@@ -162,12 +162,31 @@ if( options.count(name) ) { \
 
             //changed to 1000 after long jsonrpc requests, that use read lock
             FC_ASSERT(limit <= 1000, "Limit of ${l} is greater than maxmimum allowed (1000)", ("l", limit));
-            FC_ASSERT(from >= limit, "From must be greater than limit");
+            FC_ASSERT(limit > 0, "Limit must be greater than 0");
             //   idump((account)(from)(limit));
             const auto& idx = database.get_index<account_history_index>().indices().get<by_account>();
-            auto itr = idx.lower_bound(std::make_tuple(account, from));
+
+            // Handle from = -1 (UINT32_MAX) case: start from the latest entry
+            uint32_t actual_from = from;
+            if (from == UINT32_MAX) {
+                actual_from = itr_range->end_sequence;
+            }
+
+            auto itr = idx.lower_bound(std::make_tuple(account, actual_from));
+            if (itr == idx.end() || itr->account != account) {
+                return std::map<uint32_t, applied_operation>();
+            }
             //   if( itr != idx.end() ) idump((*itr));
-            auto end = idx.upper_bound(std::make_tuple(account, std::max(int64_t(0), int64_t(itr->sequence) - limit)));
+            // Calculate end sequence, clamping to start_sequence to avoid underflow
+            uint32_t end_sequence = 0;
+            if (itr->sequence >= limit) {
+                end_sequence = itr->sequence - limit;
+            }
+            // Ensure we don't go below start_sequence
+            if (end_sequence < itr_range->start_sequence && itr_range->start_sequence > 0) {
+                end_sequence = itr_range->start_sequence - 1;
+            }
+            auto end = idx.upper_bound(std::make_tuple(account, end_sequence));
             //   if( end != idx.end() ) idump((*end));
 
             std::map<uint32_t, applied_operation> result;

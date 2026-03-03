@@ -28,8 +28,8 @@ VIZ uses a modular plugin architecture based on Appbase. Plugins can:
 ## Core Plugins
 
 ### `chain`
-**Status:** Active (Required)  
-**Category:** Core  
+**Status:** Active (Required)
+**Category:** Core
 **Dependencies:** `json_rpc`
 
 The fundamental plugin that manages the blockchain database, block validation, and transaction processing.
@@ -52,8 +52,8 @@ flush-state-interval = 0
 ---
 
 ### `json_rpc`
-**Status:** Active (Required)  
-**Category:** Core  
+**Status:** Active (Required)
+**Category:** Core
 **Dependencies:** None
 
 Provides the JSON-RPC 2.0 framework for API method registration and dispatching.
@@ -69,8 +69,8 @@ Provides the JSON-RPC 2.0 framework for API method registration and dispatching.
 ---
 
 ### `webserver`
-**Status:** Active (Required for API access)  
-**Category:** Infrastructure  
+**Status:** Active (Required for API access)
+**Category:** Infrastructure
 **Dependencies:** `json_rpc`
 
 HTTP/WebSocket server that accepts JSON-RPC requests.
@@ -92,8 +92,8 @@ webserver-thread-pool-size = 32
 ---
 
 ### `p2p`
-**Status:** Active (Required for network sync)  
-**Category:** Infrastructure  
+**Status:** Active (Required for network sync)
+**Category:** Infrastructure
 **Dependencies:** `chain`
 
 Peer-to-peer networking for block and transaction propagation.
@@ -118,8 +118,8 @@ p2p-max-connections = 200
 ## API Plugins
 
 ### `database_api`
-**Status:** Active  
-**Category:** API  
+**Status:** Active
+**Category:** API
 **Dependencies:** `json_rpc`, `chain`
 
 Primary read API for blockchain state queries.
@@ -168,8 +168,8 @@ Primary read API for blockchain state queries.
 ---
 
 ### `network_broadcast_api`
-**Status:** Active  
-**Category:** API  
+**Status:** Active
+**Category:** API
 **Dependencies:** `json_rpc`, `chain`, `p2p`
 
 Broadcasts transactions and blocks to the network.
@@ -191,8 +191,8 @@ Broadcasts transactions and blocks to the network.
 ---
 
 ### `witness_api`
-**Status:** Active  
-**Category:** API  
+**Status:** Active
+**Category:** API
 **Dependencies:** `json_rpc`, `chain`
 
 Query witness information.
@@ -218,8 +218,8 @@ Query witness information.
 ---
 
 ### `account_by_key`
-**Status:** Active  
-**Category:** Index/API  
+**Status:** Active
+**Category:** Index/API
 **Dependencies:** `json_rpc`, `chain`
 
 Indexes accounts by their public keys for reverse lookup.
@@ -237,8 +237,8 @@ Indexes accounts by their public keys for reverse lookup.
 ---
 
 ### `account_history`
-**Status:** Active  
-**Category:** Index/API  
+**Status:** Active
+**Category:** Index/API
 **Dependencies:** `json_rpc`, `chain`, `operation_history`
 
 Indexes operation history per account.
@@ -253,18 +253,56 @@ Indexes operation history per account.
 |---|---|
 | `account_history.get_account_history` | Get operations for an account |
 
+#### `get_account_history`
+
+**Parameters:**
+
+| # | Name | Type | Description |
+|---|---|---|---|
+| 1 | `account` | string | Account name to query |
+| 2 | `from` | uint32 | Starting sequence number, or `-1` for newest |
+| 3 | `limit` | uint32 | Max entries to return (1-1000) |
+
+**Behavior:**
+- `from = -1` (or `4294967295`): Start from the most recent operation
+- Returns entries in descending order (newest first)
+- If `limit` exceeds available entries, returns all available without error
+- Example: Account has 5 entries, request `from=-1, limit=10` → returns all 5 entries
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "account_history.get_account_history",
+  "params": ["on1x", -1, 10],
+  "id": 1
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "4": {"trx_id": "abc...", "block": 1234, "op": [...]},
+    "3": {"trx_id": "def...", "block": 1233, "op": [...]},
+    "2": {"trx_id": "ghi...", "block": 1232, "op": [...]}
+  },
+  "id": 1
+}
+```
+
 **Config options:**
 ```ini
-account-history-track-account-range = ["", "zzzzzzzzzzzzzzzz"]
-account-history-whitelist-ops = []
-account-history-blacklist-ops = []
+track-account-range = ["", "zzzzzzzzzzzzzzzz"]
+history-count-blocks = 4294967295
 ```
 
 ---
 
 ### `operation_history`
-**Status:** Active  
-**Category:** Index/API  
+**Status:** Active
+**Category:** Index/API
 **Dependencies:** `json_rpc`, `chain`
 
 Indexes all operations in blocks.
@@ -283,8 +321,8 @@ Indexes all operations in blocks.
 ---
 
 ### `committee_api`
-**Status:** Active  
-**Category:** API  
+**Status:** Active
+**Category:** API
 **Dependencies:** `json_rpc`, `chain`
 
 Query committee worker requests.
@@ -305,8 +343,8 @@ Query committee worker requests.
 ---
 
 ### `invite_api`
-**Status:** Active  
-**Category:** API  
+**Status:** Active
+**Category:** API
 **Dependencies:** `json_rpc`, `chain`
 
 Query invite codes.
@@ -326,8 +364,8 @@ Query invite codes.
 ---
 
 ### `paid_subscription_api`
-**Status:** Active  
-**Category:** API  
+**Status:** Active
+**Category:** API
 **Dependencies:** `json_rpc`, `chain`
 
 Query paid subscriptions.
@@ -349,8 +387,8 @@ Query paid subscriptions.
 ---
 
 ### `follow`
-**Status:** Active  
-**Category:** Index/API  
+**Status:** Active
+**Category:** Index/API
 **Dependencies:** `json_rpc`, `chain`
 
 Indexes follow relationships and content feeds.
@@ -377,8 +415,8 @@ Indexes follow relationships and content feeds.
 ---
 
 ### `tags`
-**Status:** Active  
-**Category:** Index/API  
+**Status:** Active
+**Category:** Index/API
 **Dependencies:** `json_rpc`, `chain`, `follow`
 
 Indexes content by tags and provides content discovery.
@@ -411,8 +449,8 @@ Indexes content by tags and provides content discovery.
 ---
 
 ### `social_network`
-**Status:** Active  
-**Category:** API  
+**Status:** Active
+**Category:** API
 **Dependencies:** `json_rpc`, `chain`
 
 High-level content and social queries (combines multiple data sources).
@@ -442,8 +480,8 @@ High-level content and social queries (combines multiple data sources).
 ---
 
 ### `private_message`
-**Status:** Active  
-**Category:** Index/API  
+**Status:** Active
+**Category:** Index/API
 **Dependencies:** `json_rpc`, `chain`
 
 Indexes encrypted private messages sent via `custom_operation`.
@@ -467,8 +505,8 @@ pm-account-range = ["", "zzzzzzzzzzzzzzzz"]
 ---
 
 ### `custom_protocol_api`
-**Status:** Active  
-**Category:** API  
+**Status:** Active
+**Category:** API
 **Dependencies:** `json_rpc`, `chain`
 
 Tracks custom protocol sequences from `custom_operation`.
@@ -486,8 +524,8 @@ Tracks custom protocol sequences from `custom_operation`.
 ---
 
 ### `auth_util`
-**Status:** Active  
-**Category:** API  
+**Status:** Active
+**Category:** API
 **Dependencies:** `json_rpc`, `chain`
 
 Authority verification utilities.
@@ -504,8 +542,8 @@ Authority verification utilities.
 ---
 
 ### `block_info`
-**Status:** Active  
-**Category:** API  
+**Status:** Active
+**Category:** API
 **Dependencies:** `json_rpc`, `chain`
 
 Detailed block information queries.
@@ -524,8 +562,8 @@ Detailed block information queries.
 ---
 
 ### `raw_block`
-**Status:** Active  
-**Category:** API  
+**Status:** Active
+**Category:** API
 **Dependencies:** `json_rpc`, `chain`
 
 Get raw serialized blocks.
@@ -545,8 +583,8 @@ Get raw serialized blocks.
 ## Witness/Producer Plugins
 
 ### `witness`
-**Status:** Active  
-**Category:** Core (for block producers)  
+**Status:** Active
+**Category:** Core (for block producers)
 **Dependencies:** `chain`, `p2p`
 
 Block production plugin for witnesses.
@@ -568,8 +606,8 @@ private-key = 5K...
 ## Debug/Test Plugins
 
 ### `debug_node`
-**Status:** Active (Development only)  
-**Category:** Debug  
+**Status:** Active (Development only)
+**Category:** Debug
 **Dependencies:** `chain`
 
 Development and testing utilities. **NOT for production use.**
@@ -595,8 +633,8 @@ Development and testing utilities. **NOT for production use.**
 ---
 
 ### `test_api`
-**Status:** Active (Testing only)  
-**Category:** Test  
+**Status:** Active (Testing only)
+**Category:** Test
 **Dependencies:** `json_rpc`
 
 Test API plugin for connectivity testing.
@@ -608,8 +646,8 @@ Test API plugin for connectivity testing.
 ## External Integration Plugins
 
 ### `mongo_db`
-**Status:** Active  
-**Category:** External  
+**Status:** Active
+**Category:** External
 **Dependencies:** `chain`
 
 Exports blockchain data to MongoDB.
