@@ -408,7 +408,7 @@ Query paid subscriptions.
 ---
 
 ### `follow`
-**Status:** Active
+**Status:** Deprecated
 **Category:** Index/API
 **Dependencies:** `json_rpc`, `chain`
 
@@ -436,7 +436,7 @@ Indexes follow relationships and content feeds.
 ---
 
 ### `tags`
-**Status:** Active
+**Status:** Deprecated
 **Category:** Index/API
 **Dependencies:** `json_rpc`, `chain`, `follow`
 
@@ -470,7 +470,7 @@ Indexes content by tags and provides content discovery.
 ---
 
 ### `social_network`
-**Status:** Active
+**Status:** Deprecated
 **Category:** API
 **Dependencies:** `json_rpc`, `chain`
 
@@ -501,7 +501,7 @@ High-level content and social queries (combines multiple data sources).
 ---
 
 ### `private_message`
-**Status:** Active
+**Status:** Deprecated
 **Category:** Index/API
 **Dependencies:** `json_rpc`, `chain`
 
@@ -704,10 +704,10 @@ mongodb-db-name = viz
 | `committee_api` | Active | Yes | API |
 | `invite_api` | Active | Yes | API |
 | `paid_subscription_api` | Active | Yes | API |
-| `follow` | Active | Yes | Index/API |
-| `tags` | Active | Yes | Index/API |
-| `social_network` | Active | Yes | API |
-| `private_message` | Active | Yes | Index/API |
+| `follow` | Deprecated | Yes | Index/API |
+| `tags` | Deprecated | Yes | Index/API |
+| `social_network` | Deprecated | Yes | API |
+| `private_message` | Deprecated | Yes | Index/API |
 | `custom_protocol_api` | Active | Yes | API |
 | `auth_util` | Active | Yes | API |
 | `block_info` | Active | Yes | API |
