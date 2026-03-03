@@ -303,11 +303,17 @@ namespace graphene {
                             const auto &witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
                             auto w_itr = witness_by_name.find(witness_account);
                             graphene::protocol::public_key_type witness_pub_key = w_itr->signing_key;
+
+                            // Skip witnesses with zero/null signing key (intentionally disabled)
+                            if (witness_pub_key == graphene::protocol::public_key_type()) {
+                                ignore_witness = true;
+                            }
+
                             auto private_key_itr = _private_keys.find(witness_pub_key);
 
-                            if (private_key_itr == _private_keys.end()) {
+                            if (!ignore_witness && private_key_itr == _private_keys.end()) {
                                 ilog("No private key to public ${p} for ${w}", ("p", witness_pub_key)("w", witness_account));
-                                ignore_witness= true;
+                                ignore_witness = true;
                             }
                             if(!ignore_witness){
                                 graphene::protocol::private_key_type witness_priv_key = private_key_itr->second;
@@ -359,6 +365,13 @@ namespace graphene {
 
                 fc::time_point_sec scheduled_time = db.get_slot_time(slot);
                 graphene::protocol::public_key_type scheduled_key = itr->signing_key;
+
+                // Check if witness has zero/null signing key (intentionally disabled for block production)
+                if (scheduled_key == graphene::protocol::public_key_type()) {
+                    // Don't log - witness is configured but has zero key on chain (monitoring only)
+                    return block_production_condition::not_my_turn;
+                }
+
                 auto private_key_itr = _private_keys.find(scheduled_key);
 
                 if (private_key_itr == _private_keys.end()) {
