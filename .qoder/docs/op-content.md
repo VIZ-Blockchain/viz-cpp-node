@@ -8,7 +8,7 @@ Spec for implementing content and custom operations in PHP/Node.js libraries.
 
 ## `content_operation` *(deprecated)*
 
-**Type ID:** `1`  
+**Type ID:** `1`
 **Required authority:** `regular` of `author`
 
 Creates or updates content (post or comment).
@@ -52,7 +52,7 @@ To add beneficiaries, add to `extensions`:
 
 ## `vote_operation` *(deprecated)*
 
-**Type ID:** `0`  
+**Type ID:** `0`
 **Required authority:** `regular` of `voter`
 
 Casts a vote on content.
@@ -76,7 +76,7 @@ Casts a vote on content.
 
 ## `delete_content_operation` *(deprecated)*
 
-**Type ID:** `9`  
+**Type ID:** `9`
 **Required authority:** `regular` of `author`
 
 Deletes a piece of content.
@@ -96,7 +96,7 @@ Deletes a piece of content.
 
 ## `custom_operation`
 
-**Type ID:** `10`  
+**Type ID:** `10`
 **Required authority:** `active` or `regular` of signers
 
 Posts arbitrary JSON data to the blockchain. Used by applications for custom logic/protocols.

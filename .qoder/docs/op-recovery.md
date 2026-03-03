@@ -17,7 +17,7 @@ change_recovery_account   (30-day delay)
 
 ## `request_account_recovery_operation`
 
-**Type ID:** `12`  
+**Type ID:** `12`
 **Required authority:** `active` of `recovery_account`
 
 Initiates an account recovery request. The recovery account proposes a new master authority for the compromised account. The account holder has 24 hours to confirm.
@@ -90,7 +90,7 @@ const op = ['request_account_recovery', {
 
 ## `recover_account_operation`
 
-**Type ID:** `13`  
+**Type ID:** `13`
 **Required authority:** Both `new_master_authority` AND `recent_master_authority` signatures
 
 Confirms account recovery. The account holder proves past ownership via a recent master authority, and takes the new master authority.
@@ -134,7 +134,7 @@ Confirms account recovery. The account holder proves past ownership via a recent
 
 ## `change_recovery_account_operation`
 
-**Type ID:** `14`  
+**Type ID:** `14`
 **Required authority:** `master` of `account_to_recover`
 
 Changes the recovery account for an account. Takes effect after a 30-day delay.

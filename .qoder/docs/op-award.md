@@ -8,7 +8,7 @@ Awards are the primary social reward mechanism in VIZ. An account spends "energy
 
 ## `award_operation`
 
-**Type ID:** `47`  
+**Type ID:** `47`
 **Required authority:** `regular` of `initiator`
 
 Awards SHARES to `receiver` from the reward pool, proportional to the initiator's energy expenditure and SHARES stake.
@@ -81,7 +81,7 @@ const op = ['award', {
 
 ## `fixed_award_operation`
 
-**Type ID:** `60`  
+**Type ID:** `60`
 **Required authority:** `regular` of `initiator`
 
 Awards a **fixed amount** of SHARES to `receiver`, spending energy proportionally based on the desired amount. Added in HF11.

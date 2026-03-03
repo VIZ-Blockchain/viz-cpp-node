@@ -8,7 +8,7 @@ The committee mechanism allows community governance: anyone can create worker re
 
 ## `committee_worker_create_request_operation`
 
-**Type ID:** `35`  
+**Type ID:** `35`
 **Required authority:** `regular` of `creator`
 
 Creates a new committee worker request (funding proposal).
@@ -88,7 +88,7 @@ const op = ['committee_worker_create_request', {
 
 ## `committee_worker_cancel_request_operation`
 
-**Type ID:** `36`  
+**Type ID:** `36`
 **Required authority:** `regular` of `creator`
 
 Cancels an existing committee worker request before it expires.
@@ -139,7 +139,7 @@ const op = ['committee_worker_cancel_request', {
 
 ## `committee_vote_request_operation`
 
-**Type ID:** `37`  
+**Type ID:** `37`
 **Required authority:** `regular` of `voter`
 
 Votes on a committee worker request. Positive = support, negative = oppose.

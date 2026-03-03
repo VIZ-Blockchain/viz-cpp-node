@@ -19,7 +19,7 @@ escrow_transfer  →  escrow_approve (by agent & to)
 
 ## `escrow_transfer_operation`
 
-**Type ID:** `15`  
+**Type ID:** `15`
 **Required authority:** `active` of `from`
 
 Creates an escrow transfer proposal. Funds leave `from` into escrow balance. Both `agent` and `to` must approve before funds can be released.
@@ -103,7 +103,7 @@ const op = ['escrow_transfer', {
 
 ## `escrow_approve_operation`
 
-**Type ID:** `18`  
+**Type ID:** `18`
 **Required authority:** `active` of `who`
 
 Approves (or rejects) an escrow transfer. Both `to` and `agent` must approve. Once approved, approval cannot be revoked.
@@ -144,7 +144,7 @@ Approves (or rejects) an escrow transfer. Both `to` and `agent` must approve. On
 
 ## `escrow_dispute_operation`
 
-**Type ID:** `16`  
+**Type ID:** `16`
 **Required authority:** `active` of `who`
 
 Raises a dispute on an approved escrow. Once disputed, only the `agent` can release funds.
@@ -182,7 +182,7 @@ Raises a dispute on an approved escrow. Once disputed, only the `agent` can rele
 
 ## `escrow_release_operation`
 
-**Type ID:** `17`  
+**Type ID:** `17`
 **Required authority:** `active` of `who`
 
 Releases escrow funds to `receiver`.

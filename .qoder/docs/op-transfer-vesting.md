@@ -6,7 +6,7 @@ Spec for implementing transfer and vesting-related operations in PHP/Node.js lib
 
 ## `transfer_operation`
 
-**Type ID:** `2`  
+**Type ID:** `2`
 **Required authority:** `active` of `from` (for VIZ tokens), `master` of `from` (for SHARES)
 
 Transfers tokens (VIZ or SHARES) from one account to another.
@@ -68,7 +68,7 @@ const op = ['transfer', {
 
 ## `transfer_to_vesting_operation`
 
-**Type ID:** `3`  
+**Type ID:** `3`
 **Required authority:** `active` of `from`
 
 Converts liquid VIZ tokens into SHARES (staking/vesting). Can vest into another account's balance.
@@ -101,7 +101,7 @@ Converts liquid VIZ tokens into SHARES (staking/vesting). Can vest into another 
 
 ## `withdraw_vesting_operation`
 
-**Type ID:** `4`  
+**Type ID:** `4`
 **Required authority:** `active` of `account`
 
 Initiates a vesting withdrawal — schedules gradual conversion of SHARES back to VIZ over multiple intervals.
@@ -133,7 +133,7 @@ Initiates a vesting withdrawal — schedules gradual conversion of SHARES back t
 
 ## `set_withdraw_vesting_route_operation`
 
-**Type ID:** `11`  
+**Type ID:** `11`
 **Required authority:** `active` of `from_account`
 
 Routes a percentage of vesting withdrawals to another account (optionally re-vesting immediately).
@@ -169,7 +169,7 @@ Routes a percentage of vesting withdrawals to another account (optionally re-ves
 
 ## `delegate_vesting_shares_operation`
 
-**Type ID:** `19`  
+**Type ID:** `19`
 **Required authority:** `active` of `delegator`
 
 Delegates SHARES from one account to another. The delegator retains ownership but the delegatee gains bandwidth and voting power.

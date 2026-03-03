@@ -8,7 +8,7 @@ Account market operations allow accounts to be bought and sold. An account owner
 
 ## `set_account_price_operation`
 
-**Type ID:** `54`  
+**Type ID:** `54`
 **Required authority:** `master` of `account`
 
 Sets an account for sale or updates its sale parameters.
@@ -70,7 +70,7 @@ const op = ['set_account_price', {
 
 ## `set_subaccount_price_operation`
 
-**Type ID:** `55`  
+**Type ID:** `55`
 **Required authority:** `master` of `account`
 
 Lists the right to create subaccounts of `account` for sale. A "subaccount" of `alice` would be `alice.bob`.
@@ -119,7 +119,7 @@ $op = [
 
 ## `buy_account_operation`
 
-**Type ID:** `56`  
+**Type ID:** `56`
 **Required authority:** `active` of `buyer`
 
 Purchases an account that is listed for sale. All authorities are transferred to the buyer.
@@ -187,7 +187,7 @@ const op = ['buy_account', {
 
 ## `target_account_sale_operation`
 
-**Type ID:** `61`  
+**Type ID:** `61`
 **Required authority:** `master` of `account`
 
 Lists an account for sale to a specific buyer only (private/targeted sale). Added in HF11.

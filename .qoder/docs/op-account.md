@@ -6,7 +6,7 @@ Spec for implementing account-related operations in PHP/Node.js libraries.
 
 ## `account_create_operation`
 
-**Type ID:** `20`  
+**Type ID:** `20`
 **Required authority:** `active` of `creator`
 
 Creates a new blockchain account.
@@ -109,7 +109,7 @@ const op = ['account_create', {
 
 ## `account_update_operation`
 
-**Type ID:** `5`  
+**Type ID:** `5`
 **Required authority:** `master` of `account` (if changing master key), else `active`
 
 Updates account keys and metadata.
@@ -150,7 +150,7 @@ Updates account keys and metadata.
 
 ## `account_metadata_operation`
 
-**Type ID:** `21`  
+**Type ID:** `21`
 **Required authority:** `regular` of `account`
 
 Updates only the account's JSON metadata. Cheaper in bandwidth than full `account_update`.

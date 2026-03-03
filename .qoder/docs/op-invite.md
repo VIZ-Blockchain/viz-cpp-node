@@ -8,7 +8,7 @@ Invites allow existing VIZ users to onboard new users without requiring them to 
 
 ## `create_invite_operation`
 
-**Type ID:** `43`  
+**Type ID:** `43`
 **Required authority:** `active` of `creator`
 
 Creates an invite link by generating a key and funding it with VIZ tokens.
@@ -70,7 +70,7 @@ const op = ['create_invite', {
 
 ## `claim_invite_balance_operation`
 
-**Type ID:** `44`  
+**Type ID:** `44`
 **Required authority:** `active` of `initiator`
 
 Claims the VIZ balance from an invite, transferring it to `receiver`. The invite is consumed.
@@ -127,7 +127,7 @@ const op = ['claim_invite_balance', {
 
 ## `invite_registration_operation`
 
-**Type ID:** `45`  
+**Type ID:** `45`
 **Required authority:** `active` of `initiator`
 
 Uses an invite to create a new account. The invite balance is used to fund the new account.
@@ -189,7 +189,7 @@ const op = ['invite_registration', {
 
 ## `use_invite_balance_operation`
 
-**Type ID:** `58`  
+**Type ID:** `58`
 **Required authority:** `active` of `initiator`
 
 Alternative to `claim_invite_balance_operation` — transfers invite balance to receiver. The difference from `claim_invite_balance_operation` is that this one may convert balance to SHARES.

@@ -8,7 +8,7 @@ Paid subscriptions allow accounts to offer tiered subscription services payable 
 
 ## `set_paid_subscription_operation`
 
-**Type ID:** `50`  
+**Type ID:** `50`
 **Required authority:** `active` of `account`
 
 Creates or updates a paid subscription offering for an account. Subscribers can then subscribe via `paid_subscribe_operation`.
@@ -75,7 +75,7 @@ const op = ['set_paid_subscription', {
 
 ## `paid_subscribe_operation`
 
-**Type ID:** `51`  
+**Type ID:** `51`
 **Required authority:** `active` of `subscriber`
 
 Subscribes to or renews a paid subscription. Tokens are transferred from `subscriber` to `account`.

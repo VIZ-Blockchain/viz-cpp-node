@@ -6,7 +6,7 @@ Spec for implementing witness-related operations in PHP/Node.js libraries.
 
 ## `witness_update_operation`
 
-**Type ID:** `6`  
+**Type ID:** `6`
 **Required authority:** `active` of `owner`
 
 Registers or updates a witness. Setting `block_signing_key` to the null key removes the witness from block production contention.
@@ -65,7 +65,7 @@ const op = ['witness_update', {
 
 ## `chain_properties_update_operation`
 
-**Type ID:** `25`  
+**Type ID:** `25`
 **Required authority:** `active` of `owner`
 
 Witness votes on base chain properties (`chain_properties_init` format only). Use `versioned_chain_properties_update_operation` for extended properties.
@@ -111,7 +111,7 @@ Witness votes on base chain properties (`chain_properties_init` format only). Us
 
 ## `versioned_chain_properties_update_operation`
 
-**Type ID:** `46`  
+**Type ID:** `46`
 **Required authority:** `active` of `owner`
 
 Witness votes on versioned chain properties (supports all hardfork extensions).
@@ -167,7 +167,7 @@ Witness votes on versioned chain properties (supports all hardfork extensions).
 
 ## `account_witness_vote_operation`
 
-**Type ID:** `7`  
+**Type ID:** `7`
 **Required authority:** `active` of `account`
 
 Votes for or against a witness to be included in block production.
@@ -223,7 +223,7 @@ const op = ['account_witness_vote', {
 
 ## `account_witness_proxy_operation`
 
-**Type ID:** `8`  
+**Type ID:** `8`
 **Required authority:** `active` of `account`
 
 Assigns a proxy account for witness voting. All existing votes are removed when a proxy is set.

@@ -8,7 +8,7 @@ Proposals allow a group of accounts to jointly approve and execute a set of oper
 
 ## `proposal_create_operation`
 
-**Type ID:** `22`  
+**Type ID:** `22`
 **Required authority:** `active` of `author`
 
 Creates a transaction proposal containing one or more operations that require multi-sig approval.
@@ -112,7 +112,7 @@ const op = ['proposal_create', {
 
 ## `proposal_update_operation`
 
-**Type ID:** `23`  
+**Type ID:** `23`
 **Required authority:** Depends on which approval sets are modified
 
 Adds or removes approvals from a proposal. Proposal executes automatically when enough approvals are collected.
@@ -184,7 +184,7 @@ $op = [
 
 ## `proposal_delete_operation`
 
-**Type ID:** `24`  
+**Type ID:** `24`
 **Required authority:** `active` of `requester`
 
 Vetoes and permanently deletes a proposal. Can be done by any required authority.
