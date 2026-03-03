@@ -96,20 +96,28 @@ namespace graphene { namespace plugins { namespace operation_history {
 
         ~plugin_impl() = default;
 
-        void purge_old_history(){
+        uint32_t get_min_keep_block() const {
             uint32_t head_block = database.head_block_num();
-            //ilog("operation_history: purge_old_history START ${c} <= ${h}", ("c",history_count_blocks)("h", head_block));
             if (history_count_blocks <= head_block) {
-                uint32_t need_block = head_block - history_count_blocks;
-                const auto& idx = database.get_index<operation_index>().indices().get<by_block>();
-                auto it = idx.begin();
-                while (it != idx.end() && it->block <= need_block) {
-                    auto next_it = it;
-                    ++next_it;
-                    //ilog("operation_history: REMOVE ${c}", ("c",it->block));
-                    database.remove(*it);
-                    it = next_it;
-                }
+                return head_block - history_count_blocks;
+            }
+            return 0;
+        }
+
+        void purge_old_history(){
+            uint32_t need_block = get_min_keep_block();
+            if (need_block == 0) {
+                return;
+            }
+            //ilog("operation_history: purge_old_history need_block ${n}", ("n", need_block));
+            const auto& idx = database.get_index<operation_index>().indices().get<by_block>();
+            auto it = idx.begin();
+            while (it != idx.end() && it->block <= need_block) {
+                auto next_it = it;
+                ++next_it;
+                //ilog("operation_history: REMOVE block ${c} id ${i}", ("c",it->block)("i",it->id));
+                database.remove(*it);
+                it = next_it;
             }
         }
 
@@ -158,6 +166,10 @@ namespace graphene { namespace plugins { namespace operation_history {
         bool blacklist = false;
         fc::flat_set<std::string> ops_list;
         graphene::chain::database& database;
+
+        // Signal connections for cleanup
+        boost::signals2::connection applied_block_connection;
+        boost::signals2::connection pre_apply_operation_connection;
     };
 
     DEFINE_API(plugin, get_ops_in_block) {
@@ -206,7 +218,7 @@ namespace graphene { namespace plugins { namespace operation_history {
 
         pimpl = std::make_unique<plugin_impl>();
 
-        pimpl->database.pre_apply_operation.connect([&](graphene::chain::operation_notification& note){
+        pimpl->pre_apply_operation_connection = pimpl->database.pre_apply_operation.connect([&](graphene::chain::operation_notification& note){
             pimpl->on_operation(note);
         });
 
@@ -251,7 +263,7 @@ namespace graphene { namespace plugins { namespace operation_history {
         if (options.count("history-count-blocks")) {
             uint32_t history_count_blocks = options.at("history-count-blocks").as<uint32_t>();
             pimpl->history_count_blocks = history_count_blocks;
-            pimpl->database.applied_block.connect([&](const signed_block& block){
+            pimpl->applied_block_connection = pimpl->database.applied_block.connect([&](const signed_block& block){
                 pimpl->purge_old_history();
             });
         } else {
@@ -279,6 +291,15 @@ namespace graphene { namespace plugins { namespace operation_history {
     }
 
     void plugin::plugin_shutdown() {
+        // Disconnect signal handlers to prevent use-after-free
+        if (pimpl) {
+            pimpl->applied_block_connection.disconnect();
+            pimpl->pre_apply_operation_connection.disconnect();
+        }
+    }
+
+    uint32_t plugin::get_min_keep_block() const {
+        return pimpl->get_min_keep_block();
     }
 
 } } } // graphene::plugins::operation_history

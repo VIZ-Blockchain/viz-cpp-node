@@ -2,6 +2,7 @@
 #include <graphene/plugins/account_history/history_object.hpp>
 
 #include <graphene/plugins/operation_history/history_object.hpp>
+#include <graphene/plugins/operation_history/plugin.hpp>
 
 #include <graphene/chain/operation_notification.hpp>
 
@@ -92,35 +93,71 @@ if( options.count(name) ) { \
 
         void purge_old_history(){
             uint32_t head_block = database.head_block_num();
-            //ilog("account_history: purge_old_history START ${c} <= ${h}", ("c",history_count_blocks)("h", head_block));
-            if (history_count_blocks <= head_block) {
-                uint32_t need_block = head_block - history_count_blocks;
-                const auto& idx = database.get_index<account_history_index>().indices().get<by_block>();
-                auto it = idx.begin();
-                while (it != idx.end() && it->block <= need_block) {
-                    //change account range object if needed
-                    const auto& idx_range = database.get_index<account_range_index>().indices().get<range_by_account>();
-                    auto itr_range = idx_range.find(it->account);
-                    if(itr_range != idx_range.end()){
-                        if(itr_range->start_sequence <= it->sequence){
-                            //remove account range object if it have one sequence in range
-                            if(itr_range->start_sequence == itr_range->end_sequence){
-                                database.remove(*itr_range);
-                            }
-                            else{
-                                //edit start sequence
-                                database.modify(*itr_range, [&](account_range_object& range) {
-                                    range.start_sequence++;
-                                });
-                            }
-                        }
-                    }
 
-                    auto next_it = it;
-                    ++next_it;
-                    //ilog("account_history: REMOVE ${c}", ("c",it->block));
-                    database.remove(*it);
-                    it = next_it;
+            // Determine the minimum block to keep
+            // Use our own history_count_blocks setting
+            uint32_t need_block = 0;
+            if (history_count_blocks <= head_block) {
+                need_block = head_block - history_count_blocks;
+            }
+
+            // Also check operation_history plugin's setting to avoid dangling references
+            // We must purge at least as aggressively as operation_history
+            try {
+                auto& op_hist_plugin = appbase::app().get_plugin<operation_history::plugin>();
+                uint32_t op_need_block = op_hist_plugin.get_min_keep_block();
+                if (op_need_block > need_block) {
+                    need_block = op_need_block;
+                }
+            } catch (...) {
+                // operation_history plugin not loaded, use our own setting
+            }
+
+            if (need_block == 0) {
+                return;
+            }
+
+            //ilog("account_history: purge_old_history need_block ${n}", ("n", need_block));
+            const auto& idx = database.get_index<account_history_index>().indices().get<by_block>();
+            auto it = idx.begin();
+
+            // Collect accounts that need range updates
+            std::map<account_name_type, uint32_t> accounts_max_purged_seq;
+
+            while (it != idx.end() && it->block <= need_block) {
+                // Track the maximum purged sequence per account
+                auto acc_it = accounts_max_purged_seq.find(it->account);
+                if (acc_it == accounts_max_purged_seq.end()) {
+                    accounts_max_purged_seq[it->account] = it->sequence;
+                } else {
+                    if (it->sequence > acc_it->second) {
+                        acc_it->second = it->sequence;
+                    }
+                }
+
+                auto next_it = it;
+                ++next_it;
+                //ilog("account_history: REMOVE account ${a} seq ${s} block ${b}", ("a",it->account)("s",it->sequence)("b",it->block));
+                database.remove(*it);
+                it = next_it;
+            }
+
+            // Update account range objects
+            const auto& idx_range = database.get_index<account_range_index>().indices().get<range_by_account>();
+            for (const auto& acc_purge : accounts_max_purged_seq) {
+                auto itr_range = idx_range.find(acc_purge.first);
+                if (itr_range != idx_range.end()) {
+                    // New start sequence is one after the max purged sequence
+                    uint32_t new_start = acc_purge.second + 1;
+
+                    if (new_start > itr_range->end_sequence) {
+                        // All entries for this account have been purged
+                        database.remove(*itr_range);
+                    } else if (new_start > itr_range->start_sequence) {
+                        database.modify(*itr_range, [&](account_range_object& range) {
+                            range.start_sequence = new_start;
+                        });
+                    }
                 }
             }
         }
@@ -199,6 +236,10 @@ if( options.count(name) ) { \
         fc::flat_map<std::string, std::string> tracked_accounts;
         graphene::chain::database& database;
         uint32_t history_count_blocks = UINT32_MAX;
+
+        // Signal connections for cleanup
+        boost::signals2::connection applied_block_connection;
+        boost::signals2::connection pre_apply_operation_connection;
     };
 
     DEFINE_API(plugin, get_account_history) {
@@ -494,16 +535,19 @@ if( options.count(name) ) { \
         if (options.count("history-count-blocks")) {
             uint32_t history_count_blocks = options.at("history-count-blocks").as<uint32_t>();
             pimpl->history_count_blocks = history_count_blocks;
-            pimpl->database.applied_block.connect([&](const signed_block& block){
-                pimpl->purge_old_history();
-            });
         } else {
             pimpl->history_count_blocks = UINT32_MAX;
         }
+
+        // Always connect to applied_block for purging - coordinates with operation_history
+        pimpl->applied_block_connection = pimpl->database.applied_block.connect([&](const signed_block& block){
+            pimpl->purge_old_history();
+        });
+
         ilog("account_history: history-count-blocks ${s}", ("s", pimpl->history_count_blocks));
 
         // this is worked, because the appbase initialize required plugins at first
-        pimpl->database.pre_apply_operation.connect([&](graphene::chain::operation_notification& note){
+        pimpl->pre_apply_operation_connection = pimpl->database.pre_apply_operation.connect([&](graphene::chain::operation_notification& note){
             pimpl->on_operation(note);
         });
 
@@ -534,6 +578,17 @@ if( options.count(name) ) { \
     }
 
     void plugin::plugin_shutdown() {
+        // Disconnect signal handlers to prevent use-after-free
+        if (pimpl) {
+            pimpl->applied_block_connection.disconnect();
+            pimpl->pre_apply_operation_connection.disconnect();
+        }
+    }
+
+    void plugin::purge_old_history() {
+        if (pimpl) {
+            pimpl->purge_old_history();
+        }
     }
 
     fc::flat_map<std::string, std::string> plugin::tracked_accounts() const {

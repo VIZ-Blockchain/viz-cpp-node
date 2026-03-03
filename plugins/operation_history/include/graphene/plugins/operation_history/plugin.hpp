@@ -77,10 +77,15 @@ namespace graphene { namespace plugins { namespace operation_history {
              *  @return sequence of operations included/generated within the block
              */
             (get_ops_in_block)
-        
+
             (get_transaction)
 
         )
+
+        // Returns the minimum block number that should be kept in history
+        // Blocks older than this can be purged. Returns 0 if no purging is configured.
+        uint32_t get_min_keep_block() const;
+
     private:
         struct plugin_impl;
 

@@ -298,6 +298,12 @@ track-account-range = ["", "zzzzzzzzzzzzzzzz"]
 history-count-blocks = 4294967295
 ```
 
+**Memory Management:**
+- Old history entries are automatically purged based on `history-count-blocks`
+- Coordinates with `operation_history` plugin to avoid dangling references
+- Uses the more aggressive purge threshold between both plugins
+- Signal handlers are properly disconnected on shutdown to prevent memory leaks
+
 ---
 
 ### `operation_history`
@@ -310,6 +316,7 @@ Indexes all operations in blocks.
 **Purpose:**
 - Query operations within a block
 - Lookup transactions by ID
+- Provides base operation storage for `account_history` plugin
 
 **JSON-RPC Methods:**
 
@@ -317,6 +324,20 @@ Indexes all operations in blocks.
 |---|---|
 | `operation_history.get_ops_in_block` | Get operations in a block |
 | `operation_history.get_transaction` | Get transaction by ID |
+
+**Config options:**
+```ini
+history-whitelist-ops = []       # Only store these operations (exclusive with blacklist)
+history-blacklist-ops = []       # Don't store these operations
+history-start-block = 0          # Start recording from this block
+history-count-blocks = 4294967295 # How many blocks of history to keep
+```
+
+**Memory Management:**
+- Old operations are automatically purged based on `history-count-blocks`
+- `account_history` plugin coordinates purging with this plugin
+- Signal handlers are properly disconnected on shutdown to prevent memory leaks
+- Exposes `get_min_keep_block()` for dependent plugins to coordinate purging
 
 ---
 
