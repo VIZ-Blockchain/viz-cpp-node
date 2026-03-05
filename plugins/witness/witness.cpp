@@ -302,6 +302,10 @@ namespace graphene {
                         if (block_post_validations.size() > 0) {
                             const auto &witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
                             auto w_itr = witness_by_name.find(witness_account);
+                            if (w_itr == witness_by_name.end()) {
+                                wlog("Witness ${w} not found in witness index, skipping block post validation", ("w", witness_account));
+                                continue;
+                            }
                             graphene::protocol::public_key_type witness_pub_key = w_itr->signing_key;
 
                             // Skip witnesses with zero/null signing key (intentionally disabled)
