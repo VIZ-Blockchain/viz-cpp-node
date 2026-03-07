@@ -2574,4 +2574,313 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
             return my->sign_transaction(tx, broadcast);
         }
 
+        // ========== VIZ DNS Nameserver Helper Implementations ==========
+
+        bool wallet_api::ns_validate_ipv4(const string& ipv4) const {
+            // Validate IPv4 address format: x.x.x.x where x is 0-255
+            if (ipv4.empty()) return false;
+
+            vector<string> octets;
+            string current;
+            for (char c : ipv4) {
+                if (c == '.') {
+                    if (current.empty()) return false;
+                    octets.push_back(current);
+                    current.clear();
+                } else if (c >= '0' && c <= '9') {
+                    current += c;
+                } else {
+                    return false; // Invalid character
+                }
+            }
+            if (!current.empty()) {
+                octets.push_back(current);
+            }
+
+            if (octets.size() != 4) return false;
+
+            for (const auto& octet : octets) {
+                if (octet.empty() || octet.size() > 3) return false;
+                // Check for leading zeros (invalid except for "0")
+                if (octet.size() > 1 && octet[0] == '0') return false;
+                int value = std::stoi(octet);
+                if (value < 0 || value > 255) return false;
+            }
+
+            return true;
+        }
+
+        bool wallet_api::ns_validate_sha256_hash(const string& hash) const {
+            // SHA256 hash must be exactly 64 hex characters
+            if (hash.size() != NS_SHA256_HEX_LENGTH) return false;
+
+            for (char c : hash) {
+                if (!((c >= '0' && c <= '9') ||
+                      (c >= 'a' && c <= 'f') ||
+                      (c >= 'A' && c <= 'F'))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        bool wallet_api::ns_validate_ttl(uint32_t ttl) const {
+            // TTL must be a positive value
+            return ttl > 0;
+        }
+
+        bool wallet_api::ns_validate_ssl_txt_record(const string& txt) const {
+            // Format: ssl=<64-char-hex-hash>
+            if (txt.size() < 5) return false; // Minimum: "ssl=x"
+            if (txt.substr(0, 4) != "ssl=") return false;
+            string hash = txt.substr(4);
+            return ns_validate_sha256_hash(hash);
+        }
+
+        ns_validation_result wallet_api::ns_validate_metadata(const ns_metadata_options& options) const {
+            ns_validation_result result;
+            result.is_valid = true;
+
+            // Validate A records
+            for (const auto& ip : options.a_records) {
+                if (!ns_validate_ipv4(ip)) {
+                    result.is_valid = false;
+                    result.errors.push_back("Invalid IPv4 address: " + ip);
+                }
+            }
+
+            // Validate SSL hash if provided
+            if (options.ssl_hash) {
+                if (!ns_validate_sha256_hash(*options.ssl_hash)) {
+                    result.is_valid = false;
+                    result.errors.push_back("Invalid SHA256 hash: " + *options.ssl_hash);
+                }
+            }
+
+            // Validate TTL
+            if (!ns_validate_ttl(options.ttl)) {
+                result.is_valid = false;
+                result.errors.push_back("Invalid TTL value: must be positive");
+            }
+
+            // Validate at least one record exists
+            if (options.a_records.empty() && !options.ssl_hash) {
+                result.is_valid = false;
+                result.errors.push_back("At least one A record or SSL hash must be provided");
+            }
+
+            return result;
+        }
+
+        variant wallet_api::ns_create_metadata(const ns_metadata_options& options) const {
+            // Validate first
+            auto validation = ns_validate_metadata(options);
+            FC_ASSERT(validation.is_valid, "Invalid NS metadata: ${errors}", ("errors", validation.errors));
+
+            // Build the ns array
+            fc::mutable_variant_object result;
+            fc::variants ns_array;
+
+            // Add A records
+            for (const auto& ip : options.a_records) {
+                fc::variants record;
+                record.push_back("A");
+                record.push_back(ip);
+                ns_array.push_back(record);
+            }
+
+            // Add SSL TXT record if provided
+            if (options.ssl_hash) {
+                fc::variants record;
+                record.push_back("TXT");
+                record.push_back("ssl=" + *options.ssl_hash);
+                ns_array.push_back(record);
+            }
+
+            result["ns"] = ns_array;
+            result["ttl"] = options.ttl;
+
+            return result;
+        }
+
+        ns_summary wallet_api::ns_get_summary(const string& account_name) const {
+            ns_summary summary;
+
+            auto accounts = my->_remote_database_api->get_accounts({account_name});
+            FC_ASSERT(accounts.size() == 1, "Account does not exist");
+
+            const auto& account = accounts[0];
+            if (account.json_metadata.empty()) {
+                return summary;
+            }
+
+            try {
+                fc::variant metadata = fc::json::from_string(account.json_metadata);
+                if (!metadata.is_object()) {
+                    return summary;
+                }
+
+                fc::variant_object obj = metadata.get_object();
+
+                // Extract ns array
+                if (obj.contains("ns") && obj["ns"].is_array()) {
+                    summary.has_ns_data = true;
+                    fc::variants ns_array = obj["ns"].get_array();
+
+                    for (const auto& record : ns_array) {
+                        if (!record.is_array()) continue;
+                        fc::variants rec_arr = record.get_array();
+                        if (rec_arr.size() < 2) continue;
+
+                        string type = rec_arr[0].as_string();
+                        string value = rec_arr[1].as_string();
+
+                        if (type == "A") {
+                            summary.a_records.push_back(value);
+                        } else if (type == "TXT") {
+                            // Check for ssl= prefix
+                            if (value.substr(0, 4) == "ssl=") {
+                                summary.ssl_hash = value.substr(4);
+                            }
+                        }
+                    }
+                }
+
+                // Extract TTL
+                if (obj.contains("ttl") && obj["ttl"].is_uint64()) {
+                    summary.ttl = static_cast<uint32_t>(obj["ttl"].as_uint64());
+                    if (!summary.has_ns_data && summary.ttl > 0) {
+                        summary.has_ns_data = true;
+                    }
+                }
+            } catch (...) {
+                // Invalid JSON, return empty summary
+            }
+
+            return summary;
+        }
+
+        vector<string> wallet_api::ns_extract_a_records(const string& account_name) const {
+            auto summary = ns_get_summary(account_name);
+            return summary.a_records;
+        }
+
+        optional<string> wallet_api::ns_extract_ssl_hash(const string& account_name) const {
+            auto summary = ns_get_summary(account_name);
+            return summary.ssl_hash;
+        }
+
+        uint32_t wallet_api::ns_extract_ttl(const string& account_name) const {
+            auto summary = ns_get_summary(account_name);
+            return summary.ttl;
+        }
+
+        annotated_signed_transaction wallet_api::ns_set_records(
+            string account_name,
+            const ns_metadata_options& options,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+
+            // Validate NS metadata
+            auto validation = ns_validate_metadata(options);
+            FC_ASSERT(validation.is_valid, "Invalid NS metadata: ${errors}", ("errors", validation.errors));
+
+            auto accounts = my->_remote_database_api->get_accounts({account_name});
+            FC_ASSERT(accounts.size() == 1, "Account does not exist");
+
+            const auto& account = accounts[0];
+
+            // Parse existing metadata or create empty object
+            fc::mutable_variant_object metadata;
+            if (!account.json_metadata.empty()) {
+                try {
+                    fc::variant existing = fc::json::from_string(account.json_metadata);
+                    if (existing.is_object()) {
+                        // Copy all existing fields except ns and ttl
+                        for (const auto& item : existing.get_object()) {
+                            if (item.key() != "ns" && item.key() != "ttl") {
+                                metadata[item.key()] = item.value();
+                            }
+                        }
+                    }
+                } catch (...) {
+                    // Invalid JSON, start fresh
+                }
+            }
+
+            // Build the ns array
+            fc::variants ns_array;
+
+            // Add A records
+            for (const auto& ip : options.a_records) {
+                fc::variants record;
+                record.push_back("A");
+                record.push_back(ip);
+                ns_array.push_back(record);
+            }
+
+            // Add SSL TXT record if provided
+            if (options.ssl_hash) {
+                fc::variants record;
+                record.push_back("TXT");
+                record.push_back("ssl=" + *options.ssl_hash);
+                ns_array.push_back(record);
+            }
+
+            metadata["ns"] = ns_array;
+            metadata["ttl"] = options.ttl;
+
+            // Create and broadcast transaction
+            signed_transaction tx;
+            account_metadata_operation op;
+            op.account = account_name;
+            op.json_metadata = fc::json::to_string(metadata);
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::ns_remove_records(
+            string account_name,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+
+            auto accounts = my->_remote_database_api->get_accounts({account_name});
+            FC_ASSERT(accounts.size() == 1, "Account does not exist");
+
+            const auto& account = accounts[0];
+
+            // Parse existing metadata
+            fc::mutable_variant_object metadata;
+            if (!account.json_metadata.empty()) {
+                try {
+                    fc::variant existing = fc::json::from_string(account.json_metadata);
+                    if (existing.is_object()) {
+                        // Copy all existing fields except ns and ttl
+                        for (const auto& item : existing.get_object()) {
+                            if (item.key() != "ns" && item.key() != "ttl") {
+                                metadata[item.key()] = item.value();
+                            }
+                        }
+                    }
+                } catch (...) {
+                    // Invalid JSON, nothing to remove
+                    FC_ASSERT(false, "Account has invalid JSON metadata");
+                }
+            }
+
+            // Create and broadcast transaction
+            signed_transaction tx;
+            account_metadata_operation op;
+            op.account = account_name;
+            op.json_metadata = fc::json::to_string(metadata);
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
     } } // graphene::wallet

@@ -8,6 +8,7 @@ Full specification and implementation checklist for building VIZ blockchain clie
 
 | File | Contents |
 |---|---|
+| [cli-wallet.md](cli-wallet.md) | Complete CLI wallet command reference with examples |
 | [data-types.md](data-types.md) | Primitive types, `asset`, `authority`, `public_key_type`, operation type index |
 | [plugins.md](plugins.md) | All node plugins, dependencies, status, JSON-RPC method tables |
 | [op-account.md](op-account.md) | Account create, update, metadata operations |

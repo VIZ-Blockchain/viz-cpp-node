@@ -21,6 +21,46 @@ namespace graphene { namespace wallet {
 
         typedef uint16_t transaction_handle_type;
 
+        /// NS DNS helper constants
+        const uint32_t NS_DEFAULT_TTL = 28800;           // 8 hours in seconds
+        const uint32_t NS_MAX_TXT_LENGTH = 256;          // Max TXT record length per NS standard
+        const uint32_t NS_SHA256_HEX_LENGTH = 64;        // SHA256 hash length in hex characters
+
+        /**
+         * NS record - represents a single DNS record tuple [type, value]
+         */
+        struct ns_record {
+            string type;   // "A" or "TXT"
+            string value;  // IPv4 address or TXT content like "ssl=<hash>"
+        };
+
+        /**
+         * Options for creating NS metadata
+         */
+        struct ns_metadata_options {
+            vector<string> a_records;     // List of IPv4 addresses
+            optional<string> ssl_hash;    // SHA256 hash for SSL TXT record
+            uint32_t ttl = NS_DEFAULT_TTL; // TTL in seconds
+        };
+
+        /**
+         * Summary of NS data extracted from account metadata
+         */
+        struct ns_summary {
+            vector<string> a_records;     // List of IPv4 addresses
+            optional<string> ssl_hash;    // SSL certificate hash if present
+            uint32_t ttl = 0;             // TTL value (0 if not set)
+            bool has_ns_data = false;     // Whether any NS data was found
+        };
+
+        /**
+         * Result of NS metadata validation
+         */
+        struct ns_validation_result {
+            bool is_valid = true;
+            vector<string> errors;
+        };
+
         struct approval_delta {
             vector<string> active_approvals_to_add;
             vector<string> active_approvals_to_remove;
@@ -1266,6 +1306,117 @@ namespace graphene { namespace wallet {
                 bool account_on_sale,
                 bool broadcast = false
             );
+
+            // ========== VIZ DNS Nameserver Helpers ==========
+
+            /**
+             * Validates an IPv4 address string.
+             *
+             * @param ipv4 The IPv4 address string to validate (e.g., "188.120.231.153")
+             * @return true if the address is valid, false otherwise
+             */
+            bool ns_validate_ipv4(const string& ipv4) const;
+
+            /**
+             * Validates a SHA256 hash string (64 hex characters).
+             *
+             * @param hash The SHA256 hash string to validate
+             * @return true if the hash is valid, false otherwise
+             */
+            bool ns_validate_sha256_hash(const string& hash) const;
+
+            /**
+             * Validates a TTL value (must be positive integer).
+             *
+             * @param ttl The TTL value to validate
+             * @return true if the TTL is valid, false otherwise
+             */
+            bool ns_validate_ttl(uint32_t ttl) const;
+
+            /**
+             * Validates an SSL TXT record format (ssl=<hash>).
+             *
+             * @param txt The TXT record string to validate
+             * @return true if the format is valid, false otherwise
+             */
+            bool ns_validate_ssl_txt_record(const string& txt) const;
+
+            /**
+             * Performs complete validation of NS metadata.
+             *
+             * @param options The NS metadata options to validate
+             * @return ns_validation_result with isValid flag and errors array
+             */
+            ns_validation_result ns_validate_metadata(const ns_metadata_options& options) const;
+
+            /**
+             * Creates NS metadata JSON string from options.
+             * This only creates the ns and ttl fields for merging with existing metadata.
+             *
+             * @param options The NS metadata options (a_records, ssl_hash, ttl)
+             * @return JSON object containing ns array and ttl value
+             */
+            variant ns_create_metadata(const ns_metadata_options& options) const;
+
+            /**
+             * Gets complete NS summary from an account's metadata.
+             *
+             * @param account_name The account name to query
+             * @return ns_summary containing a_records, ssl_hash, ttl, and has_ns_data flag
+             */
+            ns_summary ns_get_summary(const string& account_name) const;
+
+            /**
+             * Extracts A records (IPv4 addresses) from an account's metadata.
+             *
+             * @param account_name The account name to query
+             * @return vector of IPv4 address strings
+             */
+            vector<string> ns_extract_a_records(const string& account_name) const;
+
+            /**
+             * Extracts SSL hash from an account's metadata TXT records.
+             *
+             * @param account_name The account name to query
+             * @return optional SSL hash string (empty if not found)
+             */
+            optional<string> ns_extract_ssl_hash(const string& account_name) const;
+
+            /**
+             * Extracts TTL value from an account's metadata.
+             *
+             * @param account_name The account name to query
+             * @return TTL value in seconds (0 if not set)
+             */
+            uint32_t ns_extract_ttl(const string& account_name) const;
+
+            /**
+             * Sets NS records for an account. Merges NS data with existing metadata,
+             * preserving other fields like profile information.
+             *
+             * @param account_name The account to update
+             * @param options The NS metadata options (a_records, ssl_hash, ttl)
+             * @param broadcast true if you wish to broadcast the transaction
+             * @return the signed transaction
+             */
+            annotated_signed_transaction ns_set_records(
+                string account_name,
+                const ns_metadata_options& options,
+                bool broadcast = false
+            );
+
+            /**
+             * Removes NS records from an account's metadata.
+             * Preserves other metadata fields like profile information.
+             *
+             * @param account_name The account to update
+             * @param broadcast true if you wish to broadcast the transaction
+             * @return the signed transaction
+             */
+            annotated_signed_transaction ns_remove_records(
+                string account_name,
+                bool broadcast = false
+            );
         };
 
         struct plain_keys {
@@ -1285,6 +1436,11 @@ FC_REFLECT( (graphene::wallet::brain_key_info), (brain_priv_key)(wif_priv_key) (
 FC_REFLECT( (graphene::wallet::plain_keys), (checksum)(keys) )
 
 FC_REFLECT_ENUM( graphene::wallet::authority_type, (master)(active)(regular) )
+
+FC_REFLECT( (graphene::wallet::ns_record), (type)(value) )
+FC_REFLECT( (graphene::wallet::ns_metadata_options), (a_records)(ssl_hash)(ttl) )
+FC_REFLECT( (graphene::wallet::ns_summary), (a_records)(ssl_hash)(ttl)(has_ns_data) )
+FC_REFLECT( (graphene::wallet::ns_validation_result), (is_valid)(errors) )
 
 FC_API( graphene::wallet::wallet_api,
 /// wallet api
@@ -1367,6 +1523,20 @@ FC_API( graphene::wallet::wallet_api,
                 (set_subaccount_price)
                 (buy_account)
                 (target_account_sale)
+
+                /// NS DNS helpers
+                (ns_validate_ipv4)
+                (ns_validate_sha256_hash)
+                (ns_validate_ttl)
+                (ns_validate_ssl_txt_record)
+                (ns_validate_metadata)
+                (ns_create_metadata)
+                (ns_get_summary)
+                (ns_extract_a_records)
+                (ns_extract_ssl_hash)
+                (ns_extract_ttl)
+                (ns_set_records)
+                (ns_remove_records)
 
                 /// helper api
                 (begin_builder_transaction)
