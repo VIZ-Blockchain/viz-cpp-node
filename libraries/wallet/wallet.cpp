@@ -2186,4 +2186,392 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
             return my->sign_transaction( trx, broadcast );
         }
 
+        annotated_signed_transaction wallet_api::custom(
+            flat_set<string> required_active_auths,
+            flat_set<string> required_regular_auths,
+            string id,
+            string json,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            custom_operation op;
+            for (const auto& acc : required_active_auths) {
+                op.required_active_auths.insert(acc);
+            }
+            for (const auto& acc : required_regular_auths) {
+                op.required_regular_auths.insert(acc);
+            }
+            op.id = id;
+            op.json = json;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::delete_content(
+            string author,
+            string permlink,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            delete_content_operation op;
+            op.author = author;
+            op.permlink = permlink;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::delete_proposal(
+            string author,
+            string title,
+            string requester,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            proposal_delete_operation op;
+            op.author = author;
+            op.title = title;
+            op.requester = requester;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::committee_worker_create_request(
+            string creator,
+            string url,
+            string worker,
+            asset required_amount_min,
+            asset required_amount_max,
+            uint32_t duration,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            committee_worker_create_request_operation op;
+            op.creator = creator;
+            op.url = url;
+            op.worker = worker;
+            op.required_amount_min = required_amount_min;
+            op.required_amount_max = required_amount_max;
+            op.duration = duration;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::committee_worker_cancel_request(
+            string creator,
+            uint32_t request_id,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            committee_worker_cancel_request_operation op;
+            op.creator = creator;
+            op.request_id = request_id;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::committee_vote_request(
+            string voter,
+            uint32_t request_id,
+            int16_t vote_percent,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            committee_vote_request_operation op;
+            op.voter = voter;
+            op.request_id = request_id;
+            op.vote_percent = vote_percent;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::create_invite(
+            string creator,
+            asset balance,
+            public_key_type invite_key,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            create_invite_operation op;
+            op.creator = creator;
+            op.balance = balance;
+            op.invite_key = invite_key;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::claim_invite_balance(
+            string initiator,
+            string receiver,
+            string invite_secret,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            claim_invite_balance_operation op;
+            op.initiator = initiator;
+            op.receiver = receiver;
+            op.invite_secret = invite_secret;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::invite_registration(
+            string initiator,
+            string new_account_name,
+            string invite_secret,
+            public_key_type new_account_key,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            invite_registration_operation op;
+            op.initiator = initiator;
+            op.new_account_name = new_account_name;
+            op.invite_secret = invite_secret;
+            op.new_account_key = new_account_key;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::use_invite_balance(
+            string initiator,
+            string receiver,
+            string invite_secret,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            use_invite_balance_operation op;
+            op.initiator = initiator;
+            op.receiver = receiver;
+            op.invite_secret = invite_secret;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::award(
+            string initiator,
+            string receiver,
+            uint16_t energy,
+            uint64_t custom_sequence,
+            string memo,
+            vector<beneficiary_route_type> beneficiaries,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            award_operation op;
+            op.initiator = initiator;
+            op.receiver = receiver;
+            op.energy = energy;
+            op.custom_sequence = custom_sequence;
+            op.memo = memo;
+            op.beneficiaries = beneficiaries;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::fixed_award(
+            string initiator,
+            string receiver,
+            asset reward_amount,
+            uint16_t max_energy,
+            uint64_t custom_sequence,
+            string memo,
+            vector<beneficiary_route_type> beneficiaries,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            fixed_award_operation op;
+            op.initiator = initiator;
+            op.receiver = receiver;
+            op.reward_amount = reward_amount;
+            op.max_energy = max_energy;
+            op.custom_sequence = custom_sequence;
+            op.memo = memo;
+            op.beneficiaries = beneficiaries;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::set_paid_subscription(
+            string account,
+            string url,
+            uint16_t levels,
+            asset amount,
+            uint16_t period,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            set_paid_subscription_operation op;
+            op.account = account;
+            op.url = url;
+            op.levels = levels;
+            op.amount = amount;
+            op.period = period;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::paid_subscribe(
+            string subscriber,
+            string account,
+            uint16_t level,
+            asset amount,
+            uint16_t period,
+            bool auto_renewal,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            paid_subscribe_operation op;
+            op.subscriber = subscriber;
+            op.account = account;
+            op.level = level;
+            op.amount = amount;
+            op.period = period;
+            op.auto_renewal = auto_renewal;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::set_account_price(
+            string account,
+            string account_seller,
+            asset account_offer_price,
+            bool account_on_sale,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            set_account_price_operation op;
+            op.account = account;
+            op.account_seller = account_seller;
+            op.account_offer_price = account_offer_price;
+            op.account_on_sale = account_on_sale;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::set_subaccount_price(
+            string account,
+            string subaccount_seller,
+            asset subaccount_offer_price,
+            bool subaccount_on_sale,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            set_subaccount_price_operation op;
+            op.account = account;
+            op.subaccount_seller = subaccount_seller;
+            op.subaccount_offer_price = subaccount_offer_price;
+            op.subaccount_on_sale = subaccount_on_sale;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::buy_account(
+            string buyer,
+            string account,
+            asset account_offer_price,
+            public_key_type account_authorities_key,
+            asset tokens_to_shares,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            buy_account_operation op;
+            op.buyer = buyer;
+            op.account = account;
+            op.account_offer_price = account_offer_price;
+            op.account_authorities_key = account_authorities_key;
+            op.tokens_to_shares = tokens_to_shares;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
+        annotated_signed_transaction wallet_api::target_account_sale(
+            string account,
+            string account_seller,
+            string target_buyer,
+            asset account_offer_price,
+            bool account_on_sale,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+            target_account_sale_operation op;
+            op.account = account;
+            op.account_seller = account_seller;
+            op.target_buyer = target_buyer;
+            op.account_offer_price = account_offer_price;
+            op.account_on_sale = account_on_sale;
+
+            signed_transaction tx;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
     } } // graphene::wallet

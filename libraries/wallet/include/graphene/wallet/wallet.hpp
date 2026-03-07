@@ -954,6 +954,318 @@ namespace graphene { namespace wallet {
                     const std::string& from, time_point newest, uint16_t limit, std::uint64_t offset);
 
             message_body try_decrypt_message( const message_api_obj& mo );
+
+            /**
+             * Broadcast a custom operation.
+             *
+             * @param required_active_auths Accounts requiring active authority
+             * @param required_regular_auths Accounts requiring regular authority
+             * @param id Custom operation type identifier
+             * @param json JSON data for the custom operation
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction custom(
+                flat_set<string> required_active_auths,
+                flat_set<string> required_regular_auths,
+                string id,
+                string json,
+                bool broadcast = false
+            );
+
+            /**
+             * Delete a content.
+             *
+             * @param author The author of the content
+             * @param permlink The permlink of the content
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction delete_content(
+                string author,
+                string permlink,
+                bool broadcast = false
+            );
+
+            /**
+             * Delete a proposal.
+             *
+             * @param author The author of the proposal
+             * @param title The title of the proposal
+             * @param requester The account requesting deletion
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction delete_proposal(
+                string author,
+                string title,
+                string requester,
+                bool broadcast = false
+            );
+
+            /**
+             * Create a committee worker request.
+             *
+             * @param creator The account creating the request
+             * @param url URL with information about the request
+             * @param worker The worker account that will receive payment
+             * @param required_amount_min Minimum amount requested
+             * @param required_amount_max Maximum amount requested
+             * @param duration Duration of the request in seconds
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction committee_worker_create_request(
+                string creator,
+                string url,
+                string worker,
+                asset required_amount_min,
+                asset required_amount_max,
+                uint32_t duration,
+                bool broadcast = false
+            );
+
+            /**
+             * Cancel a committee worker request.
+             *
+             * @param creator The account that created the request
+             * @param request_id The ID of the request to cancel
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction committee_worker_cancel_request(
+                string creator,
+                uint32_t request_id,
+                bool broadcast = false
+            );
+
+            /**
+             * Vote on a committee worker request.
+             *
+             * @param voter The account voting
+             * @param request_id The ID of the request to vote on
+             * @param vote_percent The vote percentage (-10000 to 10000)
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction committee_vote_request(
+                string voter,
+                uint32_t request_id,
+                int16_t vote_percent,
+                bool broadcast = false
+            );
+
+            /**
+             * Create an invite with a balance.
+             *
+             * @param creator The account creating the invite
+             * @param balance The balance to put in the invite
+             * @param invite_key The public key for the invite
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction create_invite(
+                string creator,
+                asset balance,
+                public_key_type invite_key,
+                bool broadcast = false
+            );
+
+            /**
+             * Claim an invite balance.
+             *
+             * @param initiator The account initiating the claim
+             * @param receiver The account receiving the balance
+             * @param invite_secret The secret key of the invite
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction claim_invite_balance(
+                string initiator,
+                string receiver,
+                string invite_secret,
+                bool broadcast = false
+            );
+
+            /**
+             * Register a new account using an invite.
+             *
+             * @param initiator The account initiating the registration
+             * @param new_account_name The name of the new account
+             * @param invite_secret The secret key of the invite
+             * @param new_account_key The public key for the new account
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction invite_registration(
+                string initiator,
+                string new_account_name,
+                string invite_secret,
+                public_key_type new_account_key,
+                bool broadcast = false
+            );
+
+            /**
+             * Use invite balance to transfer to vesting.
+             *
+             * @param initiator The account initiating the use
+             * @param receiver The account receiving the vesting
+             * @param invite_secret The secret key of the invite
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction use_invite_balance(
+                string initiator,
+                string receiver,
+                string invite_secret,
+                bool broadcast = false
+            );
+
+            /**
+             * Award an account (energy-based reward).
+             *
+             * @param initiator The account giving the award
+             * @param receiver The account receiving the award
+             * @param energy The energy amount to use (0-10000)
+             * @param custom_sequence Custom sequence number
+             * @param memo Memo for the award
+             * @param beneficiaries List of beneficiaries with weights
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction award(
+                string initiator,
+                string receiver,
+                uint16_t energy,
+                uint64_t custom_sequence,
+                string memo,
+                vector<beneficiary_route_type> beneficiaries,
+                bool broadcast = false
+            );
+
+            /**
+             * Fixed award an account (fixed amount reward).
+             *
+             * @param initiator The account giving the award
+             * @param receiver The account receiving the award
+             * @param reward_amount The fixed reward amount
+             * @param max_energy Maximum energy to use
+             * @param custom_sequence Custom sequence number
+             * @param memo Memo for the award
+             * @param beneficiaries List of beneficiaries with weights
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction fixed_award(
+                string initiator,
+                string receiver,
+                asset reward_amount,
+                uint16_t max_energy,
+                uint64_t custom_sequence,
+                string memo,
+                vector<beneficiary_route_type> beneficiaries,
+                bool broadcast = false
+            );
+
+            /**
+             * Set up a paid subscription.
+             *
+             * @param account The account setting up the subscription
+             * @param url URL with subscription information
+             * @param levels Number of subscription levels
+             * @param amount Cost per level
+             * @param period Subscription period in seconds
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction set_paid_subscription(
+                string account,
+                string url,
+                uint16_t levels,
+                asset amount,
+                uint16_t period,
+                bool broadcast = false
+            );
+
+            /**
+             * Subscribe to a paid subscription.
+             *
+             * @param subscriber The subscribing account
+             * @param account The account with the subscription
+             * @param level Subscription level
+             * @param amount Payment amount
+             * @param period Subscription period
+             * @param auto_renewal Enable auto renewal
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction paid_subscribe(
+                string subscriber,
+                string account,
+                uint16_t level,
+                asset amount,
+                uint16_t period,
+                bool auto_renewal,
+                bool broadcast = false
+            );
+
+            /**
+             * Set an account up for sale.
+             *
+             * @param account The account being sold
+             * @param account_seller The seller account
+             * @param account_offer_price The sale price
+             * @param account_on_sale Whether the account is on sale
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction set_account_price(
+                string account,
+                string account_seller,
+                asset account_offer_price,
+                bool account_on_sale,
+                bool broadcast = false
+            );
+
+            /**
+             * Set subaccount creation for sale.
+             *
+             * @param account The parent account
+             * @param subaccount_seller The seller account
+             * @param subaccount_offer_price The price for subaccount creation
+             * @param subaccount_on_sale Whether subaccounts are on sale
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction set_subaccount_price(
+                string account,
+                string subaccount_seller,
+                asset subaccount_offer_price,
+                bool subaccount_on_sale,
+                bool broadcast = false
+            );
+
+            /**
+             * Buy an account.
+             *
+             * @param buyer The buying account
+             * @param account The account being bought
+             * @param account_offer_price The purchase price
+             * @param account_authorities_key New public key for the account
+             * @param tokens_to_shares Amount to convert to shares
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction buy_account(
+                string buyer,
+                string account,
+                asset account_offer_price,
+                public_key_type account_authorities_key,
+                asset tokens_to_shares,
+                bool broadcast = false
+            );
+
+            /**
+             * Set an account for sale to a specific target buyer.
+             *
+             * @param account The account being sold
+             * @param account_seller The seller account
+             * @param target_buyer The target buyer account
+             * @param account_offer_price The sale price
+             * @param account_on_sale Whether the account is on sale
+             * @param broadcast true if you wish to broadcast the transaction
+             */
+            annotated_signed_transaction target_account_sale(
+                string account,
+                string account_seller,
+                string target_buyer,
+                asset account_offer_price,
+                bool account_on_sale,
+                bool broadcast = false
+            );
         };
 
         struct plain_keys {
@@ -1035,6 +1347,26 @@ FC_API( graphene::wallet::wallet_api,
                 (get_master_history)
                 (get_encrypted_memo)
                 (decrypt_memo)
+
+                /// new operations
+                (custom)
+                (delete_content)
+                (delete_proposal)
+                (committee_worker_create_request)
+                (committee_worker_cancel_request)
+                (committee_vote_request)
+                (create_invite)
+                (claim_invite_balance)
+                (invite_registration)
+                (use_invite_balance)
+                (award)
+                (fixed_award)
+                (set_paid_subscription)
+                (paid_subscribe)
+                (set_account_price)
+                (set_subaccount_price)
+                (buy_account)
+                (target_account_sale)
 
                 /// helper api
                 (begin_builder_transaction)
