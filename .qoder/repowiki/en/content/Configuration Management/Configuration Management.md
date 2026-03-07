@@ -1,0 +1,484 @@
+# Configuration Management
+
+<cite>
+**Referenced Files in This Document**
+- [config.ini](file://share/vizd/config/config.ini)
+- [config_testnet.ini](file://share/vizd/config/config_testnet.ini)
+- [config_witness.ini](file://share/vizd/config/config_witness.ini)
+- [config_mongo.ini](file://share/vizd/config/config_mongo.ini)
+- [config_debug.ini](file://share/vizd/config/config_debug.ini)
+- [config_debug_mongo.ini](file://share/vizd/config/config_debug_mongo.ini)
+- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production)
+- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet)
+- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem)
+- [vizd.sh](file://share/vizd/vizd.sh)
+- [main.cpp](file://programs/vizd/main.cpp)
+- [config.hpp](file://libraries/network/include/graphene/network/config.hpp)
+- [building.md](file://documentation/building.md)
+- [testnet.md](file://documentation/testnet.md)
+- [plugin.md](file://documentation/plugin.md)
+</cite>
+
+## Table of Contents
+1. [Introduction](#introduction)
+2. [Project Structure](#project-structure)
+3. [Core Components](#core-components)
+4. [Architecture Overview](#architecture-overview)
+5. [Detailed Component Analysis](#detailed-component-analysis)
+6. [Dependency Analysis](#dependency-analysis)
+7. [Performance Considerations](#performance-considerations)
+8. [Troubleshooting Guide](#troubleshooting-guide)
+9. [Conclusion](#conclusion)
+10. [Appendices](#appendices)
+
+## Introduction
+This document describes the configuration management system for VIZ CPP Node. It explains configuration file structure, runtime parameters, environment variable overrides, node types (full node, witness node, low-memory node), network configuration, plugin activation, performance tuning, logging, Docker-specific configuration, build-time options, and troubleshooting guidance. Practical deployment scenarios (production, testnet, development) are included.
+
+## Project Structure
+The configuration system centers around:
+- A primary configuration file template for mainnet
+- Testnet-specific configuration
+- Witness-specific configuration
+- MongoDB-enabled configuration variants
+- Dockerfiles for production, testnet, and low-memory builds
+- A container entrypoint script that supports environment variable overrides
+- The node binary’s program options and logging configuration loader
+
+```mermaid
+graph TB
+cfg_main["Config Template<br/>share/vizd/config/config.ini"]
+cfg_test["Testnet Config<br/>share/vizd/config/config_testnet.ini"]
+cfg_wit["Witness Config<br/>share/vizd/config/config_witness.ini"]
+cfg_mongo["Mongo Config<br/>share/vizd/config/config_mongo.ini"]
+cfg_dbg["Debug Config<br/>share/vizd/config/config_debug.ini"]
+cfg_dbg_mongo["Debug+Mongo Config<br/>share/vizd/config/config_debug_mongo.ini"]
+df_prod["Dockerfile-production<br/>share/vizd/docker/Dockerfile-production"]
+df_test["Dockerfile-testnet<br/>share/vizd/docker/Dockerfile-testnet"]
+df_lowmem["Dockerfile-lowmem<br/>share/vizd/docker/Dockerfile-lowmem"]
+entry["Container Entrypoint<br/>share/vizd/vizd.sh"]
+node["Node Binary<br/>programs/vizd/main.cpp"]
+cfg_main --> node
+cfg_test --> node
+cfg_wit --> node
+cfg_mongo --> node
+cfg_dbg --> node
+cfg_dbg_mongo --> node
+df_prod --> entry
+df_test --> entry
+df_lowmem --> entry
+entry --> node
+```
+
+**Diagram sources**
+- [config.ini](file://share/vizd/config/config.ini#L1-L130)
+- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107)
+- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L1-L135)
+- [config_debug.ini](file://share/vizd/config/config_debug.ini#L1-L126)
+- [config_debug_mongo.ini](file://share/vizd/config/config_debug_mongo.ini#L1-L135)
+- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L1-L88)
+- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L1-L88)
+- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L1-L82)
+- [vizd.sh](file://share/vizd/vizd.sh#L1-L82)
+- [main.cpp](file://programs/vizd/main.cpp#L106-L158)
+
+**Section sources**
+- [config.ini](file://share/vizd/config/config.ini#L1-L130)
+- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107)
+- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L1-L135)
+- [config_debug.ini](file://share/vizd/config/config_debug.ini#L1-L126)
+- [config_debug_mongo.ini](file://share/vizd/config/config_debug_mongo.ini#L1-L135)
+- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L1-L88)
+- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L1-L88)
+- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L1-L82)
+- [vizd.sh](file://share/vizd/vizd.sh#L1-L82)
+- [main.cpp](file://programs/vizd/main.cpp#L106-L158)
+
+## Core Components
+- Configuration file format: INI-style with sections for logging appenders and loggers.
+- Runtime parameters: Passed via program options and loaded from configuration.
+- Environment variable overrides: Container entrypoint sets CLI flags based on environment variables.
+- Plugin activation: Controlled via configuration entries.
+- Logging configuration: Program options and INI sections define appenders and logger routing.
+
+Key configuration categories:
+- Network endpoints and connectivity
+- RPC endpoints (HTTP/WebSocket)
+- Lock/wait tuning for database operations
+- Shared memory sizing and growth policy
+- Plugin list and activation
+- Witness production controls
+- Logging configuration
+
+**Section sources**
+- [main.cpp](file://programs/vizd/main.cpp#L167-L191)
+- [main.cpp](file://programs/vizd/main.cpp#L194-L289)
+- [config.ini](file://share/vizd/config/config.ini#L1-L130)
+
+## Architecture Overview
+The configuration pipeline integrates configuration files, program options, and environment variables to initialize the node.
+
+```mermaid
+sequenceDiagram
+participant Entrypoint as "Container Entrypoint<br/>vizd.sh"
+participant Env as "Environment Variables"
+participant Node as "Node Binary<br/>main.cpp"
+participant Config as "INI Loader<br/>load_config_sections/load_logging_config"
+Entrypoint->>Env : Read VIZD_* variables
+Entrypoint->>Node : Pass CLI flags (--p2p-endpoint, --rpc-endpoint,<br/>--p2p-seed-node, --witness, --private-key)
+Node->>Node : Parse program options
+Node->>Config : Load logging config from config path
+Config-->>Node : fc : : logging_config
+Node->>Node : Configure logging and startup
+```
+
+**Diagram sources**
+- [vizd.sh](file://share/vizd/vizd.sh#L13-L81)
+- [main.cpp](file://programs/vizd/main.cpp#L112-L139)
+- [main.cpp](file://programs/vizd/main.cpp#L194-L289)
+
+## Detailed Component Analysis
+
+### Configuration File Structure and Sections
+- Logging appenders:
+  - Console appenders
+  - File appenders
+- Loggers:
+  - Route loggers to specific appenders with levels
+
+These sections are parsed by the node to configure logging at startup.
+
+**Section sources**
+- [main.cpp](file://programs/vizd/main.cpp#L167-L191)
+- [main.cpp](file://programs/vizd/main.cpp#L211-L289)
+- [config.ini](file://share/vizd/config/config.ini#L111-L130)
+
+### Runtime Parameters and Program Options
+Program options include logging configuration and standard node options. The node parses configuration files and applies logging settings accordingly.
+
+**Section sources**
+- [main.cpp](file://programs/vizd/main.cpp#L112-L139)
+- [main.cpp](file://programs/vizd/main.cpp#L167-L191)
+
+### Environment Variable Overrides (Docker)
+The container entrypoint supports the following environment variables:
+- VIZD_SEED_NODES: Comma-separated seed nodes
+- VIZD_WITNESS_NAME: Witness name to operate
+- VIZD_PRIVATE_KEY: Private key for signing
+- VIZD_RPC_ENDPOINT: Override RPC endpoint
+- VIZD_P2P_ENDPOINT: Override P2P endpoint
+- VIZD_EXTRA_OPTS: Additional arguments appended to node invocation
+
+These variables override defaults and inject CLI flags at runtime.
+
+**Section sources**
+- [vizd.sh](file://share/vizd/vizd.sh#L17-L37)
+- [vizd.sh](file://share/vizd/vizd.sh#L62-L72)
+- [vizd.sh](file://share/vizd/vizd.sh#L74-L81)
+
+### Node Types and Their Configuration Requirements
+- Full node (mainnet):
+  - Uses the main configuration template with default plugin sets suitable for full synchronization and API exposure.
+- Testnet:
+  - Includes testnet-specific defaults and enables stale production for continuous block production.
+- Witness node:
+  - Activates witness and witness_api plugins, binds RPC endpoints to localhost by default, and includes witness credentials.
+- Low-memory node:
+  - Built with a dedicated flag to reduce memory footprint; Dockerfile demonstrates enabling this build-time option.
+
+```mermaid
+flowchart TD
+Start(["Select Node Type"]) --> Full["Full Node<br/>Mainnet"]
+Start --> Testnet["Testnet Node"]
+Start --> Witness["Witness Node"]
+Start --> LowMem["Low-Memory Node"]
+Full --> FullCfg["Use config.ini"]
+Testnet --> TestCfg["Use config_testnet.ini"]
+Witness --> WitCfg["Use config_witness.ini"]
+LowMem --> LowMemFlag["Build with LOW_MEMORY_NODE=TRUE"]
+```
+
+**Diagram sources**
+- [config.ini](file://share/vizd/config/config.ini#L1-L130)
+- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107)
+- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L45-L51)
+- [building.md](file://documentation/building.md#L11-L15)
+
+**Section sources**
+- [config.ini](file://share/vizd/config/config.ini#L69-L73)
+- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L69-L73)
+- [config_witness.ini](file://share/vizd/config/config_witness.ini#L68-L86)
+- [building.md](file://documentation/building.md#L11-L15)
+- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L45-L51)
+
+### Network Configuration
+Network settings include:
+- P2P endpoint binding and maximum connections
+- Seed nodes for initial connectivity
+- Checkpoint enforcement for block safety
+- Peer connection and sync behavior governed by network constants
+
+```mermaid
+flowchart TD
+NetCfg["Network Settings"] --> P2PEndpoint["P2P Endpoint"]
+NetCfg --> MaxConns["Max Incoming Connections"]
+NetCfg --> SeedNodes["Seed Nodes"]
+NetCfg --> Checkpoints["Block Checkpoints"]
+P2PEndpoint --> PeerConn["Peer Connection Logic"]
+MaxConns --> PeerConn
+SeedNodes --> PeerConn
+PeerConn --> Sync["Sync Behavior<br/>network config constants"]
+```
+
+**Diagram sources**
+- [config.ini](file://share/vizd/config/config.ini#L1-L11)
+- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L11)
+- [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L8)
+- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L54-L56)
+- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L105-L106)
+
+**Section sources**
+- [config.ini](file://share/vizd/config/config.ini#L1-L11)
+- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L11)
+- [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L8)
+- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L54-L56)
+- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L105-L106)
+
+### Plugin Activation and Configuration
+Plugins are activated via configuration entries. The node registers all built-in plugins and loads the configured set at startup. Some plugins maintain persistent state and may require replay when toggled.
+
+- Example plugin lists appear in the configuration templates.
+- The plugin documentation outlines enabling/disabling and replay requirements.
+
+**Section sources**
+- [config.ini](file://share/vizd/config/config.ini#L69-L73)
+- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L69-L73)
+- [config_witness.ini](file://share/vizd/config/config_witness.ini#L68-L68)
+- [plugin.md](file://documentation/plugin.md#L14-L18)
+
+### Performance Tuning Parameters
+Key tunables include:
+- Thread pool size for RPC clients
+- Read/write lock wait durations and retries
+- Single-threaded write mode for database operations
+- Skipping plugin notifications on push transactions
+- Shared memory size, minimum free space, increment, and free-space check frequency
+
+These parameters influence throughput and stability under load.
+
+**Section sources**
+- [config.ini](file://share/vizd/config/config.ini#L13-L47)
+- [config.ini](file://share/vizd/config/config.ini#L49-L67)
+
+### Logging Configuration
+Logging is configured via INI sections for appenders and loggers. The node exposes program options to define console/file appenders and logger routing.
+
+- Console and file appenders
+- Logger levels and appender assignments
+
+**Section sources**
+- [config.ini](file://share/vizd/config/config.ini#L111-L130)
+- [main.cpp](file://programs/vizd/main.cpp#L167-L191)
+- [main.cpp](file://programs/vizd/main.cpp#L211-L289)
+
+### Docker-Specific Configuration
+- Production image:
+  - Copies main configuration and seednodes into /etc/vizd
+  - Exposes RPC and P2P ports
+  - Mounts persistent volumes for data and config
+- Testnet image:
+  - Uses testnet configuration and snapshot
+  - Enables testnet build flag
+- Low-memory image:
+  - Enables low-memory build flag
+
+```mermaid
+graph TB
+subgraph "Docker Images"
+prod["Production Image"]
+test["Testnet Image"]
+lowmem["Low-Memory Image"]
+end
+prod --> vol1["Volumes:<br/>/var/lib/vizd, /etc/vizd"]
+test --> vol1
+lowmem --> vol1
+prod --> ports["Expose:<br/>8090, 8091, 2001"]
+test --> ports
+lowmem --> ports
+```
+
+**Diagram sources**
+- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L74-L87)
+- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L75-L87)
+- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L68-L81)
+
+**Section sources**
+- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L74-L87)
+- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L75-L87)
+- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L68-L81)
+
+### Build-Time Configuration Options
+Build-time flags and toggles:
+- LOW_MEMORY_NODE: Builds a consensus-only low-memory node
+- BUILD_TESTNET: Enables testnet-specific defaults
+- CHAINBASE_CHECK_LOCKING: Debugging toggle
+- ENABLE_MONGO_PLUGIN: Feature toggle for MongoDB plugin
+
+These are set via CMake flags in Dockerfiles and documented in the building guide.
+
+**Section sources**
+- [building.md](file://documentation/building.md#L11-L15)
+- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L46-L52)
+- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L46-L52)
+- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L45-L51)
+
+### Practical Configuration Scenarios
+
+- Production deployment (mainnet)
+  - Use the main configuration template and production Docker image.
+  - Persist data via mounted volumes.
+  - Optionally override endpoints and seed nodes via environment variables.
+
+- Testnet setup
+  - Use the testnet Docker image and configuration.
+  - The testnet image enables testnet build flags and uses a testnet snapshot.
+
+- Development environment
+  - Use the debug configuration templates to enable additional plugins and adjust logging.
+  - Optionally enable MongoDB plugin configuration.
+
+- Witness node
+  - Use the witness configuration template and bind RPC endpoints to localhost.
+  - Provide witness name and private key via environment variables.
+
+**Section sources**
+- [config.ini](file://share/vizd/config/config.ini#L1-L130)
+- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107)
+- [config_debug.ini](file://share/vizd/config/config_debug.ini#L1-L126)
+- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L1-L135)
+- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L74-L87)
+- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L75-L87)
+- [testnet.md](file://documentation/testnet.md#L21-L37)
+
+## Dependency Analysis
+Configuration dependencies and interactions:
+- The node binary depends on the configuration loader to parse logging and runtime settings.
+- Docker entrypoint depends on environment variables to inject CLI flags.
+- Network behavior is influenced by both configuration and compiled-in network constants.
+
+```mermaid
+graph LR
+ConfigINI["INI Config Files"] --> Loader["INI Loader<br/>load_config_sections/load_logging_config"]
+Loader --> NodeMain["Node Main<br/>main.cpp"]
+Entrypoint["Entrypoint Script<br/>vizd.sh"] --> NodeMain
+NodeMain --> Logging["Logging System"]
+NodeMain --> Network["Network Constants<br/>config.hpp"]
+```
+
+**Diagram sources**
+- [main.cpp](file://programs/vizd/main.cpp#L194-L289)
+- [vizd.sh](file://share/vizd/vizd.sh#L13-L81)
+- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L54-L56)
+
+**Section sources**
+- [main.cpp](file://programs/vizd/main.cpp#L194-L289)
+- [vizd.sh](file://share/vizd/vizd.sh#L13-L81)
+- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L54-L56)
+
+## Performance Considerations
+- Tune read/write lock wait parameters to balance latency and contention.
+- Use single-threaded writes to reduce database lock contention.
+- Adjust shared memory size and growth thresholds to minimize resizing overhead.
+- Limit plugin notifications on push transactions to improve responsiveness.
+- Select appropriate node type (low-memory) for constrained environments.
+
+[No sources needed since this section provides general guidance]
+
+## Troubleshooting Guide
+Common configuration issues and validation techniques:
+- Logging misconfiguration
+  - Verify INI sections for appenders and loggers.
+  - Confirm program options for logging are recognized by the node.
+- RPC/P2P endpoint conflicts
+  - Ensure endpoints are reachable and not blocked by firewalls.
+  - Validate environment variable overrides for endpoints.
+- Plugin activation problems
+  - Confirm plugin entries in configuration.
+  - Review plugin documentation for replay requirements when toggling stateful plugins.
+- Memory and shared file sizing
+  - Adjust shared file size and growth increments based on observed free space checks.
+- Docker volume and permissions
+  - Ensure persistent volumes are mounted and owned by the node user.
+  - Confirm snapshot extraction occurs when present.
+
+**Section sources**
+- [main.cpp](file://programs/vizd/main.cpp#L167-L191)
+- [main.cpp](file://programs/vizd/main.cpp#L211-L289)
+- [config.ini](file://share/vizd/config/config.ini#L111-L130)
+- [plugin.md](file://documentation/plugin.md#L14-L18)
+- [vizd.sh](file://share/vizd/vizd.sh#L44-L53)
+
+## Conclusion
+VIZ CPP Node offers a flexible configuration system combining INI-based settings, program options, and environment variable overrides. Different node types and deployment modes are supported through configuration templates and Docker images. Proper tuning of performance and logging parameters ensures reliable operation across production, testnet, and development environments.
+
+[No sources needed since this section summarizes without analyzing specific files]
+
+## Appendices
+
+### Appendix A: Configuration Keys Reference
+- Network
+  - p2p-endpoint
+  - p2p-max-connections
+  - p2p-seed-node
+  - checkpoint
+- RPC
+  - webserver-thread-pool-size
+  - webserver-http-endpoint
+  - webserver-ws-endpoint
+- Database locks
+  - read-wait-micro
+  - max-read-wait-retries
+  - write-wait-micro
+  - max-write-wait-retries
+  - single-write-thread
+  - enable-plugins-on-push-transaction
+- Shared memory
+  - shared-file-size
+  - min-free-shared-file-size
+  - inc-shared-file-size
+  - block-num-check-free-size
+- Plugins
+  - plugin (repeatable)
+- Witness
+  - enable-stale-production
+  - required-participation
+  - witness
+  - private-key
+- Logging
+  - log.console_appender.*
+  - log.file_appender.*
+  - logger.*
+
+**Section sources**
+- [config.ini](file://share/vizd/config/config.ini#L1-L130)
+- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107)
+- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L1-L135)
+- [config_debug.ini](file://share/vizd/config/config_debug.ini#L1-L126)
+- [config_debug_mongo.ini](file://share/vizd/config/config_debug_mongo.ini#L1-L135)
+
+### Appendix B: Docker Environment Variables
+- VIZD_SEED_NODES
+- VIZD_WITNESS_NAME
+- VIZD_PRIVATE_KEY
+- VIZD_RPC_ENDPOINT
+- VIZD_P2P_ENDPOINT
+- VIZD_EXTRA_OPTS
+
+**Section sources**
+- [vizd.sh](file://share/vizd/vizd.sh#L17-L37)
+- [vizd.sh](file://share/vizd/vizd.sh#L62-L72)
+- [vizd.sh](file://share/vizd/vizd.sh#L74-L81)

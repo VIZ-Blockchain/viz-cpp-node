@@ -1,0 +1,455 @@
+# Build Helper Tools
+
+<cite>
+**Referenced Files in This Document**
+- [cat-parts.cpp](file://programs/build_helpers/cat-parts.cpp)
+- [cat_parts.py](file://programs/build_helpers/cat_parts.py)
+- [check_reflect.py](file://programs/build_helpers/check_reflect.py)
+- [newplugin.py](file://programs/util/newplugin.py)
+- [pretty_schema.py](file://programs/util/pretty_schema.py)
+- [schema_test.cpp](file://programs/util/schema_test.cpp)
+- [configure_build.py](file://programs/build_helpers/configure_build.py)
+- [CMakeLists.txt (build_helpers)](file://programs/build_helpers/CMakeLists.txt)
+- [CMakeLists.txt (util)](file://programs/util/CMakeLists.txt)
+- [building.md](file://documentation/building.md)
+- [README.md](file://README.md)
+</cite>
+
+## Table of Contents
+1. [Introduction](#introduction)
+2. [Project Structure](#project-structure)
+3. [Core Components](#core-components)
+4. [Architecture Overview](#architecture-overview)
+5. [Detailed Component Analysis](#detailed-component-analysis)
+6. [Dependency Analysis](#dependency-analysis)
+7. [Performance Considerations](#performance-considerations)
+8. [Troubleshooting Guide](#troubleshooting-guide)
+9. [Conclusion](#conclusion)
+10. [Appendices](#appendices)
+
+## Introduction
+This document describes the VIZ C++ Node build helper tools that streamline development tasks such as assembling source fragments, validating reflection metadata, scaffolding custom plugins, generating formatted schema representations, and validating database schemas. It explains command-line usage, input/output formats, and integration with the main build process. Practical examples and best practices are included to maintain code organization and reduce manual errors during development.
+
+## Project Structure
+The build helper tools live under programs/build_helpers and programs/util. They integrate with CMake via dedicated CMakeLists.txt files and complement the broader build system described in documentation/building.md.
+
+```mermaid
+graph TB
+subgraph "Build Helpers"
+CP["cat-parts.cpp"]
+CPY["cat_parts.py"]
+CR["check_reflect.py"]
+CFG["configure_build.py"]
+end
+subgraph "Utilities"
+NP["newplugin.py"]
+PS["pretty_schema.py"]
+ST["schema_test.cpp"]
+end
+subgraph "CMake Integration"
+CL1["programs/build_helpers/CMakeLists.txt"]
+CL2["programs/util/CMakeLists.txt"]
+end
+CP --> CL1
+CPY --> CL1
+CR --> CL1
+CFG --> CL1
+NP --> CL2
+PS --> CL2
+ST -. "commented in CMake" .-> CL2
+```
+
+**Diagram sources**
+- [CMakeLists.txt (build_helpers)](file://programs/build_helpers/CMakeLists.txt#L1-L8)
+- [CMakeLists.txt (util)](file://programs/util/CMakeLists.txt#L1-L69)
+
+**Section sources**
+- [CMakeLists.txt (build_helpers)](file://programs/build_helpers/CMakeLists.txt#L1-L8)
+- [CMakeLists.txt (util)](file://programs/util/CMakeLists.txt#L1-L69)
+- [building.md](file://documentation/building.md#L1-L212)
+
+## Core Components
+- cat-parts: Concatenates hardfork fragment files (.hf) from a directory into a single output file, with up-to-date checks and minimal rebuild behavior.
+- cat_parts.py: Python counterpart to cat-parts with similar behavior and robustness for directory creation and file existence checks.
+- check_reflect.py: Validates FC_REFLECT and FC_REFLECT_DERIVED declarations against Doxygen XML class member lists to ensure reflection parity.
+- newplugin.py: Generates a complete plugin skeleton with standardized file structure and boilerplate code for a given provider and plugin name.
+- pretty_schema.py: Queries a local debug node JSON-RPC endpoint to fetch and pretty-print the schema representation.
+- schema_test.cpp: Demonstrates retrieving and printing schema information for specific chain objects using the schema API.
+- configure_build.py: A helper to invoke cmake with sensible defaults and optional cross-compilation and external library flags.
+
+**Section sources**
+- [cat-parts.cpp](file://programs/build_helpers/cat-parts.cpp#L1-L68)
+- [cat_parts.py](file://programs/build_helpers/cat_parts.py#L1-L74)
+- [check_reflect.py](file://programs/build_helpers/check_reflect.py#L1-L160)
+- [newplugin.py](file://programs/util/newplugin.py#L1-L251)
+- [pretty_schema.py](file://programs/util/pretty_schema.py#L1-L28)
+- [schema_test.cpp](file://programs/util/schema_test.cpp#L1-L57)
+- [configure_build.py](file://programs/build_helpers/configure_build.py#L1-L202)
+
+## Architecture Overview
+The tools are designed to be invoked from the command line and integrated into higher-level build scripts or CI. They rely on:
+- Standard filesystem operations for reading/writing files
+- Regular expressions for parsing reflection declarations
+- XML parsing for Doxygen-generated class member lists
+- JSON-RPC calls for schema retrieval
+- CMake targets for compilation and installation
+
+```mermaid
+sequenceDiagram
+participant Dev as "Developer"
+participant CMake as "CMake Targets"
+participant Tool as "Build Helper Tool"
+participant FS as "Filesystem"
+Dev->>CMake : "Configure and build"
+CMake->>Tool : "Execute helper (e.g., cat_parts.py)"
+Tool->>FS : "Read input directory and write output"
+FS-->>Tool : "Success/Failure"
+Tool-->>CMake : "Exit code"
+CMake-->>Dev : "Build artifacts ready"
+```
+
+[No sources needed since this diagram shows conceptual workflow, not actual code structure]
+
+## Detailed Component Analysis
+
+### cat-parts (C++)
+Concatenates .hf files from a directory into a single output file, skipping non-.hf entries and sorting filenames numerically. It compares the generated content with existing output to avoid unnecessary writes.
+
+Key behaviors:
+- Command-line arguments: input directory and output file path
+- Filters files by extension and sorts them
+- Compares new content with existing output to skip redundant writes
+- Uses Boost filesystem and streams
+
+```mermaid
+flowchart TD
+Start(["Start"]) --> Args["Validate CLI args"]
+Args --> DirOK{"Input dir exists?"}
+DirOK --> |No| ErrArgs["Print usage and exit"]
+DirOK --> |Yes| Scan["Scan directory for .hf files"]
+Scan --> Sort["Sort files by name"]
+Sort --> Read["Read all files in order"]
+Read --> Compare{"Output exists?"}
+Compare --> |Yes| Exists["Compare content with new data"]
+Exists --> |Same| UpToDate["Mark as up-to-date and exit"]
+Exists --> |Different| Write["Write concatenated data"]
+Compare --> |No| Write
+Write --> Done(["Done"])
+UpToDate --> Done
+ErrArgs --> Done
+```
+
+**Diagram sources**
+- [cat-parts.cpp](file://programs/build_helpers/cat-parts.cpp#L7-L68)
+
+**Section sources**
+- [cat-parts.cpp](file://programs/build_helpers/cat-parts.cpp#L1-L68)
+
+### cat_parts.py (Python)
+A Python reimplementation of cat-parts with explicit checks for directory creation and file existence. It supports filtering by file suffix and writes the concatenated content to the output file.
+
+Key behaviors:
+- Command-line arguments: input directory and output file path
+- Creates parent directories if missing
+- Reads and concatenates files in sorted order
+- Skips writing if content is identical to existing output
+
+```mermaid
+flowchart TD
+Start(["Start"]) --> Parse["Parse CLI args"]
+Parse --> Valid{"Valid input dir?"}
+Valid --> |No| Usage["Print usage and exit"]
+Valid --> |Yes| List["List files with suffix filter"]
+List --> Sorted["Sort files"]
+Sorted --> Read["Read file contents"]
+Read --> Exists{"Output exists?"}
+Exists --> |Yes| Same{"Content same?"}
+Same --> |Yes| Skip["Skip write and exit"]
+Same --> |No| Write["Write concatenated content"]
+Exists --> |No| MkDir["Ensure parent dir exists"]
+MkDir --> Write
+Write --> Done(["Done"])
+Skip --> Done
+Usage --> Done
+```
+
+**Diagram sources**
+- [cat_parts.py](file://programs/build_helpers/cat_parts.py#L28-L74)
+
+**Section sources**
+- [cat_parts.py](file://programs/build_helpers/cat_parts.py#L1-L74)
+
+### check_reflect.py (Python)
+Validates that FC_REFLECT and FC_REFLECT_DERIVED declarations match Doxygen XML class member lists. It scans source files for reflection macros, parses Doxygen XML, and reports mismatches, duplicates, and missing items.
+
+Key behaviors:
+- Parses Doxygen XML index.xml to extract class member lists
+- Scans libraries/, programs/, tests/ for .cpp/.hpp files
+- Extracts reflection declarations using regular expressions
+- Compares member sets and prints categorized results
+- Exits with success if no errors are found
+
+```mermaid
+flowchart TD
+Start(["Start"]) --> LoadXML["Load Doxygen XML index.xml"]
+LoadXML --> ExtractDoxy["Extract class member lists"]
+ExtractDoxy --> ScanSrc["Walk source directories for .cpp/.hpp"]
+ScanSrc --> ParseReflect["Find FC_REFLECT(_DERIVED) declarations"]
+ParseReflect --> Compare["Compare member sets"]
+Compare --> Report["Report OK, Not Evaluated, Errors"]
+Report --> ExitCode{"Any errors?"}
+ExitCode --> |No| Success["Exit 0"]
+ExitCode --> |Yes| Failure["Exit 1"]
+```
+
+**Diagram sources**
+- [check_reflect.py](file://programs/build_helpers/check_reflect.py#L44-L160)
+
+**Section sources**
+- [check_reflect.py](file://programs/build_helpers/check_reflect.py#L1-L160)
+
+### newplugin.py (Python)
+Generates a complete plugin skeleton under libraries/plugins/<plugin_name> with standardized files and boilerplate. It supports templating for CMakeLists.txt, plugin headers, plugin implementation, API headers, and API implementation.
+
+Key behaviors:
+- Command-line arguments: provider and plugin name
+- Renders templates with placeholders
+- Creates directories and writes files atomically
+- Outputs generated file paths to console
+
+```mermaid
+flowchart TD
+Start(["Start"]) --> Args["Parse provider and plugin name"]
+Args --> Render["Render templates with context"]
+Render --> Mkdir["Ensure output directory exists"]
+Mkdir --> Write["Write files to disk"]
+Write --> Done(["Done"])
+```
+
+**Diagram sources**
+- [newplugin.py](file://programs/util/newplugin.py#L225-L247)
+
+**Section sources**
+- [newplugin.py](file://programs/util/newplugin.py#L1-L251)
+
+### pretty_schema.py (Python)
+Connects to a local debug node JSON-RPC endpoint to retrieve the schema, parses it, pretty-prints it, and handles embedded JSON strings.
+
+Key behaviors:
+- Sends a JSON-RPC POST request to the debug node API
+- Converts the returned string schema to JSON
+- Pretty-prints the schema with indentation and sorted keys
+
+```mermaid
+sequenceDiagram
+participant Script as "pretty_schema.py"
+participant RPC as "Local Debug Node"
+Script->>RPC : "POST JSON-RPC call"
+RPC-->>Script : "Schema JSON string"
+Script->>Script : "Parse and pretty-print"
+Script-->>Script : "Print formatted schema"
+```
+
+**Diagram sources**
+- [pretty_schema.py](file://programs/util/pretty_schema.py#L9-L27)
+
+**Section sources**
+- [pretty_schema.py](file://programs/util/pretty_schema.py#L1-L28)
+
+### schema_test.cpp (C++)
+Demonstrates retrieving and printing schema information for specific chain objects. It uses the schema API to gather dependent schemas and prints names, dependencies, and serialized schema strings.
+
+Key behaviors:
+- Includes schema headers and chain objects
+- Defines a test struct with FC_REFLECT
+- Retrieves schemas for chain objects and dependent schemas
+- Prints schema metadata to stdout
+
+```mermaid
+flowchart TD
+Start(["Start"]) --> Include["Include schema headers"]
+Include --> Define["Define test struct with FC_REFLECT"]
+Define --> GetSchemas["Get schemas for chain objects"]
+GetSchemas --> Deps["Add dependent schemas"]
+Deps --> Print["Iterate and print schema info"]
+Print --> End(["End"])
+```
+
+**Diagram sources**
+- [schema_test.cpp](file://programs/util/schema_test.cpp#L15-L56)
+
+**Section sources**
+- [schema_test.cpp](file://programs/util/schema_test.cpp#L1-L57)
+
+### configure_build.py (Python)
+A helper to invoke cmake with sensible defaults and optional flags for cross-compilation and external libraries. It supports environment variables for locating Boost and OpenSSL, and passes through additional cmake options.
+
+Key behaviors:
+- Parses command-line arguments with mutually exclusive groups
+- Resolves environment variables for SYS_ROOT, BOOST_ROOT, OPENSSL_ROOT_DIR
+- Detects Boost version and adds appropriate flags
+- Supports Windows cross-compilation with MinGW
+- Builds and executes cmake with collected options
+
+```mermaid
+flowchart TD
+Start(["Start"]) --> Parse["Parse CLI args and env vars"]
+Parse --> Boost{"Boost dir provided?"}
+Boost --> |Yes| Ver["Detect Boost version"]
+Ver --> Flags["Add Boost/OpenSSL flags"]
+Boost --> |No| Flags
+Flags --> Win{"Windows cross-compile?"}
+Win --> |Yes| Mingw["Add MinGW flags"]
+Win --> |No| Cfg["Set LOW_MEMORY_NODE and BUILD_TYPE"]
+Mingw --> Cfg
+Cfg --> RootPath["Assemble root search paths"]
+RootPath --> Exec["Execute cmake with options"]
+Exec --> Done(["Done"])
+```
+
+**Diagram sources**
+- [configure_build.py](file://programs/build_helpers/configure_build.py#L143-L196)
+
+**Section sources**
+- [configure_build.py](file://programs/build_helpers/configure_build.py#L1-L202)
+
+## Dependency Analysis
+The build helper tools depend on standard libraries and external systems:
+- cat-parts and cat_parts.py depend on filesystem semantics and sorting
+- check_reflect.py depends on Doxygen XML and regular expressions
+- newplugin.py depends on Python’s string templating and filesystem operations
+- pretty_schema.py depends on a running debug node and JSON-RPC
+- schema_test.cpp depends on schema headers and chain objects
+- configure_build.py depends on cmake, environment variables, and optional toolchains
+
+```mermaid
+graph LR
+CP["cat-parts.cpp"] --> FS["Boost Filesystem"]
+CPY["cat_parts.py"] --> PY["Python Pathlib"]
+CR["check_reflect.py"] --> RX["Regex"]
+CR --> XML["xml.etree.ElementTree"]
+NP["newplugin.py"] --> PY
+PS["pretty_schema.py"] --> REQ["requests"]
+ST["schema_test.cpp"] --> SCH["graphene/db/schema"]
+CFG["configure_build.py"] --> CMK["cmake"]
+CFG --> ENV["Environment Variables"]
+```
+
+**Diagram sources**
+- [cat-parts.cpp](file://programs/build_helpers/cat-parts.cpp#L1-L6)
+- [cat_parts.py](file://programs/build_helpers/cat_parts.py#L3-L4)
+- [check_reflect.py](file://programs/build_helpers/check_reflect.py#L3-L6)
+- [newplugin.py](file://programs/util/newplugin.py#L1-L2)
+- [pretty_schema.py](file://programs/util/pretty_schema.py#L3-L5)
+- [schema_test.cpp](file://programs/util/schema_test.cpp#L1-L3)
+- [configure_build.py](file://programs/build_helpers/configure_build.py#L3-L6)
+
+**Section sources**
+- [cat-parts.cpp](file://programs/build_helpers/cat-parts.cpp#L1-L6)
+- [cat_parts.py](file://programs/build_helpers/cat_parts.py#L3-L4)
+- [check_reflect.py](file://programs/build_helpers/check_reflect.py#L3-L6)
+- [newplugin.py](file://programs/util/newplugin.py#L1-L2)
+- [pretty_schema.py](file://programs/util/pretty_schema.py#L3-L5)
+- [schema_test.cpp](file://programs/util/schema_test.cpp#L1-L3)
+- [configure_build.py](file://programs/build_helpers/configure_build.py#L3-L6)
+
+## Performance Considerations
+- cat-parts and cat_parts.py: Sorting and reading many small .hf files is efficient; the up-to-date check avoids unnecessary writes.
+- check_reflect.py: Walking source trees and parsing XML can be slow on large projects; restrict scanning to necessary directories if needed.
+- pretty_schema.py: Network latency to the debug node can dominate; cache results locally if regenerating frequently.
+- schema_test.cpp: Schema traversal is lightweight for a small set of types; adding many types increases runtime linearly.
+- configure_build.py: cmake invocation overhead is minimal compared to the build itself; passing additional flags can increase configuration time slightly.
+
+[No sources needed since this section provides general guidance]
+
+## Troubleshooting Guide
+Common issues and resolutions:
+- cat-parts/cat_parts.py
+  - Symptom: Incorrect number of arguments or invalid directory.
+  - Resolution: Ensure two arguments are provided: input directory and output file. Verify the directory exists and is readable.
+  - Symptom: Output not written despite changes.
+  - Resolution: Confirm that the concatenated content differs from the existing output; otherwise, the tool considers it up-to-date.
+- check_reflect.py
+  - Symptom: No Doxygen XML found.
+  - Resolution: Run doxygen to generate XML before invoking the tool.
+  - Symptom: Reflection mismatch reported.
+  - Resolution: Align FC_REFLECT declarations with actual class members; remove duplicates and ensure completeness.
+- newplugin.py
+  - Symptom: Permission denied when writing files.
+  - Resolution: Ensure the destination directory is writable; run with appropriate privileges.
+  - Symptom: Generated files not linked into the build.
+  - Resolution: Add the plugin’s CMakeLists.txt to the parent CMakeLists.txt and ensure target_link_libraries includes required libraries.
+- pretty_schema.py
+  - Symptom: Connection refused or timeout.
+  - Resolution: Start the debug node and ensure the JSON-RPC endpoint is reachable on the configured address.
+- schema_test.cpp
+  - Symptom: Link errors for schema headers.
+  - Resolution: Ensure the schema headers are available and the target links against graphene_chain and fc.
+- configure_build.py
+  - Symptom: cmake cannot find Boost or OpenSSL.
+  - Resolution: Set BOOST_ROOT and OPENSSL_ROOT_DIR environment variables or pass --boost-dir and --openssl-dir.
+  - Symptom: Cross-compilation fails.
+  - Resolution: Ensure MinGW toolchain is installed and CMAKE_FIND_ROOT_PATH_MODE settings are correct.
+
+**Section sources**
+- [cat-parts.cpp](file://programs/build_helpers/cat-parts.cpp#L8-L11)
+- [cat_parts.py](file://programs/build_helpers/cat_parts.py#L29-L36)
+- [check_reflect.py](file://programs/build_helpers/check_reflect.py#L44-L49)
+- [newplugin.py](file://programs/util/newplugin.py#L236-L244)
+- [pretty_schema.py](file://programs/util/pretty_schema.py#L9-L12)
+- [schema_test.cpp](file://programs/util/schema_test.cpp#L1-L3)
+- [configure_build.py](file://programs/build_helpers/configure_build.py#L114-L118)
+
+## Conclusion
+These build helper tools automate repetitive tasks, enforce consistency, and integrate cleanly with the CMake-based build system. By following the documented usage patterns and best practices, developers can maintain organized codebases, validate reflection integrity, scaffold plugins efficiently, and inspect schemas reliably.
+
+[No sources needed since this section summarizes without analyzing specific files]
+
+## Appendices
+
+### Practical Examples
+
+- Assemble hardfork fragments
+  - Use cat_parts.py to concatenate .hf files from a directory into a single output file. The tool ensures the output is only rewritten when content changes.
+  - Example command: python3 programs/build_helpers/cat_parts.py libraries/chain/hardfork.d build/hardforks.inc
+
+- Validate reflection declarations
+  - Run check_reflect.py after generating Doxygen XML to compare FC_REFLECT declarations with class members. Fix reported mismatches and duplicates.
+  - Example command: python3 programs/build_helpers/check_reflect.py
+
+- Scaffold a new plugin
+  - Use newplugin.py to generate a plugin skeleton under libraries/plugins/<plugin_name>. Customize the generated files and integrate with CMake.
+  - Example command: python3 programs/util/newplugin.py viz myplugin
+
+- Pretty-print schema
+  - Use pretty_schema.py to fetch and format the schema from a running debug node. Pipe to a file for inspection.
+  - Example command: python3 programs/util/pretty_schema.py > schema.json
+
+- Test schema retrieval
+  - Build and run schema_test.cpp to print schema information for specific chain objects. Useful for debugging schema-related issues.
+  - Example command: make schema_test && ./bin/schema_test
+
+- Configure and build
+  - Use configure_build.py to invoke cmake with sensible defaults and optional flags for cross-compilation and external libraries.
+  - Example command: python3 programs/build_helpers/configure_build.py --boost-dir /opt/boost --openssl-dir /opt/openssl
+
+**Section sources**
+- [cat_parts.py](file://programs/build_helpers/cat_parts.py#L28-L69)
+- [check_reflect.py](file://programs/build_helpers/check_reflect.py#L153-L160)
+- [newplugin.py](file://programs/util/newplugin.py#L225-L247)
+- [pretty_schema.py](file://programs/util/pretty_schema.py#L9-L27)
+- [schema_test.cpp](file://programs/util/schema_test.cpp#L44-L56)
+- [configure_build.py](file://programs/build_helpers/configure_build.py#L143-L196)
+
+### Integration with Main Build Process
+- CMake targets
+  - cat-parts is built as an executable and linked against fc and platform libs. Use it in custom targets or prebuild steps.
+  - Utilities like pretty_schema.py and schema_test.cpp are standalone scripts/executables; integrate them into CI or developer workflows as needed.
+- Build options
+  - Refer to documentation/building.md for CMAKE_BUILD_TYPE and LOW_MEMORY_NODE options. configure_build.py sets these defaults and forwards additional cmake options.
+
+**Section sources**
+- [CMakeLists.txt (build_helpers)](file://programs/build_helpers/CMakeLists.txt#L1-L8)
+- [CMakeLists.txt (util)](file://programs/util/CMakeLists.txt#L46-L56)
+- [building.md](file://documentation/building.md#L3-L15)
+- [README.md](file://README.md#L7-L10)
