@@ -303,6 +303,8 @@ FC_REFLECT(
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::witness_object, graphene::chain::witness_index)
 
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::witness_vote_object, graphene::chain::witness_vote_index)
+
+FC_REFLECT((graphene::chain::witness_vote_object), (id)(witness)(account))
 FC_REFLECT((graphene::chain::witness_schedule_object),
         (id)(current_virtual_time)(next_shuffle_block_num)(current_shuffled_witnesses)(num_scheduled_witnesses)
                 (median_props)(majority_version)

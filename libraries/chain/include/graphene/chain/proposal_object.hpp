@@ -143,3 +143,14 @@ namespace graphene { namespace chain {
 
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::proposal_object, graphene::chain::proposal_index);
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::required_approval_object, graphene::chain::required_approval_index);
+
+FC_REFLECT((graphene::chain::proposal_object),
+    (id)(author)(title)(memo)(expiration_time)(review_period_time)
+    (proposed_operations)
+    (required_active_approvals)(available_active_approvals)
+    (required_master_approvals)(available_master_approvals)
+    (required_regular_approvals)(available_regular_approvals)
+    (available_key_approvals))
+
+FC_REFLECT((graphene::chain::required_approval_object),
+    (id)(account)(proposal))

@@ -601,6 +601,50 @@ Get raw serialized blocks.
 
 ---
 
+### `snapshot`
+**Status:** Active
+**Category:** API / Infrastructure
+**Dependencies:** `json_rpc`, `chain`
+
+Export, verify, and import full blockchain state snapshots.
+
+**Purpose:**
+- Export full chainbase state (31 object types) to a binary snapshot file
+- Verify snapshot integrity against current DB state
+- Enable fast node startup from snapshot instead of hours-long replay
+- Automatic periodic snapshots and on-demand export via SIGUSR1
+
+**JSON-RPC Methods:**
+
+| Method | Description |
+|---|---|
+| `snapshot.snapshot_export` | Export state to file. Arg: file path |
+| `snapshot.snapshot_info` | Read snapshot header without loading. Arg: file path |
+| `snapshot.snapshot_verify` | Compare snapshot against current DB state. Arg: file path |
+
+**Config options:**
+```ini
+# Auto-export every N blocks (0 = disabled, 28800 = ~1 day)
+snapshot-every = 0
+
+# Directory for snapshot files (default: data_dir)
+snapshot-dir =
+```
+
+**CLI options (in chain plugin):**
+```
+--load-snapshot /path/to/snapshot.bin   Load state from snapshot instead of replay
+```
+
+**Manual trigger:**
+```bash
+kill -SIGUSR1 $(pidof vizd)
+```
+
+**Snapshot file format:** Binary with JSON header. Contains magic bytes (`VIZSNAP`), format version, JSON metadata (block number, timestamp, chain_id, SHA256 hash, section offsets), and binary payload with all chainbase objects serialized via `fc::raw::pack`.
+
+---
+
 ## Witness/Producer Plugins
 
 ### `witness`

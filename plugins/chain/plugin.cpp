@@ -1,11 +1,28 @@
 #include <graphene/chain/database_exceptions.hpp>
 #include <graphene/chain/database.hpp>
+#include <graphene/chain/global_property_object.hpp>
+#include <graphene/chain/account_object.hpp>
+#include <graphene/chain/witness_objects.hpp>
+#include <graphene/chain/content_object.hpp>
+#include <graphene/chain/chain_objects.hpp>
+#include <graphene/chain/proposal_object.hpp>
+#include <graphene/chain/committee_objects.hpp>
+#include <graphene/chain/invite_objects.hpp>
+#include <graphene/chain/paid_subscription_objects.hpp>
+#include <graphene/chain/block_summary_object.hpp>
+#include <graphene/chain/transaction_object.hpp>
+#include <graphene/chain/chain_object_types.hpp>
 #include <graphene/plugins/chain/plugin.hpp>
+#include <graphene/plugins/snapshot/snapshot_format.hpp>
 
 #include <fc/io/json.hpp>
+#include <fc/io/raw.hpp>
+#include <fc/crypto/sha256.hpp>
 #include <fc/string.hpp>
+#include <fc/interprocess/container.hpp>
 
 #include <iostream>
+#include <fstream>
 #include <graphene/protocol/protocol.hpp>
 #include <graphene/protocol/types.hpp>
 #include <future>
@@ -50,6 +67,8 @@ namespace chain {
 
         bool skip_virtual_ops = false;
 
+        std::string load_snapshot_path;
+
         graphene::chain::database db;
 
         bool single_write_thread = false;
@@ -83,6 +102,7 @@ namespace chain {
         void accept_transaction(const protocol::signed_transaction &trx);
         void wipe_db(const bfs::path &data_dir, bool wipe_block_log);
         void replay_db(const bfs::path &data_dir, bool force_replay);
+        bool load_from_snapshot(const bfs::path &data_dir);
     };
 
     void plugin::plugin_impl::check_time_in_block(const protocol::signed_block &block) {
@@ -144,6 +164,244 @@ namespace chain {
         ilog("Replaying blockchain from block num ${from}.", ("from", from_block_num));
         db.reindex(data_dir, shared_memory_dir, from_block_num, shared_memory_size);
     };
+
+    // Helper: remove all objects of a given type from the database
+    template<typename IndexType, typename ObjectType>
+    void clear_index(graphene::chain::database &db) {
+        const auto &idx = db.get_index<IndexType>().indices().template get<graphene::chain::by_id>();
+        std::vector<typename ObjectType::id_type> ids;
+        ids.reserve(std::distance(idx.begin(), idx.end()));
+        for (auto itr = idx.begin(); itr != idx.end(); ++itr) {
+            ids.push_back(itr->id);
+        }
+        for (const auto &id : ids) {
+            const auto &obj = db.get<ObjectType>(id);
+            db.remove(obj);
+        }
+    }
+
+    // Helper template: clear existing objects then import from snapshot payload.
+    // Uses fc::raw::unpack directly into the object created by chainbase
+    // (avoids the deleted default constructor problem).
+    //
+    // ID handling: chainbase::emplace sets id = _next_id before calling our constructor,
+    // then our constructor overwrites id with the snapshot value. The multi_index
+    // stores the object with the snapshot ID (correct), but _next_id may be wrong.
+    // After all objects are imported, we advance _next_id by creating+removing dummy
+    // objects until _next_id exceeds the max ID in the snapshot.
+    template<typename IndexType, typename ObjectType>
+    void import_snapshot_section(
+        graphene::chain::database &db,
+        const char *payload_data,
+        const graphene::plugins::snapshot::snapshot_section_info &section
+    ) {
+        // Clear any objects created by init_genesis
+        clear_index<IndexType, ObjectType>(db);
+
+        fc::datastream<const char*> ds(payload_data + section.offset, section.size);
+
+        uint64_t count;
+        fc::raw::unpack(ds, count);
+
+        ilog("Importing ${n} ${type} objects", ("n", count)("type", section.type));
+
+        typename ObjectType::id_type max_id(0);
+        for (uint64_t i = 0; i < count; i++) {
+            const auto &created = db.create<ObjectType>([&](ObjectType &obj) {
+                fc::raw::unpack(ds, obj);
+            });
+            if (created.id > max_id) {
+                max_id = created.id;
+            }
+        }
+
+        // Fix chainbase _next_id to be max_id + 1, so future creates
+        // don't collide with imported IDs.
+        if (count > 0) {
+            using index_type = typename chainbase::get_index_type<ObjectType>::type;
+            db.get_mutable_index<index_type>().set_next_id(
+                typename ObjectType::id_type(max_id._id + 1));
+        }
+    }
+
+    bool plugin::plugin_impl::load_from_snapshot(const bfs::path &data_dir) {
+        using namespace graphene::plugins::snapshot;
+        using namespace graphene::chain;
+
+        ilog("Loading state from snapshot: ${path}", ("path", load_snapshot_path));
+
+        // Read file
+        std::ifstream in(load_snapshot_path, std::ios::binary | std::ios::ate);
+        if (!in.is_open()) {
+            elog("Failed to open snapshot file: ${path}", ("path", load_snapshot_path));
+            return false;
+        }
+
+        size_t file_size = in.tellg();
+        in.seekg(0, std::ios::beg);
+
+        // Verify magic
+        char magic[8];
+        in.read(magic, 8);
+        if (std::memcmp(magic, SNAPSHOT_MAGIC, 8) != 0) {
+            elog("Invalid snapshot file: bad magic");
+            return false;
+        }
+
+        // Version
+        uint32_t version;
+        in.read(reinterpret_cast<char*>(&version), 4);
+        if (version != SNAPSHOT_FORMAT_VERSION) {
+            elog("Unsupported snapshot version: ${v}", ("v", version));
+            return false;
+        }
+
+        // Header
+        uint32_t header_len;
+        in.read(reinterpret_cast<char*>(&header_len), 4);
+        std::string header_json(header_len, '\0');
+        in.read(&header_json[0], header_len);
+
+        auto header = fc::json::from_string(header_json).as<snapshot_header>();
+
+        // Read payload
+        size_t payload_offset = 8 + 4 + 4 + header_len;
+        size_t payload_size = file_size - payload_offset;
+        std::vector<char> payload(payload_size);
+        in.read(payload.data(), payload_size);
+        in.close();
+
+        // Verify SHA256
+        auto computed_hash = fc::sha256::hash(payload.data(), payload.size());
+        if (computed_hash.str() != header.payload_sha256) {
+            elog("Snapshot SHA256 mismatch!");
+            return false;
+        }
+
+        ilog("Snapshot payload SHA256 verified: block ${b}, ${s} sections",
+            ("b", header.head_block_num)("s", header.sections.size()));
+
+        // Verify snapshot block exists in block_log and has valid signature
+        auto block = db.get_block_log().read_block_by_num(header.head_block_num);
+        if (!block) {
+            elog("Snapshot block ${b} not found in block_log. "
+                 "Block log may be truncated or snapshot is from a different chain.",
+                 ("b", header.head_block_num));
+            return false;
+        }
+
+        // Verify block ID matches
+        auto block_id = block->id();
+        if (block_id.str() != header.head_block_id) {
+            elog("Block ID mismatch at block ${b}: snapshot has ${snap}, block_log has ${log}",
+                 ("b", header.head_block_num)
+                 ("snap", header.head_block_id)
+                 ("log", block_id.str()));
+            return false;
+        }
+
+        // Verify block signature (recover public key from signature + digest)
+        try {
+            auto signee = block->signee();
+            FC_ASSERT(signee != fc::ecc::public_key(),
+                "Block ${b} has invalid signature (cannot recover public key)",
+                ("b", header.head_block_num));
+            ilog("Snapshot block ${b} signature verified (witness: ${w}, signee: ${s})",
+                ("b", header.head_block_num)("w", block->witness)
+                ("s", std::string(signee)));
+        } catch (const fc::exception &e) {
+            elog("Block ${b} signature verification failed: ${e}",
+                 ("b", header.head_block_num)("e", e.to_detail_string()));
+            return false;
+        }
+
+        // Verify chain_id matches
+        if (db.get_chain_id().str() != header.chain_id) {
+            elog("Chain ID mismatch: snapshot is for chain ${snap}, this node is ${node}",
+                 ("snap", header.chain_id)("node", db.get_chain_id().str()));
+            return false;
+        }
+
+        ilog("Snapshot integrity fully verified");
+
+        // Wipe DB and start fresh
+        wipe_db(data_dir, false);
+
+        // Import each section
+        for (const auto &section : header.sections) {
+            if (section.type == "dynamic_global_property") {
+                import_snapshot_section<dynamic_global_property_index, dynamic_global_property_object>(db, payload.data(), section);
+            } else if (section.type == "account") {
+                import_snapshot_section<account_index, account_object>(db, payload.data(), section);
+            } else if (section.type == "account_authority") {
+                import_snapshot_section<account_authority_index, account_authority_object>(db, payload.data(), section);
+            } else if (section.type == "witness") {
+                import_snapshot_section<witness_index, witness_object>(db, payload.data(), section);
+            } else if (section.type == "transaction") {
+                import_snapshot_section<transaction_index, transaction_object>(db, payload.data(), section);
+            } else if (section.type == "block_summary") {
+                import_snapshot_section<block_summary_index, block_summary_object>(db, payload.data(), section);
+            } else if (section.type == "witness_schedule") {
+                import_snapshot_section<witness_schedule_index, witness_schedule_object>(db, payload.data(), section);
+            } else if (section.type == "content") {
+                import_snapshot_section<content_index, content_object>(db, payload.data(), section);
+            } else if (section.type == "content_type") {
+                import_snapshot_section<content_type_index, content_type_object>(db, payload.data(), section);
+            } else if (section.type == "content_vote") {
+                import_snapshot_section<content_vote_index, content_vote_object>(db, payload.data(), section);
+            } else if (section.type == "witness_vote") {
+                import_snapshot_section<witness_vote_index, witness_vote_object>(db, payload.data(), section);
+            } else if (section.type == "hardfork_property") {
+                import_snapshot_section<hardfork_property_index, hardfork_property_object>(db, payload.data(), section);
+            } else if (section.type == "withdraw_vesting_route") {
+                import_snapshot_section<withdraw_vesting_route_index, withdraw_vesting_route_object>(db, payload.data(), section);
+            } else if (section.type == "master_authority_history") {
+                import_snapshot_section<master_authority_history_index, master_authority_history_object>(db, payload.data(), section);
+            } else if (section.type == "account_recovery_request") {
+                import_snapshot_section<account_recovery_request_index, account_recovery_request_object>(db, payload.data(), section);
+            } else if (section.type == "change_recovery_account_request") {
+                import_snapshot_section<change_recovery_account_request_index, change_recovery_account_request_object>(db, payload.data(), section);
+            } else if (section.type == "escrow") {
+                import_snapshot_section<escrow_index, escrow_object>(db, payload.data(), section);
+            } else if (section.type == "vesting_delegation") {
+                import_snapshot_section<vesting_delegation_index, vesting_delegation_object>(db, payload.data(), section);
+            } else if (section.type == "fix_vesting_delegation") {
+                import_snapshot_section<fix_vesting_delegation_index, fix_vesting_delegation_object>(db, payload.data(), section);
+            } else if (section.type == "vesting_delegation_expiration") {
+                import_snapshot_section<vesting_delegation_expiration_index, vesting_delegation_expiration_object>(db, payload.data(), section);
+            } else if (section.type == "account_metadata") {
+                import_snapshot_section<account_metadata_index, account_metadata_object>(db, payload.data(), section);
+            } else if (section.type == "proposal") {
+                import_snapshot_section<proposal_index, proposal_object>(db, payload.data(), section);
+            } else if (section.type == "required_approval") {
+                import_snapshot_section<required_approval_index, required_approval_object>(db, payload.data(), section);
+            } else if (section.type == "committee_request") {
+                import_snapshot_section<committee_request_index, committee_request_object>(db, payload.data(), section);
+            } else if (section.type == "committee_vote") {
+                import_snapshot_section<committee_vote_index, committee_vote_object>(db, payload.data(), section);
+            } else if (section.type == "invite") {
+                import_snapshot_section<invite_index, invite_object>(db, payload.data(), section);
+            } else if (section.type == "award_shares_expire") {
+                import_snapshot_section<award_shares_expire_index, award_shares_expire_object>(db, payload.data(), section);
+            } else if (section.type == "paid_subscription") {
+                import_snapshot_section<paid_subscription_index, paid_subscription_object>(db, payload.data(), section);
+            } else if (section.type == "paid_subscribe") {
+                import_snapshot_section<paid_subscribe_index, paid_subscribe_object>(db, payload.data(), section);
+            } else if (section.type == "witness_penalty_expire") {
+                import_snapshot_section<witness_penalty_expire_index, witness_penalty_expire_object>(db, payload.data(), section);
+            } else if (section.type == "block_post_validation") {
+                import_snapshot_section<block_post_validation_index, block_post_validation_object>(db, payload.data(), section);
+            } else {
+                wlog("Unknown snapshot section: ${type}, skipping", ("type", section.type));
+            }
+        }
+
+        // Set database revision to match snapshot block
+        db.set_revision(header.head_block_num);
+
+        ilog("Snapshot loaded successfully at block ${b}", ("b", header.head_block_num));
+        return true;
+    }
 
     void plugin::plugin_impl::accept_transaction(const protocol::signed_transaction &trx) {
         uint32_t skip = db.validate_transaction(trx, db.skip_apply_transaction);
@@ -248,6 +506,9 @@ namespace chain {
             ) (
                 "validate-database-invariants", boost::program_options::bool_switch()->default_value(false),
                 "Validate all supply invariants check out"
+            ) (
+                "load-snapshot", boost::program_options::value<std::string>()->default_value(""),
+                "load state from snapshot file instead of replaying blocks"
             );
     }
 
@@ -297,6 +558,7 @@ namespace chain {
         my->resync = options.at("resync-blockchain").as<bool>();
         my->check_locks = options.at("check-locks").as<bool>();
         my->validate_invariants = options.at("validate-database-invariants").as<bool>();
+        my->load_snapshot_path = options.at("load-snapshot").as<std::string>();
         if (options.count("flush-state-interval")) {
             my->flush_interval = options.at("flush-state-interval").as<uint32_t>();
         } else {
@@ -348,11 +610,16 @@ namespace chain {
         try {
             ilog("Opening shared memory from ${path}", ("path", my->shared_memory_dir.generic_string()));
             my->db.open(data_dir, my->shared_memory_dir, CHAIN_INIT_SUPPLY, my->shared_memory_size, chainbase::database::read_write/*, my->validate_invariants*/ );
-            auto head_block_log = my->db.get_block_log().head();
-            my->replay |= head_block_log && my->db.revision() != head_block_log->block_num();
 
-            if (my->replay) {
-                my->replay_db(data_dir, my->force_replay);
+            if (!my->load_snapshot_path.empty()) {
+                my->load_from_snapshot(data_dir);
+            } else {
+                auto head_block_log = my->db.get_block_log().head();
+                my->replay |= head_block_log && my->db.revision() != head_block_log->block_num();
+
+                if (my->replay) {
+                    my->replay_db(data_dir, my->force_replay);
+                }
             }
         } catch (const graphene::chain::database_revision_exception &) {
             if (my->replay_if_corrupted) {

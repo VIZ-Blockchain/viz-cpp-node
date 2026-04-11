@@ -339,6 +339,7 @@ The following plugins are part of the built-in set. Each plugin exposes specific
 - p2p: Peer-to-peer networking and broadcasting.
 - mongo_db: MongoDB integration for archival/indexing.
 - json_rpc: JSON-RPC dispatcher and method registry.
+- snapshot: Full chainbase state export/import for fast node recovery (API: snapshot_export, snapshot_info, snapshot_verify; CLI: --load-snapshot; auto-export via --snapshot-every; manual trigger via SIGUSR1).
 - Additional plugins include: account_by_key, auth_util, block_info, committee_api, custom_protocol_api, debug_node, follow, invite_api, network_broadcast_api, operation_history, paid_subscription_api, private_message, raw_block, social_network, tags, test_api, witness, witness_api.
 
 **Section sources**
