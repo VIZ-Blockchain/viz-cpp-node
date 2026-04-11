@@ -45,7 +45,7 @@ snapshot_section_info export_section(
     info.type = type_name;
     info.offset = payload.size();
 
-    const auto &idx = db.get_index<IndexType>().indices().template get<by_id>();
+    const auto &idx = db.get_index<IndexType>().indices();
     info.count = std::distance(idx.begin(), idx.end());
 
     // Pack count
