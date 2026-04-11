@@ -154,10 +154,15 @@ void plugin::plugin_impl::trigger_export() {
         } else {
             elog("snapshot: export failed: ${e}", ("e", result.error));
         }
+    } catch (const fc::exception &e) {
+        chain().resume();
+        elog("snapshot: export exception: ${e}", ("e", e.to_detail_string()));
     } catch (const std::exception &e) {
-        // Always resume on error
         chain().resume();
         elog("snapshot: export exception: ${e}", ("e", e.what()));
+    } catch (...) {
+        chain().resume();
+        elog("snapshot: export unknown exception");
     }
 
     export_in_progress_ = false;
