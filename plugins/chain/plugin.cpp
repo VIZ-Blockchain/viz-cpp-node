@@ -313,7 +313,7 @@ namespace chain {
                 ("b", header.head_block_num));
             ilog("Snapshot block ${b} signature verified (witness: ${w}, signee: ${s})",
                 ("b", header.head_block_num)("w", block->witness)
-                ("s", std::string(signee)));
+                ("s", signee.to_base58()));
         } catch (const fc::exception &e) {
             elog("Block ${b} signature verification failed: ${e}",
                  ("b", header.head_block_num)("e", e.to_detail_string()));
