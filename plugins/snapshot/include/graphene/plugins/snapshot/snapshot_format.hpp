@@ -5,24 +5,6 @@
 #include <cstdint>
 #include <fc/crypto/sha256.hpp>
 #include <fc/time.hpp>
-#include <fc/io/raw.hpp>
-#include <chainbase/chainbase.hpp>
-
-// fc::raw pack/unpack for chainbase::object_id (not reflected, needs explicit support)
-namespace fc { namespace raw {
-
-    template<typename Stream, typename T>
-    inline void pack(Stream& s, const chainbase::object_id<T>& id) {
-        fc::raw::pack(s, id._id);
-    }
-
-    template<typename Stream, typename T>
-    inline void unpack(Stream& s, chainbase::object_id<T>& id, uint32_t depth = 0) {
-        fc::raw::unpack(s, id._id, depth);
-    }
-
-}} // fc::raw
-
 namespace graphene {
 namespace plugins {
 namespace snapshot {

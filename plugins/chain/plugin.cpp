@@ -173,15 +173,13 @@ namespace chain {
     // Helper: remove all objects of a given type from the database
     template<typename IndexType, typename ObjectType>
     void clear_index(graphene::chain::database &db) {
-        const auto &idx = db.get_index<IndexType>().indices().template get<graphene::chain::by_id>();
+        const auto &idx = db.get_index<IndexType>().indices();
         std::vector<typename ObjectType::id_type> ids;
-        ids.reserve(std::distance(idx.begin(), idx.end()));
-        for (auto itr = idx.begin(); itr != idx.end(); ++itr) {
-            ids.push_back(itr->id);
+        for (const auto &obj : idx) {
+            ids.push_back(obj.id);
         }
         for (const auto &id : ids) {
-            const auto &obj = db.get<ObjectType>(id);
-            db.remove(obj);
+            db.remove(db.get<ObjectType>(id));
         }
     }
 
