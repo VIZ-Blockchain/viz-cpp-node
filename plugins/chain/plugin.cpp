@@ -1,3 +1,4 @@
+#include <graphene/plugins/snapshot/chainbase_raw.hpp>
 #include <graphene/chain/database_exceptions.hpp>
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/global_property_object.hpp>
