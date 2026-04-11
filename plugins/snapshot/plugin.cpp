@@ -69,7 +69,9 @@ snapshot_section_info export_section(
 
 struct plugin::plugin_impl {
 public:
-    plugin_impl() : db_(appbase::app().get_plugin<plugins::chain::plugin>().db()) {
+    plugin_impl()
+        : chain_plugin_(appbase::app().get_plugin<plugins::chain::plugin>()),
+          db_(chain_plugin_.db()) {
     }
 
     snapshot_export_r do_export(const std::string &path);
@@ -85,6 +87,10 @@ public:
         return db_;
     }
 
+    plugins::chain::plugin &chain() {
+        return chain_plugin_;
+    }
+
     // Config
     uint32_t snapshot_every = 0;        // 0 = disabled
     std::string snapshot_dir;
@@ -96,6 +102,7 @@ public:
     std::atomic<bool> export_in_progress_{false};
 
 private:
+    plugins::chain::plugin &chain_plugin_;
     graphene::chain::database &db_;
 };
 
@@ -130,9 +137,15 @@ void plugin::plugin_impl::trigger_export() {
 
     try {
         auto path = generate_snapshot_path();
-        ilog("snapshot: starting export to ${path}", ("path", path));
+        ilog("snapshot: pausing chain for snapshot export to ${path}", ("path", path));
+
+        // Pause block processing before export
+        chain().pause();
 
         auto result = do_export(path);
+
+        // Resume block processing after export
+        chain().resume();
 
         if (result.success) {
             ilog("snapshot: exported ${n} objects in ${s} sections to ${path} at block ${b}",
@@ -142,6 +155,8 @@ void plugin::plugin_impl::trigger_export() {
             elog("snapshot: export failed: ${e}", ("e", result.error));
         }
     } catch (const std::exception &e) {
+        // Always resume on error
+        chain().resume();
         elog("snapshot: export exception: ${e}", ("e", e.what()));
     }
 
@@ -516,9 +531,22 @@ snapshot_verify_r plugin::plugin_impl::do_verify(const std::string &path) {
 DEFINE_API(plugin, snapshot_export) {
     auto path = args.args->at(0).as<std::string>();
     auto &db = my->database();
-    return db.with_weak_read_lock([&]() {
-        return my->do_export(path);
-    });
+
+    // Pause chain for consistent snapshot
+    my->chain().pause();
+
+    snapshot_export_r result;
+    try {
+        result = db.with_weak_read_lock([&]() {
+            return my->do_export(path);
+        });
+    } catch (...) {
+        my->chain().resume();
+        throw;
+    }
+
+    my->chain().resume();
+    return result;
 }
 
 DEFINE_API(plugin, snapshot_info) {

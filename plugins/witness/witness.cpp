@@ -277,6 +277,12 @@ namespace graphene {
 
             block_production_condition::block_production_condition_enum witness_plugin::impl::maybe_produce_block(fc::mutable_variant_object &capture) {
                 auto &db = database();
+
+                // Do not produce blocks while database is paused (snapshot in progress)
+                if (db.is_paused()) {
+                    return block_production_condition::not_time_yet;
+                }
+
                 fc::time_point now_fine = graphene::time::now();
                 fc::time_point_sec now = now_fine + fc::microseconds( 500000 );
 

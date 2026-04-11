@@ -12,6 +12,7 @@
 #include <fc/log/logger.hpp>
 
 #include <map>
+#include <atomic>
 
 namespace graphene { namespace chain {
 
@@ -52,6 +53,21 @@ namespace graphene { namespace chain {
             bool _is_producing = false;
 
             bool _log_hardforks = true;
+
+            bool is_paused() const {
+                return _paused.load(std::memory_order_acquire);
+            }
+
+            void set_paused(bool p) {
+                _paused.store(p, std::memory_order_release);
+                if (p) {
+                    ilog("Database processing PAUSED");
+                } else {
+                    ilog("Database processing RESUMED");
+                }
+            }
+
+            std::atomic<bool> _paused{false};
 
             enum validation_steps {
                 skip_nothing = 0,

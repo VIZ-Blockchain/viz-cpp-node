@@ -47,6 +47,11 @@ namespace graphene {
 
                 bool block_is_on_preferred_chain(const protocol::block_id_type &block_id);
 
+                // Pause/resume block processing (for snapshots, maintenance)
+                void pause();
+                void resume();
+                bool is_paused() const;
+
                 void check_time_in_block(const protocol::signed_block &block);
 
                 template<typename MultiIndexType>

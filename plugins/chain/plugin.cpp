@@ -114,6 +114,11 @@ namespace chain {
     }
 
     bool plugin::plugin_impl::accept_block(const protocol::signed_block &block, bool currently_syncing, uint32_t skip) {
+        if (db.is_paused()) {
+            ilog("chain: block #${n} rejected — database is paused", ("n", block.block_num()));
+            return false;
+        }
+
         if (currently_syncing && block.block_num() % 10000 == 0) {
             ilog("Syncing Blockchain --- Got block: #${n} time: ${t} producer: ${p}",
                  ("t", block.timestamp)("n", block.block_num())("p", block.witness));
@@ -404,6 +409,10 @@ namespace chain {
     }
 
     void plugin::plugin_impl::accept_transaction(const protocol::signed_transaction &trx) {
+        if (db.is_paused()) {
+            FC_THROW_EXCEPTION(graphene::chain::plugin_exception, "Database is paused, transactions not accepted");
+        }
+
         uint32_t skip = db.validate_transaction(trx, db.skip_apply_transaction);
 
         if (single_write_thread) {
@@ -683,6 +692,18 @@ namespace chain {
 
     void plugin::check_time_in_block(const protocol::signed_block &block) {
         my->check_time_in_block(block);
+    }
+
+    void plugin::pause() {
+        my->db.set_paused(true);
+    }
+
+    void plugin::resume() {
+        my->db.set_paused(false);
+    }
+
+    bool plugin::is_paused() const {
+        return my->db.is_paused();
     }
 
 }
