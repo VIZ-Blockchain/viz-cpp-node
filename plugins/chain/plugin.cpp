@@ -1,3 +1,5 @@
+// Must be before chain headers: provides fc::raw overloads for interprocess types
+#include <fc/interprocess/container.hpp>
 #include <graphene/plugins/snapshot/chainbase_raw.hpp>
 #include <graphene/chain/database_exceptions.hpp>
 #include <graphene/chain/database.hpp>
