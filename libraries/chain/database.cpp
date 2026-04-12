@@ -4012,6 +4012,12 @@ namespace graphene { namespace chain {
                                         dlt_head_num = dlt_head->block_num();
                                     }
 
+                                    // If dlt_block_log is empty (fresh from snapshot), skip past
+                                    // already-irreversible blocks -- the snapshot is trusted.
+                                    if (dlt_head_num == 0) {
+                                        dlt_head_num = dpo.last_irreversible_block_num;
+                                    }
+
                                     if (dlt_head_num < dpo.last_irreversible_block_num) {
                                         while (dlt_head_num < dpo.last_irreversible_block_num) {
                                             std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
@@ -4140,6 +4146,12 @@ namespace graphene { namespace chain {
 
                                     if (dlt_head) {
                                         dlt_head_num = dlt_head->block_num();
+                                    }
+
+                                    // If dlt_block_log is empty (fresh from snapshot), skip past
+                                    // already-irreversible blocks -- the snapshot is trusted.
+                                    if (dlt_head_num == 0) {
+                                        dlt_head_num = dpo.last_irreversible_block_num;
                                     }
 
                                     if (dlt_head_num < dpo.last_irreversible_block_num) {
@@ -4355,6 +4367,12 @@ namespace graphene { namespace chain {
 
                     if (dlt_head) {
                         dlt_head_num = dlt_head->block_num();
+                    }
+
+                    // If dlt_block_log is empty (fresh from snapshot), skip past
+                    // already-irreversible blocks -- the snapshot is trusted.
+                    if (dlt_head_num == 0) {
+                        dlt_head_num = dpo.last_irreversible_block_num;
                     }
 
                     if (dlt_head_num < dpo.last_irreversible_block_num) {
