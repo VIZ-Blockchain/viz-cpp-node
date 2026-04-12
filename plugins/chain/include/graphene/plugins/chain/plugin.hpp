@@ -99,6 +99,11 @@ namespace graphene {
                 // but BEFORE on_sync(), so that the snapshot is created before P2P/witness start.
                 std::function<void()> snapshot_create_callback;
 
+                // Callback for P2P snapshot sync. Set by the snapshot plugin during initialize()
+                // when --sync-snapshot-from-trusted-peer is enabled. Called by the chain plugin
+                // during startup() when state is empty (head_block_num == 0), BEFORE on_sync().
+                std::function<void()> snapshot_p2p_sync_callback;
+
             private:
                 class plugin_impl;
 

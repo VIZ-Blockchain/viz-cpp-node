@@ -4,9 +4,40 @@
 #include <graphene/plugins/chain/plugin.hpp>
 #include <graphene/plugins/snapshot/snapshot_types.hpp>
 
+#include <vector>
+
 namespace graphene { namespace plugins { namespace snapshot {
 
     namespace bpo = boost::program_options;
+
+    // ========== Snapshot P2P sync protocol ==========
+
+    enum snapshot_net_message_type : uint32_t {
+        snapshot_info_request  = 1,
+        snapshot_info_reply    = 2,
+        snapshot_data_request  = 3,
+        snapshot_data_reply    = 4,
+        snapshot_not_available = 5
+    };
+
+    struct snapshot_info_reply_data {
+        uint32_t        block_num = 0;
+        block_id_type   block_id;
+        fc::sha256      checksum;
+        uint64_t        compressed_size = 0;
+    };
+
+    struct snapshot_data_request_data {
+        uint32_t block_num = 0;
+        uint64_t offset = 0;
+        uint32_t chunk_size = 0;  // requested chunk size (max ~1 MB)
+    };
+
+    struct snapshot_data_reply_data {
+        uint64_t            offset = 0;
+        std::vector<char>   data;
+        bool                is_last = false;
+    };
 
     class snapshot_plugin final : public appbase::plugin<snapshot_plugin> {
     public:
@@ -45,3 +76,12 @@ namespace graphene { namespace plugins { namespace snapshot {
     };
 
 } } } // graphene::plugins::snapshot
+
+FC_REFLECT((graphene::plugins::snapshot::snapshot_info_reply_data),
+    (block_num)(block_id)(checksum)(compressed_size))
+
+FC_REFLECT((graphene::plugins::snapshot::snapshot_data_request_data),
+    (block_num)(offset)(chunk_size))
+
+FC_REFLECT((graphene::plugins::snapshot::snapshot_data_reply_data),
+    (offset)(data)(is_last))

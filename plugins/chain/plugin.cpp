@@ -230,6 +230,9 @@ namespace chain {
             ) (
                 "enable-plugins-on-push-transaction", boost::program_options::value<bool>()->default_value(false),
                 "enable calling of plugins for operations on push_transaction"
+            ) (
+                "dlt-block-log-max-blocks", boost::program_options::value<uint32_t>()->default_value(100000),
+                "Number of recent blocks to keep in block_log in DLT mode (0 = no block_log in DLT mode)"
             );
         cli.add_options()
             (
@@ -319,6 +322,11 @@ namespace chain {
             my->snapshot_path = options.at("snapshot").as<std::string>();
             ilog("Chain plugin: will load state from snapshot: ${p}", ("p", my->snapshot_path));
         }
+
+        // DLT rolling block_log config
+        if (options.count("dlt-block-log-max-blocks")) {
+            my->db._dlt_block_log_max_blocks = options.at("dlt-block-log-max-blocks").as<uint32_t>();
+        }
     }
 
     void plugin::plugin_startup() {
@@ -374,7 +382,19 @@ namespace chain {
             // This MUST happen before on_sync() so that P2P starts syncing from the
             // snapshot head block, not from genesis.
             if (snapshot_load_callback) {
-                snapshot_load_callback();
+                try {
+                    snapshot_load_callback();
+                } catch (const fc::exception& e) {
+                    elog("FATAL: Failed to load snapshot: ${e}", ("e", e.to_detail_string()));
+                    elog("The snapshot file may be corrupted or incompatible. "
+                         "Check the file path and try again.");
+                    appbase::app().quit();
+                    return;
+                } catch (const std::exception& e) {
+                    elog("FATAL: Failed to load snapshot: ${e}", ("e", e.what()));
+                    appbase::app().quit();
+                    return;
+                }
             } else {
                 elog("--snapshot specified but no snapshot_load_callback registered. "
                      "Is the snapshot plugin enabled?");
@@ -434,6 +454,13 @@ namespace chain {
         if (snapshot_create_callback) {
             snapshot_create_callback();
             return;
+        }
+
+        // If state is empty and P2P snapshot sync callback is registered,
+        // download and load snapshot from trusted peers before on_sync().
+        if (my->db.head_block_num() == 0 && snapshot_p2p_sync_callback) {
+            snapshot_p2p_sync_callback();
+            ilog("Started on blockchain with ${n} blocks (from P2P snapshot sync)", ("n", my->db.head_block_num()));
         }
 
         on_sync();

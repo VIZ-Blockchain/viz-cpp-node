@@ -57,6 +57,11 @@ namespace graphene { namespace chain {
             // When true, block_log append operations are skipped.
             bool _dlt_mode = false;
 
+            // DLT rolling block_log: number of recent blocks to keep.
+            // 0 = no block_log in DLT mode (original behavior).
+            // > 0 = keep a rolling window of this many blocks in DLT mode.
+            uint32_t _dlt_block_log_max_blocks = 0;
+
             enum validation_steps {
                 skip_nothing = 0,
                 skip_witness_signature = 1 << 0,  ///< used while reindexing
@@ -470,6 +475,10 @@ namespace graphene { namespace chain {
             void set_flush_interval(uint32_t flush_blocks);
 
             const block_log &get_block_log() const;
+
+            /// Truncate block_log to keep only blocks from start_block onward.
+            /// Used by DLT rolling block_log to maintain a sliding window.
+            void truncate_block_log(uint32_t start_block);
 
             fork_database &get_fork_db() {
                 return _fork_db;

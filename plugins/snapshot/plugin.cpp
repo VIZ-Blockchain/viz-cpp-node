@@ -20,8 +20,16 @@
 #include <fc/io/json.hpp>
 #include <fc/crypto/sha256.hpp>
 #include <fc/compress/zlib.hpp>
+#include <fc/network/tcp_socket.hpp>
+#include <fc/network/ip.hpp>
+#include <fc/thread/thread.hpp>
+#include <fc/thread/future.hpp>
 
+#include <boost/filesystem.hpp>
 #include <fstream>
+#include <set>
+#include <map>
+#include <algorithm>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -656,7 +664,9 @@ inline uint32_t import_account_recovery_requests(
 class snapshot_plugin::plugin_impl {
 public:
     plugin_impl() : db(appbase::app().get_plugin<chain::plugin>().db()) {}
-    ~plugin_impl() = default;
+    ~plugin_impl() {
+        stop_server();
+    }
 
     graphene::chain::database& db;
 
@@ -666,12 +676,44 @@ public:
     uint32_t snapshot_every_n_blocks = 0; // --snapshot-every-n-blocks: periodic snapshot
     std::string snapshot_dir;         // --snapshot-dir: directory for auto-generated snapshots
 
+    // Snapshot P2P sync config
+    bool allow_snapshot_serving = false;
+    bool allow_snapshot_serving_only_trusted = false;
+    std::string snapshot_serve_endpoint_str = "0.0.0.0:8092";
+    std::vector<std::string> trusted_snapshot_peers;
+    bool sync_snapshot_from_trusted_peer = false;
+
+    // Parsed trusted IPs for server-side trust enforcement
+    std::set<uint32_t> trusted_ips;  // numeric IP addresses
+
+    // TCP server
+    std::unique_ptr<fc::tcp_server> tcp_srv;
+    fc::future<void> accept_loop_future;
+    bool server_running = false;
+
+    // Anti-spam: active sessions per IP (max 1 concurrent session per IP)
+    std::set<uint32_t> active_sessions;  // IPs with active connections
+
+    // Anti-spam: rate limiting (max N connections per hour per IP)
+    static const uint32_t MAX_CONNECTIONS_PER_HOUR = 3;
+    static const uint64_t RATE_LIMIT_WINDOW_SEC = 3600; // 1 hour
+    std::map<uint32_t, std::vector<fc::time_point>> connection_history; // IP -> timestamps
+
     boost::signals2::scoped_connection applied_block_conn;
 
     void create_snapshot(const fc::path& output_path);
     void load_snapshot(const fc::path& input_path);
 
     void on_applied_block(const graphene::protocol::signed_block& b);
+
+    // --- Snapshot P2P sync ---
+    void start_server();
+    void stop_server();
+    void accept_loop();
+    void handle_connection(fc::tcp_socket& sock);
+
+    fc::path find_latest_snapshot();
+    std::string download_snapshot_from_peers();
 
 private:
     // Core snapshot serialization (caller must hold appropriate lock)
@@ -929,6 +971,24 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
 
     // Import objects in dependency order
     db.with_strong_write_lock([&]() {
+        // Clear genesis-created multi-instance objects before importing.
+        // init_genesis() creates initial accounts, authorities, witnesses, and metadata
+        // that would conflict with the snapshot's objects. Singletons (dgp, witness_schedule,
+        // hardfork_property) and block_summaries are handled separately (modify-in-place).
+        {
+            ilog("Clearing genesis objects before snapshot import...");
+            const auto& acc_idx = db.get_index<account_index>().indices();
+            while (!acc_idx.empty()) { db.remove(*acc_idx.begin()); }
+
+            const auto& auth_idx = db.get_index<account_authority_index>().indices();
+            while (!auth_idx.empty()) { db.remove(*auth_idx.begin()); }
+
+            const auto& wit_idx = db.get_index<witness_index>().indices();
+            while (!wit_idx.empty()) { db.remove(*wit_idx.begin()); }
+
+            const auto& meta_idx = db.get_index<account_metadata_index>().indices();
+            while (!meta_idx.empty()) { db.remove(*meta_idx.begin()); }
+        }
         // CRITICAL - singleton objects (modify existing)
         if (state.contains("dynamic_global_property")) {
             detail::import_dynamic_global_properties(db, state["dynamic_global_property"].get_array());
@@ -1117,6 +1177,449 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
 }
 
 // ============================================================================
+// Wire protocol helpers
+// ============================================================================
+
+namespace {
+
+/// Read exactly `len` bytes from a tcp_socket.
+void read_exact(fc::tcp_socket& sock, char* buf, size_t len) {
+    size_t total = 0;
+    while (total < len) {
+        size_t n = sock.readsome(buf + total, len - total);
+        FC_ASSERT(n > 0, "Connection closed while reading");
+        total += n;
+    }
+}
+
+/// Write exactly `len` bytes to a tcp_socket.
+void write_exact(fc::tcp_socket& sock, const char* buf, size_t len) {
+    size_t total = 0;
+    while (total < len) {
+        size_t n = sock.writesome(buf + total, len - total);
+        FC_ASSERT(n > 0, "Connection closed while writing");
+        total += n;
+    }
+}
+
+/// Send a message: [4 bytes payload_size][4 bytes msg_type][payload]
+void send_message(fc::tcp_socket& sock, uint32_t msg_type, const std::vector<char>& payload) {
+    uint32_t payload_size = static_cast<uint32_t>(payload.size());
+    write_exact(sock, reinterpret_cast<const char*>(&payload_size), 4);
+    write_exact(sock, reinterpret_cast<const char*>(&msg_type), 4);
+    if (!payload.empty()) {
+        write_exact(sock, payload.data(), payload.size());
+    }
+    sock.flush();
+}
+
+/// Send a message with no payload (e.g. info_request, not_available).
+void send_message_empty(fc::tcp_socket& sock, uint32_t msg_type) {
+    std::vector<char> empty;
+    send_message(sock, msg_type, empty);
+}
+
+/// Read a message: returns (msg_type, payload).
+std::pair<uint32_t, std::vector<char>> read_message(fc::tcp_socket& sock) {
+    uint32_t payload_size = 0;
+    uint32_t msg_type = 0;
+    read_exact(sock, reinterpret_cast<char*>(&payload_size), 4);
+    read_exact(sock, reinterpret_cast<char*>(&msg_type), 4);
+    FC_ASSERT(payload_size <= 64 * 1024 * 1024, "Message too large: ${s} bytes", ("s", payload_size));
+    std::vector<char> payload(payload_size);
+    if (payload_size > 0) {
+        read_exact(sock, payload.data(), payload_size);
+    }
+    return {msg_type, std::move(payload)};
+}
+
+/// Serialize a struct to vector<char> via fc::raw::pack
+template<typename T>
+std::vector<char> pack_to_vec(const T& obj) {
+    return fc::raw::pack(obj);
+}
+
+/// Deserialize a struct from vector<char> via fc::raw::unpack
+template<typename T>
+T unpack_from_vec(const std::vector<char>& data) {
+    return fc::raw::unpack<T>(data);
+}
+
+} // anonymous namespace
+
+// ============================================================================
+// Snapshot file discovery
+// ============================================================================
+
+fc::path snapshot_plugin::plugin_impl::find_latest_snapshot() {
+    std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
+    fc::path dir_path(dir);
+
+    if (!fc::exists(dir_path) || !fc::is_directory(dir_path)) {
+        return fc::path();
+    }
+
+    fc::path best_path;
+    uint32_t best_block = 0;
+
+    boost::filesystem::directory_iterator end_itr;
+    for (boost::filesystem::directory_iterator itr(dir); itr != end_itr; ++itr) {
+        if (boost::filesystem::is_regular_file(itr->status())) {
+            std::string filename = itr->path().filename().string();
+            std::string ext = itr->path().extension().string();
+            // Accept .vizjson and .json snapshot files
+            if (ext == ".vizjson" || ext == ".json") {
+                // Try to parse block number from filename: snapshot-block-NNNNN.ext
+                auto pos = filename.find("snapshot-block-");
+                if (pos != std::string::npos) {
+                    try {
+                        std::string num_str = filename.substr(pos + 15);
+                        // Remove extension
+                        auto dot_pos = num_str.find('.');
+                        if (dot_pos != std::string::npos) {
+                            num_str = num_str.substr(0, dot_pos);
+                        }
+                        uint32_t block_num = static_cast<uint32_t>(std::stoul(num_str));
+                        if (block_num > best_block) {
+                            best_block = block_num;
+                            best_path = fc::path(itr->path().string());
+                        }
+                    } catch (...) {
+                        // Skip files with unparseable names
+                    }
+                }
+            }
+        }
+    }
+
+    return best_path;
+}
+
+// ============================================================================
+// Snapshot TCP server
+// ============================================================================
+
+void snapshot_plugin::plugin_impl::start_server() {
+    if (!allow_snapshot_serving) return;
+
+    auto ep = fc::ip::endpoint::from_string(snapshot_serve_endpoint_str);
+
+    tcp_srv = std::make_unique<fc::tcp_server>();
+    tcp_srv->set_reuse_address();
+    tcp_srv->listen(ep);
+    server_running = true;
+
+    ilog("Snapshot TCP server listening on ${ep}", ("ep", snapshot_serve_endpoint_str));
+
+    accept_loop_future = fc::async([this]() {
+        accept_loop();
+    }, "snapshot_accept_loop");
+}
+
+void snapshot_plugin::plugin_impl::stop_server() {
+    server_running = false;
+    if (tcp_srv) {
+        tcp_srv->close();
+    }
+    if (accept_loop_future.valid() && !accept_loop_future.ready()) {
+        accept_loop_future.cancel("shutdown");
+        try { accept_loop_future.wait(); } catch (...) {}
+    }
+}
+
+void snapshot_plugin::plugin_impl::accept_loop() {
+    while (server_running) {
+        try {
+            fc::tcp_socket sock;
+            tcp_srv->accept(sock);
+
+            if (!server_running) break;
+
+            auto remote = sock.remote_endpoint();
+            uint32_t remote_ip = static_cast<uint32_t>(remote.get_address());
+
+            // Trust enforcement
+            if (allow_snapshot_serving_only_trusted) {
+                if (trusted_ips.find(remote_ip) == trusted_ips.end()) {
+                    wlog("Snapshot server: rejected untrusted connection from ${ip}",
+                         ("ip", std::string(remote.get_address())));
+                    sock.close();
+                    continue;
+                }
+            }
+
+            // Anti-spam: reject if this IP already has an active session
+            if (active_sessions.count(remote_ip)) {
+                wlog("Snapshot server: rejected duplicate session from ${ip} (already connected)",
+                     ("ip", std::string(remote.get_address())));
+                sock.close();
+                continue;
+            }
+
+            // Anti-spam: rate limiting (max 3 connections per hour per IP)
+            {
+                auto now = fc::time_point::now();
+                auto cutoff = now - fc::seconds(RATE_LIMIT_WINDOW_SEC);
+                auto& history = connection_history[remote_ip];
+
+                // Prune old entries outside the window
+                history.erase(
+                    std::remove_if(history.begin(), history.end(),
+                        [&cutoff](const fc::time_point& t) { return t < cutoff; }),
+                    history.end());
+
+                if (history.size() >= MAX_CONNECTIONS_PER_HOUR) {
+                    wlog("Snapshot server: rate limit exceeded for ${ip} (${n} connections in last hour)",
+                         ("ip", std::string(remote.get_address()))("n", history.size()));
+                    sock.close();
+                    continue;
+                }
+
+                history.push_back(now);
+            }
+
+            // Register active session
+            active_sessions.insert(remote_ip);
+
+            ilog("Snapshot server: accepted connection from ${ip}:${port}",
+                 ("ip", std::string(remote.get_address()))("port", remote.port()));
+
+            try {
+                handle_connection(sock);
+            } catch (const fc::exception& e) {
+                wlog("Snapshot server: error handling connection: ${e}", ("e", e.to_detail_string()));
+            } catch (const std::exception& e) {
+                wlog("Snapshot server: error handling connection: ${e}", ("e", e.what()));
+            }
+
+            // Unregister active session
+            active_sessions.erase(remote_ip);
+
+            try { sock.close(); } catch (...) {}
+        } catch (const fc::canceled_exception&) {
+            break;
+        } catch (const fc::exception& e) {
+            if (server_running) {
+                wlog("Snapshot server: accept error: ${e}", ("e", e.to_detail_string()));
+            }
+        }
+    }
+}
+
+void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
+    // Read initial request
+    auto [msg_type, payload] = read_message(sock);
+
+    if (msg_type == snapshot_info_request) {
+        // Find latest snapshot file
+        fc::path snap_path = find_latest_snapshot();
+
+        if (snap_path.string().empty() || !fc::exists(snap_path)) {
+            ilog("Snapshot server: no snapshot available, sending NOT_AVAILABLE");
+            send_message_empty(sock, snapshot_not_available);
+            return;
+        }
+
+        // Read snapshot file to get info
+        std::ifstream in(snap_path.string(), std::ios::binary);
+        if (!in.is_open()) {
+            send_message_empty(sock, snapshot_not_available);
+            return;
+        }
+
+        // Get file size
+        in.seekg(0, std::ios::end);
+        uint64_t file_size = static_cast<uint64_t>(in.tellg());
+        in.seekg(0, std::ios::beg);
+        in.close();
+
+        // Compute checksum of entire file
+        std::ifstream in2(snap_path.string(), std::ios::binary);
+        std::string file_content((std::istreambuf_iterator<char>(in2)), std::istreambuf_iterator<char>());
+        in2.close();
+        fc::sha256 checksum = fc::sha256::hash(file_content.data(), file_content.size());
+
+        // Parse block number from filename
+        uint32_t block_num = 0;
+        std::string filename = snap_path.filename().string();
+        auto pos = filename.find("snapshot-block-");
+        if (pos != std::string::npos) {
+            try {
+                std::string num_str = filename.substr(pos + 15);
+                auto dot_pos = num_str.find('.');
+                if (dot_pos != std::string::npos) num_str = num_str.substr(0, dot_pos);
+                block_num = static_cast<uint32_t>(std::stoul(num_str));
+            } catch (...) {}
+        }
+
+        snapshot_info_reply_data reply;
+        reply.block_num = block_num;
+        reply.checksum = checksum;
+        reply.compressed_size = file_size;
+
+        ilog("Snapshot server: serving snapshot at block ${b}, size ${s} bytes",
+             ("b", block_num)("s", file_size));
+
+        send_message(sock, snapshot_info_reply, pack_to_vec(reply));
+
+        // Now wait for data requests in a loop
+        while (true) {
+            auto [req_type, req_payload] = read_message(sock);
+            if (req_type != snapshot_data_request) break;
+
+            auto req = unpack_from_vec<snapshot_data_request_data>(req_payload);
+
+            // Read chunk from file
+            std::ifstream chunk_in(snap_path.string(), std::ios::binary);
+            FC_ASSERT(chunk_in.is_open(), "Failed to open snapshot for serving");
+
+            chunk_in.seekg(req.offset, std::ios::beg);
+            uint32_t to_read = req.chunk_size;
+            if (req.offset + to_read > file_size) {
+                to_read = static_cast<uint32_t>(file_size - req.offset);
+            }
+
+            snapshot_data_reply_data reply_data;
+            reply_data.offset = req.offset;
+            reply_data.data.resize(to_read);
+            if (to_read > 0) {
+                chunk_in.read(reply_data.data.data(), to_read);
+            }
+            reply_data.is_last = (req.offset + to_read >= file_size);
+            chunk_in.close();
+
+            send_message(sock, snapshot_data_reply, pack_to_vec(reply_data));
+
+            if (reply_data.is_last) break;
+        }
+    }
+}
+
+// ============================================================================
+// Snapshot TCP client
+// ============================================================================
+
+std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
+    FC_ASSERT(!trusted_snapshot_peers.empty(), "No trusted snapshot peers configured");
+
+    // Phase 1: Query all peers for snapshot info
+    struct peer_info {
+        std::string endpoint_str;
+        uint32_t block_num = 0;
+        fc::sha256 checksum;
+        uint64_t compressed_size = 0;
+    };
+    std::vector<peer_info> available_peers;
+
+    for (const auto& peer_str : trusted_snapshot_peers) {
+        try {
+            ilog("Querying snapshot info from peer ${p}...", ("p", peer_str));
+            fc::tcp_socket sock;
+            auto ep = fc::ip::endpoint::from_string(peer_str);
+            sock.connect_to(ep);
+
+            send_message_empty(sock, snapshot_info_request);
+            auto [msg_type, payload] = read_message(sock);
+
+            if (msg_type == snapshot_info_reply) {
+                auto info = unpack_from_vec<snapshot_info_reply_data>(payload);
+                ilog("Peer ${p}: snapshot at block ${b}, size ${s} bytes",
+                     ("p", peer_str)("b", info.block_num)("s", info.compressed_size));
+                available_peers.push_back({peer_str, info.block_num, info.checksum, info.compressed_size});
+            } else if (msg_type == snapshot_not_available) {
+                ilog("Peer ${p}: no snapshot available", ("p", peer_str));
+            }
+
+            sock.close();
+        } catch (const fc::exception& e) {
+            wlog("Failed to query peer ${p}: ${e}", ("p", peer_str)("e", e.to_detail_string()));
+        } catch (const std::exception& e) {
+            wlog("Failed to query peer ${p}: ${e}", ("p", peer_str)("e", e.what()));
+        }
+    }
+
+    FC_ASSERT(!available_peers.empty(), "No peers have snapshots available");
+
+    // Pick the peer with the highest block_num
+    auto best = std::max_element(available_peers.begin(), available_peers.end(),
+        [](const peer_info& a, const peer_info& b) { return a.block_num < b.block_num; });
+
+    ilog("Selected peer ${p} with snapshot at block ${b} (${s} bytes)",
+         ("p", best->endpoint_str)("b", best->block_num)("s", best->compressed_size));
+
+    // Phase 2: Download snapshot in chunks
+    fc::tcp_socket sock;
+    auto ep = fc::ip::endpoint::from_string(best->endpoint_str);
+    sock.connect_to(ep);
+
+    // Request info again to establish session
+    send_message_empty(sock, snapshot_info_request);
+    auto [info_type, info_payload] = read_message(sock);
+    FC_ASSERT(info_type == snapshot_info_reply, "Unexpected response from peer during download");
+
+    // Create temp file for download
+    std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
+    std::string temp_path = dir + "/snapshot-download-temp.vizjson";
+    std::ofstream out(temp_path, std::ios::binary);
+    FC_ASSERT(out.is_open(), "Failed to create temp file for snapshot download: ${p}", ("p", temp_path));
+
+    uint64_t total_size = best->compressed_size;
+    uint64_t offset = 0;
+    const uint32_t chunk_size = 1048576; // 1 MB chunks
+
+    auto download_start = fc::time_point::now();
+
+    while (offset < total_size) {
+        snapshot_data_request_data req;
+        req.block_num = best->block_num;
+        req.offset = offset;
+        req.chunk_size = chunk_size;
+
+        send_message(sock, snapshot_data_request, pack_to_vec(req));
+        auto [data_type, data_payload] = read_message(sock);
+        FC_ASSERT(data_type == snapshot_data_reply, "Unexpected response during chunk download");
+
+        auto reply = unpack_from_vec<snapshot_data_reply_data>(data_payload);
+
+        if (!reply.data.empty()) {
+            out.write(reply.data.data(), reply.data.size());
+            offset += reply.data.size();
+        }
+
+        uint32_t percent = total_size > 0 ? static_cast<uint32_t>(offset * 100 / total_size) : 100;
+        ilog("Downloaded ${offset}/${total} bytes (${pct}%)",
+             ("offset", offset)("total", total_size)("pct", percent));
+
+        if (reply.is_last) break;
+    }
+
+    out.flush();
+    out.close();
+    sock.close();
+
+    auto download_elapsed = double((fc::time_point::now() - download_start).count()) / 1000000.0;
+    ilog("Download complete: ${s} bytes in ${t} sec", ("s", offset)("t", download_elapsed));
+
+    // Verify checksum
+    std::ifstream verify_in(temp_path, std::ios::binary);
+    std::string verify_content((std::istreambuf_iterator<char>(verify_in)), std::istreambuf_iterator<char>());
+    verify_in.close();
+
+    fc::sha256 computed = fc::sha256::hash(verify_content.data(), verify_content.size());
+    FC_ASSERT(computed == best->checksum,
+        "Snapshot checksum mismatch after download: computed=${c}, expected=${e}",
+        ("c", std::string(computed))("e", std::string(best->checksum)));
+    ilog("Snapshot checksum verified");
+
+    // Rename to final path
+    std::string final_path = dir + "/snapshot-block-" + std::to_string(best->block_num) + ".vizjson";
+    boost::filesystem::rename(temp_path, final_path);
+
+    ilog("Snapshot saved to ${p}", ("p", final_path));
+    return final_path;
+}
+
+// ============================================================================
 // Plugin interface
 // ============================================================================
 
@@ -1134,12 +1637,22 @@ void snapshot_plugin::set_program_options(
             "Automatically create a snapshot every N blocks (0 = disabled)")
         ("snapshot-dir", bpo::value<std::string>()->default_value(""),
             "Directory for auto-generated snapshot files")
+        ("allow-snapshot-serving", bpo::value<bool>()->default_value(false),
+            "Enable serving snapshots over TCP to other nodes")
+        ("allow-snapshot-serving-only-trusted", bpo::value<bool>()->default_value(false),
+            "Restrict snapshot serving to trusted peers only (from trusted-snapshot-peer list)")
+        ("snapshot-serve-endpoint", bpo::value<std::string>()->default_value("0.0.0.0:8092"),
+            "TCP endpoint for the snapshot serving listener")
+        ("trusted-snapshot-peer", bpo::value<std::vector<std::string>>()->composing(),
+            "Trusted peer endpoint for snapshot sync (IP:port). Can be specified multiple times.")
     ;
     cli.add_options()
         ("snapshot", bpo::value<std::string>(),
             "Load state from snapshot file instead of replaying blockchain")
         ("create-snapshot", bpo::value<std::string>(),
             "Create a snapshot file at the specified path and exit")
+        ("sync-snapshot-from-trusted-peer", bpo::value<bool>()->default_value(false),
+            "Download and load snapshot from trusted peers on empty state")
     ;
 }
 
@@ -1176,6 +1689,39 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
         }
     }
 
+    // Snapshot P2P sync config
+    my->allow_snapshot_serving = options.at("allow-snapshot-serving").as<bool>();
+    my->allow_snapshot_serving_only_trusted = options.at("allow-snapshot-serving-only-trusted").as<bool>();
+    my->snapshot_serve_endpoint_str = options.at("snapshot-serve-endpoint").as<std::string>();
+    my->sync_snapshot_from_trusted_peer = options.at("sync-snapshot-from-trusted-peer").as<bool>();
+
+    if (options.count("trusted-snapshot-peer")) {
+        my->trusted_snapshot_peers = options.at("trusted-snapshot-peer").as<std::vector<std::string>>();
+        // Parse trusted IPs for server-side trust enforcement
+        for (const auto& peer_str : my->trusted_snapshot_peers) {
+            try {
+                auto ep = fc::ip::endpoint::from_string(peer_str);
+                my->trusted_ips.insert(static_cast<uint32_t>(ep.get_address()));
+            } catch (const fc::exception& e) {
+                wlog("Failed to parse trusted-snapshot-peer '${p}': ${e}",
+                     ("p", peer_str)("e", e.to_detail_string()));
+            }
+        }
+        if (!my->trusted_snapshot_peers.empty()) {
+            ilog("Trusted snapshot peers: ${n} configured", ("n", my->trusted_snapshot_peers.size()));
+        }
+    }
+
+    if (my->allow_snapshot_serving) {
+        ilog("Snapshot serving enabled on ${ep}", ("ep", my->snapshot_serve_endpoint_str));
+        if (my->allow_snapshot_serving_only_trusted) {
+            ilog("Snapshot serving restricted to trusted peers only (${n} IPs)",
+                 ("n", my->trusted_ips.size()));
+        } else {
+            ilog("Snapshot serving open to anyone (public gate)");
+        }
+    }
+
     // Register snapshot loading callback on the chain plugin.
     // This ensures the snapshot is loaded DURING chain plugin startup,
     // BEFORE on_sync() fires and P2P starts syncing.
@@ -1206,6 +1752,23 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
             appbase::app().quit();
         };
     }
+
+    // Register P2P snapshot sync callback on the chain plugin.
+    // When state is empty (head_block_num == 0), download and load snapshot from trusted peers.
+    if (my->sync_snapshot_from_trusted_peer && !my->trusted_snapshot_peers.empty()) {
+        auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
+        chain_plug.snapshot_p2p_sync_callback = [this]() {
+            auto start = fc::time_point::now();
+            ilog("Requesting snapshot from trusted peers...");
+            auto snapshot_path = my->download_snapshot_from_peers();
+            ilog("Download complete, loading snapshot...");
+            my->load_snapshot(fc::path(snapshot_path));
+            my->db.initialize_hardforks();
+            auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
+            ilog("P2P snapshot sync complete at block ${n}, elapsed ${t} sec",
+                ("n", my->db.head_block_num())("t", elapsed));
+        };
+    }
 }
 
 void snapshot_plugin::plugin_startup() {
@@ -1218,6 +1781,15 @@ void snapshot_plugin::plugin_startup() {
     // Note: --create-snapshot is handled via snapshot_create_callback registered
     // in plugin_initialize(). It runs during chain plugin's startup, after full DB load
     // (including replay), but before on_sync() — so P2P/witness never start.
+
+    // Note: --sync-snapshot-from-trusted-peer is handled via snapshot_p2p_sync_callback
+    // registered in plugin_initialize(). It runs during chain plugin's startup when
+    // state is empty (head_block_num == 0), before on_sync().
+
+    // Start snapshot TCP server if enabled
+    if (my->allow_snapshot_serving) {
+        my->start_server();
+    }
 
     // If --snapshot-at-block or --snapshot-every-n-blocks is set, connect to applied_block signal
     if (my->snapshot_at_block > 0 || my->snapshot_every_n_blocks > 0) {
@@ -1236,6 +1808,7 @@ void snapshot_plugin::plugin_startup() {
 
 void snapshot_plugin::plugin_shutdown() {
     ilog("snapshot plugin: shutdown");
+    my->stop_server();
 }
 
 std::string snapshot_plugin::get_snapshot_path() const {

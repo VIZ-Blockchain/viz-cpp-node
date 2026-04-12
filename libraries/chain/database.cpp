@@ -250,10 +250,20 @@ namespace graphene { namespace chain {
                     if (head_block_num()) {
                         auto head_block = _block_log.read_block_by_num(head_block_num());
                         if (head_block.valid()) {
-                            // Normal mode: block_log has the head block
+                            // Block_log has the head block
                             FC_ASSERT(head_block->id() == head_block_id(),
                                 "Chain state does not match block log. Please reindex blockchain.");
                             _fork_db.start_block(*head_block);
+
+                            // Check if this is a DLT rolling block_log (block 1 missing)
+                            if (_dlt_block_log_max_blocks > 0) {
+                                auto first_block = _block_log.read_block_by_num(1);
+                                if (!first_block.valid()) {
+                                    _dlt_mode = true;
+                                    wlog("DLT mode detected: rolling block_log (block 1 missing, head at ${n})",
+                                         ("n", head_block_num()));
+                                }
+                            }
                         } else {
                             // DLT mode: block_log is empty but chainbase has state (loaded from snapshot).
                             // Skip block_log validation and fork_db seeding.
@@ -289,6 +299,13 @@ namespace graphene { namespace chain {
 
                 _dlt_mode = true;
 
+                // Always wipe shared memory before snapshot import to ensure clean state.
+                // This prevents conflicts if:
+                //  - A previous snapshot import attempt failed mid-way
+                //  - The node previously ran in normal mode and has existing state
+                wlog("Wiping shared memory for clean snapshot import...");
+                chainbase::database::wipe(shared_mem_dir);
+
                 init_schema();
                 chainbase::database::open(shared_mem_dir, chainbase_flags, shared_file_size);
 
@@ -296,11 +313,9 @@ namespace graphene { namespace chain {
                 initialize_evaluators();
 
                 if (chainbase_flags & chainbase::database::read_write) {
-                    if (!find<dynamic_global_property_object>()) {
-                        with_strong_write_lock([&]() {
-                            init_genesis(initial_supply);
-                        });
-                    }
+                    with_strong_write_lock([&]() {
+                        init_genesis(initial_supply);
+                    });
                 }
 
                 // Open block_log (creates empty files if they don't exist).
@@ -3491,6 +3506,60 @@ namespace graphene { namespace chain {
             return _block_log;
         }
 
+        void database::truncate_block_log(uint32_t start_block) {
+            try {
+                const auto& head = _block_log.head();
+                if (!head.valid()) return;
+
+                uint32_t head_block_num = head->block_num();
+                if (start_block >= head_block_num) return;
+
+                ilog("DLT: truncating block_log, keeping blocks ${start}-${head}",
+                     ("start", start_block)("head", head_block_num));
+
+                // Get the data_dir from the current block_log path
+                // The block_log stores its file path internally; we reconstruct it
+                // by finding the block for start_block
+                fc::path data_dir = appbase::app().data_dir() / "blockchain";
+                fc::path block_log_path = data_dir / "block_log";
+                fc::path block_log_index_path = data_dir / "block_log.index";
+                fc::path temp_log_path = data_dir / "block_log.tmp";
+                fc::path temp_index_path = data_dir / "block_log.index.tmp";
+
+                // Create temporary block_log with only recent blocks
+                {
+                    block_log temp_log;
+                    temp_log.open(temp_log_path);
+
+                    for (uint32_t i = start_block; i <= head_block_num; ++i) {
+                        auto block = _block_log.read_block_by_num(i);
+                        if (block.valid()) {
+                            temp_log.append(*block);
+                        }
+                    }
+                    temp_log.flush();
+                    temp_log.close();
+                }
+
+                // Close current block_log
+                _block_log.close();
+
+                // Swap files
+                fc::remove(block_log_path);
+                fc::remove(block_log_index_path);
+                fc::rename(temp_log_path, block_log_path);
+                if (fc::exists(temp_index_path)) {
+                    fc::rename(temp_index_path, block_log_index_path);
+                }
+
+                // Reopen block_log
+                _block_log.open(data_dir / "block_log");
+
+                ilog("DLT: block_log truncated, now contains blocks ${start}-${head}",
+                     ("start", start_block)("head", head_block_num));
+            } FC_CAPTURE_AND_RETHROW((start_block))
+        }
+
 //////////////////// private methods ////////////////////
 
         void database::apply_block(const signed_block &next_block, uint32_t skip) {
@@ -3956,7 +4025,7 @@ namespace graphene { namespace chain {
 
                                 commit(dpo.last_irreversible_block_num);
 
-                                if (!_dlt_mode) {
+                                if (!_dlt_mode || _dlt_block_log_max_blocks > 0) {
                                     // output to block log based on new last irreverisible block num
                                     const auto &tmp_head = _block_log.head();
                                     uint64_t log_head_num = 0;
@@ -3976,12 +4045,17 @@ namespace graphene { namespace chain {
 
                                         _block_log.flush();
                                     }
+
+                                    // DLT rolling block_log truncation
+                                    if (_dlt_mode && _dlt_block_log_max_blocks > 0 && log_head_num > _dlt_block_log_max_blocks * 2) {
+                                        truncate_block_log(log_head_num - _dlt_block_log_max_blocks);
+                                    }
                                 }
 
                                 //modify dpo after block log commit
                                 if (current.block_num == dpo.last_irreversible_block_num) {
                                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
-                                        if (!_dlt_mode) {
+                                        if (!_dlt_mode || _dlt_block_log_max_blocks > 0) {
                                             auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
                                             if (irreversible_block.valid()) {
                                                 _dpo.last_irreversible_block_id = irreversible_block->id();
@@ -4054,7 +4128,7 @@ namespace graphene { namespace chain {
 
                                 commit(dpo.last_irreversible_block_num);
 
-                                if (!_dlt_mode) {
+                                if (!_dlt_mode || _dlt_block_log_max_blocks > 0) {
                                     // output to block log based on new last irreverisible block num
                                     const auto &tmp_head = _block_log.head();
                                     uint64_t log_head_num = 0;
@@ -4074,12 +4148,17 @@ namespace graphene { namespace chain {
 
                                         _block_log.flush();
                                     }
+
+                                    // DLT rolling block_log truncation
+                                    if (_dlt_mode && _dlt_block_log_max_blocks > 0 && log_head_num > _dlt_block_log_max_blocks * 2) {
+                                        truncate_block_log(log_head_num - _dlt_block_log_max_blocks);
+                                    }
                                 }
 
                                 //modify dpo after block log commit
                                 if (find_block_num == dpo.last_irreversible_block_num) {
                                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
-                                        if (!_dlt_mode) {
+                                        if (!_dlt_mode || _dlt_block_log_max_blocks > 0) {
                                             auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
                                             if (irreversible_block.valid()) {
                                                 _dpo.last_irreversible_block_id = irreversible_block->id();
@@ -4238,7 +4317,7 @@ namespace graphene { namespace chain {
 
                 commit(dpo.last_irreversible_block_num);
 
-                if (!(skip & skip_block_log) && !_dlt_mode) {
+                if (!(skip & skip_block_log) && (!_dlt_mode || _dlt_block_log_max_blocks > 0)) {
                     // output to block log based on new last irreverisible block num
                     const auto &tmp_head = _block_log.head();
                     uint64_t log_head_num = 0;
@@ -4258,12 +4337,17 @@ namespace graphene { namespace chain {
 
                         _block_log.flush();
                     }
+
+                    // DLT rolling block_log truncation
+                    if (_dlt_mode && _dlt_block_log_max_blocks > 0 && log_head_num > _dlt_block_log_max_blocks * 2) {
+                        truncate_block_log(log_head_num - _dlt_block_log_max_blocks);
+                    }
                 }
 
                 //modify dpo after block log commit
                 if (new_last_irreversible_block_num == dpo.last_irreversible_block_num) {
                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
-                        if (!_dlt_mode) {
+                        if (!_dlt_mode || _dlt_block_log_max_blocks > 0) {
                             auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
                             if (irreversible_block.valid()) {
                                 _dpo.last_irreversible_block_id = irreversible_block->id();
