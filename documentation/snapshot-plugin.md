@@ -120,19 +120,24 @@ Message types:
 
 ## DLT Rolling Block Log
 
-In DLT mode (snapshot-based nodes), the block_log is normally empty. This prevents serving historical blocks to peers via P2P. The rolling block_log feature keeps a configurable window of recent blocks.
+In DLT mode (snapshot-based nodes), the main `block_log` is empty because it requires contiguous blocks from genesis. To allow DLT nodes to serve recent blocks to P2P peers, a **separate** `dlt_block_log` file with an offset-aware index is used.
+
+The `dlt_block_log` stores blocks in the same binary format as the regular block_log, but its index file has an 8-byte header storing the first block number. This allows starting from any block number (e.g., 10,000,000) without needing entries for blocks 1 through 9,999,999.
 
 ```ini
-# Keep last 100,000 blocks in block_log (default)
+# Keep last 100,000 blocks in dlt_block_log (default)
 dlt-block-log-max-blocks = 100000
 ```
 
 **Behavior:**
-- When `> 0` and in DLT mode: irreversible blocks are written to block_log, and old blocks are truncated when the window exceeds 2x the limit (amortized cost).
-- When `= 0`: original DLT behavior (no block_log writes).
-- Ignored for normal (non-DLT) nodes that always write full block_log.
+- When `> 0` and in DLT mode: irreversible blocks are written to `dlt_block_log`, and old blocks are truncated when the window exceeds 2x the limit (amortized cost).
+- When `= 0`: no DLT block_log writes (original behavior).
+- Ignored for normal (non-DLT) nodes that always write the full `block_log`.
+- The P2P layer automatically falls back to `dlt_block_log` when serving blocks not found in the main `block_log`.
 
-This allows DLT nodes to serve recent blocks to peers that load an older snapshot and need to catch up.
+Files stored in the blockchain data directory:
+- `dlt_block_log` -- block data (same format as `block_log`)
+- `dlt_block_log.index` -- offset-aware index
 
 ## Config Reference
 
@@ -147,7 +152,7 @@ This allows DLT nodes to serve recent blocks to peers that load an older snapsho
 | `allow-snapshot-serving-only-trusted` | false | Restrict serving to trusted IPs |
 | `snapshot-serve-endpoint` | 0.0.0.0:8092 | TCP listen endpoint for serving |
 | `trusted-snapshot-peer` | (none) | Trusted peer IP:port (repeatable) |
-| `dlt-block-log-max-blocks` | 100000 | Rolling block_log size in DLT mode |
+| `dlt-block-log-max-blocks` | 100000 | Rolling DLT block_log window size (0 = disabled) |
 
 ### CLI options
 

@@ -228,6 +228,7 @@ namespace graphene { namespace chain {
                     }
 
                     _block_log.open(data_dir / "block_log");
+                    _dlt_block_log.open(data_dir / "dlt_block_log");
 
                     // Rewind all undo state. This should return us to the state at the last irreversible block.
                     with_strong_write_lock([&]() {
@@ -255,15 +256,6 @@ namespace graphene { namespace chain {
                                 "Chain state does not match block log. Please reindex blockchain.");
                             _fork_db.start_block(*head_block);
 
-                            // Check if this is a DLT rolling block_log (block 1 missing)
-                            if (_dlt_block_log_max_blocks > 0) {
-                                auto first_block = _block_log.read_block_by_num(1);
-                                if (!first_block.valid()) {
-                                    _dlt_mode = true;
-                                    wlog("DLT mode detected: rolling block_log (block 1 missing, head at ${n})",
-                                         ("n", head_block_num()));
-                                }
-                            }
                         } else {
                             // DLT mode: block_log is empty but chainbase has state (loaded from snapshot).
                             // Skip block_log validation and fork_db seeding.
@@ -322,6 +314,7 @@ namespace graphene { namespace chain {
                 // In DLT mode we don't write to it, but it must be open so that
                 // code referencing _block_log doesn't crash on an unopened object.
                 _block_log.open(data_dir / "block_log");
+                _dlt_block_log.open(data_dir / "dlt_block_log");
 
                 auto end = fc::time_point::now();
                 wlog("Database opened for snapshot import (DLT mode), elapsed time ${t} sec",
@@ -502,6 +495,8 @@ namespace graphene { namespace chain {
             if (include_blocks) {
                 fc::remove_all(data_dir / "block_log");
                 fc::remove_all(data_dir / "block_log.index");
+                fc::remove_all(data_dir / "dlt_block_log");
+                fc::remove_all(data_dir / "dlt_block_log.index");
             }
         }
 
@@ -516,6 +511,7 @@ namespace graphene { namespace chain {
                 chainbase::database::close();
 
                 _block_log.close();
+                _dlt_block_log.close();
 
                 _fork_db.reset();
             }
@@ -564,6 +560,12 @@ namespace graphene { namespace chain {
                     return b->id();
                 }
 
+                // DLT rolling block_log fallback
+                b = _dlt_block_log.read_block_by_num(block_num);
+                if (b.valid()) {
+                    return b->id();
+                }
+
                 // Finally we query the fork DB.
                 shared_ptr<fork_item> fitem = _fork_db.fetch_block_on_main_branch_by_number(block_num);
                 if (fitem) {
@@ -591,6 +593,12 @@ namespace graphene { namespace chain {
                         return tmp;
                     }
 
+                    // DLT rolling block_log fallback
+                    tmp = _dlt_block_log.read_block_by_num(protocol::block_header::num_from_id(id));
+                    if (tmp && tmp->id() == id) {
+                        return tmp;
+                    }
+
                     tmp.reset();
                     return tmp;
                 }
@@ -608,6 +616,10 @@ namespace graphene { namespace chain {
                     b = results[0]->data;
                 } else {
                     b = _block_log.read_block_by_num(block_num);
+                    // DLT rolling block_log fallback
+                    if (!b.valid()) {
+                        b = _dlt_block_log.read_block_by_num(block_num);
+                    }
                 }
 
                 return b;
@@ -3506,60 +3518,6 @@ namespace graphene { namespace chain {
             return _block_log;
         }
 
-        void database::truncate_block_log(uint32_t start_block) {
-            try {
-                const auto& head = _block_log.head();
-                if (!head.valid()) return;
-
-                uint32_t head_block_num = head->block_num();
-                if (start_block >= head_block_num) return;
-
-                ilog("DLT: truncating block_log, keeping blocks ${start}-${head}",
-                     ("start", start_block)("head", head_block_num));
-
-                // Get the data_dir from the current block_log path
-                // The block_log stores its file path internally; we reconstruct it
-                // by finding the block for start_block
-                fc::path data_dir = appbase::app().data_dir() / "blockchain";
-                fc::path block_log_path = data_dir / "block_log";
-                fc::path block_log_index_path = data_dir / "block_log.index";
-                fc::path temp_log_path = data_dir / "block_log.tmp";
-                fc::path temp_index_path = data_dir / "block_log.index.tmp";
-
-                // Create temporary block_log with only recent blocks
-                {
-                    block_log temp_log;
-                    temp_log.open(temp_log_path);
-
-                    for (uint32_t i = start_block; i <= head_block_num; ++i) {
-                        auto block = _block_log.read_block_by_num(i);
-                        if (block.valid()) {
-                            temp_log.append(*block);
-                        }
-                    }
-                    temp_log.flush();
-                    temp_log.close();
-                }
-
-                // Close current block_log
-                _block_log.close();
-
-                // Swap files
-                fc::remove(block_log_path);
-                fc::remove(block_log_index_path);
-                fc::rename(temp_log_path, block_log_path);
-                if (fc::exists(temp_index_path)) {
-                    fc::rename(temp_index_path, block_log_index_path);
-                }
-
-                // Reopen block_log
-                _block_log.open(data_dir / "block_log");
-
-                ilog("DLT: block_log truncated, now contains blocks ${start}-${head}",
-                     ("start", start_block)("head", head_block_num));
-            } FC_CAPTURE_AND_RETHROW((start_block))
-        }
-
 //////////////////// private methods ////////////////////
 
         void database::apply_block(const signed_block &next_block, uint32_t skip) {
@@ -4025,7 +3983,7 @@ namespace graphene { namespace chain {
 
                                 commit(dpo.last_irreversible_block_num);
 
-                                if (!_dlt_mode || _dlt_block_log_max_blocks > 0) {
+                                if (!_dlt_mode) {
                                     // output to block log based on new last irreverisible block num
                                     const auto &tmp_head = _block_log.head();
                                     uint64_t log_head_num = 0;
@@ -4045,18 +4003,46 @@ namespace graphene { namespace chain {
 
                                         _block_log.flush();
                                     }
+                                } else if (_dlt_block_log_max_blocks > 0) {
+                                    // DLT mode: write irreversible blocks to the rolling dlt_block_log
+                                    const auto &dlt_head = _dlt_block_log.head();
+                                    uint64_t dlt_head_num = 0;
 
-                                    // DLT rolling block_log truncation
-                                    if (_dlt_mode && _dlt_block_log_max_blocks > 0 && log_head_num > _dlt_block_log_max_blocks * 2) {
-                                        truncate_block_log(log_head_num - _dlt_block_log_max_blocks);
+                                    if (dlt_head) {
+                                        dlt_head_num = dlt_head->block_num();
+                                    }
+
+                                    if (dlt_head_num < dpo.last_irreversible_block_num) {
+                                        while (dlt_head_num < dpo.last_irreversible_block_num) {
+                                            std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
+                                                    dlt_head_num + 1);
+                                            FC_ASSERT(block, "Current fork in the fork database does not contain the last_irreversible_block");
+                                            _dlt_block_log.append(block->data);
+                                            dlt_head_num++;
+                                        }
+
+                                        _dlt_block_log.flush();
+                                    }
+
+                                    // Rolling truncation: when size exceeds 2x limit, trim to 1x
+                                    if (_dlt_block_log.num_blocks() > _dlt_block_log_max_blocks * 2) {
+                                        _dlt_block_log.truncate_before(
+                                            _dlt_block_log.head_block_num() - _dlt_block_log_max_blocks + 1);
                                     }
                                 }
 
                                 //modify dpo after block log commit
                                 if (current.block_num == dpo.last_irreversible_block_num) {
                                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
-                                        if (!_dlt_mode || _dlt_block_log_max_blocks > 0) {
+                                        if (!_dlt_mode) {
                                             auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                                            if (irreversible_block.valid()) {
+                                                _dpo.last_irreversible_block_id = irreversible_block->id();
+                                                _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
+                                                _dpo.last_irreversible_block_ref_prefix= _dpo.last_irreversible_block_id._hash[1];
+                                            }
+                                        } else if (_dlt_block_log_max_blocks > 0) {
+                                            auto irreversible_block = _dlt_block_log.read_block_by_num(_dpo.last_irreversible_block_num);
                                             if (irreversible_block.valid()) {
                                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
@@ -4128,7 +4114,7 @@ namespace graphene { namespace chain {
 
                                 commit(dpo.last_irreversible_block_num);
 
-                                if (!_dlt_mode || _dlt_block_log_max_blocks > 0) {
+                                if (!_dlt_mode) {
                                     // output to block log based on new last irreverisible block num
                                     const auto &tmp_head = _block_log.head();
                                     uint64_t log_head_num = 0;
@@ -4148,18 +4134,44 @@ namespace graphene { namespace chain {
 
                                         _block_log.flush();
                                     }
+                                } else if (_dlt_block_log_max_blocks > 0) {
+                                    const auto &dlt_head = _dlt_block_log.head();
+                                    uint64_t dlt_head_num = 0;
 
-                                    // DLT rolling block_log truncation
-                                    if (_dlt_mode && _dlt_block_log_max_blocks > 0 && log_head_num > _dlt_block_log_max_blocks * 2) {
-                                        truncate_block_log(log_head_num - _dlt_block_log_max_blocks);
+                                    if (dlt_head) {
+                                        dlt_head_num = dlt_head->block_num();
+                                    }
+
+                                    if (dlt_head_num < dpo.last_irreversible_block_num) {
+                                        while (dlt_head_num < dpo.last_irreversible_block_num) {
+                                            std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
+                                                    dlt_head_num + 1);
+                                            FC_ASSERT(block, "Current fork in the fork database does not contain the last_irreversible_block");
+                                            _dlt_block_log.append(block->data);
+                                            dlt_head_num++;
+                                        }
+
+                                        _dlt_block_log.flush();
+                                    }
+
+                                    if (_dlt_block_log.num_blocks() > _dlt_block_log_max_blocks * 2) {
+                                        _dlt_block_log.truncate_before(
+                                            _dlt_block_log.head_block_num() - _dlt_block_log_max_blocks + 1);
                                     }
                                 }
 
                                 //modify dpo after block log commit
                                 if (find_block_num == dpo.last_irreversible_block_num) {
                                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
-                                        if (!_dlt_mode || _dlt_block_log_max_blocks > 0) {
+                                        if (!_dlt_mode) {
                                             auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                                            if (irreversible_block.valid()) {
+                                                _dpo.last_irreversible_block_id = irreversible_block->id();
+                                                _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
+                                                _dpo.last_irreversible_block_ref_prefix= _dpo.last_irreversible_block_id._hash[1];
+                                            }
+                                        } else if (_dlt_block_log_max_blocks > 0) {
+                                            auto irreversible_block = _dlt_block_log.read_block_by_num(_dpo.last_irreversible_block_num);
                                             if (irreversible_block.valid()) {
                                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
@@ -4317,7 +4329,7 @@ namespace graphene { namespace chain {
 
                 commit(dpo.last_irreversible_block_num);
 
-                if (!(skip & skip_block_log) && (!_dlt_mode || _dlt_block_log_max_blocks > 0)) {
+                if (!(skip & skip_block_log) && !_dlt_mode) {
                     // output to block log based on new last irreverisible block num
                     const auto &tmp_head = _block_log.head();
                     uint64_t log_head_num = 0;
@@ -4337,18 +4349,44 @@ namespace graphene { namespace chain {
 
                         _block_log.flush();
                     }
+                } else if (!(skip & skip_block_log) && _dlt_mode && _dlt_block_log_max_blocks > 0) {
+                    const auto &dlt_head = _dlt_block_log.head();
+                    uint64_t dlt_head_num = 0;
 
-                    // DLT rolling block_log truncation
-                    if (_dlt_mode && _dlt_block_log_max_blocks > 0 && log_head_num > _dlt_block_log_max_blocks * 2) {
-                        truncate_block_log(log_head_num - _dlt_block_log_max_blocks);
+                    if (dlt_head) {
+                        dlt_head_num = dlt_head->block_num();
+                    }
+
+                    if (dlt_head_num < dpo.last_irreversible_block_num) {
+                        while (dlt_head_num < dpo.last_irreversible_block_num) {
+                            std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
+                                    dlt_head_num + 1);
+                            FC_ASSERT(block, "Current fork in the fork database does not contain the last_irreversible_block");
+                            _dlt_block_log.append(block->data);
+                            dlt_head_num++;
+                        }
+
+                        _dlt_block_log.flush();
+                    }
+
+                    if (_dlt_block_log.num_blocks() > _dlt_block_log_max_blocks * 2) {
+                        _dlt_block_log.truncate_before(
+                            _dlt_block_log.head_block_num() - _dlt_block_log_max_blocks + 1);
                     }
                 }
 
                 //modify dpo after block log commit
                 if (new_last_irreversible_block_num == dpo.last_irreversible_block_num) {
                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
-                        if (!_dlt_mode || _dlt_block_log_max_blocks > 0) {
+                        if (!_dlt_mode) {
                             auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                            if (irreversible_block.valid()) {
+                                _dpo.last_irreversible_block_id = irreversible_block->id();
+                                _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
+                                _dpo.last_irreversible_block_ref_prefix= _dpo.last_irreversible_block_id._hash[1];
+                            }
+                        } else if (_dlt_block_log_max_blocks > 0) {
+                            auto irreversible_block = _dlt_block_log.read_block_by_num(_dpo.last_irreversible_block_num);
                             if (irreversible_block.valid()) {
                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;

@@ -232,7 +232,7 @@ namespace chain {
                 "enable calling of plugins for operations on push_transaction"
             ) (
                 "dlt-block-log-max-blocks", boost::program_options::value<uint32_t>()->default_value(100000),
-                "Number of recent blocks to keep in block_log in DLT mode (0 = no block_log in DLT mode)"
+                "Number of recent blocks to keep in the DLT rolling block_log (0 = disabled)"
             );
         cli.add_options()
             (

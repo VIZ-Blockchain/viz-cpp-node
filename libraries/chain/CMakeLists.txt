@@ -27,6 +27,7 @@ if(BUILD_SHARED_LIBRARIES)
             shared_authority.cpp
             #        transaction_object.cpp
             block_log.cpp
+            dlt_block_log.cpp
             proposal_object.cpp
             proposal_evaluator.cpp
             database_proposal_object.cpp
@@ -37,6 +38,7 @@ if(BUILD_SHARED_LIBRARIES)
 
             include/graphene/chain/account_object.hpp
             include/graphene/chain/block_log.hpp
+            include/graphene/chain/dlt_block_log.hpp
             include/graphene/chain/block_summary_object.hpp
             include/graphene/chain/content_object.hpp
             include/graphene/chain/proposal_object.hpp
@@ -80,6 +82,7 @@ else()
             shared_authority.cpp
             #        transaction_object.cpp
             block_log.cpp
+            dlt_block_log.cpp
             proposal_object.cpp
             proposal_evaluator.cpp
             database_proposal_object.cpp
@@ -90,6 +93,7 @@ else()
 
             include/graphene/chain/account_object.hpp
             include/graphene/chain/block_log.hpp
+            include/graphene/chain/dlt_block_log.hpp
             include/graphene/chain/block_summary_object.hpp
             include/graphene/chain/content_object.hpp
             include/graphene/chain/proposal_object.hpp

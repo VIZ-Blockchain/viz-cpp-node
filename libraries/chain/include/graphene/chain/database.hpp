@@ -4,6 +4,7 @@
 #include <graphene/chain/node_property_object.hpp>
 #include <graphene/chain/fork_database.hpp>
 #include <graphene/chain/block_log.hpp>
+#include <graphene/chain/dlt_block_log.hpp>
 #include <graphene/chain/hardfork.hpp>
 #include <graphene/protocol/protocol.hpp>
 
@@ -58,8 +59,8 @@ namespace graphene { namespace chain {
             bool _dlt_mode = false;
 
             // DLT rolling block_log: number of recent blocks to keep.
-            // 0 = no block_log in DLT mode (original behavior).
-            // > 0 = keep a rolling window of this many blocks in DLT mode.
+            // 0 = no DLT block_log (original behavior).
+            // > 0 = keep a rolling window of this many blocks in the separate dlt_block_log.
             uint32_t _dlt_block_log_max_blocks = 0;
 
             enum validation_steps {
@@ -476,10 +477,6 @@ namespace graphene { namespace chain {
 
             const block_log &get_block_log() const;
 
-            /// Truncate block_log to keep only blocks from start_block onward.
-            /// Used by DLT rolling block_log to maintain a sliding window.
-            void truncate_block_log(uint32_t start_block);
-
             fork_database &get_fork_db() {
                 return _fork_db;
             }
@@ -568,6 +565,7 @@ namespace graphene { namespace chain {
             protocol::hardfork_version _hardfork_versions[CHAIN_NUM_HARDFORKS + 1];
 
             block_log _block_log;
+            dlt_block_log _dlt_block_log;
 
             // this function needs access to _plugin_index_signal
             template<typename MultiIndexType>
