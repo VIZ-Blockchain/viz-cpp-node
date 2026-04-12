@@ -19,6 +19,7 @@
 #include <fc/io/raw.hpp>
 #include <fc/io/json.hpp>
 #include <fc/crypto/sha256.hpp>
+#include <fc/compress/zlib.hpp>
 
 #include <fstream>
 
@@ -835,11 +836,22 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(const fc::path& output
     snapshot["header"] = std::move(header_var);
     snapshot["state"] = std::move(state);
 
-    // Write to file with fsync for crash safety
+    // Write to file with zlib compression
     std::string snapshot_json = fc::json::to_string(fc::variant(snapshot));
+
+    auto compress_start = fc::time_point::now();
+    std::string compressed = fc::zlib_compress(snapshot_json);
+    auto compress_elapsed = double((fc::time_point::now() - compress_start).count()) / 1000000.0;
+
+    ilog("Compressed snapshot: ${orig} -> ${comp} bytes (${ratio}%, ${time} sec)",
+        ("orig", snapshot_json.size())
+        ("comp", compressed.size())
+        ("ratio", 100 - (compressed.size() * 100 / snapshot_json.size()))
+        ("time", compress_elapsed));
+
     std::ofstream out(output_path.string(), std::ios::binary);
     FC_ASSERT(out.is_open(), "Failed to open snapshot file for writing: ${p}", ("p", output_path.string()));
-    out.write(snapshot_json.data(), snapshot_json.size());
+    out.write(compressed.data(), compressed.size());
     out.flush();
     out.close();
 
@@ -853,9 +865,9 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(const fc::path& output
 #endif
 
     auto end = fc::time_point::now();
-    ilog("Snapshot created successfully: ${path} (${size} bytes, ${time} sec)",
+    ilog("Snapshot created successfully: ${path} (${size} bytes compressed, ${time} sec)",
         ("path", output_path.string())
-        ("size", snapshot_json.size())
+        ("size", compressed.size())
         ("time", double((end - start).count()) / 1000000.0));
 }
 
@@ -873,8 +885,18 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
 
     ilog("Read ${size} bytes from snapshot file", ("size", content.size()));
 
+    // Decompress zlib
+    auto decompress_start = fc::time_point::now();
+    std::string json_content = fc::zlib_decompress(content);
+    auto decompress_elapsed = double((fc::time_point::now() - decompress_start).count()) / 1000000.0;
+
+    ilog("Decompressed snapshot: ${comp} -> ${orig} bytes (${time} sec)",
+        ("comp", content.size())
+        ("orig", json_content.size())
+        ("time", decompress_elapsed));
+
     // Parse JSON
-    fc::variant snapshot_var = fc::json::from_string(content);
+    fc::variant snapshot_var = fc::json::from_string(json_content);
     FC_ASSERT(snapshot_var.is_object(), "Snapshot file is not a valid JSON object");
 
     auto snapshot = snapshot_var.get_object();

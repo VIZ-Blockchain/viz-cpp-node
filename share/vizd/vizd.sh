@@ -71,6 +71,22 @@ else
     P2P_ENDPOINT="0.0.0.0:2001"
 fi
 
+# If --create-snapshot is in VIZD_EXTRA_OPTS, run vizd directly (not via exec)
+# so we can shut down the container after snapshot creation instead of runit restarting it.
+if echo "$VIZD_EXTRA_OPTS" | grep -q "\-\-create-snapshot"; then
+    chpst -uvizd \
+        $VIZD \
+            --rpc-endpoint=${RPC_ENDPOINT} \
+            --p2p-endpoint=${P2P_ENDPOINT} \
+            --data-dir=$HOME \
+            $ARGS \
+            $VIZD_EXTRA_OPTS \
+            2>&1
+    echo "Snapshot created. Stopping container..."
+    kill -TERM 1
+    exit 0
+fi
+
 exec chpst -uvizd \
     $VIZD \
         --rpc-endpoint=${RPC_ENDPOINT} \
