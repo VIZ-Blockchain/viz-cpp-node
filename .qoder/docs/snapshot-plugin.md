@@ -311,6 +311,142 @@ p2p-seed-node = seed1.viz.world:2001
 
 This configuration ensures your node always has a recent snapshot available for quick recovery or for bootstrapping new nodes.
 
+## Docker Usage
+
+The standard Docker launch command:
+
+```bash
+docker run \
+  -p 8083:2001 \
+  -p 9991:8090 \
+  -v ~/vizconfig:/etc/vizd \
+  -v ~/vizhome:/var/lib/vizd \
+  --name vizd -d vizblockchain/vizd:latest
+```
+
+Volumes:
+- `~/vizconfig` → `/etc/vizd` — config files (`config.ini`, `seednodes`)
+- `~/vizhome` → `/var/lib/vizd` — blockchain data, shared memory, snapshots
+
+The entry point script (`vizd.sh`) supports `VIZD_EXTRA_OPTS` environment variable for passing additional CLI arguments.
+
+### Creating a snapshot (periodic, no downtime)
+
+Add snapshot options to your config file `~/vizconfig/config.ini`:
+
+```ini
+plugin = snapshot
+
+# Create a snapshot every ~24 hours (28800 blocks * 3s = ~86400s)
+snapshot-every-n-blocks = 28800
+
+# Store snapshots inside the data volume
+snapshot-dir = /var/lib/vizd/snapshots
+```
+
+Start (or restart) the container:
+
+```bash
+docker stop vizd && docker rm vizd
+
+docker run \
+  -p 8083:2001 \
+  -p 9991:8090 \
+  -v ~/vizconfig:/etc/vizd \
+  -v ~/vizhome:/var/lib/vizd \
+  --name vizd -d vizblockchain/vizd:latest
+```
+
+Snapshots will appear on the host at `~/vizhome/snapshots/snapshot-block-*.json`.
+
+### Creating a one-shot snapshot (stop & export)
+
+Stop the running container, then run a temporary one with `--create-snapshot`:
+
+```bash
+# Stop the running node
+docker stop vizd
+
+# Create a snapshot using VIZD_EXTRA_OPTS
+docker run --rm \
+  -v ~/vizconfig:/etc/vizd \
+  -v ~/vizhome:/var/lib/vizd \
+  -e VIZD_EXTRA_OPTS="--create-snapshot /var/lib/vizd/snapshots/viz-snapshot.json --plugin snapshot" \
+  vizblockchain/vizd:latest
+
+# The snapshot is now at ~/vizhome/snapshots/viz-snapshot.json on the host
+
+# Restart the node normally
+docker start vizd
+```
+
+### Creating a snapshot at a specific block (no downtime)
+
+Add to `~/vizconfig/config.ini`:
+
+```ini
+plugin = snapshot
+snapshot-at-block = 5000000
+snapshot-dir = /var/lib/vizd/snapshots
+```
+
+Restart the container. When block 5,000,000 is applied, the snapshot file will be created at `/var/lib/vizd/snapshots/snapshot-block-5000000.json` (accessible on host at `~/vizhome/snapshots/`).
+
+### Loading from a snapshot (new node bootstrap)
+
+Place the snapshot file on the host:
+
+```bash
+# Copy snapshot to the new server
+scp viz-snapshot.json newserver:~/vizhome/snapshots/
+```
+
+Start the container with `--snapshot` via `VIZD_EXTRA_OPTS`:
+
+```bash
+docker run \
+  -p 8083:2001 \
+  -p 9991:8090 \
+  -v ~/vizconfig:/etc/vizd \
+  -v ~/vizhome:/var/lib/vizd \
+  -e VIZD_EXTRA_OPTS="--snapshot /var/lib/vizd/snapshots/viz-snapshot.json --plugin snapshot" \
+  --name vizd -d vizblockchain/vizd:latest
+```
+
+The node loads the snapshot state in seconds and begins syncing new blocks from P2P.
+
+**Important:** After the first start with `--snapshot`, restart the container **without** `VIZD_EXTRA_OPTS`:
+
+```bash
+docker stop vizd && docker rm vizd
+
+docker run \
+  -p 8083:2001 \
+  -p 9991:8090 \
+  -v ~/vizconfig:/etc/vizd \
+  -v ~/vizhome:/var/lib/vizd \
+  --name vizd -d vizblockchain/vizd:latest
+```
+
+### Managing snapshot disk space (Docker)
+
+Add a cron job on the **host** machine to keep only the 5 most recent snapshots:
+
+```bash
+# Add to crontab (runs daily at midnight)
+0 0 * * * ls -t ~/vizhome/snapshots/snapshot-block-*.json | tail -n +6 | xargs rm -f
+```
+
+### Quick reference
+
+| Task | Command |
+|------|---------|
+| Start with periodic snapshots | Add `snapshot-every-n-blocks` to `~/vizconfig/config.ini`, restart container |
+| One-shot snapshot | `docker run --rm -e VIZD_EXTRA_OPTS="--create-snapshot /var/lib/vizd/snapshots/snap.json --plugin snapshot" ...` |
+| Load from snapshot | `docker run -e VIZD_EXTRA_OPTS="--snapshot /var/lib/vizd/snapshots/snap.json --plugin snapshot" ...` |
+| Find snapshots on host | `ls -lt ~/vizhome/snapshots/` |
+| Check snapshot creation logs | `docker logs vizd \| grep -i snapshot` |
+
 ## Modified Components
 
 The snapshot plugin required changes to several core components:
