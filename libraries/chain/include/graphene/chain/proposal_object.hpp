@@ -143,3 +143,6 @@ namespace graphene { namespace chain {
 
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::proposal_object, graphene::chain::proposal_index);
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::required_approval_object, graphene::chain::required_approval_index);
+
+FC_REFLECT((graphene::chain::required_approval_object),
+    (id)(account)(proposal))

@@ -77,7 +77,6 @@ uint32_t import_objects_generic(
     const fc::variants& arr
 ) {
     uint32_t count = 0;
-    using index_type = chainbase::generic_index<IndexType>;
 
     for (const auto& v : arr) {
         auto id_val = v["id"].as_int64();
@@ -721,7 +720,44 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(fix_vesting_delegation_index, fix_vesting_delegation_object, "fix_vesting_delegation")
     EXPORT_INDEX(withdraw_vesting_route_index, withdraw_vesting_route_object, "withdraw_vesting_route")
     EXPORT_INDEX(escrow_index, escrow_object, "escrow")
-    EXPORT_INDEX(proposal_index, proposal_object, "proposal")
+    // proposal_object has bip::flat_set with shared allocators — custom export
+    {
+        fc::variants arr;
+        const auto& idx = db.get_index<proposal_index>().indices();
+        for (auto itr = idx.begin(); itr != idx.end(); ++itr) {
+            fc::mutable_variant_object o;
+            o["id"] = static_cast<int64_t>(itr->id._id);
+            o["author"] = itr->author;
+            o["title"] = std::string(itr->title.begin(), itr->title.end());
+            o["memo"] = std::string(itr->memo.begin(), itr->memo.end());
+            o["expiration_time"] = itr->expiration_time;
+            if (itr->review_period_time.valid()) {
+                o["review_period_time"] = *(itr->review_period_time);
+            } else {
+                o["review_period_time"] = fc::variant();
+            }
+            // buffer_type → vector<char>
+            std::vector<char> ops_data(itr->proposed_operations.begin(), itr->proposed_operations.end());
+            o["proposed_operations"] = ops_data;
+            // bip::flat_set → fc::flat_set
+            fc::flat_set<account_name_type> ra(itr->required_active_approvals.begin(), itr->required_active_approvals.end());
+            o["required_active_approvals"] = ra;
+            fc::flat_set<account_name_type> aa(itr->available_active_approvals.begin(), itr->available_active_approvals.end());
+            o["available_active_approvals"] = aa;
+            fc::flat_set<account_name_type> rm(itr->required_master_approvals.begin(), itr->required_master_approvals.end());
+            o["required_master_approvals"] = rm;
+            fc::flat_set<account_name_type> am(itr->available_master_approvals.begin(), itr->available_master_approvals.end());
+            o["available_master_approvals"] = am;
+            fc::flat_set<account_name_type> rr(itr->required_regular_approvals.begin(), itr->required_regular_approvals.end());
+            o["required_regular_approvals"] = rr;
+            fc::flat_set<account_name_type> ar(itr->available_regular_approvals.begin(), itr->available_regular_approvals.end());
+            o["available_regular_approvals"] = ar;
+            fc::flat_set<graphene::protocol::public_key_type> ak(itr->available_key_approvals.begin(), itr->available_key_approvals.end());
+            o["available_key_approvals"] = ak;
+            arr.push_back(fc::variant(o));
+        }
+        state["proposal"] = std::move(arr);
+    }
     EXPORT_INDEX(required_approval_index, required_approval_object, "required_approval")
     EXPORT_INDEX(committee_request_index, committee_request_object, "committee_request")
     EXPORT_INDEX(committee_vote_index, committee_vote_object, "committee_vote")
