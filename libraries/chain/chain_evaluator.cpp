@@ -981,11 +981,6 @@ namespace graphene { namespace chain {
             FC_ASSERT(o.vesting_shares.amount >= 0, "Cannot withdraw negative SHARES.");
 
             if (o.vesting_shares.amount == 0) {
-                if(_db.has_hardfork(CHAIN_HARDFORK_4)) {
-                    FC_ASSERT(account.vesting_withdraw_rate.amount !=
-                              0, "This operation would not change the vesting withdraw rate.");
-                }
-
                 _db.modify(account, [&](account_object &a) {
                     a.vesting_withdraw_rate = asset(0, SHARES_SYMBOL);
                     a.next_vesting_withdrawal = time_point_sec::maximum();

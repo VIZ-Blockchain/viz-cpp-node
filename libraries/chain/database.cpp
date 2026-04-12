@@ -249,11 +249,20 @@ namespace graphene { namespace chain {
 
                     if (head_block_num()) {
                         auto head_block = _block_log.read_block_by_num(head_block_num());
-                        // This assertion should be caught and a reindex should occur
-                        FC_ASSERT(head_block.valid() && head_block->id() ==
-                                                        head_block_id(), "Chain state does not match block log. Please reindex blockchain.");
-
-                        _fork_db.start_block(*head_block);
+                        if (head_block.valid()) {
+                            // Normal mode: block_log has the head block
+                            FC_ASSERT(head_block->id() == head_block_id(),
+                                "Chain state does not match block log. Please reindex blockchain.");
+                            _fork_db.start_block(*head_block);
+                        } else {
+                            // DLT mode: block_log is empty but chainbase has state (loaded from snapshot).
+                            // Skip block_log validation and fork_db seeding.
+                            // P2P will seed fork_db with the first received block.
+                            _dlt_mode = true;
+                            wlog("DLT mode detected: block log is empty but database has state at block ${n}. "
+                                 "Skipping block log validation.",
+                                 ("n", head_block_num()));
+                        }
                     }
                     end = fc::time_point::now();
                     wlog("Done opening block log, elapsed time ${t} sec", ("t", double((end - start).count()) / 1000000.0));
@@ -278,6 +287,8 @@ namespace graphene { namespace chain {
                 auto start = fc::time_point::now();
                 wlog("Opening database for snapshot import. Please wait...");
 
+                _dlt_mode = true;
+
                 init_schema();
                 chainbase::database::open(shared_mem_dir, chainbase_flags, shared_file_size);
 
@@ -292,12 +303,13 @@ namespace graphene { namespace chain {
                     }
                 }
 
-                // Note: block_log is not opened here for DLT mode
-                // The snapshot plugin will handle state loading separately
-                // After snapshot import, initialize_hardforks() should be called
+                // Open block_log (creates empty files if they don't exist).
+                // In DLT mode we don't write to it, but it must be open so that
+                // code referencing _block_log doesn't crash on an unopened object.
+                _block_log.open(data_dir / "block_log");
 
                 auto end = fc::time_point::now();
-                wlog("Database opened for snapshot import, elapsed time ${t} sec",
+                wlog("Database opened for snapshot import (DLT mode), elapsed time ${t} sec",
                     ("t", double((end - start).count()) / 1000000.0));
             }
             FC_CAPTURE_LOG_AND_RETHROW((data_dir)(shared_mem_dir)(shared_file_size))
@@ -3944,35 +3956,38 @@ namespace graphene { namespace chain {
 
                                 commit(dpo.last_irreversible_block_num);
 
-                                // output to block log based on new last irreverisible block num
-                                const auto &tmp_head = _block_log.head();
-                                uint64_t log_head_num = 0;
+                                if (!_dlt_mode) {
+                                    // output to block log based on new last irreverisible block num
+                                    const auto &tmp_head = _block_log.head();
+                                    uint64_t log_head_num = 0;
 
-                                if (tmp_head) {
-                                    log_head_num = tmp_head->block_num();
-                                }
-
-                                if (log_head_num < dpo.last_irreversible_block_num) {
-                                    while (log_head_num < dpo.last_irreversible_block_num) {
-                                        std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
-                                                log_head_num + 1);
-                                        FC_ASSERT(block, "Current fork in the fork database does not contain the last_irreversible_block");
-                                        _block_log.append(block->data);
-                                        log_head_num++;
+                                    if (tmp_head) {
+                                        log_head_num = tmp_head->block_num();
                                     }
 
-                                    _block_log.flush();
+                                    if (log_head_num < dpo.last_irreversible_block_num) {
+                                        while (log_head_num < dpo.last_irreversible_block_num) {
+                                            std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
+                                                    log_head_num + 1);
+                                            FC_ASSERT(block, "Current fork in the fork database does not contain the last_irreversible_block");
+                                            _block_log.append(block->data);
+                                            log_head_num++;
+                                        }
+
+                                        _block_log.flush();
+                                    }
                                 }
 
                                 //modify dpo after block log commit
                                 if (current.block_num == dpo.last_irreversible_block_num) {
                                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
-                                        auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
-                                        if (irreversible_block.valid()) {
-                                            _dpo.last_irreversible_block_id = irreversible_block->id();
-
-                                            _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
-                                            _dpo.last_irreversible_block_ref_prefix= _dpo.last_irreversible_block_id._hash[1];
+                                        if (!_dlt_mode) {
+                                            auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                                            if (irreversible_block.valid()) {
+                                                _dpo.last_irreversible_block_id = irreversible_block->id();
+                                                _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
+                                                _dpo.last_irreversible_block_ref_prefix= _dpo.last_irreversible_block_id._hash[1];
+                                            }
                                         }
                                     });
                                 }
@@ -4039,35 +4054,38 @@ namespace graphene { namespace chain {
 
                                 commit(dpo.last_irreversible_block_num);
 
-                                // output to block log based on new last irreverisible block num
-                                const auto &tmp_head = _block_log.head();
-                                uint64_t log_head_num = 0;
+                                if (!_dlt_mode) {
+                                    // output to block log based on new last irreverisible block num
+                                    const auto &tmp_head = _block_log.head();
+                                    uint64_t log_head_num = 0;
 
-                                if (tmp_head) {
-                                    log_head_num = tmp_head->block_num();
-                                }
-
-                                if (log_head_num < dpo.last_irreversible_block_num) {
-                                    while (log_head_num < dpo.last_irreversible_block_num) {
-                                        std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
-                                                log_head_num + 1);
-                                        FC_ASSERT(block, "Current fork in the fork database does not contain the last_irreversible_block");
-                                        _block_log.append(block->data);
-                                        log_head_num++;
+                                    if (tmp_head) {
+                                        log_head_num = tmp_head->block_num();
                                     }
 
-                                    _block_log.flush();
+                                    if (log_head_num < dpo.last_irreversible_block_num) {
+                                        while (log_head_num < dpo.last_irreversible_block_num) {
+                                            std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
+                                                    log_head_num + 1);
+                                            FC_ASSERT(block, "Current fork in the fork database does not contain the last_irreversible_block");
+                                            _block_log.append(block->data);
+                                            log_head_num++;
+                                        }
+
+                                        _block_log.flush();
+                                    }
                                 }
 
                                 //modify dpo after block log commit
                                 if (find_block_num == dpo.last_irreversible_block_num) {
                                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
-                                        auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
-                                        if (irreversible_block.valid()) {
-                                            _dpo.last_irreversible_block_id = irreversible_block->id();
-
-                                            _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
-                                            _dpo.last_irreversible_block_ref_prefix= _dpo.last_irreversible_block_id._hash[1];
+                                        if (!_dlt_mode) {
+                                            auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                                            if (irreversible_block.valid()) {
+                                                _dpo.last_irreversible_block_id = irreversible_block->id();
+                                                _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
+                                                _dpo.last_irreversible_block_ref_prefix= _dpo.last_irreversible_block_id._hash[1];
+                                            }
                                         }
                                     });
                                 }
@@ -4220,7 +4238,7 @@ namespace graphene { namespace chain {
 
                 commit(dpo.last_irreversible_block_num);
 
-                if (!(skip & skip_block_log)) {
+                if (!(skip & skip_block_log) && !_dlt_mode) {
                     // output to block log based on new last irreverisible block num
                     const auto &tmp_head = _block_log.head();
                     uint64_t log_head_num = 0;
@@ -4245,12 +4263,13 @@ namespace graphene { namespace chain {
                 //modify dpo after block log commit
                 if (new_last_irreversible_block_num == dpo.last_irreversible_block_num) {
                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
-                        auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
-                        if (irreversible_block.valid()) {
-                            _dpo.last_irreversible_block_id = irreversible_block->id();
-
-                            _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
-                            _dpo.last_irreversible_block_ref_prefix= _dpo.last_irreversible_block_id._hash[1];
+                        if (!_dlt_mode) {
+                            auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                            if (irreversible_block.valid()) {
+                                _dpo.last_irreversible_block_id = irreversible_block->id();
+                                _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
+                                _dpo.last_irreversible_block_ref_prefix= _dpo.last_irreversible_block_id._hash[1];
+                            }
                         }
                     });
                 }

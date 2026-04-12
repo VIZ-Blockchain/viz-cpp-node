@@ -45,13 +45,20 @@ vizd --plugin snapshot
 
 ### Method 1: One-shot snapshot (stop node, create, exit)
 
-Stop the node, then restart it with the `--create-snapshot` flag. The node will open the existing database, serialize the full state at the current head block, write the snapshot file, and exit:
+Stop the node, then restart it with the `--create-snapshot` flag. The node will open the existing database (block log + shared memory), replay if needed to bring the state up to date, create the snapshot, and exit — **before** P2P or witness plugins activate:
 
 ```bash
 vizd --create-snapshot /data/snapshots/viz-snapshot.json --plugin snapshot
 ```
 
-The snapshot is taken at the **current head block** using a strong read lock to ensure consistency. All 32 tracked object types are exported as JSON arrays with a SHA-256 checksum for integrity verification.
+### What happens during `--create-snapshot`
+
+1. All plugins call `plugin_initialize()`. The **snapshot plugin** registers a `snapshot_create_callback` on the **chain plugin**.
+2. The **chain plugin** `plugin_startup()` opens the database normally — block log, shared memory, and replays from block log if the chainbase revision doesn't match the head block.
+3. After the database is fully loaded, the chain plugin calls `snapshot_create_callback()` — the **snapshot plugin** serializes all 32 tracked object types as JSON arrays with a SHA-256 checksum, writes the file, and calls `app().quit()`.
+4. The chain plugin **never calls `on_sync()`** — P2P and witness plugins never activate.
+
+All snapshot creation happens **inside** `chain::plugin_startup()`. The database is fully consistent (post-replay) and no new blocks arrive during serialization.
 
 ### Method 2: Snapshot at a specific block (no downtime)
 
@@ -159,16 +166,19 @@ vizd --snapshot /path/to/snapshot.json --plugin snapshot
 
 ### What happens during snapshot loading
 
-1. The **chain plugin** detects the `--snapshot` option and opens the database using `open_from_snapshot()` — this initializes chainbase, indexes, and evaluators but does **not** open the block log.
-2. The **snapshot plugin** reads the JSON file, validates the header (format version, chain ID, SHA-256 checksum), and imports all objects into the database under a strong write lock.
-3. After import, `initialize_hardforks()` is called to populate the hardfork schedule.
+1. All plugins call `plugin_initialize()`. The **snapshot plugin** registers a `snapshot_load_callback` on the **chain plugin**.
+2. The **chain plugin** `plugin_startup()` detects the `--snapshot` option and opens the database using `open_from_snapshot()` — this initializes chainbase, indexes, and evaluators but does **not** open the block log.
+3. The chain plugin calls `snapshot_load_callback()` — the **snapshot plugin** reads the JSON file, validates the header (format version, chain ID, SHA-256 checksum), imports all objects into the database under a strong write lock, and calls `initialize_hardforks()` to populate the hardfork schedule.
 4. The fork database is seeded with the head block from the snapshot.
-5. The `on_sync` signal is emitted so other plugins (P2P, APIs, etc.) know the node is ready.
-6. The node begins syncing from **LIB + 1** via P2P network.
+5. The chain plugin emits `on_sync` so other plugins (webserver, APIs, etc.) know the node is ready.
+6. **P2P plugin** starts — sees the snapshot's head block and begins syncing from **LIB + 1** via the P2P network.
+
+All snapshot loading happens **inside** `chain::plugin_startup()`, before any other plugin starts. P2P and witness never see incomplete/genesis state.
 
 ### Important notes
 
-- **No block log**: In DLT mode, the block log is not opened. Historical block queries will not work until the node has synced new blocks.
+- **No block log (DLT mode)**: When loaded from a snapshot, the node runs in DLT mode — the block_log remains empty. New irreversible blocks are **not** written to block_log. Historical block queries will not work for blocks before the snapshot.
+- **Restart without `--snapshot`**: After the initial snapshot load, restart the node **without** `--snapshot`. The node detects DLT mode automatically (block_log empty, chainbase has state), skips block_log validation, and continues syncing from P2P. The fork database is seeded by the first block received from P2P.
 - **Chain ID validation**: The snapshot's chain ID must match the node's compiled chain ID. Mismatches are rejected.
 - **Checksum verification**: The payload checksum is verified before any objects are imported.
 - **One-time operation**: The `--snapshot` flag is a CLI-only option. After the initial load, restart the node normally (without `--snapshot`) for subsequent runs.
@@ -454,8 +464,9 @@ The snapshot plugin required changes to several core components:
 | Component | Change |
 |-----------|--------|
 | `chainbase::generic_index` | Added `set_next_id()` / `next_id()` for ID preservation during import |
-| `database.hpp/cpp` | Added `open_from_snapshot()`, `initialize_hardforks()`, `get_fork_db()` |
-| `chain plugin` | Snapshot-aware startup flow — detects `--snapshot` and uses `open_from_snapshot()` |
+| `database.hpp/cpp` | Added `open_from_snapshot()`, `initialize_hardforks()`, `get_fork_db()`, `_dlt_mode` flag; DLT mode skips block_log writes and detects empty block_log on restart |
+| `chain plugin` | Added `snapshot_load_callback` and `snapshot_create_callback` — snapshot operations run inside `chain::plugin_startup()` before `on_sync()`, ensuring P2P/witness never see incomplete state |
 | `content_object.hpp` | Added missing `FC_REFLECT` for `content_object`, `content_type_object`, `content_vote_object` |
 | `witness_objects.hpp` | Added missing `FC_REFLECT` for `witness_vote_object` |
+| `proposal_object.hpp` | Added missing `FC_REFLECT` for `required_approval_object` |
 | `vizd/main.cpp` | Registered `snapshot_plugin`, linked `graphene::snapshot` |

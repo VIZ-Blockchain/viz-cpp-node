@@ -1153,36 +1153,49 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
             ilog("Snapshot directory: ${d}", ("d", my->snapshot_dir));
         }
     }
+
+    // Register snapshot loading callback on the chain plugin.
+    // This ensures the snapshot is loaded DURING chain plugin startup,
+    // BEFORE on_sync() fires and P2P starts syncing.
+    if (!my->snapshot_path.empty()) {
+        auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
+        chain_plug.snapshot_load_callback = [this]() {
+            ilog("Loading state from snapshot: ${p}", ("p", my->snapshot_path));
+            auto start = fc::time_point::now();
+            my->load_snapshot(fc::path(my->snapshot_path));
+            my->db.initialize_hardforks();
+            auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
+            ilog("Snapshot loaded successfully at block ${n}, elapsed time ${t} sec",
+                ("n", my->db.head_block_num())("t", elapsed));
+        };
+    }
+
+    // Register snapshot creation callback on the chain plugin.
+    // This ensures the snapshot is created AFTER full DB load (including replay),
+    // but BEFORE on_sync() — so P2P/witness never start.
+    if (!my->create_snapshot_path.empty()) {
+        auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
+        chain_plug.snapshot_create_callback = [this]() {
+            ilog("Creating snapshot at: ${p}", ("p", my->create_snapshot_path));
+            auto start = fc::time_point::now();
+            my->create_snapshot(fc::path(my->create_snapshot_path));
+            auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
+            ilog("Snapshot created successfully, elapsed time ${t} sec. Shutting down...", ("t", elapsed));
+            appbase::app().quit();
+        };
+    }
 }
 
 void snapshot_plugin::plugin_startup() {
     ilog("snapshot plugin: starting");
 
-    // If --snapshot is specified, load state from the snapshot file
-    if (!my->snapshot_path.empty()) {
-        ilog("Loading state from snapshot: ${p}", ("p", my->snapshot_path));
+    // Note: --snapshot loading is handled via snapshot_load_callback registered
+    // in plugin_initialize(). It runs during chain plugin's startup, before on_sync(),
+    // so that P2P syncs from the snapshot head block, not from genesis.
 
-        my->load_snapshot(fc::path(my->snapshot_path));
-
-        // Initialize hardforks after snapshot import
-        my->db.initialize_hardforks();
-
-        ilog("Snapshot loaded successfully at block ${n}", ("n", my->db.head_block_num()));
-
-        // Trigger on_sync signal so other plugins know we're ready
-        auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
-        chain_plug.on_sync();
-
-        return;
-    }
-
-    // If --create-snapshot is specified, create snapshot now and exit
-    if (!my->create_snapshot_path.empty()) {
-        my->create_snapshot(fc::path(my->create_snapshot_path));
-        ilog("Snapshot creation complete. Shutting down...");
-        appbase::app().quit();
-        return;
-    }
+    // Note: --create-snapshot is handled via snapshot_create_callback registered
+    // in plugin_initialize(). It runs during chain plugin's startup, after full DB load
+    // (including replay), but before on_sync() — so P2P/witness never start.
 
     // If --snapshot-at-block or --snapshot-every-n-blocks is set, connect to applied_block signal
     if (my->snapshot_at_block > 0 || my->snapshot_every_n_blocks > 0) {

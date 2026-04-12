@@ -364,14 +364,25 @@ namespace chain {
                     my->shared_memory_size,
                     chainbase::database::read_write);
 
-                ilog("Database opened for snapshot import. Snapshot plugin will load state.");
+                ilog("Database opened for snapshot import. Loading snapshot state...");
             } catch (const fc::exception& e) {
                 elog("Failed to open database for snapshot: ${e}", ("e", e.to_detail_string()));
                 throw;
             }
 
-            // Don't call on_sync() here - the snapshot plugin will trigger it
-            // after loading state in its own plugin_startup()
+            // Load snapshot state via callback (set by snapshot plugin during initialize)
+            // This MUST happen before on_sync() so that P2P starts syncing from the
+            // snapshot head block, not from genesis.
+            if (snapshot_load_callback) {
+                snapshot_load_callback();
+            } else {
+                elog("--snapshot specified but no snapshot_load_callback registered. "
+                     "Is the snapshot plugin enabled?");
+                throw std::runtime_error("Snapshot plugin not configured");
+            }
+
+            ilog("Started on blockchain with ${n} blocks (from snapshot)", ("n", my->db.head_block_num()));
+            on_sync();
             return;
         }
 
@@ -417,6 +428,14 @@ namespace chain {
         }
 
         ilog("Started on blockchain with ${n} blocks", ("n", my->db.head_block_num()));
+
+        // If --create-snapshot callback is registered, create snapshot and quit
+        // BEFORE on_sync() — so P2P/witness never start.
+        if (snapshot_create_callback) {
+            snapshot_create_callback();
+            return;
+        }
+
         on_sync();
     }
 

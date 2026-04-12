@@ -53,6 +53,10 @@ namespace graphene { namespace chain {
 
             bool _log_hardforks = true;
 
+            // DLT mode: node was loaded from a snapshot, block_log is empty/partial.
+            // When true, block_log append operations are skipped.
+            bool _dlt_mode = false;
+
             enum validation_steps {
                 skip_nothing = 0,
                 skip_witness_signature = 1 << 0,  ///< used while reindexing
