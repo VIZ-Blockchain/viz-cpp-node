@@ -1321,6 +1321,9 @@ namespace graphene { namespace chain {
                 int64_t max_vote_denom = dgpo.vote_regeneration_per_day *
                                          CHAIN_ENERGY_REGENERATION_SECONDS /
                                          (60 * 60 * 24);//5
+                if(max_vote_denom <= 0) {
+                    max_vote_denom = 1; // Prevent division by zero on testnet (CHAIN_ENERGY_REGENERATION_SECONDS < 86400)
+                }
                 FC_ASSERT(max_vote_denom > 0);
 
                 // Consensus by median props - flag energy additional cost
