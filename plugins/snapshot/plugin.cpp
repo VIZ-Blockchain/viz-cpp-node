@@ -1506,6 +1506,8 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
         send_message(sock, snapshot_info_reply, pack_to_vec(reply));
 
         // Now wait for data requests in a loop
+        auto serve_start = fc::time_point::now();
+        uint64_t bytes_sent = 0;
         while (true) {
             auto [req_type, req_payload] = read_message(sock);
             if (req_type != snapshot_data_request) break;
@@ -1532,9 +1534,13 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
             chunk_in.close();
 
             send_message(sock, snapshot_data_reply, pack_to_vec(reply_data));
+            bytes_sent += to_read;
 
             if (reply_data.is_last) break;
         }
+
+        auto serve_elapsed = double((fc::time_point::now() - serve_start).count()) / 1000000.0;
+        ilog("Snapshot server: served ${s} bytes in ${t} sec", ("s", bytes_sent)("t", serve_elapsed));
     }
 }
 
