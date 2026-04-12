@@ -370,7 +370,7 @@ namespace graphene { namespace chain {
 
         // Build temporary files with only the retained blocks
         {
-            dlt_block_log_impl temp;
+            detail::dlt_block_log_impl temp;
             temp.block_path = temp_block_path;
             temp.index_path = temp_index_path;
 
