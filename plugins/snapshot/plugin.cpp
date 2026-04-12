@@ -22,6 +22,11 @@
 
 #include <fstream>
 
+#ifndef _WIN32
+#include <unistd.h>
+#include <fcntl.h>
+#endif
+
 namespace graphene { namespace plugins { namespace snapshot {
 
 using namespace graphene::chain;
@@ -794,12 +799,22 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(const fc::path& output
     snapshot["header"] = std::move(header_var);
     snapshot["state"] = std::move(state);
 
-    // Write to file
+    // Write to file with fsync for crash safety
     std::string snapshot_json = fc::json::to_string(fc::variant(snapshot));
     std::ofstream out(output_path.string(), std::ios::binary);
     FC_ASSERT(out.is_open(), "Failed to open snapshot file for writing: ${p}", ("p", output_path.string()));
     out.write(snapshot_json.data(), snapshot_json.size());
+    out.flush();
     out.close();
+
+#ifndef _WIN32
+    // fsync to ensure data is persisted to disk before we report success
+    int fd = ::open(output_path.string().c_str(), O_RDONLY);
+    if (fd >= 0) {
+        ::fdatasync(fd);
+        ::close(fd);
+    }
+#endif
 
     auto end = fc::time_point::now();
     ilog("Snapshot created successfully: ${path} (${size} bytes, ${time} sec)",
