@@ -675,6 +675,7 @@ public:
     uint32_t snapshot_at_block = 0;   // --snapshot-at-block: create when block N is reached
     uint32_t snapshot_every_n_blocks = 0; // --snapshot-every-n-blocks: periodic snapshot
     std::string snapshot_dir;         // --snapshot-dir: directory for auto-generated snapshots
+    uint32_t snapshot_max_age_days = 90; // --snapshot-max-age-days: delete snapshots older than N days (0 = disabled)
 
     // Snapshot P2P sync config
     bool allow_snapshot_serving = false;
@@ -714,6 +715,7 @@ public:
 
     fc::path find_latest_snapshot();
     std::string download_snapshot_from_peers();
+    void cleanup_old_snapshots();
 
 private:
     // Core snapshot serialization (caller must hold appropriate lock)
@@ -1156,6 +1158,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             // Called from applied_block signal which is already under write lock.
             // Use write_snapshot_to_file directly (no additional lock needed).
             write_snapshot_to_file(output);
+            cleanup_old_snapshots();
         } catch (const fc::exception& e) {
             elog("Failed to create snapshot at block ${b}: ${e}", ("b", block_num)("e", e.to_detail_string()));
         }
@@ -1170,6 +1173,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             // Called from applied_block signal which is already under write lock.
             // Use write_snapshot_to_file directly (no additional lock needed).
             write_snapshot_to_file(output);
+            cleanup_old_snapshots();
         } catch (const fc::exception& e) {
             elog("Failed to create periodic snapshot at block ${b}: ${e}", ("b", block_num)("e", e.to_detail_string()));
         }
@@ -1293,6 +1297,45 @@ fc::path snapshot_plugin::plugin_impl::find_latest_snapshot() {
     }
 
     return best_path;
+}
+
+void snapshot_plugin::plugin_impl::cleanup_old_snapshots() {
+    if (snapshot_max_age_days == 0 || snapshot_dir.empty()) return;
+
+    std::string dir = snapshot_dir;
+    if (!fc::exists(fc::path(dir)) || !fc::is_directory(fc::path(dir))) return;
+
+    auto now = std::time(nullptr);
+    uint64_t max_age_sec = static_cast<uint64_t>(snapshot_max_age_days) * 86400;
+    uint32_t removed = 0;
+
+    try {
+        boost::filesystem::directory_iterator end_itr;
+        for (boost::filesystem::directory_iterator itr(dir); itr != end_itr; ++itr) {
+            if (!boost::filesystem::is_regular_file(itr->status())) continue;
+
+            std::string filename = itr->path().filename().string();
+            std::string ext = itr->path().extension().string();
+
+            if (ext != ".vizjson" && ext != ".json") continue;
+            if (filename.find("snapshot-block-") == std::string::npos) continue;
+
+            auto mtime = boost::filesystem::last_write_time(itr->path());
+            uint64_t age_sec = static_cast<uint64_t>(now - mtime);
+            if (age_sec > max_age_sec) {
+                ilog("Removing old snapshot (${days}d old): ${f}",
+                     ("days", age_sec / 86400)("f", filename));
+                boost::filesystem::remove(itr->path());
+                ++removed;
+            }
+        }
+    } catch (const std::exception& e) {
+        wlog("Error during snapshot cleanup: ${e}", ("e", e.what()));
+    }
+
+    if (removed > 0) {
+        ilog("Snapshot cleanup: removed ${n} old snapshot(s)", ("n", removed));
+    }
 }
 
 // ============================================================================
@@ -1637,6 +1680,8 @@ void snapshot_plugin::set_program_options(
             "Automatically create a snapshot every N blocks (0 = disabled)")
         ("snapshot-dir", bpo::value<std::string>()->default_value(""),
             "Directory for auto-generated snapshot files")
+        ("snapshot-max-age-days", bpo::value<uint32_t>()->default_value(90),
+            "Delete snapshots older than N days after creating a new one (0 = disabled)")
         ("allow-snapshot-serving", bpo::value<bool>()->default_value(false),
             "Enable serving snapshots over TCP to other nodes")
         ("allow-snapshot-serving-only-trusted", bpo::value<bool>()->default_value(false),
@@ -1686,6 +1731,13 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
         my->snapshot_dir = options.at("snapshot-dir").as<std::string>();
         if (!my->snapshot_dir.empty()) {
             ilog("Snapshot directory: ${d}", ("d", my->snapshot_dir));
+        }
+    }
+
+    if (options.count("snapshot-max-age-days")) {
+        my->snapshot_max_age_days = options.at("snapshot-max-age-days").as<uint32_t>();
+        if (my->snapshot_max_age_days > 0) {
+            ilog("Snapshot rotation enabled: delete snapshots older than ${d} days", ("d", my->snapshot_max_age_days));
         }
     }
 
