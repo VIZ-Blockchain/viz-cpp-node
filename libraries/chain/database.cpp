@@ -267,6 +267,46 @@ namespace graphene { namespace chain {
             FC_CAPTURE_LOG_AND_RETHROW((data_dir)(shared_mem_dir)(shared_file_size))
         }
 
+        void database::open_from_snapshot(
+            const fc::path &data_dir,
+            const fc::path &shared_mem_dir,
+            uint64_t initial_supply,
+            uint64_t shared_file_size,
+            uint32_t chainbase_flags
+        ) {
+            try {
+                auto start = fc::time_point::now();
+                wlog("Opening database for snapshot import. Please wait...");
+
+                init_schema();
+                chainbase::database::open(shared_mem_dir, chainbase_flags, shared_file_size);
+
+                initialize_indexes();
+                initialize_evaluators();
+
+                if (chainbase_flags & chainbase::database::read_write) {
+                    if (!find<dynamic_global_property_object>()) {
+                        with_strong_write_lock([&]() {
+                            init_genesis(initial_supply);
+                        });
+                    }
+                }
+
+                // Note: block_log is not opened here for DLT mode
+                // The snapshot plugin will handle state loading separately
+                // After snapshot import, initialize_hardforks() should be called
+
+                auto end = fc::time_point::now();
+                wlog("Database opened for snapshot import, elapsed time ${t} sec",
+                    ("t", double((end - start).count()) / 1000000.0));
+            }
+            FC_CAPTURE_LOG_AND_RETHROW((data_dir)(shared_mem_dir)(shared_file_size))
+        }
+
+        void database::initialize_hardforks() {
+            init_hardforks();
+        }
+
         void database::reindex(const fc::path &data_dir, const fc::path &shared_mem_dir, uint32_t from_block_num, uint64_t shared_file_size) {
             try {
                 signal_guard sg;

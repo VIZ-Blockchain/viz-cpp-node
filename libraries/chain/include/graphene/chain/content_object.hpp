@@ -261,9 +261,21 @@ namespace graphene {
     }
 } // graphene::chain
 
+FC_REFLECT((graphene::chain::content_object),
+    (id)(parent_author)(parent_permlink)(author)(permlink)
+    (last_update)(created)(active)(last_payout)
+    (depth)(children)(children_rshares)
+    (net_rshares)(abs_rshares)(vote_rshares)
+    (cashout_time)(total_vote_weight)
+    (curation_percent)(consensus_curation_percent)
+    (payout_value)(shares_payout_value)(curator_payout_value)(beneficiary_payout_value)
+    (author_rewards)(net_votes)(root_content)(beneficiaries))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::content_object, graphene::chain::content_index)
 
+FC_REFLECT((graphene::chain::content_type_object),
+    (id)(content)(title)(body)(json_metadata))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::content_type_object, graphene::chain::content_type_index)
 
+FC_REFLECT((graphene::chain::content_vote_object),
+    (id)(voter)(content)(weight)(rshares)(vote_percent)(last_update)(num_changes))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::content_vote_object, graphene::chain::content_vote_index)
-

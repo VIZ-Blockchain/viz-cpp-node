@@ -83,6 +83,28 @@ namespace graphene { namespace chain {
             void open(const fc::path &data_dir, const fc::path &shared_mem_dir, uint64_t initial_supply = CHAIN_INIT_SUPPLY, uint64_t shared_file_size = 0, uint32_t chainbase_flags = 0);
 
             /**
+             * @brief Open database from a snapshot file
+             *
+             * Initializes the database from a pre-serialized state snapshot,
+             * bypassing full blockchain replay. The snapshot must contain all
+             * consensus-critical objects.
+             */
+            void open_from_snapshot(
+                const fc::path &data_dir,
+                const fc::path &shared_mem_dir,
+                uint64_t initial_supply,
+                uint64_t shared_file_size,
+                uint32_t chainbase_flags);
+
+            /**
+             * @brief Initialize hardfork schedule data
+             *
+             * Must be called after loading state from a snapshot so that
+             * the hardfork version/time arrays are populated correctly.
+             */
+            void initialize_hardforks();
+
+            /**
              * @brief Rebuild object graph from block history and open detabase
              *
              * This method may be called after or instead of @ref database::open, and will rebuild the object graph by
@@ -444,6 +466,14 @@ namespace graphene { namespace chain {
             void set_flush_interval(uint32_t flush_blocks);
 
             const block_log &get_block_log() const;
+
+            fork_database &get_fork_db() {
+                return _fork_db;
+            }
+
+            const fork_database &get_fork_db() const {
+                return _fork_db;
+            }
 
             public_key_type get_witness_key(const account_name_type &name);
 

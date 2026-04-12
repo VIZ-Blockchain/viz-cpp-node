@@ -50,6 +50,8 @@ namespace chain {
 
         bool skip_virtual_ops = false;
 
+        std::string snapshot_path; // --snapshot: load state from snapshot file
+
         graphene::chain::database db;
 
         bool single_write_thread = false;
@@ -311,6 +313,12 @@ namespace chain {
                 my->loaded_checkpoints[item.first] = item.second;
             }
         }
+
+        // Check if snapshot plugin has a load path configured
+        if (options.count("snapshot")) {
+            my->snapshot_path = options.at("snapshot").as<std::string>();
+            ilog("Chain plugin: will load state from snapshot: ${p}", ("p", my->snapshot_path));
+        }
     }
 
     void plugin::plugin_startup() {
@@ -345,6 +353,29 @@ namespace chain {
 
         my->db.enable_plugins_on_push_transaction(my->enable_plugins_on_push_transaction);
 
+        // ========== Snapshot loading path ==========
+        if (!my->snapshot_path.empty()) {
+            ilog("Opening database in snapshot mode...");
+            try {
+                my->db.open_from_snapshot(
+                    data_dir,
+                    my->shared_memory_dir,
+                    CHAIN_INIT_SUPPLY,
+                    my->shared_memory_size,
+                    chainbase::database::read_write);
+
+                ilog("Database opened for snapshot import. Snapshot plugin will load state.");
+            } catch (const fc::exception& e) {
+                elog("Failed to open database for snapshot: ${e}", ("e", e.to_detail_string()));
+                throw;
+            }
+
+            // Don't call on_sync() here - the snapshot plugin will trigger it
+            // after loading state in its own plugin_startup()
+            return;
+        }
+
+        // ========== Normal startup path ==========
         try {
             ilog("Opening shared memory from ${path}", ("path", my->shared_memory_dir.generic_string()));
             my->db.open(data_dir, my->shared_memory_dir, CHAIN_INIT_SUPPLY, my->shared_memory_size, chainbase::database::read_write/*, my->validate_invariants*/ );
