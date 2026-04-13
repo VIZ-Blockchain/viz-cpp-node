@@ -1597,7 +1597,7 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
         reply.checksum = cached_snap_checksum;
         reply.compressed_size = cached_snap_size;
 
-        ilog("Snapshot server: serving snapshot at block ${b}, size ${s} bytes",
+        ilog("Snapshot server: offering snapshot at block ${b}, size ${s} bytes",
              ("b", cached_snap_block_num)("s", cached_snap_size));
 
         send_message(sock, snapshot_info_reply, pack_to_vec(reply));
@@ -1605,38 +1605,51 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
         std::string serve_path = cached_snap_path;
         uint64_t file_size = cached_snap_size;
 
-        // Now wait for data requests in a loop
+        // Now wait for data requests in a loop.
+        // The client may close after receiving just the info (Phase 1 query).
+        // This is normal — treat EOF here as a clean disconnect.
         auto serve_start = fc::time_point::now();
         uint64_t bytes_sent = 0;
         while (true) {
-            auto [req_type, req_payload] = read_message(sock, 64 * 1024);
-            if (req_type != snapshot_data_request) break;
+            try {
+                auto [req_type, req_payload] = read_message(sock, 64 * 1024);
+                if (req_type != snapshot_data_request) break;
 
-            auto req = unpack_from_vec<snapshot_data_request_data>(req_payload);
+                auto req = unpack_from_vec<snapshot_data_request_data>(req_payload);
 
-            // Read chunk from file
-            std::ifstream chunk_in(serve_path, std::ios::binary);
-            FC_ASSERT(chunk_in.is_open(), "Failed to open snapshot for serving");
+                // Read chunk from file
+                std::ifstream chunk_in(serve_path, std::ios::binary);
+                FC_ASSERT(chunk_in.is_open(), "Failed to open snapshot for serving");
 
-            chunk_in.seekg(req.offset, std::ios::beg);
-            uint32_t to_read = req.chunk_size;
-            if (req.offset + to_read > file_size) {
-                to_read = static_cast<uint32_t>(file_size - req.offset);
+                chunk_in.seekg(req.offset, std::ios::beg);
+                uint32_t to_read = req.chunk_size;
+                if (req.offset + to_read > file_size) {
+                    to_read = static_cast<uint32_t>(file_size - req.offset);
+                }
+
+                snapshot_data_reply_data reply_data;
+                reply_data.offset = req.offset;
+                reply_data.data.resize(to_read);
+                if (to_read > 0) {
+                    chunk_in.read(reply_data.data.data(), to_read);
+                }
+                reply_data.is_last = (req.offset + to_read >= file_size);
+                chunk_in.close();
+
+                send_message(sock, snapshot_data_reply, pack_to_vec(reply_data));
+                bytes_sent += to_read;
+
+                if (reply_data.is_last) break;
+            } catch (const fc::eof_exception&) {
+                // Client disconnected — normal for info-only queries (Phase 1)
+                if (bytes_sent == 0) {
+                    ilog("Snapshot server: client disconnected after info query (normal)");
+                } else {
+                    wlog("Snapshot server: client disconnected during transfer at ${b}/${t} bytes",
+                         ("b", bytes_sent)("t", file_size));
+                }
+                return;
             }
-
-            snapshot_data_reply_data reply_data;
-            reply_data.offset = req.offset;
-            reply_data.data.resize(to_read);
-            if (to_read > 0) {
-                chunk_in.read(reply_data.data.data(), to_read);
-            }
-            reply_data.is_last = (req.offset + to_read >= file_size);
-            chunk_in.close();
-
-            send_message(sock, snapshot_data_reply, pack_to_vec(reply_data));
-            bytes_sent += to_read;
-
-            if (reply_data.is_last) break;
         }
 
         auto serve_elapsed = double((fc::time_point::now() - serve_start).count()) / 1000000.0;

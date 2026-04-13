@@ -124,7 +124,7 @@ namespace graphene {
 
                 command_line_options.add_options()
                         ("enable-stale-production", bpo::value<bool>()->implicit_value(false) , "Enable block production, even if the chain is stale.")
-                        ("required-participation", bpo::value<int>()->implicit_value(uint32_t(3 * CHAIN_1_PERCENT)), "Percent of witnesses (0-99) that must be participating in order to produce blocks")
+                        ("required-participation", bpo::value<int>()->implicit_value(33), "Percent of witnesses (0-99) that must be participating in order to produce blocks")
                         ("witness,w", bpo::value<vector<string>>()->composing()->multitoken(), ("name of witness controlled by this node (e.g. " + witness_id_example + " )").c_str())
                         ("private-key", bpo::value<vector<string>>()->composing()->multitoken(), "WIF PRIVATE KEY to be used by one or more witnesses")
                         ;
@@ -386,7 +386,7 @@ namespace graphene {
 
                 uint32_t prate = db.witness_participation_rate();
                 if (prate < _required_witness_participation) {
-                    capture("pct", uint32_t(100 * uint64_t(prate) / CHAIN_1_PERCENT));
+                    capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
                     return block_production_condition::low_participation;
                 }
 
