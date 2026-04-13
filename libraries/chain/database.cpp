@@ -520,6 +520,19 @@ namespace graphene { namespace chain {
 
         bool database::is_known_block(const block_id_type &id) const {
             try {
+                // In DLT mode, block data may not be available (block_log and dlt_block_log
+                // can both be empty after a fresh snapshot import). Check the block_summary
+                // table first — it stores block IDs for the last 65536 blocks and survives
+                // snapshot import. This allows P2P synopsis building and has_item checks
+                // to work even when no block data exists on disk.
+                uint32_t block_num = protocol::block_header::num_from_id(id);
+                if (block_num > 0) {
+                    block_summary_id_type bsid = block_num & 0xFFFF;
+                    const auto* bs = find<block_summary_object, by_id>(bsid);
+                    if (bs != nullptr && bs->block_id == id) {
+                        return true;
+                    }
+                }
                 return fetch_block_by_id(id).valid();
             } FC_CAPTURE_AND_RETHROW()
         }
