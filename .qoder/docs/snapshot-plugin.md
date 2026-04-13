@@ -18,7 +18,7 @@ The snapshot plugin enables near-instant node startup by serializing and restori
 |--------|------|-------------|
 | `--snapshot <path>` | `string` | Load state from a snapshot file instead of replaying blockchain. The node opens in DLT mode (no block log). Safe for restarts — skips import if shared_memory already exists, and renames the file to `.used` after successful import. |
 | `--create-snapshot <path>` | `string` | Create a snapshot file at the given path using the current database state, then exit. |
-| `--sync-snapshot-from-trusted-peer` | `bool` | Download and load snapshot from trusted peers when state is empty (`head_block_num == 0`). Requires `trusted-snapshot-peer` to be configured. |
+| `--sync-snapshot-from-trusted-peer` | `bool` (default: `true`) | Download and load snapshot from trusted peers when state is empty (`head_block_num == 0`). Requires `trusted-snapshot-peer` to be configured. Defaults to `true` — if `trusted-snapshot-peer` is set, sync happens automatically. Set to `false` to disable. |
 
 ### Config file options (snapshot plugin)
 
@@ -134,6 +134,8 @@ Example output in the snapshots directory:
 | Rare | 1,000,000 | ~34.7 days |
 
 **Notes on periodic snapshots:**
+- **Only triggers on live blocks**: Periodic snapshots are skipped while the node is syncing from P2P (block time >60s behind wall clock). This prevents wasteful snapshot creation during initial sync from genesis or from an older snapshot. Snapshots begin only after the node catches up to the live chain head.
+- **Auto-creates directory**: The snapshot directory (`snapshot-dir`) is automatically created if it doesn't exist. No need to `mkdir` before starting the node.
 - The snapshot runs inside the `applied_block` signal callback, which is already under the database write lock. This means **block processing is paused** during snapshot serialization and file writing. No additional locks are needed and no deadlocks can occur.
 - On a blockchain with tens of thousands of accounts/objects, serialization may take several seconds. During this time, the node will not process new blocks (they will queue up and be processed after the snapshot completes).
 - For large chains, consider using a longer interval (e.g., `100000` blocks) to minimize the impact on block processing.
@@ -400,7 +402,6 @@ Start a new node that automatically downloads and loads a snapshot from trusted 
 
 ```bash
 vizd \
-  --sync-snapshot-from-trusted-peer \
   --plugin snapshot \
   --plugin p2p
 ```
@@ -412,13 +413,23 @@ trusted-snapshot-peer = seed1.viz.world:8092
 trusted-snapshot-peer = seed2.viz.world:8092
 ```
 
+Since `sync-snapshot-from-trusted-peer` defaults to `true`, configuring `trusted-snapshot-peer` is sufficient. When the node starts with 0 blocks, it automatically downloads the snapshot from the best available peer. To disable auto-sync explicitly:
+
+```ini
+sync-snapshot-from-trusted-peer = false
+```
+
+If the node has 0 blocks and no `trusted-snapshot-peer` is configured, a console warning is shown advising the user to configure one.
+
 ### How P2P sync works
 
-1. **Query phase**: The node connects to each trusted peer, sends a `snapshot_info_request`, and collects metadata (block number, checksum, compressed size).
+1. **Query phase**: The node connects to each trusted peer, sends a `snapshot_info_request`, and collects metadata (block number, checksum, compressed size). Progress is logged to console.
 2. **Selection**: Picks the peer with the highest block number.
-3. **Download phase**: Downloads the snapshot in 1 MB chunks, writing to a temp file. Progress is logged.
+3. **Download phase**: Downloads the snapshot in 1 MB chunks, writing to a temp file. Download progress is printed to console every 5% (size in MB and percentage).
 4. **Verification**: Streams the downloaded file through SHA-256 to verify checksum (without loading into memory).
-5. **Import**: Loads the verified snapshot into the database and initializes hardforks.
+5. **Import**: Clears database state, loads the verified snapshot, initializes hardforks. Each stage (decompress, parse, validate, import) is logged to console with timing.
+
+All operations happen during `chain::plugin_startup()`, **before** P2P and witness plugins activate. The node is fully blocked during download and import — no blocks are processed until the snapshot is loaded.
 
 ### Security features
 
@@ -588,7 +599,7 @@ Alternatively, add a cron job on the **host** machine:
 | Start with periodic snapshots | Add `snapshot-every-n-blocks` to `~/vizconfig/config.ini`, restart container |
 | One-shot snapshot | `docker run --rm -e VIZD_EXTRA_OPTS="--create-snapshot /var/lib/vizd/snapshots/snap.json --plugin snapshot" ...` |
 | Load from snapshot | `docker run -e VIZD_EXTRA_OPTS="--snapshot /var/lib/vizd/snapshots/snap.json --plugin snapshot" ...` |
-| P2P auto-bootstrap | `docker run -e VIZD_EXTRA_OPTS="--sync-snapshot-from-trusted-peer --plugin snapshot" ...` (needs `trusted-snapshot-peer` in config) |
+| P2P auto-bootstrap | Add `trusted-snapshot-peer = <ip>:<port>` to config, start container with `--plugin snapshot` |
 | Find snapshots on host | `ls -lt ~/vizhome/snapshots/` |
 | Check snapshot creation logs | `docker logs vizd \| grep -i snapshot` |
 | Force re-import | `docker run -e VIZD_EXTRA_OPTS="--resync-blockchain --snapshot /path/snap.json --plugin snapshot" ...` |
@@ -602,8 +613,8 @@ The snapshot plugin required changes to several core components:
 | `chainbase::generic_index` | Added `set_next_id()` / `next_id()` for ID preservation during import |
 | `database.hpp/cpp` | Added `open_from_snapshot()`, `initialize_hardforks()`, `get_fork_db()`, `_dlt_mode` flag; DLT mode skips block_log writes and detects empty block_log on restart; DLT block log empty-skip logic for fresh snapshot imports |
 | `dlt_block_log.hpp/cpp` | New class: offset-aware rolling block log with 8-byte header index, `truncate_before()` for rotation, read/write with mutex locking |
-| `chain plugin` | Added `snapshot_load_callback`, `snapshot_create_callback`, `snapshot_p2p_sync_callback`; restart safety (shared_memory check + `.used` rename + file existence check); `dlt-block-log-max-blocks` config option |
-| `snapshot plugin` | Full implementation: create/load/periodic snapshots; P2P TCP sync (serve + download); anti-spam (rate limiting, max connections, timeouts); cached snapshot info; streaming SHA-256 checksum; built-in rotation (`snapshot-max-age-days`); elapsed time logging for all operations |
+| `chain plugin` | Added `snapshot_load_callback`, `snapshot_create_callback`, `snapshot_p2p_sync_callback`; restart safety (shared_memory check + `.used` rename + file existence check); `dlt-block-log-max-blocks` config option; diagnostic warning when node has 0 blocks and no snapshot sync configured |
+| `snapshot plugin` | Full implementation: create/load/periodic snapshots; P2P TCP sync (serve + download); anti-spam (rate limiting, max connections, timeouts); cached snapshot info; streaming SHA-256 checksum; built-in rotation (`snapshot-max-age-days`); elapsed time logging for all operations; console progress logging for download/import; `sync-snapshot-from-trusted-peer` defaults to `true`; auto-creates snapshot directory; periodic snapshots only trigger on live blocks (skipped during P2P sync) |
 | `content_object.hpp` | Added missing `FC_REFLECT` for `content_object`, `content_type_object`, `content_vote_object` |
 | `witness_objects.hpp` | Added missing `FC_REFLECT` for `witness_vote_object` |
 | `proposal_object.hpp` | Added missing `FC_REFLECT` for `required_approval_object` |
