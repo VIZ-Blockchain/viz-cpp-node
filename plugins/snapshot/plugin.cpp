@@ -1966,6 +1966,7 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
             std::cerr << "   Clearing state and importing snapshot...\n";
             ilog("Download complete, loading snapshot...");
             my->load_snapshot(fc::path(snapshot_path));
+            my->db._dlt_mode = true;  // Mark DLT mode — block_log stays empty
             my->db.initialize_hardforks();
             auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
             std::cerr << "   === P2P Snapshot Sync complete (block "
