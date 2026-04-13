@@ -1506,30 +1506,32 @@ void snapshot_plugin::plugin_impl::accept_loop() {
             ilog("Snapshot server: accepted connection from ${ip}:${port}",
                  ("ip", std::string(remote.get_address()))("port", remote.port()));
 
-            // Handle connection asynchronously in a separate fiber with timeout
-            auto shared_sock = std::make_shared<fc::tcp_socket>(std::move(sock));
-            fc::async([this, shared_sock, remote_ip]() {
-                try {
-                    auto conn_start = fc::time_point::now();
-                    auto deadline = conn_start + fc::seconds(CONNECTION_TIMEOUT_SEC);
+            // Handle connection asynchronously in a separate fiber with timeout.
+            // fc::tcp_socket is non-copyable and non-movable (fc::fwd has no copy/move ctor).
+            // We handle the connection synchronously within a fiber — fc's cooperative
+            // scheduling still allows the accept loop to yield during I/O waits.
+            // The sock lives on the accept_loop fiber's stack and is valid for the
+            // duration of handle_connection().
+            try {
+                auto conn_start = fc::time_point::now();
+                auto deadline = conn_start + fc::seconds(CONNECTION_TIMEOUT_SEC);
 
-                    handle_connection(*shared_sock);
+                handle_connection(sock);
 
-                    if (fc::time_point::now() > deadline) {
-                        wlog("Snapshot server: connection from ${ip} exceeded timeout",
-                             ("ip", remote_ip));
-                    }
-                } catch (const fc::exception& e) {
-                    wlog("Snapshot server: error handling connection: ${e}", ("e", e.to_detail_string()));
-                } catch (const std::exception& e) {
-                    wlog("Snapshot server: error handling connection: ${e}", ("e", e.what()));
+                if (fc::time_point::now() > deadline) {
+                    wlog("Snapshot server: connection from ${ip} exceeded timeout",
+                         ("ip", remote_ip));
                 }
+            } catch (const fc::exception& e) {
+                wlog("Snapshot server: error handling connection: ${e}", ("e", e.to_detail_string()));
+            } catch (const std::exception& e) {
+                wlog("Snapshot server: error handling connection: ${e}", ("e", e.what()));
+            }
 
-                // Cleanup
-                active_sessions.erase(remote_ip);
-                active_connection_count.fetch_sub(1);
-                try { shared_sock->close(); } catch (...) {}
-            }, "snapshot_connection");
+            // Cleanup
+            active_sessions.erase(remote_ip);
+            active_connection_count.fetch_sub(1);
+            try { sock.close(); } catch (...) {}
 
         } catch (const fc::canceled_exception&) {
             break;

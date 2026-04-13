@@ -363,47 +363,72 @@ namespace chain {
 
         // ========== Snapshot loading path ==========
         if (!my->snapshot_path.empty()) {
-            ilog("Opening database in snapshot mode...");
-            try {
-                my->db.open_from_snapshot(
-                    data_dir,
-                    my->shared_memory_dir,
-                    CHAIN_INIT_SUPPLY,
-                    my->shared_memory_size,
-                    chainbase::database::read_write);
-
-                ilog("Database opened for snapshot import. Loading snapshot state...");
-            } catch (const fc::exception& e) {
-                elog("Failed to open database for snapshot: ${e}", ("e", e.to_detail_string()));
-                throw;
-            }
-
-            // Load snapshot state via callback (set by snapshot plugin during initialize)
-            // This MUST happen before on_sync() so that P2P starts syncing from the
-            // snapshot head block, not from genesis.
-            if (snapshot_load_callback) {
-                try {
-                    snapshot_load_callback();
-                } catch (const fc::exception& e) {
-                    elog("FATAL: Failed to load snapshot: ${e}", ("e", e.to_detail_string()));
-                    elog("The snapshot file may be corrupted or incompatible. "
-                         "Check the file path and try again.");
-                    appbase::app().quit();
-                    return;
-                } catch (const std::exception& e) {
-                    elog("FATAL: Failed to load snapshot: ${e}", ("e", e.what()));
-                    appbase::app().quit();
-                    return;
-                }
+            // Check if shared_memory already has state from a previous run.
+            // If so, skip snapshot import and use normal open path.
+            // This prevents re-importing an old snapshot on container restart
+            // when --snapshot is still in the command line (e.g. VIZD_EXTRA_OPTS).
+            auto shm_path = my->shared_memory_dir / "shared_memory.bin";
+            if (boost::filesystem::exists(shm_path) && boost::filesystem::file_size(shm_path) > 0) {
+                wlog("Shared memory already exists at ${p}. Skipping snapshot import, using normal startup.",
+                     ("p", shm_path.string()));
+                wlog("To force re-import, delete shared_memory first (--resync-blockchain) or remove the shared_memory file.");
+            } else if (!boost::filesystem::exists(my->snapshot_path)) {
+                // Snapshot file not found -- maybe it was already consumed (.used) or path is wrong.
+                // Fall through to normal startup instead of wiping state and failing.
+                wlog("Snapshot file not found: ${p}. Skipping snapshot import, using normal startup.",
+                     ("p", my->snapshot_path));
             } else {
-                elog("--snapshot specified but no snapshot_load_callback registered. "
-                     "Is the snapshot plugin enabled?");
-                throw std::runtime_error("Snapshot plugin not configured");
-            }
+                ilog("Opening database in snapshot mode...");
+                try {
+                    my->db.open_from_snapshot(
+                        data_dir,
+                        my->shared_memory_dir,
+                        CHAIN_INIT_SUPPLY,
+                        my->shared_memory_size,
+                        chainbase::database::read_write);
 
-            ilog("Started on blockchain with ${n} blocks (from snapshot)", ("n", my->db.head_block_num()));
-            on_sync();
-            return;
+                    ilog("Database opened for snapshot import. Loading snapshot state...");
+                } catch (const fc::exception& e) {
+                    elog("Failed to open database for snapshot: ${e}", ("e", e.to_detail_string()));
+                    throw;
+                }
+
+                // Load snapshot state via callback (set by snapshot plugin during initialize)
+                // This MUST happen before on_sync() so that P2P starts syncing from the
+                // snapshot head block, not from genesis.
+                if (snapshot_load_callback) {
+                    try {
+                        snapshot_load_callback();
+                    } catch (const fc::exception& e) {
+                        elog("FATAL: Failed to load snapshot: ${e}", ("e", e.to_detail_string()));
+                        elog("The snapshot file may be corrupted or incompatible. "
+                             "Check the file path and try again.");
+                        appbase::app().quit();
+                        return;
+                    } catch (const std::exception& e) {
+                        elog("FATAL: Failed to load snapshot: ${e}", ("e", e.what()));
+                        appbase::app().quit();
+                        return;
+                    }
+                } else {
+                    elog("--snapshot specified but no snapshot_load_callback registered. "
+                         "Is the snapshot plugin enabled?");
+                    throw std::runtime_error("Snapshot plugin not configured");
+                }
+
+                // Rename snapshot file to .used so subsequent restarts skip it
+                try {
+                    std::string used_path = my->snapshot_path + ".used";
+                    boost::filesystem::rename(my->snapshot_path, used_path);
+                    ilog("Snapshot file renamed to ${p}", ("p", used_path));
+                } catch (const std::exception& e) {
+                    wlog("Could not rename snapshot file to .used: ${e}", ("e", e.what()));
+                }
+
+                ilog("Started on blockchain with ${n} blocks (from snapshot)", ("n", my->db.head_block_num()));
+                on_sync();
+                return;
+            }
         }
 
         // ========== Normal startup path ==========

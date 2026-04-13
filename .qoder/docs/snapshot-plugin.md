@@ -16,16 +16,28 @@ The snapshot plugin enables near-instant node startup by serializing and restori
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `--snapshot <path>` | `string` | Load state from a snapshot file instead of replaying blockchain. The node opens in DLT mode (no block log). |
+| `--snapshot <path>` | `string` | Load state from a snapshot file instead of replaying blockchain. The node opens in DLT mode (no block log). Safe for restarts — skips import if shared_memory already exists, and renames the file to `.used` after successful import. |
 | `--create-snapshot <path>` | `string` | Create a snapshot file at the given path using the current database state, then exit. |
+| `--sync-snapshot-from-trusted-peer` | `bool` | Download and load snapshot from trusted peers when state is empty (`head_block_num == 0`). Requires `trusted-snapshot-peer` to be configured. |
 
-### Config file options
+### Config file options (snapshot plugin)
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `snapshot-at-block` | `uint32_t` | `0` | Create a snapshot when the specified block number is reached (while the node is running). |
+| `snapshot-at-block` | `uint32_t` | `0` | Create snapshot when the specified block number is reached (while the node is running). |
 | `snapshot-every-n-blocks` | `uint32_t` | `0` | Automatically create a snapshot every N blocks (0 = disabled). |
 | `snapshot-dir` | `string` | `""` | Directory for auto-generated snapshot files. Used by `snapshot-at-block` and `snapshot-every-n-blocks`. |
+| `snapshot-max-age-days` | `uint32_t` | `90` | Delete snapshots older than N days after creating a new one (0 = disabled). Built-in rotation replaces external cron jobs. |
+| `allow-snapshot-serving` | `bool` | `false` | Enable serving snapshots over TCP to other nodes. |
+| `allow-snapshot-serving-only-trusted` | `bool` | `false` | Restrict snapshot serving to trusted peers only (from `trusted-snapshot-peer` list). |
+| `snapshot-serve-endpoint` | `string` | `0.0.0.0:8092` | TCP endpoint for the snapshot serving listener. |
+| `trusted-snapshot-peer` | `string` (multi) | — | Trusted peer endpoint for snapshot sync (`IP:port`). Can be specified multiple times. |
+
+### Config file options (chain plugin)
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `dlt-block-log-max-blocks` | `uint32_t` | `100000` | Number of recent blocks to keep in the DLT rolling block log (0 = disabled). Only active in DLT mode (after snapshot import). |
 
 ## Enabling the Plugin
 
@@ -125,7 +137,7 @@ Example output in the snapshots directory:
 - The snapshot runs inside the `applied_block` signal callback, which is already under the database write lock. This means **block processing is paused** during snapshot serialization and file writing. No additional locks are needed and no deadlocks can occur.
 - On a blockchain with tens of thousands of accounts/objects, serialization may take several seconds. During this time, the node will not process new blocks (they will queue up and be processed after the snapshot completes).
 - For large chains, consider using a longer interval (e.g., `100000` blocks) to minimize the impact on block processing.
-- Old snapshot files are **not** automatically deleted. Use an external cron job or script to manage disk space.
+- **Built-in rotation**: Old snapshot files are automatically deleted if older than `snapshot-max-age-days` (default 90 days, 0 = disabled). Rotation runs after each new snapshot is created.
 - If snapshot creation fails (e.g., disk full), the error is logged but the node continues running normally.
 
 ### Method 4: Combining at-block with periodic
@@ -143,17 +155,23 @@ This creates a snapshot at block 5,000,000 AND every 100,000 blocks.
 
 ### Managing snapshot disk space
 
-Since periodic snapshots accumulate, add a cron job to clean up old files:
+Snapshot rotation is built-in. By default, snapshots older than 90 days are automatically deleted after each new snapshot is created.
+
+To configure or disable rotation, set `snapshot-max-age-days` in `config.ini`:
+
+```ini
+# Delete snapshots older than 30 days (default: 90)
+snapshot-max-age-days = 30
+
+# Or disable rotation entirely
+# snapshot-max-age-days = 0
+```
+
+Alternatively, you can use an external cron job for finer control:
 
 ```bash
 # Keep only the 5 most recent snapshots
 ls -t /data/snapshots/snapshot-block-*.json | tail -n +6 | xargs rm -f
-```
-
-Or as a cron entry (runs daily at midnight):
-
-```cron
-0 0 * * * ls -t /data/snapshots/snapshot-block-*.json | tail -n +6 | xargs rm -f
 ```
 
 ## Loading from a Snapshot (DLT Mode)
@@ -167,21 +185,37 @@ vizd --snapshot /path/to/snapshot.json --plugin snapshot
 ### What happens during snapshot loading
 
 1. All plugins call `plugin_initialize()`. The **snapshot plugin** registers a `snapshot_load_callback` on the **chain plugin**.
-2. The **chain plugin** `plugin_startup()` detects the `--snapshot` option and opens the database using `open_from_snapshot()` — this initializes chainbase, indexes, and evaluators but does **not** open the block log.
-3. The chain plugin calls `snapshot_load_callback()` — the **snapshot plugin** reads the JSON file, validates the header (format version, chain ID, SHA-256 checksum), imports all objects into the database under a strong write lock, and calls `initialize_hardforks()` to populate the hardfork schedule.
-4. The fork database is seeded with the head block from the snapshot.
-5. The chain plugin emits `on_sync` so other plugins (webserver, APIs, etc.) know the node is ready.
-6. **P2P plugin** starts — sees the snapshot's head block and begins syncing from **LIB + 1** via the P2P network.
+2. The **chain plugin** `plugin_startup()` detects the `--snapshot` option and checks three conditions in order:
+   - **shared_memory.bin already exists** → skips import, falls through to normal startup (prevents re-importing on container restart).
+   - **Snapshot file not found** (e.g., already renamed to `.used`) → skips import, falls through to normal startup.
+   - **Both checks pass** → proceeds with snapshot import.
+3. The chain plugin opens the database using `open_from_snapshot()` — this wipes shared memory, initializes chainbase, indexes, and evaluators.
+4. The chain plugin calls `snapshot_load_callback()` — the **snapshot plugin** reads the JSON file, validates the header (format version, chain ID, SHA-256 checksum), imports all 32 tracked object types into the database under a strong write lock, and calls `initialize_hardforks()` to populate the hardfork schedule.
+5. **The snapshot file is renamed to `.used`** (e.g., `snapshot.json` → `snapshot.json.used`) to prevent re-import on restart.
+6. The fork database is seeded with the head block from the snapshot.
+7. The chain plugin emits `on_sync` so other plugins (webserver, APIs, etc.) know the node is ready.
+8. **P2P plugin** starts — sees the snapshot's head block and begins syncing from **LIB + 1** via the P2P network.
 
 All snapshot loading happens **inside** `chain::plugin_startup()`, before any other plugin starts. P2P and witness never see incomplete/genesis state.
 
+### Restart safety
+
+The node is safe to restart with `--snapshot` still on the command line (e.g., via `VIZD_EXTRA_OPTS` in Docker). Three layers of protection prevent accidental re-import:
+
+| Restart scenario | What happens |
+|---|---|
+| **1st start** (no shared_memory, file exists) | Imports snapshot, renames file to `.used` |
+| **Restart** (shared_memory exists) | Skips import: "Shared memory already exists" |
+| **Restart** (shared_memory wiped, file already `.used`) | Skips import: "Snapshot file not found" |
+| **Force re-import** | `--resync-blockchain` wipes shared_memory + provide a fresh snapshot file |
+
 ### Important notes
 
-- **No block log (DLT mode)**: When loaded from a snapshot, the node runs in DLT mode — the block_log remains empty. New irreversible blocks are **not** written to block_log. Historical block queries will not work for blocks before the snapshot.
-- **Restart without `--snapshot`**: After the initial snapshot load, restart the node **without** `--snapshot`. The node detects DLT mode automatically (block_log empty, chainbase has state), skips block_log validation, and continues syncing from P2P. The fork database is seeded by the first block received from P2P.
+- **No block log (DLT mode)**: When loaded from a snapshot, the node runs in DLT mode — the main `block_log` remains empty. A separate **DLT rolling block log** stores recent blocks (see below).
+- **Automatic DLT mode detection on restart**: After the initial snapshot load, the node detects DLT mode automatically (block_log empty, chainbase has state), skips block_log validation, and continues syncing from P2P.
 - **Chain ID validation**: The snapshot's chain ID must match the node's compiled chain ID. Mismatches are rejected.
 - **Checksum verification**: The payload checksum is verified before any objects are imported.
-- **One-time operation**: The `--snapshot` flag is a CLI-only option. After the initial load, restart the node normally (without `--snapshot`) for subsequent runs.
+- **Restart with `--snapshot` is safe**: See "Restart safety" above — no need to remove the flag after initial import.
 
 ## Snapshot File Format
 
@@ -292,12 +326,107 @@ vizd \
 
 The node will load the snapshot state in seconds and begin syncing new blocks from the network.
 
-### Step 4: Subsequent restarts (normal mode)
+### Step 4: Subsequent restarts
+
+The node is safe to restart even with `--snapshot` still on the command line. It detects existing shared_memory and skips re-import automatically:
 
 ```bash
-# After initial snapshot load, restart without --snapshot
+# Just restart — no need to remove --snapshot flag
 vizd --plugin p2p --p2p-seed-node seed1.viz.world:2001
 ```
+
+## DLT Rolling Block Log
+
+When a node runs in DLT mode (loaded from snapshot), the main `block_log` is empty. However, a separate **DLT rolling block log** (`dlt_block_log`) stores the most recent irreversible blocks. This enables:
+
+- **P2P block serving**: Peers can request recent blocks from this node (for fork resolution and initial sync catch-up).
+- **Local block queries**: API calls like `get_block` work for recent blocks.
+
+### Configuration
+
+```ini
+# Keep the last 100,000 blocks in the DLT block log (default)
+dlt-block-log-max-blocks = 100000
+
+# Or disable the DLT block log entirely
+# dlt-block-log-max-blocks = 0
+```
+
+### How it works
+
+- The DLT block log is stored in two files: `dlt_block_log.log` and `dlt_block_log.index` in the blockchain data directory.
+- The index uses an **offset-aware format**: an 8-byte header stores the start block number, followed by 8-byte position entries for each block.
+- When the log exceeds `dlt-block-log-max-blocks`, old blocks are truncated from the front (rolling window).
+- On restart, the DLT block log is preserved — blocks are only re-written from where they left off.
+- When the DLT block log is empty (fresh snapshot import), the node skips ahead to the last irreversible block number, since snapshot state is already trusted.
+
+### P2P block serving path
+
+When a peer requests a block:
+1. `p2p_plugin::get_item()` → `database::fetch_block_by_id()`
+2. First checks main `_block_log` (empty in DLT mode)
+3. Falls back to `_dlt_block_log` for recent blocks
+4. If not found in either → block unavailable
+
+## P2P Snapshot Sync
+
+Nodes can download snapshots directly from trusted peers over a custom TCP protocol, enabling fully automated bootstrap without manual file transfers.
+
+### Server (snapshot provider)
+
+Add to `config.ini`:
+
+```ini
+plugin = snapshot
+
+# Enable TCP snapshot serving
+allow-snapshot-serving = true
+
+# TCP endpoint for the snapshot server
+snapshot-serve-endpoint = 0.0.0.0:8092
+
+# Optional: restrict to trusted peers only
+# allow-snapshot-serving-only-trusted = true
+# trusted-snapshot-peer = 1.2.3.4:8092
+
+# Must have snapshots to serve
+snapshot-every-n-blocks = 28800
+snapshot-dir = /data/viz-snapshots
+```
+
+### Client (new node bootstrap)
+
+Start a new node that automatically downloads and loads a snapshot from trusted peers:
+
+```bash
+vizd \
+  --sync-snapshot-from-trusted-peer \
+  --plugin snapshot \
+  --plugin p2p
+```
+
+With `config.ini`:
+
+```ini
+trusted-snapshot-peer = seed1.viz.world:8092
+trusted-snapshot-peer = seed2.viz.world:8092
+```
+
+### How P2P sync works
+
+1. **Query phase**: The node connects to each trusted peer, sends a `snapshot_info_request`, and collects metadata (block number, checksum, compressed size).
+2. **Selection**: Picks the peer with the highest block number.
+3. **Download phase**: Downloads the snapshot in 1 MB chunks, writing to a temp file. Progress is logged.
+4. **Verification**: Streams the downloaded file through SHA-256 to verify checksum (without loading into memory).
+5. **Import**: Loads the verified snapshot into the database and initializes hardforks.
+
+### Security features
+
+- **Max snapshot size**: Downloads exceeding 2 GB are rejected.
+- **Streaming checksum**: SHA-256 verification uses streaming (1 MB chunks) to avoid loading the entire file into memory.
+- **Trusted peer list**: Connections are only accepted from/to configured trusted peers.
+- **Anti-spam**: Rate limiting (max connections per hour per IP), max 5 concurrent connections, 60-second timeout.
+- **Payload limits**: Control messages limited to 64 KB, only data replies allow up to 64 MB.
 
 ## Recommended Production Config
 
@@ -312,6 +441,12 @@ snapshot-every-n-blocks = 28800
 
 # Store snapshots in a dedicated directory
 snapshot-dir = /data/viz-snapshots
+
+# Auto-delete snapshots older than 90 days (default)
+snapshot-max-age-days = 90
+
+# DLT rolling block log: keep last 100k blocks (default)
+dlt-block-log-max-blocks = 100000
 
 # Standard chain settings
 shared-file-size = 4G
@@ -425,25 +560,24 @@ docker run \
 
 The node loads the snapshot state in seconds and begins syncing new blocks from P2P.
 
-**Important:** After the first start with `--snapshot`, restart the container **without** `VIZD_EXTRA_OPTS`:
-
-```bash
-docker stop vizd && docker rm vizd
-
-docker run \
-  -p 8083:2001 \
-  -p 9991:8090 \
-  -v ~/vizconfig:/etc/vizd \
-  -v ~/vizhome:/var/lib/vizd \
-  --name vizd -d vizblockchain/vizd:latest
-```
+**Restart safety:** The node is safe to restart with `VIZD_EXTRA_OPTS` still set. On restart:
+1. If shared_memory already exists → skips import, uses existing state.
+2. If the snapshot file was renamed to `.used` → skips import.
+3. No need to remove `VIZD_EXTRA_OPTS` after the first run.
 
 ### Managing snapshot disk space (Docker)
 
-Add a cron job on the **host** machine to keep only the 5 most recent snapshots:
+Snapshot rotation is built-in (default: delete files older than 90 days). Add `snapshot-max-age-days` to `~/vizconfig/config.ini` to customize:
+
+```ini
+# Delete snapshots older than 30 days
+snapshot-max-age-days = 30
+```
+
+Alternatively, add a cron job on the **host** machine:
 
 ```bash
-# Add to crontab (runs daily at midnight)
+# Keep only the 5 most recent snapshots
 0 0 * * * ls -t ~/vizhome/snapshots/snapshot-block-*.json | tail -n +6 | xargs rm -f
 ```
 
@@ -454,8 +588,10 @@ Add a cron job on the **host** machine to keep only the 5 most recent snapshots:
 | Start with periodic snapshots | Add `snapshot-every-n-blocks` to `~/vizconfig/config.ini`, restart container |
 | One-shot snapshot | `docker run --rm -e VIZD_EXTRA_OPTS="--create-snapshot /var/lib/vizd/snapshots/snap.json --plugin snapshot" ...` |
 | Load from snapshot | `docker run -e VIZD_EXTRA_OPTS="--snapshot /var/lib/vizd/snapshots/snap.json --plugin snapshot" ...` |
+| P2P auto-bootstrap | `docker run -e VIZD_EXTRA_OPTS="--sync-snapshot-from-trusted-peer --plugin snapshot" ...` (needs `trusted-snapshot-peer` in config) |
 | Find snapshots on host | `ls -lt ~/vizhome/snapshots/` |
 | Check snapshot creation logs | `docker logs vizd \| grep -i snapshot` |
+| Force re-import | `docker run -e VIZD_EXTRA_OPTS="--resync-blockchain --snapshot /path/snap.json --plugin snapshot" ...` |
 
 ## Modified Components
 
@@ -464,9 +600,12 @@ The snapshot plugin required changes to several core components:
 | Component | Change |
 |-----------|--------|
 | `chainbase::generic_index` | Added `set_next_id()` / `next_id()` for ID preservation during import |
-| `database.hpp/cpp` | Added `open_from_snapshot()`, `initialize_hardforks()`, `get_fork_db()`, `_dlt_mode` flag; DLT mode skips block_log writes and detects empty block_log on restart |
-| `chain plugin` | Added `snapshot_load_callback` and `snapshot_create_callback` — snapshot operations run inside `chain::plugin_startup()` before `on_sync()`, ensuring P2P/witness never see incomplete state |
+| `database.hpp/cpp` | Added `open_from_snapshot()`, `initialize_hardforks()`, `get_fork_db()`, `_dlt_mode` flag; DLT mode skips block_log writes and detects empty block_log on restart; DLT block log empty-skip logic for fresh snapshot imports |
+| `dlt_block_log.hpp/cpp` | New class: offset-aware rolling block log with 8-byte header index, `truncate_before()` for rotation, read/write with mutex locking |
+| `chain plugin` | Added `snapshot_load_callback`, `snapshot_create_callback`, `snapshot_p2p_sync_callback`; restart safety (shared_memory check + `.used` rename + file existence check); `dlt-block-log-max-blocks` config option |
+| `snapshot plugin` | Full implementation: create/load/periodic snapshots; P2P TCP sync (serve + download); anti-spam (rate limiting, max connections, timeouts); cached snapshot info; streaming SHA-256 checksum; built-in rotation (`snapshot-max-age-days`); elapsed time logging for all operations |
 | `content_object.hpp` | Added missing `FC_REFLECT` for `content_object`, `content_type_object`, `content_vote_object` |
 | `witness_objects.hpp` | Added missing `FC_REFLECT` for `witness_vote_object` |
 | `proposal_object.hpp` | Added missing `FC_REFLECT` for `required_approval_object` |
 | `vizd/main.cpp` | Registered `snapshot_plugin`, linked `graphene::snapshot` |
+| `p2p_plugin` | Added `_dlt_block_log` fallback in `get_item()` for serving blocks to peers in DLT mode |
