@@ -4014,8 +4014,9 @@ namespace graphene { namespace chain {
 
                                     // If dlt_block_log is empty (fresh from snapshot), skip past
                                     // already-irreversible blocks -- the snapshot is trusted.
-                                    if (dlt_head_num == 0) {
-                                        dlt_head_num = dpo.last_irreversible_block_num;
+                                    // Use LIB-1 so the current newly-irreversible block IS written.
+                                    if (dlt_head_num == 0 && dpo.last_irreversible_block_num > 0) {
+                                        dlt_head_num = dpo.last_irreversible_block_num - 1;
                                     }
 
                                     if (dlt_head_num < dpo.last_irreversible_block_num) {
@@ -4150,8 +4151,9 @@ namespace graphene { namespace chain {
 
                                     // If dlt_block_log is empty (fresh from snapshot), skip past
                                     // already-irreversible blocks -- the snapshot is trusted.
-                                    if (dlt_head_num == 0) {
-                                        dlt_head_num = dpo.last_irreversible_block_num;
+                                    // Use LIB-1 so the current newly-irreversible block IS written.
+                                    if (dlt_head_num == 0 && dpo.last_irreversible_block_num > 0) {
+                                        dlt_head_num = dpo.last_irreversible_block_num - 1;
                                     }
 
                                     if (dlt_head_num < dpo.last_irreversible_block_num) {
@@ -4371,8 +4373,9 @@ namespace graphene { namespace chain {
 
                     // If dlt_block_log is empty (fresh from snapshot), skip past
                     // already-irreversible blocks -- the snapshot is trusted.
-                    if (dlt_head_num == 0) {
-                        dlt_head_num = dpo.last_irreversible_block_num;
+                    // Use LIB-1 so the current newly-irreversible block IS written.
+                    if (dlt_head_num == 0 && dpo.last_irreversible_block_num > 0) {
+                        dlt_head_num = dpo.last_irreversible_block_num - 1;
                     }
 
                     if (dlt_head_num < dpo.last_irreversible_block_num) {
