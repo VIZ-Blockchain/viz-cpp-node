@@ -490,6 +490,13 @@ namespace chain {
             std::cerr << "   P2P snapshot sync complete. Started on blockchain with "
                       << my->db.head_block_num() << " blocks\n";
             ilog("Started on blockchain with ${n} blocks (from P2P snapshot sync)", ("n", my->db.head_block_num()));
+        } else if (my->db.head_block_num() == 0 && !snapshot_p2p_sync_callback) {
+            wlog("Node has no state (0 blocks) and no P2P snapshot sync configured.");
+            wlog("Will sync from genesis via P2P (this will be very slow for mature chains).");
+            wlog("To bootstrap from a trusted peer, configure 'trusted-snapshot-peer' in config.ini.");
+            std::cerr << "   WARNING: Node has 0 blocks and no snapshot sync configured.\n";
+            std::cerr << "   Will sync from genesis via P2P (very slow for mature chains).\n";
+            std::cerr << "   Add 'trusted-snapshot-peer = <ip>:<port>' to config.ini for fast bootstrap.\n";
         }
 
         on_sync();

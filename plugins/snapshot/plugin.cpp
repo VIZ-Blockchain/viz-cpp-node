@@ -910,6 +910,15 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(const fc::path& output
         ("time", compress_elapsed));
 
     std::ofstream out(output_path.string(), std::ios::binary);
+    if (!out.is_open()) {
+        // Try to create parent directory
+        auto parent = output_path.parent_path();
+        if (!parent.string().empty() && !boost::filesystem::exists(parent)) {
+            boost::filesystem::create_directories(parent);
+            ilog("Created snapshot directory: ${d}", ("d", parent.string()));
+            out.open(output_path.string(), std::ios::binary);
+        }
+    }
     FC_ASSERT(out.is_open(), "Failed to open snapshot file for writing: ${p}", ("p", output_path.string()));
     out.write(compressed.data(), compressed.size());
     out.flush();
@@ -1219,8 +1228,13 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
 void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::signed_block& b) {
     uint32_t block_num = b.block_num();
 
+    // Skip snapshot creation while syncing from P2P (block time far behind wall clock).
+    // Only create snapshots when the node is caught up and processing live blocks.
+    auto block_age = fc::time_point::now() - fc::time_point(b.timestamp);
+    bool is_syncing = block_age > fc::seconds(60);
+
     // Check --snapshot-at-block: one-time snapshot at exact block
-    if (snapshot_at_block > 0 && block_num == snapshot_at_block) {
+    if (snapshot_at_block > 0 && block_num == snapshot_at_block && !is_syncing) {
         fc::path output;
         if (!snapshot_dir.empty()) {
             output = fc::path(snapshot_dir) / ("snapshot-block-" + std::to_string(block_num) + ".json");
@@ -1240,8 +1254,8 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         }
     }
 
-    // Check --snapshot-every-n-blocks: periodic snapshots
-    if (snapshot_every_n_blocks > 0 && block_num % snapshot_every_n_blocks == 0) {
+    // Check --snapshot-every-n-blocks: periodic snapshots (only when synced)
+    if (snapshot_every_n_blocks > 0 && block_num % snapshot_every_n_blocks == 0 && !is_syncing) {
         std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
         fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".json");
         ilog("Periodic snapshot at block ${b}: ${p}", ("b", block_num)("p", output.string()));
@@ -1711,6 +1725,10 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 
     // Create temp file for download
     std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
+    if (!boost::filesystem::exists(dir)) {
+        boost::filesystem::create_directories(dir);
+        ilog("Created snapshot directory: ${d}", ("d", dir));
+    }
     std::string temp_path = dir + "/snapshot-download-temp.vizjson";
     std::ofstream out(temp_path, std::ios::binary);
     FC_ASSERT(out.is_open(), "Failed to create temp file for snapshot download: ${p}", ("p", temp_path));
@@ -1957,6 +1975,8 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
         };
     } else if (!my->trusted_snapshot_peers.empty()) {
         ilog("P2P snapshot sync disabled (sync-snapshot-from-trusted-peer = false)");
+    } else {
+        ilog("No trusted-snapshot-peer configured. P2P snapshot sync not available.");
     }
 }
 
