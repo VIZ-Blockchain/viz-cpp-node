@@ -17,11 +17,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced P2P snapshot synchronization with automatic default behavior for empty nodes
-- Improved logging with real-time progress feedback during snapshot operations
-- Added automatic directory creation capabilities for snapshot file management
-- Enhanced chain plugin integration for seamless snapshot synchronization during blockchain initialization
-- Updated snapshot creation and loading processes with improved error handling and validation
+- Enhanced DLT mode integration with proper _dlt_mode flag setting during snapshot loading
+- Improved P2P snapshot synchronization for empty nodes with automatic detection and seamless bootstrap
+- Enhanced progress tracking and logging with real-time download progress and detailed status updates
+- Improved directory management capabilities with automatic creation and cleanup mechanisms
+- Enhanced chain plugin integration with sophisticated callback system for automatic snapshot synchronization
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -73,27 +73,33 @@ J[TCP Server] --> K[TCP Client]
 L[Database Integration] --> M[Open From Snapshot]
 N[Auto Directory Creation] --> O[Progress Logging]
 P[Chain Plugin Callbacks] --> Q[Seamless Integration]
+R[_dlt_mode Flag Setting] --> S[DLT Mode Integration]
 end
 subgraph "Data Management"
-R[Snapshot Files] --> S[Compression]
-T[Header Validation] --> U[Checksum Verification]
-V[Callback Registration] --> W[State Restoration]
-X[Automatic Cleanup] --> Y[Age-based Rotation]
+T[Snapshot Files] --> U[Compression]
+V[Header Validation] --> W[Checksum Verification]
+X[Callback Registration] --> Y[State Restoration]
+Z[Automatic Cleanup] --> AA[Age-based Rotation]
+AB[Progress Tracking] --> AC[Real-time Updates]
 end
 A --> F
 A --> J
 B --> H
 B --> I
-C --> R
-D --> S
+C --> T
+D --> U
 B --> L
 L --> M
-M --> W
+M --> Y
 N --> O
 O --> P
 P --> Q
 Q --> X
 X --> Y
+Y --> AB
+AB --> AC
+R --> S
+S --> Q
 ```
 
 **Diagram sources**
@@ -210,40 +216,40 @@ C[Automatic Creation] --> D[Block-based Triggers]
 E[P2P Synchronization] --> F[Trusted Peer Network]
 G[Direct State Loading] --> H[Programmatic API]
 I[Automatic Empty Node Sync] --> J[Default Behavior]
+K[DLT Mode Integration] --> L[_dlt_mode Flag Setting]
 end
 subgraph "Data Flow"
-K[Database State] --> L[JSON Export]
-L --> M[Zlib Compression]
-M --> N[Snapshot File]
-N --> O[File System Storage]
-O --> P[Automatic Directory Creation]
-end
-subgraph "Validation Layer"
-Q[Header Validation] --> R[Checksum Verification]
-R --> S[Integrity Check]
-T[Callback Registration] --> U[State Restoration]
-V[Progress Logging] --> W[Real-time Feedback]
+M[Database State] --> N[JSON Export]
+N --> O[Zlib Compression]
+O --> P[Snapshot File]
+P --> Q[File System Storage]
+Q --> R[Automatic Directory Creation]
+S[Progress Tracking] --> T[Real-time Feedback]
+U[Chain Plugin Callbacks] --> V[Seamless Integration]
+W[Checksum Verification] --> X[Integrity Check]
 end
 subgraph "Network Layer"
-X[TCP Server] --> Y[Client Connections]
-Y --> Z[Chunked Transfer]
-Z --> AA[Progress Tracking]
-BB[Automatic Cleanup] --> CC[Age-based Rotation]
+Y[TCP Server] --> Z[Client Connections]
+Z --> AA[Chunked Transfer]
+AA --> BB[Progress Tracking]
+CC[Automatic Cleanup] --> DD[Age-based Rotation]
+EE[Trusted Peer Enforcement] --> FF[Security]
 end
-A --> K
-C --> K
-E --> X
-G --> T
+A --> M
+C --> M
+E --> Y
+G --> S
 I --> E
-K --> Q
-Q --> S
-S --> N
-N --> O
-O --> P
-X --> Y
+K --> L
+M --> W
+W --> P
+P --> Q
+Q --> R
 Y --> Z
 Z --> AA
-BB --> CC
+AA --> BB
+CC --> DD
+EE --> FF
 ```
 
 **Diagram sources**
@@ -506,7 +512,8 @@ Verify --> |Match| Import[Import Objects]
 Import --> ValidateObjects[Validate Imported Objects]
 ValidateObjects --> |Fail| Error
 ValidateObjects --> |Success| InitializeHF[Initialize Hardforks]
-InitializeHF --> Success[State Restoration Complete]
+InitializeHF --> SetDLTMode[Set _dlt_mode Flag]
+SetDLTMode --> Success[State Restoration Complete]
 Error --> Cleanup[Cleanup Resources]
 ```
 
@@ -562,7 +569,7 @@ Snap->>Snap : Select Best Peer
 Snap->>Peers : Download Snapshot Chunks
 Peers-->>Snap : Chunk Data
 Snap->>FS : Verify Checksum
-Snap->>FS : Save Final Snapshot
+Snap->>FS : Save Final File
 Snap->>Snap : Load Snapshot
 Snap->>Chain : Mark DLT Mode
 Snap->>Chain : Initialize Hardforks
@@ -761,6 +768,28 @@ NormalStartup --> Complete
 **Diagram sources**
 - [plugin.cpp:1984-2017](file://plugins/snapshot/plugin.cpp#L1984-L2017)
 
+### DLT Mode Integration
+
+**New**: The snapshot plugin now properly sets the `_dlt_mode` flag during snapshot loading, enabling seamless DLT mode operation:
+
+```mermaid
+sequenceDiagram
+participant Snap as "Snapshot Plugin"
+participant DB as "Database"
+participant Chain as "Chain Plugin"
+Snap->>DB : load_snapshot()
+DB->>DB : Import Snapshot State
+DB->>DB : Set Revision
+DB->>DB : Seed ForkDB
+DB->>DB : _dlt_mode = true
+DB->>DB : initialize_hardforks()
+DB-->>Chain : Database Ready
+Chain-->>Chain : DLT Mode Operational
+```
+
+**Diagram sources**
+- [plugin.cpp:1968-1970](file://plugins/snapshot/plugin.cpp#L1968-L1970)
+
 **Section sources**
 - [plugin.cpp:1925-1981](file://plugins/snapshot/plugin.cpp#L1925-L1981)
 - [plugin.cpp:1984-2017](file://plugins/snapshot/plugin.cpp#L1984-L2017)
@@ -787,28 +816,32 @@ Q[graphene_chain_plugin] --> R[Chain Plugin]
 S[graphene_time] --> T[Time Management]
 U[graphene_json_rpc] --> V[RPC Integration]
 W[graphene_p2p] --> X[P2P Integration]
+Y[graphene_dlt_block_log] --> Z[DLT Block Logging]
 end
 subgraph "Snapshot Plugin"
-Y[snapshot_plugin] --> Z[plugin_impl]
-Z --> AA[Serialization Layer]
-Z --> BB[Network Layer]
-Z --> CC[File Management]
-Z --> DD[Callback System]
-Z --> EE[Progress Logging]
+AA[snapshot_plugin] --> BB[plugin_impl]
+BB --> CC[Serialization Layer]
+BB --> DD[Network Layer]
+BB --> EE[File Management]
+BB --> FF[Callback System]
+BB --> GG[Progress Logging]
+BB --> HH[_dlt_mode Integration]
 end
-A --> Y
-E --> Y
-G --> Y
-I --> Y
-K --> Y
-M --> Y
-O --> Y
-Q --> Y
-S --> Y
-U --> Y
-W --> Y
-DD --> Y
-EE --> Y
+A --> AA
+E --> AA
+G --> AA
+I --> AA
+K --> AA
+M --> AA
+O --> AA
+Q --> AA
+S --> AA
+U --> AA
+W --> AA
+Y --> AA
+FF --> AA
+GG --> AA
+HH --> AA
 ```
 
 **Diagram sources**
@@ -828,6 +861,7 @@ The plugin's dependencies are carefully managed to minimize coupling while maxim
 - **graphene_protocol**: Blockchain-specific data types and structures
 - **graphene_time**: Time-related operations for snapshot metadata
 - **graphene_p2p**: P2P network integration for snapshot synchronization
+- **graphene_dlt_block_log**: DLT mode block logging support
 
 **Section sources**
 - [CMakeLists.txt:27-37](file://plugins/snapshot/CMakeLists.txt#L27-L37)
@@ -899,6 +933,11 @@ The snapshot plugin is designed with several performance optimizations:
 - **Cause**: Missing trusted peer configuration
 - **Solution**: Configure trusted-snapshot-peer options
 
+**DLT Mode Integration Issues**
+- **Symptom**: `DLT mode not properly initialized`
+- **Cause**: Missing `_dlt_mode` flag setting during snapshot loading
+- **Solution**: Ensure snapshot loading process sets `_dlt_mode = true`
+
 **Section sources**
 - [plugin.cpp:986-1032](file://plugins/snapshot/plugin.cpp#L986-L1032)
 - [plugin.cpp:1252-1303](file://plugins/snapshot/plugin.cpp#L1252-L1303)
@@ -962,6 +1001,7 @@ Key strengths of the system include:
 - **Intelligent Automation**: Automatic directory management and cleanup
 - **Real-time Monitoring**: Comprehensive logging and progress feedback
 - **Automatic State Detection**: Intelligent response to different node states
+- **DLT Mode Support**: Proper integration with DLT mode operations through _dlt_mode flag setting
 
 The plugin's integration with the broader VIZ ecosystem ensures seamless operation alongside existing blockchain infrastructure, while its well-documented APIs and configuration options facilitate easy deployment and maintenance.
 

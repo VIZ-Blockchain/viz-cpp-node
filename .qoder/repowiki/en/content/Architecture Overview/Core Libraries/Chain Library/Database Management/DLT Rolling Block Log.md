@@ -8,32 +8,33 @@
 - [database.cpp](file://libraries/chain/database.cpp)
 - [plugin.cpp](file://plugins/chain/plugin.cpp)
 - [database.hpp](file://libraries/chain/include/graphene/chain/database.hpp)
+- [snapshot_plugin.cpp](file://plugins/snapshot/plugin.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced DLT mode support documentation with comprehensive rolling block log implementation
-- Added detailed coverage of selective retention policies and automatic pruning capabilities
-- Expanded configuration management section with runtime parameter documentation
-- Updated architecture diagrams to reflect integrated DLT mode operation
-- Added troubleshooting guidance for DLT-specific scenarios
+- Enhanced DLT mode operations with improved block identification and verification processes
+- Updated database layer integration to handle DLT mode seamlessly with special handling for block identification and verification during snapshot operations
+- Improved fallback mechanisms from primary block log to DLT rolling block log
+- Enhanced snapshot plugin integration with better block verification and checksum validation
+- Updated architecture diagrams to reflect integrated DLT mode operation with improved error handling
 
 ## Table of Contents
 1. [Introduction](#introduction)
-2. [Project Structure](#project-structure)
-3. [Core Components](#core-components)
-4. [Architecture Overview](#architecture-overview)
-5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Selective Retention Policies](#selective-retention-policies)
-7. [Automatic Pruning Capabilities](#automatic-pruning-capabilities)
-8. [Configuration Management](#configuration-management)
-9. [Dependency Analysis](#dependency-analysis)
-10. [Performance Considerations](#performance-considerations)
-11. [Troubleshooting Guide](#troubleshooting-guide)
+2. [Project Structure](#project_structure)
+3. [Core Components](#core_components)
+4. [Architecture Overview](#architecture_overview)
+5. [Detailed Component Analysis](#detailed_component_analysis)
+6. [Selective Retention Policies](#selective_retention_policies)
+7. [Automatic Pruning Capabilities](#automatic_pruning_capabilities)
+8. [Configuration Management](#configuration_management)
+9. [Dependency Analysis](#dependency_analysis)
+10. [Performance Considerations](#performance_observations)
+11. [Troubleshooting Guide](#troubleshooting_guide)
 12. [Conclusion](#conclusion)
 
 ## Introduction
-This document explains the comprehensive DLT (Data Ledger Technology) Rolling Block Log implementation used by VIZ blockchain nodes to maintain a sliding window of recent irreversible blocks with selective retention policies and automatic pruning capabilities. The DLT mode provides advanced support for snapshot-based nodes, enabling efficient serving of recent blocks to P2P peers while maintaining configurable retention windows and automated cleanup mechanisms.
+This document explains the comprehensive DLT (Data Ledger Technology) Rolling Block Log implementation used by VIZ blockchain nodes to maintain a sliding window of recent irreversible blocks with selective retention policies and automatic pruning capabilities. The DLT mode provides advanced support for snapshot-based nodes, enabling efficient serving of recent blocks to P2P peers while maintaining configurable retention windows and automated cleanup mechanisms. Recent enhancements include improved block identification and verification processes during snapshot operations and enhanced fallback mechanisms between block logs.
 
 ## Project Structure
 The DLT rolling block log is implemented as a standalone component with comprehensive integration into the main database system. It operates alongside the traditional block log while providing specialized functionality for snapshot-based ("DLT") nodes with selective retention and automatic pruning capabilities.
@@ -47,15 +48,18 @@ DB["database.cpp"]
 END
 subgraph "Plugins"
 CP["plugins/chain/plugin.cpp"]
+SP["plugins/snapshot/plugin.cpp"]
 END
 subgraph "Config"
 DH["database.hpp"]
 END
 CP --> DB
+SP --> DB
 DB --> DLT
 DB --> BL
 DLT -.-> BL
 CP --> DH
+SP --> DH
 ```
 
 **Diagram sources**
@@ -65,6 +69,7 @@ CP --> DH
 - [database.cpp:220-271](file://libraries/chain/database.cpp#L220-L271)
 - [plugin.cpp:320-330](file://plugins/chain/plugin.cpp#L320-L330)
 - [database.hpp:60-70](file://libraries/chain/include/graphene/chain/database.hpp#L60-L70)
+- [snapshot_plugin.cpp:1960-2039](file://plugins/snapshot/plugin.cpp#L1960-L2039)
 
 **Section sources**
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
@@ -73,12 +78,14 @@ CP --> DH
 - [database.cpp:220-271](file://libraries/chain/database.cpp#L220-L271)
 - [plugin.cpp:320-330](file://plugins/chain/plugin.cpp#L320-L330)
 - [database.hpp:60-70](file://libraries/chain/include/graphene/chain/database.hpp#L60-L70)
+- [snapshot_plugin.cpp:1960-2039](file://plugins/snapshot/plugin.cpp#L1960-L2039)
 
 ## Core Components
 - **DLT Rolling Block Log API**: Provides comprehensive methods for opening/closing, appending blocks, selective reading by block number, querying head/start/end indices, and intelligent truncation with retention policies.
 - **Advanced Internal Implementation**: Manages sophisticated memory-mapped files for data and offset-aware index storage, maintains head state with automatic validation, reconstructs indexes when inconsistencies are detected, and performs safe truncation with temporary files and atomic operations.
 - **Integrated Database System**: Seamlessly opens both DLT rolling block log and primary block log during normal and snapshot modes, implements fallback block retrieval when primary block log is empty, and coordinates DLT mode detection and operation.
 - **Comprehensive Chain Plugin Configuration**: Exposes runtime options for configuring maximum blocks to retain, selective retention policies, and automatic pruning thresholds with flexible parameter management.
+- **Enhanced Snapshot Plugin Integration**: Provides improved block verification, checksum validation, and seamless transition to DLT mode after snapshot import with enhanced error handling.
 
 **Enhanced Key Capabilities**:
 - Offset-aware index layout supporting arbitrary start block numbers with intelligent retention policies
@@ -86,21 +93,25 @@ CP --> DH
 - Automatic index reconstruction with conflict resolution and selective retention enforcement
 - Safe truncation with temporary files, atomic swapping, and intelligent pruning based on configured limits
 - Comprehensive DLT mode support with fallback mechanisms and selective block serving
+- Enhanced block identification and verification during snapshot operations
+- Improved error handling and validation for DLT mode operations
 
 **Section sources**
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
 - [dlt_block_log.cpp:18-278](file://libraries/chain/dlt_block_log.cpp#L18-L278)
 - [database.cpp:230-231](file://libraries/chain/database.cpp#L230-L231)
 - [plugin.cpp:327-329](file://plugins/chain/plugin.cpp#L327-L329)
+- [snapshot_plugin.cpp:1968-1970](file://plugins/snapshot/plugin.cpp#L1968-L1970)
 
 ## Architecture Overview
-The DLT rolling block log operates in conjunction with the primary block log, providing comprehensive support for snapshot-based nodes with selective retention policies and automatic pruning. During normal operation, the database opens both logs and validates them. In DLT mode (after snapshot import), the primary block log remains empty while the database holds state; the DLT rolling block log serves as a fallback with intelligent retention management.
+The DLT rolling block log operates in conjunction with the primary block log, providing comprehensive support for snapshot-based nodes with selective retention policies and automatic pruning. During normal operation, the database opens both logs and validates them. In DLT mode (after snapshot import), the primary block log remains empty while the database holds state; the DLT rolling block log serves as a fallback with intelligent retention management and enhanced block verification.
 
 ```mermaid
 sequenceDiagram
 participant App as "Application"
 participant Chain as "Chain Plugin"
 participant DB as "Database"
+participant SP as "Snapshot Plugin"
 participant DLT as "DLT Block Log"
 participant BL as "Block Log"
 App->>Chain : Start node
@@ -129,6 +140,7 @@ DB-->>App : block
 - [database.cpp:560-627](file://libraries/chain/database.cpp#L560-L627)
 - [block_log.cpp:238-241](file://libraries/chain/block_log.cpp#L238-L241)
 - [dlt_block_log.cpp:313-328](file://libraries/chain/dlt_block_log.cpp#L313-L328)
+- [snapshot_plugin.cpp:1968-1970](file://plugins/snapshot/plugin.cpp#L1968-L1970)
 
 ## Detailed Component Analysis
 
@@ -274,6 +286,20 @@ end
 - [database.cpp:230-268](file://libraries/chain/database.cpp#L230-L268)
 - [database.cpp:560-627](file://libraries/chain/database.cpp#L560-L627)
 
+### Enhanced Snapshot Plugin Integration
+The snapshot plugin provides comprehensive integration with DLT mode operations, including improved block verification, checksum validation, and seamless transition to DLT mode after snapshot import with enhanced error handling.
+
+**Enhanced Snapshot Operations**:
+- Improved block identification and verification during snapshot loading
+- Enhanced checksum validation with comprehensive error reporting
+- Seamless transition to DLT mode with proper state initialization
+- Better integration with database layer for DLT mode operations
+- Enhanced fallback mechanisms for block verification and serving
+
+**Section sources**
+- [snapshot_plugin.cpp:1968-1970](file://plugins/snapshot/plugin.cpp#L1968-L1970)
+- [snapshot_plugin.cpp:942-1054](file://plugins/snapshot/plugin.cpp#L942-L1054)
+
 ## Selective Retention Policies
 The DLT rolling block log implements sophisticated selective retention policies that allow fine-grained control over which blocks are maintained and when automatic pruning occurs. These policies ensure optimal disk usage while maintaining serviceability for P2P peers.
 
@@ -329,6 +355,7 @@ The DLT rolling block log implementation has comprehensive dependencies across m
   - FC library for comprehensive assertions, data streams, and logging
 - database.cpp integrates DLT block log with comprehensive fallback mechanisms and state management
 - plugin.cpp configures DLT rolling block log with runtime parameter management and validation
+- snapshot_plugin.cpp provides enhanced integration with DLT mode operations and block verification
 
 ```mermaid
 graph LR
@@ -336,6 +363,7 @@ DLT_H["dlt_block_log.hpp"] --> DLT_CPP["dlt_block_log.cpp"]
 DLT_CPP --> BL_CPP["block_log.cpp"]
 DLT_CPP --> DB_CPP["database.cpp"]
 CP_CPP["plugins/chain/plugin.cpp"] --> DB_CPP
+SP_CPP["plugins/snapshot/plugin.cpp"] --> DB_CPP
 DB_CPP --> DH_HPP["database.hpp"]
 ```
 
@@ -345,6 +373,7 @@ DB_CPP --> DH_HPP["database.hpp"]
 - [block_log.cpp:1-6](file://libraries/chain/block_log.cpp#L1-L6)
 - [database.cpp:1-10](file://libraries/chain/database.cpp#L1-L10)
 - [plugin.cpp:1-10](file://plugins/chain/plugin.cpp#L1-L10)
+- [snapshot_plugin.cpp:1960-2039](file://plugins/snapshot/plugin.cpp#L1960-L2039)
 - [database.hpp:60-70](file://libraries/chain/include/graphene/chain/database.hpp#L60-L70)
 
 **Section sources**
@@ -353,6 +382,7 @@ DB_CPP --> DH_HPP["database.hpp"]
 - [block_log.cpp:1-6](file://libraries/chain/block_log.cpp#L1-L6)
 - [database.cpp:1-10](file://libraries/chain/database.cpp#L1-L10)
 - [plugin.cpp:1-10](file://plugins/chain/plugin.cpp#L1-L10)
+- [snapshot_plugin.cpp:1960-2039](file://plugins/snapshot/plugin.cpp#L1960-L2039)
 - [database.hpp:60-70](file://libraries/chain/include/graphene/chain/database.hpp#L60-L70)
 
 ## Performance Considerations
@@ -375,6 +405,7 @@ Comprehensive troubleshooting guidance for DLT-specific scenarios, retention pol
 - Truncation failures with temporary file cleanup and atomic operation validation
 - Retention policy violations with selective block preservation and pruning triggers
 - Configuration parameter validation and runtime parameter enforcement
+- Enhanced block verification failures during snapshot operations
 
 **Section sources**
 - [dlt_block_log.cpp:161-209](file://libraries/chain/dlt_block_log.cpp#L161-L209)
@@ -382,4 +413,4 @@ Comprehensive troubleshooting guidance for DLT-specific scenarios, retention pol
 - [database.cpp:259-268](file://libraries/chain/database.cpp#L259-L268)
 
 ## Conclusion
-The DLT Rolling Block Log provides a comprehensive, offset-aware append-only storage mechanism specifically designed for snapshot-based nodes with advanced selective retention policies and automatic pruning capabilities. Its sophisticated integration with the database ensures seamless fallback when the primary block log is empty, while configurable limits, intelligent retention enforcement, and automatic cleanup mechanisms help manage disk usage efficiently. The implementation leverages advanced memory-mapped files, strict position validation, and comprehensive error handling to deliver reliable performance and data integrity for modern blockchain operations.
+The DLT Rolling Block Log provides a comprehensive, offset-aware append-only storage mechanism specifically designed for snapshot-based nodes with advanced selective retention policies and automatic pruning capabilities. Recent enhancements include improved block identification and verification processes during snapshot operations, enhanced fallback mechanisms between block logs, and better integration with the snapshot plugin for seamless DLT mode operations. Its sophisticated integration with the database ensures seamless fallback when the primary block log is empty, while configurable limits, intelligent retention enforcement, and automatic cleanup mechanisms help manage disk usage efficiently. The implementation leverages advanced memory-mapped files, strict position validation, and comprehensive error handling to deliver reliable performance and data integrity for modern blockchain operations.
