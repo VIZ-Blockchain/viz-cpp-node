@@ -1572,8 +1572,10 @@ void snapshot_plugin::plugin_impl::accept_loop() {
 }
 
 void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
-    // Read initial request (server-side: small payload limit)
-    auto [msg_type, payload] = read_message(sock, 64 * 1024);
+    // Read initial request (server-side: small payload limit).
+    // Use 256 KB to tolerate slightly oversized messages from future protocol versions,
+    // while still rejecting non-protocol traffic (P2P nodes, scanners, browsers).
+    auto [msg_type, payload] = read_message(sock, 256 * 1024);
 
     if (msg_type == snapshot_info_request) {
         // Use cached snapshot info if available, otherwise find and cache
@@ -1612,7 +1614,7 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
         uint64_t bytes_sent = 0;
         while (true) {
             try {
-                auto [req_type, req_payload] = read_message(sock, 64 * 1024);
+                auto [req_type, req_payload] = read_message(sock, 256 * 1024);
                 if (req_type != snapshot_data_request) break;
 
                 auto req = unpack_from_vec<snapshot_data_request_data>(req_payload);
@@ -1684,7 +1686,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
             sock.connect_to(ep);
 
             send_message_empty(sock, snapshot_info_request);
-            auto [msg_type, payload] = read_message(sock, 64 * 1024);
+            auto [msg_type, payload] = read_message(sock, 256 * 1024);
 
             if (msg_type == snapshot_info_reply) {
                 auto info = unpack_from_vec<snapshot_info_reply_data>(payload);
@@ -1728,7 +1730,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 
     // Request info again to establish session
     send_message_empty(sock, snapshot_info_request);
-    auto [info_type, info_payload] = read_message(sock, 64 * 1024);
+    auto [info_type, info_payload] = read_message(sock, 256 * 1024);
     FC_ASSERT(info_type == snapshot_info_reply, "Unexpected response from peer during download");
 
     // Validate snapshot size against maximum
