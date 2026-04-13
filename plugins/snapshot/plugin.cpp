@@ -30,6 +30,7 @@
 #include <set>
 #include <map>
 #include <algorithm>
+#include <atomic>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -700,6 +701,20 @@ public:
     static const uint64_t RATE_LIMIT_WINDOW_SEC = 3600; // 1 hour
     std::map<uint32_t, std::vector<fc::time_point>> connection_history; // IP -> timestamps
 
+    // Cached snapshot info for serving (avoids re-reading file on each request)
+    std::string cached_snap_path;
+    uint64_t cached_snap_size = 0;
+    fc::sha256 cached_snap_checksum;
+    uint32_t cached_snap_block_num = 0;
+
+    // Async connection tracking
+    static const uint32_t MAX_CONCURRENT_CONNECTIONS = 5;
+    static const uint32_t CONNECTION_TIMEOUT_SEC = 60;
+    std::atomic<uint32_t> active_connection_count{0};
+
+    // Max snapshot file size for download (2 GB)
+    static const uint64_t MAX_SNAPSHOT_SIZE = 2ULL * 1024 * 1024 * 1024;
+
     boost::signals2::scoped_connection applied_block_conn;
 
     void create_snapshot(const fc::path& output_path);
@@ -712,6 +727,7 @@ public:
     void stop_server();
     void accept_loop();
     void handle_connection(fc::tcp_socket& sock);
+    void update_snapshot_cache(const fc::path& snap_path);
 
     fc::path find_latest_snapshot();
     std::string download_snapshot_from_peers();
@@ -913,6 +929,52 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(const fc::path& output
         ("path", output_path.string())
         ("size", compressed.size())
         ("time", double((end - start).count()) / 1000000.0));
+
+    // Update cached info for serving
+    update_snapshot_cache(output_path);
+}
+
+void snapshot_plugin::plugin_impl::update_snapshot_cache(const fc::path& snap_path) {
+    try {
+        std::ifstream in(snap_path.string(), std::ios::binary);
+        if (!in.is_open()) return;
+
+        // Stream-compute checksum in 1 MB chunks
+        fc::sha256::encoder enc;
+        uint64_t file_size = 0;
+        char buf[1048576];
+        while (in.good()) {
+            in.read(buf, sizeof(buf));
+            auto n = in.gcount();
+            if (n > 0) {
+                enc.write(buf, static_cast<uint32_t>(n));
+                file_size += n;
+            }
+        }
+        in.close();
+
+        // Parse block number from filename
+        uint32_t block_num = 0;
+        std::string filename = snap_path.filename().string();
+        auto pos = filename.find("snapshot-block-");
+        if (pos != std::string::npos) {
+            try {
+                std::string num_str = filename.substr(pos + 15);
+                auto dot_pos = num_str.find('.');
+                if (dot_pos != std::string::npos) num_str = num_str.substr(0, dot_pos);
+                block_num = static_cast<uint32_t>(std::stoul(num_str));
+            } catch (...) {}
+        }
+
+        cached_snap_path = snap_path.string();
+        cached_snap_size = file_size;
+        cached_snap_checksum = enc.result();
+        cached_snap_block_num = block_num;
+        ilog("Snapshot cache updated: block ${b}, size ${s}, checksum ${c}",
+             ("b", block_num)("s", file_size)("c", std::string(cached_snap_checksum)));
+    } catch (const std::exception& e) {
+        wlog("Failed to update snapshot cache: ${e}", ("e", e.what()));
+    }
 }
 
 void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
@@ -1224,12 +1286,15 @@ void send_message_empty(fc::tcp_socket& sock, uint32_t msg_type) {
 }
 
 /// Read a message: returns (msg_type, payload).
-std::pair<uint32_t, std::vector<char>> read_message(fc::tcp_socket& sock) {
+/// max_payload_size limits the accepted payload (default 64 MB for data replies,
+/// use 64 KB for control/request messages to prevent memory abuse).
+std::pair<uint32_t, std::vector<char>> read_message(fc::tcp_socket& sock, uint32_t max_payload_size = 64 * 1024 * 1024) {
     uint32_t payload_size = 0;
     uint32_t msg_type = 0;
     read_exact(sock, reinterpret_cast<char*>(&payload_size), 4);
     read_exact(sock, reinterpret_cast<char*>(&msg_type), 4);
-    FC_ASSERT(payload_size <= 64 * 1024 * 1024, "Message too large: ${s} bytes", ("s", payload_size));
+    FC_ASSERT(payload_size <= max_payload_size, "Message too large: ${s} bytes (limit ${l})",
+        ("s", payload_size)("l", max_payload_size));
     std::vector<char> payload(payload_size);
     if (payload_size > 0) {
         read_exact(sock, payload.data(), payload_size);
@@ -1391,6 +1456,14 @@ void snapshot_plugin::plugin_impl::accept_loop() {
                 }
             }
 
+            // Reject if max concurrent connections reached
+            if (active_connection_count.load() >= MAX_CONCURRENT_CONNECTIONS) {
+                wlog("Snapshot server: max concurrent connections reached, rejecting ${ip}",
+                     ("ip", std::string(remote.get_address())));
+                sock.close();
+                continue;
+            }
+
             // Anti-spam: reject if this IP already has an active session
             if (active_sessions.count(remote_ip)) {
                 wlog("Snapshot server: rejected duplicate session from ${ip} (already connected)",
@@ -1411,34 +1484,53 @@ void snapshot_plugin::plugin_impl::accept_loop() {
                         [&cutoff](const fc::time_point& t) { return t < cutoff; }),
                     history.end());
 
-                if (history.size() >= MAX_CONNECTIONS_PER_HOUR) {
+                // Clean up empty entries to prevent unbounded map growth
+                if (history.empty()) {
+                    connection_history.erase(remote_ip);
+                    // Re-check rate limit with fresh entry
+                    connection_history[remote_ip].push_back(now);
+                } else if (history.size() >= MAX_CONNECTIONS_PER_HOUR) {
                     wlog("Snapshot server: rate limit exceeded for ${ip} (${n} connections in last hour)",
                          ("ip", std::string(remote.get_address()))("n", history.size()));
                     sock.close();
                     continue;
+                } else {
+                    history.push_back(now);
                 }
-
-                history.push_back(now);
             }
 
             // Register active session
             active_sessions.insert(remote_ip);
+            active_connection_count.fetch_add(1);
 
             ilog("Snapshot server: accepted connection from ${ip}:${port}",
                  ("ip", std::string(remote.get_address()))("port", remote.port()));
 
-            try {
-                handle_connection(sock);
-            } catch (const fc::exception& e) {
-                wlog("Snapshot server: error handling connection: ${e}", ("e", e.to_detail_string()));
-            } catch (const std::exception& e) {
-                wlog("Snapshot server: error handling connection: ${e}", ("e", e.what()));
-            }
+            // Handle connection asynchronously in a separate fiber with timeout
+            auto shared_sock = std::make_shared<fc::tcp_socket>(std::move(sock));
+            fc::async([this, shared_sock, remote_ip]() {
+                try {
+                    auto conn_start = fc::time_point::now();
+                    auto deadline = conn_start + fc::seconds(CONNECTION_TIMEOUT_SEC);
 
-            // Unregister active session
-            active_sessions.erase(remote_ip);
+                    handle_connection(*shared_sock);
 
-            try { sock.close(); } catch (...) {}
+                    if (fc::time_point::now() > deadline) {
+                        wlog("Snapshot server: connection from ${ip} exceeded timeout",
+                             ("ip", remote_ip));
+                    }
+                } catch (const fc::exception& e) {
+                    wlog("Snapshot server: error handling connection: ${e}", ("e", e.to_detail_string()));
+                } catch (const std::exception& e) {
+                    wlog("Snapshot server: error handling connection: ${e}", ("e", e.what()));
+                }
+
+                // Cleanup
+                active_sessions.erase(remote_ip);
+                active_connection_count.fetch_sub(1);
+                try { shared_sock->close(); } catch (...) {}
+            }, "snapshot_connection");
+
         } catch (const fc::canceled_exception&) {
             break;
         } catch (const fc::exception& e) {
@@ -1450,72 +1542,50 @@ void snapshot_plugin::plugin_impl::accept_loop() {
 }
 
 void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
-    // Read initial request
-    auto [msg_type, payload] = read_message(sock);
+    // Read initial request (server-side: small payload limit)
+    auto [msg_type, payload] = read_message(sock, 64 * 1024);
 
     if (msg_type == snapshot_info_request) {
-        // Find latest snapshot file
-        fc::path snap_path = find_latest_snapshot();
-
-        if (snap_path.string().empty() || !fc::exists(snap_path)) {
-            ilog("Snapshot server: no snapshot available, sending NOT_AVAILABLE");
-            send_message_empty(sock, snapshot_not_available);
-            return;
+        // Use cached snapshot info if available, otherwise find and cache
+        if (cached_snap_path.empty() || !fc::exists(fc::path(cached_snap_path))) {
+            fc::path snap_path = find_latest_snapshot();
+            if (snap_path.string().empty() || !fc::exists(snap_path)) {
+                ilog("Snapshot server: no snapshot available, sending NOT_AVAILABLE");
+                send_message_empty(sock, snapshot_not_available);
+                return;
+            }
+            update_snapshot_cache(snap_path);
         }
 
-        // Read snapshot file to get info
-        std::ifstream in(snap_path.string(), std::ios::binary);
-        if (!in.is_open()) {
+        if (cached_snap_size == 0) {
             send_message_empty(sock, snapshot_not_available);
             return;
-        }
-
-        // Get file size
-        in.seekg(0, std::ios::end);
-        uint64_t file_size = static_cast<uint64_t>(in.tellg());
-        in.seekg(0, std::ios::beg);
-        in.close();
-
-        // Compute checksum of entire file
-        std::ifstream in2(snap_path.string(), std::ios::binary);
-        std::string file_content((std::istreambuf_iterator<char>(in2)), std::istreambuf_iterator<char>());
-        in2.close();
-        fc::sha256 checksum = fc::sha256::hash(file_content.data(), file_content.size());
-
-        // Parse block number from filename
-        uint32_t block_num = 0;
-        std::string filename = snap_path.filename().string();
-        auto pos = filename.find("snapshot-block-");
-        if (pos != std::string::npos) {
-            try {
-                std::string num_str = filename.substr(pos + 15);
-                auto dot_pos = num_str.find('.');
-                if (dot_pos != std::string::npos) num_str = num_str.substr(0, dot_pos);
-                block_num = static_cast<uint32_t>(std::stoul(num_str));
-            } catch (...) {}
         }
 
         snapshot_info_reply_data reply;
-        reply.block_num = block_num;
-        reply.checksum = checksum;
-        reply.compressed_size = file_size;
+        reply.block_num = cached_snap_block_num;
+        reply.checksum = cached_snap_checksum;
+        reply.compressed_size = cached_snap_size;
 
         ilog("Snapshot server: serving snapshot at block ${b}, size ${s} bytes",
-             ("b", block_num)("s", file_size));
+             ("b", cached_snap_block_num)("s", cached_snap_size));
 
         send_message(sock, snapshot_info_reply, pack_to_vec(reply));
+
+        std::string serve_path = cached_snap_path;
+        uint64_t file_size = cached_snap_size;
 
         // Now wait for data requests in a loop
         auto serve_start = fc::time_point::now();
         uint64_t bytes_sent = 0;
         while (true) {
-            auto [req_type, req_payload] = read_message(sock);
+            auto [req_type, req_payload] = read_message(sock, 64 * 1024);
             if (req_type != snapshot_data_request) break;
 
             auto req = unpack_from_vec<snapshot_data_request_data>(req_payload);
 
             // Read chunk from file
-            std::ifstream chunk_in(snap_path.string(), std::ios::binary);
+            std::ifstream chunk_in(serve_path, std::ios::binary);
             FC_ASSERT(chunk_in.is_open(), "Failed to open snapshot for serving");
 
             chunk_in.seekg(req.offset, std::ios::beg);
@@ -1568,7 +1638,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
             sock.connect_to(ep);
 
             send_message_empty(sock, snapshot_info_request);
-            auto [msg_type, payload] = read_message(sock);
+            auto [msg_type, payload] = read_message(sock, 64 * 1024);
 
             if (msg_type == snapshot_info_reply) {
                 auto info = unpack_from_vec<snapshot_info_reply_data>(payload);
@@ -1603,8 +1673,13 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 
     // Request info again to establish session
     send_message_empty(sock, snapshot_info_request);
-    auto [info_type, info_payload] = read_message(sock);
+    auto [info_type, info_payload] = read_message(sock, 64 * 1024);
     FC_ASSERT(info_type == snapshot_info_reply, "Unexpected response from peer during download");
+
+    // Validate snapshot size against maximum
+    FC_ASSERT(best->compressed_size <= MAX_SNAPSHOT_SIZE,
+        "Snapshot too large: ${s} bytes exceeds limit of ${l} bytes",
+        ("s", best->compressed_size)("l", MAX_SNAPSHOT_SIZE));
 
     // Create temp file for download
     std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
@@ -1649,15 +1724,27 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     auto download_elapsed = double((fc::time_point::now() - download_start).count()) / 1000000.0;
     ilog("Download complete: ${s} bytes in ${t} sec", ("s", offset)("t", download_elapsed));
 
-    // Verify checksum
-    std::ifstream verify_in(temp_path, std::ios::binary);
-    std::string verify_content((std::istreambuf_iterator<char>(verify_in)), std::istreambuf_iterator<char>());
-    verify_in.close();
+    // Verify checksum by streaming file in chunks (avoids loading entire file into memory)
+    {
+        std::ifstream verify_in(temp_path, std::ios::binary);
+        FC_ASSERT(verify_in.is_open(), "Failed to open downloaded snapshot for verification");
 
-    fc::sha256 computed = fc::sha256::hash(verify_content.data(), verify_content.size());
-    FC_ASSERT(computed == best->checksum,
-        "Snapshot checksum mismatch after download: computed=${c}, expected=${e}",
-        ("c", std::string(computed))("e", std::string(best->checksum)));
+        fc::sha256::encoder enc;
+        char buf[1048576]; // 1 MB chunks
+        while (verify_in.good()) {
+            verify_in.read(buf, sizeof(buf));
+            auto n = verify_in.gcount();
+            if (n > 0) {
+                enc.write(buf, static_cast<uint32_t>(n));
+            }
+        }
+        verify_in.close();
+
+        fc::sha256 computed = enc.result();
+        FC_ASSERT(computed == best->checksum,
+            "Snapshot checksum mismatch after download: computed=${c}, expected=${e}",
+            ("c", std::string(computed))("e", std::string(best->checksum)));
+    }
     ilog("Snapshot checksum verified");
 
     // Rename to final path
