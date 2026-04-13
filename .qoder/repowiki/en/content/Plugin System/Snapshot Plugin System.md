@@ -17,11 +17,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced DLT mode integration with proper _dlt_mode flag setting during snapshot loading
-- Improved P2P snapshot synchronization for empty nodes with automatic detection and seamless bootstrap
-- Enhanced progress tracking and logging with real-time download progress and detailed status updates
-- Improved directory management capabilities with automatic creation and cleanup mechanisms
-- Enhanced chain plugin integration with sophisticated callback system for automatic snapshot synchronization
+- Enhanced payload size limits with increased maximum from 64KB to 256KB for protocol messages
+- Improved client disconnection handling with try-catch mechanisms for graceful error management
+- Enhanced logging for Phase 1 info-only queries versus active transfers with clear distinction
+- Strengthened error handling for graceful disconnection management during snapshot transfers
+- Added better logging for client disconnection scenarios and connection lifecycle events
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -611,7 +611,7 @@ Verify --> Load[Load Snapshot]
 
 ## Improved Logging and Progress Feedback
 
-**Updated**: The snapshot system now provides comprehensive real-time logging and progress feedback throughout all operations.
+**Updated**: The snapshot system now provides comprehensive real-time logging and progress feedback throughout all operations, with enhanced distinction between Phase 1 info-only queries and active transfers.
 
 ### Comprehensive Progress Reporting
 
@@ -655,6 +655,33 @@ Client->>Logger : Log Completion
 
 **Diagram sources**
 - [plugin.cpp:1740-1777](file://plugins/snapshot/plugin.cpp#L1740-L1777)
+
+### Enhanced Client Disconnection Handling
+
+**New**: Improved client disconnection handling with try-catch mechanisms and better logging for graceful error management:
+
+```mermaid
+flowchart TD
+Start([Handle Connection]) --> ReadRequest[Read Initial Request]
+ReadRequest --> CheckType{Request Type?}
+CheckType --> |INFO_REQUEST| HandleInfo[Handle Info Query]
+CheckType --> |DATA_REQUEST| HandleData[Handle Data Transfer]
+HandleInfo --> CheckDisconnect{Client Disconnected?}
+CheckDisconnect --> |Yes| LogInfoOnly[Log Info-only Query]
+CheckDisconnect --> |No| WaitRequests[Wait for Data Requests]
+WaitRequests --> CheckDataDisconnect{Client Disconnected During Transfer?}
+CheckDataDisconnect --> |Yes| LogGracefulDisconnect[Log Graceful Disconnect]
+CheckDataDisconnect --> |No| ContinueTransfer[Continue Transfer]
+HandleData --> CheckTransferComplete{Transfer Complete?}
+CheckTransferComplete --> |Yes| LogComplete[Log Transfer Complete]
+CheckTransferComplete --> |No| HandleData
+LogInfoOnly --> End([Connection Closed])
+LogGracefulDisconnect --> End
+LogComplete --> End
+```
+
+**Diagram sources**
+- [plugin.cpp:1574-1660](file://plugins/snapshot/plugin.cpp#L1574-L1660)
 
 **Section sources**
 - [plugin.cpp:912-944](file://plugins/snapshot/plugin.cpp#L912-L944)
@@ -936,7 +963,17 @@ The snapshot plugin is designed with several performance optimizations:
 **DLT Mode Integration Issues**
 - **Symptom**: `DLT mode not properly initialized`
 - **Cause**: Missing `_dlt_mode` flag setting during snapshot loading
-- **Solution**: Ensure snapshot loading process sets `_dlt_mode = true`
+- **Solution**: Ensure snapshot loading process sets `_dlt_mode = true
+
+**Enhanced Payload Size Limit Issues**
+- **Symptom**: `Message too large: ${s} bytes (limit ${l})`
+- **Cause**: Protocol message exceeding payload size limits
+- **Solution**: Adjust payload size limits or optimize message structure
+
+**Improved Client Disconnection Handling**
+- **Symptom**: Unexpected connection closures during snapshot transfer
+- **Cause**: Client disconnects during active transfers
+- **Solution**: Implement graceful error handling and logging for disconnection scenarios
 
 **Section sources**
 - [plugin.cpp:986-1032](file://plugins/snapshot/plugin.cpp#L986-L1032)
@@ -1002,6 +1039,8 @@ Key strengths of the system include:
 - **Real-time Monitoring**: Comprehensive logging and progress feedback
 - **Automatic State Detection**: Intelligent response to different node states
 - **DLT Mode Support**: Proper integration with DLT mode operations through _dlt_mode flag setting
+- **Improved Payload Handling**: Enhanced payload size limits and client disconnection management
+- **Better Error Handling**: Graceful disconnection management and enhanced logging
 
 The plugin's integration with the broader VIZ ecosystem ensures seamless operation alongside existing blockchain infrastructure, while its well-documented APIs and configuration options facilitate easy deployment and maintenance.
 
