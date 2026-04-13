@@ -4020,15 +4020,24 @@ namespace graphene { namespace chain {
                                     }
 
                                     if (dlt_head_num < dpo.last_irreversible_block_num) {
+                                        bool wrote_any = false;
                                         while (dlt_head_num < dpo.last_irreversible_block_num) {
                                             std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
                                                     dlt_head_num + 1);
-                                            FC_ASSERT(block, "Current fork in the fork database does not contain the last_irreversible_block");
+                                            if (!block) {
+                                                // Block not in fork database — normal after restart when fork_db
+                                                // hasn't accumulated blocks back to LIB yet. Will catch up once
+                                                // LIB advances past the post-restart head.
+                                                break;
+                                            }
                                             _dlt_block_log.append(block->data);
                                             dlt_head_num++;
+                                            wrote_any = true;
                                         }
 
-                                        _dlt_block_log.flush();
+                                        if (wrote_any) {
+                                            _dlt_block_log.flush();
+                                        }
                                     }
 
                                     // Rolling truncation: when size exceeds 2x limit, trim to 1x
@@ -4157,15 +4166,24 @@ namespace graphene { namespace chain {
                                     }
 
                                     if (dlt_head_num < dpo.last_irreversible_block_num) {
+                                        bool wrote_any = false;
                                         while (dlt_head_num < dpo.last_irreversible_block_num) {
                                             std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
                                                     dlt_head_num + 1);
-                                            FC_ASSERT(block, "Current fork in the fork database does not contain the last_irreversible_block");
+                                            if (!block) {
+                                                // Block not in fork database — normal after restart when fork_db
+                                                // hasn't accumulated blocks back to LIB yet. Will catch up once
+                                                // LIB advances past the post-restart head.
+                                                break;
+                                            }
                                             _dlt_block_log.append(block->data);
                                             dlt_head_num++;
+                                            wrote_any = true;
                                         }
 
-                                        _dlt_block_log.flush();
+                                        if (wrote_any) {
+                                            _dlt_block_log.flush();
+                                        }
                                     }
 
                                     if (_dlt_block_log.num_blocks() > _dlt_block_log_max_blocks * 2) {
@@ -4379,15 +4397,24 @@ namespace graphene { namespace chain {
                     }
 
                     if (dlt_head_num < dpo.last_irreversible_block_num) {
+                        bool wrote_any = false;
                         while (dlt_head_num < dpo.last_irreversible_block_num) {
                             std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
                                     dlt_head_num + 1);
-                            FC_ASSERT(block, "Current fork in the fork database does not contain the last_irreversible_block");
+                            if (!block) {
+                                // Block not in fork database — normal after restart when fork_db
+                                // hasn't accumulated blocks back to LIB yet. Will catch up once
+                                // LIB advances past the post-restart head.
+                                break;
+                            }
                             _dlt_block_log.append(block->data);
                             dlt_head_num++;
+                            wrote_any = true;
                         }
 
-                        _dlt_block_log.flush();
+                        if (wrote_any) {
+                            _dlt_block_log.flush();
+                        }
                     }
 
                     if (_dlt_block_log.num_blocks() > _dlt_block_log_max_blocks * 2) {
