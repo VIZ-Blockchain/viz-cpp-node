@@ -9,7 +9,18 @@
 - [CMakeLists.txt](file://plugins/snapshot/CMakeLists.txt)
 - [snapshot-plugin.md](file://documentation/snapshot-plugin.md)
 - [snapshot.json](file://share/vizd/snapshot.json)
+- [database.hpp](file://libraries/chain/include/graphene/chain/database.hpp)
+- [database.cpp](file://libraries/chain/database.cpp)
+- [plugin.cpp](file://plugins/chain/plugin.cpp)
+- [plugin.hpp](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added documentation for the new `open_from_snapshot` method in the database layer
+- Enhanced state restoration process documentation with improved error handling and validation
+- Updated plugin initialization flow to reflect the new callback-based architecture
+- Added comprehensive coverage of the enhanced snapshot loading and validation processes
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -17,14 +28,17 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+6. [Enhanced State Restoration Process](#enhanced-state-restoration-process)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
 
 ## Introduction
 
 The Snapshot Plugin System is a comprehensive solution for managing DLT (Distributed Ledger Technology) state snapshots in VIZ blockchain nodes. This system enables efficient node bootstrapping, state synchronization between nodes, and automated snapshot management through a sophisticated TCP-based protocol.
+
+**Updated**: Enhanced with the new `open_from_snapshot` method that provides improved state restoration capabilities and better integration with the database layer.
 
 The plugin provides three primary capabilities:
 - **State Creation**: Generate compressed JSON snapshots containing complete blockchain state
@@ -49,22 +63,28 @@ subgraph "Core Components"
 F[JSON Serialization] --> G[Binary Compression]
 H[Object Export] --> I[Object Import]
 J[TCP Server] --> K[TCP Client]
+L[Database Integration] --> M[Open From Snapshot]
 end
 subgraph "Data Management"
-L[Snapshot Files] --> M[Compression]
-N[Header Validation] --> O[Checksum Verification]
+N[Snapshot Files] --> O[Compression]
+P[Header Validation] --> Q[Checksum Verification]
+R[Callback Registration] --> S[State Restoration]
 end
 A --> F
 A --> J
 B --> H
 B --> I
-C --> L
-D --> M
+C --> N
+D --> O
+B --> L
+L --> M
+M --> S
 ```
 
 **Diagram sources**
 - [plugin.cpp:40-745](file://plugins/snapshot/plugin.cpp#L40-L745)
 - [plugin.hpp:42-76](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L42-L76)
+- [database.cpp:281-324](file://libraries/chain/database.cpp#L281-L324)
 
 **Section sources**
 - [plugin.cpp:1-800](file://plugins/snapshot/plugin.cpp#L1-L800)
@@ -171,41 +191,46 @@ subgraph "Operational Modes"
 A[Manual Creation] --> B[CLI Command]
 C[Automatic Creation] --> D[Block-based Triggers]
 E[P2P Synchronization] --> F[Trusted Peer Network]
+G[Direct State Loading] --> H[Programmatic API]
 end
 subgraph "Data Flow"
-G[Database State] --> H[JSON Export]
-H --> I[Zlib Compression]
-I --> J[Snapshot File]
-J --> K[File System Storage]
+I[Database State] --> J[JSON Export]
+J --> K[Zlib Compression]
+K --> L[Snapshot File]
+L --> M[File System Storage]
 end
 subgraph "Validation Layer"
-L[Header Validation] --> M[Checksum Verification]
-M --> N[Integrity Check]
+N[Header Validation] --> O[Checksum Verification]
+O --> P[Integrity Check]
+Q[Callback Registration] --> R[State Restoration]
 end
 subgraph "Network Layer"
-O[TCP Server] --> P[Client Connections]
-P --> Q[Chunked Transfer]
-Q --> R[Progress Tracking]
+S[TCP Server] --> T[Client Connections]
+T --> U[Chunked Transfer]
+U --> V[Progress Tracking]
 end
-A --> G
-C --> G
-E --> O
-G --> L
-L --> N
-N --> J
-J --> K
-O --> P
-P --> Q
+A --> I
+C --> I
+E --> S
+G --> Q
+I --> N
+N --> P
+P --> L
+L --> M
+S --> T
+T --> U
 ```
 
 **Diagram sources**
 - [plugin.cpp:843-1203](file://plugins/snapshot/plugin.cpp#L843-L1203)
 - [plugin.cpp:1409-1617](file://plugins/snapshot/plugin.cpp#L1409-L1617)
+- [database.cpp:281-324](file://libraries/chain/database.cpp#L281-L324)
 
-The architecture supports three primary use cases:
+The architecture supports four primary use cases:
 1. **Manual Snapshot Creation**: Generate snapshots on demand for backup or distribution
 2. **Automatic Snapshot Generation**: Create snapshots at specific block heights or intervals
 3. **P2P Snapshot Synchronization**: Enable nodes to bootstrap from trusted peers
+4. **Direct State Loading**: Programmatic loading of snapshots through the `open_from_snapshot` method
 
 **Section sources**
 - [plugin.cpp:1767-1976](file://plugins/snapshot/plugin.cpp#L1767-L1976)
@@ -402,6 +427,91 @@ The serializer handles two distinct object categories:
 **Section sources**
 - [snapshot_serializer.hpp:125-157](file://plugins/snapshot/include/graphene/plugins/snapshot/snapshot_serializer.hpp#L125-L157)
 
+## Enhanced State Restoration Process
+
+**Updated**: The state restoration process has been significantly enhanced with improved error handling, validation, and integration with the database layer.
+
+### Database Integration and Callback Registration
+
+The snapshot plugin now integrates deeply with the chain plugin through a callback-based architecture:
+
+```mermaid
+sequenceDiagram
+participant App as "Application"
+participant Chain as "Chain Plugin"
+participant Snap as "Snapshot Plugin"
+participant DB as "Database"
+App->>Chain : plugin_initialize()
+Chain->>Snap : Register Callbacks
+Snap->>Chain : snapshot_load_callback
+Snap->>Chain : snapshot_create_callback
+Snap->>Chain : snapshot_p2p_sync_callback
+App->>Chain : plugin_startup()
+Chain->>Chain : Check --snapshot flag
+alt Snapshot Path Exists
+Chain->>DB : open_from_snapshot()
+DB-->>Chain : Database Ready
+Chain->>Snap : snapshot_load_callback()
+Snap->>DB : load_snapshot()
+DB->>DB : initialize_hardforks()
+else No Snapshot Path
+Chain->>DB : Normal Database Open
+end
+```
+
+**Diagram sources**
+- [plugin.cpp:1872-1918](file://plugins/snapshot/plugin.cpp#L1872-L1918)
+- [database.cpp:281-324](file://libraries/chain/database.cpp#L281-L324)
+
+### Enhanced Error Handling and Validation
+
+The state restoration process now includes comprehensive error handling and validation:
+
+```mermaid
+flowchart TD
+Start([Load Snapshot]) --> Validate[Validate Snapshot File]
+Validate --> |Invalid| Error[Throw Exception]
+Validate --> |Valid| Decompress[Decompress Zlib]
+Decompress --> Parse[Parse JSON Header]
+Parse --> Verify[Verify Chain ID]
+Verify --> |Mismatch| Error
+Verify --> |Match| Import[Import Objects]
+Import --> ValidateObjects[Validate Imported Objects]
+ValidateObjects --> |Fail| Error
+ValidateObjects --> |Success| InitializeHF[Initialize Hardforks]
+InitializeHF --> Success[State Restoration Complete]
+Error --> Cleanup[Cleanup Resources]
+```
+
+**Diagram sources**
+- [plugin.cpp:980-1203](file://plugins/snapshot/plugin.cpp#L980-L1203)
+
+### Direct State Loading via Programmatic API
+
+**New**: The snapshot plugin now provides programmatic access to state loading through the `load_snapshot_from` method:
+
+```mermaid
+classDiagram
+class snapshot_plugin {
++load_snapshot_from(path) void
++create_snapshot_at(path) void
++get_snapshot_path() string
+}
+class DatabaseIntegration {
++open_from_snapshot(data_dir, shared_mem_dir, initial_supply, shared_file_size, flags) void
++initialize_hardforks() void
+}
+snapshot_plugin --> DatabaseIntegration : "uses"
+```
+
+**Diagram sources**
+- [plugin.hpp:67-71](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L67-L71)
+- [database.hpp:102-107](file://libraries/chain/include/graphene/chain/database.hpp#L102-L107)
+
+**Section sources**
+- [plugin.cpp:1872-1918](file://plugins/snapshot/plugin.cpp#L1872-L1918)
+- [database.cpp:281-324](file://libraries/chain/database.cpp#L281-L324)
+
 ## Dependency Analysis
 
 The snapshot plugin has a well-defined dependency structure that integrates with the broader VIZ ecosystem:
@@ -427,6 +537,7 @@ S[snapshot_plugin] --> T[plugin_impl]
 T --> U[Serialization Layer]
 T --> V[Network Layer]
 T --> W[File Management]
+T --> X[Callback System]
 end
 A --> S
 E --> S
@@ -436,6 +547,7 @@ K --> S
 M --> S
 O --> S
 Q --> S
+X --> S
 ```
 
 **Diagram sources**
@@ -504,6 +616,11 @@ The snapshot plugin is designed with several performance optimizations:
 - **Cause**: Insufficient RAM for large snapshot files
 - **Solution**: Increase system memory or use smaller snapshot files
 
+**Database Initialization Failures**
+- **Symptom**: `Failed to open database for snapshot: ${e}`
+- **Cause**: Corrupted shared memory or insufficient disk space
+- **Solution**: Clear shared memory and ensure sufficient disk space
+
 **Section sources**
 - [plugin.cpp:986-1032](file://plugins/snapshot/plugin.cpp#L986-L1032)
 - [plugin.cpp:1252-1303](file://plugins/snapshot/plugin.cpp#L1252-L1303)
@@ -547,11 +664,14 @@ vizd --help | grep snapshot
 
 The Snapshot Plugin System represents a sophisticated solution for blockchain state management, providing essential capabilities for node bootstrapping, state synchronization, and automated snapshot management. The system's modular architecture, comprehensive validation mechanisms, and robust networking support make it suitable for production environments requiring reliable and efficient state synchronization.
 
+**Updated**: Recent enhancements have significantly strengthened the system's capabilities through the introduction of the `open_from_snapshot` method, improved state restoration processes, and enhanced callback-based architecture integration.
+
 Key strengths of the system include:
 - **Comprehensive Coverage**: Handles all major blockchain object types
 - **Robust Security**: Multiple layers of validation and anti-abuse protection
 - **Scalable Design**: Efficient memory and network usage patterns
-- **Flexible Deployment**: Supports manual, automatic, and P2P synchronization modes
+- **Flexible Deployment**: Supports manual, automatic, P2P synchronization, and programmatic loading modes
+- **Enhanced Integration**: Seamless integration with database layer and callback system
 
 The plugin's integration with the broader VIZ ecosystem ensures seamless operation alongside existing blockchain infrastructure, while its well-documented APIs and configuration options facilitate easy deployment and maintenance.
 

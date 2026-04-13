@@ -14,11 +14,10 @@
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive documentation for DLT (Data Ledger Technology) mode implementation
-- Documented conditional block log operations and rolling DLT block log functionality
-- Enhanced snapshot-aware initialization with DLT mode flag management
-- Updated database lifecycle methods to include DLT mode detection and error handling
-- Added detailed coverage of DLT block log integration and rolling window management
+- Enhanced conditional block fetching logic with graceful fallback mechanisms
+- Improved error handling during restart sequences with better exception propagation
+- Updated restart sequence handling to use graceful failure instead of assertions
+- Strengthened DLT mode block log operations with conditional error handling
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -32,12 +31,12 @@
 9. [Conclusion](#conclusion)
 
 ## Introduction
-This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, and practical examples of database operations and performance optimization.
+This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, conditional block fetching logic with graceful error handling, and practical examples of database operations and performance optimization.
 
 ## Project Structure
-The database subsystem is implemented primarily in the chain library with enhanced support for DLT mode:
+The database subsystem is implemented primarily in the chain library with enhanced support for DLT mode and improved error handling:
 - Core database interface and declarations: libraries/chain/include/graphene/chain/database.hpp
-- Implementation of database operations: libraries/chain/database.cpp
+- Implementation of database operations with enhanced error handling: libraries/chain/database.cpp
 - Block log abstraction: libraries/chain/include/graphene/chain/block_log.hpp and libraries/chain/block_log.cpp
 - DLT block log for rolling window storage: libraries/chain/include/graphene/chain/dlt_block_log.hpp and libraries/chain/dlt_block_log.cpp
 - Fork database for reversible blocks: libraries/chain/include/graphene/chain/fork_database.hpp and libraries/chain/fork_database.cpp
@@ -65,7 +64,7 @@ DBCPP --> FDCPP
 
 **Diagram sources**
 - [database.hpp:1-602](file://libraries/chain/include/graphene/chain/database.hpp#L1-L602)
-- [database.cpp:1-5497](file://libraries/chain/database.cpp#L1-L5497)
+- [database.cpp:1-5524](file://libraries/chain/database.cpp#L1-L5524)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
@@ -75,7 +74,7 @@ DBCPP --> FDCPP
 
 **Section sources**
 - [database.hpp:1-602](file://libraries/chain/include/graphene/chain/database.hpp#L1-L602)
-- [database.cpp:1-5497](file://libraries/chain/database.cpp#L1-L5497)
+- [database.cpp:1-5524](file://libraries/chain/database.cpp#L1-L5524)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
@@ -84,19 +83,21 @@ DBCPP --> FDCPP
 - [fork_database.cpp:1-245](file://libraries/chain/fork_database.cpp#L1-L245)
 
 ## Core Components
-- database class: Public interface for blockchain state management, block and transaction processing, checkpoints, and event notifications with DLT mode support.
+- database class: Public interface for blockchain state management, block and transaction processing, checkpoints, and event notifications with DLT mode support and enhanced error handling.
 - block_log: Append-only block storage with random-access indexing.
 - dlt_block_log: Rolling window block storage specifically designed for DLT (snapshot-based) nodes.
 - fork_database: Maintains reversible blocks and supports fork selection and switching.
 - chainbase integration: Provides persistent object storage and undo sessions.
+- signal_guard: Enhanced signal handling for graceful restart sequence management.
 
 Key responsibilities:
-- Lifecycle: open(), open_from_snapshot(), reindex(), close(), wipe()
+- Lifecycle: open(), open_from_snapshot(), reindex(), close(), wipe() with improved error handling
 - Validation: validate_block(), validate_transaction(), with configurable skip flags
 - Operations: push_block(), push_transaction(), generate_block()
 - DLT Mode: Conditional block log operations, rolling window management, snapshot-aware initialization
 - Observers: signals for pre/post operation, applied block, pending/applied transactions
 - Persistence: integrates with block_log and dlt_block_log for different operational modes
+- Conditional Fetching: graceful fallback mechanisms for block retrieval across multiple storage layers
 
 **Section sources**
 - [database.hpp:37-115](file://libraries/chain/include/graphene/chain/database.hpp#L37-L115)
@@ -106,11 +107,12 @@ Key responsibilities:
 - [fork_database.hpp:53-125](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L125)
 
 ## Architecture Overview
-The database composes four primary subsystems with enhanced DLT mode support:
+The database composes four primary subsystems with enhanced DLT mode support and improved error handling:
 - Chainbase: Persistent object database with undo/redo capabilities
 - Fork database: Holds recent blocks for fork resolution
 - Block log: Immutable, append-only block storage with index
 - DLT block log: Rolling window block storage for DLT (snapshot-based) nodes
+- Signal guard: Enhanced signal handling for graceful restart sequences
 
 ```mermaid
 classDiagram
@@ -128,6 +130,7 @@ class database {
 +signals : pre_apply_operation, post_apply_operation, applied_block, on_pending_transaction, on_applied_transaction
 +_dlt_mode : bool
 +_dlt_block_log_max_blocks : uint32_t
++signal_guard : enhanced error handling
 }
 class block_log {
 +open(path)
@@ -153,9 +156,16 @@ class fork_database {
 +fetch_branch_from(first, second)
 +set_max_size(n)
 }
+class signal_guard {
++setup()
++restore()
++get_is_interrupted()
++throw_exception()
+}
 database --> block_log : "uses (normal mode)"
 database --> dlt_block_log : "uses (DLT mode)"
 database --> fork_database : "uses"
+database --> signal_guard : "enhanced restart handling"
 ```
 
 **Diagram sources**
@@ -164,14 +174,15 @@ database --> fork_database : "uses"
 - [block_log.hpp:38-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L38-L75)
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
 - [fork_database.hpp:53-125](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L125)
+- [database.cpp:94-184](file://libraries/chain/database.cpp#L94-L184)
 
 ## Detailed Component Analysis
 
 ### Database Lifecycle: Constructor, Destructor, and Methods
 - Constructor and destructor: Initialize internal implementation and ensure pending transactions are cleared on destruction.
-- open(): Initializes schema, opens shared memory, initializes indexes and evaluators, loads genesis if needed, opens both block_log and dlt_block_log, rewinds undo state, verifies chain consistency, and initializes hardfork state.
+- open(): Initializes schema, opens shared memory, initializes indexes and evaluators, loads genesis if needed, opens both block_log and dlt_block_log, rewinds undo state, verifies chain consistency, and initializes hardfork state. **Enhanced** with DLT mode detection and graceful error handling.
 - open_from_snapshot(): **Enhanced** - Sets DLT mode flag to true, wipes shared memory for clean state, initializes schema and chainbase, opens both block_log and dlt_block_log, and logs snapshot import progress.
-- reindex(): Reads blocks sequentially from the block log, applies them with aggressive skip flags to accelerate replay, periodically sets revision, checks free memory, and updates fork database head.
+- reindex(): **Enhanced** - Uses signal_guard for graceful restart handling, reads blocks sequentially from the block log with improved error propagation, applies them with aggressive skip flags to accelerate replay, periodically sets revision, checks free memory, and updates fork database head.
 - close(): Clears pending transactions, flushes and closes chainbase, closes both block_log and dlt_block_log, resets fork database.
 - wipe(): Closes database, wipes shared memory file, optionally removes both block_log and dlt_block_log.
 
@@ -179,6 +190,7 @@ database --> fork_database : "uses"
 sequenceDiagram
 participant App as "Application"
 participant DB as "database"
+participant SG as "signal_guard"
 participant CB as "chainbase"
 participant BL as "block_log"
 participant DLT as "dlt_block_log"
@@ -193,30 +205,103 @@ DB->>DB : with_strong_write_lock(init_genesis)
 DB->>BL : open(data_dir/"block_log")
 DB->>DLT : open(data_dir/"dlt_block_log")
 App->>DB : reindex(data_dir, shared_mem_dir, from_block_num, ...)
+DB->>SG : setup()
 DB->>DB : with_strong_write_lock()
 loop for each block
 DB->>BL : read_block_by_num(block_num)
 DB->>DB : apply_block(block, skip_flags)
 DB->>DB : check_free_memory(...)
+DB->>DB : signal_guard : : get_is_interrupted()?
+alt interrupted
+DB->>SG : restore()
+DB->>App : appbase : : app().quit()
+end
 end
 DB->>DLT : start_block(head)
 ```
 
 **Diagram sources**
 - [database.cpp:281-324](file://libraries/chain/database.cpp#L281-L324)
+- [database.cpp:330-410](file://libraries/chain/database.cpp#L330-L410)
+- [database.cpp:134-184](file://libraries/chain/database.cpp#L134-L184)
 
 **Section sources**
 - [database.hpp:37-115](file://libraries/chain/include/graphene/chain/database.hpp#L37-L115)
 - [database.cpp:281-324](file://libraries/chain/database.cpp#L281-L324)
 - [database.cpp:503-519](file://libraries/chain/database.cpp#L503-L519)
+- [database.cpp:330-410](file://libraries/chain/database.cpp#L330-L410)
+- [database.cpp:134-184](file://libraries/chain/database.cpp#L134-L184)
+
+### Enhanced Conditional Block Fetching Logic
+**Updated** - The database now implements sophisticated conditional block fetching with graceful fallback mechanisms:
+
+- Multi-layered retrieval: Block lookup follows a hierarchical approach - TAPOS buffer → block_log → dlt_block_log → fork database
+- Graceful fallback: When a block is not found in one layer, the system automatically attempts the next layer without throwing exceptions
+- DLT mode awareness: In DLT mode, the system prioritizes dlt_block_log for rolling window storage while maintaining compatibility with block_log
+- Restart sequence safety: During restart sequences, the system handles missing blocks gracefully with explanatory messages
+
+```mermaid
+flowchart TD
+Start(["Block Fetch Request"]) --> Tapos["Check TAPOS buffer"]
+Tapos --> Found1{"Found?"}
+Found1 --> |Yes| Return1["Return from TAPOS"]
+Found1 --> |No| BlockLog["Check block_log"]
+BlockLog --> Found2{"Found?"}
+Found2 --> |Yes| Return2["Return from block_log"]
+Found2 --> |No| DLTLog["Check dlt_block_log (DLT mode)"]
+DLTLog --> Found3{"Found?"}
+Found3 --> |Yes| Return3["Return from dlt_block_log"]
+Found3 --> |No| ForkDB["Check fork_database"]
+ForkDB --> Found4{"Found?"}
+Found4 --> |Yes| Return4["Return from fork_database"]
+Found4 --> |No| Error["Return invalid optional"]
+```
+
+**Diagram sources**
+- [database.cpp:539-627](file://libraries/chain/database.cpp#L539-L627)
+- [database.cpp:4027-4031](file://libraries/chain/database.cpp#L4027-L4031)
+- [database.cpp:4173-4177](file://libraries/chain/database.cpp#L4173-L4177)
+
+**Section sources**
+- [database.cpp:539-627](file://libraries/chain/database.cpp#L539-L627)
+- [database.cpp:4027-4031](file://libraries/chain/database.cpp#L4027-L4031)
+- [database.cpp:4173-4177](file://libraries/chain/database.cpp#L4173-L4177)
+
+### Enhanced Error Handling During Restart Sequences
+**Updated** - The database implements improved error handling for restart sequences:
+
+- Signal guard integration: The reindex process now uses signal_guard to handle interruption signals gracefully
+- Graceful restart: When interrupted, the system restores signal handlers and exits cleanly via appbase::app().quit()
+- Conditional assertions: In DLT mode, the system uses conditional block fetching with graceful fallback instead of assertions
+- Enhanced logging: Clear diagnostic messages explain why certain operations are skipped during restart sequences
+
+```mermaid
+flowchart TD
+Start(["Restart Sequence"]) --> Setup["signal_guard::setup()"]
+Setup --> ProcessBlocks["Process blocks sequentially"]
+ProcessBlocks --> CheckSignal{"signal_guard::get_is_interrupted()?"}
+CheckSignal --> |No| Continue["Continue processing"]
+CheckSignal --> |Yes| Restore["signal_guard::restore()"]
+Restore --> Quit["appbase::app().quit()"]
+Continue --> ProcessBlocks
+```
+
+**Diagram sources**
+- [database.cpp:330-410](file://libraries/chain/database.cpp#L330-L410)
+- [database.cpp:134-184](file://libraries/chain/database.cpp#L134-L184)
+
+**Section sources**
+- [database.cpp:330-410](file://libraries/chain/database.cpp#L330-L410)
+- [database.cpp:134-184](file://libraries/chain/database.cpp#L134-L184)
 
 ### DLT Mode Detection and Conditional Operations
-**Enhanced** - The database now supports DLT (Data Ledger Technology) mode for snapshot-based nodes:
+**Enhanced** - The database now supports DLT (Data Ledger Technology) mode for snapshot-based nodes with improved error handling:
 
 - DLT Mode Flag: `_dlt_mode = true` indicates the node is running in snapshot mode
 - Conditional Block Log Operations: When `_dlt_mode` is true, normal block_log operations are skipped while dlt_block_log continues to operate
 - Rolling Window Management: `_dlt_block_log_max_blocks` controls the size of the rolling window for DLT mode
 - Snapshot-Aware Initialization: Automatic wipe and clean state preparation for snapshot imports
+- Graceful fallback: Enhanced error handling ensures smooth operation even when blocks are temporarily unavailable
 
 ```mermaid
 flowchart TD
@@ -235,12 +320,14 @@ UpdateDPO --> End(["Complete"])
 **Diagram sources**
 - [database.cpp:3986-4039](file://libraries/chain/database.cpp#L3986-L4039)
 - [database.cpp:4144-4175](file://libraries/chain/database.cpp#L4144-L4175)
+- [database.cpp:4384-4424](file://libraries/chain/database.cpp#L4384-L4424)
 
 **Section sources**
 - [database.hpp:57-64](file://libraries/chain/include/graphene/chain/database.hpp#L57-L64)
 - [database.cpp:292-292](file://libraries/chain/database.cpp#L292-L292)
 - [database.cpp:3986-4039](file://libraries/chain/database.cpp#L3986-L4039)
 - [database.cpp:4144-4175](file://libraries/chain/database.cpp#L4144-L4175)
+- [database.cpp:4384-4424](file://libraries/chain/database.cpp#L4384-L4424)
 
 ### Validation Steps Enumeration and Use Cases
 Validation flags control which checks are performed during block and transaction validation:
@@ -409,7 +496,7 @@ These signals are used by plugins to react to blockchain events without tight co
 ### Examples of Database Operations and Queries
 - Open database and initialize: open(data_dir, shared_mem_dir, initial_supply, shared_file_size, chainbase_flags)
 - **Open from snapshot**: open_from_snapshot(data_dir, shared_mem_dir, initial_supply, shared_file_size, chainbase_flags) - **Enhanced**
-- Rebuild state from history: reindex(data_dir, shared_mem_dir, from_block_num, shared_file_size)
+- Rebuild state from history: reindex(data_dir, shared_mem_dir, from_block_num, shared_file_size) - **Enhanced with signal handling**
 - Push a block: push_block(signed_block, skip_flags)
 - Push a transaction: push_transaction(signed_transaction, skip_flags)
 - Validate a block: validate_block(signed_block, skip_flags)
@@ -434,6 +521,7 @@ The database depends on:
 - dlt_block_log for rolling window storage in DLT mode
 - fork_database for reversible blocks and fork resolution
 - Protocol types and evaluators for operation processing
+- signal_guard for enhanced error handling during restart sequences
 
 ```mermaid
 graph LR
@@ -441,6 +529,7 @@ DB["database.cpp"] --> CB["chainbase (external)"]
 DB --> BL["block_log.hpp/.cpp"]
 DB --> DLT["dlt_block_log.hpp/.cpp"]
 DB --> FD["fork_database.hpp/.cpp"]
+DB --> SG["signal_guard (enhanced)"]
 DB --> PT["protocol types"]
 DB --> EV["evaluators"]
 ```
@@ -448,10 +537,12 @@ DB --> EV["evaluators"]
 **Diagram sources**
 - [database.hpp:1-10](file://libraries/chain/include/graphene/chain/database.hpp#L1-L10)
 - [database.cpp:1-30](file://libraries/chain/database.cpp#L1-L30)
+- [database.cpp:94-184](file://libraries/chain/database.cpp#L94-L184)
 
 **Section sources**
 - [database.hpp:1-10](file://libraries/chain/include/graphene/chain/database.hpp#L1-L10)
 - [database.cpp:1-30](file://libraries/chain/database.cpp#L1-L30)
+- [database.cpp:94-184](file://libraries/chain/database.cpp#L94-L184)
 
 ## Performance Considerations
 - Use skip flags during reindex to bypass expensive validations and improve replay speed.
@@ -461,6 +552,8 @@ DB --> EV["evaluators"]
 - Tune flush intervals to balance durability and throughput.
 - **DLT Mode Optimization**: Use rolling window DLT block log to reduce storage requirements for snapshot-based nodes.
 - **Conditional Operations**: Leverage DLT mode to skip unnecessary block log operations while maintaining required functionality.
+- **Enhanced Error Handling**: Graceful fallback mechanisms prevent performance degradation during restart sequences.
+- **Multi-layered Fetching**: Hierarchical block retrieval minimizes lookup overhead and improves response times.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -470,12 +563,15 @@ Common issues and remedies:
 - Signal-related errors: Verify signal handlers and ensure proper exception propagation.
 - **DLT Mode Issues**: Ensure proper DLT mode flag management and verify rolling window configuration.
 - **Snapshot Import Problems**: Check that shared memory is wiped before snapshot import and verify DLT mode initialization.
+- **Restart Sequence Failures**: Monitor signal guard functionality and ensure graceful handling of interruption signals.
+- **Conditional Fetching Errors**: Verify multi-layered block retrieval logic and check DLT mode configuration.
 
 **Section sources**
 - [database.cpp:800-830](file://libraries/chain/database.cpp#L800-L830)
 - [database.cpp:270-279](file://libraries/chain/database.cpp#L270-L279)
 - [database.cpp:492-501](file://libraries/chain/database.cpp#L492-L501)
 - [database.cpp:4016-4020](file://libraries/chain/database.cpp#L4016-L4020)
+- [database.cpp:3998-4000](file://libraries/chain/database.cpp#L3998-L4000)
 
 ## Conclusion
-The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support. It integrates chainbase for persistent storage, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, and DLT mode detection, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals. The snapshot-aware initialization and rolling window management make it particularly suitable for distributed ledger applications requiring efficient synchronization and reduced storage overhead.
+The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support and improved error handling. It integrates chainbase for persistent storage, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection, conditional block fetching logic with graceful fallback mechanisms, and enhanced signal handling for restart sequences, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals. The snapshot-aware initialization, rolling window management, and graceful failure handling make it particularly suitable for distributed ledger applications requiring efficient synchronization, reduced storage overhead, and resilient operation during restart sequences.
