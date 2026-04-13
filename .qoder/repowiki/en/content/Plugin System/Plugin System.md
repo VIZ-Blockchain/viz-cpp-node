@@ -27,11 +27,12 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced snapshot plugin documentation to cover new DLT (Distributed Ledger Technology) mode capabilities
+- Enhanced P2P plugin integration with DLT mode awareness for improved error handling and logging
 - Added comprehensive DLT rolling block log integration details
 - Updated plugin architecture to reflect snapshot plugin's role in DLT mode operations
 - Expanded P2P plugin integration documentation for DLT mode compatibility
 - Added new sections covering snapshot-based node bootstrap and DLT-specific configurations
+- Improved error handling patterns with enhanced logging for DLT mode block serving operations
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -40,17 +41,18 @@
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [DLT Mode and Snapshot Integration](#dlt-mode-and-snapshot-integration)
-7. [Dependency Analysis](#dependency-analysis)
-8. [Plugin Deprecation Status and Maintenance Practices](#plugin-deprecation-status-and-maintenance-practices)
-9. [Performance Considerations](#performance-considerations)
-10. [Troubleshooting Guide](#troubleshooting-guide)
-11. [Conclusion](#conclusion)
-12. [Appendices](#appendices)
+7. [Enhanced P2P Plugin Integration with DLT Mode Awareness](#enhanced-p2p-plugin-integration-with-dlt-mode-awareness)
+8. [Dependency Analysis](#dependency-analysis)
+9. [Plugin Deprecation Status and Maintenance Practices](#plugin-deprecation-status-and-maintenance-practices)
+10. [Performance Considerations](#performance-considerations)
+11. [Troubleshooting Guide](#troubleshooting-guide)
+12. [Conclusion](#conclusion)
+13. [Appendices](#appendices)
 
 ## Introduction
 This document explains the VIZ C++ Node plugin system architecture, focusing on how the appbase-based framework enables modular functionality, the plugin lifecycle from registration to shutdown, and inter-plugin communication patterns. It documents the built-in plugin ecosystem (40+ plugins) ranging from core blockchain functions to specialized APIs and integrations, including the enhanced snapshot plugin capabilities for DLT (Distributed Ledger Technology) mode operations and integration with rolling block log features.
 
-**Updated** Enhanced with comprehensive DLT mode documentation covering snapshot-based node bootstrap, rolling block log integration, and P2P layer compatibility for distributed ledger deployments.
+**Updated** Enhanced with comprehensive DLT mode documentation covering snapshot-based node bootstrap, rolling block log integration, and P2P layer compatibility for distributed ledger deployments. The P2P plugin now includes sophisticated DLT mode awareness with improved error handling and logging capabilities for DLT mode block serving operations.
 
 ## Project Structure
 The plugin system is organized around the appbase application framework and a dedicated plugins directory. Each plugin is a self-contained module that registers APIs, subscribes to chain events, and optionally depends on other plugins. The top-level plugins build script enumerates subdirectories and exposes a runtime-accessible list of available plugins. Built-in plugins are located under libraries/plugins/<plugin_name>, while external plugins can be added similarly.
@@ -92,7 +94,7 @@ G --> L["DLT Mode Integration<br/>P2P Layer"]
 - Webserver Plugin: Starts an HTTP/WebSocket server and dispatches JSON-RPC queries to registered handlers on the app's io_service thread.
 - Database API Plugin: Exposes read-only database queries via JSON-RPC, including blocks, accounts, balances, and chain metadata.
 - Account History Plugin: Tracks per-account operation histories and exposes retrieval APIs.
-- P2P Plugin: Manages peer-to-peer networking, broadcasting blocks/transactions, and block production controls.
+- P2P Plugin: Manages peer-to-peer networking, broadcasting blocks/transactions, and block production controls. **Enhanced** with DLT mode awareness and improved error handling.
 - Mongo DB Plugin: Integrates with MongoDB for indexing and archival of chain data.
 - **Snapshot Plugin**: Enables DLT (Distributed Ledger Technology) mode operations including snapshot creation, loading, P2P snapshot synchronization, and integration with rolling block logs.
 
@@ -260,6 +262,7 @@ class AccountHistoryPlugin {
 - Dependencies: Requires Chain plugin.
 - **Maintenance Note**: Uses deprecated configuration options with warnings for migration.
 - **DLT Integration**: Automatically falls back to DLT block log when serving blocks not found in main block log.
+- **Enhanced Error Handling**: Improved logging and error handling specifically for DLT mode scenarios.
 
 ```mermaid
 classDiagram
@@ -569,6 +572,82 @@ The snapshot plugin provides TCP-based synchronization for distributed deploymen
 - [documentation/snapshot-plugin.md:104-164](file://documentation/snapshot-plugin.md#L104-L164)
 - [plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp:15-41](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L15-L41)
 
+## Enhanced P2P Plugin Integration with DLT Mode Awareness
+
+### Improved Error Handling and Logging
+The P2P plugin now includes sophisticated DLT mode awareness with enhanced error handling and logging capabilities:
+
+**DLT Mode Detection Logic:**
+- When serving blocks in DLT mode, the P2P plugin detects when block data is not available for blocks outside the DLT log range
+- Instead of logging generic errors, it provides specific DLT mode context information
+- Uses debug logging (`dlog`) for DLT mode scenarios to avoid flooding error logs
+
+**Enhanced Block Serving Flow:**
+1. Attempt to fetch block from main chain database
+2. If block not found and DLT mode is active:
+   - Log specific DLT mode information using debug logging
+   - Throw appropriate exception to indicate block unavailability
+3. If not in DLT mode, log detailed error information with block ID correlation
+
+**Logging Improvements:**
+- **Debug Logging**: `dlog` statements provide DLT mode context without polluting error logs
+- **Error Logging**: `elog` statements provide detailed error information with block ID correlation
+- **Context Information**: Both debug and error logs include block ID and expected block number context
+
+```mermaid
+flowchart TD
+A["Block Request Received"] --> B{"Is DLT Mode Active?"}
+B --> |Yes| C["Check Main Block Log"]
+B --> |No| D["Check Main Block Log"]
+C --> E{"Block Found?"}
+E --> |Yes| F["Return Block"]
+E --> |No| G["Log DLT Context Info<br/>dlog: 'Block ${id} not available in DLT mode'<br/>Throw key_not_found_exception"]
+D --> H{"Block Found?"}
+H --> |Yes| F
+H --> |No| I["Log Detailed Error<br/>elog: 'Couldn't find block ${id}'<br/>Include block ID correlation"]
+```
+
+**Diagram sources**
+- [plugins/p2p/p2p_plugin.cpp:265-276](file://plugins/p2p/p2p_plugin.cpp#L265-L276)
+
+**Section sources**
+- [plugins/p2p/p2p_plugin.cpp:265-276](file://plugins/p2p/p2p_plugin.cpp#L265-L276)
+
+### DLT Mode Block Serving Operations
+The P2P plugin now provides enhanced error handling specifically for DLT mode block serving operations:
+
+**Expected Behavior in DLT Mode:**
+- Blocks outside the DLT log range are intentionally not available
+- This is expected behavior and should not be logged as errors
+- The P2P layer handles this gracefully by falling back to other peers
+
+**Error Handling Strategy:**
+- **DLT Mode**: Use debug logging with `dlog` to indicate expected unavailability
+- **Non-DLT Mode**: Use error logging with `elog` to report unexpected failures
+- **Exception Handling**: Throw appropriate exceptions to signal block unavailability
+
+**Section sources**
+- [plugins/p2p/p2p_plugin.cpp:265-276](file://plugins/p2p/p2p_plugin.cpp#L265-L276)
+
+### Database Integration Enhancements
+The database layer provides comprehensive fallback mechanisms for DLT mode:
+
+**Multi-Level Block Retrieval:**
+1. **TAPoS Buffer**: Fastest check for reversible blocks
+2. **Main Block Log**: Irreversible blocks
+3. **DLT Block Log**: Recent blocks in DLT mode
+4. **Fork Database**: Alternative chain blocks
+
+**DLT Mode Fallback Logic:**
+- Main block log fallback for DLT mode scenarios
+- Automatic detection of DLT mode availability
+- Graceful degradation when DLT log is empty or unavailable
+
+**Section sources**
+- [libraries/chain/database.cpp:558-580](file://libraries/chain/database.cpp#L558-L580)
+- [libraries/chain/database.cpp:599-620](file://libraries/chain/database.cpp#L599-L620)
+- [libraries/chain/database.cpp:623-640](file://libraries/chain/database.cpp#L623-L640)
+
 ## Dependency Analysis
 Plugins declare explicit dependencies using APPBASE_PLUGIN_REQUIRES. The JSON-RPC plugin is a central dependency for most plugins that expose APIs. The Chain plugin is often required by stateful plugins.
 
@@ -707,6 +786,7 @@ plugin = p2p
 - Storage Backends: Plugins like mongo_db introduce additional write amplification; tune indexing and batching strategies.
 - **DLT Mode Benefits**: Snapshot-based nodes eliminate block log storage requirements and enable instant bootstrap times.
 - **DLT Mode Overhead**: Rolling block log requires additional disk I/O for recent block storage and truncation operations.
+- **Enhanced Error Handling**: Improved logging reduces error noise while providing better context information for debugging.
 - **Maintenance Impact**: Deprecated plugins may have reduced performance due to compatibility layers and should be migrated to supported alternatives.
 
 ## Troubleshooting Guide
@@ -724,6 +804,8 @@ plugin = p2p
   - Check DLT block log configuration and permissions
   - Monitor rolling window truncation logs
   - Validate P2P fallback to DLT block log
+  - **Enhanced Error Handling**: Check debug logs for DLT mode context information
+  - **DLT Mode Logging**: Look for specific DLT mode debug messages indicating expected block unavailability
 - **Deprecation Issues**:
   - Check for deprecation warnings in plugin logs
   - Review deprecated operations and migrate to supported alternatives
@@ -740,7 +822,7 @@ plugin = p2p
 ## Conclusion
 The VIZ C++ Node plugin system leverages appbase to deliver a modular, extensible architecture. Plugins integrate seamlessly through JSON-RPC, share the chain database, and coordinate via signals. The template-based development tool accelerates custom plugin creation, while configuration options govern exposure and security. With 40+ built-in plugins spanning core blockchain functionality to specialized integrations, the system supports diverse use cases from public APIs to archival pipelines.
 
-**Updated** The system now includes comprehensive DLT mode support with snapshot-based state management, rolling block log integration, and P2P layer compatibility. These enhancements enable distributed ledger deployments with improved performance, reduced storage requirements, and streamlined node bootstrap processes.
+**Updated** The system now includes comprehensive DLT mode support with snapshot-based state management, rolling block log integration, and P2P layer compatibility. The enhanced P2P plugin integration with DLT mode awareness provides improved error handling and logging capabilities for DLT mode block serving operations, reducing error noise while providing better context information for debugging distributed ledger deployments.
 
 ## Appendices
 
@@ -778,6 +860,7 @@ The VIZ C++ Node plugin system leverages appbase to deliver a modular, extensibl
 - Future Hardforks: Monitor operation deprecation notices and prepare migration plans
 - Plugin Deprecations: Regular review and replacement of deprecated plugin functionality
 - **DLT Mode Introduction**: Snapshot-based DLT mode with rolling block log support
+- **Enhanced P2P Integration**: Improved DLT mode awareness with sophisticated error handling and logging
 
 **Section sources**
 - [libraries/protocol/include/graphene/protocol/operations.hpp:14-27](file://libraries/protocol/include/graphene/protocol/operations.hpp#L14-L27)
