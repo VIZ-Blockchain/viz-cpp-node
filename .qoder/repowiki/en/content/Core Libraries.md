@@ -25,10 +25,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced comprehensive operation documentation coverage with detailed operation definitions
-- Expanded data type documentation including cryptographic types, asset types, and authority structures
-- Added protocol specification documentation with operation categorization and virtual operations
-- Improved wallet API documentation with prototype operation generation and method descriptions
+- Added comprehensive documentation for DNS nameserver helper functionality in the wallet library
+- Documented new NS (nameserver) metadata management capabilities for VIZ accounts
+- Added detailed coverage of DNS record validation, extraction, and management operations
+- Included practical examples of DNS record configuration and SSL certificate hash integration
+- Enhanced wallet library documentation with DNS-specific API methods and data structures
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -38,10 +39,11 @@
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Blockchain Operations and Data Types](#blockchain-operations-and-data-types)
 7. [Protocol Specifications](#protocol-specifications)
-8. [Dependency Analysis](#dependency-analysis)
-9. [Performance Considerations](#performance-considerations)
-10. [Troubleshooting Guide](#troubleshooting-guide)
-11. [Conclusion](#conclusion)
+8. [DNS Nameserver Helper Functionality](#dns-nameserver-helper-functionality)
+9. [Dependency Analysis](#dependency-analysis)
+10. [Performance Considerations](#performance-considerations)
+11. [Troubleshooting Guide](#troubleshooting-guide)
+12. [Conclusion](#conclusion)
 
 ## Introduction
 This document explains the VIZ CPP Node core libraries that form the foundation of the blockchain node. The four main library categories are:
@@ -52,14 +54,14 @@ This document explains the VIZ CPP Node core libraries that form the foundation 
 
 These libraries interact closely: the Chain library validates and applies operations, the Protocol library defines operations and transactions, the Network library propagates blocks and transactions across peers, and the Wallet library signs transactions before they are broadcast.
 
-**Updated** Enhanced documentation now includes comprehensive coverage of blockchain operations, data types, and protocol specifications with detailed operation definitions and cryptographic type documentation.
+**Updated** Enhanced documentation now includes comprehensive coverage of blockchain operations, data types, protocol specifications, and DNS nameserver helper functionality for VIZ account metadata management.
 
 ## Project Structure
 The core libraries are organized under the libraries/ directory, with each library providing focused capabilities:
 - libraries/chain: state machine, evaluators, database, fork management, block processing
 - libraries/protocol: operations, transactions, signing, types, chain constants
 - libraries/network: P2P node, peer connections, message handling, synchronization
-- libraries/wallet: transaction builder, signing, key management, APIs
+- libraries/wallet: transaction builder, signing, key management, APIs, DNS nameserver helpers
 
 Plugins integrate these libraries into a full node via the appbase framework. The main entry point initializes plugins and starts the node.
 
@@ -69,7 +71,7 @@ subgraph "Core Libraries"
 CHAIN["Chain Library<br/>database.hpp, evaluator.hpp, chain_objects.hpp"]
 PROTO["Protocol Library<br/>operations.hpp, transaction.hpp, types.hpp"]
 NET["Network Library<br/>node.hpp"]
-WALLET["Wallet Library<br/>wallet.hpp, api_documentation.hpp"]
+WALLET["Wallet Library<br/>wallet.hpp, api_documentation.hpp<br/>DNS Nameserver Helpers"]
 end
 subgraph "Plugins"
 PL_CHAIN["plugins/chain/plugin.hpp"]
@@ -119,11 +121,12 @@ This section introduces the primary responsibilities and key classes of each lib
   - Responsibilities: block and transaction propagation, peer discovery, sync from peers, bandwidth limits
 
 - Wallet Library
-  - wallet_api: transaction builder, signing, key management, proposal creation, account operations
+  - wallet_api: transaction builder, signing, key management, proposal creation, account operations, DNS nameserver helpers
   - api_documentation: method descriptions and help system for wallet operations
-  - Responsibilities: construct transactions, sign with private keys, manage encrypted key storage, expose APIs
+  - DNS Nameserver Helpers: validation, extraction, and management of DNS records in account metadata
+  - Responsibilities: construct transactions, sign with private keys, manage encrypted key storage, expose APIs, handle DNS metadata
 
-**Updated** Enhanced with comprehensive data type coverage and operation documentation.
+**Updated** Enhanced with comprehensive DNS nameserver helper functionality documentation.
 
 **Section sources**
 - [libraries/chain/include/graphene/chain/database.hpp](file://libraries/chain/include/graphene/chain/database.hpp#L36-L561)
@@ -137,11 +140,11 @@ This section introduces the primary responsibilities and key classes of each lib
 - [libraries/wallet/include/graphene/wallet/api_documentation.hpp](file://libraries/wallet/include/graphene/wallet/api_documentation.hpp#L37-L75)
 
 ## Architecture Overview
-The libraries integrate through explicit interfaces and signals. The Chain library exposes a database interface and signals for operation application. The Protocol library defines the canonical operation types and transaction structures. The Network library consumes blocks and transactions from the Chain library and broadcasts them to peers. The Wallet library constructs and signs transactions using the Protocol library and sends them to the Chain library via the P2P plugin.
+The libraries integrate through explicit interfaces and signals. The Chain library exposes a database interface and signals for operation application. The Protocol library defines the canonical operation types and transaction structures. The Network library consumes blocks and transactions from the Chain library and broadcasts them to peers. The Wallet library constructs and signs transactions using the Protocol library and sends them to the Chain library via the P2P plugin. The DNS nameserver helper functionality extends the wallet library to manage DNS metadata within account JSON metadata.
 
 ```mermaid
 graph TB
-WALLET["Wallet API<br/>wallet.hpp"]
+WALLET["Wallet API<br/>wallet.hpp<br/>DNS Nameserver Helpers"]
 API_DOC["API Documentation<br/>api_documentation.hpp"]
 PROTO["Protocol<br/>transaction.hpp, operations.hpp, types.hpp"]
 CHAIN["Chain Database<br/>database.hpp"]
@@ -150,8 +153,10 @@ CHAIN_OBJ["Chain Objects<br/>chain_objects.hpp"]
 NET["Network Node<br/>node.hpp"]
 PL_CHAIN["Chain Plugin<br/>plugin.hpp"]
 PL_P2P["P2P Plugin<br/>p2p_plugin.hpp"]
+DNS_HELPERS["DNS Nameserver Helpers<br/>ns_validate_*<br/>ns_create_metadata<br/>ns_set_records"]
 WALLET --> API_DOC
 WALLET --> PROTO
+WALLET --> DNS_HELPERS
 WALLET --> PL_P2P
 PL_P2P --> NET
 PL_CHAIN --> CHAIN
@@ -162,7 +167,7 @@ PROTO --> CHAIN
 ```
 
 **Diagram sources**
-- [libraries/wallet/include/graphene/wallet/wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L96-L1067)
+- [libraries/wallet/include/graphene/wallet/wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L1310-L1420)
 - [libraries/wallet/include/graphene/wallet/api_documentation.hpp](file://libraries/wallet/include/graphene/wallet/api_documentation.hpp#L43-L75)
 - [libraries/protocol/include/graphene/protocol/transaction.hpp](file://libraries/protocol/include/graphene/protocol/transaction.hpp#L12-L101)
 - [libraries/protocol/include/graphene/protocol/operations.hpp](file://libraries/protocol/include/graphene/protocol/operations.hpp#L13-L102)
@@ -321,8 +326,9 @@ CHAIN-->>NET : "sync_status(item_type, count)"
 
 ### Wallet Library
 The Wallet library provides transaction construction and signing:
-- wallet_api: builder APIs, signing, key management, proposal creation, account operations
+- wallet_api: builder APIs, signing, key management, proposal creation, account operations, DNS nameserver helpers
 - api_documentation: method descriptions and help system for wallet operations
+- DNS Nameserver Helpers: comprehensive DNS metadata management functionality
 - Signing: uses Protocol transaction structures and private keys
 - Integration: communicates with the node via plugins and remote APIs
 
@@ -347,6 +353,67 @@ Send --> End
 - [libraries/wallet/include/graphene/wallet/wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L96-L1067)
 - [libraries/wallet/wallet.cpp](file://libraries/wallet/wallet.cpp#L1-L200)
 - [libraries/wallet/include/graphene/wallet/api_documentation.hpp](file://libraries/wallet/include/graphene/wallet/api_documentation.hpp#L37-L75)
+
+### DNS Nameserver Helper Functionality
+The wallet library now includes comprehensive DNS nameserver helper functionality for managing DNS records within VIZ account metadata. This functionality enables:
+
+- **Validation Functions**: IPv4 address validation, SHA256 hash validation, TTL validation, and SSL TXT record format validation
+- **Metadata Creation**: Generation of DNS metadata JSON with A records and SSL hash TXT records
+- **Extraction Functions**: Retrieval of A records, SSL hashes, and TTL values from account metadata
+- **Management Operations**: Setting and removing DNS records while preserving other metadata fields
+
+Key data structures:
+- `ns_record`: Represents a single DNS record tuple [type, value]
+- `ns_metadata_options`: Configuration options for DNS metadata (A records, SSL hash, TTL)
+- `ns_summary`: Extracted DNS metadata summary from account JSON
+- `ns_validation_result`: Validation results with error reporting
+
+```mermaid
+classDiagram
+class ns_metadata_options {
++vector~string~ a_records
++optional~string~ ssl_hash
++uint32_t ttl
+}
+class ns_summary {
++vector~string~ a_records
++optional~string~ ssl_hash
++uint32_t ttl
++bool has_ns_data
+}
+class ns_validation_result {
++bool is_valid
++vector~string~ errors
+}
+class wallet_api {
++ns_validate_ipv4(ipv4)
++ns_validate_sha256_hash(hash)
++ns_validate_ttl(ttl)
++ns_validate_ssl_txt_record(txt)
++ns_validate_metadata(options)
++ns_create_metadata(options)
++ns_get_summary(account_name)
++ns_extract_a_records(account_name)
++ns_extract_ssl_hash(account_name)
++ns_extract_ttl(account_name)
++ns_set_records(account_name, options, broadcast)
++ns_remove_records(account_name, broadcast)
+}
+ns_metadata_options --> ns_summary : "creates"
+ns_validation_result --> ns_metadata_options : "validates"
+wallet_api --> ns_metadata_options : "uses"
+wallet_api --> ns_summary : "returns"
+```
+
+**Diagram sources**
+- [libraries/wallet/include/graphene/wallet/wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L24-L62)
+- [libraries/wallet/include/graphene/wallet/wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L1310-L1420)
+- [libraries/wallet/wallet.cpp](file://libraries/wallet/wallet.cpp#L2577-L2884)
+
+**Section sources**
+- [libraries/wallet/include/graphene/wallet/wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L24-L62)
+- [libraries/wallet/include/graphene/wallet/wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L1310-L1420)
+- [libraries/wallet/wallet.cpp](file://libraries/wallet/wallet.cpp#L2577-L2884)
 
 ### Typical Operations: Transaction Processing and Block Validation
 
@@ -501,16 +568,92 @@ Transactions follow a strict validation pipeline:
 - [libraries/protocol/include/graphene/protocol/transaction.hpp](file://libraries/protocol/include/graphene/protocol/transaction.hpp#L12-L101)
 - [libraries/protocol/transaction.cpp](file://libraries/protocol/transaction.cpp#L30-L200)
 
+## DNS Nameserver Helper Functionality
+
+The wallet library now includes comprehensive DNS nameserver helper functionality that extends blockchain metadata management capabilities with DNS record support for VIZ accounts.
+
+### DNS Metadata Structure
+DNS nameserver helpers manage DNS records stored within account JSON metadata. The metadata structure supports:
+
+- **NS Array**: Contains DNS record tuples with type and value pairs
+- **TTL Value**: Time-to-live for DNS records in seconds
+- **SSL Hash**: Optional SHA256 hash for SSL certificate verification
+
+### Validation Functions
+The DNS helpers provide comprehensive validation for DNS metadata:
+
+- **IPv4 Validation**: Validates IPv4 address format with proper octet ranges
+- **SHA256 Hash Validation**: Ensures 64-character hexadecimal hash format
+- **TTL Validation**: Requires positive integer values for TTL
+- **SSL TXT Record Validation**: Validates "ssl=<hash>" format
+
+### Extraction and Management Operations
+The DNS helpers support complete DNS metadata lifecycle management:
+
+- **Metadata Creation**: Generates DNS metadata JSON with A records and SSL hash TXT records
+- **Summary Extraction**: Retrieves complete DNS metadata summary from account JSON
+- **Record Extraction**: Extracts specific DNS record types (A records, SSL hashes, TTL values)
+- **Record Management**: Sets and removes DNS records while preserving other metadata fields
+
+### Practical Usage Examples
+
+#### Setting DNS Records
+```cpp
+// Configure DNS metadata options
+ns_metadata_options options;
+options.a_records = {"188.120.231.153", "192.168.1.100"};
+options.ssl_hash = "a1b2c3d4e5f67890123456789012345678901234567890123456789012345678";
+options.ttl = 28800; // 8 hours
+
+// Validate metadata
+auto validation = wallet.ns_validate_metadata(options);
+if (validation.is_valid) {
+    // Set DNS records for account
+    auto tx = wallet.ns_set_records("myaccount", options, true);
+}
+```
+
+#### Extracting DNS Information
+```cpp
+// Extract A records
+auto a_records = wallet.ns_extract_a_records("myaccount");
+for (const auto& ip : a_records) {
+    std::cout << "A record: " << ip << std::endl;
+}
+
+// Extract SSL hash
+auto ssl_hash = wallet.ns_extract_ssl_hash("myaccount");
+if (ssl_hash) {
+    std::cout << "SSL hash: " << *ssl_hash << std::endl;
+}
+
+// Extract TTL
+auto ttl = wallet.ns_extract_ttl("myaccount");
+std::cout << "TTL: " << ttl << " seconds" << std::endl;
+```
+
+#### Removing DNS Records
+```cpp
+// Remove DNS records while preserving other metadata
+auto tx = wallet.ns_remove_records("myaccount", true);
+```
+
+**Section sources**
+- [libraries/wallet/include/graphene/wallet/wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L24-L62)
+- [libraries/wallet/include/graphene/wallet/wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L1310-L1420)
+- [libraries/wallet/wallet.cpp](file://libraries/wallet/wallet.cpp#L2577-L2884)
+
 ## Dependency Analysis
 The libraries exhibit layered dependencies:
 - Chain depends on Protocol for operation types and transaction structures
 - Network depends on Protocol for message serialization and types
-- Wallet depends on Protocol for transaction construction and signing
+- Wallet depends on Protocol for transaction construction and signing, plus includes DNS helpers
 - Plugins depend on Chain for database access and on Network for P2P operations
 
 ```mermaid
 graph LR
 WALLET["Wallet"] --> PROTO["Protocol"]
+WALLET --> DNS_HELPERS["DNS Nameserver Helpers"]
 NET["Network"] --> PROTO
 CHAIN["Chain"] --> PROTO
 PL_P2P["P2P Plugin"] --> NET
@@ -542,6 +685,7 @@ MAIN --> PL_P2P
 - Network bandwidth: rate limiting and propagation tracking help manage traffic
 - Wallet caching: minimal caching assumptions favor local APIs with fast node connections
 - Operation processing: efficient static_variant dispatch and lazy evaluation optimize performance
+- DNS validation: lightweight validation functions minimize overhead for DNS metadata operations
 
 ## Troubleshooting Guide
 Common issues and diagnostics:
@@ -550,6 +694,9 @@ Common issues and diagnostics:
 - Network sync stalls: check peer counts, sync status callbacks, and bandwidth limits
 - Wallet signing problems: verify chain ID, key derivation, and memo encryption
 - Operation classification errors: verify operation type and category using is_virtual_operation and is_data_operation functions
+- DNS metadata errors: validate DNS records using ns_validate_metadata and check for proper JSON formatting
+- SSL hash validation failures: ensure 64-character hexadecimal format for SSL certificate hashes
+- TTL validation errors: verify positive integer values for DNS record TTL settings
 
 **Section sources**
 - [libraries/chain/include/graphene/chain/database.hpp](file://libraries/chain/include/graphene/chain/database.hpp#L56-L73)
@@ -557,8 +704,9 @@ Common issues and diagnostics:
 - [libraries/network/include/graphene/network/node.hpp](file://libraries/network/include/graphene/network/node.hpp#L143-L148)
 - [libraries/wallet/include/graphene/wallet/wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L311-L331)
 - [libraries/protocol/operations.cpp](file://libraries/protocol/operations.cpp#L17-L52)
+- [libraries/wallet/wallet.cpp](file://libraries/wallet/wallet.cpp#L2640-L2673)
 
 ## Conclusion
-The VIZ CPP Node core libraries form a cohesive architecture: Protocol defines canonical operations and transactions, Chain manages state and validation, Network enables peer synchronization and propagation, and Wallet provides signing and key management. The enhanced documentation now provides comprehensive coverage of blockchain operations, data types, and protocol specifications, supporting robust transaction processing, block validation, and peer coordination essential to a production blockchain node.
+The VIZ CPP Node core libraries form a cohesive architecture: Protocol defines canonical operations and transactions, Chain manages state and validation, Network enables peer synchronization and propagation, and Wallet provides signing and key management. The enhanced documentation now provides comprehensive coverage of blockchain operations, data types, protocol specifications, and DNS nameserver helper functionality, supporting robust transaction processing, block validation, peer coordination, and DNS metadata management essential to a production blockchain node.
 
-**Updated** Enhanced documentation provides expanded coverage of blockchain operations, data types, and protocol specifications including comprehensive operation documentation and data type coverage, making it easier for developers to understand and work with the VIZ blockchain protocol.
+**Updated** Enhanced documentation provides expanded coverage of blockchain operations, data types, protocol specifications, and DNS nameserver helper functionality, making it easier for developers to understand and work with the VIZ blockchain protocol and manage DNS records within account metadata.

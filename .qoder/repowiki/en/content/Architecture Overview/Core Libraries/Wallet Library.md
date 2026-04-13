@@ -21,14 +21,11 @@
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive documentation for new wallet operations including custom operations broadcasting, content management, committee system operations, invite functionality, reward systems, subscription management, and account marketplace features
-- Updated wallet API surface documentation to reflect 25+ new operations covering advanced blockchain interaction capabilities
-- Enhanced transaction builder API documentation with new operation types
-- Added detailed coverage of content creation, voting, and reward distribution systems
-- Documented committee work request management and voting mechanisms
-- Added invite system operations for account creation and fund transfers
-- Documented paid subscription management and marketplace operations
-- Updated architecture diagrams to reflect expanded API surface
+- Added comprehensive documentation for the new VIZ DNS nameserver helper system
+- Documented DNS metadata validation functions, data structures, and transaction operations
+- Updated wallet API surface to include DNS management operations
+- Enhanced transaction builder API with DNS record management capabilities
+- Added detailed coverage of DNS record validation, metadata creation, and extraction functions
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -36,12 +33,13 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Advanced Wallet Operations](#advanced-wallet-operations)
-7. [Dependency Analysis](#dependency-analysis)
-8. [Performance Considerations](#performance-considerations)
-9. [Troubleshooting Guide](#troubleshooting-guide)
-10. [Conclusion](#conclusion)
-11. [Appendices](#appendices)
+6. [DNS Nameserver Helper System](#dns-nameserver-helper-system)
+7. [Advanced Wallet Operations](#advanced-wallet-operations)
+8. [Dependency Analysis](#dependency-analysis)
+9. [Performance Considerations](#performance-considerations)
+10. [Troubleshooting Guide](#troubleshooting-guide)
+11. [Conclusion](#conclusion)
+12. [Appendices](#appendices)
 
 ## Introduction
 This document describes the Wallet Library that provides transaction signing capabilities and wallet management functionality for the blockchain node. It covers:
@@ -52,7 +50,7 @@ This document describes the Wallet Library that provides transaction signing cap
 - Transaction construction, signature aggregation, and broadcast mechanisms
 - Examples of wallet creation, key import/export, transaction signing workflows, and remote node integration
 - Backup strategies, recovery procedures, and security considerations for key management
-- **Updated**: Comprehensive coverage of advanced blockchain interaction capabilities including custom operations broadcasting, content management, committee system operations, invite functionality, reward systems, subscription management, and account marketplace features
+- **Updated**: Comprehensive coverage of the VIZ DNS nameserver helper system for managing DNS records through blockchain metadata
 
 ## Project Structure
 The Wallet Library is organized around a public API header and an implementation module, with supporting utilities for documentation and reflection. The CLI wallet demonstrates integration with a remote node.
@@ -78,6 +76,7 @@ CM["committee_api_object.hpp"]
 IO["invite_api_object.hpp"]
 PSO["paid_subscription_objects.hpp"]
 PSAPI["paid_subscription_api_object.hpp"]
+DNS["DNS Nameserver Helper"]
 end
 H --> C
 R --> C
@@ -93,14 +92,15 @@ H --> CM
 H --> IO
 H --> PSO
 H --> PSAPI
+H --> DNS
 ```
 
 **Diagram sources**
-- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L1-L1399)
+- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L1-L1569)
 - [remote_node_api.hpp](file://libraries/wallet/include/graphene/wallet/remote_node_api.hpp#L1-L295)
 - [api_documentation.hpp](file://libraries/wallet/include/graphene/wallet/api_documentation.hpp#L1-L79)
 - [reflect_util.hpp](file://libraries/wallet/include/graphene/wallet/reflect_util.hpp#L1-L91)
-- [wallet.cpp](file://libraries/wallet/wallet.cpp#L1-L2578)
+- [wallet.cpp](file://libraries/wallet/wallet.cpp#L1-L2887)
 - [api_documentation_standin.cpp](file://libraries/wallet/api_documentation_standin.cpp#L1-L64)
 - [generate_api_documentation.pl](file://libraries/wallet/generate_api_documentation.pl#L1-L180)
 - [CMakeLists.txt](file://libraries/wallet/CMakeLists.txt#L1-L85)
@@ -122,11 +122,11 @@ H --> PSAPI
 - api_documentation: Runtime or generated documentation container for wallet API methods.
 - reflect_util: Utilities for dynamic operation name-to-ID mapping and variant conversion.
 - CLI integration: Demonstrates connecting to a remote node, registering the wallet API, and exposing it over WebSocket/HTTP/TLS endpoints.
-- **Updated**: Advanced feature support for content management, committee operations, invite system, reward distribution, paid subscriptions, and marketplace functionality.
+- **Updated**: DNS nameserver helper system for managing DNS records through blockchain metadata, including validation functions, data structures, and transaction operations.
 
 **Section sources**
-- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L96-L1399)
-- [wallet.cpp](file://libraries/wallet/wallet.cpp#L183-L2578)
+- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L96-L1569)
+- [wallet.cpp](file://libraries/wallet/wallet.cpp#L183-L2887)
 - [remote_node_api.hpp](file://libraries/wallet/include/graphene/wallet/remote_node_api.hpp#L44-L295)
 - [api_documentation.hpp](file://libraries/wallet/include/graphene/wallet/api_documentation.hpp#L43-L79)
 - [reflect_util.hpp](file://libraries/wallet/include/graphene/wallet/reflect_util.hpp#L9-L91)
@@ -169,7 +169,7 @@ The public API exposes:
 - Transactions: begin_builder_transaction, add_operation_to_builder_transaction, replace_operation_in_builder_transaction, preview_builder_transaction, sign_builder_transaction, propose_builder_transaction, remove_builder_transaction, approve_proposal, get_proposed_transactions, get_prototype_operation, serialize_transaction, sign_transaction
 - Operations: create_account, create_account_with_keys, update_account, update_account_auth_key, update_account_auth_account, update_account_auth_threshold, update_account_meta, update_account_memo_key, delegate_vesting_shares, update_witness, update_chain_properties, versioned_update_chain_properties, set_voting_proxy, vote_for_witness, transfer, escrow_transfer, escrow_approve, escrow_dispute, escrow_release, transfer_to_vesting, withdraw_vesting, set_withdraw_vesting_route, post_content, vote, set_transaction_expiration, request_account_recovery, recover_account, change_recovery_account, get_master_history, get_encrypted_memo, decrypt_memo, get_inbox, get_outbox, follow
 
-**Updated**: Advanced operations including custom operations broadcasting, content management, committee system operations, invite functionality, reward systems, subscription management, and account marketplace features.
+**Updated**: Advanced operations including custom operations broadcasting, content management, committee system operations, invite functionality, reward systems, subscription management, account marketplace features, and DNS nameserver helper operations.
 
 Security and privacy helpers:
 - Memo encryption/decryption and safety checks
@@ -177,8 +177,8 @@ Security and privacy helpers:
 - Brain key suggestion and normalization
 
 **Section sources**
-- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L104-L1399)
-- [wallet.cpp](file://libraries/wallet/wallet.cpp#L1062-L2578)
+- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L104-L1569)
+- [wallet.cpp](file://libraries/wallet/wallet.cpp#L1062-L2887)
 
 ### Wallet Implementation Internals (wallet_api_impl)
 Key responsibilities:
@@ -309,11 +309,11 @@ wallet_api --> wallet_api_impl : "owns"
 ```
 
 **Diagram sources**
-- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L96-L1399)
-- [wallet.cpp](file://libraries/wallet/wallet.cpp#L183-L2578)
+- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L96-L1569)
+- [wallet.cpp](file://libraries/wallet/wallet.cpp#L183-L2887)
 
 **Section sources**
-- [wallet.cpp](file://libraries/wallet/wallet.cpp#L183-L2578)
+- [wallet.cpp](file://libraries/wallet/wallet.cpp#L183-L2887)
 
 ### Remote Node API Contracts (remote_node_api)
 Dummy classes define the remote API surface for each plugin. FC_API macros declare the method names and signatures exposed to the wallet.
@@ -404,6 +404,53 @@ CLI->>WS : "Reconnect"
 **Section sources**
 - [main.cpp](file://programs/cli_wallet/main.cpp#L166-L226)
 
+## DNS Nameserver Helper System
+
+### DNS Data Structures and Constants
+The wallet library introduces a comprehensive DNS nameserver helper system with the following core data structures:
+
+- **ns_record**: Represents a single DNS record tuple [type, value] with string type ("A" or "TXT") and string value (IPv4 address or TXT content like "ssl=<hash>")
+- **ns_metadata_options**: Options for creating NS metadata including vector of A records, optional SSL hash, and TTL value
+- **ns_summary**: Summary of NS data extracted from account metadata with A records, SSL hash, TTL, and presence flag
+- **ns_validation_result**: Result of NS metadata validation with boolean validity flag and error messages array
+
+DNS helper constants:
+- NS_DEFAULT_TTL: Default TTL of 28800 seconds (8 hours)
+- NS_MAX_TXT_LENGTH: Maximum TXT record length per NS standard (256 characters)
+- NS_SHA256_HEX_LENGTH: SHA256 hash length in hex characters (64 characters)
+
+### DNS Validation Functions
+The system provides comprehensive validation functions:
+
+- **ns_validate_ipv4()**: Validates IPv4 address format with proper octet ranges (0-255) and rejects invalid formats
+- **ns_validate_sha256_hash()**: Validates SHA256 hash format requiring exactly 64 hexadecimal characters
+- **ns_validate_ttl()**: Ensures TTL values are positive integers
+- **ns_validate_ssl_txt_record()**: Validates SSL TXT record format "ssl=<64-char-hex-hash>"
+- **ns_validate_metadata()**: Performs complete validation of NS metadata with comprehensive error reporting
+
+### DNS Metadata Operations
+The system offers complete DNS record management through blockchain metadata:
+
+- **ns_create_metadata()**: Creates NS metadata JSON string from options, building ns arrays with A and TXT records
+- **ns_get_summary()**: Extracts complete NS summary from account metadata, parsing A records and SSL hashes
+- **ns_extract_a_records()**: Extracts IPv4 addresses from account metadata
+- **ns_extract_ssl_hash()**: Extracts SSL certificate hash from TXT records
+- **ns_extract_ttl()**: Extracts TTL value from account metadata
+- **ns_set_records()**: Sets NS records for an account, merging with existing metadata while preserving other fields
+- **ns_remove_records()**: Removes NS records from account metadata while preserving other metadata fields
+
+### Transaction Integration
+DNS operations integrate seamlessly with the wallet's transaction system:
+- All DNS operations return signed transactions that can be broadcast
+- Uses account_metadata_operation for blockchain updates
+- Maintains backward compatibility with existing account metadata
+- Supports both validation-only operations and transaction creation
+
+**Section sources**
+- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L24-L62)
+- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L1311-L1420)
+- [wallet.cpp](file://libraries/wallet/wallet.cpp#L2578-L2887)
+
 ## Advanced Wallet Operations
 
 ### Custom Operations Broadcasting
@@ -463,8 +510,10 @@ Secondary market for digital assets:
 - **target_account_sale()**: Direct sales to specific buyers with escrow protection
 - **Auction Integration**: Bid management and sale completion tracking
 
+**Updated**: DNS nameserver helper operations including validation functions, metadata creation, record extraction, and transaction management for comprehensive DNS record management on the blockchain.
+
 **Section sources**
-- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L958-L1268)
+- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L958-L1569)
 - [content_api_object.hpp](file://libraries/api/include/graphene/api/content_api_object.hpp#L12-L58)
 - [committee_api_object.hpp](file://libraries/api/include/graphene/api/committee_api_object.hpp#L23-L51)
 - [invite_api_object.hpp](file://libraries/api/include/graphene/api/invite_api_object.hpp#L13-L30)
@@ -477,7 +526,7 @@ The wallet library depends on:
 - Plugins for remote APIs (database_api, operation_history, account_history, social_network, tags, network_broadcast_api, follow, private_message, account_by_key, witness_api)
 - Utilities for key conversion and word lists
 - fc for networking, RPC, crypto, and containers
-- **Updated**: Advanced feature dependencies for content management, committee operations, invite system, reward distribution, paid subscriptions, and marketplace functionality
+- **Updated**: Advanced feature dependencies for content management, committee operations, invite system, reward distribution, paid subscriptions, marketplace functionality, and DNS nameserver helper system.
 
 ```mermaid
 graph LR
@@ -500,6 +549,7 @@ Wallet --> ContentAPI["content_api_object.hpp"]
 Wallet --> CommitteeAPI["committee_api_object.hpp"]
 Wallet --> InviteAPI["invite_api_object.hpp"]
 Wallet --> PaidSubAPI["paid_subscription_api_object.hpp"]
+Wallet --> DNSHelper["DNS Nameserver Helper"]
 ```
 
 **Diagram sources**
@@ -517,7 +567,7 @@ Wallet --> PaidSubAPI["paid_subscription_api_object.hpp"]
 - Transaction signing minimization: The implementation computes minimal required signatures to reduce signing overhead.
 - Batched operations: Use builder transactions to assemble multiple operations efficiently before signing and broadcasting.
 - Avoid unnecessary remote calls: Reuse cached account data where possible and batch queries.
-- **Updated**: Advanced feature performance considerations including content indexing, committee voting calculations, subscription billing cycles, and marketplace transaction optimization.
+- **Updated**: Advanced feature performance considerations including content indexing, committee voting calculations, subscription billing cycles, marketplace transaction optimization, and DNS metadata parsing efficiency.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -526,7 +576,7 @@ Common issues and remedies:
 - Broadcasting failures: Verify network connectivity to the remote node and that the transaction is valid and within expiration.
 - Memo decryption failures: Ensure the correct private key is present in the wallet for memo decryption.
 - Authority errors: When updating authorities, ensure thresholds and weights are valid; impossible authorities can cause assertion failures.
-- **Updated**: Advanced feature troubleshooting including content validation errors, committee request processing failures, invite claim issues, subscription payment problems, and marketplace transaction conflicts.
+- **Updated**: Advanced feature troubleshooting including content validation errors, committee request processing failures, invite claim issues, subscription payment problems, marketplace transaction conflicts, and DNS metadata validation failures.
 
 **Section sources**
 - [wallet.cpp](file://libraries/wallet/wallet.cpp#L1203-L1232)
@@ -535,7 +585,7 @@ Common issues and remedies:
 - [wallet.cpp](file://libraries/wallet/wallet.cpp#L1995-L2025)
 
 ## Conclusion
-The Wallet Library provides a robust, extensible framework for managing keys, constructing transactions, and interacting with a remote blockchain node. Its modular design, strong security practices, and dynamic API documentation system make it suitable for both interactive and automated use cases. **Updated**: The library now supports comprehensive advanced blockchain interaction capabilities including custom operations broadcasting, content management, committee governance, invite systems, reward distribution, subscription management, and marketplace functionality, making it a complete solution for modern decentralized applications.
+The Wallet Library provides a robust, extensible framework for managing keys, constructing transactions, and interacting with a remote blockchain node. Its modular design, strong security practices, and dynamic API documentation system make it suitable for both interactive and automated use cases. **Updated**: The library now supports comprehensive advanced blockchain interaction capabilities including custom operations broadcasting, content management, committee governance, invite systems, reward distribution, subscription management, marketplace functionality, and a complete DNS nameserver helper system for managing DNS records through blockchain metadata, making it a complete solution for modern decentralized applications.
 
 ## Appendices
 
@@ -545,7 +595,7 @@ The Wallet Library provides a robust, extensible framework for managing keys, co
 - Avoid exposing private keys: Never paste private keys into untrusted terminals or logs.
 - Validate memos: Use built-in memo safety checks to prevent accidental exposure of private keys.
 - Use remote signing: Prefer offline signing workflows when possible.
-- **Updated**: Advanced security considerations including content moderation, committee voting integrity, invite system protection, subscription billing security, and marketplace transaction validation.
+- **Updated**: Advanced security considerations including content moderation, committee voting integrity, invite system protection, subscription billing security, marketplace transaction validation, and DNS metadata integrity verification.
 
 **Section sources**
 - [wallet.cpp](file://libraries/wallet/wallet.cpp#L243-L270)
@@ -573,7 +623,7 @@ The Wallet Library provides a robust, extensible framework for managing keys, co
   - Register the wallet API over RPC endpoints
   - Execute commands and receive formatted results
 
-- **Updated**: Advanced workflow examples including content creation with voting rewards, committee participation for project funding, invite-based account creation, subscription management, and marketplace transactions.
+- **Updated**: Advanced workflow examples including content creation with voting rewards, committee participation for project funding, invite-based account creation, subscription management, marketplace transactions, and DNS record management through blockchain metadata.
 
 **Section sources**
 - [main.cpp](file://programs/cli_wallet/main.cpp#L166-L226)
@@ -612,9 +662,19 @@ The Wallet Library provides a robust, extensible framework for managing keys, co
 3. Execute sales with proper key replacement
 4. Handle target sales to specific buyers
 
+#### DNS Nameserver Helper Workflow
+1. Validate DNS metadata using ns_validate_metadata() before creation
+2. Create NS metadata with ns_create_metadata() including A records and SSL hashes
+3. Extract existing DNS records using ns_get_summary() for verification
+4. Set DNS records with ns_set_records() to update account metadata
+5. Remove DNS records with ns_remove_records() when needed
+6. Monitor TTL values and record validity through extraction functions
+
 **Section sources**
-- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L958-L1268)
+- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L958-L1569)
 - [content_object.hpp](file://libraries/chain/include/graphene/chain/content_object.hpp#L56-L114)
 - [committee_api_object.hpp](file://libraries/api/include/graphene/api/committee_api_object.hpp#L23-L51)
 - [invite_api_object.hpp](file://libraries/api/include/graphene/api/invite_api_object.hpp#L13-L30)
 - [paid_subscription_objects.hpp](file://libraries/chain/include/graphene/chain/paid_subscription_objects.hpp#L15-L75)
+- [wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L1311-L1420)
+- [wallet.cpp](file://libraries/wallet/wallet.cpp#L2578-L2887)
