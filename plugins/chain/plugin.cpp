@@ -484,7 +484,11 @@ namespace chain {
         // If state is empty and P2P snapshot sync callback is registered,
         // download and load snapshot from trusted peers before on_sync().
         if (my->db.head_block_num() == 0 && snapshot_p2p_sync_callback) {
+            std::cerr << "   Node has no state (0 blocks). Requesting snapshot from trusted peers...\n";
+            ilog("Node has no state. Triggering P2P snapshot sync from trusted peers...");
             snapshot_p2p_sync_callback();
+            std::cerr << "   P2P snapshot sync complete. Started on blockchain with "
+                      << my->db.head_block_num() << " blocks\n";
             ilog("Started on blockchain with ${n} blocks (from P2P snapshot sync)", ("n", my->db.head_block_num()));
         }
 

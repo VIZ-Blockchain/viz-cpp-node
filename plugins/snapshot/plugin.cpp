@@ -979,19 +979,23 @@ void snapshot_plugin::plugin_impl::update_snapshot_cache(const fc::path& snap_pa
 
 void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     ilog("Loading snapshot from ${path}...", ("path", input_path.string()));
+    std::cerr << "   Loading snapshot from " << input_path.string() << "...\n";
 
     auto start = fc::time_point::now();
 
     // Read file
+    std::cerr << "   Reading snapshot file...\n";
     std::ifstream in(input_path.string(), std::ios::binary);
     FC_ASSERT(in.is_open(), "Failed to open snapshot file: ${p}", ("p", input_path.string()));
 
     std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     in.close();
 
+    std::cerr << "   Read " << (content.size() / 1048576) << " MB from file\n";
     ilog("Read ${size} bytes from snapshot file", ("size", content.size()));
 
     // Decompress zlib
+    std::cerr << "   Decompressing...\n";
     auto decompress_start = fc::time_point::now();
     std::string json_content = fc::zlib_decompress(content);
     auto decompress_elapsed = double((fc::time_point::now() - decompress_start).count()) / 1000000.0;
@@ -1000,8 +1004,11 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         ("comp", content.size())
         ("orig", json_content.size())
         ("time", decompress_elapsed));
+    std::cerr << "   Decompressed: " << (content.size() / 1048576) << " MB -> "
+              << (json_content.size() / 1048576) << " MB (" << decompress_elapsed << " sec)\n";
 
     // Parse JSON
+    std::cerr << "   Parsing JSON...\n";
     fc::variant snapshot_var = fc::json::from_string(json_content);
     FC_ASSERT(snapshot_var.is_object(), "Snapshot file is not a valid JSON object");
 
@@ -1022,18 +1029,23 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     ilog("Snapshot header validated: block=${b}, LIB=${lib}, chain_id=${cid}",
         ("b", header.snapshot_block_num)("lib", header.last_irreversible_block_num)
         ("cid", std::string(header.chain_id)));
+    std::cerr << "   Snapshot: block " << header.snapshot_block_num
+              << ", LIB " << header.last_irreversible_block_num << "\n";
 
     // Validate checksum
+    std::cerr << "   Validating snapshot checksum...\n";
     std::string state_json = fc::json::to_string(snapshot["state"]);
     auto computed_checksum = fc::sha256::hash(state_json.data(), state_json.size());
     FC_ASSERT(computed_checksum == header.payload_checksum,
         "Snapshot checksum mismatch: computed=${c}, header=${h}",
         ("c", std::string(computed_checksum))("h", std::string(header.payload_checksum)));
     ilog("Snapshot checksum verified");
+    std::cerr << "   Snapshot checksum verified OK\n";
 
     const auto& state = snapshot["state"].get_object();
 
     // Import objects in dependency order
+    std::cerr << "   Importing state into database...\n";
     db.with_strong_write_lock([&]() {
         // Clear genesis-created multi-instance objects before importing.
         // init_genesis() creates initial accounts, authorities, witnesses, and metadata
@@ -1199,7 +1211,9 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     }
 
     auto end = fc::time_point::now();
-    ilog("Snapshot loaded successfully in ${t} sec", ("t", double((end - start).count()) / 1000000.0));
+    auto total_elapsed = double((end - start).count()) / 1000000.0;
+    std::cerr << "   Snapshot loaded successfully in " << total_elapsed << " sec\n";
+    ilog("Snapshot loaded successfully in ${t} sec", ("t", total_elapsed));
 }
 
 void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::signed_block& b) {
@@ -1623,6 +1637,8 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
 std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     FC_ASSERT(!trusted_snapshot_peers.empty(), "No trusted snapshot peers configured");
 
+    std::cerr << "   Querying " << trusted_snapshot_peers.size() << " trusted peer(s) for snapshot info...\n";
+
     // Phase 1: Query all peers for snapshot info
     struct peer_info {
         std::string endpoint_str;
@@ -1634,6 +1650,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 
     for (const auto& peer_str : trusted_snapshot_peers) {
         try {
+            std::cerr << "   Connecting to peer " << peer_str << "...\n";
             ilog("Querying snapshot info from peer ${p}...", ("p", peer_str));
             fc::tcp_socket sock;
             auto ep = fc::ip::endpoint::from_string(peer_str);
@@ -1644,17 +1661,22 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 
             if (msg_type == snapshot_info_reply) {
                 auto info = unpack_from_vec<snapshot_info_reply_data>(payload);
+                std::cerr << "   Peer " << peer_str << ": snapshot at block "
+                          << info.block_num << " (" << (info.compressed_size / 1048576) << " MB)\n";
                 ilog("Peer ${p}: snapshot at block ${b}, size ${s} bytes",
                      ("p", peer_str)("b", info.block_num)("s", info.compressed_size));
                 available_peers.push_back({peer_str, info.block_num, info.checksum, info.compressed_size});
             } else if (msg_type == snapshot_not_available) {
+                std::cerr << "   Peer " << peer_str << ": no snapshot available\n";
                 ilog("Peer ${p}: no snapshot available", ("p", peer_str));
             }
 
             sock.close();
         } catch (const fc::exception& e) {
+            std::cerr << "   Peer " << peer_str << ": connection failed\n";
             wlog("Failed to query peer ${p}: ${e}", ("p", peer_str)("e", e.to_detail_string()));
         } catch (const std::exception& e) {
+            std::cerr << "   Peer " << peer_str << ": connection failed\n";
             wlog("Failed to query peer ${p}: ${e}", ("p", peer_str)("e", e.what()));
         }
     }
@@ -1667,8 +1689,12 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 
     ilog("Selected peer ${p} with snapshot at block ${b} (${s} bytes)",
          ("p", best->endpoint_str)("b", best->block_num)("s", best->compressed_size));
+    std::cerr << "   Selected peer " << best->endpoint_str
+              << " (block " << best->block_num
+              << ", " << (best->compressed_size / 1048576) << " MB)\n";
 
     // Phase 2: Download snapshot in chunks
+    std::cerr << "   Downloading snapshot...\n";
     fc::tcp_socket sock;
     auto ep = fc::ip::endpoint::from_string(best->endpoint_str);
     sock.connect_to(ep);
@@ -1692,6 +1718,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     uint64_t total_size = best->compressed_size;
     uint64_t offset = 0;
     const uint32_t chunk_size = 1048576; // 1 MB chunks
+    int last_printed_percent = -1;
 
     auto download_start = fc::time_point::now();
 
@@ -1713,6 +1740,10 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
         }
 
         uint32_t percent = total_size > 0 ? static_cast<uint32_t>(offset * 100 / total_size) : 100;
+        if (static_cast<int>(percent) != last_printed_percent && (percent % 5 == 0 || reply.is_last)) {
+            std::cerr << "   Downloaded " << (offset / 1048576) << "/" << (total_size / 1048576) << " MB (" << percent << "%)\n";
+            last_printed_percent = static_cast<int>(percent);
+        }
         ilog("Downloaded ${offset}/${total} bytes (${pct}%)",
              ("offset", offset)("total", total_size)("pct", percent));
 
@@ -1724,9 +1755,11 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     sock.close();
 
     auto download_elapsed = double((fc::time_point::now() - download_start).count()) / 1000000.0;
+    std::cerr << "   Download complete: " << (offset / 1048576) << " MB in " << download_elapsed << " sec\n";
     ilog("Download complete: ${s} bytes in ${t} sec", ("s", offset)("t", download_elapsed));
 
     // Verify checksum by streaming file in chunks (avoids loading entire file into memory)
+    std::cerr << "   Verifying checksum...\n";
     {
         std::ifstream verify_in(temp_path, std::ios::binary);
         FC_ASSERT(verify_in.is_open(), "Failed to open downloaded snapshot for verification");
@@ -1748,11 +1781,13 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
             ("c", std::string(computed))("e", std::string(best->checksum)));
     }
     ilog("Snapshot checksum verified");
+    std::cerr << "   Checksum verified OK\n";
 
     // Rename to final path
     std::string final_path = dir + "/snapshot-block-" + std::to_string(best->block_num) + ".vizjson";
     boost::filesystem::rename(temp_path, final_path);
 
+    std::cerr << "   Snapshot saved to " << final_path << "\n";
     ilog("Snapshot saved to ${p}", ("p", final_path));
     return final_path;
 }
@@ -1791,8 +1826,8 @@ void snapshot_plugin::set_program_options(
             "Load state from snapshot file instead of replaying blockchain")
         ("create-snapshot", bpo::value<std::string>(),
             "Create a snapshot file at the specified path and exit")
-        ("sync-snapshot-from-trusted-peer", bpo::value<bool>()->default_value(false),
-            "Download and load snapshot from trusted peers on empty state")
+        ("sync-snapshot-from-trusted-peer", bpo::value<bool>()->default_value(true),
+            "Download and load snapshot from trusted peers on empty state (requires trusted-snapshot-peer)")
     ;
 }
 
@@ -1903,18 +1938,25 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     // Register P2P snapshot sync callback on the chain plugin.
     // When state is empty (head_block_num == 0), download and load snapshot from trusted peers.
     if (my->sync_snapshot_from_trusted_peer && !my->trusted_snapshot_peers.empty()) {
+        ilog("P2P snapshot sync enabled: will download from trusted peers on empty state");
         auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
         chain_plug.snapshot_p2p_sync_callback = [this]() {
             auto start = fc::time_point::now();
+            std::cerr << "   === P2P Snapshot Sync ===\n";
             ilog("Requesting snapshot from trusted peers...");
             auto snapshot_path = my->download_snapshot_from_peers();
+            std::cerr << "   Clearing state and importing snapshot...\n";
             ilog("Download complete, loading snapshot...");
             my->load_snapshot(fc::path(snapshot_path));
             my->db.initialize_hardforks();
             auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
+            std::cerr << "   === P2P Snapshot Sync complete (block "
+                      << my->db.head_block_num() << ", " << elapsed << " sec) ===\n";
             ilog("P2P snapshot sync complete at block ${n}, elapsed ${t} sec",
                 ("n", my->db.head_block_num())("t", elapsed));
         };
+    } else if (!my->trusted_snapshot_peers.empty()) {
+        ilog("P2P snapshot sync disabled (sync-snapshot-from-trusted-peer = false)");
     }
 }
 
