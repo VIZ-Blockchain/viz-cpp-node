@@ -1954,7 +1954,11 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
         }
     }
 
-    FC_ASSERT(!available_peers.empty(), "No peers have snapshots available");
+    if (available_peers.empty()) {
+        wlog("No trusted peers have snapshots available. Falling back to P2P genesis sync.");
+        std::cerr << "   No peers have snapshots available. Will sync from genesis via P2P.\n";
+        return std::string();  // empty = no snapshot downloaded
+    }
 
     // Pick the peer with the highest block_num
     auto best = std::max_element(available_peers.begin(), available_peers.end(),
@@ -2238,20 +2242,45 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
         ilog("P2P snapshot sync enabled: will download from trusted peers on empty state");
         auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
         chain_plug.snapshot_p2p_sync_callback = [this]() {
-            auto start = fc::time_point::now();
-            std::cerr << "   === P2P Snapshot Sync ===\n";
-            ilog("Requesting snapshot from trusted peers...");
-            auto snapshot_path = my->download_snapshot_from_peers();
-            std::cerr << "   Clearing state and importing snapshot...\n";
-            ilog("Download complete, loading snapshot...");
-            my->load_snapshot(fc::path(snapshot_path));
-            my->db.set_dlt_mode(true);  // Mark DLT mode — block_log stays empty
-            my->db.initialize_hardforks();
-            auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
-            std::cerr << "   === P2P Snapshot Sync complete (block "
-                      << my->db.head_block_num() << ", " << elapsed << " sec) ===\n";
-            ilog("P2P snapshot sync complete at block ${n}, elapsed ${t} sec",
-                ("n", my->db.head_block_num())("t", elapsed));
+            const uint32_t retry_interval_sec = my->stalled_sync_timeout_minutes * 60;
+            uint32_t attempt = 0;
+
+            while (true) {
+                ++attempt;
+                auto start = fc::time_point::now();
+                std::cerr << "   === P2P Snapshot Sync (attempt " << attempt << ") ===\n";
+                ilog("Requesting snapshot from trusted peers (attempt ${a})...", ("a", attempt));
+
+                std::string snapshot_path;
+                try {
+                    snapshot_path = my->download_snapshot_from_peers();
+                } catch (const fc::exception& e) {
+                    elog("Snapshot download failed: ${e}", ("e", e.to_detail_string()));
+                } catch (const std::exception& e) {
+                    elog("Snapshot download failed: ${e}", ("e", e.what()));
+                }
+
+                if (!snapshot_path.empty()) {
+                    std::cerr << "   Clearing state and importing snapshot...\n";
+                    ilog("Download complete, loading snapshot...");
+                    my->load_snapshot(fc::path(snapshot_path));
+                    my->db.set_dlt_mode(true);  // Mark DLT mode — block_log stays empty
+                    my->db.initialize_hardforks();
+                    auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
+                    std::cerr << "   === P2P Snapshot Sync complete (block "
+                              << my->db.head_block_num() << ", " << elapsed << " sec) ===\n";
+                    ilog("P2P snapshot sync complete at block ${n}, elapsed ${t} sec",
+                        ("n", my->db.head_block_num())("t", elapsed));
+                    return;
+                }
+
+                // No snapshot available — wait and retry
+                std::cerr << "   No snapshot available from trusted peers.\n"
+                          << "   Will retry in " << retry_interval_sec << " seconds...\n";
+                wlog("No snapshot available from trusted peers. Retrying in ${s} sec (attempt ${a})",
+                     ("s", retry_interval_sec)("a", attempt));
+                fc::usleep(fc::seconds(retry_interval_sec));
+            }
         };
     } else if (!my->trusted_snapshot_peers.empty()) {
         ilog("P2P snapshot sync disabled (sync-snapshot-from-trusted-peer = false)");

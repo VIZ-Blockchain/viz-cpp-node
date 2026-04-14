@@ -486,7 +486,19 @@ namespace chain {
         if (my->db.head_block_num() == 0 && snapshot_p2p_sync_callback) {
             std::cerr << "   Node has no state (0 blocks). Requesting snapshot from trusted peers...\n";
             ilog("Node has no state. Triggering P2P snapshot sync from trusted peers...");
-            snapshot_p2p_sync_callback();
+            try {
+                snapshot_p2p_sync_callback();
+            } catch (const fc::exception& e) {
+                elog("FATAL: P2P snapshot sync failed: ${e}", ("e", e.to_detail_string()));
+                std::cerr << "   FATAL: P2P snapshot sync failed: " << e.what() << "\n";
+                appbase::app().quit();
+                return;
+            } catch (const std::exception& e) {
+                elog("FATAL: P2P snapshot sync failed: ${e}", ("e", e.what()));
+                std::cerr << "   FATAL: P2P snapshot sync failed: " << e.what() << "\n";
+                appbase::app().quit();
+                return;
+            }
             std::cerr << "   P2P snapshot sync complete. Started on blockchain with "
                       << my->db.head_block_num() << " blocks\n";
             ilog("Started on blockchain with ${n} blocks (from P2P snapshot sync)", ("n", my->db.head_block_num()));
