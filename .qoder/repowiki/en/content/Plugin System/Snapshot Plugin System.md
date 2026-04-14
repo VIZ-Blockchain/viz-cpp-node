@@ -17,14 +17,13 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced peer operation timeout handling with 30-second timeout for all snapshot operations
-- Improved error handling with better logging for connection management scenarios
-- Strengthened timeout protection mechanisms for both server and client operations
-- Enhanced payload size limits with increased maximum from 64KB to 256KB for protocol messages
-- Improved client disconnection handling with try-catch mechanisms for graceful error management
-- Enhanced logging for Phase 1 info-only queries versus active transfers with clear distinction
-- Strengthened error handling for graceful disconnection management during snapshot transfers
-- Added better logging for client disconnection scenarios and connection lifecycle events
+- Enhanced peer operation timeout handling with comprehensive 30-second timeout system for all snapshot operations
+- Implemented robust anti-spam measures including max 5 concurrent connections, rate limiting (3 connections per hour), and 60-second connection timeout enforcement
+- Added DLT mode support with set_dlt_mode() method for seamless DLT mode operation
+- Expanded comprehensive documentation covering flowcharts, security measures, and operational guidelines
+- Improved payload size limits with increased maximum from 64KB to 256KB for protocol messages
+- Enhanced client disconnection handling with try-catch mechanisms for graceful error management
+- Strengthened logging for Phase 1 info-only queries versus active transfers with clear distinction
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -37,16 +36,17 @@
 8. [Improved Logging and Progress Feedback](#improved-logging-and-progress-feedback)
 9. [Automatic Directory Management](#automatic-directory-management)
 10. [Enhanced Chain Plugin Integration](#enhanced-chain-plugin-integration)
-11. [Dependency Analysis](#dependency-analysis)
-12. [Performance Considerations](#performance-considerations)
-13. [Troubleshooting Guide](#troubleshooting-guide)
-14. [Conclusion](#conclusion)
+11. [Enhanced Security and Anti-Spam Measures](#enhanced-security-and-anti-spam-measures)
+12. [Dependency Analysis](#dependency-analysis)
+13. [Performance Considerations](#performance-considerations)
+14. [Troubleshooting Guide](#troubleshooting-guide)
+15. [Conclusion](#conclusion)
 
 ## Introduction
 
 The Snapshot Plugin System is a comprehensive solution for managing DLT (Distributed Ledger Technology) state snapshots in VIZ blockchain nodes. This system enables efficient node bootstrapping, state synchronization between nodes, and automated snapshot management through a sophisticated TCP-based protocol.
 
-**Updated**: Enhanced with improved P2P snapshot synchronization featuring automatic default behavior for empty nodes, real-time progress feedback during operations, automatic directory creation capabilities, and seamless integration with the chain plugin for automatic snapshot synchronization during blockchain initialization.
+**Updated**: Enhanced with improved P2P snapshot synchronization featuring automatic default behavior for empty nodes, real-time progress feedback during operations, automatic directory creation capabilities, and seamless integration with the chain plugin for automatic snapshot synchronization during blockchain initialization. The system now includes comprehensive timeout management, robust anti-spam protection, and DLT mode support.
 
 The plugin provides five primary capabilities:
 - **State Creation**: Generate compressed JSON snapshots containing complete blockchain state
@@ -76,33 +76,44 @@ J[TCP Server] --> K[TCP Client]
 L[Database Integration] --> M[Open From Snapshot]
 N[Auto Directory Creation] --> O[Progress Logging]
 P[Chain Plugin Callbacks] --> Q[Seamless Integration]
-R[_dlt_mode Flag Setting] --> S[DLT Mode Integration]
+R[DLT Mode Integration] --> S[set_dlt_mode Method]
+T[Enhanced Timeout Management] --> U[30-second Operations]
+V[Anti-Spam Protection] --> W[5 Concurrent Connections]
+X[Security Measures] --> Y[Rate Limiting]
 end
 subgraph "Data Management"
-T[Snapshot Files] --> U[Compression]
-V[Header Validation] --> W[Checksum Verification]
-X[Callback Registration] --> Y[State Restoration]
-Z[Automatic Cleanup] --> AA[Age-based Rotation]
-AB[Progress Tracking] --> AC[Real-time Updates]
+Z[Snapshot Files] --> AA[Compression]
+AB[Header Validation] --> AC[Checksum Verification]
+AD[Callback Registration] --> AE[State Restoration]
+AF[Automatic Cleanup] --> AG[Age-based Rotation]
+AH[Progress Tracking] --> AI[Real-time Updates]
+AJ[Payload Limits] --> AK[256KB Messages]
 end
 A --> F
 A --> J
 B --> H
 B --> I
-C --> T
-D --> U
+C --> Z
+D --> AA
 B --> L
 L --> M
-M --> Y
+M --> AE
 N --> O
 O --> P
 P --> Q
-Q --> X
-X --> Y
-Y --> AB
-AB --> AC
+Q --> AB
+AB --> AE
+AE --> AH
+AH --> AI
 R --> S
-S --> Q
+S --> T
+T --> U
+U --> V
+V --> W
+W --> X
+X --> Y
+Y --> AJ
+AJ --> AK
 ```
 
 **Diagram sources**
@@ -196,6 +207,9 @@ class plugin_impl {
 +download_snapshot_from_peers() string
 +update_snapshot_cache(path) void
 +cleanup_old_snapshots() void
++MAX_CONCURRENT_CONNECTIONS 5
++CONNECTION_TIMEOUT_SEC 60
++MAX_CONNECTIONS_PER_HOUR 3
 }
 snapshot_plugin --> plugin_impl : "owns"
 ```
@@ -219,7 +233,7 @@ C[Automatic Creation] --> D[Block-based Triggers]
 E[P2P Synchronization] --> F[Trusted Peer Network]
 G[Direct State Loading] --> H[Programmatic API]
 I[Automatic Empty Node Sync] --> J[Default Behavior]
-K[DLT Mode Integration] --> L[_dlt_mode Flag Setting]
+K[DLT Mode Integration] --> L[set_dlt_mode Method]
 end
 subgraph "Data Flow"
 M[Database State] --> N[JSON Export]
@@ -230,17 +244,23 @@ Q --> R[Automatic Directory Creation]
 S[Progress Tracking] --> T[Real-time Feedback]
 U[Chain Plugin Callbacks] --> V[Seamless Integration]
 W[Checksum Verification] --> X[Integrity Check]
+Y[Enhanced Timeout Management] --> Z[30-second Operations]
+AA[Anti-Spam Protection] --> BB[5 Concurrent Connections]
+CC[Security Measures] --> DD[Rate Limiting]
 end
 subgraph "Network Layer"
-Y[TCP Server] --> Z[Client Connections]
-Z --> AA[Chunked Transfer]
-AA --> BB[Progress Tracking]
-CC[Automatic Cleanup] --> DD[Age-based Rotation]
-EE[Trusted Peer Enforcement] --> FF[Security]
+EE[TCP Server] --> FF[Client Connections]
+FF --> GG[Chunked Transfer]
+GG --> HH[Progress Tracking]
+II[Automatic Cleanup] --> JJ[Age-based Rotation]
+KK[Trusted Peer Enforcement] --> LL[Security]
+MM[Payload Limits] --> NN[256KB Messages]
+OO[Connection Timeout] --> PP[60-second Enforcement]
+QQ[Thread Safety] --> RR[Mutex Protection]
 end
 A --> M
 C --> M
-E --> Y
+E --> EE
 G --> S
 I --> E
 K --> L
@@ -248,11 +268,14 @@ M --> W
 W --> P
 P --> Q
 Q --> R
-Y --> Z
-Z --> AA
-AA --> BB
-CC --> DD
 EE --> FF
+FF --> GG
+GG --> HH
+II --> JJ
+KK --> LL
+MM --> NN
+OO --> PP
+QQ --> RR
 ```
 
 **Diagram sources**
@@ -359,7 +382,7 @@ The import process includes several validation steps:
 
 ### TCP Server Implementation
 
-The snapshot server provides secure, rate-limited access to snapshot files:
+The snapshot server provides secure, rate-limited access to snapshot files with comprehensive anti-spam protection:
 
 ```mermaid
 flowchart TD
@@ -392,13 +415,14 @@ The server implements multiple anti-abuse mechanisms:
 - **Rate Limiting**: Limits connections to 3 per hour per IP
 - **Trust Enforcement**: Optional restriction to trusted peer list
 - **Timeout Protection**: 60-second connection timeout
+- **Concurrent Connection Control**: Maximum 5 simultaneous connections
 
 **Section sources**
 - [plugin.cpp:1449-1500](file://plugins/snapshot/plugin.cpp#L1449-L1500)
 
 ### TCP Client Implementation
 
-The client component enables automatic snapshot synchronization from trusted peers:
+The client component enables automatic snapshot synchronization from trusted peers with comprehensive timeout management:
 
 ```mermaid
 sequenceDiagram
@@ -407,15 +431,15 @@ participant Peer1 as "Peer 1"
 participant Peer2 as "Peer 2"
 participant PeerN as "Peer N"
 participant FS as "File System"
-Client->>Peer1 : Query Snapshot Info
+Client->>Peer1 : Query Snapshot Info (30s timeout)
 Peer1-->>Client : Info Reply
-Client->>Peer2 : Query Snapshot Info
+Client->>Peer2 : Query Snapshot Info (30s timeout)
 Peer2-->>Client : Info Reply
-Client->>PeerN : Query Snapshot Info
+Client->>PeerN : Query Snapshot Info (30s timeout)
 PeerN-->>Client : Info Reply
 Note over Client : Select Best Peer (Highest Block)
-Client->>BestPeer : Establish Session
-Client->>BestPeer : Request Data Chunks
+Client->>BestPeer : Establish Session (60s timeout)
+Client->>BestPeer : Request Data Chunks (30s timeout each)
 BestPeer-->>Client : Chunk 1
 BestPeer-->>Client : Chunk 2
 BestPeer-->>Client : Chunk N (is_last=true)
@@ -490,6 +514,7 @@ DB-->>Chain : Database Ready
 Chain->>Snap : snapshot_load_callback()
 Snap->>DB : load_snapshot()
 DB->>DB : initialize_hardforks()
+DB->>DB : set_dlt_mode(true)
 else No Snapshot Path
 Chain->>DB : Normal Database Open
 end
@@ -537,6 +562,7 @@ class snapshot_plugin {
 class DatabaseIntegration {
 +open_from_snapshot(data_dir, shared_mem_dir, initial_supply, shared_file_size, flags) void
 +initialize_hardforks() void
++set_dlt_mode(enabled) void
 }
 snapshot_plugin --> DatabaseIntegration : "uses"
 ```
@@ -551,7 +577,7 @@ snapshot_plugin --> DatabaseIntegration : "uses"
 
 ## Enhanced P2P Snapshot Synchronization
 
-**Updated**: The P2P snapshot synchronization has been enhanced with automatic default behavior for empty nodes, providing seamless bootstrap capabilities.
+**Updated**: The P2P snapshot synchronization has been enhanced with automatic default behavior for empty nodes, providing seamless bootstrap capabilities with comprehensive timeout management.
 
 ### Automatic Empty Node Detection and Synchronization
 
@@ -566,16 +592,16 @@ participant FS as "File System"
 Chain->>Snap : Check head_block_num == 0
 alt Empty State Detected
 Chain->>Snap : snapshot_p2p_sync_callback()
-Snap->>Peers : Query Snapshot Info
+Snap->>Peers : Query Snapshot Info (30s timeout)
 Peers-->>Snap : Available Snapshots
 Snap->>Snap : Select Best Peer
-Snap->>Peers : Download Snapshot Chunks
+Snap->>Peers : Download Snapshot Chunks (30s timeout each)
 Peers-->>Snap : Chunk Data
 Snap->>FS : Verify Checksum
 Snap->>FS : Save Final File
 Snap->>Snap : Load Snapshot
-Snap->>Chain : Mark DLT Mode
-Snap->>Chain : Initialize Hardforks
+Snap->>DB : set_dlt_mode(true)
+Snap->>DB : initialize_hardforks()
 else Non-empty State
 Chain->>Chain : Normal Operation
 end
@@ -590,7 +616,7 @@ The peer selection process now includes intelligent ranking based on snapshot qu
 
 ```mermaid
 flowchart TD
-Start([Peer Discovery]) --> Query[Query All Peers]
+Start([Peer Discovery]) --> Query[Query All Peers (30s timeout)]
 Query --> Collect[Collect Snapshot Info]
 Collect --> Rank[Rank by Quality Metrics]
 Rank --> |Multiple Peers| Compare[Compare Block Numbers]
@@ -600,7 +626,7 @@ Compare --> |Different Blocks| Select
 CompareSize --> |Equal Sizes| CompareLatency[Compare Latency]
 CompareSize --> |Different Sizes| Select
 CompareLatency --> Select
-Select --> Download[Download Snapshot]
+Select --> Download[Download Snapshot Chunks (30s timeout each)]
 Download --> Verify[Verify Checksum]
 Verify --> Load[Load Snapshot]
 ```
@@ -614,7 +640,7 @@ Verify --> Load[Load Snapshot]
 
 ### Enhanced Timeout Management
 
-**Updated**: All peer operations now use a comprehensive 30-second timeout system for improved reliability:
+**Updated**: All peer operations now use a comprehensive 30-second timeout system for improved reliability and security:
 
 The snapshot system implements a robust timeout framework for all network operations:
 
@@ -671,7 +697,7 @@ participant Server as "Server"
 participant Logger as "Logger"
 Client->>Server : Request Snapshot
 Server-->>Client : Info Reply
-Client->>Server : Download Chunks
+Client->>Server : Download Chunks (30s timeout each)
 loop For Each Chunk
 Server-->>Client : Chunk Data
 Client->>Logger : Log Progress (%)
@@ -835,7 +861,7 @@ Snap->>DB : load_snapshot()
 DB->>DB : Import Snapshot State
 DB->>DB : Set Revision
 DB->>DB : Seed ForkDB
-DB->>DB : _dlt_mode = true
+DB->>DB : set_dlt_mode(true)
 DB->>DB : initialize_hardforks()
 DB-->>Chain : Database Ready
 Chain-->>Chain : DLT Mode Operational
@@ -847,6 +873,81 @@ Chain-->>Chain : DLT Mode Operational
 **Section sources**
 - [plugin.cpp:1925-1981](file://plugins/snapshot/plugin.cpp#L1925-L1981)
 - [plugin.cpp:1984-2017](file://plugins/snapshot/plugin.cpp#L1984-L2017)
+
+## Enhanced Security and Anti-Spam Measures
+
+**Updated**: The snapshot plugin now implements comprehensive security measures including enhanced timeout management, anti-spam protection, and robust connection handling.
+
+### Comprehensive Anti-Spam Protection
+
+The snapshot server implements multiple layers of anti-abuse protection:
+
+```mermaid
+flowchart TD
+Start([Incoming Connection]) --> TrustCheck{Trusted Peer?}
+TrustCheck --> |No Trusted| Reject[Reject Connection]
+TrustCheck --> |Trusted| ConcurrencyCheck{Max 5 Concurrency?}
+ConcurrencyCheck --> |Exceeded| Reject
+ConcurrencyCheck --> |Available| SessionCheck{Active Session Per IP?}
+SessionCheck --> |Duplicate| Reject
+SessionCheck --> |Available| RateLimit{Rate Limit Check}
+RateLimit --> |Exceeded| Reject
+RateLimit --> |Allowed| Accept[Accept Connection]
+Accept --> TimeoutCheck{60-second Timeout}
+TimeoutCheck --> |Expired| Close[Close Connection]
+TimeoutCheck --> |Active| Process[Process Requests]
+Process --> Complete[Connection Complete]
+Complete --> Close[Close Connection]
+```
+
+**Diagram sources**
+- [plugin.cpp:1555-1613](file://plugins/snapshot/plugin.cpp#L1555-L1613)
+
+### Enhanced Timeout Management
+
+The system implements comprehensive timeout protection across all operations:
+
+**Connection-Level Timeouts**:
+- **Accept Loop**: 60-second connection timeout enforced before processing
+- **Initial Request**: 10-second timeout for info requests
+- **Data Requests**: 5-minute timeout for chunk transfers
+- **Overall Connection**: Hard deadline prevents resource exhaustion
+
+**Peer Operation Timeouts**:
+- **Peer Queries**: 30-second timeout per peer operation
+- **Chunk Downloads**: 30-second timeout per chunk request
+- **Response Handling**: 30-second timeout for all peer responses
+
+**Section sources**
+- [plugin.cpp:1555-1613](file://plugins/snapshot/plugin.cpp#L1555-L1613)
+- [plugin.cpp:1294-1412](file://plugins/snapshot/plugin.cpp#L1294-L1412)
+
+### Enhanced Payload Size Limits
+
+The system implements strict payload size limits to prevent memory abuse:
+
+```mermaid
+flowchart TD
+Start([Receive Message]) --> CheckSize{Check Payload Size}
+CheckSize --> |Control Message| ControlLimit[256KB Limit]
+CheckSize --> |Data Reply| DataLimit[64MB Limit]
+CheckSize --> |Request Message| RequestLimit[64KB Limit]
+ControlLimit --> |Exceeded| Reject[Reject Message]
+DataLimit --> |Exceeded| Reject
+RequestLimit --> |Exceeded| Reject
+ControlLimit --> |OK| Process[Process Message]
+DataLimit --> |OK| Process
+RequestLimit --> |OK| Process
+Reject --> Log[Log Violation]
+Process --> End([Message Processed])
+Log --> End
+```
+
+**Diagram sources**
+- [plugin.cpp:1368-1412](file://plugins/snapshot/plugin.cpp#L1368-L1412)
+
+**Section sources**
+- [plugin.cpp:1368-1412](file://plugins/snapshot/plugin.cpp#L1368-L1412)
 
 ## Dependency Analysis
 
@@ -863,39 +964,51 @@ G[appbase] --> H[Plugin Framework]
 I[graphene_protocol] --> J[Blockchain Types]
 K[boost::filesystem] --> L[File System Operations]
 M[fc::thread] --> N[Async Operations]
+O[fc::mutex] --> P[Thread Safety]
+Q[fc::time_point] --> R[Timeout Management]
 end
 subgraph "Internal Dependencies"
-O[graphene_chain] --> P[Database Interface]
-Q[graphene_chain_plugin] --> R[Chain Plugin]
-S[graphene_time] --> T[Time Management]
-U[graphene_json_rpc] --> V[RPC Integration]
-W[graphene_p2p] --> X[P2P Integration]
-Y[graphene_dlt_block_log] --> Z[DLT Block Logging]
+S[graphene_chain] --> T[Database Interface]
+U[graphene_chain_plugin] --> V[Chain Plugin]
+W[graphene_time] --> X[Time Management]
+Y[graphene_json_rpc] --> Z[RPC Integration]
+AA[graphene_p2p] --> BB[P2P Integration]
+CC[graphene_dlt_block_log] --> DD[DLT Block Logging]
+EE[graphene_protocol] --> FF[Blockchain Protocol]
 end
 subgraph "Snapshot Plugin"
-AA[snapshot_plugin] --> BB[plugin_impl]
-BB --> CC[Serialization Layer]
-BB --> DD[Network Layer]
-BB --> EE[File Management]
-BB --> FF[Callback System]
-BB --> GG[Progress Logging]
-BB --> HH[_dlt_mode Integration]
+GG[snapshot_plugin] --> HH[plugin_impl]
+HH --> II[Serialization Layer]
+HH --> JJ[Network Layer]
+HH --> KK[File Management]
+HH --> LL[Callback System]
+HH --> MM[Progress Logging]
+HH --> NN[set_dlt_mode Integration]
+HH --> OO[Enhanced Timeout Management]
+HH --> PP[Anti-Spam Protection]
+HH --> QQ[Security Measures]
 end
-A --> AA
-E --> AA
-G --> AA
-I --> AA
-K --> AA
-M --> AA
-O --> AA
-Q --> AA
-S --> AA
-U --> AA
-W --> AA
-Y --> AA
-FF --> AA
-GG --> AA
-HH --> AA
+A --> GG
+E --> GG
+G --> GG
+I --> GG
+K --> GG
+M --> GG
+O --> GG
+Q --> GG
+S --> GG
+U --> GG
+W --> GG
+Y --> GG
+AA --> GG
+CC --> GG
+EE --> GG
+LL --> GG
+MM --> GG
+NN --> GG
+OO --> GG
+PP --> GG
+QQ --> GG
 ```
 
 **Diagram sources**
@@ -909,6 +1022,8 @@ The plugin's dependencies are carefully managed to minimize coupling while maxim
 - **appbase**: Manages plugin lifecycle and application integration
 - **boost::filesystem**: Enables cross-platform file system operations
 - **fc::thread**: Provides asynchronous operation support
+- **fc::mutex**: Ensures thread safety across concurrent operations
+- **fc::time_point**: Provides precise timeout and deadline management
 
 **Internal Dependencies**:
 - **graphene_chain**: Access to blockchain state and database operations
@@ -916,6 +1031,7 @@ The plugin's dependencies are carefully managed to minimize coupling while maxim
 - **graphene_time**: Time-related operations for snapshot metadata
 - **graphene_p2p**: P2P network integration for snapshot synchronization
 - **graphene_dlt_block_log**: DLT mode block logging support
+- **graphene_chain_plugin**: Chain plugin callback system integration
 
 **Section sources**
 - [CMakeLists.txt:27-37](file://plugins/snapshot/CMakeLists.txt#L27-L37)
@@ -935,12 +1051,14 @@ The snapshot plugin is designed with several performance optimizations:
 - **Connection Pooling**: Limited concurrent connections prevent resource exhaustion
 - **Anti-Spam Measures**: Rate limiting prevents abuse while maintaining service availability
 - **Intelligent Peer Selection**: Optimized peer choice reduces transfer time and bandwidth usage
+- **Timeout Management**: Comprehensive timeout protection prevents resource exhaustion
 
 ### Database Optimization
 - **Batch Operations**: Objects are imported in batches to reduce database overhead
 - **ID Management**: Pre-allocated ID spaces prevent database fragmentation
 - **Transaction Batching**: Multiple objects are committed in single transactions
 - **DLT Mode Support**: Special handling for DLT mode operations without block logs
+- **set_dlt_mode Integration**: Seamless DLT mode activation during snapshot loading
 
 ### File System Operations
 - **Asynchronous I/O**: Non-blocking file operations improve responsiveness
@@ -989,8 +1107,8 @@ The snapshot plugin is designed with several performance optimizations:
 
 **DLT Mode Integration Issues**
 - **Symptom**: `DLT mode not properly initialized`
-- **Cause**: Missing `_dlt_mode` flag setting during snapshot loading
-- **Solution**: Ensure snapshot loading process sets `_dlt_mode = true
+- **Cause**: Missing `set_dlt_mode()` call during snapshot loading
+- **Solution**: Ensure snapshot loading process calls `set_dlt_mode(true)`
 
 **Enhanced Payload Size Limit Issues**
 - **Symptom**: `Message too large: ${s} bytes (limit ${l})`
@@ -1006,6 +1124,16 @@ The snapshot plugin is designed with several performance optimizations:
 - **Symptom**: `Connection timeout to peer ${p}`
 - **Cause**: Peer operations exceeding 30-second timeout limit
 - **Solution**: Check network connectivity and peer responsiveness
+
+**Anti-Spam Protection Issues**
+- **Symptom**: `Rate limit exceeded for ${ip} (${n} connections in last hour)`
+- **Cause**: Client exceeding rate limit of 3 connections per hour
+- **Solution**: Implement exponential backoff or reduce connection frequency
+
+**Enhanced Security Measures Issues**
+- **Symptom**: `Max concurrent connections reached, rejecting ${ip}`
+- **Cause**: Server reaching maximum of 5 concurrent connections
+- **Solution**: Reduce concurrent client connections or increase server capacity
 
 **Section sources**
 - [plugin.cpp:986-1032](file://plugins/snapshot/plugin.cpp#L986-L1032)
@@ -1055,11 +1183,22 @@ tail -f ~/.vizd/log/vizd.log | grep "Snapshot created"
 tail -f ~/.vizd/log/vizd.log | grep "P2P Snapshot Sync"
 ```
 
+**Test Anti-Spam Protection**
+```bash
+# Test rate limiting
+for i in {1..10}; do
+    curl -s --max-time 30 http://localhost:8092/snapshot-info
+done
+
+# Monitor connection limits
+netstat -an | grep :8092 | wc -l
+```
+
 ## Conclusion
 
 The Snapshot Plugin System represents a sophisticated solution for blockchain state management, providing essential capabilities for node bootstrapping, state synchronization, and automated snapshot management. The system's modular architecture, comprehensive validation mechanisms, and robust networking support make it suitable for production environments requiring reliable and efficient state synchronization.
 
-**Updated**: Recent enhancements have significantly strengthened the system's capabilities through the introduction of automatic P2P snapshot synchronization for empty nodes, real-time progress feedback during operations, automatic directory creation capabilities, and seamless integration with the chain plugin for automatic snapshot synchronization during blockchain initialization.
+**Updated**: Recent enhancements have significantly strengthened the system's capabilities through the introduction of automatic P2P snapshot synchronization for empty nodes, real-time progress feedback during operations, automatic directory creation capabilities, and seamless integration with the chain plugin for automatic snapshot synchronization during blockchain initialization. The system now includes comprehensive timeout management with 30-second timeouts, robust anti-spam protection with max 5 concurrent connections and rate limiting, and DLT mode support with set_dlt_mode() method for seamless DLT mode operation.
 
 Key strengths of the system include:
 - **Comprehensive Coverage**: Handles all major blockchain object types
@@ -1070,10 +1209,12 @@ Key strengths of the system include:
 - **Intelligent Automation**: Automatic directory management and cleanup
 - **Real-time Monitoring**: Comprehensive logging and progress feedback
 - **Automatic State Detection**: Intelligent response to different node states
-- **DLT Mode Support**: Proper integration with DLT mode operations through _dlt_mode flag setting
+- **DLT Mode Support**: Proper integration with DLT mode operations through set_dlt_mode() method
+- **Enhanced Timeout Management**: Comprehensive 30-second timeout handling for all peer operations
 - **Improved Payload Handling**: Enhanced payload size limits and client disconnection management
 - **Better Error Handling**: Graceful disconnection management and enhanced logging
-- **Enhanced Timeout Management**: Comprehensive 30-second timeout handling for all peer operations
+- **Robust Anti-Spam Protection**: Max 5 concurrent connections, rate limiting, and 60-second connection timeout enforcement
+- **Thread Safety**: Mutex protection for concurrent operations and session management
 
 The plugin's integration with the broader VIZ ecosystem ensures seamless operation alongside existing blockchain infrastructure, while its well-documented APIs and configuration options facilitate easy deployment and maintenance.
 

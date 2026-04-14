@@ -14,11 +14,12 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced P2P fallback mechanisms with detailed logging for DLT mode scenarios where block data may not be available for certain ranges
-- Improved error handling and graceful fallback implementation with specific error reporting for DLT mode block serving operations
-- Enhanced DLT mode detection with better integration between database and P2P layers
-- Improved fallback logic in database layer with comprehensive error reporting for storage-related issues
-- Enhanced block serving operations with detailed error messages and proper exception handling
+- Enhanced DLT mode detection with improved validation logic when block_log is empty
+- Improved fallback mechanisms between block_log and dlt_block_log with better error handling
+- Enhanced P2P fallback implementation with detailed logging for DLT mode scenarios
+- Strengthened block validation logic with comprehensive error reporting
+- Improved synchronization handling with enhanced logging capabilities for block serving operations
+- Better integration between database, snapshot, and P2P layers for DLT mode operations
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -36,7 +37,7 @@
 13. [Conclusion](#conclusion)
 
 ## Introduction
-This document explains the comprehensive DLT (Data Ledger Technology) Rolling Block Log implementation used by VIZ blockchain nodes to maintain a sliding window of recent irreversible blocks with selective retention policies and automatic pruning capabilities. The DLT mode provides advanced support for snapshot-based nodes, enabling efficient serving of recent blocks to P2P peers while maintaining configurable retention windows and automated cleanup mechanisms. Recent enhancements include improved block identification and verification processes during snapshot operations, enhanced fallback mechanisms between block logs, and significantly improved error handling for DLT mode block serving operations with detailed logging and graceful fallback mechanisms.
+This document explains the comprehensive DLT (Data Ledger Technology) Rolling Block Log implementation used by VIZ blockchain nodes to maintain a sliding window of recent irreversible blocks with selective retention policies and automatic pruning capabilities. The DLT mode provides advanced support for snapshot-based nodes, enabling efficient serving of recent blocks to P2P peers while maintaining configurable retention windows and automated cleanup mechanisms. Recent enhancements include improved block identification and verification processes during snapshot operations, enhanced fallback mechanisms between block logs, significantly improved error handling for DLT mode block serving operations with detailed logging and graceful fallback mechanisms, and strengthened block validation logic with comprehensive error reporting.
 
 ## Project Structure
 The DLT rolling block log is implemented as a standalone component with comprehensive integration into the main database system. It operates alongside the traditional block log while providing specialized functionality for snapshot-based ("DLT") nodes with selective retention and automatic pruning capabilities.
@@ -104,6 +105,7 @@ PP --> DH
 - Enhanced block identification and verification during snapshot operations
 - Improved error handling and validation for DLT mode operations
 - Graceful fallback mechanisms with detailed logging for P2P block serving operations
+- Strengthened block validation logic with comprehensive error reporting and synchronization handling
 
 **Section sources**
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
@@ -424,7 +426,35 @@ The DLT rolling block log implementation provides optimized performance characte
 
 ## Enhanced Error Handling and Fallback Mechanisms
 
-### Improved P2P Fallback Implementation
+### Improved DLT Mode Detection and Validation
+The database now includes enhanced DLT mode detection with improved validation logic. When the primary block log is empty but the database has state (loaded from snapshot), the system sets DLT mode and skips block log validation with comprehensive logging and graceful fallback mechanisms.
+
+**Enhanced DLT Mode Features**:
+- Improved detection logic when block_log.read_block_by_num(head_block_num()) fails
+- Enhanced logging with detailed information about DLT mode activation
+- Graceful fallback mechanisms that prevent crashes when block data is unavailable
+- Better integration between database and DLT block log for seamless operation
+- Comprehensive error reporting for DLT mode initialization and operation
+
+```mermaid
+flowchart TD
+OpenDB["Open Database"] --> CheckBL["Check block_log head"]
+CheckBL --> HasHead{"Head block present?"}
+HasHead --> |Yes| ValidateState["Validate chain state"]
+HasHead --> |No| SetDLT["Set DLT mode"]
+SetDLT --> SkipValidation["Skip block log validation"]
+SkipValidation --> LogDLT["Log DLT mode activation"]
+LogDLT --> Ready["Ready for DLT operations"]
+```
+
+**Diagram sources**
+- [database.cpp:250-271](file://libraries/chain/database.cpp#L250-L271)
+
+**Section sources**
+- [database.cpp:259-268](file://libraries/chain/database.cpp#L259-L268)
+- [database.cpp:262-267](file://libraries/chain/database.cpp#L262-L267)
+
+### Enhanced P2P Fallback Implementation
 The P2P plugin now includes significantly enhanced error handling specifically designed for DLT mode scenarios. When serving blocks to peers in DLT mode, the system gracefully handles cases where block data may not be available for certain ranges, providing detailed logging and appropriate error responses with comprehensive error reporting.
 
 **Enhanced P2P Error Handling Features**:
@@ -485,6 +515,20 @@ The system now provides comprehensive error reporting for storage-related issues
 - [database.cpp:599-621](file://libraries/chain/database.cpp#L599-L621)
 - [database.cpp:623-640](file://libraries/chain/database.cpp#L623-L640)
 
+### Strengthened Block Validation Logic
+The DLT block log implementation now includes enhanced validation logic with comprehensive error checking and reporting. The validation ensures data integrity and provides detailed feedback when inconsistencies are detected.
+
+**Enhanced Validation Features**:
+- Improved position validation during append operations with conflict resolution
+- Enhanced index reconstruction with selective retention enforcement
+- Better error reporting for validation failures and recovery operations
+- Comprehensive logging of validation results and corrective actions
+- Strengthened block verification with detailed error messages
+
+**Section sources**
+- [dlt_block_log.cpp:241-249](file://libraries/chain/dlt_block_log.cpp#L241-L249)
+- [dlt_block_log.cpp:320-325](file://libraries/chain/dlt_block_log.cpp#L320-L325)
+
 ## Troubleshooting Guide
 Comprehensive troubleshooting guidance for DLT-specific scenarios, retention policy issues, automatic pruning failures, and configuration problems with systematic diagnostic approaches and enhanced error reporting.
 
@@ -498,6 +542,7 @@ Comprehensive troubleshooting guidance for DLT-specific scenarios, retention pol
 - P2P fallback errors in DLT mode with detailed logging and error reporting
 - Graceful fallback mechanism failures with proper exception handling
 - Storage-related issues with comprehensive error messages and logging
+- Enhanced synchronization issues with detailed logging capabilities
 
 **Section sources**
 - [dlt_block_log.cpp:161-209](file://libraries/chain/dlt_block_log.cpp#L161-L209)
@@ -506,4 +551,4 @@ Comprehensive troubleshooting guidance for DLT-specific scenarios, retention pol
 - [p2p_plugin.cpp:265-272](file://plugins/p2p/p2p_plugin.cpp#L265-L272)
 
 ## Conclusion
-The DLT Rolling Block Log provides a comprehensive, offset-aware append-only storage mechanism specifically designed for snapshot-based nodes with advanced selective retention policies and automatic pruning capabilities. Recent enhancements include improved block identification and verification processes during snapshot operations, enhanced fallback mechanisms between block logs, better integration with the snapshot plugin for seamless DLT mode operations, and significantly improved error handling for P2P block serving operations. The enhanced P2P fallback mechanisms now provide graceful handling of DLT mode scenarios where block data may not be available for certain ranges, with detailed logging and appropriate error responses including specific messages like "Block ${id} not available in DLT mode (no block data for this range)". Its sophisticated integration with the database ensures seamless fallback when the primary block log is empty, while configurable limits, intelligent retention enforcement, and automatic cleanup mechanisms help manage disk usage efficiently. The implementation leverages advanced memory-mapped files, strict position validation, and comprehensive error handling to deliver reliable performance and data integrity for modern blockchain operations. The improved error handling and fallback mechanisms ensure that DLT mode operations are robust, well-documented, and provide excellent user experience for both operators and P2P peers with comprehensive logging and graceful degradation capabilities.
+The DLT Rolling Block Log provides a comprehensive, offset-aware append-only storage mechanism specifically designed for snapshot-based nodes with advanced selective retention policies and automatic pruning capabilities. Recent enhancements include improved block identification and verification processes during snapshot operations, enhanced fallback mechanisms between block logs, better integration with the snapshot plugin for seamless DLT mode operations, significantly improved error handling for P2P block serving operations, strengthened block validation logic with comprehensive error reporting, and enhanced logging capabilities for synchronization issues. The enhanced P2P fallback mechanisms now provide graceful handling of DLT mode scenarios where block data may not be available for certain ranges, with detailed logging and appropriate error responses including specific messages like "Block ${id} not available in DLT mode (no block data for this range)". Its sophisticated integration with the database ensures seamless fallback when the primary block log is empty, while configurable limits, intelligent retention enforcement, and automatic cleanup mechanisms help manage disk usage efficiently. The implementation leverages advanced memory-mapped files, strict position validation, and comprehensive error handling to deliver reliable performance and data integrity for modern blockchain operations. The improved error handling and fallback mechanisms ensure that DLT mode operations are robust, well-documented, and provide excellent user experience for both operators and P2P peers with comprehensive logging and graceful degradation capabilities.

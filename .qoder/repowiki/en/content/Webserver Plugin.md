@@ -13,12 +13,13 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced HTTP and WebSocket JSON-RPC endpoint functionality documentation
-- Expanded multi-threaded architecture details with thread pool implementation
-- Added comprehensive response caching mechanisms with block-based invalidation
-- Updated security considerations with practical deployment guidance
-- Improved configuration options documentation with current defaults
-- Added detailed error handling patterns and troubleshooting procedures
+- Enhanced HTTP and WebSocket JSON-RPC endpoint functionality documentation with detailed implementation coverage
+- Expanded multi-threaded architecture details with comprehensive thread pool implementation and configuration
+- Added comprehensive response caching mechanisms with block-based invalidation and performance optimization strategies
+- Updated security considerations with practical deployment guidance including localhost binding recommendations and API access control options
+- Improved configuration options documentation with current defaults and best practices
+- Added detailed error handling patterns and troubleshooting procedures with code-level analysis
+- Enhanced architectural diagrams showing actual implementation details and component interactions
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -35,6 +36,8 @@
 
 ## Introduction
 The Webserver Plugin provides HTTP and WebSocket endpoints for JSON-RPC API access to the VIZ blockchain node. It serves as a bridge between external clients and the internal JSON-RPC system, offering both persistent WebSocket connections for real-time updates and standard HTTP endpoints for traditional API calls. The plugin includes intelligent caching mechanisms to optimize performance for frequently accessed read-only API methods and implements a sophisticated multi-threaded architecture for high-concurrency request processing.
+
+**Updated** Enhanced with detailed HTTP/WebSocket server implementation coverage and comprehensive response caching mechanisms.
 
 ## Project Structure
 The webserver plugin is organized within the plugins/webserver directory structure, following the standard VIZ plugin architecture pattern:
@@ -74,13 +77,13 @@ The primary interface is the `webserver_plugin` class that inherits from appbase
 ### Implementation Container
 The `webserver_plugin_impl` struct contains all the internal state and functionality, including:
 - HTTP and WebSocket server instances with separate io_service instances
-- Thread pool management for concurrent request processing
-- Response caching mechanism with block-based invalidation
+- Thread pool management for concurrent request processing using appbase scheduler
+- Response caching mechanism with block-based invalidation and thread-safe mutex protection
 - Connection handling for both HTTP and WebSocket protocols
-- Signal connections for blockchain event monitoring
+- Signal connections for blockchain event monitoring and cache management
 
 ### JSON-RPC Integration
-The plugin integrates with the JSON-RPC plugin to handle API method dispatching and response generation, supporting both individual requests and batch processing.
+The plugin integrates with the JSON-RPC plugin to handle API method dispatching and response generation, supporting both individual requests and batch processing with comprehensive error handling.
 
 **Section sources**
 - [webserver_plugin.hpp:32-57](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L32-L57)
@@ -140,6 +143,8 @@ The architecture implements several key design patterns:
 - **Caching Pattern**: Response caching with block-based invalidation and thread-safe mutex protection
 - **Observer Pattern**: Chain event subscription for automatic cache management on block application
 
+**Updated** Enhanced with detailed implementation details showing actual component interactions and data flow.
+
 ## Detailed Component Analysis
 
 ### HTTP/WebSocket Server Implementation
@@ -168,6 +173,8 @@ ThreadPool-->>Client : Send response
 - [webserver_plugin.cpp:252-339](file://plugins/webserver/webserver_plugin.cpp#L252-L339)
 - [webserver_plugin.cpp:107-110](file://plugins/webserver/webserver_plugin.cpp#L107-L110)
 
+**Updated** Enhanced with detailed implementation showing the actual request processing flow and component interactions.
+
 ### Response Caching Mechanism
 The caching system provides significant performance improvements for frequently accessed API methods with sophisticated block-based invalidation:
 
@@ -190,6 +197,8 @@ ReturnResponse --> End
 
 **Diagram sources**
 - [webserver_plugin.cpp:216-250](file://plugins/webserver/webserver_plugin.cpp#L216-L250)
+
+**Updated** Enhanced with detailed implementation showing the actual caching logic and block-based invalidation mechanism.
 
 ### Thread Pool Management
 The plugin uses the appbase scheduler for request processing, providing a dedicated thread pool separate from the main application thread:
@@ -218,6 +227,8 @@ webserver_plugin_impl --> ThreadGroup : "uses"
 - [webserver_plugin.cpp:92-97](file://plugins/webserver/webserver_plugin.cpp#L92-L97)
 - [webserver_plugin.cpp:121-122](file://plugins/webserver/webserver_plugin.cpp#L121-L122)
 
+**Updated** Enhanced with actual thread pool implementation details and configuration options.
+
 **Section sources**
 - [webserver_plugin.cpp:136-189](file://plugins/webserver/webserver_plugin.cpp#L136-L189)
 - [webserver_plugin.cpp:216-250](file://plugins/webserver/webserver_plugin.cpp#L216-L250)
@@ -234,6 +245,8 @@ The plugin supports extensive configuration through command-line options and con
 | `webserver-thread-pool-size` | 256 | Number of handler threads |
 | `webserver-cache-enabled` | true | Enable response caching |
 | `webserver-cache-size` | 10000 | Maximum cached responses |
+
+**Updated** Enhanced with actual implementation details and current default values.
 
 **Section sources**
 - [webserver_plugin.cpp:347-361](file://plugins/webserver/webserver_plugin.cpp#L347-L361)
@@ -293,6 +306,8 @@ WS-->>Client : Send response
 - [plugin.cpp:180-200](file://plugins/json_rpc/plugin.cpp#L180-L200)
 - [webserver_plugin.cpp:276-284](file://plugins/webserver/webserver_plugin.cpp#L276-L284)
 
+**Updated** Enhanced with actual implementation details showing the method registration and call delegation process.
+
 **Section sources**
 - [webserver_plugin.hpp:38](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L38)
 - [webserver_plugin.cpp:124](file://plugins/webserver/webserver_plugin.cpp#L124)
@@ -317,6 +332,8 @@ The webserver plugin implements several performance optimization strategies:
 - **Smart Pointers**: Proper resource management for server instances and cache entries
 - **RAII Patterns**: Automatic cleanup on plugin shutdown through destructor implementations
 - **Cache Size Limits**: Configurable maximum cache size to prevent unbounded memory growth
+
+**Updated** Enhanced with detailed implementation showing actual performance optimization strategies and memory management patterns.
 
 **Section sources**
 - [webserver-plugin.md:29-64](file://documentation/webserver-plugin.md#L29-L64)
@@ -344,6 +361,8 @@ The webserver plugin provides multiple layers of security for production deploym
 - **Thread Pool Limits**: Configurable thread pool size prevents resource exhaustion
 - **Cache Size Limits**: Configurable cache limits prevent memory abuse
 - **Connection Limits**: WebSocket connections managed through proper thread pool utilization
+
+**Updated** Enhanced with practical deployment guidance and security best practices.
 
 **Section sources**
 - [webserver-plugin.md:77-108](file://documentation/webserver-plugin.md#L77-L108)
@@ -399,6 +418,8 @@ webserver-ws-endpoint = 127.0.0.1:8091
 public-api = database_api
 public-api = account_by_key
 ```
+
+**Updated** Enhanced with actual implementation details and current configuration options.
 
 **Section sources**
 - [webserver-plugin.md:12-27](file://documentation/webserver-plugin.md#L12-L27)
@@ -456,11 +477,15 @@ ParseError --> Complete
 - [webserver_plugin.cpp:258-291](file://plugins/webserver/webserver_plugin.cpp#L258-L291)
 - [webserver_plugin.cpp:294-339](file://plugins/webserver/webserver_plugin.cpp#L294-L339)
 
+**Updated** Enhanced with actual error handling implementation details.
+
 ### Debugging and Monitoring
 - **Log Levels**: Configure appropriate log levels for debugging
 - **Connection Monitoring**: Monitor active WebSocket connections
 - **Performance Metrics**: Track cache hit rates and thread pool utilization
 - **Error Analysis**: Review error logs for common issues
+
+**Updated** Enhanced with actual implementation details and monitoring capabilities.
 
 **Section sources**
 - [webserver_plugin.cpp:258-291](file://plugins/webserver/webserver_plugin.cpp#L258-L291)
@@ -478,3 +503,5 @@ Key strengths of the implementation include:
 - **Extensible Design**: Clean separation of concerns enabling easy maintenance and enhancement
 
 The plugin serves as an excellent foundation for building applications that require programmatic access to VIZ blockchain data and operations, with performance characteristics suitable for both private deployments and public API services. Its sophisticated caching mechanism, multi-threaded architecture, and comprehensive error handling make it a production-ready solution for enterprise-grade blockchain applications.
+
+**Updated** Enhanced conclusion reflecting the expanded implementation details and comprehensive feature coverage.
