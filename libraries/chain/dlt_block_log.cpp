@@ -169,6 +169,38 @@ namespace graphene { namespace chain {
                 block_path = file.string();
                 index_path = boost::filesystem::path(file.string() + ".index").string();
 
+                // Recover from a crash during truncate_before():
+                // If .bak files exist but originals are missing/empty, restore from backup.
+                std::string bak_block = block_path + ".bak";
+                std::string bak_index = index_path + ".bak";
+                if (boost::filesystem::exists(bak_block)) {
+                    if (!boost::filesystem::is_regular_file(block_path) || boost::filesystem::file_size(block_path) <= 1) {
+                        ilog("DLT block log: restoring data from .bak after interrupted truncation");
+                        boost::filesystem::remove_all(block_path);
+                        boost::filesystem::rename(bak_block, block_path);
+                    } else {
+                        boost::filesystem::remove_all(bak_block);
+                    }
+                }
+                if (boost::filesystem::exists(bak_index)) {
+                    if (!boost::filesystem::is_regular_file(index_path) || boost::filesystem::file_size(index_path) <= 1) {
+                        ilog("DLT block log: restoring index from .bak after interrupted truncation");
+                        boost::filesystem::remove_all(index_path);
+                        boost::filesystem::rename(bak_index, index_path);
+                    } else {
+                        boost::filesystem::remove_all(bak_index);
+                    }
+                }
+                // Also clean up stale .tmp files from interrupted truncation
+                std::string tmp_block = block_path + ".tmp";
+                std::string tmp_index = index_path + ".tmp";
+                if (boost::filesystem::exists(tmp_block)) {
+                    boost::filesystem::remove_all(tmp_block);
+                }
+                if (boost::filesystem::exists(tmp_index)) {
+                    boost::filesystem::remove_all(tmp_index);
+                }
+
                 open_block_mapped_file();
                 open_index_mapped_file();
 
@@ -398,11 +430,18 @@ namespace graphene { namespace chain {
         // Close originals
         my->close();
 
-        // Swap files
-        boost::filesystem::remove_all(my->block_path);
-        boost::filesystem::remove_all(my->index_path);
+        // Swap files safely: rename originals to .bak first, then rename temps,
+        // then remove backups. This way a crash at any point leaves recoverable files.
+        std::string bak_block_path = my->block_path + ".bak";
+        std::string bak_index_path = my->index_path + ".bak";
+        boost::filesystem::remove_all(bak_block_path);
+        boost::filesystem::remove_all(bak_index_path);
+        boost::filesystem::rename(my->block_path, bak_block_path);
+        boost::filesystem::rename(my->index_path, bak_index_path);
         boost::filesystem::rename(temp_block_path, my->block_path);
         boost::filesystem::rename(temp_index_path, my->index_path);
+        boost::filesystem::remove_all(bak_block_path);
+        boost::filesystem::remove_all(bak_index_path);
 
         // Reopen
         my->open(fc::path(my->block_path));
