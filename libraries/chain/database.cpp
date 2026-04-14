@@ -260,7 +260,7 @@ namespace graphene { namespace chain {
                             // DLT mode: block_log is empty but chainbase has state (loaded from snapshot).
                             // Skip block_log validation and fork_db seeding.
                             // P2P will seed fork_db with the first received block.
-                            _dlt_mode = true;
+                            set_dlt_mode(true);
                             wlog("DLT mode detected: block log is empty but database has state at block ${n}. "
                                  "Skipping block log validation.",
                                  ("n", head_block_num()));
@@ -289,7 +289,7 @@ namespace graphene { namespace chain {
                 auto start = fc::time_point::now();
                 wlog("Opening database for snapshot import. Please wait...");
 
-                _dlt_mode = true;
+                _dlt_mode = true;  // Set before init_genesis so all subsequent code sees DLT mode
 
                 // Always wipe shared memory before snapshot import to ensure clean state.
                 // This prevents conflicts if:
@@ -520,17 +520,22 @@ namespace graphene { namespace chain {
 
         bool database::is_known_block(const block_id_type &id) const {
             try {
-                // In DLT mode, block data may not be available (block_log and dlt_block_log
-                // can both be empty after a fresh snapshot import). Check the block_summary
-                // table first — it stores block IDs for the last 65536 blocks and survives
-                // snapshot import. This allows P2P synopsis building and has_item checks
-                // to work even when no block data exists on disk.
-                uint32_t block_num = protocol::block_header::num_from_id(id);
-                if (block_num > 0) {
-                    block_summary_id_type bsid = block_num & 0xFFFF;
-                    const auto* bs = find<block_summary_object, by_id>(bsid);
-                    if (bs != nullptr && bs->block_id == id) {
-                        return true;
+                // In non-DLT mode, the block_summary table (TAPOS buffer, last 65536 blocks)
+                // provides a fast existence check — if the block ID matches, block data
+                // is guaranteed to be in block_log.
+                // In DLT mode, block_summary survives snapshot import but block data may
+                // not be available (block_log empty, dlt_block_log may not cover the range).
+                // Returning true here would lie to P2P peers who then fail to fetch the block.
+                // So in DLT mode, skip the block_summary shortcut and fall through to
+                // fetch_block_by_id() which checks actual data availability.
+                if (!_dlt_mode) {
+                    uint32_t block_num = protocol::block_header::num_from_id(id);
+                    if (block_num > 0) {
+                        block_summary_id_type bsid = block_num & 0xFFFF;
+                        const auto* bs = find<block_summary_object, by_id>(bsid);
+                        if (bs != nullptr && bs->block_id == id) {
+                            return true;
+                        }
                     }
                 }
                 return fetch_block_by_id(id).valid();
@@ -4418,6 +4423,11 @@ namespace graphene { namespace chain {
                                 // Block not in fork database — normal after restart when fork_db
                                 // hasn't accumulated blocks back to LIB yet. Will catch up once
                                 // LIB advances past the post-restart head.
+                                wlog("DLT block log: block ${n} not in fork_db, skipping "
+                                     "(dlt_head=${h}, LIB=${lib}). Gap will fill as new blocks arrive.",
+                                     ("n", dlt_head_num + 1)
+                                     ("h", _dlt_block_log.head_block_num())
+                                     ("lib", dpo.last_irreversible_block_num));
                                 break;
                             }
                             _dlt_block_log.append(block->data);

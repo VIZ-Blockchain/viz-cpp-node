@@ -78,6 +78,7 @@ plugin = snapshot
 trusted-snapshot-peer = seed1.example.com:8092
 trusted-snapshot-peer = seed2.example.com:8092
 snapshot-dir = /var/lib/vizd/snapshots
+sync-snapshot-from-trusted-peer = true
 ```
 
 The node will:
@@ -99,8 +100,10 @@ The node will:
 
 The snapshot TCP server has built-in anti-spam measures:
 
-- **1 active session per IP**: If an IP already has an active download in progress, additional connections from the same IP are rejected.
+- **Max 5 concurrent connections**: The server accepts up to 5 simultaneous connections, each handled in a separate fiber (via `fc::async`). Additional connections are rejected.
+- **1 active session per IP**: If an IP already has an active download in progress, additional connections from the same IP are rejected. Session tracking is protected by a mutex for thread safety across fibers.
 - **Rate limiting (3 connections/hour per IP)**: Each IP is limited to 3 connections per hour. Exceeding this triggers a rejection with a warning log. This prevents abuse where a client repeatedly connects to waste server bandwidth.
+- **Enforced connection timeout (60s)**: Each connection has a hard deadline. The timeout is checked before each I/O operation (initial request read, each chunk transfer). Slow or stalled clients are disconnected when the deadline expires, freeing the session slot.
 - **Trusted peers bypass nothing**: Anti-spam rules apply equally to all connections (trusted and untrusted). Trust enforcement (`allow-snapshot-serving-only-trusted`) is checked first; anti-spam is checked after.
 
 ### Protocol
@@ -162,4 +165,4 @@ Files stored in the blockchain data directory:
 |--------|-------------|
 | `--snapshot <path>` | Load state from snapshot file |
 | `--create-snapshot <path>` | Create snapshot and exit |
-| `--sync-snapshot-from-trusted-peer true` | Download snapshot from trusted peers on empty state |
+| `--sync-snapshot-from-trusted-peer true` | Download snapshot from trusted peers on empty state (default: false, opt-in) |

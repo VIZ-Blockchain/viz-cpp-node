@@ -23,6 +23,8 @@
 #include <fc/network/tcp_socket.hpp>
 #include <fc/network/ip.hpp>
 #include <fc/thread/thread.hpp>
+#include <fc/thread/mutex.hpp>
+#include <fc/thread/scoped_lock.hpp>
 #include <fc/thread/future.hpp>
 
 #include <boost/filesystem.hpp>
@@ -702,6 +704,11 @@ public:
     static const uint64_t RATE_LIMIT_WINDOW_SEC = 3600; // 1 hour
     std::map<uint32_t, std::vector<fc::time_point>> connection_history; // IP -> timestamps
 
+    // Mutex protecting active_sessions and connection_history.
+    // Required because handle_connection runs in separate fc::async fibers
+    // while accept_loop also accesses these structures.
+    fc::mutex sessions_mutex;
+
     // Cached snapshot info for serving (avoids re-reading file on each request)
     std::string cached_snap_path;
     uint64_t cached_snap_size = 0;
@@ -727,7 +734,7 @@ public:
     void start_server();
     void stop_server();
     void accept_loop();
-    void handle_connection(fc::tcp_socket& sock);
+    void handle_connection(fc::tcp_socket& sock, fc::time_point deadline);
     void update_snapshot_cache(const fc::path& snap_path);
 
     fc::path find_latest_snapshot();
@@ -1010,11 +1017,16 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     std::string json_content = fc::zlib_decompress(content);
     auto decompress_elapsed = double((fc::time_point::now() - decompress_start).count()) / 1000000.0;
 
+    // Save compressed size before freeing to reduce peak memory usage
+    auto compressed_size = content.size();
+    content.clear();
+    content.shrink_to_fit();
+
     ilog("Decompressed snapshot: ${comp} -> ${orig} bytes (${time} sec)",
-        ("comp", content.size())
+        ("comp", compressed_size)
         ("orig", json_content.size())
         ("time", decompress_elapsed));
-    std::cerr << "   Decompressed: " << (content.size() / 1048576) << " MB -> "
+    std::cerr << "   Decompressed: " << (compressed_size / 1048576) << " MB -> "
               << (json_content.size() / 1048576) << " MB (" << decompress_elapsed << " sec)\n";
 
     // Parse JSON
@@ -1535,12 +1547,12 @@ void snapshot_plugin::plugin_impl::stop_server() {
 void snapshot_plugin::plugin_impl::accept_loop() {
     while (server_running) {
         try {
-            fc::tcp_socket sock;
-            tcp_srv->accept(sock);
+            auto sock_ptr = std::make_shared<fc::tcp_socket>();
+            tcp_srv->accept(*sock_ptr);
 
             if (!server_running) break;
 
-            auto remote = sock.remote_endpoint();
+            auto remote = sock_ptr->remote_endpoint();
             uint32_t remote_ip = static_cast<uint32_t>(remote.get_address());
 
             // Trust enforcement
@@ -1548,7 +1560,7 @@ void snapshot_plugin::plugin_impl::accept_loop() {
                 if (trusted_ips.find(remote_ip) == trusted_ips.end()) {
                     wlog("Snapshot server: rejected untrusted connection from ${ip}",
                          ("ip", std::string(remote.get_address())));
-                    sock.close();
+                    sock_ptr->close();
                     continue;
                 }
             }
@@ -1557,78 +1569,78 @@ void snapshot_plugin::plugin_impl::accept_loop() {
             if (active_connection_count.load() >= MAX_CONCURRENT_CONNECTIONS) {
                 wlog("Snapshot server: max concurrent connections reached, rejecting ${ip}",
                      ("ip", std::string(remote.get_address())));
-                sock.close();
+                sock_ptr->close();
                 continue;
             }
 
-            // Anti-spam: reject if this IP already has an active session
-            if (active_sessions.count(remote_ip)) {
-                wlog("Snapshot server: rejected duplicate session from ${ip} (already connected)",
-                     ("ip", std::string(remote.get_address())));
-                sock.close();
-                continue;
-            }
-
-            // Anti-spam: rate limiting (max 3 connections per hour per IP)
+            // All anti-spam checks under mutex (active_sessions + connection_history)
             {
-                auto now = fc::time_point::now();
-                auto cutoff = now - fc::seconds(RATE_LIMIT_WINDOW_SEC);
-                auto& history = connection_history[remote_ip];
+                fc::scoped_lock<fc::mutex> lock(sessions_mutex);
 
-                // Prune old entries outside the window
-                history.erase(
-                    std::remove_if(history.begin(), history.end(),
-                        [&cutoff](const fc::time_point& t) { return t < cutoff; }),
-                    history.end());
-
-                // Clean up empty entries to prevent unbounded map growth
-                if (history.empty()) {
-                    connection_history.erase(remote_ip);
-                    // Re-check rate limit with fresh entry
-                    connection_history[remote_ip].push_back(now);
-                } else if (history.size() >= MAX_CONNECTIONS_PER_HOUR) {
-                    wlog("Snapshot server: rate limit exceeded for ${ip} (${n} connections in last hour)",
-                         ("ip", std::string(remote.get_address()))("n", history.size()));
-                    sock.close();
+                // Anti-spam: reject if this IP already has an active session
+                if (active_sessions.count(remote_ip)) {
+                    wlog("Snapshot server: rejected duplicate session from ${ip} (already connected)",
+                         ("ip", std::string(remote.get_address())));
+                    sock_ptr->close();
                     continue;
-                } else {
-                    history.push_back(now);
                 }
-            }
 
-            // Register active session
-            active_sessions.insert(remote_ip);
+                // Anti-spam: rate limiting (max 3 connections per hour per IP)
+                {
+                    auto now = fc::time_point::now();
+                    auto cutoff = now - fc::seconds(RATE_LIMIT_WINDOW_SEC);
+                    auto& history = connection_history[remote_ip];
+
+                    // Prune old entries outside the window
+                    history.erase(
+                        std::remove_if(history.begin(), history.end(),
+                            [&cutoff](const fc::time_point& t) { return t < cutoff; }),
+                        history.end());
+
+                    // Clean up empty entries to prevent unbounded map growth
+                    if (history.empty()) {
+                        connection_history.erase(remote_ip);
+                        // Re-check rate limit with fresh entry
+                        connection_history[remote_ip].push_back(now);
+                    } else if (history.size() >= MAX_CONNECTIONS_PER_HOUR) {
+                        wlog("Snapshot server: rate limit exceeded for ${ip} (${n} connections in last hour)",
+                             ("ip", std::string(remote.get_address()))("n", history.size()));
+                        sock_ptr->close();
+                        continue;
+                    } else {
+                        history.push_back(now);
+                    }
+                }
+
+                // Register active session
+                active_sessions.insert(remote_ip);
+            }
             active_connection_count.fetch_add(1);
 
             ilog("Snapshot server: accepted connection from ${ip}:${port}",
                  ("ip", std::string(remote.get_address()))("port", remote.port()));
 
-            // Handle connection asynchronously in a separate fiber with timeout.
-            // fc::tcp_socket is non-copyable and non-movable (fc::fwd has no copy/move ctor).
-            // We handle the connection synchronously within a fiber — fc's cooperative
-            // scheduling still allows the accept loop to yield during I/O waits.
-            // The sock lives on the accept_loop fiber's stack and is valid for the
-            // duration of handle_connection().
-            try {
-                auto conn_start = fc::time_point::now();
-                auto deadline = conn_start + fc::seconds(CONNECTION_TIMEOUT_SEC);
-
-                handle_connection(sock);
-
-                if (fc::time_point::now() > deadline) {
-                    wlog("Snapshot server: connection from ${ip} exceeded timeout",
-                         ("ip", remote_ip));
+            // Handle connection asynchronously in a separate fiber.
+            // The socket is heap-allocated (shared_ptr) so it survives the accept_loop
+            // iteration and lives until the async fiber completes.
+            auto deadline = fc::time_point::now() + fc::seconds(CONNECTION_TIMEOUT_SEC);
+            fc::async([this, sock_ptr, remote_ip, deadline]() {
+                try {
+                    handle_connection(*sock_ptr, deadline);
+                } catch (const fc::exception& e) {
+                    wlog("Snapshot server: error handling connection: ${e}", ("e", e.to_detail_string()));
+                } catch (const std::exception& e) {
+                    wlog("Snapshot server: error handling connection: ${e}", ("e", e.what()));
                 }
-            } catch (const fc::exception& e) {
-                wlog("Snapshot server: error handling connection: ${e}", ("e", e.to_detail_string()));
-            } catch (const std::exception& e) {
-                wlog("Snapshot server: error handling connection: ${e}", ("e", e.what()));
-            }
 
-            // Cleanup
-            active_sessions.erase(remote_ip);
-            active_connection_count.fetch_sub(1);
-            try { sock.close(); } catch (...) {}
+                // Cleanup under mutex
+                {
+                    fc::scoped_lock<fc::mutex> lock(sessions_mutex);
+                    active_sessions.erase(remote_ip);
+                }
+                active_connection_count.fetch_sub(1);
+                try { sock_ptr->close(); } catch (...) {}
+            }, "snapshot_handle_connection");
 
         } catch (const fc::canceled_exception&) {
             break;
@@ -1640,11 +1652,17 @@ void snapshot_plugin::plugin_impl::accept_loop() {
     }
 }
 
-void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
+void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::time_point deadline) {
     auto remote = sock.remote_endpoint();
     std::string remote_str = std::string(remote.get_address()) + ":" + std::to_string(remote.port());
 
     ilog("Snapshot server: handling connection from ${remote}", ("remote", remote_str));
+
+    // Check deadline before initial read
+    if (fc::time_point::now() > deadline) {
+        wlog("Snapshot server: connection timeout before processing request from ${remote}", ("remote", remote_str));
+        return;
+    }
 
     // Read initial request (server-side: small payload limit) with timeout.
     // Use 256 KB to tolerate slightly oversized messages from future protocol versions,
@@ -1701,8 +1719,17 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
         uint64_t bytes_sent = 0;
         while (true) {
             try {
-                // Use longer timeout for data requests to support slow clients.
+                // Check connection deadline before each chunk operation
+                if (fc::time_point::now() > deadline) {
+                    wlog("Snapshot server: connection timeout during transfer to ${remote} "
+                         "(sent ${b}/${t} bytes)",
+                         ("remote", remote_str)("b", bytes_sent)("t", file_size));
+                    return;
+                }
+
+                // Use longer per-chunk timeout for data requests to support slow clients.
                 // Client has 5 min to request next chunk (includes their processing time).
+                // But overall connection is bounded by the deadline above.
                 auto req_result = read_message_with_timeout(sock, 256 * 1024, fc::minutes(5));
                 if (!std::get<0>(req_result)) {
                     wlog("Snapshot server: timeout waiting for data request from ${remote}", ("remote", remote_str));
@@ -1984,7 +2011,7 @@ void snapshot_plugin::set_program_options(
             "Load state from snapshot file instead of replaying blockchain")
         ("create-snapshot", bpo::value<std::string>(),
             "Create a snapshot file at the specified path and exit")
-        ("sync-snapshot-from-trusted-peer", bpo::value<bool>()->default_value(true),
+        ("sync-snapshot-from-trusted-peer", bpo::value<bool>()->default_value(false),
             "Download and load snapshot from trusted peers on empty state (requires trusted-snapshot-peer)")
     ;
 }
@@ -2106,7 +2133,7 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
             std::cerr << "   Clearing state and importing snapshot...\n";
             ilog("Download complete, loading snapshot...");
             my->load_snapshot(fc::path(snapshot_path));
-            my->db._dlt_mode = true;  // Mark DLT mode — block_log stays empty
+            my->db.set_dlt_mode(true);  // Mark DLT mode — block_log stays empty
             my->db.initialize_hardforks();
             auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
             std::cerr << "   === P2P Snapshot Sync complete (block "

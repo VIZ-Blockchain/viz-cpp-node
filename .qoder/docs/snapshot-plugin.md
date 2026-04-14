@@ -18,7 +18,7 @@ The snapshot plugin enables near-instant node startup by serializing and restori
 |--------|------|-------------|
 | `--snapshot <path>` | `string` | Load state from a snapshot file instead of replaying blockchain. The node opens in DLT mode (no block log). Safe for restarts — skips import if shared_memory already exists, and renames the file to `.used` after successful import. |
 | `--create-snapshot <path>` | `string` | Create a snapshot file at the given path using the current database state, then exit. |
-| `--sync-snapshot-from-trusted-peer` | `bool` (default: `true`) | Download and load snapshot from trusted peers when state is empty (`head_block_num == 0`). Requires `trusted-snapshot-peer` to be configured. Defaults to `true` — if `trusted-snapshot-peer` is set, sync happens automatically. Set to `false` to disable. |
+| `--sync-snapshot-from-trusted-peer` | `bool` (default: `false`) | Download and load snapshot from trusted peers when state is empty (`head_block_num == 0`). Requires `trusted-snapshot-peer` to be configured. Defaults to `false` (opt-in) — must be explicitly enabled to prevent accidental state wipe via `chainbase::wipe()`. |
 
 ### Config file options (snapshot plugin)
 
@@ -361,6 +361,7 @@ dlt-block-log-max-blocks = 100000
 - When the log exceeds `dlt-block-log-max-blocks`, old blocks are truncated from the front (rolling window).
 - On restart, the DLT block log is preserved — blocks are only re-written from where they left off.
 - When the DLT block log is empty (fresh snapshot import), the node skips ahead to the last irreversible block number, since snapshot state is already trusted.
+- If a block is not found in the fork database during DLT block log writes (normal after restart), the gap is logged via `wlog` and fills naturally as LIB advances past the post-restart head.
 
 ### P2P block serving path
 
@@ -369,6 +370,8 @@ When a peer requests a block:
 2. First checks main `_block_log` (empty in DLT mode)
 3. Falls back to `_dlt_block_log` for recent blocks
 4. If not found in either → block unavailable
+
+**Note on `is_known_block()`:** In DLT mode, the `block_summary` table (TAPOS buffer, 65536 entries) survives snapshot import but may reference blocks not actually available on disk. To prevent lying to P2P peers (which would cause them to request blocks the node can't serve), `is_known_block()` skips the `block_summary` shortcut in DLT mode and falls through to `fetch_block_by_id()`, which checks actual data availability in both `_block_log` and `_dlt_block_log`.
 
 ## P2P Snapshot Sync
 
@@ -413,7 +416,15 @@ trusted-snapshot-peer = seed1.viz.world:8092
 trusted-snapshot-peer = seed2.viz.world:8092
 ```
 
-Since `sync-snapshot-from-trusted-peer` defaults to `true`, configuring `trusted-snapshot-peer` is sufficient. When the node starts with 0 blocks, it automatically downloads the snapshot from the best available peer. To disable auto-sync explicitly:
+Since `sync-snapshot-from-trusted-peer` defaults to `false`, you must explicitly enable it in `config.ini` along with `trusted-snapshot-peer`:
+
+```ini
+trusted-snapshot-peer = seed1.viz.world:8092
+trusted-snapshot-peer = seed2.viz.world:8092
+sync-snapshot-from-trusted-peer = true
+```
+
+When the node starts with 0 blocks and sync is enabled, it automatically downloads the snapshot from the best available peer. To disable auto-sync (the default):
 
 ```ini
 sync-snapshot-from-trusted-peer = false
@@ -436,7 +447,7 @@ All operations happen during `chain::plugin_startup()`, **before** P2P and witne
 - **Max snapshot size**: Downloads exceeding 2 GB are rejected.
 - **Streaming checksum**: SHA-256 verification uses streaming (1 MB chunks) to avoid loading the entire file into memory.
 - **Trusted peer list**: Connections are only accepted from/to configured trusted peers.
-- **Anti-spam**: Rate limiting (max connections per hour per IP), max 5 concurrent connections, 60-second timeout.
+- **Anti-spam**: Rate limiting (max connections per hour per IP), max 5 concurrent connections (each in a separate fiber with mutex-protected session tracking), 60-second enforced connection deadline (checked before each I/O operation, not just post-hoc).
 - **Payload limits**: Control messages limited to 64 KB, only data replies allow up to 64 MB.
 
 ## Recommended Production Config
@@ -611,10 +622,10 @@ The snapshot plugin required changes to several core components:
 | Component | Change |
 |-----------|--------|
 | `chainbase::generic_index` | Added `set_next_id()` / `next_id()` for ID preservation during import |
-| `database.hpp/cpp` | Added `open_from_snapshot()`, `initialize_hardforks()`, `get_fork_db()`, `_dlt_mode` flag; DLT mode skips block_log writes and detects empty block_log on restart; DLT block log empty-skip logic for fresh snapshot imports |
+| `database.hpp/cpp` | Added `open_from_snapshot()`, `initialize_hardforks()`, `get_fork_db()`, `_dlt_mode` flag with `set_dlt_mode()` setter; DLT mode skips block_log writes and detects empty block_log on restart; `is_known_block()` skips block_summary shortcut in DLT mode to prevent lying to P2P peers; DLT block log gap logging via `wlog`; DLT block log empty-skip logic for fresh snapshot imports |
 | `dlt_block_log.hpp/cpp` | New class: offset-aware rolling block log with 8-byte header index, `truncate_before()` for rotation, read/write with mutex locking |
 | `chain plugin` | Added `snapshot_load_callback`, `snapshot_create_callback`, `snapshot_p2p_sync_callback`; restart safety (shared_memory check + `.used` rename + file existence check); `dlt-block-log-max-blocks` config option; diagnostic warning when node has 0 blocks and no snapshot sync configured |
-| `snapshot plugin` | Full implementation: create/load/periodic snapshots; P2P TCP sync (serve + download); anti-spam (rate limiting, max connections, timeouts); cached snapshot info; streaming SHA-256 checksum; built-in rotation (`snapshot-max-age-days`); elapsed time logging for all operations; console progress logging for download/import; `sync-snapshot-from-trusted-peer` defaults to `true`; auto-creates snapshot directory; periodic snapshots only trigger on live blocks (skipped during P2P sync) |
+| `snapshot plugin` | Full implementation: create/load/periodic snapshots; P2P TCP sync (serve + download with concurrent fiber handling via `fc::async`); anti-spam (rate limiting, mutex-protected session tracking, enforced per-operation connection deadline); cached snapshot info; streaming SHA-256 checksum; built-in rotation (`snapshot-max-age-days`); elapsed time logging for all operations; console progress logging for download/import; `sync-snapshot-from-trusted-peer` defaults to `false` (opt-in); auto-creates snapshot directory; periodic snapshots only trigger on live blocks (skipped during P2P sync); memory optimization: compressed data freed immediately after decompression |
 | `content_object.hpp` | Added missing `FC_REFLECT` for `content_object`, `content_type_object`, `content_vote_object` |
 | `witness_objects.hpp` | Added missing `FC_REFLECT` for `witness_vote_object` |
 | `proposal_object.hpp` | Added missing `FC_REFLECT` for `required_approval_object` |

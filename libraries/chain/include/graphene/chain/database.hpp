@@ -58,6 +58,15 @@ namespace graphene { namespace chain {
             // When true, block_log append operations are skipped.
             bool _dlt_mode = false;
 
+            /// Set DLT mode flag. Should be called before loading snapshot data
+            /// so that all subsequent code sees a consistent state.
+            void set_dlt_mode(bool enabled) {
+                _dlt_mode = enabled;
+                if (enabled) {
+                    ilog("DLT mode enabled: block_log writes will be skipped");
+                }
+            }
+
             // DLT rolling block_log: number of recent blocks to keep.
             // 0 = no DLT block_log (original behavior).
             // > 0 = keep a rolling window of this many blocks in the separate dlt_block_log.
