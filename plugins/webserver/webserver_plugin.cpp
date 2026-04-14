@@ -1,11 +1,13 @@
 #include <graphene/plugins/webserver/webserver_plugin.hpp>
 
 #include <graphene/plugins/chain/plugin.hpp>
+#include <graphene/protocol/block.hpp>
 
 #include <fc/network/ip.hpp>
 #include <fc/log/logger_config.hpp>
 #include <fc/io/json.hpp>
 #include <fc/network/resolve.hpp>
+#include <fc/crypto/sha256.hpp>
 
 #include <boost/asio.hpp>
 #include <boost/optional.hpp>
@@ -23,6 +25,9 @@
 #include <thread>
 #include <memory>
 #include <iostream>
+#include <map>
+#include <unordered_map>
+#include <mutex>
 #include <graphene/plugins/json_rpc/plugin.hpp>
 
 namespace graphene {
@@ -76,6 +81,12 @@ namespace graphene {
 
             using websocket_server_type = websocketpp::server<asio_with_stub_log>;
 
+            // Cache entry for JSON-RPC responses
+            struct cache_entry {
+                std::string response;
+                uint32_t block_num;
+            };
+
             struct webserver_plugin::webserver_plugin_impl final {
             public:
                 boost::thread_group& thread_pool = appbase::app().scheduler();
@@ -93,6 +104,11 @@ namespace graphene {
 
                 void handle_http_message(websocket_server_type *, connection_hdl);
 
+                // Cache methods
+                fc::optional<std::string> get_cached_response(const std::string& request_hash);
+                void cache_response(const std::string& request_hash, const std::string& response, uint32_t block_num);
+                void clear_cache();
+
                 shared_ptr<std::thread> http_thread;
                 asio::io_service http_ios;
                 optional<tcp::endpoint> http_endpoint;
@@ -107,6 +123,14 @@ namespace graphene {
 
                 plugins::json_rpc::plugin *api;
                 boost::signals2::connection chain_sync_con;
+                boost::signals2::connection applied_block_conn;
+
+                // Cache for JSON-RPC responses
+                std::unordered_map<std::string, cache_entry> response_cache;
+                std::mutex cache_mutex;
+                uint32_t current_block_num = 0;
+                bool cache_enabled = true;
+                size_t max_cache_size = 10000;
             };
 
             void webserver_plugin::webserver_plugin_impl::start_webserver() {
@@ -189,6 +213,42 @@ namespace graphene {
                 }
             }
 
+            fc::optional<std::string> webserver_plugin::webserver_plugin_impl::get_cached_response(const std::string& request_hash) {
+                if (!cache_enabled) {
+                    return fc::optional<std::string>();
+                }
+
+                std::lock_guard<std::mutex> lock(cache_mutex);
+                auto it = response_cache.find(request_hash);
+                if (it != response_cache.end()) {
+                    // Check if the cached response is still valid for current block
+                    if (it->second.block_num == current_block_num) {
+                        return it->second.response;
+                    }
+                }
+                return fc::optional<std::string>();
+            }
+
+            void webserver_plugin::webserver_plugin_impl::cache_response(const std::string& request_hash, const std::string& response, uint32_t block_num) {
+                if (!cache_enabled) {
+                    return;
+                }
+
+                std::lock_guard<std::mutex> lock(cache_mutex);
+
+                // Simple eviction: clear if cache is too large
+                if (response_cache.size() >= max_cache_size) {
+                    response_cache.clear();
+                }
+
+                response_cache[request_hash] = cache_entry{response, block_num};
+            }
+
+            void webserver_plugin::webserver_plugin_impl::clear_cache() {
+                std::lock_guard<std::mutex> lock(cache_mutex);
+                response_cache.clear();
+            }
+
             void webserver_plugin::webserver_plugin_impl::handle_ws_message(
                 websocket_server_type *server,
                 connection_hdl hdl,
@@ -198,11 +258,29 @@ namespace graphene {
                 thread_pool_ios.post([con, msg, this]() {
                     try {
                         if (msg->get_opcode() == websocketpp::frame::opcode::text) {
-                            api->call(msg->get_payload(), [con](const std::string &data){
+                            auto body = msg->get_payload();
+
+                            // Generate cache key from request body
+                            std::string request_hash = fc::sha256::hash(body).str();
+
+                            // Check cache first
+                            auto cached_response = get_cached_response(request_hash);
+                            if (cached_response.valid()) {
+                                auto ec = con->send(*cached_response);
+                                if (ec) {
+                                    throw websocketpp::exception(ec);
+                                }
+                                return;
+                            }
+
+                            api->call(body, [con, this, request_hash](const std::string &data){
                                 auto ec = con->send(data);
                                 if (ec) {
                                     throw websocketpp::exception(ec);
                                 }
+
+                                // Cache the response
+                                cache_response(request_hash, data, current_block_num);
                             });
                         } else {
                             con->send("error: string payload expected");
@@ -220,13 +298,28 @@ namespace graphene {
                 thread_pool_ios.post([con, this]() {
                     auto body = con->get_request_body();
 
+                    // Generate cache key from request body
+                    std::string request_hash = fc::sha256::hash(body).str();
+
+                    // Check cache first
+                    auto cached_response = get_cached_response(request_hash);
+                    if (cached_response.valid()) {
+                        con->set_body(*cached_response);
+                        con->set_status(websocketpp::http::status_code::ok);
+                        con->send_http_response();
+                        return;
+                    }
+
                     try {
-                        api->call(body, [con](const std::string &data){
+                        api->call(body, [con, this, request_hash](const std::string &data){
                             // this lambda can be called from any thread in application
                             //   for example, when task was delegated ( see msg_pack(msg_pack&&) )
                             con->set_body(data);
                             con->set_status(websocketpp::http::status_code::ok);
                             con->send_http_response();
+
+                            // Cache the response
+                            cache_response(request_hash, data, current_block_num);
                         });
                     } catch (fc::exception &e) {
                         // this case happens if exception was thrown on parsing request
@@ -260,7 +353,11 @@ namespace graphene {
                     ("rpc-endpoint", boost::program_options::value<string>(),
                         "Local http and websocket endpoint for webserver requests. Deprectaed in favor of webserver-http-endpoint and webserver-ws-endpoint")
                     ("webserver-thread-pool-size", boost::program_options::value<thread_pool_size_t>()->default_value(256),
-                        "Number of threads used to handle queries. Default: 256.");
+                        "Number of threads used to handle queries. Default: 256.")
+                    ("webserver-cache-enabled", boost::program_options::value<bool>()->default_value(true),
+                        "Enable caching of JSON-RPC responses. Cache is cleared on each new block. Default: true.")
+                    ("webserver-cache-size", boost::program_options::value<size_t>()->default_value(10000),
+                        "Maximum number of cached JSON-RPC responses. Default: 10000.");
             }
 
             void webserver_plugin::plugin_initialize(const boost::program_options::variables_map &options) {
@@ -268,6 +365,12 @@ namespace graphene {
                 FC_ASSERT(thread_pool_size > 0, "webserver-thread-pool-size must be greater than 0");
                 ilog("configured with ${tps} thread pool size", ("tps", thread_pool_size));
                 my.reset(new webserver_plugin_impl(thread_pool_size));
+
+                // Read cache configuration
+                my->cache_enabled = options.at("webserver-cache-enabled").as<bool>();
+                my->max_cache_size = options.at("webserver-cache-size").as<size_t>();
+                ilog("webserver cache enabled: ${enabled}, max size: ${size}",
+                     ("enabled", my->cache_enabled)("size", my->max_cache_size));
 
                 if (options.count("webserver-http-endpoint")) {
                     auto http_endpoint = options.at("webserver-http-endpoint").as<string>();
@@ -323,6 +426,16 @@ namespace graphene {
                     });
                 } else {
                     my->start_webserver();
+                }
+
+                // Connect to applied_block signal to update block number and clear cache
+                if (chain != nullptr) {
+                    my->applied_block_conn = chain->db().applied_block.connect([this](const protocol::signed_block &b) {
+                        std::lock_guard<std::mutex> lock(my->cache_mutex);
+                        my->current_block_num = b.block_num();
+                        // Clear cache on new block since state may have changed
+                        my->response_cache.clear();
+                    });
                 }
             }
 
