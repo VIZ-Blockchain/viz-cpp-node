@@ -1238,17 +1238,18 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     if (snapshot_at_block > 0 && block_num == snapshot_at_block && !is_syncing) {
         fc::path output;
         if (!snapshot_dir.empty()) {
-            output = fc::path(snapshot_dir) / ("snapshot-block-" + std::to_string(block_num) + ".json");
+            output = fc::path(snapshot_dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         } else if (!create_snapshot_path.empty()) {
             output = fc::path(create_snapshot_path);
         } else {
-            output = fc::path("snapshot-block-" + std::to_string(block_num) + ".json");
+            output = fc::path("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         }
         ilog("Reached snapshot-at-block ${b}, creating snapshot: ${p}", ("b", block_num)("p", output.string()));
         try {
             // Called from applied_block signal which is already under write lock.
             // Use write_snapshot_to_file directly (no additional lock needed).
             write_snapshot_to_file(output);
+            update_snapshot_cache(output);
             cleanup_old_snapshots();
         } catch (const fc::exception& e) {
             elog("Failed to create snapshot at block ${b}: ${e}", ("b", block_num)("e", e.to_detail_string()));
@@ -1258,12 +1259,13 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     // Check --snapshot-every-n-blocks: periodic snapshots (only when synced)
     if (snapshot_every_n_blocks > 0 && block_num % snapshot_every_n_blocks == 0 && !is_syncing) {
         std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
-        fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".json");
+        fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         ilog("Periodic snapshot at block ${b}: ${p}", ("b", block_num)("p", output.string()));
         try {
             // Called from applied_block signal which is already under write lock.
             // Use write_snapshot_to_file directly (no additional lock needed).
             write_snapshot_to_file(output);
+            update_snapshot_cache(output);
             cleanup_old_snapshots();
         } catch (const fc::exception& e) {
             elog("Failed to create periodic snapshot at block ${b}: ${e}", ("b", block_num)("e", e.to_detail_string()));
