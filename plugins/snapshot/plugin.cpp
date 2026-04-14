@@ -1646,11 +1646,15 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
 
     ilog("Snapshot server: handling connection from ${remote}", ("remote", remote_str));
 
-    // Read initial request (server-side: small payload limit).
+    // Read initial request (server-side: small payload limit) with timeout.
     // Use 256 KB to tolerate slightly oversized messages from future protocol versions,
     // while still rejecting non-protocol traffic (P2P nodes, scanners, browsers).
-    auto msg_result = read_message(sock, 256 * 1024);
-    uint32_t msg_type = msg_result.first;
+    auto msg_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(10));
+    if (!std::get<0>(msg_result)) {
+        wlog("Snapshot server: timeout reading request from ${remote}", ("remote", remote_str));
+        return;
+    }
+    uint32_t msg_type = std::get<1>(msg_result);
 
     ilog("Snapshot server: received message type ${type} from ${remote}",
          ("type", msg_type)("remote", remote_str));
@@ -1697,10 +1701,16 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
         uint64_t bytes_sent = 0;
         while (true) {
             try {
-                auto req_result = read_message(sock, 256 * 1024);
-                if (req_result.first != snapshot_data_request) break;
+                // Use longer timeout for data requests to support slow clients.
+                // Client has 5 min to request next chunk (includes their processing time).
+                auto req_result = read_message_with_timeout(sock, 256 * 1024, fc::minutes(5));
+                if (!std::get<0>(req_result)) {
+                    wlog("Snapshot server: timeout waiting for data request from ${remote}", ("remote", remote_str));
+                    return;
+                }
+                if (std::get<1>(req_result) != snapshot_data_request) break;
 
-                auto req = unpack_from_vec<snapshot_data_request_data>(req_result.second);
+                auto req = unpack_from_vec<snapshot_data_request_data>(std::get<2>(req_result));
 
                 // Read chunk from file
                 std::ifstream chunk_in(serve_path, std::ios::binary);
@@ -1874,7 +1884,9 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
         req.chunk_size = chunk_size;
 
         send_message(sock, snapshot_data_request, pack_to_vec(req));
-        auto data_result = read_message_with_timeout(sock, 64 * 1024 * 1024, fc::microseconds(SNAPSHOT_PEER_TIMEOUT.count() * 2));
+        // Use longer timeout for chunk download to support slow connections.
+        // 1 MB chunk with 5 min timeout = min 3.4 KB/s required (very slow connections OK).
+        auto data_result = read_message_with_timeout(sock, 64 * 1024 * 1024, fc::minutes(5));
         FC_ASSERT(std::get<0>(data_result), "Timeout waiting for chunk data from peer");
         FC_ASSERT(std::get<1>(data_result) == snapshot_data_reply, "Unexpected response during chunk download");
 
