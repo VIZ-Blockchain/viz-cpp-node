@@ -31,6 +31,7 @@
 #include <map>
 #include <algorithm>
 #include <atomic>
+#include <tuple>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -1277,7 +1278,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
 namespace {
 
 /// Timeout for snapshot peer operations (connect, read, write)
-constexpr fc::microseconds SNAPSHOT_PEER_TIMEOUT = fc::seconds(30);
+const fc::microseconds SNAPSHOT_PEER_TIMEOUT = fc::seconds(30);
 
 /// Read exactly `len` bytes from a tcp_socket with timeout.
 /// Returns true on success, false on timeout.
@@ -1646,7 +1647,8 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
     // Read initial request (server-side: small payload limit).
     // Use 256 KB to tolerate slightly oversized messages from future protocol versions,
     // while still rejecting non-protocol traffic (P2P nodes, scanners, browsers).
-    auto [msg_type, payload] = read_message(sock, 256 * 1024);
+    auto msg_result = read_message(sock, 256 * 1024);
+    uint32_t msg_type = msg_result.first;
 
     ilog("Snapshot server: received message type ${type} from ${remote}",
          ("type", msg_type)("remote", remote_str));
@@ -1693,10 +1695,10 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
         uint64_t bytes_sent = 0;
         while (true) {
             try {
-                auto [req_type, req_payload] = read_message(sock, 256 * 1024);
-                if (req_type != snapshot_data_request) break;
+                auto req_result = read_message(sock, 256 * 1024);
+                if (req_result.first != snapshot_data_request) break;
 
-                auto req = unpack_from_vec<snapshot_data_request_data>(req_payload);
+                auto req = unpack_from_vec<snapshot_data_request_data>(req_result.second);
 
                 // Read chunk from file
                 std::ifstream chunk_in(serve_path, std::ios::binary);
@@ -1779,22 +1781,25 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
             send_message_empty(sock, snapshot_info_request);
 
             // Read response with timeout
-            auto [success, msg_type, payload] = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
-            if (!success) {
+            auto resp_result = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
+            if (!std::get<0>(resp_result)) {
                 std::cerr << "   Peer " << peer_str << ": response timeout\n";
                 wlog("Response timeout from peer ${p}", ("p", peer_str));
                 sock.close();
                 continue;
             }
 
-            if (msg_type == snapshot_info_reply) {
-                auto info = unpack_from_vec<snapshot_info_reply_data>(payload);
+            uint32_t resp_msg_type = std::get<1>(resp_result);
+            const auto& resp_payload = std::get<2>(resp_result);
+
+            if (resp_msg_type == snapshot_info_reply) {
+                auto info = unpack_from_vec<snapshot_info_reply_data>(resp_payload);
                 std::cerr << "   Peer " << peer_str << ": snapshot at block "
                           << info.block_num << " (" << (info.compressed_size / 1048576) << " MB)\n";
                 ilog("Peer ${p}: snapshot at block ${b}, size ${s} bytes",
                      ("p", peer_str)("b", info.block_num)("s", info.compressed_size));
                 available_peers.push_back({peer_str, info.block_num, info.checksum, info.compressed_size});
-            } else if (msg_type == snapshot_not_available) {
+            } else if (resp_msg_type == snapshot_not_available) {
                 std::cerr << "   Peer " << peer_str << ": no snapshot available\n";
                 ilog("Peer ${p}: no snapshot available", ("p", peer_str));
             }
@@ -1834,9 +1839,9 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 
     // Request info again to establish session
     send_message_empty(sock, snapshot_info_request);
-    auto [info_success, info_type, info_payload] = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
-    FC_ASSERT(info_success, "Timeout waiting for peer response during download");
-    FC_ASSERT(info_type == snapshot_info_reply, "Unexpected response from peer during download");
+    auto info_result = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
+    FC_ASSERT(std::get<0>(info_result), "Timeout waiting for peer response during download");
+    FC_ASSERT(std::get<1>(info_result) == snapshot_info_reply, "Unexpected response from peer during download");
 
     // Validate snapshot size against maximum
     FC_ASSERT(best->compressed_size <= MAX_SNAPSHOT_SIZE,
@@ -1867,11 +1872,11 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
         req.chunk_size = chunk_size;
 
         send_message(sock, snapshot_data_request, pack_to_vec(req));
-        auto [data_success, data_type, data_payload] = read_message_with_timeout(sock, 64 * 1024 * 1024, SNAPSHOT_PEER_TIMEOUT * 2);
-        FC_ASSERT(data_success, "Timeout waiting for chunk data from peer");
-        FC_ASSERT(data_type == snapshot_data_reply, "Unexpected response during chunk download");
+        auto data_result = read_message_with_timeout(sock, 64 * 1024 * 1024, fc::microseconds(SNAPSHOT_PEER_TIMEOUT.count() * 2));
+        FC_ASSERT(std::get<0>(data_result), "Timeout waiting for chunk data from peer");
+        FC_ASSERT(std::get<1>(data_result) == snapshot_data_reply, "Unexpected response during chunk download");
 
-        auto reply = unpack_from_vec<snapshot_data_reply_data>(data_payload);
+        auto reply = unpack_from_vec<snapshot_data_reply_data>(std::get<2>(data_result));
 
         if (!reply.data.empty()) {
             out.write(reply.data.data(), reply.data.size());
