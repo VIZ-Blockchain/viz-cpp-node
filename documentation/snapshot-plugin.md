@@ -90,6 +90,8 @@ The node will:
 4. Verify the checksum
 5. Load the snapshot and start syncing from that block
 
+If no trusted peers respond, the node will **retry automatically** every `stalled-sync-timeout-minutes` minutes (default: 5) until a snapshot becomes available. The node will not fall back to genesis sync.
+
 **Note on Timeouts:** All P2P snapshot operations have a 30-second timeout. If a peer doesn't respond within this time (e.g., accepts TCP connection but never sends data), the node will skip that peer and try the next one. This prevents indefinite hangs when some peers are unresponsive.
 
 ### Trust Model
@@ -195,7 +197,7 @@ stalled-sync-timeout-minutes = 5
 | `trusted-snapshot-peer` | (none) | Trusted peer IP:port (repeatable) |
 | `sync-snapshot-from-trusted-peer` | false | Download snapshot on empty state (config.ini or CLI) |
 | `enable-stalled-sync-detection` | false | Auto-detect stalled sync and re-download snapshot |
-| `stalled-sync-timeout-minutes` | 5 | Timeout before triggering snapshot re-download |
+| `stalled-sync-timeout-minutes` | 5 | Timeout for stalled sync detection and startup retry interval |
 | `dlt-block-log-max-blocks` | 100000 | Rolling DLT block_log window size (0 = disabled) |
 
 ### CLI options

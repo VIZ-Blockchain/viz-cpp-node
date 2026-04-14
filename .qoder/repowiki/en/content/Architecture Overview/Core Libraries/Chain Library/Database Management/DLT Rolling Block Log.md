@@ -14,12 +14,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced DLT mode detection with improved validation logic when block_log is empty
-- Improved fallback mechanisms between block_log and dlt_block_log with better error handling
-- Enhanced P2P fallback implementation with detailed logging for DLT mode scenarios
-- Strengthened block validation logic with comprehensive error reporting
-- Improved synchronization handling with enhanced logging capabilities for block serving operations
-- Better integration between database, snapshot, and P2P layers for DLT mode operations
+- Implemented critical memory safety improvements replacing unsafe uint64_t pointer casts with std::memcpy operations throughout the DLT block log implementation
+- Added comprehensive crash recovery mechanisms with .bak file restoration for atomic file operations during truncation
+- Enhanced cross-platform compatibility through standardized file operations and memory-mapped file handling
+- Strengthened error handling with FC_ASSERT and FC_THROW_EXCEPTION macros for robust validation
+- Improved file recovery procedures with automatic cleanup of stale temporary files
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -27,17 +26,19 @@
 3. [Core Components](#core_components)
 4. [Architecture Overview](#architecture_overview)
 5. [Detailed Component Analysis](#detailed_component_analysis)
-6. [Selective Retention Policies](#selective_retention_policies)
-7. [Automatic Pruning Capabilities](#automatic_pruning_capabilities)
-8. [Configuration Management](#configuration_management)
-9. [Dependency Analysis](#dependency_analysis)
-10. [Performance Considerations](#performance_considerations)
-11. [Enhanced Error Handling and Fallback Mechanisms](#enhanced-error-handling-and-fallback-mechanisms)
-12. [Troubleshooting Guide](#troubleshooting-guide)
-13. [Conclusion](#conclusion)
+6. [Memory Safety and Cross-Platform Enhancements](#memory-safety-and-cross-platform-enhancements)
+7. [Crash Recovery and Atomic Operations](#crash-recovery-and-atomic-operations)
+8. [Selective Retention Policies](#selective_retention_policies)
+9. [Automatic Pruning Capabilities](#automatic_pruning_capabilities)
+10. [Configuration Management](#configuration_management)
+11. [Dependency Analysis](#dependency_analysis)
+12. [Performance Considerations](#performance-considerations)
+13. [Enhanced Error Handling and Fallback Mechanisms](#enhanced-error-handling-and-fallback-mechanisms)
+14. [Troubleshooting Guide](#troubleshooting-guide)
+15. [Conclusion](#conclusion)
 
 ## Introduction
-This document explains the comprehensive DLT (Data Ledger Technology) Rolling Block Log implementation used by VIZ blockchain nodes to maintain a sliding window of recent irreversible blocks with selective retention policies and automatic pruning capabilities. The DLT mode provides advanced support for snapshot-based nodes, enabling efficient serving of recent blocks to P2P peers while maintaining configurable retention windows and automated cleanup mechanisms. Recent enhancements include improved block identification and verification processes during snapshot operations, enhanced fallback mechanisms between block logs, significantly improved error handling for DLT mode block serving operations with detailed logging and graceful fallback mechanisms, and strengthened block validation logic with comprehensive error reporting.
+This document explains the comprehensive DLT (Data Ledger Technology) Rolling Block Log implementation used by VIZ blockchain nodes to maintain a sliding window of recent irreversible blocks with selective retention policies and automatic pruning capabilities. The DLT mode provides advanced support for snapshot-based nodes, enabling efficient serving of recent blocks to P2P peers while maintaining configurable retention windows and automated cleanup mechanisms. Recent enhancements include critical memory safety improvements replacing unsafe pointer casts with std::memcpy operations, comprehensive crash recovery mechanisms with .bak file restoration, enhanced cross-platform compatibility, and strengthened validation logic throughout the implementation.
 
 ## Project Structure
 The DLT rolling block log is implemented as a standalone component with comprehensive integration into the main database system. It operates alongside the traditional block log while providing specialized functionality for snapshot-based ("DLT") nodes with selective retention and automatic pruning capabilities.
@@ -70,7 +71,7 @@ PP --> DH
 
 **Diagram sources**
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
-- [dlt_block_log.cpp:1-414](file://libraries/chain/dlt_block_log.cpp#L1-L414)
+- [dlt_block_log.cpp:1-454](file://libraries/chain/dlt_block_log.cpp#L1-L454)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [database.cpp:220-271](file://libraries/chain/database.cpp#L220-L271)
 - [plugin.cpp:320-330](file://plugins/chain/plugin.cpp#L320-L330)
@@ -80,7 +81,7 @@ PP --> DH
 
 **Section sources**
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
-- [dlt_block_log.cpp:1-414](file://libraries/chain/dlt_block_log.cpp#L1-L414)
+- [dlt_block_log.cpp:1-454](file://libraries/chain/dlt_block_log.cpp#L1-L454)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [database.cpp:220-271](file://libraries/chain/database.cpp#L220-L271)
 - [plugin.cpp:320-330](file://plugins/chain/plugin.cpp#L320-L330)
@@ -90,7 +91,7 @@ PP --> DH
 
 ## Core Components
 - **DLT Rolling Block Log API**: Provides comprehensive methods for opening/closing, appending blocks, selective reading by block number, querying head/start/end indices, and intelligent truncation with retention policies.
-- **Advanced Internal Implementation**: Manages sophisticated memory-mapped files for data and offset-aware index storage, maintains head state with automatic validation, reconstructs indexes when inconsistencies are detected, and performs safe truncation with temporary files and atomic operations.
+- **Advanced Memory-Safe Implementation**: Manages sophisticated memory-mapped files for data and offset-aware index storage using std::memcpy operations instead of unsafe pointer casts, maintains head state with automatic validation, reconstructs indexes when inconsistencies are detected, and performs safe truncation with temporary files and atomic operations.
 - **Integrated Database System**: Seamlessly opens both DLT rolling block log and primary block log during normal and snapshot modes, implements fallback block retrieval when primary block log is empty, and coordinates DLT mode detection and operation with enhanced error handling.
 - **Comprehensive Chain Plugin Configuration**: Exposes runtime options for configuring maximum blocks to retain, selective retention policies, and automatic pruning thresholds with flexible parameter management.
 - **Enhanced Snapshot Plugin Integration**: Provides improved block verification, checksum validation, and seamless transition to DLT mode after snapshot import with enhanced error handling.
@@ -106,6 +107,9 @@ PP --> DH
 - Improved error handling and validation for DLT mode operations
 - Graceful fallback mechanisms with detailed logging for P2P block serving operations
 - Strengthened block validation logic with comprehensive error reporting and synchronization handling
+- **Critical Memory Safety Improvements**: Replaced all unsafe uint64_t pointer casts with std::memcpy operations for cross-platform compatibility
+- **Comprehensive Crash Recovery**: Implemented .bak file restoration mechanisms for atomic file operations during truncation
+- **Enhanced Cross-Platform Compatibility**: Standardized file operations and memory-mapped file handling across platforms
 
 **Section sources**
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
@@ -194,16 +198,18 @@ class dlt_block_log {
 **Section sources**
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
 
-### Advanced Internal Implementation Details
-The implementation manages sophisticated memory-mapped files with comprehensive error handling, intelligent validation, and automatic recovery mechanisms. It enforces strict position checks, implements selective retention policies, and provides automatic pruning capabilities.
+### Advanced Memory-Safe Implementation Details
+The implementation manages sophisticated memory-mapped files with comprehensive error handling, intelligent validation, and automatic recovery mechanisms. It enforces strict position checks using std::memcpy operations instead of unsafe pointer casts, implements selective retention policies, and provides automatic pruning capabilities.
 
 **Key Advanced Behaviors**:
-- Sophisticated memory-mapped files for zero-copy reads with comprehensive error handling
-- Offset-aware index with intelligent header management and selective entry tracking
-- Strict position validation during append operations with conflict resolution
-- Intelligent index reconstruction with selective retention enforcement
+- Sophisticated memory-mapped files for zero-copy reads with comprehensive error handling using std::memcpy
+- Offset-aware index with intelligent header management and selective entry tracking using safe memory operations
+- Strict position validation during append operations with conflict resolution using FC_ASSERT
+- Intelligent index reconstruction with selective retention enforcement using atomic memory operations
 - Safe truncation using temporary files with atomic swap and comprehensive validation
 - Automatic pruning based on configured retention limits with selective block management
+
+**Updated** Enhanced memory safety through std::memcpy operations replacing unsafe uint64_t pointer casts throughout the implementation
 
 ```mermaid
 flowchart TD
@@ -231,7 +237,9 @@ ApplyRetention --> Ready
 - [dlt_block_log.cpp:18-278](file://libraries/chain/dlt_block_log.cpp#L18-L278)
 
 ### Enhanced Append Operation Flow
-The append operation validates sequential positioning with intelligent conflict resolution, writes block data with trailing position markers, updates the index with selective retention enforcement, and maintains head state with automatic pruning triggers.
+The append operation validates sequential positioning with intelligent conflict resolution, writes block data with trailing position markers using std::memcpy, updates the index with selective retention enforcement, and maintains head state with automatic pruning triggers.
+
+**Updated** Memory-safe append operations using std::memcpy for all data transfers
 
 ```mermaid
 sequenceDiagram
@@ -242,8 +250,8 @@ participant IF as "Index File"
 Client->>DLT : append(block)
 DLT->>IF : resize to expected index size
 DLT->>BF : resize to current file size + packed block + 8
-DLT->>BF : write packed block + trailing position
-DLT->>IF : write index entry
+DLT->>BF : write packed block + trailing position (std : : memcpy)
+DLT->>IF : write index entry (std : : memcpy)
 DLT->>DLT : update head/head_id
 DLT->>DLT : check retention limits
 alt Exceeds 2x limit
@@ -259,7 +267,9 @@ DLT-->>Client : block position
 - [dlt_block_log.cpp:211-268](file://libraries/chain/dlt_block_log.cpp#L211-L268)
 
 ### Intelligent Truncation Process
-Truncation creates temporary files containing only retained blocks with selective retention enforcement, then atomically replaces the original files with comprehensive validation and automatic cleanup.
+Truncation creates temporary files containing only retained blocks with selective retention enforcement, then atomically replaces the original files with comprehensive validation and automatic cleanup using .bak files for crash recovery.
+
+**Updated** Enhanced truncation with comprehensive crash recovery using .bak file restoration
 
 ```mermaid
 flowchart TD
@@ -267,7 +277,7 @@ TStart([Truncate Before]) --> Validate["Validate range and open state"]
 Validate --> CheckRetention["Check retention policies"]
 CheckRetention --> BuildTemp["Build temp files with retained blocks"]
 BuildTemp --> CloseOrig["Close original files"]
-CloseOrig --> Swap["Swap temp -> original"]
+CloseOrig --> Swap["Swap temp -> original (.bak backup)"]
 Swap --> Reopen["Reopen with new state"]
 Reopen --> Cleanup["Cleanup temporary files"]
 Cleanup --> TEnd([Complete])
@@ -323,6 +333,86 @@ The snapshot plugin provides comprehensive integration with DLT mode operations,
 **Section sources**
 - [snapshot_plugin.cpp:1968-1970](file://plugins/snapshot/plugin.cpp#L1968-L1970)
 - [snapshot_plugin.cpp:942-1054](file://plugins/snapshot/plugin.cpp#L942-L1054)
+
+## Memory Safety and Cross-Platform Enhancements
+
+### Critical Memory Safety Improvements
+The DLT block log implementation has undergone significant memory safety improvements, replacing all unsafe uint64_t pointer casts with std::memcpy operations throughout the codebase. This change ensures cross-platform compatibility and eliminates potential undefined behavior issues.
+
+**Memory Safety Features**:
+- All uint64_t data extraction now uses std::memcpy instead of reinterpret_cast<uint64_t*>(ptr)
+- Safe memory copying operations with explicit bounds checking using FC_ASSERT
+- Cross-platform compatible memory operations that work consistently across different architectures
+- Elimination of undefined behavior from pointer casting operations
+- Enhanced validation of memory access patterns with comprehensive error reporting
+
+**Updated** Memory safety improvements implemented across all data access operations
+
+**Section sources**
+- [dlt_block_log.cpp:44-65](file://libraries/chain/dlt_block_log.cpp#L44-L65)
+- [dlt_block_log.cpp:146-159](file://libraries/chain/dlt_block_log.cpp#L146-L159)
+- [dlt_block_log.cpp:253-297](file://libraries/chain/dlt_block_log.cpp#L253-L297)
+
+### Enhanced Cross-Platform Compatibility
+The implementation now provides comprehensive cross-platform compatibility through standardized file operations and memory-mapped file handling. The codebase leverages FC library abstractions that ensure consistent behavior across different operating systems and architectures.
+
+**Cross-Platform Features**:
+- Standardized file operations using boost::filesystem and fc::filesystem abstractions
+- Consistent memory-mapped file handling across platforms
+- Platform-independent error handling and exception reporting
+- Cross-platform compatible file naming conventions (.bak, .tmp extensions)
+- Unified logging mechanisms that work across different environments
+
+**Section sources**
+- [dlt_block_log.cpp:172-202](file://libraries/chain/dlt_block_log.cpp#L172-L202)
+- [dlt_block_log.cpp:432-444](file://libraries/chain/dlt_block_log.cpp#L432-L444)
+
+## Crash Recovery and Atomic Operations
+
+### Comprehensive Crash Recovery Mechanisms
+The DLT block log implementation includes sophisticated crash recovery mechanisms that ensure data integrity even during unexpected shutdowns or system failures. The system automatically detects and recovers from interrupted operations using .bak file restoration.
+
+**Crash Recovery Features**:
+- Automatic detection of interrupted truncation operations through .bak file monitoring
+- Safe restoration of data from .bak files when original files are missing or corrupted
+- Atomic file operations using temporary files (.tmp) and backup files (.bak)
+- Comprehensive cleanup of stale temporary files during startup
+- Graceful degradation when crash recovery is not possible
+
+**Updated** Enhanced crash recovery with .bak file restoration and atomic operation guarantees
+
+```mermaid
+flowchart TD
+Startup([Startup]) --> CheckBak["Check .bak files"]
+CheckBak --> BakExists{"Bak files exist?"}
+BakExists --> |Yes| CheckOriginals["Check original file status"]
+CheckOriginals --> OriginalMissing{"Originals missing/empty?"}
+OriginalMissing --> |Yes| RestoreFromBak["Restore from .bak files"]
+OriginalMissing --> |No| CleanBak["Clean .bak files"]
+BakExists --> |No| NormalStartup["Normal startup"]
+RestoreFromBak --> NormalStartup
+CleanBak --> NormalStartup
+```
+
+**Diagram sources**
+- [dlt_block_log.cpp:172-202](file://libraries/chain/dlt_block_log.cpp#L172-L202)
+
+**Section sources**
+- [dlt_block_log.cpp:172-202](file://libraries/chain/dlt_block_log.cpp#L172-L202)
+- [dlt_block_log.cpp:432-444](file://libraries/chain/dlt_block_log.cpp#L432-L444)
+
+### Atomic File Operations
+The truncation process implements atomic file operations to ensure data consistency. The system uses a three-phase approach: backup original files, write new files to temporary locations, then atomically replace originals.
+
+**Atomic Operation Features**:
+- Backup original files to .bak before any modifications
+- Write new data to .tmp files to avoid partial writes
+- Atomic rename operations that are guaranteed to succeed or fail completely
+- Automatic cleanup of backup files after successful operations
+- Comprehensive rollback capability if operations fail
+
+**Section sources**
+- [dlt_block_log.cpp:432-444](file://libraries/chain/dlt_block_log.cpp#L432-L444)
 
 ## Selective Retention Policies
 The DLT rolling block log implements sophisticated selective retention policies that allow fine-grained control over which blocks are maintained and when automatic pruning occurs. These policies ensure optimal disk usage while maintaining serviceability for P2P peers.
@@ -423,6 +513,8 @@ The DLT rolling block log implementation provides optimized performance characte
 - Intelligent truncation scheduling during low-traffic periods to minimize latency impact
 - Configurable retention limits preventing excessive disk usage and rebuild overhead
 - Automatic pruning reduces fragmentation and maintains optimal file system performance
+- **Enhanced Memory Safety**: std::memcpy operations provide predictable performance across platforms
+- **Improved Reliability**: Crash recovery mechanisms eliminate data corruption risks
 
 ## Enhanced Error Handling and Fallback Mechanisms
 
@@ -543,6 +635,9 @@ Comprehensive troubleshooting guidance for DLT-specific scenarios, retention pol
 - Graceful fallback mechanism failures with proper exception handling
 - Storage-related issues with comprehensive error messages and logging
 - Enhanced synchronization issues with detailed logging capabilities
+- **Memory Safety Issues**: Unsafe pointer cast errors resolved through std::memcpy operations
+- **Crash Recovery Problems**: .bak file restoration failures and atomic operation issues
+- **Cross-Platform Compatibility**: Platform-specific file operation problems
 
 **Section sources**
 - [dlt_block_log.cpp:161-209](file://libraries/chain/dlt_block_log.cpp#L161-L209)
@@ -551,4 +646,4 @@ Comprehensive troubleshooting guidance for DLT-specific scenarios, retention pol
 - [p2p_plugin.cpp:265-272](file://plugins/p2p/p2p_plugin.cpp#L265-L272)
 
 ## Conclusion
-The DLT Rolling Block Log provides a comprehensive, offset-aware append-only storage mechanism specifically designed for snapshot-based nodes with advanced selective retention policies and automatic pruning capabilities. Recent enhancements include improved block identification and verification processes during snapshot operations, enhanced fallback mechanisms between block logs, better integration with the snapshot plugin for seamless DLT mode operations, significantly improved error handling for P2P block serving operations, strengthened block validation logic with comprehensive error reporting, and enhanced logging capabilities for synchronization issues. The enhanced P2P fallback mechanisms now provide graceful handling of DLT mode scenarios where block data may not be available for certain ranges, with detailed logging and appropriate error responses including specific messages like "Block ${id} not available in DLT mode (no block data for this range)". Its sophisticated integration with the database ensures seamless fallback when the primary block log is empty, while configurable limits, intelligent retention enforcement, and automatic cleanup mechanisms help manage disk usage efficiently. The implementation leverages advanced memory-mapped files, strict position validation, and comprehensive error handling to deliver reliable performance and data integrity for modern blockchain operations. The improved error handling and fallback mechanisms ensure that DLT mode operations are robust, well-documented, and provide excellent user experience for both operators and P2P peers with comprehensive logging and graceful degradation capabilities.
+The DLT Rolling Block Log provides a comprehensive, offset-aware append-only storage mechanism specifically designed for snapshot-based nodes with advanced selective retention policies and automatic pruning capabilities. Recent enhancements include critical memory safety improvements replacing unsafe pointer casts with std::memcpy operations throughout the implementation, comprehensive crash recovery mechanisms with .bak file restoration for atomic file operations, enhanced cross-platform compatibility through standardized file operations, and strengthened validation logic with comprehensive error reporting. The enhanced P2P fallback mechanisms now provide graceful handling of DLT mode scenarios where block data may not be available for certain ranges, with detailed logging and appropriate error responses including specific messages like "Block ${id} not available in DLT mode (no block data for this range)". Its sophisticated integration with the database ensures seamless fallback when the primary block log is empty, while configurable limits, intelligent retention enforcement, and automatic cleanup mechanisms help manage disk usage efficiently. The implementation leverages advanced memory-mapped files, strict position validation using std::memcpy operations, and comprehensive error handling to deliver reliable performance and data integrity for modern blockchain operations. The improved error handling and fallback mechanisms ensure that DLT mode operations are robust, well-documented, and provide excellent user experience for both operators and P2P peers with comprehensive logging and graceful degradation capabilities. The critical memory safety improvements eliminate undefined behavior risks, while the crash recovery mechanisms ensure data integrity even during unexpected system failures.

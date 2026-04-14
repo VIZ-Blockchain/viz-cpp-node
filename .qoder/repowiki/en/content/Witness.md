@@ -10,8 +10,18 @@
 - [chain_objects.hpp](file://libraries/chain/include/graphene/chain/chain_objects.hpp)
 - [database.hpp](file://libraries/chain/include/graphene/chain/database.hpp)
 - [database.cpp](file://libraries/chain/database.cpp)
+- [time.hpp](file://libraries/time/time.hpp)
+- [time.cpp](file://libraries/time/time.cpp)
+- [ntp.cpp](file://thirdparty/fc/src/network/ntp.cpp)
 - [main.cpp](file://programs/vizd/main.cpp)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Enhanced NTP time synchronization section to reflect forced time sync on block production lag conditions
+- Added crash race condition handling improvements during potential crashes
+- Strengthened timing-related production failure prevention mechanisms
+- Updated troubleshooting guide with new timing-related diagnostic information
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -26,6 +36,8 @@
 
 ## Introduction
 This document explains the Witness subsystem of the VIZ node implementation. It covers how witnesses are scheduled, how blocks are produced, how witness participation is monitored, and how the witness-related APIs expose information to clients. The focus is on the witness plugin (block production), the witness API plugin (read-only queries), and the underlying chain database that maintains witness state and schedules.
+
+**Updated** Enhanced with improved NTP time synchronization, crash race condition handling, and strengthened timing-related production failure prevention mechanisms.
 
 ## Project Structure
 The Witness functionality spans three primary areas:
@@ -49,12 +61,16 @@ DB["database.hpp/.cpp"]
 WITNESS_OBJ["witness_objects.hpp"]
 BPV_OBJ["chain_objects.hpp<br/>block_post_validation_object"]
 end
+subgraph "Time Synchronization"
+TIME["Time Service<br/>NTP synchronization"]
+end
 VIZD --> WITNESS
 VIZD --> WAPI
 VIZD --> P2P
 VIZD --> CHAIN
 WITNESS --> P2P
 WITNESS --> CHAIN
+WITNESS --> TIME
 CHAIN --> DB
 DB --> WITNESS_OBJ
 DB --> BPV_OBJ
@@ -71,6 +87,7 @@ CHAIN --> DB
 - [database.hpp:37-83](file://libraries/chain/include/graphene/chain/database.hpp#L37-L83)
 - [witness_objects.hpp:27-132](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L27-L132)
 - [chain_objects.hpp:174-201](file://libraries/chain/include/graphene/chain/chain_objects.hpp#L174-L201)
+- [time.cpp:13-53](file://libraries/time/time.cpp#L13-L53)
 
 **Section sources**
 - [main.cpp:63-92](file://programs/vizd/main.cpp#L63-L92)
@@ -80,12 +97,15 @@ CHAIN --> DB
   - Provides block production loop synchronized to wall-clock seconds.
   - Validates whether it is time to produce a block, checks participation thresholds, and signs blocks with configured private keys.
   - Broadcasts blocks and block post validations via the P2P plugin.
+  - **Enhanced**: Implements forced NTP synchronization when timing issues are detected during block production attempts.
 - Witness API Plugin
   - Exposes read-only queries for active witnesses, schedule, individual witnesses, and counts.
   - Returns API-friendly objects derived from chain witness data.
 - Chain Database
   - Stores witness objects, schedules, participation metrics, and supports witness scheduling and participation computations.
   - Manages block post validation objects and updates last irreversible block computation based on witness confirmations.
+
+**Updated** Added forced NTP synchronization capability for timing-related production failure prevention.
 
 **Section sources**
 - [witness.hpp:34-65](file://plugins/witness/include/graphene/plugins/witness/witness.hpp#L34-L65)
@@ -97,12 +117,21 @@ CHAIN --> DB
 ## Architecture Overview
 The Witness subsystem integrates tightly with the chain database and P2P layer. The witness plugin periodically evaluates conditions to produce a block, consults the database for witness scheduling and participation, and broadcasts the resulting block. The witness API plugin reads from the database to serve JSON-RPC queries.
 
+**Enhanced** The architecture now includes robust NTP time synchronization with automatic fallback mechanisms and crash-safe shutdown procedures.
+
 ```mermaid
 sequenceDiagram
 participant Timer as "Witness Impl<br/>schedule_production_loop"
+participant NTP as "NTP Service<br/>time synchronization"
 participant DB as "Chain Database"
 participant P2P as "P2P Plugin"
 participant Net as "Network"
+Timer->>NTP : check_time_sync()
+NTP-->>Timer : synchronized status
+alt timing issues detected
+Timer->>NTP : force_sync()
+NTP-->>Timer : updated time
+end
 Timer->>Timer : compute next second boundary
 Timer->>DB : get_slot_at_time(now)
 DB-->>Timer : slot
@@ -116,6 +145,7 @@ DB-->>Timer : signed_block
 Timer->>P2P : broadcast_block(block)
 P2P->>Net : transmit block
 else conditions not met
+Timer->>NTP : update_ntp_time() on lag
 Timer->>Timer : log reason (sync, participation, key, lag)
 end
 else no slot
@@ -127,7 +157,9 @@ Timer->>Timer : reschedule for next second
 **Diagram sources**
 - [witness.cpp:206-276](file://plugins/witness/witness.cpp#L206-L276)
 - [witness.cpp:278-423](file://plugins/witness/witness.cpp#L278-L423)
+- [witness.cpp:263-266](file://plugins/witness/witness.cpp#L263-L266)
 - [database.cpp:4317-4332](file://libraries/chain/database.cpp#L4317-L4332)
+- [time.cpp:74-76](file://libraries/time/time.cpp#L74-L76)
 
 ## Detailed Component Analysis
 
@@ -140,23 +172,26 @@ Responsibilities:
   - Checks participation thresholds and scheduling eligibility.
   - Generates and broadcasts blocks when eligible.
   - Signs and broadcasts block post validations when available.
+  - **Enhanced**: Forces NTP synchronization when timing issues are detected during production attempts.
 
 Key behaviors:
 - Participation threshold enforcement via witness participation rate.
 - Graceful handling of missing private keys, low participation, and timing lags.
 - Optional allowance for stale production during initial sync.
+- **Enhanced**: Automatic NTP synchronization on lag detection to prevent timing-related production failures.
 
 ```mermaid
 flowchart TD
 Start(["Startup"]) --> InitKeys["Load witness names and private keys"]
-InitKeys --> SyncCheck["Wait until synchronized to slot"]
+InitKeys --> InitNTP["Initialize NTP time service"]
+InitNTP --> SyncCheck["Wait until synchronized to slot"]
 SyncCheck --> SlotCheck{"Slot available?"}
 SlotCheck --> |No| WaitNext["Sleep until next slot"] --> SyncCheck
 SlotCheck --> |Yes| Scheduled["Get scheduled witness and slot time"]
 Scheduled --> Participation{"Participation >= threshold?"}
 Participation --> |No| LogLowParticipation["Log low participation"] --> Resched["Reschedule"] --> SyncCheck
 Participation --> |Yes| TimeCheck{"Within 500ms window?"}
-TimeCheck --> |No| LogLag["Log lag"] --> Resched
+TimeCheck --> |No| LogLag["Log lag"] --> ForceSync["Force NTP sync"] --> Resched
 TimeCheck --> |Yes| SignCheck{"Private key available?"}
 SignCheck --> |No| LogNoKey["Log missing key"] --> Resched
 SignCheck --> |Yes| Produce["Generate block and broadcast"]
@@ -166,6 +201,7 @@ Produce --> Resched
 **Diagram sources**
 - [witness.cpp:206-276](file://plugins/witness/witness.cpp#L206-L276)
 - [witness.cpp:278-423](file://plugins/witness/witness.cpp#L278-L423)
+- [witness.cpp:263-266](file://plugins/witness/witness.cpp#L263-L266)
 
 **Section sources**
 - [witness.hpp:34-65](file://plugins/witness/include/graphene/plugins/witness/witness.hpp#L34-L65)
@@ -292,11 +328,33 @@ block_post_validation_object --> witness_schedule_object : "mentions scheduled w
 - [database.cpp:4317-4332](file://libraries/chain/database.cpp#L4317-L4332)
 - [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
 
+### Time Synchronization Service
+**New Section** The witness system now includes robust time synchronization capabilities managed through the time service layer.
+
+Responsibilities:
+- Provide precise wall-clock time synchronization using NTP.
+- Handle crash-safe shutdown procedures for NTP services.
+- Monitor and report significant time synchronization changes.
+- Enable forced synchronization on timing issues.
+
+Key behaviors:
+- Thread-safe NTP service initialization and management.
+- Automatic fallback mechanisms for NTP server failures.
+- Significant delta change detection (100ms threshold) for monitoring.
+- Graceful shutdown with proper resource cleanup.
+
+**Section sources**
+- [time.cpp:13-53](file://libraries/time/time.cpp#L13-L53)
+- [time.cpp:36-39](file://libraries/time/time.cpp#L36-L39)
+- [time.cpp:74-76](file://libraries/time/time.cpp#L74-L76)
+- [ntp.cpp:184-201](file://thirdparty/fc/src/network/ntp.cpp#L184-L201)
+- [ntp.cpp:236-266](file://thirdparty/fc/src/network/ntp.cpp#L236-L266)
+
 ## Dependency Analysis
 - The witness plugin depends on:
   - Chain plugin for database access and block generation.
   - P2P plugin for broadcasting blocks and block post validations.
-  - NTP time service for precise slot alignment.
+  - **Enhanced**: NTP time service for precise slot alignment and timing validation.
 - The witness API plugin depends on:
   - Chain plugin for read-only queries.
   - JSON-RPC plugin for transport.
@@ -308,10 +366,12 @@ block_post_validation_object --> witness_schedule_object : "mentions scheduled w
 graph LR
 WITNESS["Witness Plugin"] --> CHAIN["Chain Plugin"]
 WITNESS --> P2P["P2P Plugin"]
+WITNESS --> TIME["Time Service"]
 WAPI["Witness API Plugin"] --> CHAIN
 CHAIN --> DB["database.hpp/.cpp"]
 DB --> WITNESS_OBJ["witness_objects.hpp"]
 DB --> BPV_OBJ["chain_objects.hpp"]
+TIME --> NTP["NTP Service"]
 ```
 
 **Diagram sources**
@@ -321,6 +381,7 @@ DB --> BPV_OBJ["chain_objects.hpp"]
 - [database.hpp:37-83](file://libraries/chain/include/graphene/chain/database.hpp#L37-L83)
 - [witness_objects.hpp:27-132](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L27-L132)
 - [chain_objects.hpp:174-201](file://libraries/chain/include/graphene/chain/chain_objects.hpp#L174-L201)
+- [time.cpp:13-53](file://libraries/time/time.cpp#L13-L53)
 
 **Section sources**
 - [witness.cpp:59-118](file://plugins/witness/witness.cpp#L59-L118)
@@ -332,8 +393,9 @@ DB --> BPV_OBJ["chain_objects.hpp"]
 - Retry on block generation failures: On exceptions during block generation, pending transactions are cleared and the generation is retried once to mitigate transient issues.
 - Participation threshold: Ensures sufficient witness participation before producing blocks, preventing premature production on minority forks.
 - Virtual scheduling: Uses virtual time and votes to fairly distribute block production slots among witnesses, avoiding hot-spotting and ensuring proportional representation.
+- **Enhanced**: Forced NTP synchronization reduces timing-related production failures and improves system reliability during clock drift scenarios.
 
-[No sources needed since this section provides general guidance]
+**Updated** Added forced NTP synchronization consideration for timing-related production failure prevention.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -349,14 +411,29 @@ Common issues and resolutions:
 - Timing lag
   - Symptom: Blocks not produced due to waking up outside the 500 ms window.
   - Resolution: Improve system clock accuracy and reduce latency; consider enabling stale production only during initial sync.
+  - **Enhanced**: System automatically forces NTP synchronization when timing issues are detected.
 - Consecutive block production disabled
   - Symptom: Blocks not produced because the last block was generated by the same witness.
   - Resolution: Investigate connectivity issues; disable consecutive production only as a temporary workaround.
+- **New**: NTP synchronization issues
+  - Symptom: Frequent timing-related warnings or blocks not produced despite good participation.
+  - Resolution: Check NTP server connectivity and system clock accuracy; verify NTP service is running properly.
+- **New**: Crash race conditions
+  - Symptom: Witness plugin fails to shut down cleanly or leaves NTP service in inconsistent state.
+  - Resolution: Ensure proper shutdown sequence; the system now handles crash-safe NTP service cleanup.
+
+**Updated** Added NTP synchronization and crash race condition handling troubleshooting information.
 
 **Section sources**
 - [witness.cpp:171-192](file://plugins/witness/witness.cpp#L171-L192)
 - [witness.cpp:255-271](file://plugins/witness/witness.cpp#L255-L271)
 - [witness.cpp:387-396](file://plugins/witness/witness.cpp#L387-L396)
+- [witness.cpp:263-266](file://plugins/witness/witness.cpp#L263-L266)
+- [time.cpp:36-39](file://libraries/time/time.cpp#L36-L39)
 
 ## Conclusion
-The Witness subsystem integrates tightly with the chain database and P2P layer to ensure timely, secure, and fair block production. The witness plugin manages production loops, participation thresholds, and broadcasting, while the witness API plugin exposes essential read-only data to clients. Together, they form a robust foundation for witness operations in the VIZ node.
+The Witness subsystem integrates tightly with the chain database and P2P layer to ensure timely, secure, and fair block production. The witness plugin manages production loops, participation thresholds, and broadcasting, while the witness API plugin exposes essential read-only data to clients. 
+
+**Enhanced** The system now includes robust NTP time synchronization with automatic fallback mechanisms, crash-safe shutdown procedures, and strengthened timing-related production failure prevention. These enhancements improve system reliability and reduce the likelihood of timing-related production failures, making the witness system more resilient to various operational challenges.
+
+Together, they form a robust foundation for witness operations in the VIZ node, with improved time synchronization and crash handling capabilities.

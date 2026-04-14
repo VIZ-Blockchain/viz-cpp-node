@@ -13,16 +13,21 @@
 - [database.cpp](file://libraries/chain/database.cpp)
 - [plugin.cpp](file://plugins/chain/plugin.cpp)
 - [plugin.hpp](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp)
+- [dlt_block_log.cpp](file://libraries/chain/dlt_block_log.cpp)
+- [dlt_block_log.hpp](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced peer operation timeout handling with comprehensive 30-second timeout system for all snapshot operations
-- Implemented robust anti-spam measures including max 5 concurrent connections, rate limiting (3 connections per hour), and 60-second connection timeout enforcement
-- Added DLT mode support with set_dlt_mode() method for seamless DLT mode operation
-- Expanded comprehensive documentation covering flowcharts, security measures, and operational guidelines
-- Improved payload size limits with increased maximum from 64KB to 256KB for protocol messages
-- Enhanced client disconnection handling with try-catch mechanisms for graceful error management
+- Enhanced error handling with comprehensive exception handling and graceful shutdown mechanisms
+- Implemented intelligent retry loops with configurable intervals for P2P snapshot synchronization
+- Added automatic fallback to P2P genesis sync when trusted peers are unavailable
+- Improved user feedback with detailed progress logging and status reporting
+- Strengthened stalled sync detection with automatic recovery capabilities
+- Enhanced timeout management with 30-second configurable intervals for all peer operations
+- Improved anti-spam protection with max 5 concurrent connections and rate limiting
+- Enhanced payload size limits with increased maximum from 64KB to 256KB for protocol messages
+- Improved client disconnection handling with try-catch mechanisms for graceful error management
 - Strengthened logging for Phase 1 info-only queries versus active transfers with clear distinction
 
 ## Table of Contents
@@ -33,14 +38,16 @@
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Enhanced State Restoration Process](#enhanced-state-restoration-process)
 7. [Enhanced P2P Snapshot Synchronization](#enhanced-p2p-snapshot-synchronization)
-8. [Improved Logging and Progress Feedback](#improved-logging-and-progress-feedback)
-9. [Automatic Directory Management](#automatic-directory-management)
-10. [Enhanced Chain Plugin Integration](#enhanced-chain-plugin-integration)
-11. [Enhanced Security and Anti-Spam Measures](#enhanced-security-and-anti-spam-measures)
-12. [Dependency Analysis](#dependency-analysis)
-13. [Performance Considerations](#performance-considerations)
-14. [Troubleshooting Guide](#troubleshooting-guide)
-15. [Conclusion](#conclusion)
+8. [Stalled Sync Detection and Automatic Recovery](#stalled-sync-detection-and-automatic-recovery)
+9. [Improved Logging and Progress Feedback](#improved-logging-and-progress-feedback)
+10. [Automatic Directory Management](#automatic-directory-management)
+11. [Enhanced Chain Plugin Integration](#enhanced-chain-plugin-integration)
+12. [Enhanced Security and Anti-Spam Measures](#enhanced-security-and-anti-spam-measures)
+13. [DLT Mode Capabilities](#dlt-mode-capabilities)
+14. [Dependency Analysis](#dependency-analysis)
+15. [Performance Considerations](#performance-considerations)
+16. [Troubleshooting Guide](#troubleshooting-guide)
+17. [Conclusion](#conclusion)
 
 ## Introduction
 
@@ -48,12 +55,18 @@ The Snapshot Plugin System is a comprehensive solution for managing DLT (Distrib
 
 **Updated**: Enhanced with improved P2P snapshot synchronization featuring automatic default behavior for empty nodes, real-time progress feedback during operations, automatic directory creation capabilities, and seamless integration with the chain plugin for automatic snapshot synchronization during blockchain initialization. The system now includes comprehensive timeout management, robust anti-spam protection, and DLT mode support.
 
-The plugin provides five primary capabilities:
+The plugin provides seven primary capabilities:
 - **State Creation**: Generate compressed JSON snapshots containing complete blockchain state
 - **State Loading**: Rapidly bootstrap nodes from existing snapshots instead of replaying blocks
 - **P2P Synchronization**: Enable nodes to serve and download snapshots from trusted peers
 - **Automatic Directory Management**: Intelligent snapshot file organization with automatic creation
 - **Real-time Progress Monitoring**: Comprehensive logging and progress feedback throughout operations
+- **Stalled Sync Detection**: Automatic detection of stalled synchronization with snapshot recovery
+- **DLT Mode Integration**: Seamless DLT mode activation during snapshot loading and operations
+- **Enhanced Error Handling**: Comprehensive exception handling with graceful shutdown mechanisms
+- **Intelligent Retry Loops**: Configurable retry intervals for P2P snapshot synchronization
+- **Automatic Fallback**: Fallback to P2P genesis sync when trusted peers are unavailable
+- **Improved User Feedback**: Detailed progress logging and status reporting for all operations
 
 This system is particularly valuable for DLT mode operations where traditional block logs are not maintained, allowing nodes to quickly synchronize state from any recent block.
 
@@ -80,6 +93,13 @@ R[DLT Mode Integration] --> S[set_dlt_mode Method]
 T[Enhanced Timeout Management] --> U[30-second Operations]
 V[Anti-Spam Protection] --> W[5 Concurrent Connections]
 X[Security Measures] --> Y[Rate Limiting]
+Z[Stalled Sync Detection] --> AA[Automatic Recovery]
+BB[Configurable Timeouts] --> CC[Customizable Detection Period]
+DD[Background Thread Management] --> EE[Thread Safety]
+FF[Enhanced Error Handling] --> GG[Graceful Shutdown]
+HH[Retry Mechanisms] --> II[Configurable Intervals]
+JJ[Automatic Fallback] --> KK[P2P Genesis Sync]
+LL[Improved Logging] --> MM[Detailed Progress Reports]
 end
 subgraph "Data Management"
 Z[Snapshot Files] --> AA[Compression]
@@ -88,6 +108,10 @@ AD[Callback Registration] --> AE[State Restoration]
 AF[Automatic Cleanup] --> AG[Age-based Rotation]
 AH[Progress Tracking] --> AI[Real-time Updates]
 AJ[Payload Limits] --> AK[256KB Messages]
+AL[Exception Handling] --> AM[Graceful Error Management]
+AN[Retry Logic] --> AO[Configurable Attempts]
+AP[Backup Strategies] --> AQ[Fallback Mechanisms]
+AR[User Feedback] --> AS[Status Reporting]
 end
 A --> F
 A --> J
@@ -112,8 +136,26 @@ U --> V
 V --> W
 W --> X
 X --> Y
-Y --> AJ
-AJ --> AK
+Y --> Z
+Z --> AA
+AA --> BB
+BB --> CC
+CC --> DD
+DD --> EE
+EE --> FF
+FF --> GG
+GG --> HH
+HH --> II
+II --> JJ
+JJ --> KK
+KK --> LL
+LL --> MM
+MM --> AN
+AN --> AO
+AO --> AP
+AP --> AQ
+AQ --> AR
+AR --> AS
 ```
 
 **Diagram sources**
@@ -200,6 +242,10 @@ class plugin_impl {
 -allow_snapshot_serving bool
 -tcp_srv tcp_server
 -applied_block_conn scoped_connection
+-stalled_sync_check_running atomic_bool
+-stalled_sync_check_future future
+-stalled_sync_timeout_minutes uint32_t
+-last_block_received_time time_point
 +create_snapshot(path) void
 +load_snapshot(path) void
 +on_applied_block(block) void
@@ -207,6 +253,9 @@ class plugin_impl {
 +download_snapshot_from_peers() string
 +update_snapshot_cache(path) void
 +cleanup_old_snapshots() void
++start_stalled_sync_detection() void
++stop_stalled_sync_detection() void
++check_stalled_sync_loop() void
 +MAX_CONCURRENT_CONNECTIONS 5
 +CONNECTION_TIMEOUT_SEC 60
 +MAX_CONNECTIONS_PER_HOUR 3
@@ -234,48 +283,65 @@ E[P2P Synchronization] --> F[Trusted Peer Network]
 G[Direct State Loading] --> H[Programmatic API]
 I[Automatic Empty Node Sync] --> J[Default Behavior]
 K[DLT Mode Integration] --> L[set_dlt_mode Method]
+M[Stalled Sync Detection] --> N[Automatic Recovery]
+O[Configurable Timeout System] --> P[30-second Operations]
+Q[Anti-Spam Protection] --> R[5 Concurrent Connections]
+S[Security Measures] --> T[Rate Limiting]
+U[Enhanced Payload Limits] --> V[256KB Messages]
+W[Improved Client Handling] --> X[Graceful Disconnection]
+Y[Enhanced Error Handling] --> Z[Graceful Shutdown]
+AA[Intelligent Retry Loops] --> BB[Configurable Intervals]
+CC[Automatic Fallback] --> DD[P2P Genesis Sync]
+EE[Improved User Feedback] --> FF[Detailed Progress Logs]
 end
 subgraph "Data Flow"
-M[Database State] --> N[JSON Export]
-N --> O[Zlib Compression]
-O --> P[Snapshot File]
-P --> Q[File System Storage]
-Q --> R[Automatic Directory Creation]
-S[Progress Tracking] --> T[Real-time Feedback]
-U[Chain Plugin Callbacks] --> V[Seamless Integration]
-W[Checksum Verification] --> X[Integrity Check]
-Y[Enhanced Timeout Management] --> Z[30-second Operations]
-AA[Anti-Spam Protection] --> BB[5 Concurrent Connections]
-CC[Security Measures] --> DD[Rate Limiting]
-end
-subgraph "Network Layer"
-EE[TCP Server] --> FF[Client Connections]
-FF --> GG[Chunked Transfer]
-GG --> HH[Progress Tracking]
-II[Automatic Cleanup] --> JJ[Age-based Rotation]
-KK[Trusted Peer Enforcement] --> LL[Security]
-MM[Payload Limits] --> NN[256KB Messages]
-OO[Connection Timeout] --> PP[60-second Enforcement]
-QQ[Thread Safety] --> RR[Mutex Protection]
-end
-A --> M
-C --> M
-E --> EE
-G --> S
-I --> E
+M --> Y
+Y --> G
+G --> H
+H --> I
+I --> J
+J --> K
 K --> L
-M --> W
-W --> P
+L --> N
+N --> O
+O --> P
 P --> Q
 Q --> R
+R --> S
+S --> T
+T --> U
+U --> V
+V --> W
+W --> X
+X --> Y
+Y --> Z
+Z --> AA
+AA --> BB
+BB --> CC
+CC --> DD
+DD --> EE
 EE --> FF
-FF --> GG
-GG --> HH
-II --> JJ
-KK --> LL
-MM --> NN
-OO --> PP
-QQ --> RR
+FF --> GG[Background Thread Monitoring]
+GG --> HH[Check Last Block Time]
+HH --> II[Timeout Detection]
+II --> JJ[Query Trusted Peers]
+JJ --> KK[Download Newer Snapshot]
+KK --> LL[Reload State]
+LL --> MM[Restart Monitoring]
+end
+subgraph "Network Layer"
+MM --> NN[Client Connections]
+NN --> OO[Chunked Transfer]
+OO --> PP[Progress Tracking]
+QQ[Automatic Cleanup] --> RR[Age-based Rotation]
+SS[Trusted Peer Enforcement] --> TT[Security]
+UU[Connection Timeout] --> VV[60-second Enforcement]
+WW[Thread Safety] --> XX[Mutex Protection]
+YY[Background Processing] --> ZZ[Async Operations]
+AA[Enhanced Exception Handling] --> BB[Graceful Error Management]
+CC[Retry Mechanisms] --> DD[Configurable Attempt Limits]
+EE[Automatic Fallback] --> FF[Genesis Sync Backup]
+GG[Improved Logging] --> HH[Comprehensive Status Reports]
 ```
 
 **Diagram sources**
@@ -283,12 +349,18 @@ QQ --> RR
 - [plugin.cpp:1409-1617](file://plugins/snapshot/plugin.cpp#L1409-L1617)
 - [database.cpp:281-324](file://libraries/chain/database.cpp#L281-L324)
 
-The architecture supports five primary use cases:
+The architecture supports seven primary use cases:
 1. **Manual Snapshot Creation**: Generate snapshots on demand for backup or distribution
 2. **Automatic Snapshot Generation**: Create snapshots at specific block heights or intervals
 3. **P2P Snapshot Synchronization**: Enable nodes to bootstrap from trusted peers
 4. **Direct State Loading**: Programmatic loading of snapshots through the `open_from_snapshot` method
 5. **Automatic Empty Node Synchronization**: Seamless snapshot synchronization for nodes with empty state
+6. **Stalled Sync Detection**: Automatic detection and recovery from stalled synchronization
+7. **DLT Mode Operations**: Seamless DLT mode activation and management during snapshot operations
+8. **Enhanced Error Handling**: Comprehensive exception handling with graceful shutdown mechanisms
+9. **Intelligent Retry Loops**: Configurable retry intervals for P2P snapshot synchronization
+10. **Automatic Fallback**: Fallback to P2P genesis sync when trusted peers are unavailable
+11. **Improved User Feedback**: Detailed progress logging and status reporting for all operations
 
 **Section sources**
 - [plugin.cpp:1767-1976](file://plugins/snapshot/plugin.cpp#L1767-L1976)
@@ -577,7 +649,7 @@ snapshot_plugin --> DatabaseIntegration : "uses"
 
 ## Enhanced P2P Snapshot Synchronization
 
-**Updated**: The P2P snapshot synchronization has been enhanced with automatic default behavior for empty nodes, providing seamless bootstrap capabilities with comprehensive timeout management.
+**Updated**: The P2P snapshot synchronization has been enhanced with automatic default behavior for empty nodes, providing seamless bootstrap capabilities with comprehensive timeout management and intelligent retry mechanisms.
 
 ### Automatic Empty Node Detection and Synchronization
 
@@ -602,8 +674,10 @@ Snap->>FS : Save Final File
 Snap->>Snap : Load Snapshot
 Snap->>DB : set_dlt_mode(true)
 Snap->>DB : initialize_hardforks()
-else Non-empty State
-Chain->>Chain : Normal Operation
+else No Snapshot Available
+Chain->>Snap : Fallback to P2P Genesis Sync
+Snap->>DB : initialize_hardforks()
+Snap->>DB : set_dlt_mode(false)
 end
 ```
 
@@ -634,9 +708,31 @@ Verify --> Load[Load Snapshot]
 **Diagram sources**
 - [plugin.cpp:1651-1710](file://plugins/snapshot/plugin.cpp#L1651-L1710)
 
+### Intelligent Retry Loops with Configurable Intervals
+
+**New**: The P2P synchronization now implements intelligent retry loops with configurable intervals:
+
+```mermaid
+flowchart TD
+Start([P2P Sync Request]) --> Attempt[Attempt 1]
+Attempt --> Download[Download Snapshot]
+Download --> |Success| Load[Load Snapshot]
+Download --> |Failure| CheckAttempts{More Attempts?}
+CheckAttempts --> |Yes| Wait[Wait Retry Interval]
+Wait --> Attempt
+CheckAttempts --> |No| Fallback[Fallback to Genesis Sync]
+Fallback --> Genesis[Initialize from Genesis]
+Load --> Complete[Sync Complete]
+Genesis --> Complete
+```
+
+**Diagram sources**
+- [plugin.cpp:2244-2284](file://plugins/snapshot/plugin.cpp#L2244-L2284)
+
 **Section sources**
 - [plugin.cpp:1956-1981](file://plugins/snapshot/plugin.cpp#L1956-L1981)
 - [plugin.cpp:1651-1710](file://plugins/snapshot/plugin.cpp#L1651-L1710)
+- [plugin.cpp:2244-2284](file://plugins/snapshot/plugin.cpp#L2244-L2284)
 
 ### Enhanced Timeout Management
 
@@ -661,6 +757,118 @@ Success --> End([Operation Complete])
 
 **Section sources**
 - [plugin.cpp:1282-1400](file://plugins/snapshot/plugin.cpp#L1282-L1400)
+
+## Stalled Sync Detection and Automatic Recovery
+
+**New**: The snapshot plugin now includes a comprehensive stalled sync detection system that automatically monitors synchronization health and recovers from stalled conditions by downloading newer snapshots from trusted peers.
+
+### Stalled Sync Detection Architecture
+
+The system implements a background monitoring thread that continuously tracks synchronization health:
+
+```mermaid
+sequenceDiagram
+participant Monitor as "Stalled Sync Monitor"
+participant Timer as "30-second Timer"
+participant DB as "Database"
+participant Peers as "Trusted Peers"
+participant FS as "File System"
+Monitor->>Timer : Start 30-second loop
+Timer->>Monitor : Check interval elapsed
+Monitor->>DB : Get last_block_received_time
+Monitor->>DB : Calculate elapsed time
+alt Elapsed > configured_timeout
+DB->>Monitor : Timeout detected
+Monitor->>Peers : Query for newer snapshots (30s timeout)
+Peers-->>Monitor : Available snapshots
+alt Newer snapshot available
+Monitor->>FS : Stop monitor temporarily
+Monitor->>FS : Load newer snapshot
+Monitor->>DB : set_dlt_mode(true)
+Monitor->>DB : initialize_hardforks()
+Monitor->>FS : Restart monitor
+else No newer snapshot
+Monitor->>DB : Reset last_block_received_time
+Monitor->>Timer : Continue monitoring
+end
+else Within timeout
+Monitor->>Timer : Continue monitoring
+end
+```
+
+**Diagram sources**
+- [plugin.cpp:1301-1387](file://plugins/snapshot/plugin.cpp#L1301-L1387)
+
+### Enhanced Error Handling and Graceful Shutdown
+
+**New**: The stalled sync detection system now includes comprehensive error handling and graceful shutdown mechanisms:
+
+```mermaid
+flowchart TD
+Start([Monitor Loop]) --> CheckRunning{Monitor Running?}
+CheckRunning --> |No| Exit[Exit Loop]
+CheckRunning --> |Yes| Sleep[Sleep 30 Seconds]
+Sleep --> CheckTimeout{Elapsed > Timeout?}
+CheckTimeout --> |No| CheckRunning
+CheckTimeout --> |Yes| LogWarning[Log Warning]
+LogWarning --> QueryPeers[Query Trusted Peers]
+QueryPeers --> CheckResult{Newer Snapshot?}
+CheckResult --> |Yes| StopMonitor[Stop Monitor Temporarily]
+StopMonitor --> LoadSnapshot[Load Newer Snapshot]
+LoadSnapshot --> SetDLT[Set DLT Mode]
+SetDLT --> InitHF[Initialize Hardforks]
+InitHF --> RestartMonitor[Restart Monitor]
+RestartMonitor --> CheckRunning
+CheckResult --> |No| ResetTimer[Reset Timer]
+ResetTimer --> CheckRunning
+```
+
+**Diagram sources**
+- [plugin.cpp:1322-1387](file://plugins/snapshot/plugin.cpp#L1322-L1387)
+
+### Configuration and Parameters
+
+The stalled sync detection system is highly configurable:
+
+**Configuration Options:**
+- **enable-stalled-sync-detection**: Enable/disable the feature (default: false)
+- **stalled-sync-timeout-minutes**: Timeout threshold before triggering recovery (default: 5 minutes)
+- **trusted-snapshot-peer**: Required trusted peers for snapshot recovery
+
+**Monitoring Parameters:**
+- **Check Interval**: Every 30 seconds
+- **Peer Query Timeout**: 30 seconds per peer operation
+- **Recovery Process**: Automatic snapshot download and state reload
+- **Graceful Shutdown**: Proper cleanup of background threads during shutdown
+
+**Section sources**
+- [plugin.cpp:1301-1387](file://plugins/snapshot/plugin.cpp#L1301-L1387)
+- [plugin.cpp:2088-2115](file://plugins/snapshot/plugin.cpp#L2088-L2115)
+
+### Automatic Recovery Process
+
+When stalled sync is detected, the system automatically executes a recovery sequence:
+
+```mermaid
+flowchart TD
+Start([Stalled Sync Detected]) --> Log[Log Warning]
+Log --> Query[Query Trusted Peers]
+Query --> Check{Newer Snapshot Available?}
+Check --> |Yes| Stop[Stop Monitor Temporarily]
+Stop --> Load[Load Newer Snapshot]
+Load --> SetDLT[Set DLT Mode]
+SetDLT --> InitHF[Initialize Hardforks]
+InitHF --> Restart[Restart Monitor]
+Restart --> Complete[Recovery Complete]
+Check --> |No| Reset[Reset Timer]
+Reset --> Continue[Continue Monitoring]
+```
+
+**Diagram sources**
+- [plugin.cpp:1344-1378](file://plugins/snapshot/plugin.cpp#L1344-L1378)
+
+**Section sources**
+- [plugin.cpp:1344-1378](file://plugins/snapshot/plugin.cpp#L1344-L1378)
 
 ## Improved Logging and Progress Feedback
 
@@ -736,9 +944,32 @@ LogComplete --> End
 **Diagram sources**
 - [plugin.cpp:1574-1660](file://plugins/snapshot/plugin.cpp#L1574-L1660)
 
+### Enhanced Error Handling and Exception Management
+
+**New**: The system now includes comprehensive error handling with detailed exception management:
+
+```mermaid
+flowchart TD
+Start([Operation]) --> TryOp[Try Operation]
+TryOp --> |Success| Success[Operation Success]
+TryOp --> |Exception| CatchErr[Catch Exception]
+CatchErr --> LogErr[Log Error Details]
+LogErr --> CheckSeverity{Check Severity}
+CheckSeverity --> |Critical| GracefulShutdown[Graceful Shutdown]
+CheckSeverity --> |Non-critical| Continue[Continue Operation]
+CheckSeverity --> |Timeout| RetryOp[Retry Operation]
+GracefulShutdown --> End([Shutdown])
+Continue --> End
+RetryOp --> TryOp
+```
+
+**Diagram sources**
+- [plugin.cpp:1373-1387](file://plugins/snapshot/plugin.cpp#L1373-L1387)
+
 **Section sources**
 - [plugin.cpp:912-944](file://plugins/snapshot/plugin.cpp#L912-L944)
 - [plugin.cpp:1740-1777](file://plugins/snapshot/plugin.cpp#L1740-L1777)
+- [plugin.cpp:1574-1660](file://plugins/snapshot/plugin.cpp#L1574-L1660)
 
 ## Automatic Directory Management
 
@@ -949,6 +1180,64 @@ Log --> End
 **Section sources**
 - [plugin.cpp:1368-1412](file://plugins/snapshot/plugin.cpp#L1368-L1412)
 
+## DLT Mode Capabilities
+
+**New**: The snapshot plugin now provides comprehensive DLT (Distributed Ledger Technology) mode support with automatic DLT mode activation and enhanced block log management.
+
+### DLT Mode Integration
+
+The system seamlessly integrates with DLT mode operations through automatic DLT mode activation:
+
+```mermaid
+sequenceDiagram
+participant Snap as "Snapshot Plugin"
+participant DB as "Database"
+participant DLT as "DLT Block Log"
+participant Chain as "Chain Plugin"
+Snap->>DB : load_snapshot()
+DB->>DB : Import Snapshot State
+DB->>DB : Set Revision
+DB->>DB : Seed ForkDB
+DB->>DB : set_dlt_mode(true)
+DB->>DLT : Initialize DLT Block Log
+DB->>DB : initialize_hardforks()
+DB-->>Chain : Database Ready
+Chain-->>Chain : DLT Mode Operational
+```
+
+**Diagram sources**
+- [plugin.cpp:1968-1970](file://plugins/snapshot/plugin.cpp#L1968-L1970)
+
+### DLT Block Log Management
+
+The system manages DLT block logs separately from regular block logs:
+
+```mermaid
+flowchart TD
+Start([DLT Mode Enabled]) --> CheckWindow{dlt-block-log-max-blocks > 0?}
+CheckWindow --> |Yes| WriteDLT[Write to DLT Block Log]
+CheckWindow --> |No| WriteRegular[Write to Regular Block Log]
+WriteDLT --> ManageWindow[Manage Window Size]
+ManageWindow --> Truncate[Truncate Old Blocks]
+Truncate --> Maintain[Amortized Cost]
+WriteRegular --> Maintain
+Maintain --> Serve[Serve Blocks to Peers]
+```
+
+**Diagram sources**
+- [dlt_block_log.cpp:336-402](file://libraries/chain/dlt_block_log.cpp#L336-L402)
+
+### Enhanced DLT Block Log Features
+
+**Window Management**: Maintains rolling window of recent blocks with configurable size
+**Offset-aware Indexing**: Stores first block number in index header for efficient random access
+**Automatic Truncation**: Removes old blocks when window exceeds 2x the configured limit
+**Amortized Cost**: Distributes truncation cost across multiple operations
+
+**Section sources**
+- [dlt_block_log.cpp:336-402](file://libraries/chain/dlt_block_log.cpp#L336-L402)
+- [dlt_block_log.hpp:35-75](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L75)
+
 ## Dependency Analysis
 
 The snapshot plugin has a well-defined dependency structure that integrates with the broader VIZ ecosystem:
@@ -966,49 +1255,76 @@ K[boost::filesystem] --> L[File System Operations]
 M[fc::thread] --> N[Async Operations]
 O[fc::mutex] --> P[Thread Safety]
 Q[fc::time_point] --> R[Timeout Management]
+S[fc::async] --> T[Background Processing]
+U[fc::canceled_exception] --> V[Thread Cancellation]
+W[fc::microseconds] --> X[Time Units]
+Y[fc::seconds] --> Z[Time Units]
 end
 subgraph "Internal Dependencies"
-S[graphene_chain] --> T[Database Interface]
-U[graphene_chain_plugin] --> V[Chain Plugin]
-W[graphene_time] --> X[Time Management]
-Y[graphene_json_rpc] --> Z[RPC Integration]
-AA[graphene_p2p] --> BB[P2P Integration]
-CC[graphene_dlt_block_log] --> DD[DLT Block Logging]
-EE[graphene_protocol] --> FF[Blockchain Protocol]
+AA[graphene_chain] --> BB[Database Interface]
+CC[graphene_chain_plugin] --> DD[Chain Plugin]
+EE[graphene_time] --> FF[Time Management]
+GG[graphene_json_rpc] --> HH[RPC Integration]
+II[graphene_p2p] --> JJ[P2P Integration]
+KK[graphene_dlt_block_log] --> LL[DLT Block Logging]
+MM[graphene_protocol] --> NN[Blockchain Protocol]
+OO[dlt_block_log] --> PP[DLT Block Log Management]
+QQ[background_monitoring] --> RR[Stalled Sync Detection]
+SS[enhanced_error_handling] --> TT[Graceful Shutdown]
+UU[intelligent_retry_loops] --> VV[Configurable Intervals]
+WW[automatic_fallback] --> XX[P2P Genesis Sync]
+YY[improved_logging] --> ZZ[Detailed Progress Reports]
 end
 subgraph "Snapshot Plugin"
-GG[snapshot_plugin] --> HH[plugin_impl]
-HH --> II[Serialization Layer]
-HH --> JJ[Network Layer]
-HH --> KK[File Management]
-HH --> LL[Callback System]
-HH --> MM[Progress Logging]
-HH --> NN[set_dlt_mode Integration]
-HH --> OO[Enhanced Timeout Management]
-HH --> PP[Anti-Spam Protection]
-HH --> QQ[Security Measures]
+AA[snapshot_plugin] --> BB[plugin_impl]
+BB --> CC[Serialization Layer]
+BB --> DD[Network Layer]
+BB --> EE[File Management]
+BB --> FF[Callback System]
+BB --> GG[Progress Logging]
+BB --> HH[set_dlt_mode Integration]
+BB --> II[Enhanced Timeout Management]
+BB --> JJ[Anti-Spam Protection]
+BB --> KK[Security Measures]
+BB --> LL[Stalled Sync Detection]
+BB --> MM[Background Thread Management]
+BB --> NN[Configurable Timeouts]
+BB --> OO[Thread Safety]
+BB --> PP[Enhanced Error Handling]
+BB --> QQ[Retry Mechanisms]
+BB --> RR[Automatic Fallback]
+BB --> SS[Improved User Feedback]
 end
-A --> GG
-E --> GG
-G --> GG
-I --> GG
-K --> GG
-M --> GG
-O --> GG
-Q --> GG
-S --> GG
-U --> GG
-W --> GG
-Y --> GG
+A --> AA
+E --> AA
+G --> AA
+I --> AA
+K --> AA
+M --> AA
+O --> AA
+Q --> AA
+S --> AA
+U --> AA
+W --> AA
+Y --> AA
+AA --> BB
+AA --> CC
+AA --> DD
+AA --> EE
+AA --> FF
 AA --> GG
-CC --> GG
-EE --> GG
-LL --> GG
-MM --> GG
-NN --> GG
-OO --> GG
-PP --> GG
-QQ --> GG
+AA --> HH
+AA --> II
+AA --> JJ
+AA --> KK
+AA --> LL
+AA --> MM
+AA --> NN
+AA --> OO
+AA --> PP
+AA --> QQ
+AA --> RR
+AA --> SS
 ```
 
 **Diagram sources**
@@ -1024,6 +1340,9 @@ The plugin's dependencies are carefully managed to minimize coupling while maxim
 - **fc::thread**: Provides asynchronous operation support
 - **fc::mutex**: Ensures thread safety across concurrent operations
 - **fc::time_point**: Provides precise timeout and deadline management
+- **fc::async**: Enables background processing and monitoring
+- **fc::canceled_exception**: Handles thread cancellation gracefully
+- **fc::microseconds/seconds**: Provides precise time unit management
 
 **Internal Dependencies**:
 - **graphene_chain**: Access to blockchain state and database operations
@@ -1032,6 +1351,12 @@ The plugin's dependencies are carefully managed to minimize coupling while maxim
 - **graphene_p2p**: P2P network integration for snapshot synchronization
 - **graphene_dlt_block_log**: DLT mode block logging support
 - **graphene_chain_plugin**: Chain plugin callback system integration
+- **dlt_block_log**: DLT block log management and operations
+- **background_monitoring**: Stalled sync detection and recovery system
+- **enhanced_error_handling**: Comprehensive exception handling and graceful shutdown
+- **intelligent_retry_loops**: Configurable retry mechanisms for P2P operations
+- **automatic_fallback**: Fallback mechanisms for P2P genesis sync
+- **improved_logging**: Enhanced logging and progress reporting systems
 
 **Section sources**
 - [CMakeLists.txt:27-37](file://plugins/snapshot/CMakeLists.txt#L27-L37)
@@ -1052,6 +1377,9 @@ The snapshot plugin is designed with several performance optimizations:
 - **Anti-Spam Measures**: Rate limiting prevents abuse while maintaining service availability
 - **Intelligent Peer Selection**: Optimized peer choice reduces transfer time and bandwidth usage
 - **Timeout Management**: Comprehensive timeout protection prevents resource exhaustion
+- **Background Monitoring**: Asynchronous stalled sync detection doesn't block main operations
+- **Retry Mechanisms**: Configurable retry intervals optimize network utilization
+- **Automatic Fallback**: Fallback to P2P genesis sync when trusted peers are unavailable
 
 ### Database Optimization
 - **Batch Operations**: Objects are imported in batches to reduce database overhead
@@ -1059,12 +1387,21 @@ The snapshot plugin is designed with several performance optimizations:
 - **Transaction Batching**: Multiple objects are committed in single transactions
 - **DLT Mode Support**: Special handling for DLT mode operations without block logs
 - **set_dlt_mode Integration**: Seamless DLT mode activation during snapshot loading
+- **Automatic DLT Mode**: DLT mode automatically enabled during snapshot operations
 
 ### File System Operations
 - **Asynchronous I/O**: Non-blocking file operations improve responsiveness
 - **Atomic Operations**: Temporary files ensure data integrity during transfers
 - **Automatic Cleanup**: Scheduled cleanup prevents disk space accumulation
 - **Directory Intelligence**: Automatic directory creation eliminates manual intervention
+
+### Thread Safety and Concurrency
+- **Background Threads**: Stalled sync detection runs in separate threads
+- **Mutex Protection**: Thread-safe session management and rate limiting
+- **Async Operations**: Non-blocking network operations prevent deadlocks
+- **Graceful Shutdown**: Proper cleanup of background threads during shutdown
+- **Exception Handling**: Comprehensive error handling prevents thread crashes
+- **Retry Loops**: Configurable retry mechanisms prevent resource starvation
 
 ## Troubleshooting Guide
 
@@ -1135,6 +1472,36 @@ The snapshot plugin is designed with several performance optimizations:
 - **Cause**: Server reaching maximum of 5 concurrent connections
 - **Solution**: Reduce concurrent client connections or increase server capacity
 
+**Stalled Sync Detection Issues**
+- **Symptom**: `Stalled sync detection not working`
+- **Cause**: Missing trusted peers or incorrect configuration
+- **Solution**: Verify `enable-stalled-sync-detection` and `trusted-snapshot-peer` settings
+
+**Enhanced Error Handling Issues**
+- **Symptom**: `Graceful shutdown failed`
+- **Cause**: Background threads not properly terminated
+- **Solution**: Ensure proper cleanup of all background processes
+
+**Intelligent Retry Loops Issues**
+- **Symptom**: `Retry attempts exhausted`
+- **Cause**: Configured retry attempts exceeded
+- **Solution**: Increase retry attempts or check network connectivity
+
+**Automatic Fallback Issues**
+- **Symptom**: `P2P genesis sync not working`
+- **Cause**: Missing genesis block or network connectivity issues
+- **Solution**: Verify network connectivity and genesis block availability
+
+**Improved Logging Issues**
+- **Symptom**: `Insufficient logging information`
+- **Cause**: Missing log entries or insufficient verbosity
+- **Solution**: Increase log level or add additional logging points
+
+**Background Thread Management Issues**
+- **Symptom**: `Thread already running` or `Thread not running`
+- **Cause**: Improper thread lifecycle management
+- **Solution**: Ensure proper start/stop sequence and thread safety
+
 **Section sources**
 - [plugin.cpp:986-1032](file://plugins/snapshot/plugin.cpp#L986-L1032)
 - [plugin.cpp:1252-1303](file://plugins/snapshot/plugin.cpp#L1252-L1303)
@@ -1181,6 +1548,12 @@ tail -f ~/.vizd/log/vizd.log | grep "Snapshot created"
 
 # Monitor P2P synchronization
 tail -f ~/.vizd/log/vizd.log | grep "P2P Snapshot Sync"
+
+# Monitor stalled sync detection
+tail -f ~/.vizd/log/vizd.log | grep "WARNING: No blocks received"
+
+# Monitor error handling
+tail -f ~/.vizd/log/vizd.log | grep "Exception"
 ```
 
 **Test Anti-Spam Protection**
@@ -1194,11 +1567,49 @@ done
 netstat -an | grep :8092 | wc -l
 ```
 
+**Test Stalled Sync Detection**
+```bash
+# Monitor stalled sync logs
+tail -f ~/.vizd/log/vizd.log | grep "WARNING: No blocks received"
+
+# Check timeout configuration
+vizd --help | grep stalled-sync-timeout
+```
+
+**Test Enhanced Error Handling**
+```bash
+# Monitor graceful shutdown
+tail -f ~/.vizd/log/vizd.log | grep "shutdown"
+
+# Test exception handling
+vizd --help | grep snapshot
+```
+
+**Test Intelligent Retry Loops**
+```bash
+# Monitor retry attempts
+tail -f ~/.vizd/log/vizd.log | grep "retry"
+
+# Check retry configuration
+vizd --help | grep snapshot
+```
+
+**Test Automatic Fallback**
+```bash
+# Monitor fallback behavior
+tail -f ~/.vizd/log/vizd.log | grep "fallback"
+
+# Check fallback configuration
+vizd --help | grep sync-snapshot-from-trusted-peer
+```
+
 ## Conclusion
 
 The Snapshot Plugin System represents a sophisticated solution for blockchain state management, providing essential capabilities for node bootstrapping, state synchronization, and automated snapshot management. The system's modular architecture, comprehensive validation mechanisms, and robust networking support make it suitable for production environments requiring reliable and efficient state synchronization.
 
 **Updated**: Recent enhancements have significantly strengthened the system's capabilities through the introduction of automatic P2P snapshot synchronization for empty nodes, real-time progress feedback during operations, automatic directory creation capabilities, and seamless integration with the chain plugin for automatic snapshot synchronization during blockchain initialization. The system now includes comprehensive timeout management with 30-second timeouts, robust anti-spam protection with max 5 concurrent connections and rate limiting, and DLT mode support with set_dlt_mode() method for seamless DLT mode operation.
+
+**New**: The most significant enhancement is the addition of stalled sync detection and automatic recovery capabilities. This system continuously monitors synchronization health and automatically downloads newer snapshots from trusted peers when synchronization appears stalled, ensuring nodes can recover from network partitions or peer pruning scenarios. The system now includes comprehensive error handling with graceful shutdown mechanisms, intelligent retry loops with configurable intervals, automatic fallback to P2P genesis sync, and detailed progress logging throughout all operations.
 
 Key strengths of the system include:
 - **Comprehensive Coverage**: Handles all major blockchain object types
@@ -1215,6 +1626,14 @@ Key strengths of the system include:
 - **Better Error Handling**: Graceful disconnection management and enhanced logging
 - **Robust Anti-Spam Protection**: Max 5 concurrent connections, rate limiting, and 60-second connection timeout enforcement
 - **Thread Safety**: Mutex protection for concurrent operations and session management
+- **Stalled Sync Detection**: Automatic monitoring and recovery from stalled synchronization
+- **Background Processing**: Non-blocking monitoring that doesn't interfere with main operations
+- **Configurable Timeouts**: Customizable detection periods and recovery thresholds
+- **Automatic DLT Mode**: Seamless DLT mode activation during snapshot operations
+- **Enhanced Error Handling**: Comprehensive exception handling with graceful shutdown mechanisms
+- **Intelligent Retry Loops**: Configurable retry intervals for P2P snapshot synchronization
+- **Automatic Fallback**: Fallback to P2P genesis sync when trusted peers are unavailable
+- **Improved User Feedback**: Detailed progress logging and status reporting for all operations
 
 The plugin's integration with the broader VIZ ecosystem ensures seamless operation alongside existing blockchain infrastructure, while its well-documented APIs and configuration options facilitate easy deployment and maintenance.
 
