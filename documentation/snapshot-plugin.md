@@ -81,11 +81,13 @@ snapshot-dir = /var/lib/vizd/snapshots
 ```
 
 The node will:
-1. Query all trusted peers for their latest snapshot
+1. Query all trusted peers for their latest snapshot (30-second timeout per peer)
 2. Select the peer with the highest block number
-3. Download the snapshot in 1 MB chunks with progress logging
+3. Download the snapshot in 1 MB chunks with progress logging (30-second timeout per operation)
 4. Verify the checksum
 5. Load the snapshot and start syncing from that block
+
+**Note on Timeouts:** All P2P snapshot operations have a 30-second timeout. If a peer doesn't respond within this time (e.g., accepts TCP connection but never sends data), the node will skip that peer and try the next one. This prevents indefinite hangs when some peers are unresponsive.
 
 ### Trust Model
 

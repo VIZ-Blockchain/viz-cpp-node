@@ -1276,6 +1276,40 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
 
 namespace {
 
+/// Timeout for snapshot peer operations (connect, read, write)
+constexpr fc::microseconds SNAPSHOT_PEER_TIMEOUT = fc::seconds(30);
+
+/// Read exactly `len` bytes from a tcp_socket with timeout.
+/// Returns true on success, false on timeout.
+bool read_exact_with_timeout(fc::tcp_socket& sock, char* buf, size_t len, const fc::microseconds& timeout) {
+    size_t total = 0;
+    auto deadline = fc::time_point::now() + timeout;
+    while (total < len) {
+        // Use async operation with timeout
+        auto read_future = fc::async([&sock, buf, len, total]() -> size_t {
+            return sock.readsome(buf + total, len - total);
+        });
+
+        auto remaining = deadline - fc::time_point::now();
+        if (remaining <= fc::microseconds(0)) {
+            return false; // Timeout
+        }
+
+        size_t n;
+        try {
+            n = read_future.wait(remaining);
+        } catch (const fc::timeout_exception&) {
+            return false; // Timeout
+        }
+
+        if (n == 0) {
+            FC_THROW("Connection closed while reading");
+        }
+        total += n;
+    }
+    return true;
+}
+
 /// Read exactly `len` bytes from a tcp_socket.
 void read_exact(fc::tcp_socket& sock, char* buf, size_t len) {
     size_t total = 0;
@@ -1328,6 +1362,38 @@ std::pair<uint32_t, std::vector<char>> read_message(fc::tcp_socket& sock, uint32
         read_exact(sock, payload.data(), payload_size);
     }
     return {msg_type, std::move(payload)};
+}
+
+/// Read a message with timeout: returns (success, msg_type, payload).
+/// Returns success=false on timeout or error.
+std::tuple<bool, uint32_t, std::vector<char>> read_message_with_timeout(
+    fc::tcp_socket& sock,
+    uint32_t max_payload_size = 64 * 1024 * 1024,
+    const fc::microseconds& timeout = SNAPSHOT_PEER_TIMEOUT) {
+
+    uint32_t payload_size = 0;
+    uint32_t msg_type = 0;
+
+    // Read header (8 bytes) with timeout
+    if (!read_exact_with_timeout(sock, reinterpret_cast<char*>(&payload_size), 4, timeout)) {
+        return {false, 0, std::vector<char>()};
+    }
+    if (!read_exact_with_timeout(sock, reinterpret_cast<char*>(&msg_type), 4, timeout)) {
+        return {false, 0, std::vector<char>()};
+    }
+
+    if (payload_size > max_payload_size) {
+        FC_THROW("Message too large: ${s} bytes (limit ${l})",
+            ("s", payload_size)("l", max_payload_size));
+    }
+
+    std::vector<char> payload(payload_size);
+    if (payload_size > 0) {
+        if (!read_exact_with_timeout(sock, payload.data(), payload_size, timeout)) {
+            return {false, 0, std::vector<char>()};
+        }
+    }
+    return {true, msg_type, std::move(payload)};
 }
 
 /// Serialize a struct to vector<char> via fc::raw::pack
@@ -1683,10 +1749,30 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
             ilog("Querying snapshot info from peer ${p}...", ("p", peer_str));
             fc::tcp_socket sock;
             auto ep = fc::ip::endpoint::from_string(peer_str);
-            sock.connect_to(ep);
+
+            // Connect with timeout
+            auto connect_future = fc::async([&sock, &ep]() {
+                sock.connect_to(ep);
+            });
+            try {
+                connect_future.wait(SNAPSHOT_PEER_TIMEOUT);
+            } catch (const fc::timeout_exception&) {
+                std::cerr << "   Peer " << peer_str << ": connection timeout\n";
+                wlog("Connection timeout to peer ${p}", ("p", peer_str));
+                sock.close();
+                continue;
+            }
 
             send_message_empty(sock, snapshot_info_request);
-            auto [msg_type, payload] = read_message(sock, 256 * 1024);
+
+            // Read response with timeout
+            auto [success, msg_type, payload] = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
+            if (!success) {
+                std::cerr << "   Peer " << peer_str << ": response timeout\n";
+                wlog("Response timeout from peer ${p}", ("p", peer_str));
+                sock.close();
+                continue;
+            }
 
             if (msg_type == snapshot_info_reply) {
                 auto info = unpack_from_vec<snapshot_info_reply_data>(payload);
@@ -1726,11 +1812,17 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     std::cerr << "   Downloading snapshot...\n";
     fc::tcp_socket sock;
     auto ep = fc::ip::endpoint::from_string(best->endpoint_str);
-    sock.connect_to(ep);
+
+    // Connect with timeout
+    auto connect_future = fc::async([&sock, &ep]() {
+        sock.connect_to(ep);
+    });
+    connect_future.wait(SNAPSHOT_PEER_TIMEOUT);
 
     // Request info again to establish session
     send_message_empty(sock, snapshot_info_request);
-    auto [info_type, info_payload] = read_message(sock, 256 * 1024);
+    auto [info_success, info_type, info_payload] = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
+    FC_ASSERT(info_success, "Timeout waiting for peer response during download");
     FC_ASSERT(info_type == snapshot_info_reply, "Unexpected response from peer during download");
 
     // Validate snapshot size against maximum
@@ -1762,7 +1854,8 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
         req.chunk_size = chunk_size;
 
         send_message(sock, snapshot_data_request, pack_to_vec(req));
-        auto [data_type, data_payload] = read_message(sock);
+        auto [data_success, data_type, data_payload] = read_message_with_timeout(sock, 64 * 1024 * 1024, SNAPSHOT_PEER_TIMEOUT * 2);
+        FC_ASSERT(data_success, "Timeout waiting for chunk data from peer");
         FC_ASSERT(data_type == snapshot_data_reply, "Unexpected response during chunk download");
 
         auto reply = unpack_from_vec<snapshot_data_reply_data>(data_payload);
