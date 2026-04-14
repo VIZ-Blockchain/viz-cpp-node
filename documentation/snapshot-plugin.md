@@ -81,6 +81,8 @@ snapshot-dir = /var/lib/vizd/snapshots
 sync-snapshot-from-trusted-peer = true
 ```
 
+**Note:** `sync-snapshot-from-trusted-peer` can be set in both `config.ini` and as a CLI option.
+
 The node will:
 1. Query all trusted peers for their latest snapshot (30-second timeout per peer)
 2. Select the peer with the highest block number
@@ -144,6 +146,40 @@ Files stored in the blockchain data directory:
 - `dlt_block_log` -- block data (same format as `block_log`)
 - `dlt_block_log.index` -- offset-aware index
 
+## Stalled Sync Detection (DLT Mode)
+
+For DLT mode nodes that may fall behind the network, automatic stalled sync detection can re-download a newer snapshot when P2P sync is no longer possible (peers have pruned old blocks).
+
+### How It Works
+
+1. Node tracks the time of last received block
+2. Background thread checks every 30 seconds
+3. If no blocks received for the configured timeout, node queries trusted peers
+4. If a newer snapshot is available, node clears state and reloads from it
+5. If no newer snapshot, timer resets and P2P sync continues
+
+### Configuration
+
+```ini
+plugin = snapshot
+
+# Required: trusted peers for snapshot download
+trusted-snapshot-peer = seed1.example.com:8092
+trusted-snapshot-peer = seed2.example.com:8092
+
+# Enable stalled sync detection
+enable-stalled-sync-detection = true
+
+# Timeout before triggering re-download (default: 5 minutes)
+stalled-sync-timeout-minutes = 5
+```
+
+### Use Cases
+
+- **Node was offline for days/weeks**: Instead of failing to sync because peers no longer have old blocks, the node automatically downloads a fresh snapshot.
+- **Network partition**: If the node cannot reach the chain head via P2P, it will attempt to bootstrap from a snapshot.
+- **DLT mode recovery**: Essential for nodes running in DLT mode without full block history.
+
 ## Config Reference
 
 ### Config file options (`config.ini`)
@@ -157,6 +193,9 @@ Files stored in the blockchain data directory:
 | `allow-snapshot-serving-only-trusted` | false | Restrict serving to trusted IPs |
 | `snapshot-serve-endpoint` | 0.0.0.0:8092 | TCP listen endpoint for serving |
 | `trusted-snapshot-peer` | (none) | Trusted peer IP:port (repeatable) |
+| `sync-snapshot-from-trusted-peer` | false | Download snapshot on empty state (config.ini or CLI) |
+| `enable-stalled-sync-detection` | false | Auto-detect stalled sync and re-download snapshot |
+| `stalled-sync-timeout-minutes` | 5 | Timeout before triggering snapshot re-download |
 | `dlt-block-log-max-blocks` | 100000 | Rolling DLT block_log window size (0 = disabled) |
 
 ### CLI options
@@ -165,4 +204,4 @@ Files stored in the blockchain data directory:
 |--------|-------------|
 | `--snapshot <path>` | Load state from snapshot file |
 | `--create-snapshot <path>` | Create snapshot and exit |
-| `--sync-snapshot-from-trusted-peer true` | Download snapshot from trusted peers on empty state (default: false, opt-in) |
+| `--sync-snapshot-from-trusted-peer true` | Download snapshot from trusted peers on empty state (also available in config.ini) |

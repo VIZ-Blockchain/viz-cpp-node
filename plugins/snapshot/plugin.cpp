@@ -725,10 +725,20 @@ public:
 
     boost::signals2::scoped_connection applied_block_conn;
 
+    // Stalled sync detection for DLT mode
+    bool enable_stalled_sync_detection = false;
+    uint32_t stalled_sync_timeout_minutes = 5;
+    fc::time_point last_block_received_time;
+    fc::future<void> stalled_sync_check_future;
+    std::atomic<bool> stalled_sync_check_running{false};
+
     void create_snapshot(const fc::path& output_path);
     void load_snapshot(const fc::path& input_path);
 
     void on_applied_block(const graphene::protocol::signed_block& b);
+    void start_stalled_sync_detection();
+    void stop_stalled_sync_detection();
+    void check_stalled_sync_loop();
 
     // --- Snapshot P2P sync ---
     void start_server();
@@ -1241,6 +1251,9 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
 void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::signed_block& b) {
     uint32_t block_num = b.block_num();
 
+    // Update last block received time for stalled sync detection
+    last_block_received_time = fc::time_point::now();
+
     // Skip snapshot creation while syncing from P2P (block time far behind wall clock).
     // Only create snapshots when the node is caught up and processing live blocks.
     auto block_age = fc::time_point::now() - fc::time_point(b.timestamp);
@@ -1281,6 +1294,94 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             cleanup_old_snapshots();
         } catch (const fc::exception& e) {
             elog("Failed to create periodic snapshot at block ${b}: ${e}", ("b", block_num)("e", e.to_detail_string()));
+        }
+    }
+}
+
+void snapshot_plugin::plugin_impl::start_stalled_sync_detection() {
+    if (stalled_sync_check_running.exchange(true)) {
+        return; // Already running
+    }
+    last_block_received_time = fc::time_point::now();
+    stalled_sync_check_future = fc::async([this]() {
+        check_stalled_sync_loop();
+    }, "stalled_sync_check");
+    ilog("Stalled sync detection started (timeout: ${m} min)", ("m", stalled_sync_timeout_minutes));
+}
+
+void snapshot_plugin::plugin_impl::stop_stalled_sync_detection() {
+    if (!stalled_sync_check_running.exchange(false)) {
+        return; // Not running
+    }
+    if (stalled_sync_check_future.valid()) {
+        stalled_sync_check_future.cancel_and_wait();
+    }
+    ilog("Stalled sync detection stopped");
+}
+
+void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
+    while (stalled_sync_check_running.load()) {
+        try {
+            // Check every 30 seconds
+            fc::usleep(fc::seconds(30));
+
+            if (!stalled_sync_check_running.load()) {
+                break;
+            }
+
+            auto now = fc::time_point::now();
+            auto elapsed = now - last_block_received_time;
+            auto timeout = fc::minutes(stalled_sync_timeout_minutes);
+
+            if (elapsed > timeout) {
+                uint32_t head_block = db.head_block_num();
+
+                std::cerr << "   WARNING: No blocks received for " << (elapsed.count() / 1000000 / 60)
+                          << " minutes (head: " << head_block << "). Checking for newer snapshot...\n";
+                wlog("Stalled sync detected: no blocks for ${e} min, head=${h}",
+                     ("e", elapsed.count() / 1000000 / 60)("h", head_block));
+
+                // Try to download a newer snapshot
+                try {
+                    std::cerr << "   Querying trusted peers for newer snapshot...\n";
+                    auto snapshot_path = download_snapshot_from_peers();
+
+                    if (!snapshot_path.empty() && stalled_sync_check_running.load()) {
+                        std::cerr << "   Newer snapshot found. Clearing state and re-importing...\n";
+                        ilog("Newer snapshot downloaded, reloading...");
+
+                        // Stop the check temporarily during reload
+                        stalled_sync_check_running.store(false);
+
+                        load_snapshot(fc::path(snapshot_path));
+                        db.set_dlt_mode(true);
+                        db.initialize_hardforks();
+
+                        last_block_received_time = fc::time_point::now();
+
+                        std::cerr << "   === Snapshot reload complete (block " << db.head_block_num() << ") ===\n";
+                        ilog("Snapshot reload complete at block ${n}", ("n", db.head_block_num()));
+
+                        // Restart the check
+                        stalled_sync_check_running.store(true);
+                    } else {
+                        std::cerr << "   No newer snapshot available from peers. Continuing with P2P sync...\n";
+                        ilog("No newer snapshot available, continuing P2P sync");
+                        // Reset timer to avoid immediate retry
+                        last_block_received_time = fc::time_point::now();
+                    }
+                } catch (const fc::exception& e) {
+                    std::cerr << "   Failed to download newer snapshot: " << e.what() << "\n";
+                    elog("Failed to download newer snapshot: ${e}", ("e", e.to_detail_string()));
+                    // Reset timer to avoid immediate retry
+                    last_block_received_time = fc::time_point::now();
+                }
+            }
+        } catch (const fc::canceled_exception&) {
+            break;
+        } catch (const std::exception& e) {
+            elog("Error in stalled sync check: ${e}", ("e", e.what()));
+            fc::usleep(fc::seconds(10));
         }
     }
 }
@@ -2005,14 +2106,18 @@ void snapshot_plugin::set_program_options(
             "TCP endpoint for the snapshot serving listener")
         ("trusted-snapshot-peer", bpo::value<std::vector<std::string>>()->composing(),
             "Trusted peer endpoint for snapshot sync (IP:port). Can be specified multiple times.")
+        ("sync-snapshot-from-trusted-peer", bpo::value<bool>()->default_value(false),
+            "Download and load snapshot from trusted peers on empty state (requires trusted-snapshot-peer)")
+        ("enable-stalled-sync-detection", bpo::value<bool>()->default_value(false),
+            "Enable automatic detection of stalled sync and re-download snapshot from trusted peers (DLT mode)")
+        ("stalled-sync-timeout-minutes", bpo::value<uint32_t>()->default_value(5),
+            "Timeout in minutes before considering sync stalled and triggering re-download (requires enable-stalled-sync-detection)")
     ;
     cli.add_options()
         ("snapshot", bpo::value<std::string>(),
             "Load state from snapshot file instead of replaying blockchain")
         ("create-snapshot", bpo::value<std::string>(),
             "Create a snapshot file at the specified path and exit")
-        ("sync-snapshot-from-trusted-peer", bpo::value<bool>()->default_value(false),
-            "Download and load snapshot from trusted peers on empty state (requires trusted-snapshot-peer)")
     ;
 }
 
@@ -2061,6 +2166,13 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     my->allow_snapshot_serving_only_trusted = options.at("allow-snapshot-serving-only-trusted").as<bool>();
     my->snapshot_serve_endpoint_str = options.at("snapshot-serve-endpoint").as<std::string>();
     my->sync_snapshot_from_trusted_peer = options.at("sync-snapshot-from-trusted-peer").as<bool>();
+
+    // Stalled sync detection config
+    my->enable_stalled_sync_detection = options.at("enable-stalled-sync-detection").as<bool>();
+    my->stalled_sync_timeout_minutes = options.at("stalled-sync-timeout-minutes").as<uint32_t>();
+    if (my->enable_stalled_sync_detection) {
+        ilog("Stalled sync detection enabled: timeout ${m} minutes", ("m", my->stalled_sync_timeout_minutes));
+    }
 
     if (options.count("trusted-snapshot-peer")) {
         my->trusted_snapshot_peers = options.at("trusted-snapshot-peer").as<std::vector<std::string>>();
@@ -2168,8 +2280,9 @@ void snapshot_plugin::plugin_startup() {
         my->start_server();
     }
 
-    // If --snapshot-at-block or --snapshot-every-n-blocks is set, connect to applied_block signal
-    if (my->snapshot_at_block > 0 || my->snapshot_every_n_blocks > 0) {
+    // If --snapshot-at-block or --snapshot-every-n-blocks is set, OR if stalled sync detection is enabled,
+    // connect to applied_block signal
+    if (my->snapshot_at_block > 0 || my->snapshot_every_n_blocks > 0 || my->enable_stalled_sync_detection) {
         my->applied_block_conn = my->db.applied_block.connect(
             [this](const graphene::protocol::signed_block& b) {
                 my->on_applied_block(b);
@@ -2181,10 +2294,17 @@ void snapshot_plugin::plugin_startup() {
             ilog("Will create periodic snapshots every ${n} blocks", ("n", my->snapshot_every_n_blocks));
         }
     }
+
+    // Start stalled sync detection if enabled (for DLT mode)
+    if (my->enable_stalled_sync_detection && !my->trusted_snapshot_peers.empty()) {
+        my->start_stalled_sync_detection();
+    }
 }
 
 void snapshot_plugin::plugin_shutdown() {
     ilog("snapshot plugin: shutdown");
+    // Stop stalled sync detection before server to avoid callbacks during shutdown
+    my->stop_stalled_sync_detection();
     my->stop_server();
 }
 
