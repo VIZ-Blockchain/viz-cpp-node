@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <graphene/chain/dlt_block_log.hpp>
 #include <boost/iostreams/device/mapped_file.hpp>
@@ -50,7 +51,7 @@ namespace graphene { namespace chain {
                 uint64_t value;
                 FC_ASSERT(get_mapped_size(mapped_file) >= pos + sizeof(value));
                 auto* ptr = mapped_file.data() + pos;
-                value = *reinterpret_cast<uint64_t*>(ptr);
+                std::memcpy(&value, ptr, sizeof(value));
                 return value;
             }
 
@@ -59,7 +60,7 @@ namespace graphene { namespace chain {
                 auto size = get_mapped_size(mapped_file);
                 FC_ASSERT(size >= sizeof(value));
                 auto* ptr = mapped_file.data() + size - sizeof(value);
-                value = *reinterpret_cast<uint64_t*>(ptr);
+                std::memcpy(&value, ptr, sizeof(value));
                 return value;
             }
 
@@ -143,7 +144,7 @@ namespace graphene { namespace chain {
                 index_mapped_file.resize(INDEX_HEADER_SIZE + count * sizeof(uint64_t));
 
                 // Write header: start_block_num
-                *reinterpret_cast<uint64_t*>(index_mapped_file.data()) = first_num;
+                { uint64_t tmp = first_num; std::memcpy(index_mapped_file.data(), &tmp, sizeof(tmp)); }
                 _start_block_num = first_num;
 
                 // Write entries
@@ -152,7 +153,7 @@ namespace graphene { namespace chain {
                 signed_block tmp_block;
 
                 while (pos <= end_pos) {
-                    *reinterpret_cast<uint64_t*>(idx_ptr) = pos;
+                    std::memcpy(idx_ptr, &pos, sizeof(pos));
                     pos = read_block(pos, tmp_block);
                     idx_ptr += sizeof(uint64_t);
                 }
@@ -218,7 +219,7 @@ namespace graphene { namespace chain {
 
                     // Write header + first entry
                     index_mapped_file.resize(INDEX_HEADER_SIZE + sizeof(uint64_t));
-                    *reinterpret_cast<uint64_t*>(index_mapped_file.data()) = _start_block_num;
+                    { uint64_t tmp = _start_block_num; std::memcpy(index_mapped_file.data(), &tmp, sizeof(tmp)); }
 
                     uint64_t block_pos = get_mapped_size(block_mapped_file);
 
@@ -227,11 +228,11 @@ namespace graphene { namespace chain {
                     auto* ptr = block_mapped_file.data() + block_pos;
                     std::memcpy(ptr, data.data(), data.size());
                     ptr += data.size();
-                    *reinterpret_cast<uint64_t*>(ptr) = block_pos;
+                    std::memcpy(ptr, &block_pos, sizeof(block_pos));
 
                     // Write index entry
                     auto* idx_ptr = index_mapped_file.data() + INDEX_HEADER_SIZE;
-                    *reinterpret_cast<uint64_t*>(idx_ptr) = block_pos;
+                    std::memcpy(idx_ptr, &block_pos, sizeof(block_pos));
 
                     head = b;
                     head_id = b.id();
@@ -255,12 +256,12 @@ namespace graphene { namespace chain {
                 auto* ptr = block_mapped_file.data() + block_pos;
                 std::memcpy(ptr, data.data(), data.size());
                 ptr += data.size();
-                *reinterpret_cast<uint64_t*>(ptr) = block_pos;
+                std::memcpy(ptr, &block_pos, sizeof(block_pos));
 
                 // Write index entry
                 index_mapped_file.resize(idx_size + sizeof(uint64_t));
                 ptr = index_mapped_file.data() + idx_size;
-                *reinterpret_cast<uint64_t*>(ptr) = block_pos;
+                std::memcpy(ptr, &block_pos, sizeof(block_pos));
 
                 head = b;
                 head_id = b.id();

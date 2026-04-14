@@ -81,6 +81,29 @@ namespace graphene {
 
             using websocket_server_type = websocketpp::server<asio_with_stub_log>;
 
+            // API prefixes whose responses must never be cached because
+            // the calls are mutating (broadcast, locks, etc.).
+            static bool is_cacheable_request(const std::string& body) {
+                // Quick JSON-RPC "method" extraction without a full parse.
+                // Looks for "method" key and checks the value prefix.
+                auto pos = body.find("\"method\"");
+                if (pos == std::string::npos) return true; // not JSON-RPC — let it through uncached via normal path
+                pos = body.find(':', pos + 8);
+                if (pos == std::string::npos) return true;
+                // skip whitespace and opening quote
+                pos = body.find('"', pos + 1);
+                if (pos == std::string::npos) return true;
+                ++pos; // start of method name
+                auto end = body.find('"', pos);
+                if (end == std::string::npos) return true;
+                std::string method = body.substr(pos, end - pos);
+
+                // Blacklist mutating API namespaces
+                if (method.compare(0, 23, "network_broadcast_api.") == 0) return false;
+                if (method.compare(0, 10, "debug_node") == 0) return false;
+                return true;
+            }
+
             // Cache entry for JSON-RPC responses
             struct cache_entry {
                 std::string response;
@@ -259,28 +282,34 @@ namespace graphene {
                     try {
                         if (msg->get_opcode() == websocketpp::frame::opcode::text) {
                             auto body = msg->get_payload();
+                            bool cacheable = is_cacheable_request(body);
 
                             // Generate cache key from request body
-                            std::string request_hash = fc::sha256::hash(body).str();
+                            std::string request_hash;
+                            if (cacheable) {
+                                request_hash = fc::sha256::hash(body).str();
 
-                            // Check cache first
-                            auto cached_response = get_cached_response(request_hash);
-                            if (cached_response.valid()) {
-                                auto ec = con->send(*cached_response);
-                                if (ec) {
-                                    throw websocketpp::exception(ec);
+                                // Check cache first
+                                auto cached_response = get_cached_response(request_hash);
+                                if (cached_response.valid()) {
+                                    auto ec = con->send(*cached_response);
+                                    if (ec) {
+                                        throw websocketpp::exception(ec);
+                                    }
+                                    return;
                                 }
-                                return;
                             }
 
-                            api->call(body, [con, this, request_hash](const std::string &data){
+                            api->call(body, [con, this, request_hash, cacheable](const std::string &data){
                                 auto ec = con->send(data);
                                 if (ec) {
                                     throw websocketpp::exception(ec);
                                 }
 
-                                // Cache the response
-                                cache_response(request_hash, data, current_block_num);
+                                // Cache the response only for read-only methods
+                                if (cacheable) {
+                                    cache_response(request_hash, data, current_block_num);
+                                }
                             });
                         } else {
                             con->send("error: string payload expected");
@@ -297,29 +326,35 @@ namespace graphene {
 
                 thread_pool_ios.post([con, this]() {
                     auto body = con->get_request_body();
+                    bool cacheable = is_cacheable_request(body);
 
                     // Generate cache key from request body
-                    std::string request_hash = fc::sha256::hash(body).str();
+                    std::string request_hash;
+                    if (cacheable) {
+                        request_hash = fc::sha256::hash(body).str();
 
-                    // Check cache first
-                    auto cached_response = get_cached_response(request_hash);
-                    if (cached_response.valid()) {
-                        con->set_body(*cached_response);
-                        con->set_status(websocketpp::http::status_code::ok);
-                        con->send_http_response();
-                        return;
+                        // Check cache first
+                        auto cached_response = get_cached_response(request_hash);
+                        if (cached_response.valid()) {
+                            con->set_body(*cached_response);
+                            con->set_status(websocketpp::http::status_code::ok);
+                            con->send_http_response();
+                            return;
+                        }
                     }
 
                     try {
-                        api->call(body, [con, this, request_hash](const std::string &data){
+                        api->call(body, [con, this, request_hash, cacheable](const std::string &data){
                             // this lambda can be called from any thread in application
                             //   for example, when task was delegated ( see msg_pack(msg_pack&&) )
                             con->set_body(data);
                             con->set_status(websocketpp::http::status_code::ok);
                             con->send_http_response();
 
-                            // Cache the response
-                            cache_response(request_hash, data, current_block_num);
+                            // Cache the response only for read-only methods
+                            if (cacheable) {
+                                cache_response(request_hash, data, current_block_num);
+                            }
                         });
                     } catch (fc::exception &e) {
                         // this case happens if exception was thrown on parsing request
