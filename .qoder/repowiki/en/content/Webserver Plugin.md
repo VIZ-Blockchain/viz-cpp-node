@@ -11,6 +11,15 @@
 - [config.ini](file://share/vizd/config/config.ini)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Enhanced HTTP and WebSocket JSON-RPC endpoint functionality documentation
+- Expanded multi-threaded architecture details with thread pool implementation
+- Added comprehensive response caching mechanisms with block-based invalidation
+- Updated security considerations with practical deployment guidance
+- Improved configuration options documentation with current defaults
+- Added detailed error handling patterns and troubleshooting procedures
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
@@ -19,11 +28,13 @@
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Dependency Analysis](#dependency-analysis)
 7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+8. [Security Considerations](#security-considerations)
+9. [Configuration Guide](#configuration-guide)
+10. [Troubleshooting Guide](#troubleshooting-guide)
+11. [Conclusion](#conclusion)
 
 ## Introduction
-The Webserver Plugin provides HTTP and WebSocket endpoints for JSON-RPC API access to the VIZ blockchain node. It serves as a bridge between external clients and the internal JSON-RPC system, offering both persistent WebSocket connections for real-time updates and standard HTTP endpoints for traditional API calls. The plugin includes intelligent caching mechanisms to optimize performance for frequently accessed read-only API methods.
+The Webserver Plugin provides HTTP and WebSocket endpoints for JSON-RPC API access to the VIZ blockchain node. It serves as a bridge between external clients and the internal JSON-RPC system, offering both persistent WebSocket connections for real-time updates and standard HTTP endpoints for traditional API calls. The plugin includes intelligent caching mechanisms to optimize performance for frequently accessed read-only API methods and implements a sophisticated multi-threaded architecture for high-concurrency request processing.
 
 ## Project Structure
 The webserver plugin is organized within the plugins/webserver directory structure, following the standard VIZ plugin architecture pattern:
@@ -37,10 +48,12 @@ subgraph "Dependencies"
 E[json_rpc/plugin.hpp] --> F[JSON-RPC Plugin]
 G[appbase/application.hpp] --> H[Application Framework]
 I[websocketpp/server.hpp] --> J[WebSocket Library]
+K[boost::asio] --> L[Asynchronous I/O]
 end
 D --> E
 D --> G
 D --> I
+D --> K
 end
 ```
 
@@ -60,20 +73,21 @@ The primary interface is the `webserver_plugin` class that inherits from appbase
 
 ### Implementation Container
 The `webserver_plugin_impl` struct contains all the internal state and functionality, including:
-- HTTP and WebSocket server instances
+- HTTP and WebSocket server instances with separate io_service instances
 - Thread pool management for concurrent request processing
-- Response caching mechanism
-- Connection handling for both protocols
+- Response caching mechanism with block-based invalidation
+- Connection handling for both HTTP and WebSocket protocols
+- Signal connections for blockchain event monitoring
 
 ### JSON-RPC Integration
-The plugin integrates with the JSON-RPC plugin to handle API method dispatching and response generation.
+The plugin integrates with the JSON-RPC plugin to handle API method dispatching and response generation, supporting both individual requests and batch processing.
 
 **Section sources**
 - [webserver_plugin.hpp:32-57](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L32-L57)
 - [webserver_plugin.cpp:90-134](file://plugins/webserver/webserver_plugin.cpp#L90-L134)
 
 ## Architecture Overview
-The webserver plugin follows a multi-threaded architecture designed for high concurrency and reliability:
+The webserver plugin follows a sophisticated multi-threaded architecture designed for high concurrency and reliability:
 
 ```mermaid
 graph TB
@@ -109,9 +123,11 @@ F -.-> E
 subgraph "Cache Management"
 K[Block Number Tracking]
 L[Cache Eviction]
+M[Thread-Safe Operations]
 end
 I --> K
 K --> L
+L --> M
 ```
 
 **Diagram sources**
@@ -119,10 +135,10 @@ K --> L
 - [webserver_plugin.cpp:432-439](file://plugins/webserver/webserver_plugin.cpp#L432-L439)
 
 The architecture implements several key design patterns:
-- **Separation of Concerns**: HTTP and WebSocket servers run in separate threads
-- **Thread Pool Pattern**: Concurrent request processing with configurable thread count
-- **Caching Pattern**: Response caching with block-based invalidation
-- **Observer Pattern**: Chain event subscription for cache management
+- **Separation of Concerns**: HTTP and WebSocket servers run in separate threads with dedicated io_service instances
+- **Thread Pool Pattern**: Concurrent request processing with configurable thread count using appbase scheduler
+- **Caching Pattern**: Response caching with block-based invalidation and thread-safe mutex protection
+- **Observer Pattern**: Chain event subscription for automatic cache management on block application
 
 ## Detailed Component Analysis
 
@@ -153,7 +169,7 @@ ThreadPool-->>Client : Send response
 - [webserver_plugin.cpp:107-110](file://plugins/webserver/webserver_plugin.cpp#L107-L110)
 
 ### Response Caching Mechanism
-The caching system provides significant performance improvements for frequently accessed API methods:
+The caching system provides significant performance improvements for frequently accessed API methods with sophisticated block-based invalidation:
 
 ```mermaid
 flowchart TD
@@ -176,7 +192,7 @@ ReturnResponse --> End
 - [webserver_plugin.cpp:216-250](file://plugins/webserver/webserver_plugin.cpp#L216-L250)
 
 ### Thread Pool Management
-The plugin uses a dedicated thread pool for request processing, separate from the main application thread:
+The plugin uses the appbase scheduler for request processing, providing a dedicated thread pool separate from the main application thread:
 
 ```mermaid
 classDiagram
@@ -286,24 +302,108 @@ WS-->>Client : Send response
 The webserver plugin implements several performance optimization strategies:
 
 ### Caching Strategy
-- **SHA256 Hash Keys**: Unique request identification for cache entries
-- **Block-Based Invalidation**: Cache cleared on each new block to prevent stale data
-- **Thread-Safe Operations**: Mutex protection for concurrent access
-- **Eviction Policy**: Automatic cache clearing when maximum size is reached
+- **SHA256 Hash Keys**: Unique request identification for cache entries using cryptographic hashing
+- **Block-Based Invalidation**: Cache cleared on each new block to prevent stale data through blockchain event subscription
+- **Thread-Safe Operations**: Mutex protection for concurrent access across multiple worker threads
+- **Eviction Policy**: Automatic cache clearing when maximum size is reached to prevent memory exhaustion
 
 ### Concurrency Model
-- **Separate IO Services**: HTTP and WebSocket servers use dedicated io_service instances
-- **Configurable Thread Pool**: Adjustable worker thread count based on workload
-- **Non-blocking Operations**: Async processing prevents thread starvation
+- **Separate IO Services**: HTTP and WebSocket servers use dedicated io_service instances for isolation
+- **Configurable Thread Pool**: Adjustable worker thread count based on workload using appbase scheduler
+- **Non-blocking Operations**: Async processing prevents thread starvation and improves throughput
+- **Connection Pooling**: Efficient WebSocket connection handling with proper resource management
 
 ### Memory Management
-- **Smart Pointers**: Proper resource management for server instances
-- **RAII Patterns**: Automatic cleanup on plugin shutdown
-- **Connection Pooling**: Efficient WebSocket connection handling
+- **Smart Pointers**: Proper resource management for server instances and cache entries
+- **RAII Patterns**: Automatic cleanup on plugin shutdown through destructor implementations
+- **Cache Size Limits**: Configurable maximum cache size to prevent unbounded memory growth
 
 **Section sources**
 - [webserver-plugin.md:29-64](file://documentation/webserver-plugin.md#L29-L64)
 - [webserver_plugin.cpp:232-245](file://plugins/webserver/webserver_plugin.cpp#L232-L245)
+
+## Security Considerations
+The webserver plugin provides multiple layers of security for production deployments:
+
+### Network Security
+- **Localhost Binding**: Recommended practice for internal services using 127.0.0.1 binding
+- **External Access Control**: Use 0.0.0.0 binding only for trusted networks
+- **Port Management**: Separate HTTP (8090) and WebSocket (8091) ports for different access patterns
+
+### API Access Control
+- **Public API Restriction**: Use `public-api` configuration to limit exposed API surface
+- **Authentication**: Implement `api-user` authentication for sensitive operations
+- **Rate Limiting**: Consider external rate limiting solutions for public APIs
+
+### Input Validation
+- **JSON-RPC Validation**: Built-in validation of JSON-RPC 2.0 compliance
+- **Method Whitelisting**: Only registered API methods are callable
+- **Parameter Validation**: Type checking and parameter validation for API calls
+
+### Resource Protection
+- **Thread Pool Limits**: Configurable thread pool size prevents resource exhaustion
+- **Cache Size Limits**: Configurable cache limits prevent memory abuse
+- **Connection Limits**: WebSocket connections managed through proper thread pool utilization
+
+**Section sources**
+- [webserver-plugin.md:77-108](file://documentation/webserver-plugin.md#L77-L108)
+
+## Configuration Guide
+
+### Basic Configuration
+Enable the webserver plugin in `config.ini`:
+
+```ini
+plugin = webserver
+
+# HTTP endpoint (required for HTTP API access)
+webserver-http-endpoint = 127.0.0.1:8090
+
+# WebSocket endpoint (required for WebSocket API access)
+webserver-ws-endpoint = 127.0.0.1:8091
+
+# Or use a single endpoint for both (deprecated)
+# rpc-endpoint = 127.0.0.1:8090
+```
+
+### Advanced Configuration
+```ini
+# Thread pool configuration for high concurrency
+webserver-thread-pool-size = 256
+
+# Response caching configuration
+webserver-cache-enabled = true
+webserver-cache-size = 10000
+
+# API access control
+public-api = database_api
+public-api = network_broadcast_api
+
+# Authentication
+api-user = username:password:database_api
+```
+
+### Production Configuration
+For production deployments, consider:
+
+```ini
+# High performance settings
+webserver-thread-pool-size = 512
+webserver-cache-size = 50000
+
+# Security settings
+webserver-http-endpoint = 127.0.0.1:8090
+webserver-ws-endpoint = 127.0.0.1:8091
+
+# API restrictions
+public-api = database_api
+public-api = account_by_key
+```
+
+**Section sources**
+- [webserver-plugin.md:12-27](file://documentation/webserver-plugin.md#L12-L27)
+- [webserver-plugin.md:40-48](file://documentation/webserver-plugin.md#L40-L48)
+- [webserver-plugin.md:109-125](file://documentation/webserver-plugin.md#L109-L125)
 
 ## Troubleshooting Guide
 
@@ -321,14 +421,14 @@ The webserver plugin implements several performance optimization strategies:
 **Solution**: Adjust cache configuration
 - Reduce `webserver-cache-size` value
 - Disable caching for low-traffic scenarios
-- Monitor cache hit ratios
+- Monitor cache hit ratios and memory usage
 
 #### Performance Degradation
 **Problem**: Slow response times under load
 **Solution**: Optimize thread pool configuration
 - Increase `webserver-thread-pool-size`
-- Monitor thread utilization
-- Consider hardware resources
+- Monitor thread utilization and queue lengths
+- Consider hardware resource allocation
 
 ### Error Handling Patterns
 The plugin implements comprehensive error handling:
@@ -356,6 +456,12 @@ ParseError --> Complete
 - [webserver_plugin.cpp:258-291](file://plugins/webserver/webserver_plugin.cpp#L258-L291)
 - [webserver_plugin.cpp:294-339](file://plugins/webserver/webserver_plugin.cpp#L294-L339)
 
+### Debugging and Monitoring
+- **Log Levels**: Configure appropriate log levels for debugging
+- **Connection Monitoring**: Monitor active WebSocket connections
+- **Performance Metrics**: Track cache hit rates and thread pool utilization
+- **Error Analysis**: Review error logs for common issues
+
 **Section sources**
 - [webserver_plugin.cpp:258-291](file://plugins/webserver/webserver_plugin.cpp#L258-L291)
 - [webserver_plugin.cpp:294-339](file://plugins/webserver/webserver_plugin.cpp#L294-L339)
@@ -368,6 +474,7 @@ Key strengths of the implementation include:
 - **Intelligent Caching**: Block-aware cache invalidation preventing stale data
 - **Flexible Deployment**: Separate HTTP and WebSocket endpoints with independent configuration
 - **Production Ready**: Comprehensive error handling and graceful degradation
+- **Security Features**: Multiple layers of security for production deployments
 - **Extensible Design**: Clean separation of concerns enabling easy maintenance and enhancement
 
-The plugin serves as an excellent foundation for building applications that require programmatic access to VIZ blockchain data and operations, with performance characteristics suitable for both private deployments and public API services.
+The plugin serves as an excellent foundation for building applications that require programmatic access to VIZ blockchain data and operations, with performance characteristics suitable for both private deployments and public API services. Its sophisticated caching mechanism, multi-threaded architecture, and comprehensive error handling make it a production-ready solution for enterprise-grade blockchain applications.

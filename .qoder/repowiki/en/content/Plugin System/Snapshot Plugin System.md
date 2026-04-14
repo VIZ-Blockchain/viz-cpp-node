@@ -17,6 +17,9 @@
 
 ## Update Summary
 **Changes Made**
+- Enhanced peer operation timeout handling with 30-second timeout for all snapshot operations
+- Improved error handling with better logging for connection management scenarios
+- Strengthened timeout protection mechanisms for both server and client operations
 - Enhanced payload size limits with increased maximum from 64KB to 256KB for protocol messages
 - Improved client disconnection handling with try-catch mechanisms for graceful error management
 - Enhanced logging for Phase 1 info-only queries versus active transfers with clear distinction
@@ -609,6 +612,30 @@ Verify --> Load[Load Snapshot]
 - [plugin.cpp:1956-1981](file://plugins/snapshot/plugin.cpp#L1956-L1981)
 - [plugin.cpp:1651-1710](file://plugins/snapshot/plugin.cpp#L1651-L1710)
 
+### Enhanced Timeout Management
+
+**Updated**: All peer operations now use a comprehensive 30-second timeout system for improved reliability:
+
+The snapshot system implements a robust timeout framework for all network operations:
+
+```mermaid
+flowchart TD
+Start([Network Operation]) --> Connect[Connect to Peer]
+Connect --> Timeout{30-second Timeout}
+Timeout --> |Within Time| Success[Operation Success]
+Timeout --> |Exceeded| TimeoutError[Timeout Error]
+TimeoutError --> Log[Log Timeout Event]
+Log --> Retry[Retry Logic]
+Retry --> Success
+Success --> End([Operation Complete])
+```
+
+**Diagram sources**
+- [plugin.cpp:1282-1400](file://plugins/snapshot/plugin.cpp#L1282-L1400)
+
+**Section sources**
+- [plugin.cpp:1282-1400](file://plugins/snapshot/plugin.cpp#L1282-L1400)
+
 ## Improved Logging and Progress Feedback
 
 **Updated**: The snapshot system now provides comprehensive real-time logging and progress feedback throughout all operations, with enhanced distinction between Phase 1 info-only queries and active transfers.
@@ -975,6 +1002,11 @@ The snapshot plugin is designed with several performance optimizations:
 - **Cause**: Client disconnects during active transfers
 - **Solution**: Implement graceful error handling and logging for disconnection scenarios
 
+**Enhanced Timeout Management Issues**
+- **Symptom**: `Connection timeout to peer ${p}`
+- **Cause**: Peer operations exceeding 30-second timeout limit
+- **Solution**: Check network connectivity and peer responsiveness
+
 **Section sources**
 - [plugin.cpp:986-1032](file://plugins/snapshot/plugin.cpp#L986-L1032)
 - [plugin.cpp:1252-1303](file://plugins/snapshot/plugin.cpp#L1252-L1303)
@@ -1041,6 +1073,7 @@ Key strengths of the system include:
 - **DLT Mode Support**: Proper integration with DLT mode operations through _dlt_mode flag setting
 - **Improved Payload Handling**: Enhanced payload size limits and client disconnection management
 - **Better Error Handling**: Graceful disconnection management and enhanced logging
+- **Enhanced Timeout Management**: Comprehensive 30-second timeout handling for all peer operations
 
 The plugin's integration with the broader VIZ ecosystem ensures seamless operation alongside existing blockchain infrastructure, while its well-documented APIs and configuration options facilitate easy deployment and maintenance.
 
