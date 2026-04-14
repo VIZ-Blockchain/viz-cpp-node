@@ -1638,24 +1638,36 @@ void snapshot_plugin::plugin_impl::accept_loop() {
 }
 
 void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
+    auto remote = sock.remote_endpoint();
+    std::string remote_str = std::string(remote.get_address()) + ":" + std::to_string(remote.port());
+
+    ilog("Snapshot server: handling connection from ${remote}", ("remote", remote_str));
+
     // Read initial request (server-side: small payload limit).
     // Use 256 KB to tolerate slightly oversized messages from future protocol versions,
     // while still rejecting non-protocol traffic (P2P nodes, scanners, browsers).
     auto [msg_type, payload] = read_message(sock, 256 * 1024);
+
+    ilog("Snapshot server: received message type ${type} from ${remote}",
+         ("type", msg_type)("remote", remote_str));
 
     if (msg_type == snapshot_info_request) {
         // Use cached snapshot info if available, otherwise find and cache
         if (cached_snap_path.empty() || !fc::exists(fc::path(cached_snap_path))) {
             fc::path snap_path = find_latest_snapshot();
             if (snap_path.string().empty() || !fc::exists(snap_path)) {
-                ilog("Snapshot server: no snapshot available, sending NOT_AVAILABLE");
+                ilog("Snapshot server: no snapshot available, sending NOT_AVAILABLE to ${remote}",
+                     ("remote", remote_str));
                 send_message_empty(sock, snapshot_not_available);
+                ilog("Snapshot server: sent snapshot_not_available to ${remote}", ("remote", remote_str));
                 return;
             }
             update_snapshot_cache(snap_path);
         }
 
         if (cached_snap_size == 0) {
+            ilog("Snapshot server: snapshot has zero size, sending NOT_AVAILABLE to ${remote}",
+                 ("remote", remote_str));
             send_message_empty(sock, snapshot_not_available);
             return;
         }
@@ -1665,10 +1677,11 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock) {
         reply.checksum = cached_snap_checksum;
         reply.compressed_size = cached_snap_size;
 
-        ilog("Snapshot server: offering snapshot at block ${b}, size ${s} bytes",
-             ("b", cached_snap_block_num)("s", cached_snap_size));
+        ilog("Snapshot server: offering snapshot at block ${b}, size ${s} bytes to ${remote}",
+             ("b", cached_snap_block_num)("s", cached_snap_size)("remote", remote_str));
 
         send_message(sock, snapshot_info_reply, pack_to_vec(reply));
+        ilog("Snapshot server: sent snapshot_info_reply to ${remote}", ("remote", remote_str));
 
         std::string serve_path = cached_snap_path;
         uint64_t file_size = cached_snap_size;
