@@ -123,8 +123,8 @@ namespace graphene {
                     string witness_id_example = "initwitness";
 
                 command_line_options.add_options()
-                        ("enable-stale-production", bpo::value<bool>()->implicit_value(false) , "Enable block production, even if the chain is stale.")
-                        ("required-participation", bpo::value<int>()->implicit_value(33), "Percent of witnesses (0-99) that must be participating in order to produce blocks")
+                        ("enable-stale-production", bpo::value<bool>()->implicit_value(true) , "Enable block production, even if the chain is stale.")
+                        ("required-participation", bpo::value<uint32_t>()->default_value(33 * CHAIN_1_PERCENT), "Percent of witnesses (0-99) that must be participating in order to produce blocks")
                         ("witness,w", bpo::value<vector<string>>()->composing()->multitoken(), ("name of witness controlled by this node (e.g. " + witness_id_example + " )").c_str())
                         ("private-key", bpo::value<vector<string>>()->composing()->multitoken(), "WIF PRIVATE KEY to be used by one or more witnesses")
                         ;
@@ -151,8 +151,7 @@ namespace graphene {
                     }
 
                     if(options.count("required-participation")){
-                        int e = static_cast<int>(options["required-participation"].as<int>());
-                        pimpl->_required_witness_participation = uint32_t(e * CHAIN_1_PERCENT);
+                        pimpl->_required_witness_participation = options["required-participation"].as<uint32_t>();
                     }
 
                     if (options.count("private-key")) {
