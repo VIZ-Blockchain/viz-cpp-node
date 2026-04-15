@@ -620,7 +620,23 @@ Block production plugin for witnesses.
 ```ini
 witness = "your-witness-account"
 private-key = 5K...
+enable-stale-production = true          # Produce blocks even on a stale chain (default: false)
+required-participation = 3300            # Min witness participation in basis points to produce (default: 33% = 3300)
 ```
+
+**Bug Fix: `enable-stale-production` and `required-participation` option parsing**
+
+Two bugs were fixed in the witness plugin option definitions ([witness.cpp](../../plugins/witness/witness.cpp)):
+
+| Bug | Before | After |
+|---|---|---|
+| `enable-stale-production` used `implicit_value(false)` | `--enable-stale-production` without a value set production to `false` (same as not using the flag at all) | `implicit_value(true)` — using the flag alone now correctly enables stale production |
+| `required-participation` used `implicit_value(33)` then multiplied by `CHAIN_1_PERCENT` | Config file value `required-participation = 50` was interpreted as 50×100=5000 basis points (500%) | Now uses `default_value(33 * CHAIN_1_PERCENT)` and reads the raw value directly — config value is in basis points |
+
+The `required-participation` value is now always in **basis points** (0–10000 = 0%–100%):
+- Default: `3300` = 33%
+- Config: `required-participation = 5000` = 50%
+- CLI: `--required-participation 5000` = 50%
 
 ---
 

@@ -169,6 +169,47 @@ Now the log only fires once, after both loops complete, with an accurate count o
 
 ---
 
+## Bug Fix: Witness Plugin Option Parsing
+
+Source: [witness.cpp](../../plugins/witness/witness.cpp)
+
+### Bug 1: `enable-stale-production` with `implicit_value(false)`
+
+```cpp
+// BUGGY CODE (before fix)
+("enable-stale-production", bpo::value<bool>()->implicit_value(false), ...)
+```
+
+Using `--enable-stale-production` on the command line (without `=true`) would set the value to `false` — the same as the default. The flag was effectively a no-op unless you explicitly wrote `--enable-stale-production=true`.
+
+**Fix:** Changed to `implicit_value(true)` so the bare flag enables stale production as expected.
+
+### Bug 2: `required-participation` double-scaling
+
+```cpp
+// BUGGY CODE (before fix)
+("required-participation", bpo::value<int>()->implicit_value(33), ...)
+// ...
+int e = options["required-participation"].as<int>();
+_required_witness_participation = uint32_t(e * CHAIN_1_PERCENT);
+```
+
+The value passed by the user (e.g. `33` meaning 33%) was multiplied by `CHAIN_1_PERCENT` (100), producing 3300 basis points. This was correct for percentage input but:
+- It was inconsistent with internal representation (basis points)
+- Users putting basis points in config files would get 100× scaling
+- `implicit_value(33)` made the bare flag `--required-participation` set 33%, but the behavior was unclear
+
+**Fix:** Changed to `default_value(33 * CHAIN_1_PERCENT)` and removed the multiplication in parsing. The value is now always in basis points (0–10000 = 0%–100%):
+
+```cpp
+// FIXED CODE
+("required-participation", bpo::value<uint32_t>()->default_value(33 * CHAIN_1_PERCENT), ...)
+// ...
+_required_witness_participation = options["required-participation"].as<uint32_t>();
+```
+
+---
+
 ## Legitimate Reasons for Pending Transaction Postponement
 
 | Reason | Mechanism | Log |

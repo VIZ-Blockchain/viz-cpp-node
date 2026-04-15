@@ -314,6 +314,10 @@ namespace graphene {
                     case block_production_condition::exception_producing_block:
                         elog("Failure when producing block with no transactions");
                         break;
+                    case block_production_condition::fork_collision:
+                        wlog("Deferred block production due to fork collision; will retry next slot");
+                        graphene::time::update_ntp_time();  // Force NTP sync on fork issues
+                        break;
                 }
 
                 schedule_production_loop();
@@ -438,6 +442,32 @@ namespace graphene {
                 if (llabs((scheduled_time - now).count()) > fc::milliseconds(500).count()) {
                     capture("scheduled_time", scheduled_time)("now", now);
                     return block_production_condition::lag;
+                }
+
+                // Check if a competing block already exists in the fork database for this block height.
+                // If another block at the same height already exists, it means we are on a fork
+                // and producing would create a collision. Skip production to let fork resolution proceed.
+                {
+                    auto existing_blocks = db.get_fork_db().fetch_block_by_number(db.head_block_num() + 1);
+                    if (existing_blocks.size() > 0) {
+                        // Check if any existing block at this height was produced by a different witness
+                        // on a different parent (true fork), not just a duplicate of our own
+                        bool has_competing_block = false;
+                        for (const auto &eb : existing_blocks) {
+                            if (eb->data.witness != scheduled_witness &&
+                                eb->data.previous != db.head_block_id()) {
+                                has_competing_block = true;
+                                break;
+                            }
+                        }
+                        if (has_competing_block) {
+                            capture("height", db.head_block_num() + 1)("scheduled_witness", scheduled_witness);
+                            wlog("Skipping block production at height ${h} due to existing competing block "
+                                 "in fork database (witness ${w} deferring to allow fork resolution)",
+                                 ("h", db.head_block_num() + 1)("w", scheduled_witness));
+                            return block_production_condition::fork_collision;
+                        }
+                    }
                 }
 
                 int retry = 0;

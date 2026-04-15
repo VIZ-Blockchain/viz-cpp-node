@@ -930,13 +930,55 @@ namespace graphene { namespace chain {
             auto blocks = _fork_db.fetch_block_by_number(height);
             if (blocks.size() > 1) {
                 vector<std::pair<account_name_type, fc::time_point_sec>> witness_time_pairs;
+                vector<block_id_type> previous_ids;
                 for (const auto &b : blocks) {
                     witness_time_pairs.push_back(std::make_pair(b->data.witness, b->data.timestamp));
+                    previous_ids.push_back(b->data.previous);
                 }
 
-                ilog(
-                    "Encountered block num collision at block ${n} due to a fork, witnesses are: ${w}",
-                    ("n", height)("w", witness_time_pairs));
+                // Determine if collisions share the same parent (same-slot double production)
+                // or different parents (fork from different chain tips)
+                bool same_parent = std::all_of(previous_ids.begin() + 1, previous_ids.end(),
+                    [&](const block_id_type &id) { return id == previous_ids[0]; });
+
+                // Compute timestamp delta between colliding blocks
+                int64_t time_delta_sec = 0;
+                if (blocks.size() >= 2) {
+                    time_delta_sec = std::abs((blocks[0]->data.timestamp - blocks[1]->data.timestamp).to_seconds());
+                }
+
+                // Rate-limit the warning: only log once per block height to avoid log spam
+                // during sustained fork conditions
+                static uint32_t last_warned_height = 0;
+                static fc::time_point_sec last_warned_time;
+                auto now = fc::time_point::now();
+                bool should_log = true;
+
+                if (last_warned_height == height) {
+                    // Same height: suppress if logged within last 5 seconds
+                    if ((now - last_warned_time).to_seconds() < 5) {
+                        should_log = false;
+                    }
+                }
+
+                if (should_log) {
+                    last_warned_height = height;
+                    last_warned_time = now;
+
+                    if (same_parent) {
+                        wlog("Block num collision at block ${n}: ${cnt} blocks with SAME parent "
+                             "(possible double-production), time_delta=${td}s, witnesses: ${w}",
+                             ("n", height)("cnt", blocks.size())("td", time_delta_sec)("w", witness_time_pairs));
+                    } else {
+                        wlog("Block num collision at block ${n}: ${cnt} blocks with DIFFERENT parents "
+                             "(fork from divergent chain tips), time_delta=${td}s, witnesses: ${w}",
+                             ("n", height)("cnt", blocks.size())("td", time_delta_sec)("w", witness_time_pairs));
+                    }
+
+                    // Log previous block IDs for fork topology analysis
+                    ilog("Collision parents at block ${n}: ${p}",
+                         ("n", height)("p", previous_ids));
+                }
             }
             return;
         }

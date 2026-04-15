@@ -27,7 +27,8 @@ namespace graphene {
                     low_participation = 5,
                     lag = 6,
                     consecutive = 7,
-                    exception_producing_block = 8
+                    exception_producing_block = 8,
+                    fork_collision = 9
                 };
             }
 
