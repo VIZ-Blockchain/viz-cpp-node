@@ -14,11 +14,12 @@
 
 ## Update Summary
 **Changes Made**
-- Implemented critical memory safety improvements replacing unsafe uint64_t pointer casts with std::memcpy operations throughout the DLT block log implementation
-- Added comprehensive crash recovery mechanisms with .bak file restoration for atomic file operations during truncation
+- Implemented comprehensive memory safety improvements replacing unsafe uint64_t pointer casting with std::memcpy operations throughout the DLT block log implementation
+- Added sophisticated crash recovery mechanisms with .bak file restoration for atomic file operations during truncation
 - Enhanced cross-platform compatibility through standardized file operations and memory-mapped file handling
 - Strengthened error handling with FC_ASSERT and FC_THROW_EXCEPTION macros for robust validation
 - Improved file recovery procedures with automatic cleanup of stale temporary files
+- Enhanced P2P fallback mechanisms with detailed logging and graceful error handling for DLT mode scenarios
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -29,7 +30,7 @@
 6. [Memory Safety and Cross-Platform Enhancements](#memory-safety-and-cross-platform-enhancements)
 7. [Crash Recovery and Atomic Operations](#crash-recovery-and-atomic-operations)
 8. [Selective Retention Policies](#selective_retention_policies)
-9. [Automatic Pruning Capabilities](#automatic_pruning_capabilities)
+9. [Automatic Pruning Capabilities](#automatic-pruning-capabilities)
 10. [Configuration Management](#configuration_management)
 11. [Dependency Analysis](#dependency_analysis)
 12. [Performance Considerations](#performance-considerations)

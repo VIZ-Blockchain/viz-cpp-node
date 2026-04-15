@@ -19,6 +19,7 @@
 
 ## Update Summary
 **Changes Made**
+- Added witness-aware snapshot deferral to prevent block production interruption during periodic snapshot creation
 - Enhanced error handling with comprehensive exception handling and graceful shutdown mechanisms
 - Implemented intelligent retry loops with configurable intervals for P2P snapshot synchronization
 - Added automatic fallback to P2P genesis sync when trusted peers are unavailable
@@ -41,13 +42,14 @@
 8. [Stalled Sync Detection and Automatic Recovery](#stalled-sync-detection-and-automatic-recovery)
 9. [Improved Logging and Progress Feedback](#improved-logging-and-progress-feedback)
 10. [Automatic Directory Management](#automatic-directory-management)
-11. [Enhanced Chain Plugin Integration](#enhanced-chain-plugin-integration)
-12. [Enhanced Security and Anti-Spam Measures](#enhanced-security-and-anti-spam-measures)
-13. [DLT Mode Capabilities](#dlt-mode-capabilities)
-14. [Dependency Analysis](#dependency-analysis)
-15. [Performance Considerations](#performance-considerations)
-16. [Troubleshooting Guide](#troubleshooting-guide)
-17. [Conclusion](#conclusion)
+11. [Witness-Aware Snapshot Deferral](#witness-aware-snapshot-deferral)
+12. [Enhanced Chain Plugin Integration](#enhanced-chain-plugin-integration)
+13. [Enhanced Security and Anti-Spam Measures](#enhanced-security-and-anti-spam-measures)
+14. [DLT Mode Capabilities](#dlt-mode-capabilities)
+15. [Dependency Analysis](#dependency-analysis)
+16. [Performance Considerations](#performance-considerations)
+17. [Troubleshooting Guide](#troubleshooting-guide)
+18. [Conclusion](#conclusion)
 
 ## Introduction
 
@@ -239,6 +241,8 @@ class plugin_impl {
 -snapshot_at_block uint32_t
 -snapshot_every_n_blocks uint32_t
 -snapshot_dir string
+-snapshot_pending bool
+-pending_snapshot_path string
 -allow_snapshot_serving bool
 -tcp_srv tcp_server
 -applied_block_conn scoped_connection
@@ -404,7 +408,7 @@ The export process handles different object categories with varying complexity:
 
 **Critical Objects**: Singleton objects that require modification rather than creation
 - Dynamic Global Property
-- Witness Schedule  
+- Witness Schedule
 - Hardfork Property
 
 **Multi-instance Objects**: Objects that require ID management and creation
@@ -1020,6 +1024,57 @@ Continue --> End([Cleanup Complete])
 - [plugin.cpp:914-925](file://plugins/snapshot/plugin.cpp#L914-L925)
 - [plugin.cpp:1395-1432](file://plugins/snapshot/plugin.cpp#L1395-L1432)
 
+## Witness-Aware Snapshot Deferral
+
+**New**: The snapshot plugin now detects when the local node is a block-producing witness scheduled to produce the next block, and defers snapshot creation to avoid missing the production slot.
+
+### Problem
+
+Snapshot serialization (`write_snapshot_to_file`) runs inside the `applied_block` signal handler, which holds the database write lock. For large databases, this can take significant time. If the witness is scheduled to produce the next block, the held write lock prevents `maybe_produce_block()` from generating the block within the 500ms timing window, causing the witness to miss its slot.
+
+### Solution Architecture
+
+The snapshot plugin queries the witness plugin at runtime (via `appbase::app().find_plugin<witness_plugin>()`) to check if a locally-controlled witness is scheduled to produce in the next 1-2 slots. If so, snapshot creation is deferred by setting a `snapshot_pending` flag and storing the intended output path. On subsequent `applied_block` signals, the deferred snapshot is created once the witness is no longer imminently scheduled.
+
+```mermaid
+flowchart TD
+Start([applied_block signal]) --> CheckPending{snapshot_pending?}
+CheckPending --> |Yes| WitnessStill{Witness still scheduled?}
+WitnessStill --> |No| CreateDeferred[Create deferred snapshot]
+WitnessStill --> |Yes| KeepDeferred[Keep deferring]
+CheckPending --> |No| CheckTrigger{Periodic or at-block trigger?}
+CheckTrigger --> |No| End([Done])
+CheckTrigger --> |Yes| WitnessCheck{Witness scheduled soon?}
+WitnessCheck --> |Yes| Defer[Set snapshot_pending = true]
+WitnessCheck --> |No| CreateNow[Create snapshot immediately]
+CreateDeferred --> End
+KeepDeferred --> End
+Defer --> End
+CreateNow --> End
+```
+
+### Witness Schedule Detection
+
+The `witness_plugin::is_witness_scheduled_soon()` method checks:
+1. Whether the witness plugin has configured witnesses and private keys
+2. The scheduled witness for the next 1-2 slots via `db.get_scheduled_witness()`
+3. Whether the scheduled witness is in the local witness set
+4. Whether the witness has a non-null signing key on-chain
+5. Whether the corresponding private key is available locally
+
+This check is lightweight (database index lookups only) and safe to call from the `applied_block` signal handler.
+
+### Cross-Plugin Dependency
+
+The snapshot plugin has an optional runtime dependency on the witness plugin:
+- **Build dependency**: `graphene_witness` added to `target_link_libraries` in `plugins/snapshot/CMakeLists.txt`
+- **Runtime check**: Uses `find_plugin<witness_plugin>()` which returns `nullptr` if the witness plugin is not loaded, making the deferral logic a no-op on non-producing nodes
+
+**Section sources**
+- [plugin.cpp:1255-1345](file://plugins/snapshot/plugin.cpp#L1255-L1345)
+- [witness.cpp:206-250](file://plugins/witness/witness.cpp#L206-L250)
+- [witness.hpp:59-62](file://plugins/witness/include/graphene/plugins/witness/witness.hpp#L59-L62)
+
 ## Enhanced Chain Plugin Integration
 
 **Updated**: The snapshot plugin now provides seamless integration with the chain plugin through sophisticated callback mechanisms and automatic synchronization.
@@ -1270,9 +1325,7 @@ KK[graphene_dlt_block_log] --> LL[DLT Block Logging]
 MM[graphene_protocol] --> NN[Blockchain Protocol]
 OO[dlt_block_log] --> PP[DLT Block Log Management]
 QQ[background_monitoring] --> RR[Stalled Sync Detection]
-SS[enhanced_error_handling] --> TT[Graceful Shutdown]
-UU[intelligent_retry_loops] --> VV[Configurable Intervals]
-WW[automatic_fallback] --> XX[P2P Genesis Sync]
+SS[graphene_witness] --> TT[Witness Schedule Detection]
 YY[improved_logging] --> ZZ[Detailed Progress Reports]
 end
 subgraph "Snapshot Plugin"
