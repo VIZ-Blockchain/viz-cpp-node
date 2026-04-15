@@ -29,6 +29,7 @@ target_link_libraries (
     graphene_chain
     graphene_chain_plugin
     graphene_protocol
+    graphene_witness
     appbase
     graphene_json_rpc
     graphene_time

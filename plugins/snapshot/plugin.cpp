@@ -1,6 +1,7 @@
 #include <graphene/plugins/snapshot/plugin.hpp>
 #include <graphene/plugins/snapshot/snapshot_types.hpp>
 #include <graphene/plugins/snapshot/snapshot_serializer.hpp>
+#include <graphene/plugins/witness/witness.hpp>
 
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/global_property_object.hpp>
@@ -681,6 +682,10 @@ public:
     std::string snapshot_dir;         // --snapshot-dir: directory for auto-generated snapshots
     uint32_t snapshot_max_age_days = 90; // --snapshot-max-age-days: delete snapshots older than N days (0 = disabled)
 
+    // Deferred snapshot creation (to avoid interrupting witness block production)
+    bool snapshot_pending = false;        // deferred snapshot flag
+    std::string pending_snapshot_path;    // path for deferred snapshot
+
     // Snapshot P2P sync config
     bool allow_snapshot_serving = false;
     bool allow_snapshot_serving_only_trusted = false;
@@ -1259,6 +1264,36 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     auto block_age = fc::time_point::now() - fc::time_point(b.timestamp);
     bool is_syncing = block_age > fc::seconds(60);
 
+    // Helper lambda: check if local witness is scheduled to produce soon
+    auto is_witness_producing_soon = [&]() -> bool {
+        try {
+            auto* witness_plug = appbase::app().find_plugin<graphene::plugins::witness_plugin::witness_plugin>();
+            if (witness_plug != nullptr && witness_plug->get_state() == appbase::abstract_plugin::started) {
+                return witness_plug->is_witness_scheduled_soon();
+            }
+        } catch (...) {}
+        return false;
+    };
+
+    // Handle deferred (pending) snapshot from a previous block
+    if (snapshot_pending && !is_syncing) {
+        if (!is_witness_producing_soon()) {
+            ilog("Creating deferred snapshot now (witness no longer scheduled): ${p}", ("p", pending_snapshot_path));
+            try {
+                fc::path output(pending_snapshot_path);
+                write_snapshot_to_file(output);
+                update_snapshot_cache(output);
+                cleanup_old_snapshots();
+            } catch (const fc::exception& e) {
+                elog("Failed to create deferred snapshot: ${e}", ("e", e.to_detail_string()));
+            }
+            snapshot_pending = false;
+            pending_snapshot_path.clear();
+        } else {
+            ilog("Snapshot still deferred at block ${b}: witness scheduled to produce next block", ("b", block_num));
+        }
+    }
+
     // Check --snapshot-at-block: one-time snapshot at exact block
     if (snapshot_at_block > 0 && block_num == snapshot_at_block && !is_syncing) {
         fc::path output;
@@ -1269,15 +1304,19 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         } else {
             output = fc::path("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         }
-        ilog("Reached snapshot-at-block ${b}, creating snapshot: ${p}", ("b", block_num)("p", output.string()));
-        try {
-            // Called from applied_block signal which is already under write lock.
-            // Use write_snapshot_to_file directly (no additional lock needed).
-            write_snapshot_to_file(output);
-            update_snapshot_cache(output);
-            cleanup_old_snapshots();
-        } catch (const fc::exception& e) {
-            elog("Failed to create snapshot at block ${b}: ${e}", ("b", block_num)("e", e.to_detail_string()));
+        if (is_witness_producing_soon()) {
+            ilog("Deferring snapshot-at-block ${b}: witness scheduled to produce next block", ("b", block_num));
+            snapshot_pending = true;
+            pending_snapshot_path = output.string();
+        } else {
+            ilog("Reached snapshot-at-block ${b}, creating snapshot: ${p}", ("b", block_num)("p", output.string()));
+            try {
+                write_snapshot_to_file(output);
+                update_snapshot_cache(output);
+                cleanup_old_snapshots();
+            } catch (const fc::exception& e) {
+                elog("Failed to create snapshot at block ${b}: ${e}", ("b", block_num)("e", e.to_detail_string()));
+            }
         }
     }
 
@@ -1285,15 +1324,19 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     if (snapshot_every_n_blocks > 0 && block_num % snapshot_every_n_blocks == 0 && !is_syncing) {
         std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
         fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
-        ilog("Periodic snapshot at block ${b}: ${p}", ("b", block_num)("p", output.string()));
-        try {
-            // Called from applied_block signal which is already under write lock.
-            // Use write_snapshot_to_file directly (no additional lock needed).
-            write_snapshot_to_file(output);
-            update_snapshot_cache(output);
-            cleanup_old_snapshots();
-        } catch (const fc::exception& e) {
-            elog("Failed to create periodic snapshot at block ${b}: ${e}", ("b", block_num)("e", e.to_detail_string()));
+        if (is_witness_producing_soon()) {
+            ilog("Deferring periodic snapshot at block ${b}: witness scheduled to produce next block", ("b", block_num));
+            snapshot_pending = true;
+            pending_snapshot_path = output.string();
+        } else {
+            ilog("Periodic snapshot at block ${b}: ${p}", ("b", block_num)("p", output.string()));
+            try {
+                write_snapshot_to_file(output);
+                update_snapshot_cache(output);
+                cleanup_old_snapshots();
+            } catch (const fc::exception& e) {
+                elog("Failed to create periodic snapshot at block ${b}: ${e}", ("b", block_num)("e", e.to_detail_string()));
+            }
         }
     }
 }

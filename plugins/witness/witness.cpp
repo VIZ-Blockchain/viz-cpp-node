@@ -203,6 +203,52 @@ namespace graphene {
 
             witness_plugin::~witness_plugin() {}
 
+            bool witness_plugin::is_witness_scheduled_soon() const {
+                try {
+                    if (!pimpl || pimpl->_witnesses.empty() || pimpl->_private_keys.empty()) {
+                        return false;
+                    }
+
+                    auto& db = pimpl->database();
+                    fc::time_point now_fine = graphene::time::now();
+                    fc::time_point_sec now = now_fine + fc::microseconds(500000);
+
+                    uint32_t slot = db.get_slot_at_time(now);
+                    if (slot == 0) {
+                        // Also check next slot
+                        slot = 1;
+                    }
+
+                    // Check slots 1 and 2 (current and next)
+                    for (uint32_t s = slot; s <= slot + 1; ++s) {
+                        string scheduled_witness = db.get_scheduled_witness(s);
+                        if (pimpl->_witnesses.find(scheduled_witness) == pimpl->_witnesses.end()) {
+                            continue;
+                        }
+
+                        const auto& witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
+                        auto itr = witness_by_name.find(scheduled_witness);
+                        if (itr == witness_by_name.end()) {
+                            continue;
+                        }
+
+                        graphene::protocol::public_key_type scheduled_key = itr->signing_key;
+                        if (scheduled_key == graphene::protocol::public_key_type()) {
+                            continue; // Disabled witness (zero key)
+                        }
+
+                        if (pimpl->_private_keys.find(scheduled_key) != pimpl->_private_keys.end()) {
+                            return true; // We have the private key and are scheduled soon
+                        }
+                    }
+                } catch (const fc::exception& e) {
+                    wlog("is_witness_scheduled_soon check failed: ${e}", ("e", e.to_detail_string()));
+                } catch (...) {
+                    wlog("is_witness_scheduled_soon check failed with unknown exception");
+                }
+                return false;
+            }
+
             void witness_plugin::impl::schedule_production_loop() {
                 //Schedule for the next second's tick regardless of chain state
                 // If we would wait less than 50ms, wait for the whole second.

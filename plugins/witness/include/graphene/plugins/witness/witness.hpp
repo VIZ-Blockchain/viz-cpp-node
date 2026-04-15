@@ -58,6 +58,9 @@ namespace graphene {
 
                 void plugin_shutdown() override;
 
+                /// Returns true if a locally-controlled witness is scheduled to produce in the next slot
+                bool is_witness_scheduled_soon() const;
+
             private:
                 struct impl;
                 std::unique_ptr<impl> pimpl;
