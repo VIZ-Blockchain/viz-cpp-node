@@ -4423,11 +4423,14 @@ namespace graphene { namespace chain {
                                 // Block not in fork database — normal after restart when fork_db
                                 // hasn't accumulated blocks back to LIB yet. Will catch up once
                                 // LIB advances past the post-restart head.
-                                wlog("DLT block log: block ${n} not in fork_db, skipping "
-                                     "(dlt_head=${h}, LIB=${lib}). Gap will fill as new blocks arrive.",
-                                     ("n", dlt_head_num + 1)
-                                     ("h", _dlt_block_log.head_block_num())
-                                     ("lib", dpo.last_irreversible_block_num));
+                                if (!_dlt_gap_logged) {
+                                    _dlt_gap_logged = true;
+                                    ilog("DLT block log: block ${n} not in fork_db, skipping "
+                                         "(dlt_head=${h}, LIB=${lib}). Gap will fill as new blocks arrive.",
+                                         ("n", dlt_head_num + 1)
+                                         ("h", _dlt_block_log.head_block_num())
+                                         ("lib", dpo.last_irreversible_block_num));
+                                }
                                 break;
                             }
                             _dlt_block_log.append(block->data);
@@ -4436,6 +4439,7 @@ namespace graphene { namespace chain {
                         }
 
                         if (wrote_any) {
+                            _dlt_gap_logged = false;  // Gap is filling, re-enable logging if it reappears
                             _dlt_block_log.flush();
                         }
                     }

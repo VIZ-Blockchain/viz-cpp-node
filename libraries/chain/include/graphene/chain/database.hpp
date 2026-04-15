@@ -72,6 +72,10 @@ namespace graphene { namespace chain {
             // > 0 = keep a rolling window of this many blocks in the separate dlt_block_log.
             uint32_t _dlt_block_log_max_blocks = 0;
 
+            // Suppress repeated "block not in fork_db" warnings after snapshot import.
+            // Set to true after logging once; resets when the gap is filled.
+            bool _dlt_gap_logged = false;
+
             enum validation_steps {
                 skip_nothing = 0,
                 skip_witness_signature = 1 << 0,  ///< used while reindexing
