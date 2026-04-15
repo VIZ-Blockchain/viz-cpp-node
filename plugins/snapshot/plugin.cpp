@@ -875,6 +875,7 @@ void snapshot_plugin::plugin_impl::create_snapshot(const fc::path& output_path) 
     db.with_strong_read_lock([&]() {
         write_snapshot_to_file(output_path);
     });
+    update_snapshot_cache(output_path);
 }
 
 void snapshot_plugin::plugin_impl::write_snapshot_to_file(const fc::path& output_path) {
@@ -968,12 +969,26 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(const fc::path& output
         ("size", compressed.size())
         ("time", double((end - start).count()) / 1000000.0));
 
-    // Update cached info for serving
-    update_snapshot_cache(output_path);
+    // Note: cache update is the caller's responsibility
+    // (to avoid duplicate updates when callers already call update_snapshot_cache)
 }
 
 void snapshot_plugin::plugin_impl::update_snapshot_cache(const fc::path& snap_path) {
     try {
+        // Skip if cache already matches this exact file (same path + size)
+        uint64_t existing_size = 0;
+        if (cached_snap_path == snap_path.string()) {
+            std::ifstream quick_check(snap_path.string(), std::ios::binary | std::ios::ate);
+            if (quick_check.is_open()) {
+                existing_size = static_cast<uint64_t>(quick_check.tellg());
+                quick_check.close();
+            }
+            if (existing_size > 0 && existing_size == cached_snap_size) {
+                dlog("Snapshot cache already up-to-date for ${p}, skipping redundant update", ("p", snap_path.string()));
+                return;
+            }
+        }
+
         std::ifstream in(snap_path.string(), std::ios::binary);
         if (!in.is_open()) return;
 
@@ -2437,6 +2452,7 @@ void snapshot_plugin::load_snapshot_from(const std::string& path) {
 void snapshot_plugin::create_snapshot_at(const std::string& path) {
     FC_ASSERT(my, "Snapshot plugin not initialized");
     my->create_snapshot(fc::path(path));
+    // Note: create_snapshot() already calls update_snapshot_cache()
 }
 
 } } } // graphene::plugins::snapshot
