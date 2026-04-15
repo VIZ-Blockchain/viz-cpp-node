@@ -15,31 +15,33 @@
 - [ntp.cpp](file://thirdparty/fc/src/network/ntp.cpp)
 - [main.cpp](file://programs/vizd/main.cpp)
 - [snapshot_plugin.cpp](file://plugins/snapshot/plugin.cpp)
+- [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
+- [config.ini](file://share/vizd/config/config.ini)
+- [config_witness.ini](file://share/vizd/config/config_witness.ini)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added documentation for the new `is_witness_scheduled_soon()` method that checks if any locally-controlled witnesses are scheduled to produce blocks in the upcoming 4 slots
-- Updated the Core Components section to include this new method
-- Added usage examples showing how other plugins coordinate with witness scheduling
-- Enhanced the Troubleshooting Guide with information about witness scheduling conflicts
-- Updated the Architecture Overview to show how this method enables plugin coordination
+- Updated Configuration Parameters section to reflect corrected default values for enable-stale-production (changed from false to true) and required-participation parameter type (changed from int to uint32_t with CHAIN_1_PERCENT scaling)
+- Enhanced Troubleshooting Guide with information about configuration parameter types and scaling factors
+- Updated Architecture Overview to show how configuration parameters are processed and validated
 
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
-5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+5. [Configuration Parameters](#configuration-parameters)
+6. [Detailed Component Analysis](#detailed-component-analysis)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
 
 ## Introduction
 This document explains the Witness subsystem of the VIZ node implementation. It covers how witnesses are scheduled, how blocks are produced, how witness participation is monitored, and how the witness-related APIs expose information to clients. The focus is on the witness plugin (block production), the witness API plugin (read-only queries), and the underlying chain database that maintains witness state and schedules.
 
-**Updated** Enhanced with improved NTP time synchronization, crash race condition handling, strengthened timing-related production failure prevention mechanisms, and the new `is_witness_scheduled_soon()` method for plugin coordination.
+**Updated** Enhanced with improved NTP time synchronization, crash race condition handling, strengthened timing-related production failure prevention mechanisms, the new `is_witness_scheduled_soon()` method for plugin coordination, and corrected configuration parameter defaults.
 
 ## Project Structure
 The Witness functionality spans three primary areas:
@@ -174,6 +176,61 @@ Timer-->>Snapshot : true/false
 - [database.cpp:4317-4332](file://libraries/chain/database.cpp#L4317-L4332)
 - [time.cpp:74-76](file://libraries/time/time.cpp#L74-L76)
 - [snapshot_plugin.cpp:1267-1276](file://plugins/snapshot/plugin.cpp#L1267-1276)
+
+## Configuration Parameters
+
+### Parameter Types and Scaling
+
+The witness plugin configuration parameters have been updated with improved type safety and scaling:
+
+- **enable-stale-production**: Boolean parameter controlling whether block production continues when the chain is stale
+  - Type: `bool` (previously `int`)
+  - Default: `true` (changed from `false`)
+  - Purpose: Allows production even when the node is behind the chain head
+  - Command line: `--enable-stale-production`
+  - Config file: `enable-stale-production`
+
+- **required-participation**: Integer parameter specifying minimum witness participation percentage
+  - Type: `uint32_t` (changed from `int`)
+  - Scale: Multiplied by `CHAIN_1_PERCENT` (100 units = 1%)
+  - Range: 0-99% (0-9900 units)
+  - Default: 33% (3300 units)
+  - Command line: `--required-participation`
+  - Config file: `required-participation`
+
+### Configuration Defaults
+
+**Updated** The default values have been corrected for production stability:
+
+- **enable-stale-production**: Now defaults to `true` to improve node resilience during initial sync
+- **required-participation**: Defaults to 33% participation threshold for balanced security/performance
+
+### Configuration Processing
+
+The configuration parameters are processed during plugin initialization:
+
+```mermaid
+flowchart TD
+Config["Configuration File"] --> Parser["Parameter Parser"]
+Parser --> TypeCheck{"Type Validation"}
+TypeCheck --> |enable-stale-production| BoolConvert["Convert to bool"]
+TypeCheck --> |required-participation| IntConvert["Convert to uint32_t<br/>Scale by CHAIN_1_PERCENT"]
+BoolConvert --> Storage["Store in plugin state"]
+IntConvert --> Storage
+Storage --> Runtime["Runtime Usage"]
+```
+
+**Diagram sources**
+- [witness.cpp:125-133](file://plugins/witness/witness.cpp#L125-L133)
+- [witness.cpp:149-155](file://plugins/witness/witness.cpp#L149-L155)
+- [config.hpp:57-58](file://libraries/protocol/include/graphene/protocol/config.hpp#L57-L58)
+
+**Section sources**
+- [witness.cpp:125-133](file://plugins/witness/witness.cpp#L125-L133)
+- [witness.cpp:149-155](file://plugins/witness/witness.cpp#L149-L155)
+- [config.hpp:57-58](file://libraries/protocol/include/graphene/protocol/config.hpp#L57-L58)
+- [config.ini:99-103](file://share/vizd/config/config.ini#L99-L103)
+- [config_witness.ini:76-80](file://share/vizd/config/config_witness.ini#L76-L80)
 
 ## Detailed Component Analysis
 
@@ -435,8 +492,9 @@ TIME --> NTP["NTP Service"]
 - Virtual scheduling: Uses virtual time and votes to fairly distribute block production slots among witnesses, avoiding hot-spotting and ensuring proportional representation.
 - **Enhanced**: Forced NTP synchronization reduces timing-related production failures and improves system reliability during clock drift scenarios.
 - **New**: Efficient slot checking in `is_witness_scheduled_soon()` method performs minimal database operations across 4 slots to detect scheduling conflicts quickly.
+- **Updated**: Improved configuration parameter processing with type safety and proper scaling for better performance and reliability.
 
-**Updated** Added performance considerations for the new `is_witness_scheduled_soon()` method.
+**Updated** Added performance considerations for the corrected configuration parameter types and processing.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -465,8 +523,14 @@ Common issues and resolutions:
 - **New**: Crash race conditions
   - Symptom: Witness plugin fails to shut down cleanly or leaves NTP service in inconsistent state.
   - Resolution: Ensure proper shutdown sequence; the system now handles crash-safe NTP service cleanup.
+- **New**: Configuration parameter type errors
+  - Symptom: Errors indicating incorrect parameter types or values.
+  - Resolution: Verify configuration parameters use correct types:
+    - `enable-stale-production`: boolean value (`true`/`false`)
+    - `required-participation`: integer value scaled by `CHAIN_1_PERCENT` (e.g., 33 for 33%)
+    - Check configuration files for proper syntax and values
 
-**Updated** Added troubleshooting information for witness scheduling conflicts and the new coordination mechanisms.
+**Updated** Added troubleshooting information for witness scheduling conflicts, the new coordination mechanisms, and configuration parameter type issues.
 
 **Section sources**
 - [witness.cpp:171-192](file://plugins/witness/witness.cpp#L171-L192)
@@ -479,6 +543,6 @@ Common issues and resolutions:
 ## Conclusion
 The Witness subsystem integrates tightly with the chain database and P2P layer to ensure timely, secure, and fair block production. The witness plugin manages production loops, participation thresholds, and broadcasting, while the witness API plugin exposes essential read-only data to clients. 
 
-**Enhanced** The system now includes robust NTP time synchronization with automatic fallback mechanisms, crash-safe shutdown procedures, and strengthened timing-related production failure prevention. **New**: The addition of the `is_witness_scheduled_soon()` method enables sophisticated plugin coordination, allowing other plugins to avoid conflicts during critical operations like snapshot creation. This enhancement makes the witness system more resilient to various operational challenges while providing better integration points for the broader VIZ ecosystem.
+**Enhanced** The system now includes robust NTP time synchronization with automatic fallback mechanisms, crash-safe shutdown procedures, and strengthened timing-related production failure prevention. **New** The addition of the `is_witness_scheduled_soon()` method enables sophisticated plugin coordination, allowing other plugins to avoid conflicts during critical operations like snapshot creation. **Updated** The configuration parameter system has been improved with corrected defaults and proper type handling for better reliability and performance. This enhancement makes the witness system more resilient to various operational challenges while providing better integration points for the broader VIZ ecosystem.
 
-Together, they form a robust foundation for witness operations in the VIZ node, with improved time synchronization, crash handling capabilities, and enhanced plugin coordination features.
+Together, they form a robust foundation for witness operations in the VIZ node, with improved time synchronization, crash handling capabilities, enhanced plugin coordination features, and reliable configuration parameter processing.
