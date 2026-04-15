@@ -33,7 +33,7 @@ snapshot-every-n-blocks = 100000
 snapshot-dir = /var/lib/vizd/snapshots
 ```
 
-**Witness-Aware Deferral:** When the node is also a block-producing witness, periodic snapshot creation is automatically deferred if the witness is scheduled to produce the next block. This prevents snapshot serialization (which holds the database write lock) from causing the witness to miss its production slot. The snapshot is created after the witness successfully produces and broadcasts its block.
+**Witness-Aware Deferral:** When the node is also a block-producing witness, periodic snapshot creation is automatically deferred if the witness is scheduled to produce within the next 4 slots (~12 seconds). This covers the typical snapshot creation time (~10 seconds) plus a safety margin, preventing snapshot serialization (which holds the database write lock) from causing the witness to miss its production slot. The snapshot is created once the witness is no longer scheduled in the near-term slots.
 
 ### Snapshot at Specific Block
 

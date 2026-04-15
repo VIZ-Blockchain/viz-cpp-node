@@ -215,12 +215,11 @@ namespace graphene {
 
                     uint32_t slot = db.get_slot_at_time(now);
                     if (slot == 0) {
-                        // Also check next slot
                         slot = 1;
                     }
 
-                    // Check slots 1 and 2 (current and next)
-                    for (uint32_t s = slot; s <= slot + 1; ++s) {
+                    // Check 4 upcoming slots (~12 seconds) to cover snapshot creation time (~10s) + safety margin
+                    for (uint32_t s = slot; s <= slot + 3; ++s) {
                         string scheduled_witness = db.get_scheduled_witness(s);
                         if (pimpl->_witnesses.find(scheduled_witness) == pimpl->_witnesses.end()) {
                             continue;

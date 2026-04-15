@@ -1034,7 +1034,7 @@ Snapshot serialization (`write_snapshot_to_file`) runs inside the `applied_block
 
 ### Solution Architecture
 
-The snapshot plugin queries the witness plugin at runtime (via `appbase::app().find_plugin<witness_plugin>()`) to check if a locally-controlled witness is scheduled to produce in the next 1-2 slots. If so, snapshot creation is deferred by setting a `snapshot_pending` flag and storing the intended output path. On subsequent `applied_block` signals, the deferred snapshot is created once the witness is no longer imminently scheduled.
+The snapshot plugin queries the witness plugin at runtime (via `appbase::app().find_plugin<witness_plugin>()`) to check if a locally-controlled witness is scheduled to produce in the next 4 slots (~12 seconds, covering ~10s snapshot creation time plus safety margin). If so, snapshot creation is deferred by setting a `snapshot_pending` flag and storing the intended output path. On subsequent `applied_block` signals, the deferred snapshot is created once the witness is no longer imminently scheduled.
 
 ```mermaid
 flowchart TD
@@ -1057,7 +1057,7 @@ CreateNow --> End
 
 The `witness_plugin::is_witness_scheduled_soon()` method checks:
 1. Whether the witness plugin has configured witnesses and private keys
-2. The scheduled witness for the next 1-2 slots via `db.get_scheduled_witness()`
+2. The scheduled witness for the next 4 slots via `db.get_scheduled_witness()` (~12 seconds ahead)
 3. Whether the scheduled witness is in the local witness set
 4. Whether the witness has a non-null signing key on-chain
 5. Whether the corresponding private key is available locally
