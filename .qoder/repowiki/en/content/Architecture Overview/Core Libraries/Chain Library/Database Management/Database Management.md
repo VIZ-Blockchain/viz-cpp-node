@@ -15,6 +15,7 @@
 
 ## Update Summary
 **Changes Made**
+- Added documentation for the new `_dlt_gap_logged` flag mechanism that suppresses repeated warnings about missing blocks in fork database after snapshot import
 - Enhanced DLT mode detection with proper setter implementation in set_dlt_mode() method
 - Implemented skip block_summary shortcuts in is_known_block() method to prevent false positives in DLT mode
 - Added enhanced logging for DLT block log gaps during block processing
@@ -32,7 +33,7 @@
 9. [Conclusion](#conclusion)
 
 ## Introduction
-This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, and practical examples of database operations and performance optimization.
+This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for suppressing repeated warnings, and practical examples of database operations and performance optimization.
 
 ## Project Structure
 The database subsystem is implemented primarily in the chain library with enhanced support for DLT mode and improved error handling:
@@ -69,8 +70,8 @@ SNAPH --> DBH
 ```
 
 **Diagram sources**
-- [database.hpp:1-611](file://libraries/chain/include/graphene/chain/database.hpp#L1-L611)
-- [database.cpp:1-5547](file://libraries/chain/database.cpp#L1-L5547)
+- [database.hpp:1-615](file://libraries/chain/include/graphene/chain/database.hpp#L1-L615)
+- [database.cpp:1-5551](file://libraries/chain/database.cpp#L1-L5551)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
@@ -80,8 +81,8 @@ SNAPH --> DBH
 - [plugin.cpp:2130-2140](file://plugins/snapshot/plugin.cpp#L2130-L2140)
 
 **Section sources**
-- [database.hpp:1-611](file://libraries/chain/include/graphene/chain/database.hpp#L1-L611)
-- [database.cpp:1-5547](file://libraries/chain/database.cpp#L1-L5547)
+- [database.hpp:1-615](file://libraries/chain/include/graphene/chain/database.hpp#L1-L615)
+- [database.cpp:1-5551](file://libraries/chain/database.cpp#L1-L5551)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
@@ -97,6 +98,7 @@ SNAPH --> DBH
 - fork_database: Maintains reversible blocks and supports fork selection and switching.
 - chainbase integration: Provides persistent object storage and undo sessions.
 - signal_guard: Enhanced signal handling for graceful restart sequence management.
+- **_dlt_gap_logged flag**: New mechanism to suppress repeated warnings about missing blocks in fork database after snapshot import.
 
 Key responsibilities:
 - Lifecycle: open(), open_from_snapshot(), reindex(), close(), wipe() with improved error handling
@@ -106,6 +108,7 @@ Key responsibilities:
 - Observers: signals for pre/post operation, applied block, pending/applied transactions
 - Persistence: integrates with block_log and dlt_block_log for different operational modes
 - Enhanced Block Fetching: DLT mode-aware block retrieval with proper validation logic
+- **Gap Suppression**: Prevents log spam during normal operations by suppressing repeated warnings about missing blocks
 
 **Section sources**
 - [database.hpp:61-115](file://libraries/chain/include/graphene/chain/database.hpp#L61-L115)
@@ -121,6 +124,7 @@ The database composes four primary subsystems with enhanced DLT mode support and
 - Block log: Immutable, append-only block storage with index
 - DLT block log: Rolling window block storage for DLT (snapshot-based) nodes
 - Signal guard: Enhanced signal handling for graceful restart sequences
+- **DLT Gap Logger**: New component that manages warning suppression for missing blocks
 
 ```mermaid
 classDiagram
@@ -139,6 +143,7 @@ class database {
 +signals : pre_apply_operation, post_apply_operation, applied_block, on_pending_transaction, on_applied_transaction
 +_dlt_mode : bool
 +_dlt_block_log_max_blocks : uint32_t
++_dlt_gap_logged : bool
 +signal_guard : enhanced error handling
 }
 class block_log {
@@ -358,6 +363,38 @@ UpdateDPO --> End(["Complete"])
 - [database.cpp:4144-4175](file://libraries/chain/database.cpp#L4144-L4175)
 - [database.cpp:4384-4424](file://libraries/chain/database.cpp#L4384-L4424)
 
+### Enhanced Gap Suppression Mechanism for DLT Mode
+**New** - The database now includes a sophisticated gap suppression mechanism to prevent log spam during normal DLT operations:
+
+- **_dlt_gap_logged Flag**: A boolean flag that tracks whether a gap warning has already been logged for the current DLT operation cycle.
+- **Warning Suppression**: When a block is not found in the fork database during DLT mode processing, the system checks `_dlt_gap_logged` to determine if it should log the warning.
+- **Temporary Suppression**: The flag is set to `true` when the first gap warning is logged, preventing repeated warnings for the same gap condition.
+- **Automatic Reset**: The flag is reset to `false` when blocks are successfully written to the DLT block log, allowing warnings to be logged again if the gap reappears.
+- **Contextual Logging**: The mechanism provides informative log messages that include current DLT head, LIB, and target block numbers to help diagnose synchronization issues.
+
+```mermaid
+flowchart TD
+Start(["DLT Gap Detection"]) --> CheckGap{"Block not in fork_db?"}
+CheckGap --> |No| Continue["Continue processing"]
+CheckGap --> |Yes| CheckFlag{"_dlt_gap_logged?"}
+CheckFlag --> |Yes| Suppress["Suppress warning (already logged)"]
+CheckFlag --> |No| LogWarning["Log gap warning"]
+LogWarning --> SetFlag["_dlt_gap_logged = true"]
+SetFlag --> Break["Break to continue"]
+Suppress --> Continue
+Continue --> CheckWrote{"Wrote blocks successfully?"}
+CheckWrote --> |Yes| ResetFlag["_dlt_gap_logged = false"]
+ResetFlag --> Flush["Flush DLT block log"]
+CheckWrote --> |No| Continue
+```
+
+**Diagram sources**
+- [database.cpp:4426-4444](file://libraries/chain/database.cpp#L4426-L4444)
+
+**Section sources**
+- [database.hpp:75-77](file://libraries/chain/include/graphene/chain/database.hpp#L75-L77)
+- [database.cpp:4426-4444](file://libraries/chain/database.cpp#L4426-L4444)
+
 ### Validation Steps Enumeration and Use Cases
 Validation flags control which checks are performed during block and transaction validation:
 - skip_nothing: Perform all validations
@@ -534,6 +571,7 @@ These signals are used by plugins to react to blockchain events without tight co
 - Validate a block: validate_block(signed_block, skip_flags)
 - Validate a transaction: validate_transaction(signed_signed_transaction, skip_flags)
 - **Set DLT mode**: set_dlt_mode(true/false) - **Enhanced with proper setter implementation**
+- **DLT Gap Suppression**: The database now automatically manages gap warnings to prevent log spam during normal operations
 - Query helpers:
   - get_block_id_for_num(uint32_t)
   - fetch_block_by_id(block_id_type)
@@ -556,6 +594,7 @@ The database depends on:
 - Protocol types and evaluators for operation processing
 - signal_guard for enhanced error handling during restart sequences
 - snapshot plugin for DLT mode initialization
+- **_dlt_gap_logged flag**: New dependency for managing gap warning suppression
 
 ```mermaid
 graph LR
@@ -567,6 +606,7 @@ DB --> SG["signal_guard (enhanced)"]
 DB --> PT["protocol types"]
 DB --> EV["evaluators"]
 DB --> SNAP["snapshot plugin"]
+DB --> GAP["gap suppression flag"]
 ```
 
 **Diagram sources**
@@ -590,6 +630,8 @@ DB --> SNAP["snapshot plugin"]
 - **Enhanced Error Handling**: Graceful fallback mechanisms prevent performance degradation during restart sequences.
 - **Multi-layered Fetching**: Hierarchical block retrieval minimizes lookup overhead and improves response times.
 - **DLT Mode Awareness**: Skip block_summary shortcuts in DLT mode to prevent false positives and improve P2P synchronization accuracy.
+- **Gap Suppression**: The `_dlt_gap_logged` flag prevents log spam during normal DLT operations, reducing I/O overhead and improving system responsiveness.
+- **Automatic Warning Management**: The gap suppression mechanism automatically manages warning states, eliminating the need for manual intervention.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -602,6 +644,8 @@ Common issues and remedies:
 - **Restart Sequence Failures**: Monitor signal guard functionality and ensure graceful handling of interruption signals.
 - **Conditional Fetching Errors**: Verify multi-layered block retrieval logic and check DLT mode configuration.
 - **Block Availability Issues**: In DLT mode, verify that block_summary shortcuts are properly skipped to prevent false positives.
+- **Gap Warning Spam**: The `_dlt_gap_logged` flag automatically suppresses repeated warnings, but if warnings persist, check DLT block log configuration and LIB advancement.
+- **DLT Gap Detection**: Monitor the gap suppression mechanism to ensure it's functioning correctly during normal DLT operations.
 
 **Section sources**
 - [database.cpp:800-830](file://libraries/chain/database.cpp#L800-L830)
@@ -611,4 +655,4 @@ Common issues and remedies:
 - [database.cpp:3998-4000](file://libraries/chain/database.cpp#L3998-L4000)
 
 ## Conclusion
-The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support and improved error handling. It integrates chainbase for persistent storage, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, and improved gap logging, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals. The snapshot-aware initialization, rolling window management, and graceful failure handling make it particularly suitable for distributed ledger applications requiring efficient synchronization, reduced storage overhead, and resilient operation during restart sequences. The enhanced DLT mode detection and block availability checking logic ensures accurate P2P synchronization and prevents false positives in block availability reporting.
+The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support and improved error handling. It integrates chainbase for persistent storage, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, and the new `_dlt_gap_logged` flag mechanism for suppressing repeated warnings, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals. The snapshot-aware initialization, rolling window management, and graceful failure handling make it particularly suitable for distributed ledger applications requiring efficient synchronization, reduced storage overhead, and resilient operation during restart sequences. The enhanced DLT mode detection and block availability checking logic ensures accurate P2P synchronization and prevents false positives in block availability reporting. The new gap suppression mechanism provides intelligent warning management that prevents log spam during normal DLT operations while maintaining diagnostic capability for troubleshooting.

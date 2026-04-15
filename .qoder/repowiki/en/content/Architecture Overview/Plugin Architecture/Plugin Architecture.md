@@ -23,12 +23,11 @@
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive documentation for the new snapshot plugin system
-- Documented the complete snapshot lifecycle including creation, loading, and P2P synchronization
-- Added detailed coverage of the custom TCP protocol for snapshot distribution
-- Included anti-spam protection mechanisms and security considerations
-- Documented the integration with chain plugin callbacks for seamless operation
-- Added practical examples of snapshot plugin configuration and usage
+- Added comprehensive documentation for RAII session guard implementation in snapshot plugin connection handling
+- Documented enhanced retry logic for client-side connection establishment addressing race conditions in P2P communication
+- Updated snapshot plugin system with improved session management and connection reliability
+- Enhanced documentation of anti-spam protection mechanisms with race condition prevention
+- Added detailed coverage of session_guard class and its role in preventing race conditions
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -38,22 +37,25 @@
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Enhanced Lifecycle Management](#enhanced-lifecycle-management)
 7. [Signal Handler Coordination](#signal-handler-coordination)
-8. [Memory Leak Prevention](#memory-let-prevention)
+8. [Memory Leak Prevention](#memory-leak-prevention)
 9. [Snapshot Plugin System](#snapshot-plugin-system)
 10. [Custom Network Protocol](#custom-network-protocol)
 11. [Anti-Spam Protection](#anti-spam-protection)
-12. [Integration with Chain Plugin](#integration-with-chain-plugin)
-13. [Dependency Analysis](#dependency-analysis)
-14. [Performance Considerations](#performance-considerations)
-15. [Troubleshooting Guide](#troubleshooting-guide)
-16. [Conclusion](#conclusion)
-17. [Appendices](#appendices)
+12. [Session Guard Implementation](#session-guard-implementation)
+13. [Enhanced Retry Logic](#enhanced-retry-logic)
+14. [Race Condition Prevention](#race-condition-prevention)
+15. [Integration with Chain Plugin](#integration-with-chain-plugin)
+16. [Dependency Analysis](#dependency-analysis)
+17. [Performance Considerations](#performance-considerations)
+18. [Troubleshooting Guide](#troubleshooting-guide)
+19. [Conclusion](#conclusion)
+20. [Appendices](#appendices)
 
 ## Introduction
-This document explains the plugin architecture of the node, focusing on the modular, plugin-based design enabled by the appbase framework. It covers how plugins are registered, initialized, started, and shut down with enhanced lifecycle management; how they interact with the chain database and each other; and how to develop custom plugins using the provided template generator. The architecture now includes improved shutdown procedures, signal handler coordination, memory leak prevention mechanisms, and a comprehensive snapshot plugin system with custom network protocols for efficient blockchain state synchronization.
+This document explains the plugin architecture of the node, focusing on the modular, plugin-based design enabled by the appbase framework. It covers how plugins are registered, initialized, started, and shut down with enhanced lifecycle management; how they interact with the chain database and each other; and how to develop custom plugins using the provided template generator. The architecture now includes improved shutdown procedures, signal handler coordination, memory leak prevention mechanisms, comprehensive snapshot plugin system with custom network protocols for efficient blockchain state synchronization, and robust session management with RAII-based race condition prevention.
 
 ## Project Structure
-The node organizes plugins under the plugins directory, with each plugin providing its own header and implementation files. The application entry point registers and initializes plugins, while a Python script generates boilerplate for new plugins. The enhanced lifecycle management ensures proper resource cleanup during shutdown. The new snapshot plugin extends this architecture with advanced state synchronization capabilities.
+The node organizes plugins under the plugins directory, with each plugin providing its own header and implementation files. The application entry point registers and initializes plugins, while a Python script generates boilerplate for new plugins. The enhanced lifecycle management ensures proper resource cleanup during shutdown. The new snapshot plugin extends this architecture with advanced state synchronization capabilities and sophisticated connection management.
 
 ```mermaid
 graph TB
@@ -64,7 +66,7 @@ subgraph "Core Plugins"
 P1["plugins/chain<br/>Chain plugin"]
 P2["plugins/webserver<br/>Webserver plugin"]
 P3["plugins/p2p<br/>P2P plugin"]
-P4["plugins/snapshot<br/>Snapshot plugin<br/>NEW"]
+P4["plugins/snapshot<br/>Snapshot plugin<br/>Enhanced"]
 end
 subgraph "Feature Plugins"
 P5["plugins/database_api<br/>Database API plugin"]
@@ -107,7 +109,7 @@ T --> P7
 - Database API plugin: Depends on chain and JSON-RPC; provides read-only database queries and subscriptions.
 - Account History plugin: Tracks per-account operation history and depends on chain and operation history.
 - Follow plugin: Depends on chain and JSON-RPC; provides social graph APIs.
-- **Snapshot plugin**: NEW - Provides DLT state snapshots, automatic snapshot creation, P2P synchronization, and custom TCP protocol for efficient state distribution.
+- **Snapshot plugin**: Enhanced - Provides DLT state snapshots, automatic snapshot creation, P2P synchronization, custom TCP protocol for efficient state distribution, and robust session management with RAII-based race condition prevention.
 - Plugin template generator: Automates creation of new plugins with standardized structure and dependencies.
 
 **Section sources**
@@ -123,7 +125,7 @@ T --> P7
 - [snapshot_plugin.hpp:42-76](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L42-L76)
 
 ## Architecture Overview
-The node uses appbase to manage plugins as independent, composable units with enhanced lifecycle management. Plugins declare their dependencies, receive lifecycle callbacks with proper shutdown handling, and can expose APIs and signals. The chain plugin owns the database and emits events; other plugins subscribe to chain events or depend on the chain plugin for read/write access with coordinated shutdown procedures. The new snapshot plugin integrates seamlessly with this architecture through specialized callbacks for state management.
+The node uses appbase to manage plugins as independent, composable units with enhanced lifecycle management. Plugins declare their dependencies, receive lifecycle callbacks with proper shutdown handling, and can expose APIs and signals. The chain plugin owns the database and emits events; other plugins subscribe to chain events or depend on the chain plugin for read/write access with coordinated shutdown procedures. The enhanced snapshot plugin integrates seamlessly with this architecture through specialized callbacks for state management and sophisticated connection handling.
 
 ```mermaid
 graph TB
@@ -133,7 +135,7 @@ end
 subgraph "Core Plugins"
 CHAIN["chain::plugin<br/>owns database<br/>enhanced shutdown"]
 JSONRPC["json_rpc::plugin"]
-SNAPSHOT["snapshot::plugin<br/>NEW<br/>DLT state management"]
+SNAPSHOT["snapshot::plugin<br/>Enhanced<br/>DLT state management<br/>RAII session guards"]
 end
 subgraph "Feature Plugins"
 WS["webserver_plugin<br/>proper cleanup"]
@@ -441,7 +443,7 @@ The enhanced lifecycle management includes several mechanisms to prevent memory 
 ## Snapshot Plugin System
 
 ### Overview
-The snapshot plugin provides comprehensive DLT (Distributed Ledger Technology) state management capabilities for VIZ blockchain nodes. It enables efficient state synchronization through automatic snapshot creation, loading from existing snapshots, and P2P synchronization between nodes using a custom TCP protocol.
+The snapshot plugin provides comprehensive DLT (Distributed Ledger Technology) state management capabilities for VIZ blockchain nodes. It enables efficient state synchronization through automatic snapshot creation, loading from existing snapshots, and P2P synchronization between nodes using a custom TCP protocol. The enhanced version includes robust session management with RAII-based race condition prevention and sophisticated retry logic for reliable connection establishment.
 
 ### Key Features
 - **Automatic Snapshot Creation**: Creates snapshots at specific block heights or periodically
@@ -450,6 +452,8 @@ The snapshot plugin provides comprehensive DLT (Distributed Ledger Technology) s
 - **Custom TCP Protocol**: Implements a binary protocol for efficient snapshot distribution
 - **Anti-Spam Protection**: Built-in rate limiting and connection management
 - **Security Controls**: Trust model with optional trusted-only serving
+- **Enhanced Session Management**: RAII-based session guards prevent race conditions
+- **Robust Connection Handling**: Retry logic addresses timing issues in P2P communication
 
 ### Snapshot Formats and Storage
 The snapshot plugin supports two file formats:
@@ -553,6 +557,140 @@ I --> |No| K["Accept Connection"]
 **Section sources**
 - [snapshot_plugin.cpp:1438-1544](file://plugins/snapshot/plugin.cpp#L1438-L1544)
 - [snapshot-plugin.md:96-103](file://documentation/snapshot-plugin.md#L96-L103)
+
+## Session Guard Implementation
+
+### RAII Session Guard Design
+The snapshot plugin implements a sophisticated RAII session guard to prevent race conditions in connection handling:
+
+#### Session Guard Class
+The `session_guard` class provides automatic cleanup of active session records:
+
+```cpp
+struct session_guard {
+    snapshot_plugin::plugin_impl& self;
+    uint32_t ip;
+    bool released = false;
+    session_guard(snapshot_plugin::plugin_impl& s, uint32_t i) : self(s), ip(i) {}
+    ~session_guard() { release(); }
+    void release() {
+        if (!released) {
+            released = true;
+            fc::scoped_lock<fc::mutex> lock(self.sessions_mutex);
+            self.active_sessions.erase(ip);
+        }
+    }
+} guard(*this, remote_ip);
+```
+
+#### Race Condition Prevention
+- **Eager Cleanup**: Session is removed from `active_sessions` immediately when the guard goes out of scope
+- **Prevents Duplicate Connections**: Ensures no race condition where a client reconnects before async fiber cleanup
+- **Thread Safety**: Uses mutex protection for session management operations
+
+#### Integration with Connection Handling
+The session guard is integrated into the `handle_connection` method:
+
+```mermaid
+flowchart TD
+A["handle_connection Called"] --> B["Create session_guard"]
+B --> C["Process Connection Requests"]
+C --> D{"Function Returns?"}
+D --> |Yes| E["Guard destructor called"]
+E --> F["Remove from active_sessions"]
+F --> G["Cleanup Complete"]
+D --> |No Exception| H["Guard destructor called"]
+H --> F
+```
+
+**Diagram sources**
+- [snapshot_plugin.cpp:1800-1820](file://plugins/snapshot/plugin.cpp#L1800-L1820)
+- [snapshot_plugin.cpp:1780-1788](file://plugins/snapshot/plugin.cpp#L1780-L1788)
+
+**Section sources**
+- [snapshot_plugin.cpp:1800-1820](file://plugins/snapshot/plugin.cpp#L1800-L1820)
+- [snapshot_plugin.cpp:1780-1788](file://plugins/snapshot/plugin.cpp#L1780-L1788)
+
+## Enhanced Retry Logic
+
+### Client-Side Connection Retry Mechanism
+The snapshot plugin implements sophisticated retry logic to address race conditions in P2P communication:
+
+#### Retry Strategy
+- **Maximum 3 Retries**: Limits retry attempts to prevent infinite loops
+- **2-Second Delays**: Allows time for server-side session cleanup
+- **Exponential Backoff**: Gradual retry delays improve success probability
+- **Resource Cleanup**: Proper cleanup between retry attempts
+
+#### Retry Implementation
+The retry logic addresses timing issues where server-side cleanup may not complete:
+
+```mermaid
+flowchart TD
+A["Connect Attempt"] --> B{"Connection Success?"}
+B --> |Yes| C["Connected Successfully"]
+B --> |No| D{"Retry Attempts Left?"}
+D --> |Yes| E["Close Socket"]
+E --> F["Wait 2 Seconds"]
+F --> G["Create New Socket"]
+G --> A
+D --> |No| H["Throw Exception"]
+```
+
+#### Specific Use Cases
+- **Phase 1 to Phase 2 Transition**: Brief delay allows server to clean up Phase 1 session
+- **Anti-Spam Duplicate Session Check**: Addresses timing window where duplicate session detection triggers
+- **Async Fiber Cleanup**: Allows time for background fiber to complete cleanup operations
+
+**Diagram sources**
+- [snapshot_plugin.cpp:2047-2064](file://plugins/snapshot/plugin.cpp#L2047-L2064)
+- [snapshot_plugin.cpp:2036-2039](file://plugins/snapshot/plugin.cpp#L2036-L2039)
+
+**Section sources**
+- [snapshot_plugin.cpp:2047-2064](file://plugins/snapshot/plugin.cpp#L2047-L2064)
+- [snapshot_plugin.cpp:2036-2039](file://plugins/snapshot/plugin.cpp#L2036-L2039)
+
+## Race Condition Prevention
+
+### Comprehensive Race Condition Mitigation
+The enhanced snapshot plugin addresses multiple race conditions through layered protection mechanisms:
+
+#### Connection Race Conditions
+- **Duplicate Session Prevention**: Session guard ensures no overlap between connection attempts
+- **Anti-Spam Race**: Mutex-protected session tracking prevents concurrent access issues
+- **Cleanup Timing**: Proper sequencing of cleanup operations prevents timing gaps
+
+#### Session Management Race Conditions
+- **Active Session Tracking**: Thread-safe tracking prevents concurrent modifications
+- **Connection Count Synchronization**: Atomic operations ensure accurate connection counts
+- **Resource Deallocation**: Proper cleanup order prevents dangling references
+
+#### P2P Communication Race Conditions
+- **Phase Transition Delays**: Controlled timing prevents race between phases
+- **Retry Logic Coordination**: Synchronized retry attempts with server cleanup
+- **Timeout Management**: Coordinated timeouts prevent deadlocks
+
+```mermaid
+sequenceDiagram
+participant Client as "Client"
+participant Server as "Server"
+Client->>Server : Phase 1 Connection
+Server->>Server : Session Created
+Client->>Server : Close Phase 1
+Server->>Server : Async Cleanup Started
+Client->>Server : Phase 2 Connection (Retry)
+Note over Server : Session Guard prevents duplicate
+Server->>Server : Cleanup Completes
+Server->>Client : Connection Established
+```
+
+**Diagram sources**
+- [snapshot_plugin.cpp:1720-1761](file://plugins/snapshot/plugin.cpp#L1720-L1761)
+- [snapshot_plugin.cpp:1804-1820](file://plugins/snapshot/plugin.cpp#L1804-L1820)
+
+**Section sources**
+- [snapshot_plugin.cpp:1720-1761](file://plugins/snapshot/plugin.cpp#L1720-L1761)
+- [snapshot_plugin.cpp:1804-1820](file://plugins/snapshot/plugin.cpp#L1804-L1820)
 
 ## Integration with Chain Plugin
 
@@ -671,6 +809,8 @@ SNAPSHOT --> CHAIN
 - **Chunked transfers**: 1MB chunk size balances memory usage and network efficiency.
 - **Connection limits**: Maximum 5 concurrent connections prevents resource exhaustion.
 - **Anti-spam controls**: Prevents abuse while maintaining reasonable throughput.
+- **Session guard overhead**: Minimal performance impact with significant race condition prevention benefits.
+- **Retry logic efficiency**: Controlled retries with exponential backoff optimize connection success rates.
 
 **Section sources**
 - [plugin.cpp:281-346](file://plugins/chain/plugin.cpp#L281-L346)
@@ -688,10 +828,13 @@ SNAPSHOT --> CHAIN
   - Check snapshot directory permissions for read/write access
   - Monitor TCP server logs for connection errors
   - Validate trusted peer configurations for P2P sync
+  - **Check session guard logs for race condition prevention**
+  - **Monitor retry attempts for connection establishment issues**
 - **Performance issues**:
   - Monitor snapshot creation time and adjust chunk sizes
   - Check network bandwidth for P2P synchronization
   - Verify anti-spam configuration isn't blocking legitimate connections
+  - **Review session guard effectiveness in preventing race conditions**
 
 ```mermaid
 flowchart TD
@@ -728,16 +871,18 @@ NormalShutdown --> Finalize
 - [snapshot_plugin.cpp:1872-1919](file://plugins/snapshot/plugin.cpp#L1872-L1919)
 
 ## Conclusion
-The enhanced plugin architecture leverages appbase to provide a clean separation of concerns with improved lifecycle management, enabling flexible feature addition and removal. Plugins declare dependencies, participate in a standardized lifecycle with proper shutdown procedures, and communicate via signals and API factories. The enhanced shutdown mechanisms, signal handler coordination, and memory leak prevention ensure robust, maintainable extensions to the node. 
+The enhanced plugin architecture leverages appbase to provide a clean separation of concerns with improved lifecycle management, enabling flexible feature addition and removal. Plugins declare dependencies, participate in a standardized lifecycle with proper shutdown procedures, and communicate via signals and API factories. The enhanced shutdown mechanisms, signal handler coordination, and memory leak prevention ensure robust, maintainable extensions to the node.
 
 **The new snapshot plugin system significantly enhances the architecture by providing:**
 - Efficient DLT state management through automatic snapshot creation and loading
 - Custom TCP protocol for optimized P2P synchronization
 - Comprehensive anti-spam protection and security controls
 - Seamless integration with the chain plugin through specialized callbacks
-- Flexible deployment options for different network topologies
+- **Robust session management with RAII-based race condition prevention**
+- **Sophisticated retry logic addressing P2P communication timing issues**
+- **Layered protection mechanisms preventing various race conditions**
 
-The template generator accelerates development while the chain plugin centralizes database access and synchronization events with proper resource cleanup. The snapshot plugin exemplifies best practices for extending node functionality with specialized protocols, robust error handling, and comprehensive configuration options.
+The template generator accelerates development while the chain plugin centralizes database access and synchronization events with proper resource cleanup. The enhanced snapshot plugin exemplifies best practices for extending node functionality with specialized protocols, robust error handling, comprehensive configuration options, and sophisticated concurrency control mechanisms.
 
 ## Appendices
 - Best practices for extending node functionality:
@@ -750,6 +895,8 @@ The template generator accelerates development while the chain plugin centralize
   - Keep plugin responsibilities narrow and focused on specific domains.
   - Use configuration options to tune performance and behavior.
   - Ensure graceful shutdown procedures for all long-running operations.
-  - **For network plugins**: Implement proper connection management and anti-abuse controls.
-  - **For state management plugins**: Provide validation and recovery mechanisms.
-  - **For protocol plugins**: Design efficient wire formats and implement proper error handling.
+  - **For network plugins**: Implement proper connection management, anti-abuse controls, and race condition prevention.
+  - **For state management plugins**: Provide validation and recovery mechanisms with proper cleanup procedures.
+  - **For protocol plugins**: Design efficient wire formats, implement proper error handling, and consider concurrency implications.
+  - **For plugins with shared resources**: Implement RAII-based resource management to prevent race conditions.
+  - **For client-side plugins**: Implement retry logic with proper backoff strategies for reliable operation.

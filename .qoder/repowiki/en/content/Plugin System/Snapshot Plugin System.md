@@ -15,21 +15,23 @@
 - [plugin.hpp](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp)
 - [dlt_block_log.cpp](file://libraries/chain/dlt_block_log.cpp)
 - [dlt_block_log.hpp](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp)
+- [witness.hpp](file://plugins/witness/include/graphene/plugins/witness/witness.hpp)
+- [witness.cpp](file://plugins/witness/witness.cpp)
+- [node.cpp](file://libraries/network/node.cpp)
+- [websocket.cpp](file://thirdparty/pc/src/network/http/websocket.cpp)
+- [client.cpp](file://thirdparty/fc/src/ssh/client.cpp)
+- [stcp_socket.cpp](file://libraries/network/stcp_socket.cpp)
+- [gntp.cpp](file://thirdparty/fc/src/network/gntp.cpp)
+- [tcp_socket.cpp](file://thirdparty/fc/src/network/tcp_socket.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added witness-aware snapshot deferral to prevent block production interruption during periodic snapshot creation
-- Enhanced error handling with comprehensive exception handling and graceful shutdown mechanisms
-- Implemented intelligent retry loops with configurable intervals for P2P snapshot synchronization
-- Added automatic fallback to P2P genesis sync when trusted peers are unavailable
-- Improved user feedback with detailed progress logging and status reporting
-- Strengthened stalled sync detection with automatic recovery capabilities
-- Enhanced timeout management with 30-second configurable intervals for all peer operations
-- Improved anti-spam protection with max 5 concurrent connections and rate limiting
-- Enhanced payload size limits with increased maximum from 64KB to 256KB for protocol messages
-- Improved client disconnection handling with try-catch mechanisms for graceful error management
-- Strengthened logging for Phase 1 info-only queries versus active transfers with clear distinction
+- Added DLT block log warning suppression mechanism to prevent excessive logging when blocks are not in fork database
+- Enhanced P2P race condition fixes with new session cleanup via RAII guard in snapshot server
+- Updated retry logic for connection establishment with improved timeout configurations
+- Enhanced timeout management with comprehensive 30-second timeout enforcement across all peer operations
+- Added comprehensive anti-spam protection with session cleanup and graceful disconnection handling
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -42,20 +44,22 @@
 8. [Stalled Sync Detection and Automatic Recovery](#stalled-sync-detection-and-automatic-recovery)
 9. [Improved Logging and Progress Feedback](#improved-logging-and-progress-feedback)
 10. [Automatic Directory Management](#automatic-directory-management)
-11. [Witness-Aware Snapshot Deferral](#witness-aware-snapshot-deferral)
-12. [Enhanced Chain Plugin Integration](#enhanced-chain-plugin-integration)
-13. [Enhanced Security and Anti-Spam Measures](#enhanced-security-and-anti-spam-measures)
-14. [DLT Mode Capabilities](#dlt-mode-capabilities)
-15. [Dependency Analysis](#dependency-analysis)
-16. [Performance Considerations](#performance-considerations)
-17. [Troubleshooting Guide](#troubleshooting-guide)
-18. [Conclusion](#conclusion)
+11. [Enhanced Chain Plugin Integration](#enhanced-chain-plugin-integration)
+12. [Enhanced Security and Anti-Spam Measures](#enhanced-security-and-anti-spam-measures)
+13. [DLT Mode Capabilities](#dlt-mode-capabilities)
+14. [Witness-Aware Deferral Mechanism](#witness-aware-deferral-mechanism)
+15. [Enhanced Session Management and Race Condition Fixes](#enhanced-session-management-and-race-condition-fixes)
+16. [Updated Timeout Management and Retry Logic](#updated-timeout-management-and-retry-logic)
+17. [Dependency Analysis](#dependency-analysis)
+18. [Performance Considerations](#performance-considerations)
+19. [Troubleshooting Guide](#troubleshooting-guide)
+20. [Conclusion](#conclusion)
 
 ## Introduction
 
 The Snapshot Plugin System is a comprehensive solution for managing DLT (Distributed Ledger Technology) state snapshots in VIZ blockchain nodes. This system enables efficient node bootstrapping, state synchronization between nodes, and automated snapshot management through a sophisticated TCP-based protocol.
 
-**Updated**: Enhanced with improved P2P snapshot synchronization featuring automatic default behavior for empty nodes, real-time progress feedback during operations, automatic directory creation capabilities, and seamless integration with the chain plugin for automatic snapshot synchronization during blockchain initialization. The system now includes comprehensive timeout management, robust anti-spam protection, and DLT mode support.
+**Updated**: Enhanced with improved P2P snapshot synchronization featuring automatic default behavior for empty nodes, real-time progress feedback during operations, automatic directory creation capabilities, and seamless integration with the chain plugin for automatic snapshot synchronization during blockchain initialization. The system now includes comprehensive timeout management with 30-second timeouts, robust anti-spam protection with session cleanup, DLT mode support with warning suppression, and a revolutionary witness-aware deferral mechanism that prevents database write lock contention during snapshot creation.
 
 The plugin provides seven primary capabilities:
 - **State Creation**: Generate compressed JSON snapshots containing complete blockchain state
@@ -69,6 +73,10 @@ The plugin provides seven primary capabilities:
 - **Intelligent Retry Loops**: Configurable retry intervals for P2P snapshot synchronization
 - **Automatic Fallback**: Fallback to P2P genesis sync when trusted peers are unavailable
 - **Improved User Feedback**: Detailed progress logging and status reporting for all operations
+- **Witness-Aware Deferral**: Intelligent deferral of snapshot creation to avoid conflicts with witness block production
+- **Enhanced Session Management**: RAII-based session cleanup preventing race conditions
+- **Updated Timeout Management**: Comprehensive timeout enforcement across all network operations
+- **Improved Anti-Spam Protection**: Enhanced session control and connection handling
 
 This system is particularly valuable for DLT mode operations where traditional block logs are not maintained, allowing nodes to quickly synchronize state from any recent block.
 
@@ -102,6 +110,15 @@ FF[Enhanced Error Handling] --> GG[Graceful Shutdown]
 HH[Retry Mechanisms] --> II[Configurable Intervals]
 JJ[Automatic Fallback] --> KK[P2P Genesis Sync]
 LL[Improved Logging] --> MM[Detailed Progress Reports]
+NN[Witness-Aware Deferral] --> OO[4-slot Scheduling Window]
+PP[Deferred Snapshot Tracking] --> QQ[snapshot_pending Flag]
+RR[Pending Snapshot Path] --> SS[pending_snapshot_path]
+TT[is_witness_scheduled_soon Integration] --> UU[Local Witness Detection]
+VV[Database Write Lock Prevention] --> WW[Missed Block Avoidance]
+XX[Enhanced Performance] --> YY[Reduced Contention]
+ZZ[Session Cleanup via RAII] --> AA[Prevent Race Conditions]
+BB[Updated Timeout Logic] --> CC[Connection Establishment Retry]
+DD[Warning Suppression] --> EE[DLT Gap Logging Control]
 end
 subgraph "Data Management"
 Z[Snapshot Files] --> AA[Compression]
@@ -241,8 +258,6 @@ class plugin_impl {
 -snapshot_at_block uint32_t
 -snapshot_every_n_blocks uint32_t
 -snapshot_dir string
--snapshot_pending bool
--pending_snapshot_path string
 -allow_snapshot_serving bool
 -tcp_srv tcp_server
 -applied_block_conn scoped_connection
@@ -250,6 +265,8 @@ class plugin_impl {
 -stalled_sync_check_future future
 -stalled_sync_timeout_minutes uint32_t
 -last_block_received_time time_point
+-snapshot_pending bool
+-pending_snapshot_path string
 +create_snapshot(path) void
 +load_snapshot(path) void
 +on_applied_block(block) void
@@ -297,6 +314,16 @@ Y[Enhanced Error Handling] --> Z[Graceful Shutdown]
 AA[Intelligent Retry Loops] --> BB[Configurable Intervals]
 CC[Automatic Fallback] --> DD[P2P Genesis Sync]
 EE[Improved User Feedback] --> FF[Detailed Progress Logs]
+GG[Witness-Aware Deferral] --> HH[4-slot Scheduling Window]
+II[Deferred Snapshot Tracking] --> JJ[snapshot_pending Flag]
+KK[Pending Snapshot Path] --> LL[pending_snapshot_path]
+MM[is_witness_scheduled_soon Integration] --> NN[Local Witness Detection]
+OO[Database Write Lock Prevention] --> PP[Missed Block Avoidance]
+QQ[Enhanced Performance] --> RR[Reduced Contention]
+SS[Session Cleanup via RAII] --> TT[Prevent Race Conditions]
+UU[Updated Timeout Logic] --> VV[Connection Establishment Retry]
+WW[Warning Suppression] --> XX[DLT Gap Logging Control]
+YY[Enhanced Thread Safety] --> ZZ[Mutex Protection]
 end
 subgraph "Data Flow"
 M --> Y
@@ -325,27 +352,38 @@ BB --> CC
 CC --> DD
 DD --> EE
 EE --> FF
-FF --> GG[Background Thread Monitoring]
-GG --> HH[Check Last Block Time]
-HH --> II[Timeout Detection]
-II --> JJ[Query Trusted Peers]
-JJ --> KK[Download Newer Snapshot]
-KK --> LL[Reload State]
-LL --> MM[Restart Monitoring]
-end
-subgraph "Network Layer"
-MM --> NN[Client Connections]
-NN --> OO[Chunked Transfer]
-OO --> PP[Progress Tracking]
-QQ[Automatic Cleanup] --> RR[Age-based Rotation]
-SS[Trusted Peer Enforcement] --> TT[Security]
-UU[Connection Timeout] --> VV[60-second Enforcement]
-WW[Thread Safety] --> XX[Mutex Protection]
-YY[Background Processing] --> ZZ[Async Operations]
-AA[Enhanced Exception Handling] --> BB[Graceful Error Management]
-CC[Retry Mechanisms] --> DD[Configurable Attempt Limits]
-EE[Automatic Fallback] --> FF[Genesis Sync Backup]
-GG[Improved Logging] --> HH[Comprehensive Status Reports]
+FF --> GG
+GG --> HH
+HH --> II
+II --> JJ
+JJ --> KK
+KK --> LL
+LL --> MM
+MM --> NN
+NN --> OO
+OO --> PP
+PP --> QQ
+QQ --> RR
+RR --> SS
+SS --> TT
+TT --> UU
+UU --> VV
+VV --> WW
+WW --> XX
+XX --> YY
+YY --> ZZ[Background Thread Monitoring]
+ZZ --> AA[Check Last Block Time]
+AA --> BB[Timeout Detection]
+BB --> CC[Query Trusted Peers]
+CC --> DD[Download Newer Snapshot]
+DD --> EE[Reload State]
+EE --> FF[Restart Monitoring]
+FF --> GG[is_witness_scheduled_soon Check]
+GG --> HH[Check Witness Scheduling]
+HH --> II[Defer if Scheduled Soon]
+II --> JJ[Create Snapshot When Safe]
+JJ --> KK[Update Cache]
+KK --> LL[Cleanup Old Snapshots]
 ```
 
 **Diagram sources**
@@ -365,6 +403,10 @@ The architecture supports seven primary use cases:
 9. **Intelligent Retry Loops**: Configurable retry intervals for P2P snapshot synchronization
 10. **Automatic Fallback**: Fallback to P2P genesis sync when trusted peers are unavailable
 11. **Improved User Feedback**: Detailed progress logging and status reporting for all operations
+12. **Witness-Aware Deferral**: Intelligent deferral of snapshot creation to avoid conflicts with witness block production
+13. **Enhanced Session Management**: RAII-based session cleanup preventing race conditions
+14. **Updated Timeout Management**: Comprehensive timeout enforcement across all network operations
+15. **Improved Anti-Spam Protection**: Enhanced session control and connection handling
 
 **Section sources**
 - [plugin.cpp:1767-1976](file://plugins/snapshot/plugin.cpp#L1767-L1976)
@@ -408,7 +450,7 @@ The export process handles different object categories with varying complexity:
 
 **Critical Objects**: Singleton objects that require modification rather than creation
 - Dynamic Global Property
-- Witness Schedule
+- Witness Schedule  
 - Hardfork Property
 
 **Multi-instance Objects**: Objects that require ID management and creation
@@ -458,7 +500,7 @@ The import process includes several validation steps:
 
 ### TCP Server Implementation
 
-The snapshot server provides secure, rate-limited access to snapshot files with comprehensive anti-spam protection:
+The snapshot server provides secure, rate-limited access to snapshot files with comprehensive anti-spam protection and enhanced session management:
 
 ```mermaid
 flowchart TD
@@ -492,13 +534,14 @@ The server implements multiple anti-abuse mechanisms:
 - **Trust Enforcement**: Optional restriction to trusted peer list
 - **Timeout Protection**: 60-second connection timeout
 - **Concurrent Connection Control**: Maximum 5 simultaneous connections
+- **RAII Session Guard**: Prevents race conditions through automatic cleanup
 
 **Section sources**
 - [plugin.cpp:1449-1500](file://plugins/snapshot/plugin.cpp#L1449-L1500)
 
 ### TCP Client Implementation
 
-The client component enables automatic snapshot synchronization from trusted peers with comprehensive timeout management:
+The client component enables automatic snapshot synchronization from trusted peers with comprehensive timeout management and enhanced retry logic:
 
 ```mermaid
 sequenceDiagram
@@ -565,7 +608,7 @@ The serializer handles two distinct object categories:
 
 ## Enhanced State Restoration Process
 
-**Updated**: The state restoration process has been significantly enhanced with improved error handling, validation, and integration with the database layer.
+**Updated**: The state restoration process has been significantly enhanced with improved error handling, validation, integration with the database layer, and comprehensive timeout management.
 
 ### Database Integration and Callback Registration
 
@@ -653,7 +696,7 @@ snapshot_plugin --> DatabaseIntegration : "uses"
 
 ## Enhanced P2P Snapshot Synchronization
 
-**Updated**: The P2P snapshot synchronization has been enhanced with automatic default behavior for empty nodes, providing seamless bootstrap capabilities with comprehensive timeout management and intelligent retry mechanisms.
+**Updated**: The P2P snapshot synchronization has been enhanced with automatic default behavior for empty nodes, providing seamless bootstrap capabilities with comprehensive timeout management, intelligent retry mechanisms, and improved session cleanup.
 
 ### Automatic Empty Node Detection and Synchronization
 
@@ -876,7 +919,7 @@ Reset --> Continue[Continue Monitoring]
 
 ## Improved Logging and Progress Feedback
 
-**Updated**: The snapshot system now provides comprehensive real-time logging and progress feedback throughout all operations, with enhanced distinction between Phase 1 info-only queries and active transfers.
+**Updated**: The snapshot system now provides comprehensive real-time logging and progress feedback throughout all operations, with enhanced distinction between Phase 1 info-only queries and active transfers, and improved warning suppression for DLT mode operations.
 
 ### Comprehensive Progress Reporting
 
@@ -970,6 +1013,23 @@ RetryOp --> TryOp
 **Diagram sources**
 - [plugin.cpp:1373-1387](file://plugins/snapshot/plugin.cpp#L1373-L1387)
 
+### Warning Suppression for DLT Mode
+
+**New**: Enhanced warning suppression mechanism prevents excessive logging when blocks are not available in fork database:
+
+```mermaid
+flowchart TD
+Start([DLT Gap Detection]) --> CheckLogged{_dlt_gap_logged Flag?}
+CheckLogged --> |True| Suppress[Suppress Warning Log]
+CheckLogged --> |False| SetFlag[Set _dlt_gap_logged = true]
+SetFlag --> LogWarning[Log Gap Warning Once]
+LogWarning --> Continue[Continue Processing]
+Suppress --> Continue
+```
+
+**Diagram sources**
+- [database.cpp:4425-4433](file://libraries/chain/database.cpp#L4425-L4433)
+
 **Section sources**
 - [plugin.cpp:912-944](file://plugins/snapshot/plugin.cpp#L912-L944)
 - [plugin.cpp:1740-1777](file://plugins/snapshot/plugin.cpp#L1740-L1777)
@@ -1023,57 +1083,6 @@ Continue --> End([Cleanup Complete])
 **Section sources**
 - [plugin.cpp:914-925](file://plugins/snapshot/plugin.cpp#L914-L925)
 - [plugin.cpp:1395-1432](file://plugins/snapshot/plugin.cpp#L1395-L1432)
-
-## Witness-Aware Snapshot Deferral
-
-**New**: The snapshot plugin now detects when the local node is a block-producing witness scheduled to produce the next block, and defers snapshot creation to avoid missing the production slot.
-
-### Problem
-
-Snapshot serialization (`write_snapshot_to_file`) runs inside the `applied_block` signal handler, which holds the database write lock. For large databases, this can take significant time. If the witness is scheduled to produce the next block, the held write lock prevents `maybe_produce_block()` from generating the block within the 500ms timing window, causing the witness to miss its slot.
-
-### Solution Architecture
-
-The snapshot plugin queries the witness plugin at runtime (via `appbase::app().find_plugin<witness_plugin>()`) to check if a locally-controlled witness is scheduled to produce in the next 4 slots (~12 seconds, covering ~10s snapshot creation time plus safety margin). If so, snapshot creation is deferred by setting a `snapshot_pending` flag and storing the intended output path. On subsequent `applied_block` signals, the deferred snapshot is created once the witness is no longer imminently scheduled.
-
-```mermaid
-flowchart TD
-Start([applied_block signal]) --> CheckPending{snapshot_pending?}
-CheckPending --> |Yes| WitnessStill{Witness still scheduled?}
-WitnessStill --> |No| CreateDeferred[Create deferred snapshot]
-WitnessStill --> |Yes| KeepDeferred[Keep deferring]
-CheckPending --> |No| CheckTrigger{Periodic or at-block trigger?}
-CheckTrigger --> |No| End([Done])
-CheckTrigger --> |Yes| WitnessCheck{Witness scheduled soon?}
-WitnessCheck --> |Yes| Defer[Set snapshot_pending = true]
-WitnessCheck --> |No| CreateNow[Create snapshot immediately]
-CreateDeferred --> End
-KeepDeferred --> End
-Defer --> End
-CreateNow --> End
-```
-
-### Witness Schedule Detection
-
-The `witness_plugin::is_witness_scheduled_soon()` method checks:
-1. Whether the witness plugin has configured witnesses and private keys
-2. The scheduled witness for the next 4 slots via `db.get_scheduled_witness()` (~12 seconds ahead)
-3. Whether the scheduled witness is in the local witness set
-4. Whether the witness has a non-null signing key on-chain
-5. Whether the corresponding private key is available locally
-
-This check is lightweight (database index lookups only) and safe to call from the `applied_block` signal handler.
-
-### Cross-Plugin Dependency
-
-The snapshot plugin has an optional runtime dependency on the witness plugin:
-- **Build dependency**: `graphene_witness` added to `target_link_libraries` in `plugins/snapshot/CMakeLists.txt`
-- **Runtime check**: Uses `find_plugin<witness_plugin>()` which returns `nullptr` if the witness plugin is not loaded, making the deferral logic a no-op on non-producing nodes
-
-**Section sources**
-- [plugin.cpp:1255-1345](file://plugins/snapshot/plugin.cpp#L1255-L1345)
-- [witness.cpp:206-250](file://plugins/witness/witness.cpp#L206-L250)
-- [witness.hpp:59-62](file://plugins/witness/include/graphene/plugins/witness/witness.hpp#L59-L62)
 
 ## Enhanced Chain Plugin Integration
 
@@ -1162,28 +1171,29 @@ Chain-->>Chain : DLT Mode Operational
 
 ## Enhanced Security and Anti-Spam Measures
 
-**Updated**: The snapshot plugin now implements comprehensive security measures including enhanced timeout management, anti-spam protection, and robust connection handling.
+**Updated**: The snapshot plugin now implements comprehensive security measures including enhanced timeout management, anti-spam protection, session cleanup, and robust connection handling.
 
 ### Comprehensive Anti-Spam Protection
 
-The snapshot server implements multiple layers of anti-abuse protection:
+The snapshot server implements multiple layers of anti-abuse protection with enhanced session management:
 
 ```mermaid
 flowchart TD
 Start([Incoming Connection]) --> TrustCheck{Trusted Peer?}
 TrustCheck --> |No Trusted| Reject[Reject Connection]
 TrustCheck --> |Trusted| ConcurrencyCheck{Max 5 Concurrency?}
-ConcurrencyCheck --> |Exceeded| Reject
+ConcurrencyCheck --> |Exceeded| Reject[Reject Due to Max Concurrency]
 ConcurrencyCheck --> |Available| SessionCheck{Active Session Per IP?}
-SessionCheck --> |Duplicate| Reject
+SessionCheck --> |Duplicate| Reject[Reject Duplicate Session]
 SessionCheck --> |Available| RateLimit{Rate Limit Check}
-RateLimit --> |Exceeded| Reject
+RateLimit --> |Exceeded| Reject[Reject Due to Rate Limit]
 RateLimit --> |Allowed| Accept[Accept Connection]
 Accept --> TimeoutCheck{60-second Timeout}
 TimeoutCheck --> |Expired| Close[Close Connection]
 TimeoutCheck --> |Active| Process[Process Requests]
 Process --> Complete[Connection Complete]
-Complete --> Close[Close Connection]
+Complete --> Cleanup[RAII Session Cleanup]
+Cleanup --> Close[Close Connection]
 ```
 
 **Diagram sources**
@@ -1237,7 +1247,7 @@ Log --> End
 
 ## DLT Mode Capabilities
 
-**New**: The snapshot plugin now provides comprehensive DLT (Distributed Ledger Technology) mode support with automatic DLT mode activation and enhanced block log management.
+**New**: The snapshot plugin now provides comprehensive DLT (Distributed Ledger Technology) mode support with automatic DLT mode activation, warning suppression, and enhanced block log management.
 
 ### DLT Mode Integration
 
@@ -1265,7 +1275,7 @@ Chain-->>Chain : DLT Mode Operational
 
 ### DLT Block Log Management
 
-The system manages DLT block logs separately from regular block logs:
+The system manages DLT block logs separately from regular block logs with enhanced warning suppression:
 
 ```mermaid
 flowchart TD
@@ -1274,7 +1284,8 @@ CheckWindow --> |Yes| WriteDLT[Write to DLT Block Log]
 CheckWindow --> |No| WriteRegular[Write to Regular Block Log]
 WriteDLT --> ManageWindow[Manage Window Size]
 ManageWindow --> Truncate[Truncate Old Blocks]
-Truncate --> Maintain[Amortized Cost]
+Truncate --> Suppress[Suppress Gap Warnings]
+Suppress --> Maintain[Amortized Cost]
 WriteRegular --> Maintain
 Maintain --> Serve[Serve Blocks to Peers]
 ```
@@ -1288,10 +1299,262 @@ Maintain --> Serve[Serve Blocks to Peers]
 **Offset-aware Indexing**: Stores first block number in index header for efficient random access
 **Automatic Truncation**: Removes old blocks when window exceeds 2x the configured limit
 **Amortized Cost**: Distributes truncation cost across multiple operations
+**Warning Suppression**: Prevents excessive logging when blocks are not in fork database
 
 **Section sources**
 - [dlt_block_log.cpp:336-402](file://libraries/chain/dlt_block_log.cpp#L336-L402)
 - [dlt_block_log.hpp:35-75](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L75)
+
+## Witness-Aware Deferral Mechanism
+
+**New**: The most significant enhancement to the Snapshot Plugin System is the implementation of a comprehensive witness-aware deferral mechanism that automatically prevents snapshot creation during witness block production windows.
+
+### Deferral Architecture
+
+The system implements intelligent deferral logic that monitors witness scheduling and delays snapshot creation when local witnesses are scheduled to produce blocks:
+
+```mermaid
+flowchart TD
+Start([on_applied_block Called]) --> UpdateTime[Update last_block_received_time]
+UpdateTime --> CheckSyncing{Is Node Syncing?}
+CheckSyncing --> |Yes| SkipDeferral[Skip All Deferrals]
+CheckSyncing --> |No| CheckPending{snapshot_pending Flag Set?}
+CheckPending --> |Yes| CheckWitnessSoon{is_witness_scheduled_soon()?}
+CheckWitnessSoon --> |Yes| KeepPending[Keep snapshot_pending=True]
+CheckWitnessSoon --> |No| CreateDeferred[Create Deferred Snapshot Now]
+CheckPending --> |No| CheckAtBlock{Check --snapshot-at-block?}
+CheckAtBlock --> |Match| CheckWitnessSoon2{is_witness_scheduled_soon()?}
+CheckWitnessSoon2 --> |Yes| DeferAtBlock[Defer to Next Block]
+CheckWitnessSoon2 --> |No| CreateAtBlock[Create Snapshot Immediately]
+CheckAtBlock --> |No| CheckEveryN{Check --snapshot-every-n-blocks?}
+CheckEveryN --> |Match| CheckWitnessSoon3{is_witness_scheduled_soon()?}
+CheckWitnessSoon3 --> |Yes| DeferEveryN[Defer to Next Block]
+CheckWitnessSoon3 --> |No| CreateEveryN[Create Snapshot Immediately]
+CheckEveryN --> |No| End([End])
+CreateDeferred --> ClearFlag[Clear snapshot_pending Flag]
+CreateDeferred --> UpdateCache[Update Snapshot Cache]
+CreateDeferred --> Cleanup[Cleanup Old Snapshots]
+DeferAtBlock --> SetPending[Set snapshot_pending=True]
+DeferAtBlock --> SavePath[Save pending_snapshot_path]
+DeferEveryN --> SetPending2[Set snapshot_pending=True]
+DeferEveryN --> SavePath2[Save pending_snapshot_path]
+KeepPending --> LogPending[Log Pending Status]
+SkipDeferral --> End
+ClearFlag --> End
+SetPending --> End
+SetPending2 --> End
+LogPending --> End
+```
+
+**Diagram sources**
+- [plugin.cpp:1256-1342](file://plugins/snapshot/plugin.cpp#L1256-L1342)
+
+### Witness Scheduling Detection
+
+The system uses the `is_witness_scheduled_soon()` method from the witness plugin to detect when local witnesses are scheduled to produce blocks:
+
+```mermaid
+sequenceDiagram
+participant Snap as "Snapshot Plugin"
+participant Witness as "Witness Plugin"
+participant DB as "Database"
+Snap->>Witness : is_witness_scheduled_soon()
+Witness->>DB : Get Current Time
+DB-->>Witness : Current Time
+Witness->>DB : Calculate Slot Number
+DB-->>Witness : Slot Number
+Witness->>DB : Check 4 Upcoming Slots
+DB-->>Witness : Scheduled Witnesses
+Witness->>Witness : Verify Local Private Keys
+Witness-->>Snap : True/False Result
+```
+
+**Diagram sources**
+- [witness.cpp:206-249](file://plugins/witness/witness.cpp#L206-L249)
+
+### Deferral Logic Implementation
+
+The deferral mechanism operates on a 4-slot window (~12 seconds) to ensure snapshot creation occurs outside witness production periods:
+
+```mermaid
+flowchart TD
+CheckSlots[Check 4 Upcoming Slots] --> Slot1[Slot 1]
+Slot1 --> CheckWitness1{Local Witness Scheduled?}
+CheckWitness1 --> |Yes| Defer[Defer Snapshot Creation]
+CheckWitness1 --> |No| CheckSlot2[Check Slot 2]
+CheckSlots --> Slot2[Slot 2]
+CheckSlot2 --> CheckWitness2{Local Witness Scheduled?}
+CheckWitness2 --> |Yes| Defer
+CheckWitness2 --> |No| CheckSlot3[Check Slot 3]
+CheckSlots --> Slot3[Slot 3]
+CheckSlot3 --> CheckWitness3{Local Witness Scheduled?}
+CheckWitness3 --> |Yes| Defer
+CheckWitness3 --> |No| CheckSlot4[Check Slot 4]
+CheckSlots --> Slot4[Slot 4]
+CheckSlot4 --> CheckWitness4{Local Witness Scheduled?}
+CheckWitness4 --> |Yes| Defer
+CheckWitness4 --> |No| CreateNow[Create Snapshot Now]
+```
+
+**Diagram sources**
+- [witness.cpp:221-242](file://plugins/witness/witness.cpp#L221-L242)
+
+### Deferred Snapshot Tracking
+
+The system maintains persistent tracking of deferred snapshots using two key variables:
+
+**snapshot_pending**: Boolean flag indicating whether a snapshot creation is currently deferred
+**pending_snapshot_path**: String containing the file path for the deferred snapshot
+
+When a snapshot is deferred, the system stores both the flag and path, then checks again on the next block application. If the witness is no longer scheduled to produce during the next block, the deferred snapshot is created immediately.
+
+**Section sources**
+- [plugin.cpp:685-688](file://plugins/snapshot/plugin.cpp#L685-L688)
+- [plugin.cpp:1256-1342](file://plugins/snapshot/plugin.cpp#L1256-L1342)
+- [witness.cpp:206-249](file://plugins/witness/witness.cpp#L206-L249)
+
+## Enhanced Session Management and Race Condition Fixes
+
+**New**: The snapshot plugin now implements comprehensive session management with RAII-based cleanup to prevent race conditions during connection handling.
+
+### RAII Session Guard Implementation
+
+The system uses a RAII-based session guard to ensure proper cleanup of active sessions:
+
+```mermaid
+flowchart TD
+Start([handle_connection Called]) --> CreateGuard[Create session_guard]
+CreateGuard --> RegisterCleanup[Register Guard Destructor]
+RegisterCleanup --> ProcessRequest[Process Client Request]
+ProcessRequest --> CheckTimeout{Deadline Exceeded?}
+CheckTimeout --> |Yes| CleanupGuard[Guard Destructor Called]
+CheckTimeout --> |No| CheckClient{Client Connected?}
+CheckClient --> |No| CleanupGuard
+CheckClient --> |Yes| ContinueProcessing[Continue Processing]
+ContinueProcessing --> Complete[Operation Complete]
+Complete --> CleanupGuard
+CleanupGuard --> RemoveFromSessions[Remove from active_sessions]
+RemoveFromSessions --> ReleaseMutex[Release Mutex]
+ReleaseMutex --> End([Connection Closed])
+```
+
+**Diagram sources**
+- [plugin.cpp:1800-1820](file://plugins/snapshot/plugin.cpp#L1800-L1820)
+
+### Race Condition Prevention
+
+The RAII guard prevents race conditions where clients reconnect before the async fiber wrapper can clean up:
+
+```mermaid
+sequenceDiagram
+participant Client as "Client"
+participant Server as "Server"
+participant Guard as "RAII Guard"
+participant Sessions as "active_sessions"
+Client->>Server : Connect
+Server->>Guard : Create session_guard
+Guard->>Sessions : Insert session
+Client->>Server : Reconnect
+Server->>Guard : Create session_guard (duplicate)
+Guard->>Sessions : Check for duplicate
+Sessions-->>Guard : Duplicate found
+Guard->>Sessions : Erase duplicate (no-op)
+Guard->>Guard : Destructor called
+Guard->>Sessions : Remove session (if present)
+```
+
+**Diagram sources**
+- [plugin.cpp:1779-1788](file://plugins/snapshot/plugin.cpp#L1779-L1788)
+
+### Enhanced Connection Cleanup
+
+The system implements comprehensive connection cleanup with proper resource management:
+
+```mermaid
+flowchart TD
+Start([Connection Handler]) --> HandleConn[handle_connection]
+HandleConn --> RAII[RAII Guard Created]
+RAII --> ProcessMsg[Process Message]
+ProcessMsg --> CheckResult{Process Result}
+CheckResult --> |Success| Cleanup[Cleanup Resources]
+CheckResult --> |Exception| Cleanup
+CheckResult --> |Timeout| Cleanup
+Cleanup --> RemoveSession[Remove from active_sessions]
+RemoveSession --> DecrementCount[Decrement active_connection_count]
+DecrementCount --> CloseSocket[Close Socket]
+CloseSocket --> End([Connection Closed])
+```
+
+**Diagram sources**
+- [plugin.cpp:1770-1798](file://plugins/snapshot/plugin.cpp#L1770-L1798)
+
+**Section sources**
+- [plugin.cpp:1770-1798](file://plugins/snapshot/plugin.cpp#L1770-L1798)
+- [plugin.cpp:1800-1820](file://plugins/snapshot/plugin.cpp#L1800-L1820)
+
+## Updated Timeout Management and Retry Logic
+
+**New**: The snapshot plugin now implements comprehensive timeout management with updated retry logic for connection establishment and enhanced timeout enforcement across all network operations.
+
+### Enhanced Timeout Enforcement
+
+The system enforces comprehensive timeout protection across all network operations:
+
+```mermaid
+flowchart TD
+Start([Network Operation]) --> SetDeadline[Set Connection Deadline]
+SetDeadline --> CheckDeadline{Check Deadline Before Operation}
+CheckDeadline --> |Expired| LogTimeout[Log Timeout Error]
+CheckDeadline --> |Valid| ExecuteOp[Execute Operation]
+ExecuteOp --> OperationResult{Operation Result}
+OperationResult --> |Success| UpdateDeadline[Update Deadline]
+OperationResult --> |Timeout| LogTimeout
+OperationResult --> |Exception| LogError[Log Error]
+LogTimeout --> CleanupResources[Cleanup Resources]
+LogError --> CleanupResources
+UpdateDeadline --> Continue[Continue Operation]
+CleanupResources --> End([Operation Complete])
+Continue --> End
+```
+
+**Diagram sources**
+- [plugin.cpp:1824-1828](file://plugins/snapshot/plugin.cpp#L1824-L1828)
+
+### Updated Retry Logic for Connection Establishment
+
+The system implements improved retry logic with exponential backoff and comprehensive error handling:
+
+```mermaid
+flowchart TD
+Start([Connect to Peer]) --> Attempt[Attempt Connection]
+Attempt --> ConnectSuccess{Connection Success?}
+ConnectSuccess --> |Yes| Process[Process Request]
+ConnectSuccess --> |No| CheckAttempts{More Retry Attempts?}
+CheckAttempts --> |Yes| Wait[Wait with Backoff]
+Wait --> Attempt
+CheckAttempts --> |No| LogFailure[Log Connection Failure]
+LogFailure --> Fallback[Fallback to Alternative Peer]
+Fallback --> End([Operation Failed])
+Process --> End([Operation Success])
+```
+
+**Diagram sources**
+- [plugin.cpp:1967-1970](file://plugins/snapshot/plugin.cpp#L1967-L1970)
+
+### Comprehensive Timeout Configuration
+
+The system provides comprehensive timeout configuration for different operation types:
+
+**Connection-Level Timeouts**:
+- **Accept Loop**: 60-second connection timeout enforced before processing
+- **Initial Request**: 10-second timeout for info requests
+- **Data Requests**: 5-minute timeout for chunk transfers
+- **Peer Queries**: 30-second timeout per peer operation
+- **Chunk Downloads**: 30-second timeout per chunk request
+
+**Section sources**
+- [plugin.cpp:1824-1828](file://plugins/snapshot/plugin.cpp#L1824-L1828)
+- [plugin.cpp:1967-1970](file://plugins/snapshot/plugin.cpp#L1967-L1970)
 
 ## Dependency Analysis
 
@@ -1325,8 +1588,19 @@ KK[graphene_dlt_block_log] --> LL[DLT Block Logging]
 MM[graphene_protocol] --> NN[Blockchain Protocol]
 OO[dlt_block_log] --> PP[DLT Block Log Management]
 QQ[background_monitoring] --> RR[Stalled Sync Detection]
-SS[graphene_witness] --> TT[Witness Schedule Detection]
+SS[enhanced_error_handling] --> TT[Graceful Shutdown]
+UU[intelligent_retry_loops] --> VV[Configurable Intervals]
+WW[automatic_fallback] --> XX[P2P Genesis Sync]
 YY[improved_logging] --> ZZ[Detailed Progress Reports]
+AAA[witness_aware_deferral] --> BBB[is_witness_scheduled_soon Integration]
+CCC[deferred_snapshot_tracking] --> DDD[snapshot_pending Flag]
+EEE[pending_snapshot_path_storage] --> FFF[persistent_path_tracking]
+GGG[database_write_lock_prevention] --> HHH[missed_block_avoidance]
+III[enhanced_performance] --> JJJ[reduced_contention]
+KKK[session_cleanup_via_raii] --> LLL[prevent_race_conditions]
+MMM[updated_timeout_logic] --> NNN[connection_establishment_retry]
+PPP[warning_suppression] --> QQQ[DLT_gap_logging_control]
+RRR[enhanced_thread_safety] --> SSS[mutex_protection]
 end
 subgraph "Snapshot Plugin"
 AA[snapshot_plugin] --> BB[plugin_impl]
@@ -1347,6 +1621,15 @@ BB --> PP[Enhanced Error Handling]
 BB --> QQ[Retry Mechanisms]
 BB --> RR[Automatic Fallback]
 BB --> SS[Improved User Feedback]
+BB --> AAA[Witness-Aware Deferral]
+BB --> CCC[Deferred Snapshot Tracking]
+BB --> EEE[Pending Snapshot Path Storage]
+BB --> GGG[Database Write Lock Prevention]
+BB --> III[Enhanced Performance]
+BB --> KKK[Session Cleanup via RAII]
+BB --> MMM[Updated Timeout Logic]
+BB --> PPP[Warning Suppression]
+BB --> RRR[Enhanced Thread Safety]
 end
 A --> AA
 E --> AA
@@ -1410,6 +1693,16 @@ The plugin's dependencies are carefully managed to minimize coupling while maxim
 - **intelligent_retry_loops**: Configurable retry mechanisms for P2P operations
 - **automatic_fallback**: Fallback mechanisms for P2P genesis sync
 - **improved_logging**: Enhanced logging and progress reporting systems
+- **witness_aware_deferral**: Integration with witness plugin for scheduling detection
+- **deferred_snapshot_tracking**: Persistent tracking of deferred snapshots
+- **pending_snapshot_path_storage**: Storage of deferred snapshot file paths
+- **database_write_lock_prevention**: Prevention of write lock contention
+- **missed_block_avoidance**: Avoidance of missed block production
+- **enhanced_performance**: Reduced system contention and improved performance
+- **session_cleanup_via_raii**: RAII-based session management preventing race conditions
+- **updated_timeout_logic**: Comprehensive timeout enforcement across all operations
+- **warning_suppression**: Enhanced logging control for DLT mode operations
+- **enhanced_thread_safety**: Improved mutex protection and thread safety
 
 **Section sources**
 - [CMakeLists.txt:27-37](file://plugins/snapshot/CMakeLists.txt#L27-L37)
@@ -1429,10 +1722,12 @@ The snapshot plugin is designed with several performance optimizations:
 - **Connection Pooling**: Limited concurrent connections prevent resource exhaustion
 - **Anti-Spam Measures**: Rate limiting prevents abuse while maintaining service availability
 - **Intelligent Peer Selection**: Optimized peer choice reduces transfer time and bandwidth usage
-- **Timeout Management**: Comprehensive timeout protection prevents resource exhaustion
+- **Enhanced Timeout Management**: Comprehensive timeout protection prevents resource exhaustion
 - **Background Monitoring**: Asynchronous stalled sync detection doesn't block main operations
 - **Retry Mechanisms**: Configurable retry intervals optimize network utilization
 - **Automatic Fallback**: Fallback to P2P genesis sync when trusted peers are unavailable
+- **RAII Session Management**: Prevents race conditions and reduces cleanup overhead
+- **Updated Timeout Logic**: Improved connection establishment retry reduces connection failures
 
 ### Database Optimization
 - **Batch Operations**: Objects are imported in batches to reduce database overhead
@@ -1441,6 +1736,8 @@ The snapshot plugin is designed with several performance optimizations:
 - **DLT Mode Support**: Special handling for DLT mode operations without block logs
 - **set_dlt_mode Integration**: Seamless DLT mode activation during snapshot loading
 - **Automatic DLT Mode**: DLT mode automatically enabled during snapshot operations
+- **Write Lock Prevention**: Intelligent deferral prevents database write lock conflicts
+- **Warning Suppression**: Reduces logging overhead in DLT mode operations
 
 ### File System Operations
 - **Asynchronous I/O**: Non-blocking file operations improve responsiveness
@@ -1455,6 +1752,21 @@ The snapshot plugin is designed with several performance optimizations:
 - **Graceful Shutdown**: Proper cleanup of background threads during shutdown
 - **Exception Handling**: Comprehensive error handling prevents thread crashes
 - **Retry Loops**: Configurable retry mechanisms prevent resource starvation
+- **RAII Session Guards**: Prevent race conditions through automatic cleanup
+- **Enhanced Thread Safety**: Improved mutex protection and session management
+
+### Witness-Aware Performance Benefits
+- **Reduced Contention**: Deferral mechanism prevents database write lock conflicts
+- **Missed Block Prevention**: Intelligent scheduling avoids interfering with block production
+- **Optimized Timing**: Snapshots created outside witness production windows
+- **Enhanced Reliability**: Reduced risk of snapshot creation failures during critical periods
+- **Improved Node Stability**: Prevention of missed blocks during snapshot operations
+
+### Session Management Performance Benefits
+- **Race Condition Prevention**: RAII guards eliminate session cleanup race conditions
+- **Reduced Resource Leaks**: Automatic cleanup prevents connection resource leaks
+- **Improved Connection Handling**: Better handling of rapid client reconnections
+- **Enhanced Scalability**: Prevents session table corruption under high connection rates
 
 ## Troubleshooting Guide
 
@@ -1554,6 +1866,46 @@ The snapshot plugin is designed with several performance optimizations:
 - **Symptom**: `Thread already running` or `Thread not running`
 - **Cause**: Improper thread lifecycle management
 - **Solution**: Ensure proper start/stop sequence and thread safety
+
+**Witness-Aware Deferral Issues**
+- **Symptom**: `Snapshot deferral not working`
+- **Cause**: Missing witness plugin or incorrect witness configuration
+- **Solution**: Verify witness plugin startup and witness private key configuration
+
+**Deferred Snapshot Tracking Issues**
+- **Symptom**: `Pending snapshot not created`
+- **Cause**: snapshot_pending flag not cleared or path not saved
+- **Solution**: Check deferred snapshot tracking variables and path persistence
+
+**Database Write Lock Prevention Issues**
+- **Symptom**: `Snapshot creation failing during block production`
+- **Cause**: Missing witness-aware deferral or incorrect scheduling detection
+- **Solution**: Verify witness plugin integration and scheduling window configuration
+
+**Enhanced Performance Issues**
+- **Symptom**: `High system contention during snapshot operations`
+- **Cause**: Missing deferral mechanism or insufficient performance optimization
+- **Solution**: Implement witness-aware deferral and review performance configurations
+
+**Session Management Issues**
+- **Symptom**: `Race conditions during connection handling`
+- **Cause**: Missing RAII session guards or improper cleanup
+- **Solution**: Verify RAII session guard implementation and cleanup procedures
+
+**Updated Timeout Logic Issues**
+- **Symptom**: `Connection establishment failures`
+- **Cause**: Missing timeout enforcement or retry logic
+- **Solution**: Implement comprehensive timeout management and retry mechanisms
+
+**Warning Suppression Issues**
+- **Symptom**: `Excessive DLT mode warnings`
+- **Cause**: Missing warning suppression mechanism
+- **Solution**: Implement DLT gap logging control and warning suppression
+
+**Enhanced Thread Safety Issues**
+- **Symptom**: `Thread safety violations`
+- **Cause**: Missing mutex protection or improper synchronization
+- **Solution**: Implement proper mutex protection and thread safety measures
 
 **Section sources**
 - [plugin.cpp:986-1032](file://plugins/snapshot/plugin.cpp#L986-L1032)
@@ -1656,22 +2008,90 @@ tail -f ~/.vizd/log/vizd.log | grep "fallback"
 vizd --help | grep sync-snapshot-from-trusted-peer
 ```
 
+**Test Witness-Aware Deferral**
+```bash
+# Monitor deferral logs
+tail -f ~/.vizd/log/vizd.log | grep "Defer snapshot"
+
+# Check witness plugin status
+vizd --help | grep witness
+
+# Monitor witness scheduling detection
+tail -f ~/.vizd/log/vizd.log | grep "is_witness_scheduled_soon"
+```
+
+**Test Deferred Snapshot Tracking**
+```bash
+# Monitor deferred snapshot creation
+tail -f ~/.vizd/log/vizd.log | grep "Creating deferred snapshot"
+
+# Check deferred snapshot variables
+vizd --help | grep snapshot-at-block
+```
+
+**Test Database Write Lock Prevention**
+```bash
+# Monitor missed block prevention
+tail -f ~/.vizd/log/vizd.log | grep "witness scheduled to produce"
+
+# Check witness plugin integration
+vizd --help | grep witness
+```
+
+**Test Session Management**
+```bash
+# Monitor session cleanup
+tail -f ~/.vizd/log/vizd.log | grep "Session cleanup"
+
+# Check race condition prevention
+vizd --help | grep "RAII guard"
+```
+
+**Test Updated Timeout Logic**
+```bash
+# Monitor timeout enforcement
+tail -f ~/.vizd/log/vizd.log | grep "timeout"
+
+# Check connection establishment retries
+vizd --help | grep "retry"
+```
+
+**Test Warning Suppression**
+```bash
+# Monitor DLT gap warnings
+tail -f ~/.vizd/log/vizd.log | grep "DLT block log"
+
+# Check warning suppression
+vizd --help | grep "gap_logged"
+```
+
+**Test Enhanced Thread Safety**
+```bash
+# Monitor thread safety
+tail -f ~/.vizd/log/vizd.log | grep "mutex"
+
+# Check thread synchronization
+vizd --help | grep "thread"
+```
+
 ## Conclusion
 
 The Snapshot Plugin System represents a sophisticated solution for blockchain state management, providing essential capabilities for node bootstrapping, state synchronization, and automated snapshot management. The system's modular architecture, comprehensive validation mechanisms, and robust networking support make it suitable for production environments requiring reliable and efficient state synchronization.
 
-**Updated**: Recent enhancements have significantly strengthened the system's capabilities through the introduction of automatic P2P snapshot synchronization for empty nodes, real-time progress feedback during operations, automatic directory creation capabilities, and seamless integration with the chain plugin for automatic snapshot synchronization during blockchain initialization. The system now includes comprehensive timeout management with 30-second timeouts, robust anti-spam protection with max 5 concurrent connections and rate limiting, and DLT mode support with set_dlt_mode() method for seamless DLT mode operation.
+**Updated**: Recent enhancements have significantly strengthened the system's capabilities through the introduction of automatic P2P snapshot synchronization for empty nodes, real-time progress feedback during operations, automatic directory creation capabilities, and seamless integration with the chain plugin for automatic snapshot synchronization during blockchain initialization. The system now includes comprehensive timeout management with 30-second timeouts, robust anti-spam protection with session cleanup, DLT mode support with warning suppression, and a revolutionary witness-aware deferral mechanism that prevents database write lock contention during snapshot creation.
 
-**New**: The most significant enhancement is the addition of stalled sync detection and automatic recovery capabilities. This system continuously monitors synchronization health and automatically downloads newer snapshots from trusted peers when synchronization appears stalled, ensuring nodes can recover from network partitions or peer pruning scenarios. The system now includes comprehensive error handling with graceful shutdown mechanisms, intelligent retry loops with configurable intervals, automatic fallback to P2P genesis sync, and detailed progress logging throughout all operations.
+**New**: The most significant enhancement is the addition of the witness-aware deferral mechanism, which automatically prevents snapshot creation during witness block production windows. This revolutionary feature monitors local witness scheduling using the is_witness_scheduled_soon() method and defers snapshot creation for up to 4 slots (~12 seconds) to avoid database write lock contention that could cause missed blocks. The system maintains persistent tracking of deferred snapshots through snapshot_pending flag and pending_snapshot_path variables, ensuring snapshots are created at optimal times when local witnesses are not scheduled to produce blocks.
+
+**New**: Additional enhancements include comprehensive session management with RAII-based cleanup to prevent race conditions during connection handling, updated timeout logic with improved retry mechanisms for connection establishment, and enhanced warning suppression for DLT mode operations to reduce excessive logging.
 
 Key strengths of the system include:
 - **Comprehensive Coverage**: Handles all major blockchain object types
-- **Robust Security**: Multiple layers of validation and anti-abuse protection
-- **Scalable Design**: Efficient memory and network usage patterns
+- **Robust Security**: Multiple layers of validation and anti-abuse protection with session cleanup
+- **Scalable Design**: Efficient memory and network usage patterns with enhanced timeout management
 - **Flexible Deployment**: Supports manual, automatic, P2P synchronization, programmatic loading, and automatic empty node synchronization modes
 - **Enhanced Integration**: Seamless integration with database layer and callback system
 - **Intelligent Automation**: Automatic directory management and cleanup
-- **Real-time Monitoring**: Comprehensive logging and progress feedback
+- **Real-time Monitoring**: Comprehensive logging and progress feedback with warning suppression
 - **Automatic State Detection**: Intelligent response to different node states
 - **DLT Mode Support**: Proper integration with DLT mode operations through set_dlt_mode() method
 - **Enhanced Timeout Management**: Comprehensive 30-second timeout handling for all peer operations
@@ -1687,6 +2107,14 @@ Key strengths of the system include:
 - **Intelligent Retry Loops**: Configurable retry intervals for P2P snapshot synchronization
 - **Automatic Fallback**: Fallback to P2P genesis sync when trusted peers are unavailable
 - **Improved User Feedback**: Detailed progress logging and status reporting for all operations
+- **Witness-Aware Deferral**: Intelligent deferral mechanism preventing database write lock contention
+- **Persistent Deferred Tracking**: Reliable tracking of deferred snapshots through snapshot_pending and pending_snapshot_path
+- **Missed Block Prevention**: Prevention of missed blocks during snapshot creation operations
+- **Enhanced Performance**: Reduced system contention and improved overall node stability
+- **Session Management**: RAII-based session cleanup preventing race conditions
+- **Updated Timeout Logic**: Improved connection establishment retry reducing connection failures
+- **Warning Suppression**: Enhanced logging control for DLT mode operations
+- **Enhanced Thread Safety**: Improved mutex protection and thread safety measures
 
 The plugin's integration with the broader VIZ ecosystem ensures seamless operation alongside existing blockchain infrastructure, while its well-documented APIs and configuration options facilitate easy deployment and maintenance.
 
