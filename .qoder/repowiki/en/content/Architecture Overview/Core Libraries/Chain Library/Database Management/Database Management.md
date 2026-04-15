@@ -11,15 +11,16 @@
 - [fork_database.hpp](file://libraries/chain/include/graphene/chain/fork_database.hpp)
 - [fork_database.cpp](file://libraries/chain/fork_database.cpp)
 - [plugin.cpp](file://plugins/snapshot/plugin.cpp)
+- [db_with.hpp](file://libraries/chain/include/graphene/chain/db_with.hpp)
+- [witness.cpp](file://plugins/witness/witness.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added documentation for the new `_dlt_gap_logged` flag mechanism that prevents repetitive logging of missing block warnings during DLT operations
-- Enhanced DLT mode detection with proper setter implementation in set_dlt_mode() method
-- Implemented automatic flag reset upon successful block writes to dlt_block_log
-- Added comprehensive contextual logging for DLT block gaps showing dlt_head, LIB, and target block numbers
-- Improved DLT gap suppression mechanism with intelligent warning management
+- Enhanced logging capabilities with rate-limited warnings for block number collisions
+- Sophisticated differentiation between same-parent double production and different-parent fork scenarios
+- Improved postponed transaction processing documentation with time-based execution limits
+- Enhanced DLT gap logging with automatic state management for gap filling detection
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -43,6 +44,8 @@ The database subsystem is implemented primarily in the chain library with enhanc
 - DLT block log for rolling window storage: libraries/chain/include/graphene/chain/dlt_block_log.hpp and libraries/chain/dlt_block_log.cpp
 - Fork database for reversible blocks: libraries/chain/include/graphene/chain/fork_database.hpp and libraries/chain/fork_database.cpp
 - Snapshot plugin integration: plugins/snapshot/plugin.cpp for DLT mode initialization
+- Postponed transaction processing: libraries/chain/include/graphene/chain/db_with.hpp for transaction queue management
+- Witness plugin integration: plugins/witness/witness.cpp for block production coordination
 
 ```mermaid
 graph TB
@@ -55,9 +58,11 @@ DLTH["dlt_block_log.hpp"]
 DLTCPP["dlt_block_log.cpp"]
 FDH["fork_database.hpp"]
 FDCPP["fork_database.cpp"]
+DBWH["db_with.hpp"]
 end
 subgraph "Plugins"
 SNAPH["snapshot/plugin.cpp"]
+WITNESS["witness/witness.cpp"]
 end
 DBH --> DBCPP
 DBCPP --> BLH
@@ -66,30 +71,36 @@ DBCPP --> DLTH
 DBCPP --> DLTCPP
 DBCPP --> FDH
 DBCPP --> FDCPP
+DBCPP --> DBWH
 SNAPH --> DBH
+WITNESS --> DBH
 ```
 
 **Diagram sources**
 - [database.hpp:1-615](file://libraries/chain/include/graphene/chain/database.hpp#L1-L615)
-- [database.cpp:1-5551](file://libraries/chain/database.cpp#L1-L5551)
+- [database.cpp:1-5593](file://libraries/chain/database.cpp#L1-L5593)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
 - [dlt_block_log.cpp:1-414](file://libraries/chain/dlt_block_log.cpp#L1-L414)
 - [fork_database.hpp:1-125](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L125)
 - [fork_database.cpp:1-245](file://libraries/chain/fork_database.cpp#L1-L245)
+- [db_with.hpp:1-154](file://libraries/chain/include/graphene/chain/db_with.hpp#L1-L154)
 - [plugin.cpp:2130-2140](file://plugins/snapshot/plugin.cpp#L2130-L2140)
+- [witness.cpp:449-467](file://plugins/witness/witness.cpp#L449-L467)
 
 **Section sources**
 - [database.hpp:1-615](file://libraries/chain/include/graphene/chain/database.hpp#L1-L615)
-- [database.cpp:1-5551](file://libraries/chain/database.cpp#L1-L5551)
+- [database.cpp:1-5593](file://libraries/chain/database.cpp#L1-L5593)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
 - [dlt_block_log.cpp:1-414](file://libraries/chain/dlt_block_log.cpp#L1-L414)
 - [fork_database.hpp:1-125](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L125)
 - [fork_database.cpp:1-245](file://libraries/chain/fork_database.cpp#L1-L245)
+- [db_with.hpp:1-154](file://libraries/chain/include/graphene/chain/db_with.hpp#L1-L154)
 - [plugin.cpp:2130-2140](file://plugins/snapshot/plugin.cpp#L2130-L2140)
+- [witness.cpp:449-467](file://plugins/witness/witness.cpp#L449-L467)
 
 ## Core Components
 - database class: Public interface for blockchain state management, block and transaction processing, checkpoints, and event notifications with enhanced DLT mode support and improved error handling.
@@ -99,6 +110,8 @@ SNAPH --> DBH
 - chainbase integration: Provides persistent object storage and undo sessions.
 - signal_guard: Enhanced signal handling for graceful restart sequence management.
 - **_dlt_gap_logged flag**: New mechanism to suppress repeated warnings about missing blocks in fork database after snapshot import, with automatic reset upon successful DLT block writes.
+- **Enhanced block collision detection**: Sophisticated logging system that differentiates between same-parent double production and different-parent fork scenarios with rate-limiting.
+- **Postponed transaction processing**: Time-based transaction execution with automatic queuing when processing limits are reached.
 
 Key responsibilities:
 - Lifecycle: open(), open_from_snapshot(), reindex(), close(), wipe() with improved error handling
@@ -109,6 +122,8 @@ Key responsibilities:
 - Persistence: integrates with block_log and dlt_block_log for different operational modes
 - Enhanced Block Fetching: DLT mode-aware block retrieval with proper validation logic
 - **Gap Suppression**: Intelligent warning suppression mechanism that prevents log spam during normal DLT operations while maintaining diagnostic capability
+- **Rate-limited Logging**: Sophisticated collision detection with time-based suppression to prevent log flooding
+- **Smart Transaction Processing**: Automatic transaction queuing and delayed execution based on processing time limits
 
 **Section sources**
 - [database.hpp:61-115](file://libraries/chain/include/graphene/chain/database.hpp#L61-L115)
@@ -116,6 +131,8 @@ Key responsibilities:
 - [block_log.hpp:38-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L38-L75)
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
 - [fork_database.hpp:53-125](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L125)
+- [database.cpp:929-984](file://libraries/chain/database.cpp#L929-L984)
+- [db_with.hpp:33-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L33-L100)
 
 ## Architecture Overview
 The database composes four primary subsystems with enhanced DLT mode support and improved error handling:
@@ -125,6 +142,8 @@ The database composes four primary subsystems with enhanced DLT mode support and
 - DLT block log: Rolling window block storage for DLT (snapshot-based) nodes
 - Signal guard: Enhanced signal handling for graceful restart sequences
 - **DLT Gap Logger**: New component that manages warning suppression for missing blocks with automatic state management
+- **Enhanced Collision Detection**: Sophisticated logging system for block number collisions with scenario differentiation
+- **Postponed Transaction Manager**: Smart transaction queue management with time-based execution limits
 
 ```mermaid
 classDiagram
@@ -145,6 +164,8 @@ class database {
 +_dlt_block_log_max_blocks : uint32_t
 +_dlt_gap_logged : bool
 +signal_guard : enhanced error handling
++_maybe_warn_multiple_production(height)
++CHIAN_PENDING_TRANSACTION_EXECUTION_LIMIT : time limit constant
 }
 class block_log {
 +open(path)
@@ -176,10 +197,18 @@ class signal_guard {
 +get_is_interrupted()
 +throw_exception()
 }
+class pending_transactions_restorer {
++pending_transactions_restorer(db, skip, pending)
++~pending_transactions_restorer()
++apply_trxs : bool
++applied_txs : uint32_t
++postponed_txs : uint32_t
+}
 database --> block_log : "uses (normal mode)"
 database --> dlt_block_log : "uses (DLT mode)"
 database --> fork_database : "uses"
 database --> signal_guard : "enhanced restart handling"
+database --> pending_transactions_restorer : "manages postponed tx"
 ```
 
 **Diagram sources**
@@ -189,6 +218,7 @@ database --> signal_guard : "enhanced restart handling"
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
 - [fork_database.hpp:53-125](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L125)
 - [database.cpp:94-184](file://libraries/chain/database.cpp#L94-L184)
+- [db_with.hpp:33-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L33-L100)
 
 ## Detailed Component Analysis
 
@@ -390,11 +420,75 @@ CheckWrote --> |No| Continue
 ```
 
 **Diagram sources**
-- [database.cpp:4426-4444](file://libraries/chain/database.cpp#L4426-L4444)
+- [database.cpp:4460-4490](file://libraries/chain/database.cpp#L4460-L4490)
 
 **Section sources**
 - [database.hpp:75-77](file://libraries/chain/include/graphene/chain/database.hpp#L75-L77)
-- [database.cpp:4426-4444](file://libraries/chain/database.cpp#L4426-L4444)
+- [database.cpp:4460-4490](file://libraries/chain/database.cpp#L4460-L4490)
+
+### Enhanced Block Number Collision Detection and Logging
+**New** - The database now features sophisticated collision detection with rate-limiting and scenario differentiation:
+
+- **Same-Parent vs Different-Parent Detection**: The system differentiates between same-parent double production (colliding blocks from the same parent) and different-parent fork scenarios (divergent chain tips).
+- **Rate-Limited Warnings**: Uses a static counter and timestamp to suppress repeated warnings at the same block height within a 5-second window.
+- **Timestamp Delta Analysis**: Calculates time differences between colliding blocks to help diagnose timing issues.
+- **Witness Information Logging**: Logs witness names and timestamps for all colliding blocks to aid in forensic analysis.
+- **Parent Block ID Tracking**: Records previous block IDs to help analyze fork topology and collision origins.
+
+```mermaid
+flowchart TD
+Start(["Block Height Collision"]) --> FetchBlocks["fetch_block_by_number(height)"]
+FetchBlocks --> CheckSize{"blocks.size() > 1?"}
+CheckSize --> |No| Return["No collision"]
+CheckSize --> |Yes| ExtractInfo["Extract witness, timestamp, previous_id"]
+ExtractInfo --> SameParent{"all previous_ids identical?"}
+SameParent --> |Yes| DoubleProd["Same Parent - Possible Double Production"]
+SameParent --> |No| ForkScenario["Different Parents - Fork Scenario"]
+DoubleProd --> RateLimit["Check rate limit (5s window)"]
+ForkScenario --> RateLimit
+RateLimit --> ShouldLog{"Should log warning?"}
+ShouldLog --> |No| Return
+ShouldLog --> |Yes| LogWarning["Log collision with scenario differentiation"]
+LogWarning --> UpdateState["Update last_warned_height/time"]
+UpdateState --> LogParents["Log previous block IDs for topology analysis"]
+LogParents --> Return
+```
+
+**Diagram sources**
+- [database.cpp:929-984](file://libraries/chain/database.cpp#L929-L984)
+
+**Section sources**
+- [database.cpp:929-984](file://libraries/chain/database.cpp#L929-L984)
+
+### Enhanced Postponed Transaction Processing
+**New** - The database now implements intelligent transaction queuing with time-based execution limits:
+
+- **Time-Based Execution Limits**: Uses `CHAIN_PENDING_TRANSACTION_EXECUTION_LIMIT` constant to control processing time per batch.
+- **Automatic Queue Management**: When execution time exceeds the limit, transactions are automatically postponed to the next processing cycle.
+- **Smart Recovery**: The `pending_transactions_restorer` class handles recovery after fork switches, attempting to reapply transactions within time limits.
+- **Progressive Application**: Processes transactions in batches, applying as many as possible within the time limit, with postponed transactions moved to the pending queue.
+- **Diagnostic Logging**: Logs the number of applied and postponed transactions to monitor system performance.
+
+```mermaid
+flowchart TD
+Start(["Transaction Processing"]) --> CheckTime["Check time elapsed < CHAIN_PENDING_TRANSACTION_EXECUTION_LIMIT"]
+CheckTime --> |Within Limit| ApplyTx["Apply transaction immediately"]
+CheckTime --> |Exceeded Limit| Postpone["Add to postponed queue"]
+ApplyTx --> NextTx["Next transaction"]
+Postpone --> NextTx
+NextTx --> MoreTx{"More transactions?"}
+MoreTx --> |Yes| CheckTime
+MoreTx --> |No| Complete["Complete processing"]
+Complete --> Recovery["pending_transactions_restorer recovery"]
+Recovery --> BatchApply["Batch apply within time limit"]
+BatchApply --> Finalize["Finalize processing"]
+```
+
+**Diagram sources**
+- [db_with.hpp:33-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L33-L100)
+
+**Section sources**
+- [db_with.hpp:33-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L33-L100)
 
 ### Validation Steps Enumeration and Use Cases
 Validation flags control which checks are performed during block and transaction validation:
@@ -573,6 +667,8 @@ These signals are used by plugins to react to blockchain events without tight co
 - Validate a transaction: validate_transaction(signed_signed_transaction, skip_flags)
 - **Set DLT mode**: set_dlt_mode(true/false) - **Enhanced with proper setter implementation**
 - **DLT Gap Suppression**: The database now automatically manages gap warnings to prevent log spam during normal operations with intelligent state management
+- **Enhanced Collision Detection**: Sophisticated logging for block number collisions with scenario differentiation and rate-limiting
+- **Postponed Transaction Processing**: Automatic transaction queuing with time-based execution limits and smart recovery
 - Query helpers:
   - get_block_id_for_num(uint32_t)
   - fetch_block_by_id(block_id_type)
@@ -592,10 +688,12 @@ The database depends on:
 - block_log for immutable block storage and random access
 - dlt_block_log for rolling window storage in DLT mode
 - fork_database for reversible blocks and fork resolution
-- Protocol types and evaluators for operation processing
+- protocol types and evaluators for operation processing
 - signal_guard for enhanced error handling during restart sequences
 - snapshot plugin for DLT mode initialization
 - **_dlt_gap_logged flag**: New dependency for managing gap warning suppression with automatic state management
+- **Enhanced collision detection**: Sophisticated logging system with scenario differentiation
+- **Postponed transaction manager**: Smart queue management with time-based execution limits
 
 ```mermaid
 graph LR
@@ -608,6 +706,8 @@ DB --> PT["protocol types"]
 DB --> EV["evaluators"]
 DB --> SNAP["snapshot plugin"]
 DB --> GAP["gap suppression flag (_dlt_gap_logged)"]
+DB --> COLL["collision detection system"]
+DB --> POST["postponed transaction manager"]
 ```
 
 **Diagram sources**
@@ -634,6 +734,9 @@ DB --> GAP["gap suppression flag (_dlt_gap_logged)"]
 - **Intelligent Gap Suppression**: The `_dlt_gap_logged` flag prevents log spam during normal DLT operations while maintaining diagnostic capability, reducing I/O overhead and improving system responsiveness.
 - **Automatic Warning Management**: The gap suppression mechanism automatically manages warning states without manual intervention, ensuring optimal logging behavior.
 - **Contextual Logging**: Enhanced diagnostic information helps operators understand DLT synchronization status without excessive log volume.
+- **Rate-Limited Collision Detection**: Sophisticated collision logging prevents log flooding while maintaining critical diagnostic information.
+- **Smart Transaction Processing**: Time-based transaction execution limits prevent system overload and ensure responsive operation.
+- **Postponed Queue Management**: Automatic transaction queuing maintains system stability under high load conditions.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -649,6 +752,10 @@ Common issues and remedies:
 - **Gap Warning Spam**: The `_dlt_gap_logged` flag automatically suppresses repeated warnings, but if warnings persist, check DLT block log configuration and LIB advancement.
 - **DLT Gap Detection**: Monitor the gap suppression mechanism to ensure it's functioning correctly during normal DLT operations. The system will automatically reset the flag when gaps are filled.
 - **Contextual Logging Issues**: Verify that log messages include proper dlt_head, LIB, and target block information for effective troubleshooting.
+- **Block Collision Confusion**: Use the enhanced collision detection logs to differentiate between same-parent double production and different-parent fork scenarios.
+- **Rate-Limiting Issues**: Monitor collision warning suppression to ensure it's functioning properly during sustained fork conditions.
+- **Postponed Transaction Delays**: Check transaction queue processing limits and adjust `CHAIN_PENDING_TRANSACTION_EXECUTION_LIMIT` if necessary.
+- **Witness Production Conflicts**: Monitor witness plugin logs for collision avoidance behavior during fork resolution.
 
 **Section sources**
 - [database.cpp:800-830](file://libraries/chain/database.cpp#L800-L830)
@@ -656,6 +763,8 @@ Common issues and remedies:
 - [database.cpp:492-501](file://libraries/chain/database.cpp#L492-L501)
 - [database.cpp:4016-4020](file://libraries/chain/database.cpp#L4016-L4020)
 - [database.cpp:3998-4000](file://libraries/chain/database.cpp#L3998-L4000)
+- [database.cpp:929-984](file://libraries/chain/database.cpp#L929-L984)
+- [db_with.hpp:33-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L33-L100)
 
 ## Conclusion
-The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support and improved error handling. It integrates chainbase for persistent storage, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, and the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals. The snapshot-aware initialization, rolling window management, and graceful failure handling make it particularly suitable for distributed ledger applications requiring efficient synchronization, reduced storage overhead, and resilient operation during restart sequences. The enhanced DLT mode detection and block availability checking logic ensures accurate P2P synchronization and prevents false positives in block availability reporting. The new gap suppression mechanism provides intelligent warning management that prevents log spam during normal DLT operations while maintaining comprehensive diagnostic capability for troubleshooting. The automatic state management of the `_dlt_gap_logged` flag ensures optimal logging behavior without manual intervention, making the system more maintainable and operable in production environments.
+The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support and improved error handling. It integrates chainbase for persistent storage, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, and the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals. The snapshot-aware initialization, rolling window management, and graceful failure handling make it particularly suitable for distributed ledger applications requiring efficient synchronization, reduced storage overhead, and resilient operation during restart sequences. The enhanced DLT mode detection and block availability checking logic ensures accurate P2P synchronization and prevents false positives in block availability reporting. The new gap suppression mechanism provides intelligent warning management that prevents log spam during normal DLT operations while maintaining comprehensive diagnostic capability for troubleshooting. The automatic state management of the `_dlt_gap_logged` flag ensures optimal logging behavior without manual intervention, making the system more maintainable and operable in production environments. The sophisticated block collision detection system with rate-limiting and scenario differentiation provides enhanced diagnostic capabilities for network health monitoring. The intelligent postponed transaction processing system ensures stable operation under high load conditions with automatic queue management and time-based execution limits.

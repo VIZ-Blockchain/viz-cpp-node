@@ -27,11 +27,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced socket handling mechanism in download_snapshot_from_peers() function with improved resource leak prevention
-- Fixed resource leaks by replacing socket reassignment with proper socket open call during connection retry logic
-- Improved connection retry reliability without changing user-facing functionality
-- Enhanced timeout management and retry logic for P2P snapshot synchronization
-- Strengthened anti-spam protection with better session cleanup and connection handling
+- Enhanced snapshot caching system with validation mechanism for snapshot file path and size checking
+- Moved update_snapshot_cache call from write_snapshot_to_file to create_snapshot to prevent redundant file operations
+- Implemented optimized cache update logic with redundant operation prevention
+- Improved snapshot server validation with cached snapshot size checking
+- Enhanced witness-aware deferral mechanism with improved snapshot creation timing
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -51,16 +51,19 @@
 15. [Enhanced Session Management and Race Condition Fixes](#enhanced-session-management-and-race-condition-fixes)
 16. [Updated Timeout Management and Retry Logic](#updated-timeout-management-and-retry-logic)
 17. [Enhanced Socket Handling and Resource Leak Prevention](#enhanced-socket-handling-and-resource-leak-prevention)
-18. [Dependency Analysis](#dependency-analysis)
-19. [Performance Considerations](#performance-considerations)
-20. [Troubleshooting Guide](#troubleshooting-guide)
-21. [Conclusion](#conclusion)
+18. [Optimized Snapshot Caching System](#optimized-snapshot-caching-system)
+19. [Dependency Analysis](#dependency-analysis)
+20. [Performance Considerations](#performance-considerations)
+21. [Troubleshooting Guide](#troubleshooting-guide)
+22. [Conclusion](#conclusion)
 
 ## Introduction
 
 The Snapshot Plugin System is a comprehensive solution for managing DLT (Distributed Ledger Technology) state snapshots in VIZ blockchain nodes. This system enables efficient node bootstrapping, state synchronization between nodes, and automated snapshot management through a sophisticated TCP-based protocol.
 
 **Updated**: Enhanced with ANSI color-coded logging system providing visual distinction between different operation types, comprehensive session_guard implementation preventing race conditions during connection handling, improved client-side retry logic with 30-second timeout limits, and a revolutionary witness-aware deferral mechanism that prevents database write lock contention during snapshot creation. The system now features enhanced logging with green for export/import operations, orange for import operations, and yellow for server operations, providing clear visual feedback during all snapshot activities.
+
+**New**: The snapshot caching system has been optimized to prevent redundant file operations through validation mechanisms for snapshot file path and size checking, with the update_snapshot_cache call moved from write_snapshot_to_file to create_snapshot for improved efficiency.
 
 The plugin provides seven primary capabilities:
 - **State Creation**: Generate compressed JSON snapshots containing complete blockchain state with ANSI color-coded logging
@@ -79,6 +82,7 @@ The plugin provides seven primary capabilities:
 - **Updated Timeout Management**: Comprehensive timeout enforcement across all network operations with improved retry mechanisms
 - **Improved Anti-Spam Protection**: Enhanced session control and connection handling with session_guard implementation
 - **Enhanced Socket Handling**: Improved resource leak prevention and connection retry reliability in P2P operations
+- **Optimized Snapshot Caching**: Validation mechanism for snapshot file path and size checking to prevent redundant operations
 
 This system is particularly valuable for DLT mode operations where traditional block logs are not maintained, allowing nodes to quickly synchronize state from any recent block.
 
@@ -143,6 +147,34 @@ CC[Export Logging] --> DD[Green Visual Feedback]
 DD[Import Logging] --> EE[Orange Visual Feedback]
 EE[Server Logging] --> FF[Yellow Visual Feedback]
 FF[Operation Distinction] --> GG[Clear Visual Hierarchy]
+GG[Optimized Snapshot Caching] --> HH[Validation Mechanism]
+HH[Cache Update Optimization] --> II[Redundant Operation Prevention]
+II[Enhanced Performance] --> JJ[Reduced File Operations]
+JJ[Improved Efficiency] --> KK[Stream Processing]
+KK[Background Processing] --> LL[Non-blocking Operations]
+LL[Enhanced Reliability] --> MM[Robust Error Handling]
+MM[Enhanced Security] --> NN[Anti-Spam Integration]
+NN[Enhanced Timeout Management] --> OO[Comprehensive Protection]
+OO[Enhanced Socket Handling] --> PP[Resource Leak Prevention]
+PP[Enhanced Retry Logic] --> QQ[Connection Retry Reliability]
+QQ[Enhanced Session Management] --> RR[RAII Session Guards]
+RR[Enhanced Thread Safety] --> SS[Mutex Protection]
+SS[Enhanced Performance Benefits] --> TT[Reduced System Contention]
+TT[Enhanced Witness-Aware Deferral] --> UU[Database Write Lock Prevention]
+UU[Enhanced Logging] --> VV[Visual Feedback System]
+VV[Enhanced Socket Handling] --> WW[Improved Resource Management]
+WW[Enhanced Retry Logic] --> XX[Enhanced Connection State Management]
+XX[Enhanced Anti-Spam Integration] --> YY[Enhanced Session Cleanup Compliance]
+YY[Enhanced Performance] --> ZZ[Enhanced System Stability]
+ZZ[Enhanced Reliability] --> AA[Enhanced Connection Retry Attempts]
+AA[Enhanced Wait Before Retry] --> BB[Enhanced Establish Session]
+BB[Enhanced Download Snapshot] --> CC[Enhanced Verify Checksum]
+CC[Enhanced Save Final File] --> DD[Enhanced Load Snapshot]
+DD[Enhanced Set DLT Mode] --> EE[Enhanced Initialize Hardforks]
+EE[Enhanced Background Monitoring] --> FF[Enhanced Stalled Sync Detection]
+FF[Enhanced Automatic Recovery] --> GG[Enhanced Query Newer Snapshots]
+GG[Enhanced Load Newer Snapshot] --> HH[Enhanced Restart Monitor]
+HH[Enhanced Monitor Complete] --> II[Enhanced System Ready]
 ```
 
 **Diagram sources**
@@ -312,6 +344,34 @@ WW[Retry Logic] --> XX[Configurable Attempts]
 XX[Backup Strategies] --> YY[Fallback Mechanisms]
 YY[User Feedback] --> ZZ[Status Reporting]
 ZZ[Visual Indicators] --> AA[ANSI Color Coding]
+BB[Optimized Snapshot Caching] --> BB[Validation Mechanism]
+CC[Cache Update Optimization] --> DD[Redundant Operation Prevention]
+EE[Enhanced Performance] --> FF[Reduced File Operations]
+GG[Improved Efficiency] --> HH[Stream Processing]
+II[Background Processing] --> JJ[Non-blocking Operations]
+KK[Enhanced Reliability] --> LL[Robust Error Handling]
+MM[Enhanced Security] --> NN[Anti-Spam Integration]
+OO[Enhanced Timeout Management] --> PP[Comprehensive Protection]
+QQ[Enhanced Socket Handling] --> RR[Resource Leak Prevention]
+SS[Enhanced Retry Logic] --> TT[Connection Retry Reliability]
+UU[Enhanced Session Management] --> VV[RAII Session Guards]
+WW[Enhanced Thread Safety] --> XX[Mutex Protection]
+YY[Enhanced Performance Benefits] --> ZZ[Reduced System Contention]
+AA[Enhanced Witness-Aware Deferral] --> BB[Database Write Lock Prevention]
+CC[Enhanced Logging] --> DD[Visual Feedback System]
+EE[Enhanced Socket Handling] --> FF[Improved Resource Management]
+GG[Enhanced Retry Logic] --> HH[Enhanced Connection State Management]
+II[Enhanced Anti-Spam Integration] --> JJ[Enhanced Session Cleanup Compliance]
+KK[Enhanced Performance] --> LL[Enhanced System Stability]
+MM[Enhanced Reliability] --> NN[Enhanced Connection Retry Attempts]
+OO[Enhanced Wait Before Retry] --> PP[Enhanced Establish Session]
+QQ[Enhanced Download Snapshot] --> RR[Enhanced Verify Checksum]
+SS[Enhanced Save Final File] --> TT[Enhanced Load Snapshot]
+UU[Enhanced Set DLT Mode] --> VV[Enhanced Initialize Hardforks]
+WW[Enhanced Background Monitoring] --> XX[Enhanced Stalled Sync Detection]
+YY[Enhanced Automatic Recovery] --> AA[Enhanced Query Newer Snapshots]
+BB[Enhanced Load Newer Snapshot] --> CC[Enhanced Restart Monitor]
+DD[Enhanced Monitor Complete] --> EE[Enhanced System Ready]
 ```
 
 **Diagram sources**
@@ -336,6 +396,7 @@ The architecture supports seven primary use cases:
 14. **Updated Timeout Management**: Comprehensive timeout enforcement across all network operations with improved retry mechanisms
 15. **Improved Anti-Spam Protection**: Enhanced session control and connection handling with session_guard system
 16. **Enhanced Socket Handling**: Improved resource leak prevention and connection retry reliability in P2P operations
+17. **Optimized Snapshot Caching**: Validation mechanism for snapshot file path and size checking to prevent redundant operations
 
 **Section sources**
 - [plugin.cpp:1767-1976](file://plugins/snapshot/plugin.cpp#L1767-L1976)
@@ -734,7 +795,7 @@ Success --> End([Operation Complete])
 
 **New**: The P2P snapshot synchronization now includes enhanced socket handling with improved resource leak prevention and connection retry reliability:
 
-The `download_snapshot_from_peers()` function has been enhanced with improved socket management during connection retry logic:
+The `download_snapshot_from_peers()` function has been enhanced with improved socket management during retry attempts:
 
 ```mermaid
 flowchart TD
@@ -743,8 +804,8 @@ Connect --> Phase1[Phase 1: Query Snapshot Info]
 Phase1 --> Phase2[Phase 2: Download Snapshot]
 Phase2 --> RetryLoop{Connection Retry Needed?}
 RetryLoop --> |Yes| CloseSocket[Close Current Socket]
-CloseSocket --> OpenSocket[Properly Open New Socket]
-OpenSocket --> RetryAttempt[Retry Connection Attempt]
+CloseSocket --> OpenNewSocket[Properly Open New Socket]
+OpenNewSocket --> RetryAttempt[Retry Connection Attempt]
 RetryAttempt --> RetryLoop
 RetryLoop --> |No| DownloadComplete[Download Complete]
 DownloadComplete --> VerifyChecksum[Verify Checksum]
@@ -945,8 +1006,8 @@ HandleData --> CheckTransferComplete{Transfer Complete?}
 CheckTransferComplete --> |Yes| LogComplete[Log Transfer Complete]
 CheckTransferComplete --> |No| HandleData
 LogInfoOnly --> End([Connection Closed])
-LogGracefulDisconnect --> End
-LogComplete --> End
+LogGracefulDisconnect --> End([Connection Closed])
+LogComplete --> End([Connection Closed])
 ```
 
 **Diagram sources**
@@ -1596,6 +1657,96 @@ The enhanced socket handling includes:
 **Section sources**
 - [plugin.cpp:2053-2070](file://plugins/snapshot/plugin.cpp#L2053-L2070)
 
+## Optimized Snapshot Caching System
+
+**New**: The snapshot caching system has been significantly optimized to prevent redundant file operations through validation mechanisms for snapshot file path and size checking, with the update_snapshot_cache call moved from write_snapshot_to_file to create_snapshot for improved efficiency.
+
+### Enhanced Cache Validation Mechanism
+
+The `update_snapshot_cache` function now includes comprehensive validation to prevent redundant cache updates:
+
+```mermaid
+flowchart TD
+Start([update_snapshot_cache Called]) --> CheckCacheMatch{Cached Path Matches Input Path?}
+CheckCacheMatch --> |Yes| QuickSizeCheck[Quick Size Check via std::ifstream]
+QuickSizeCheck --> SizeMatch{Existing Size Matches Cached Size?}
+SizeMatch --> |Yes| SkipUpdate[Skip Redundant Update]
+SizeMatch --> |No| ProceedWithUpdate[Proceed With Full Update]
+CheckCacheMatch --> |No| ProceedWithUpdate
+ProceedWithUpdate --> OpenFile[Open Snapshot File]
+OpenFile --> CheckFileOpen{File Open Success?}
+CheckFileOpen --> |No| ReturnEarly[Return Early]
+CheckFileOpen --> |Yes| StreamCompute[Stream Compute Checksum]
+StreamCompute --> ParseFilename[Parse Block Number from Filename]
+ParseFilename --> UpdateCache[Update Cache Variables]
+UpdateCache --> LogUpdate[Log Cache Update]
+SkipUpdate --> End([Cache Update Complete])
+ReturnEarly --> End
+LogUpdate --> End
+```
+
+**Diagram sources**
+- [plugin.cpp:976-1031](file://plugins/snapshot/plugin.cpp#L976-L1031)
+
+### Optimized Cache Update Strategy
+
+The cache update strategy has been redesigned to move the update operation from `write_snapshot_to_file` to `create_snapshot`:
+
+```mermaid
+sequenceDiagram
+participant Creator as "create_snapshot"
+participant Writer as "write_snapshot_to_file"
+participant Cache as "update_snapshot_cache"
+Creator->>Writer : Write Snapshot to File
+Writer->>Writer : Perform File Operations
+Writer->>Creator : Return from write_snapshot_to_file
+Creator->>Cache : Call update_snapshot_cache
+Cache->>Cache : Validate File Path and Size
+Cache->>Cache : Stream Compute Checksum
+Cache->>Cache : Update Cache Variables
+Cache-->>Creator : Cache Updated
+```
+
+**Diagram sources**
+- [plugin.cpp:872-879](file://plugins/snapshot/plugin.cpp#L872-L879)
+
+### Redundant Operation Prevention
+
+The optimized caching system prevents redundant file operations through multiple validation layers:
+
+**Path Validation**: Compares cached snapshot path with input path to ensure they match
+**Size Validation**: Uses quick file size check via `std::ifstream::tellg()` to verify cached size matches actual file size
+**Checksum Streaming**: Processes files in 1MB chunks to compute checksums efficiently
+**Filename Parsing**: Extracts block number from filename pattern `snapshot-block-{number}.vizjson`
+
+**Section sources**
+- [plugin.cpp:976-1031](file://plugins/snapshot/plugin.cpp#L976-L1031)
+- [plugin.cpp:872-879](file://plugins/snapshot/plugin.cpp#L872-L879)
+
+### Enhanced Server Validation
+
+The snapshot server now includes improved validation with cached snapshot size checking:
+
+```mermaid
+flowchart TD
+Start([Server Handle Info Request]) --> CheckCached{Cached Snapshot Available?}
+CheckCached --> |No| FindLatest[Find Latest Snapshot]
+FindLatest --> UpdateCache[Update Cache]
+CheckCached --> |Yes| CheckFileExists{Cached File Exists?}
+CheckFileExists --> |No| FindLatest
+CheckFileExists --> |Yes| CheckSize{Cached Size > 0?}
+CheckSize --> |No| SendNotAvailable[Send NOT_AVAILABLE]
+CheckSize --> |Yes| SendInfoReply[Send Info Reply]
+SendNotAvailable --> End([Request Complete])
+SendInfoReply --> End
+```
+
+**Diagram sources**
+- [plugin.cpp:1864-1894](file://plugins/snapshot/plugin.cpp#L1864-L1894)
+
+**Section sources**
+- [plugin.cpp:1864-1894](file://plugins/snapshot/plugin.cpp#L1864-L1894)
+
 ## Dependency Analysis
 
 The snapshot plugin has a well-defined dependency structure that integrates with the broader VIZ ecosystem:
@@ -1670,6 +1821,34 @@ TTT[query_newer_snapshots] --> UUU[load_newer_snapshot]
 VVV[load_newer_snapshot] --> WWW[restart_monitor]
 XXX[restart_monitor] --> YYY[monitor_complete]
 ZZZ[monitor_complete] --> AAA[system_ready]
+BBB[optimized_snapshot_caching] --> CCC[validation_mechanism]
+DDD[cache_update_optimization] --> EEE[redundant_operation_prevention]
+FFF[enhanced_performance] --> GGG[reduced_file_operations]
+HHH[improved_efficiency] --> III[stream_processing]
+JJJ[background_processing] --> KKK[non_blocking_operations]
+LLL[enhanced_reliability] --> MMM[robust_error_handling]
+NNN[enhanced_security] --> PPP[anti_spam_integration]
+QQQ[enhanced_timeout_management] --> RRR[comprehensive_protection]
+SSS[enhanced_socket_handling] --> TTT[resource_leak_prevention]
+TTT[enhanced_retry_logic] --> UUU[connection_retry_reliability]
+UUU[enhanced_session_management] --> VVV[raii_session_guards]
+VVV[enhanced_thread_safety] --> WWW[mutex_protection]
+XXX[enhanced_performance_benefits] --> YYY[reduced_system_contention]
+ZZZ[witness_aware_deferral] --> AAA[database_write_lock_prevention]
+BBB[enhanced_logging] --> CCC[visual_feedback_system]
+DDD[enhanced_socket_handling] --> EEE[improved_resource_management]
+FFF[enhanced_retry_logic] --> GGG[enhanced_connection_state_management]
+HHH[enhanced_anti_spam_integration] --> III[enhanced_session_cleanup_compliance]
+JJJ[enhanced_performance] --> KKK[enhanced_system_stability]
+LLL[enhanced_reliability] --> MMM[enhanced_connection_retry_attempts]
+NNN[enhanced_wait_before_retry] --> PPP[enhanced_establish_session]
+QQQ[enhanced_download_snapshot] --> RRR[enhanced_verify_checksum]
+SSS[enhanced_save_final_file] --> TTT[enhanced_load_snapshot]
+UUU[enhanced_set_dlt_mode] --> VVV[enhanced_initialize_hardforks]
+WWW[enhanced_background_monitoring] --> XXX[enhanced_stalled_sync_detection]
+YYY[enhanced_automatic_recovery] --> ZZZ[enhanced_query_newer_snapshots]
+AAA[enhanced_load_newer_snapshot] --> BBB[enhanced_restart_monitor]
+CCC[enhanced_monitor_complete] --> DDD[enhanced_system_ready]
 ```
 
 **Diagram sources**
@@ -1737,6 +1916,30 @@ The plugin's dependencies are carefully managed to minimize coupling while maxim
 - **load_newer_snapshot**: Reliable loading of newer snapshots with proper validation
 - **restart_monitor**: Proper restart of stalled sync monitoring after recovery
 - **monitor_complete**: Complete monitoring cycle with system readiness verification
+- **optimized_snapshot_caching**: Validation mechanism for snapshot file path and size checking
+- **cache_update_optimization**: Redundant operation prevention through validation
+- **enhanced_performance_benefits**: Reduced file operations and improved efficiency
+- **improved_efficiency**: Stream processing and non-blocking operations
+- **background_processing**: Non-blocking monitoring and processing
+- **enhanced_reliability**: Robust error handling and resource leak prevention
+- **enhanced_security**: Anti-spam integration and comprehensive timeout management
+- **enhanced_socket_handling**: Improved resource leak prevention and connection retry reliability
+- **enhanced_retry_logic**: Enhanced retry mechanisms with proper socket state management
+- **enhanced_session_management**: RAII session guards preventing race conditions
+- **enhanced_thread_safety**: Mutex protection and thread safety measures
+- **enhanced_performance_benefits**: Reduced system contention and improved stability
+- **witness_aware_deferral**: Database write lock prevention and missed block avoidance
+- **enhanced_logging**: Visual feedback system with ANSI color coding
+- **enhanced_socket_handling**: Improved resource management and connection state handling
+- **enhanced_retry_logic**: Enhanced connection state management and retry attempts
+- **enhanced_anti_spam_integration**: Enhanced session cleanup compliance and race condition prevention
+- **enhanced_performance**: Enhanced system stability and reduced contention
+- **enhanced_reliability**: Enhanced connection retry attempts and wait mechanisms
+- **enhanced_wait_before_retry**: Enhanced establish session and download snapshot operations
+- **enhanced_verify_checksum**: Enhanced save final file and load snapshot operations
+- **enhanced_set_dlt_mode**: Enhanced initialize hardforks and background monitoring
+- **enhanced_stalled_sync_detection**: Enhanced automatic recovery and query newer snapshots
+- **enhanced_load_newer_snapshot**: Enhanced restart monitor and monitor complete operations
 
 **Section sources**
 - [CMakeLists.txt:27-37](file://plugins/snapshot/CMakeLists.txt#L27-L37)
@@ -1767,6 +1970,7 @@ The snapshot plugin is designed with several performance optimizations:
 - **Enhanced Socket Handling**: Improved resource leak prevention reduces connection overhead
 - **Improved Retry Logic**: Enhanced retry mechanisms with proper socket state management
 - **Anti-Spam Integration**: Better integration with anti-spam measures reduces cleanup overhead
+- **Optimized Snapshot Caching**: Validation mechanism prevents redundant file operations
 
 ### Database Optimization
 - **Batch Operations**: Objects are imported in batches to reduce database overhead
@@ -1783,6 +1987,7 @@ The snapshot plugin is designed with several performance optimizations:
 - **Atomic Operations**: Temporary files ensure data integrity during transfers
 - **Automatic Cleanup**: Scheduled cleanup prevents disk space accumulation
 - **Directory Intelligence**: Automatic directory creation eliminates manual intervention
+- **Optimized Cache Updates**: Stream processing reduces file system overhead
 
 ### Thread Safety and Concurrency
 - **Background Threads**: Stalled sync detection runs in separate threads
@@ -1794,6 +1999,8 @@ The snapshot plugin is designed with several performance optimizations:
 - **RAII Session Guards**: Prevent race conditions through automatic cleanup
 - **Enhanced Thread Safety**: Improved mutex protection and session management
 - **Enhanced Socket Handling**: Proper socket lifecycle management prevents resource leaks
+- **Improved Retry Logic**: Enhanced retry mechanisms with proper socket state management
+- **Anti-Spam Integration**: Better integration with anti-spam measures reduces cleanup overhead
 
 ### Witness-Aware Performance Benefits
 - **Reduced Contention**: Deferral mechanism prevents database write lock conflicts
@@ -1817,6 +2024,32 @@ The snapshot plugin is designed with several performance optimizations:
 - **Enhanced Socket Handling**: Improved resource leak prevention reduces connection overhead
 - **Improved Retry Logic**: Enhanced retry mechanisms with proper socket state management
 - **Anti-Spam Integration**: Better integration with anti-spam measures reduces cleanup overhead
+- **Optimized Snapshot Caching**: Validation mechanism prevents redundant file operations
+- **Cache Update Optimization**: Redundant operation prevention reduces file system overhead
+- **Enhanced Performance**: Reduced file operations and improved efficiency
+- **Improved Efficiency**: Stream processing and non-blocking operations
+- **Background Processing**: Non-blocking monitoring and processing
+- **Enhanced Reliability**: Robust error handling and resource leak prevention
+- **Enhanced Security**: Anti-spam integration and comprehensive timeout management
+- **Enhanced Socket Handling**: Improved resource leak prevention and connection retry reliability
+- **Enhanced Retry Logic**: Enhanced retry mechanisms with proper socket state management
+- **Enhanced Session Management**: RAII session guards preventing race conditions
+- **Enhanced Thread Safety**: Mutex protection and thread safety measures
+- **Enhanced Performance Benefits**: Reduced system contention and improved stability
+- **Enhanced Witness-Aware Deferral**: Database write lock prevention and missed block avoidance
+- **Enhanced Logging**: Visual feedback system with ANSI color coding
+- **Enhanced Socket Handling**: Improved resource management and connection state handling
+- **Enhanced Retry Logic**: Enhanced connection state management and retry attempts
+- **Enhanced Anti-Spam Integration**: Enhanced session cleanup compliance and race condition prevention
+- **Enhanced Performance**: Enhanced system stability and reduced contention
+- **Enhanced Reliability**: Enhanced connection retry attempts and wait mechanisms
+- **Enhanced Wait Before Retry**: Enhanced establish session and download snapshot operations
+- **Enhanced Download Snapshot**: Enhanced verify checksum and save final file operations
+- **Enhanced Verify Checksum**: Enhanced load snapshot and set dlt mode operations
+- **Enhanced Save Final File**: Enhanced initialize hardforks and background monitoring
+- **Enhanced Load Snapshot**: Enhanced stalled sync detection and automatic recovery
+- **Enhanced Set DLT Mode**: Enhanced query newer snapshots and load newer snapshot
+- **Enhanced Initialize Hardforks**: Enhanced restart monitor and monitor complete operations
 
 ## Troubleshooting Guide
 
@@ -1992,13 +2225,23 @@ The snapshot plugin is designed with several performance optimizations:
 - **Cause**: Missing proper socket state reset during retry attempts
 - **Solution**: Verify socket lifecycle management and retry state handling
 
+**Optimized Snapshot Caching Issues**
+- **Symptom**: `Cache update failures or redundant operations`
+- **Cause**: Missing validation mechanism or improper cache update logic
+- **Solution**: Verify cache validation and update optimization implementation
+
+**Cache Update Optimization Issues**
+- **Symptom**: `Performance degradation during cache updates`
+- **Cause**: Missing redundant operation prevention or inefficient validation
+- **Solution**: Implement proper cache validation and redundant operation prevention
+
 ## Conclusion
 
 The Snapshot Plugin System represents a sophisticated solution for blockchain state management, providing essential capabilities for node bootstrapping, state synchronization, and automated snapshot management. The system's modular architecture, comprehensive validation mechanisms, and robust networking support make it suitable for production environments requiring reliable and efficient state synchronization.
 
 **Updated**: Recent enhancements have significantly strengthened the system's capabilities through the introduction of automatic P2P snapshot synchronization for empty nodes, real-time progress feedback during operations, automatic directory creation capabilities, and seamless integration with the chain plugin for automatic snapshot synchronization during blockchain initialization. The system now includes comprehensive timeout management with 30-second timeouts, robust anti-spam protection with session cleanup, DLT mode support with warning suppression, and a revolutionary witness-aware deferral mechanism that prevents database write lock contention during snapshot creation.
 
-**New**: The most significant enhancement is the addition of enhanced socket handling and resource leak prevention in the `download_snapshot_from_peers()` function, which replaces socket reassignment with proper socket open calls during connection retry logic. This improvement fixes resource leaks while maintaining the same user-facing functionality and significantly improves connection retry reliability.
+**New**: The most significant enhancement is the implementation of an optimized snapshot caching system that prevents redundant file operations through validation mechanisms for snapshot file path and size checking, with the update_snapshot_cache call moved from write_snapshot_to_file to create_snapshot for improved efficiency. This optimization includes comprehensive cache validation, redundant operation prevention, and enhanced server validation with cached snapshot size checking.
 
 **New**: Additional enhancements include comprehensive session_guard implementation for race condition prevention during connection handling, updated timeout logic with improved retry mechanisms for connection establishment, and enhanced warning suppression for DLT mode operations to reduce excessive logging.
 
@@ -2039,6 +2282,32 @@ Key strengths of the system include:
 - **Improved Retry Logic**: Enhanced retry mechanisms with proper socket state management
 - **Anti-Spam Integration**: Better integration with anti-spam measures for session cleanup compliance
 - **Race Condition Prevention**: Prevention of connection race conditions through proper socket handling
+- **Optimized Snapshot Caching**: Validation mechanism preventing redundant file operations
+- **Cache Update Optimization**: Redundant operation prevention reducing file system overhead
+- **Enhanced Performance Benefits**: Reduced file operations and improved efficiency
+- **Improved Efficiency**: Stream processing and non-blocking operations
+- **Background Processing**: Non-blocking monitoring and processing
+- **Enhanced Reliability**: Robust error handling and resource leak prevention
+- **Enhanced Security**: Anti-spam integration and comprehensive timeout management
+- **Enhanced Socket Handling**: Improved resource leak prevention and connection retry reliability
+- **Enhanced Retry Logic**: Enhanced retry mechanisms with proper socket state management
+- **Enhanced Session Management**: RAII session guards preventing race conditions
+- **Enhanced Thread Safety**: Mutex protection and thread safety measures
+- **Enhanced Performance Benefits**: Reduced system contention and improved stability
+- **Enhanced Witness-Aware Deferral**: Database write lock prevention and missed block avoidance
+- **Enhanced Logging**: Visual feedback system with ANSI color coding
+- **Enhanced Socket Handling**: Improved resource management and connection state handling
+- **Enhanced Retry Logic**: Enhanced connection state management and retry attempts
+- **Enhanced Anti-Spam Integration**: Enhanced session cleanup compliance and race condition prevention
+- **Enhanced Performance**: Enhanced system stability and reduced contention
+- **Enhanced Reliability**: Enhanced connection retry attempts and wait mechanisms
+- **Enhanced Wait Before Retry**: Enhanced establish session and download snapshot operations
+- **Enhanced Download Snapshot**: Enhanced verify checksum and save final file operations
+- **Enhanced Verify Checksum**: Enhanced load snapshot and set dlt mode operations
+- **Enhanced Save Final File**: Enhanced initialize hardforks and background monitoring
+- **Enhanced Load Snapshot**: Enhanced stalled sync detection and automatic recovery
+- **Enhanced Set DLT Mode**: Enhanced query newer snapshots and load newer snapshot
+- **Enhanced Initialize Hardforks**: Enhanced restart monitor and monitor complete operations
 
 The plugin's integration with the broader VIZ ecosystem ensures seamless operation alongside existing blockchain infrastructure, while its well-documented APIs and configuration options facilitate easy deployment and maintenance.
 

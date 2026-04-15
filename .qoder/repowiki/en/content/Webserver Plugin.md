@@ -13,9 +13,12 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced JSON RPC plugin with ANSI gray color codes for diagnostic logs, particularly around RPC timing and data processing
-- Improved developer experience with visual distinction between normal operation and diagnostic information
-- Enhanced logging capabilities for RPC timing measurements and data processing diagnostics
+- Enhanced JSON-RPC caching mechanism with id-independent keys for improved cache efficiency
+- Implemented string-based mutating API detection for more reliable cache control
+- Added enhanced WebSocket/HTTP handler support with improved request processing
+- Updated request classification system with better mutating API blacklist detection
+- Improved cache key generation to prevent cache bypass attacks via id rotation
+- Enhanced response ID handling with proper JSON-RPC 2.0 compliance
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -34,7 +37,7 @@
 ## Introduction
 The Webserver Plugin provides HTTP and WebSocket endpoints for JSON-RPC API access to the VIZ blockchain node. It serves as a bridge between external clients and the internal JSON-RPC system, offering both persistent WebSocket connections for real-time updates and standard HTTP endpoints for traditional API calls. The plugin includes an intelligent caching mechanisms that automatically classifies requests as mutating or non-mutating, optimizing performance for frequently accessed read-only API methods while preventing cache pollution from state-changing operations.
 
-**Updated** Enhanced with improved diagnostic logging capabilities through ANSI color coding for better developer experience.
+**Updated** Enhanced with major performance optimizations to the JSON-RPC caching mechanism, including id-independent keys, string-based mutating API detection, and improved WebSocket/HTTP handler support.
 
 ## Project Structure
 The webserver plugin is organized within the plugins/webserver directory structure, following the standard VIZ plugin architecture pattern:
@@ -147,7 +150,7 @@ The architecture implements several key design patterns:
 - **Observer Pattern**: Chain event subscription for automatic cache management on block application
 - **Blacklist Pattern**: Mutating API detection and prevention of cache pollution
 
-**Updated** Enhanced with improved diagnostic logging capabilities through ANSI color coding.
+**Updated** Enhanced with improved diagnostic logging capabilities through ANSI color coding and major performance optimizations to the caching mechanism.
 
 ## Detailed Component Analysis
 
@@ -217,6 +220,72 @@ ReturnResponse --> End
 - [webserver_plugin.cpp:86-105](file://plugins/webserver/webserver_plugin.cpp#L86-L105)
 
 **Updated** Enhanced with detailed implementation showing the intelligent caching logic and mutating API blacklist integration.
+
+### Enhanced Cache Key Generation
+The plugin now implements id-independent cache keys to prevent cache bypass attacks and improve cache efficiency:
+
+```mermaid
+flowchart TD
+Request[JSON-RPC Request] --> Parse[Parse Request Body]
+Parse --> Batch{Is Array Request?}
+Batch --> |Yes| FullHash[SHA256 Hash Full Array]
+Batch --> |No| BuildKey[Build Key Material]
+BuildKey --> Method{Has Method?}
+Method --> |Yes| AddMethod[Add Method to Key]
+Method --> |No| ParamsCheck{Has Params?}
+AddMethod --> ParamsCheck
+ParamsCheck --> |Yes| AddParams[Add Params to Key]
+ParamsCheck --> |No| EmptyKey[Empty Key Material]
+AddParams --> HashKey[SHA256 Hash Key Material]
+EmptyKey --> HashKey
+HashKey --> CacheKey[Unique Cache Key]
+FullHash --> CacheKey
+CacheKey --> UseKey[Use for Cache Lookup]
+```
+
+**Diagram sources**
+- [webserver_plugin.cpp:133-159](file://plugins/webserver/webserver_plugin.cpp#L133-L159)
+
+**Updated** Enhanced with new id-independent cache key generation mechanism that prevents cache bypass attacks.
+
+### Enhanced Request Processing Pipeline
+The plugin now includes improved WebSocket and HTTP handler support with better request processing:
+
+```mermaid
+sequenceDiagram
+participant Client as "Client"
+participant Handler as "HTTP/WebSocket Handler"
+participant Parser as "JSON Parser"
+participant Classifier as "Request Classifier"
+participant Cache as "Cache System"
+participant API as "JSON-RPC API"
+Client->>Handler : Raw Request
+Handler->>Parser : Parse JSON
+Parser-->>Handler : Parsed Request
+Handler->>Classifier : Check Mutating API
+Classifier-->>Handler : Cache Decision
+alt Cacheable Request
+Handler->>Cache : Lookup Cache
+Cache-->>Handler : Cache Hit/Miss
+alt Cache Hit
+Handler->>Client : Return Cached Response
+else Cache Miss
+Handler->>API : Process Request
+API-->>Handler : Response
+Handler->>Cache : Store Response
+Handler->>Client : Return Response
+end
+else Non-Cacheable Request
+Handler->>API : Process Request
+API-->>Handler : Response
+Handler->>Client : Return Response
+end
+```
+
+**Diagram sources**
+- [webserver_plugin.cpp:353-496](file://plugins/webserver/webserver_plugin.cpp#L353-L496)
+
+**Updated** Enhanced with improved request processing pipeline that includes better cache handling and response ID management.
 
 ### Thread Pool Management
 The plugin uses the appbase scheduler for request processing, providing a dedicated thread pool separate from the main application thread:
@@ -349,6 +418,8 @@ The webserver plugin implements several performance optimization strategies with
 - **Thread-Safe Operations**: Mutex protection for concurrent access across multiple worker threads
 - **Eviction Policy**: Automatic cache clearing when maximum size is reached to prevent memory exhaustion
 - **Selective Caching**: Prevents cache pollution from mutating API calls (network_broadcast_api, debug_node)
+- **Id-Independent Keys**: Prevents cache bypass attacks via id rotation patterns
+- **String-Based Detection**: Reliable mutating API detection using string parsing instead of complex object traversal
 
 ### Concurrency Model
 - **Separate IO Services**: HTTP and WebSocket servers use dedicated io_service instances for isolation
@@ -362,7 +433,7 @@ The webserver plugin implements several performance optimization strategies with
 - **Cache Size Limits**: Configurable maximum cache size to prevent unbounded memory growth
 - **Blacklist Optimization**: Reduces unnecessary cache storage for mutating API calls
 
-**Updated** Enhanced with detailed implementation showing actual performance optimization strategies and intelligent caching mechanisms.
+**Updated** Enhanced with detailed implementation showing actual performance optimization strategies and intelligent caching mechanisms including id-independent keys and string-based mutating API detection.
 
 **Section sources**
 - [webserver-plugin.md:29-64](file://documentation/webserver-plugin.md#L29-L64)
@@ -394,8 +465,9 @@ The webserver plugin provides multiple layers of security for production deploym
 - **Cache Size Limits**: Configurable cache limits prevent memory abuse
 - **Connection Limits**: WebSocket connections managed through proper thread pool utilization
 - **Blacklist Enforcement**: Prevents cache poisoning from mutating API calls
+- **Cache Bypass Prevention**: Id-independent keys prevent cache bypass attacks via request id rotation
 
-**Updated** Enhanced with practical deployment guidance and security best practices including intelligent request classification.
+**Updated** Enhanced with practical deployment guidance and security best practices including intelligent request classification and cache bypass prevention.
 
 **Section sources**
 - [webserver-plugin.md:77-108](file://documentation/webserver-plugin.md#L77-L108)
@@ -523,6 +595,7 @@ ParseError --> Complete
 - **Performance Metrics**: Track cache hit rates and thread pool utilization
 - **Error Analysis**: Review error logs for common issues
 - **Request Classification**: Monitor which requests are classified as mutating vs non-mutating
+- **Cache Efficiency**: Monitor cache key generation and collision rates
 
 **Updated** Enhanced with actual implementation details and monitoring capabilities including request classification metrics.
 
@@ -593,7 +666,9 @@ Key strengths of the implementation include:
 - **Security Features**: Multiple layers of security including intelligent request classification for mutating APIs
 - **Enhanced Diagnostics**: ANSI color-coded logging system for improved developer experience
 - **Extensible Design**: Clean separation of concerns enabling easy maintenance and enhancement
+- **Performance Optimizations**: Major improvements to caching mechanism with id-independent keys and string-based mutating API detection
+- **Robust Request Processing**: Enhanced WebSocket/HTTP handler support with improved request classification and cache management
 
 The plugin serves as an excellent foundation for building applications that require programmatic access to VIZ blockchain data and operations, with performance characteristics suitable for both private deployments and public API services. Its sophisticated caching mechanism with intelligent request classification, multi-threaded architecture, comprehensive error handling, and enhanced diagnostic logging make it a production-ready solution for enterprise-grade blockchain applications.
 
-**Updated** Enhanced conclusion reflecting the expanded implementation details, intelligent request classification system, selective caching mechanisms, and enhanced diagnostic logging capabilities with ANSI color coding.
+**Updated** Enhanced conclusion reflecting the expanded implementation details, intelligent request classification system, selective caching mechanisms, enhanced WebSocket/HTTP handler support, and major performance optimizations including id-independent cache keys and string-based mutating API detection.

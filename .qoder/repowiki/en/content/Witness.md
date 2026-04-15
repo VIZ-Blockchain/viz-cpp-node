@@ -10,6 +10,8 @@
 - [chain_objects.hpp](file://libraries/chain/include/graphene/chain/chain_objects.hpp)
 - [database.hpp](file://libraries/chain/include/graphene/chain/database.hpp)
 - [database.cpp](file://libraries/chain/database.cpp)
+- [fork_database.hpp](file://libraries/chain/include/graphene/chain/fork_database.hpp)
+- [fork_database.cpp](file://libraries/chain/fork_database.cpp)
 - [time.hpp](file://libraries/time/time.hpp)
 - [time.cpp](file://libraries/time/time.cpp)
 - [ntp.cpp](file://thirdparty/fc/src/network/ntp.cpp)
@@ -22,9 +24,11 @@
 
 ## Update Summary
 **Changes Made**
-- Updated Configuration Parameters section to reflect corrected default values for enable-stale-production (changed from false to true) and required-participation parameter type (changed from int to uint32_t with CHAIN_1_PERCENT scaling)
-- Enhanced Troubleshooting Guide with information about configuration parameter types and scaling factors
-- Updated Architecture Overview to show how configuration parameters are processed and validated
+- Enhanced fork collision detection system with new fork_collision state in block production conditions
+- Improved NTP synchronization logging with comprehensive delta change monitoring and collision-aware synchronization
+- Comprehensive fork database querying capabilities for detecting competing blocks at the same height
+- Enhanced witness plugin with fork collision prevention logic and automatic NTP synchronization on fork issues
+- Strengthened fork database with multi-block height querying and main branch resolution
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -41,7 +45,7 @@
 ## Introduction
 This document explains the Witness subsystem of the VIZ node implementation. It covers how witnesses are scheduled, how blocks are produced, how witness participation is monitored, and how the witness-related APIs expose information to clients. The focus is on the witness plugin (block production), the witness API plugin (read-only queries), and the underlying chain database that maintains witness state and schedules.
 
-**Updated** Enhanced with improved NTP time synchronization, crash race condition handling, strengthened timing-related production failure prevention mechanisms, the new `is_witness_scheduled_soon()` method for plugin coordination, and corrected configuration parameter defaults.
+**Updated** Enhanced with improved NTP time synchronization, crash race condition handling, strengthened timing-related production failure prevention mechanisms, the new `is_witness_scheduled_soon()` method for plugin coordination, comprehensive fork collision detection system, and enhanced fork database querying capabilities for detecting competing blocks at the same height.
 
 ## Project Structure
 The Witness functionality spans three primary areas:
@@ -65,10 +69,11 @@ subgraph "Chain Database"
 DB["database.hpp/.cpp"]
 WITNESS_OBJ["witness_objects.hpp"]
 BPV_OBJ["chain_objects.hpp<br/>block_post_validation_object"]
+FORK_DB["fork_database.hpp/.cpp<br/>enhanced fork collision detection"]
 end
 subgraph "Time Synchronization"
 TIME["Time Service<br/>NTP synchronization"]
-end
+END
 VIZD --> WITNESS
 VIZD --> WAPI
 VIZD --> SNAPSHOT
@@ -80,6 +85,7 @@ WITNESS --> TIME
 CHAIN --> DB
 DB --> WITNESS_OBJ
 DB --> BPV_OBJ
+DB --> FORK_DB
 WAPI --> CHAIN
 CHAIN --> DB
 SNAPSHOT --> WITNESS
@@ -94,6 +100,7 @@ SNAPSHOT --> WITNESS
 - [database.hpp:37-83](file://libraries/chain/include/graphene/chain/database.hpp#L37-L83)
 - [witness_objects.hpp:27-132](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L27-L132)
 - [chain_objects.hpp:174-201](file://libraries/chain/include/graphene/chain/chain_objects.hpp#L174-L201)
+- [fork_database.hpp:53-81](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L81)
 - [time.cpp:13-53](file://libraries/time/time.cpp#L13-L53)
 - [snapshot_plugin.cpp:1267-1276](file://plugins/snapshot/plugin.cpp#L1267-1276)
 
@@ -106,6 +113,7 @@ SNAPSHOT --> WITNESS
   - Validates whether it is time to produce a block, checks participation thresholds, and signs blocks with configured private keys.
   - Broadcasts blocks and block post validations via the P2P plugin.
   - **Enhanced**: Implements forced NTP synchronization when timing issues are detected during block production attempts.
+  - **Enhanced**: Implements comprehensive fork collision detection to prevent competing blocks at the same height.
   - **New**: Provides `is_witness_scheduled_soon()` method to check if any locally-controlled witnesses are scheduled to produce blocks in the upcoming 4 slots.
 - Witness API Plugin
   - Exposes read-only queries for active witnesses, schedule, individual witnesses, and counts.
@@ -113,8 +121,9 @@ SNAPSHOT --> WITNESS
 - Chain Database
   - Stores witness objects, schedules, participation metrics, and supports witness scheduling and participation computations.
   - Manages block post validation objects and updates last irreversible block computation based on witness confirmations.
+  - **Enhanced**: Provides enhanced fork database access with comprehensive querying capabilities for fork collision detection.
 
-**Updated** Added forced NTP synchronization capability for timing-related production failure prevention and the new `is_witness_scheduled_soon()` method for plugin coordination.
+**Updated** Added forced NTP synchronization capability for timing-related production failure prevention, comprehensive fork collision detection system, and the new `is_witness_scheduled_soon()` method for plugin coordination.
 
 **Section sources**
 - [witness.hpp:34-68](file://plugins/witness/include/graphene/plugins/witness/witness.hpp#L34-L68)
@@ -127,13 +136,14 @@ SNAPSHOT --> WITNESS
 ## Architecture Overview
 The Witness subsystem integrates tightly with the chain database and P2P layer. The witness plugin periodically evaluates conditions to produce a block, consults the database for witness scheduling and participation, and broadcasts the resulting block. The witness API plugin reads from the database to serve JSON-RPC queries. **New**: Other plugins can now coordinate with witness scheduling using the `is_witness_scheduled_soon()` method to avoid conflicts during critical operations.
 
-**Enhanced** The architecture now includes robust NTP time synchronization with automatic fallback mechanisms, crash-safe shutdown procedures, and plugin coordination capabilities through the new scheduling method.
+**Enhanced** The architecture now includes robust NTP time synchronization with automatic fallback mechanisms, crash-safe shutdown procedures, plugin coordination capabilities through the new scheduling method, and comprehensive fork collision detection system.
 
 ```mermaid
 sequenceDiagram
 participant Timer as "Witness Impl<br/>schedule_production_loop"
 participant NTP as "NTP Service<br/>time synchronization"
 participant DB as "Chain Database"
+participant ForkDB as "Fork Database<br/>collision detection"
 participant P2P as "P2P Plugin"
 participant Net as "Network"
 participant Snapshot as "Snapshot Plugin<br/>coordination"
@@ -151,10 +161,18 @@ Timer->>DB : get_scheduled_witness(slot)
 Timer->>DB : get_slot_time(slot)
 Timer->>DB : witness_participation_rate()
 alt conditions met
+alt fork collision check
+Timer->>ForkDB : fetch_block_by_number(head_block_num + 1)
+ForkDB-->>Timer : existing blocks at height
+alt competing blocks exist
+Timer->>NTP : force_sync() on fork collision
+Timer->>Timer : log fork collision and defer
+else no competing blocks
 Timer->>DB : generate_block(scheduled_time, witness, key, flags)
 DB-->>Timer : signed_block
 Timer->>P2P : broadcast_block(block)
 P2P->>Net : transmit block
+end
 else conditions not met
 Timer->>NTP : update_ntp_time() on lag
 Timer->>Timer : log reason (sync, participation, key, lag)
@@ -171,6 +189,7 @@ Timer-->>Snapshot : true/false
 **Diagram sources**
 - [witness.cpp:206-276](file://plugins/witness/witness.cpp#L206-L276)
 - [witness.cpp:278-423](file://plugins/witness/witness.cpp#L278-L423)
+- [witness.cpp:447-471](file://plugins/witness/witness.cpp#L447-L471)
 - [witness.cpp:263-266](file://plugins/witness/witness.cpp#L263-L266)
 - [witness.cpp:206-249](file://plugins/witness/witness.cpp#L206-L249)
 - [database.cpp:4317-4332](file://libraries/chain/database.cpp#L4317-L4332)
@@ -241,16 +260,18 @@ Responsibilities:
 - Run a production loop that:
   - Waits until synchronized to the next second boundary.
   - Checks participation thresholds and scheduling eligibility.
+  - **Enhanced**: Performs comprehensive fork collision detection before block generation.
   - Generates and broadcasts blocks when eligible.
   - Signs and broadcasts block post validations when available.
-  - **Enhanced**: Forces NTP synchronization when timing issues are detected during production attempts.
+  - **Enhanced**: Forces NTP synchronization when timing issues or fork collisions are detected during production attempts.
   - **New**: Provides `is_witness_scheduled_soon()` method for external coordination.
 
 Key behaviors:
 - Participation threshold enforcement via witness participation rate.
 - Graceful handling of missing private keys, low participation, and timing lags.
 - Optional allowance for stale production during initial sync.
-- **Enhanced**: Automatic NTP synchronization on lag detection to prevent timing-related production failures.
+- **Enhanced**: Automatic NTP synchronization on lag detection and fork collision to prevent timing-related production failures.
+- **Enhanced**: Comprehensive fork collision detection prevents competing blocks at the same height.
 - **New**: Efficient slot checking across 4 upcoming slots to detect witness scheduling conflicts.
 
 ```mermaid
@@ -265,7 +286,9 @@ Scheduled --> Participation{"Participation >= threshold?"}
 Participation --> |No| LogLowParticipation["Log low participation"] --> Resched["Reschedule"] --> SyncCheck
 Participation --> |Yes| TimeCheck{"Within 500ms window?"}
 TimeCheck --> |No| LogLag["Log lag"] --> ForceSync["Force NTP sync"] --> Resched
-TimeCheck --> |Yes| SignCheck{"Private key available?"}
+TimeCheck --> |Yes| ForkCollision{"Fork collision check"}
+ForkCollision --> |Competing blocks| LogCollision["Log fork collision"] --> ForceSync --> Resched
+ForkCollision --> |No competing blocks| SignCheck{"Private key available?"}
 SignCheck --> |No| LogNoKey["Log missing key"] --> Resched
 SignCheck --> |Yes| Produce["Generate block and broadcast"]
 Produce --> Resched
@@ -274,6 +297,7 @@ Produce --> Resched
 **Diagram sources**
 - [witness.cpp:206-276](file://plugins/witness/witness.cpp#L206-L276)
 - [witness.cpp:278-423](file://plugins/witness/witness.cpp#L278-L423)
+- [witness.cpp:447-471](file://plugins/witness/witness.cpp#L447-L471)
 - [witness.cpp:263-266](file://plugins/witness/witness.cpp#L263-L266)
 
 **Section sources**
@@ -282,7 +306,28 @@ Produce --> Resched
 - [witness.cpp:171-192](file://plugins/witness/witness.cpp#L171-L192)
 - [witness.cpp:206-276](file://plugins/witness/witness.cpp#L206-L276)
 - [witness.cpp:278-423](file://plugins/witness/witness.cpp#L278-L423)
+- [witness.cpp:447-471](file://plugins/witness/witness.cpp#L447-L471)
 - [witness.cpp:206-249](file://plugins/witness/witness.cpp#L206-L249)
+
+### New: Enhanced Fork Collision Detection System
+The witness plugin now implements a comprehensive fork collision detection system to prevent competing blocks at the same height.
+
+**Detection Logic**:
+- Queries the fork database for all blocks at the next height level (head_block_num + 1)
+- Identifies competing blocks produced by different witnesses with different parent blocks
+- Prevents block production when fork collision is detected
+- Automatically triggers NTP synchronization to resolve timing issues
+
+**Implementation Details**:
+- Uses `db.get_fork_db().fetch_block_by_number(db.head_block_num() + 1)` to query all blocks at the target height
+- Analyzes each existing block to determine if it was produced by a different witness with a different parent
+- Captures detailed information including height and scheduled witness for logging
+- Returns `block_production_condition::fork_collision` to defer production
+
+**Section sources**
+- [witness.cpp:447-471](file://plugins/witness/witness.cpp#L447-L471)
+- [fork_database.hpp:73](file://libraries/chain/include/graphene/chain/fork_database.hpp#L73)
+- [fork_database.cpp:151-166](file://libraries/chain/fork_database.cpp#L151-166)
 
 ### New: is_witness_scheduled_soon() Method
 The `is_witness_scheduled_soon()` method provides a crucial coordination mechanism for other plugins to avoid conflicts during critical operations.
@@ -354,16 +399,23 @@ RPC-->>Client : response
 - [witness_api_plugin.cpp:102-159](file://plugins/witness_api/plugin.cpp#L102-L159)
 - [witness_api_plugin.cpp:161-203](file://plugins/witness_api/plugin.cpp#L161-L203)
 
-### Chain Database: Witness Objects and Scheduling
+### Chain Database: Enhanced Fork Database Integration
 The database maintains:
 - Witness objects with voting, signing keys, virtual scheduling fields, and participation counters.
 - Witness schedule object with shuffled witnesses, current virtual time, and majority version.
 - Block post validation objects used to coordinate cross-witness validation.
+- **Enhanced**: Direct fork database access through `get_fork_db()` method for comprehensive fork collision detection.
 
 Behavior highlights:
 - Computes witness participation rate and enforces minimum participation thresholds.
 - Updates last irreversible block (LIB) based on witness confirmations and thresholds.
 - Recomputes witness schedule and shuffles according to virtual time and votes.
+- **Enhanced**: Provides comprehensive fork database querying capabilities for fork collision detection.
+
+**Enhanced Fork Database Capabilities**:
+- `fetch_block_by_number()`: Retrieves all blocks at a specific height (handles multiple forks)
+- `fetch_block_on_main_branch_by_number()`: Resolves ambiguity between competing blocks
+- `fetch_branch_from()`: Provides branch comparison for fork resolution
 
 ```mermaid
 classDiagram
@@ -405,14 +457,24 @@ class block_post_validation_object {
 +current_shuffled_witnesses[]
 +current_shuffled_witnesses_validations[]
 }
+class fork_database {
++MAX_BLOCK_REORDERING : 1024
++push_block()
++fetch_block_by_number()
++fetch_block_on_main_branch_by_number()
++fetch_branch_from()
+}
 witness_object --> witness_schedule_object : "referenced by schedule"
 block_post_validation_object --> witness_schedule_object : "mentions scheduled witnesses"
+fork_database --> witness_schedule_object : "tracks competing blocks"
 ```
 
 **Diagram sources**
 - [witness_objects.hpp:27-132](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L27-L132)
 - [witness_objects.hpp:104-171](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L104-L171)
 - [chain_objects.hpp:174-201](file://libraries/chain/include/graphene/chain/chain_objects.hpp#L174-L201)
+- [fork_database.hpp:53-81](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L81)
+- [fork_database.hpp:90-95](file://libraries/chain/include/graphene/chain/fork_database.hpp#L90-L95)
 
 **Section sources**
 - [witness_objects.hpp:27-132](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L27-L132)
@@ -421,21 +483,26 @@ block_post_validation_object --> witness_schedule_object : "mentions scheduled w
 - [database.cpp:1626-1805](file://libraries/chain/database.cpp#L1626-L1805)
 - [database.cpp:4317-4332](file://libraries/chain/database.cpp#L4317-L4332)
 - [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
+- [database.hpp:492-499](file://libraries/chain/include/graphene/chain/database.hpp#L492-L499)
+- [fork_database.hpp:73](file://libraries/chain/include/graphene/chain/fork_database.hpp#L73)
+- [fork_database.cpp:151-166](file://libraries/chain/fork_database.cpp#L151-166)
 
-### Time Synchronization Service
-**New Section** The witness system now includes robust time synchronization capabilities managed through the time service layer.
+### Enhanced Time Synchronization Service
+**New Section** The witness system now includes robust time synchronization capabilities managed through the time service layer with enhanced logging for fork collision detection.
 
 Responsibilities:
 - Provide precise wall-clock time synchronization using NTP.
 - Handle crash-safe shutdown procedures for NTP services.
 - Monitor and report significant time synchronization changes.
-- Enable forced synchronization on timing issues.
+- Enable forced synchronization on timing issues and fork collisions.
+- **Enhanced**: Comprehensive delta change monitoring with 100ms threshold detection.
 
 Key behaviors:
 - Thread-safe NTP service initialization and management.
 - Automatic fallback mechanisms for NTP server failures.
 - Significant delta change detection (100ms threshold) for monitoring.
 - Graceful shutdown with proper resource cleanup.
+- **Enhanced**: Automatic NTP synchronization triggered by fork collision detection.
 
 **Section sources**
 - [time.cpp:13-53](file://libraries/time/time.cpp#L13-L53)
@@ -449,6 +516,7 @@ Key behaviors:
   - Chain plugin for database access and block generation.
   - P2P plugin for broadcasting blocks and block post validations.
   - **Enhanced**: NTP time service for precise slot alignment and timing validation.
+  - **Enhanced**: Fork database for comprehensive fork collision detection.
   - **New**: External plugins can depend on the `is_witness_scheduled_soon()` method for coordination.
 - The witness API plugin depends on:
   - Chain plugin for read-only queries.
@@ -456,17 +524,20 @@ Key behaviors:
 - The chain database depends on:
   - Witness objects and schedule indices.
   - Block post validation objects for cross-witness coordination.
+  - **Enhanced**: Fork database for tracking competing blocks and fork resolution.
 
 ```mermaid
 graph LR
 WITNESS["Witness Plugin"] --> CHAIN["Chain Plugin"]
 WITNESS --> P2P["P2P Plugin"]
 WITNESS --> TIME["Time Service"]
+WITNESS --> FORK_DB["Fork Database"]
 WAPI["Witness API Plugin"] --> CHAIN
 SNAPSHOT["Snapshot Plugin"] --> WITNESS
 CHAIN --> DB["database.hpp/.cpp"]
 DB --> WITNESS_OBJ["witness_objects.hpp"]
 DB --> BPV_OBJ["chain_objects.hpp"]
+DB --> FORK_DB["fork_database.hpp/.cpp"]
 TIME --> NTP["NTP Service"]
 ```
 
@@ -477,6 +548,7 @@ TIME --> NTP["NTP Service"]
 - [database.hpp:37-83](file://libraries/chain/include/graphene/chain/database.hpp#L37-L83)
 - [witness_objects.hpp:27-132](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L27-L132)
 - [chain_objects.hpp:174-201](file://libraries/chain/include/graphene/chain/chain_objects.hpp#L174-L201)
+- [fork_database.hpp:53-81](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L81)
 - [time.cpp:13-53](file://libraries/time/time.cpp#L13-L53)
 - [snapshot_plugin.cpp:1267-1276](file://plugins/snapshot/plugin.cpp#L1267-1276)
 
@@ -491,10 +563,12 @@ TIME --> NTP["NTP Service"]
 - Participation threshold: Ensures sufficient witness participation before producing blocks, preventing premature production on minority forks.
 - Virtual scheduling: Uses virtual time and votes to fairly distribute block production slots among witnesses, avoiding hot-spotting and ensuring proportional representation.
 - **Enhanced**: Forced NTP synchronization reduces timing-related production failures and improves system reliability during clock drift scenarios.
+- **Enhanced**: Comprehensive fork collision detection adds minimal overhead while preventing costly fork resolution failures.
 - **New**: Efficient slot checking in `is_witness_scheduled_soon()` method performs minimal database operations across 4 slots to detect scheduling conflicts quickly.
 - **Updated**: Improved configuration parameter processing with type safety and proper scaling for better performance and reliability.
+- **Enhanced**: Fork database querying uses efficient multi-index containers for fast block lookup and competition detection.
 
-**Updated** Added performance considerations for the corrected configuration parameter types and processing.
+**Updated** Added performance considerations for the corrected configuration parameter types, fork collision detection system, and enhanced fork database querying capabilities.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -514,12 +588,15 @@ Common issues and resolutions:
 - Consecutive block production disabled
   - Symptom: Blocks not produced because the last block was generated by the same witness.
   - Resolution: Investigate connectivity issues; disable consecutive production only as a temporary workaround.
+- **New**: Fork collision detection issues
+  - Symptom: Blocks not produced despite good participation and timing, frequent "deferred block production due to fork collision" messages.
+  - Resolution: Check network connectivity and witness coordination; verify fork database integrity; monitor NTP synchronization quality.
 - **New**: Witness scheduling conflicts
   - Symptom: Other plugins experience conflicts with witness operations.
   - Resolution: Use `is_witness_scheduled_soon()` method to coordinate operations and defer critical tasks until witness production is complete.
 - **New**: NTP synchronization issues
   - Symptom: Frequent timing-related warnings or blocks not produced despite good participation.
-  - Resolution: Check NTP server connectivity and system clock accuracy; verify NTP service is running properly.
+  - Resolution: Check NTP server connectivity and system clock accuracy; verify NTP service is running properly; monitor delta change logs.
 - **New**: Crash race conditions
   - Symptom: Witness plugin fails to shut down cleanly or leaves NTP service in inconsistent state.
   - Resolution: Ensure proper shutdown sequence; the system now handles crash-safe NTP service cleanup.
@@ -529,8 +606,11 @@ Common issues and resolutions:
     - `enable-stale-production`: boolean value (`true`/`false`)
     - `required-participation`: integer value scaled by `CHAIN_1_PERCENT` (e.g., 33 for 33%)
     - Check configuration files for proper syntax and values
+- **Enhanced**: Fork collision detection logging
+  - Symptom: Frequent fork collision warnings with "Collision parents at block" messages.
+  - Resolution: Monitor fork database for competing blocks; check witness coordination; verify network stability; ensure proper NTP synchronization.
 
-**Updated** Added troubleshooting information for witness scheduling conflicts, the new coordination mechanisms, and configuration parameter type issues.
+**Updated** Added troubleshooting information for fork collision detection, witness scheduling conflicts, the new coordination mechanisms, and configuration parameter type issues.
 
 **Section sources**
 - [witness.cpp:171-192](file://plugins/witness/witness.cpp#L171-L192)
@@ -538,11 +618,12 @@ Common issues and resolutions:
 - [witness.cpp:387-396](file://plugins/witness/witness.cpp#L387-L396)
 - [witness.cpp:263-266](file://plugins/witness/witness.cpp#L263-L266)
 - [witness.cpp:206-249](file://plugins/witness/witness.cpp#L206-L249)
+- [witness.cpp:447-471](file://plugins/witness/witness.cpp#L447-L471)
 - [time.cpp:36-39](file://libraries/time/time.cpp#L36-L39)
 
 ## Conclusion
-The Witness subsystem integrates tightly with the chain database and P2P layer to ensure timely, secure, and fair block production. The witness plugin manages production loops, participation thresholds, and broadcasting, while the witness API plugin exposes essential read-only data to clients. 
+The Witness subsystem integrates tightly with the chain database and P2P layer to ensure timely, secure, and fair block production. The witness plugin manages production loops, participation thresholds, and broadcasting, while the witness API plugin exposes essential read-only data to clients.
 
-**Enhanced** The system now includes robust NTP time synchronization with automatic fallback mechanisms, crash-safe shutdown procedures, and strengthened timing-related production failure prevention. **New** The addition of the `is_witness_scheduled_soon()` method enables sophisticated plugin coordination, allowing other plugins to avoid conflicts during critical operations like snapshot creation. **Updated** The configuration parameter system has been improved with corrected defaults and proper type handling for better reliability and performance. This enhancement makes the witness system more resilient to various operational challenges while providing better integration points for the broader VIZ ecosystem.
+**Enhanced** The system now includes robust NTP time synchronization with automatic fallback mechanisms, crash-safe shutdown procedures, strengthened timing-related production failure prevention, comprehensive fork collision detection system, and enhanced fork database querying capabilities. **New** The addition of the `is_witness_scheduled_soon()` method enables sophisticated plugin coordination, allowing other plugins to avoid conflicts during critical operations like snapshot creation. **Updated** The configuration parameter system has been improved with corrected defaults and proper type handling for better reliability and performance. This enhancement makes the witness system more resilient to various operational challenges while providing better integration points for the broader VIZ ecosystem.
 
-Together, they form a robust foundation for witness operations in the VIZ node, with improved time synchronization, crash handling capabilities, enhanced plugin coordination features, and reliable configuration parameter processing.
+Together, they form a robust foundation for witness operations in the VIZ node, with improved time synchronization, crash handling capabilities, enhanced plugin coordination features, comprehensive fork collision detection, reliable configuration parameter processing, and strengthened fork database querying for detecting competing blocks at the same height.
