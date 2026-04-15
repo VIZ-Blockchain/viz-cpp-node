@@ -13,12 +13,12 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced JSON-RPC caching mechanism with id-independent keys for improved cache efficiency
-- Implemented string-based mutating API detection for more reliable cache control
-- Added enhanced WebSocket/HTTP handler support with improved request processing
-- Updated request classification system with better mutating API blacklist detection
-- Improved cache key generation to prevent cache bypass attacks via id rotation
-- Enhanced response ID handling with proper JSON-RPC 2.0 compliance
+- Enhanced JSON-RPC response caching system with proper JSON parsing using fc::json::from_string
+- Implemented id-independent cache keys to prevent cache bypass attacks via id rotation
+- Improved cache validation with comprehensive error handling for malformed requests
+- Added enhanced WebSocket/HTTP handler support with proper JSON-RPC 2.0 response ID patching
+- Updated request classification system with robust mutating API detection using fc::variant parsing
+- Enhanced cache configuration options with comprehensive size management and thread-safe operations
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -37,7 +37,7 @@
 ## Introduction
 The Webserver Plugin provides HTTP and WebSocket endpoints for JSON-RPC API access to the VIZ blockchain node. It serves as a bridge between external clients and the internal JSON-RPC system, offering both persistent WebSocket connections for real-time updates and standard HTTP endpoints for traditional API calls. The plugin includes an intelligent caching mechanisms that automatically classifies requests as mutating or non-mutating, optimizing performance for frequently accessed read-only API methods while preventing cache pollution from state-changing operations.
 
-**Updated** Enhanced with major performance optimizations to the JSON-RPC caching mechanism, including id-independent keys, string-based mutating API detection, and improved WebSocket/HTTP handler support.
+**Updated** Enhanced with major performance optimizations to the JSON-RPC caching mechanism, including id-independent keys, robust fc::variant-based JSON parsing, comprehensive cache validation, and improved WebSocket/HTTP handler support with proper JSON-RPC 2.0 compliance.
 
 ## Project Structure
 The webserver plugin is organized within the plugins/webserver directory structure, following the standard VIZ plugin architecture pattern:
@@ -52,11 +52,13 @@ E[json_rpc/plugin.hpp] --> F[JSON-RPC Plugin]
 G[appbase/application.hpp] --> H[Application Framework]
 I[websocketpp/server.hpp] --> J[WebSocket Library]
 K[boost::asio] --> L[Asynchronous I/O]
+M[fc::json::from_string] --> N[Proper JSON Parsing]
 end
 D --> E
 D --> G
 D --> I
 D --> K
+D --> M
 end
 ```
 
@@ -104,14 +106,18 @@ D[WebSocket Server Thread]
 E[Thread Pool]
 F[Intelligent Cache System]
 G[Request Classifier]
+H[fc::variant Parser]
+I[Response ID Patcher]
 end
 subgraph "JSON-RPC Layer"
-H[JSON-RPC Plugin]
-I[API Registry]
+J[JSON-RPC Plugin]
+K[API Registry]
+L[fc::json::from_string]
 end
 subgraph "Blockchain Layer"
-J[Chain Plugin]
-K[Database]
+M[Chain Plugin]
+N[Database]
+O[Block Event Signals]
 end
 A --> C
 B --> D
@@ -119,28 +125,26 @@ C --> E
 D --> E
 E --> G
 G --> F
+F --> I
+F --> H
+H --> L
+I --> L
 F -.-> C
 F -.-> D
 F -.-> E
-G --> H
-H --> I
-I --> J
+G --> J
 J --> K
-subgraph "Cache Management"
-L[Block Number Tracking]
-M[Cache Eviction]
-N[Thread-Safe Operations]
-O[Mutating API Blacklist]
-end
-J --> L
+K --> L
 L --> M
 M --> N
-O --> G
+M --> O
+O --> F
 ```
 
 **Diagram sources**
 - [webserver_plugin.cpp:84-105](file://plugins/webserver/webserver_plugin.cpp#L84-L105)
-- [webserver_plugin.cpp:130-157](file://plugins/webserver/webserver_plugin.cpp#L130-L157)
+- [webserver_plugin.cpp:133-159](file://plugins/webserver/webserver_plugin.cpp#L133-L159)
+- [webserver_plugin.cpp:161-183](file://plugins/webserver/webserver_plugin.cpp#L161-L183)
 - [webserver_plugin.cpp:466-474](file://plugins/webserver/webserver_plugin.cpp#L466-L474)
 
 The architecture implements several key design patterns:
@@ -149,24 +153,28 @@ The architecture implements several key design patterns:
 - **Intelligent Caching Pattern**: Request classification system with automatic cache control based on API mutability
 - **Observer Pattern**: Chain event subscription for automatic cache management on block application
 - **Blacklist Pattern**: Mutating API detection and prevention of cache pollution
+- **fc::variant Pattern**: Robust JSON parsing and manipulation using fc library variants
 
-**Updated** Enhanced with improved diagnostic logging capabilities through ANSI color coding and major performance optimizations to the caching mechanism.
+**Updated** Enhanced with fc::variant-based JSON parsing, response ID patching, and comprehensive error handling capabilities.
 
 ## Detailed Component Analysis
 
 ### Intelligent Request Classification System
-The plugin implements an advanced request classification system that automatically determines whether a JSON-RPC request should be cached based on its API mutability:
+The plugin implements an advanced request classification system that automatically determines whether a JSON-RPC request should be cached based on its API mutability using robust fc::variant parsing:
 
 ```mermaid
 sequenceDiagram
 participant Client as "Client"
 participant Server as "Webserver Plugin"
+participant Parser as "fc : : variant Parser"
 participant Classifier as "Request Classifier"
 participant Cache as "Response Cache"
 participant JSONRPC as "JSON-RPC Plugin"
 Client->>Server : JSON-RPC Request
+Server->>Parser : fc : : json : : from_string(request)
+Parser-->>Server : fc : : variant object
 Server->>Classifier : Analyze request method
-Classifier->>Classifier : Extract method name
+Classifier->>Classifier : Extract method name using fc : : variant
 Classifier->>Classifier : Check blacklist (network_broadcast_api, debug_node)
 Classifier-->>Server : Cacheable/Non-cacheable decision
 alt Cacheable request
@@ -189,16 +197,19 @@ Server-->>Client : Send response
 - [webserver_plugin.cpp:285](file://plugins/webserver/webserver_plugin.cpp#L285)
 - [webserver_plugin.cpp:329](file://plugins/webserver/webserver_plugin.cpp#L329)
 
-**Updated** Enhanced with detailed implementation showing the intelligent request classification and selective caching logic.
+**Updated** Enhanced with fc::variant-based JSON parsing and robust request classification logic.
 
 ### Response Caching Mechanism
 The caching system provides significant performance improvements for frequently accessed API methods with sophisticated block-based invalidation and intelligent request filtering:
 
 ```mermaid
 flowchart TD
-Start([Request Received]) --> Classify["Classify Request Type"]
+Start([Request Received]) --> Parse[Parse with fc::json::from_string]
+Parse --> Valid{Valid JSON?}
+Valid --> |No| ProcessDirect["Process Directly (No Cache)"]
+Valid --> |Yes| Classify["Classify Request Type"]
 Classify --> Mutating{"Mutating API?"}
-Mutating --> |Yes| ProcessDirect["Process Directly (No Cache)"]
+Mutating --> |Yes| ProcessDirect
 Mutating --> |No| Hash["Generate SHA256 Hash"]
 Hash --> CacheCheck{"Cache Enabled?"}
 CacheCheck --> |No| ProcessDirect
@@ -206,7 +217,8 @@ CacheCheck --> |Yes| LookupCache["Lookup Cache Entry"]
 LookupCache --> CacheHit{"Cache Hit?"}
 CacheHit --> |Yes| BlockCheck{"Block Valid?"}
 CacheHit --> |No| ProcessRequest["Process Request"]
-BlockCheck --> |Yes| ReturnCached["Return Cached Response"]
+BlockCheck --> |Yes| PatchID["Patch Response ID"]
+PatchID --> ReturnCached["Return Cached Response"]
 BlockCheck --> |No| ProcessRequest
 ProcessRequest --> StoreCache["Store in Cache"]
 StoreCache --> ReturnResponse["Return Response"]
@@ -218,15 +230,16 @@ ReturnResponse --> End
 **Diagram sources**
 - [webserver_plugin.cpp:239-273](file://plugins/webserver/webserver_plugin.cpp#L239-L273)
 - [webserver_plugin.cpp:86-105](file://plugins/webserver/webserver_plugin.cpp#L86-L105)
+- [webserver_plugin.cpp:161-183](file://plugins/webserver/webserver_plugin.cpp#L161-L183)
 
-**Updated** Enhanced with detailed implementation showing the intelligent caching logic and mutating API blacklist integration.
+**Updated** Enhanced with fc::variant-based JSON parsing, response ID patching, and comprehensive cache validation.
 
 ### Enhanced Cache Key Generation
-The plugin now implements id-independent cache keys to prevent cache bypass attacks and improve cache efficiency:
+The plugin now implements id-independent cache keys to prevent cache bypass attacks and improve cache efficiency using fc::variant-based request parsing:
 
 ```mermaid
 flowchart TD
-Request[JSON-RPC Request] --> Parse[Parse Request Body]
+Request[JSON-RPC Request] --> Parse[fc::json::from_string]
 Parse --> Batch{Is Array Request?}
 Batch --> |Yes| FullHash[SHA256 Hash Full Array]
 Batch --> |No| BuildKey[Build Key Material]
@@ -246,22 +259,43 @@ CacheKey --> UseKey[Use for Cache Lookup]
 **Diagram sources**
 - [webserver_plugin.cpp:133-159](file://plugins/webserver/webserver_plugin.cpp#L133-L159)
 
-**Updated** Enhanced with new id-independent cache key generation mechanism that prevents cache bypass attacks.
+**Updated** Enhanced with fc::variant-based JSON parsing and id-independent cache key generation that prevents cache bypass attacks.
+
+### Enhanced Response ID Handling
+The plugin implements proper JSON-RPC 2.0 compliance with response ID patching using fc::json::from_string for accurate ID extraction and replacement:
+
+```mermaid
+flowchart TD
+Response[JSON-RPC Response] --> ParseResp[fc::json::from_string]
+ParseResp --> HasID{Has ID Field?}
+HasID --> |No| ReturnResp[Return Original Response]
+HasID --> |Yes| ExtractID[Extract Request ID]
+ExtractID --> PatchResp[Replace Response ID]
+PatchResp --> Serialize[fc::json::to_string]
+Serialize --> ReturnPatched[Return Patched Response]
+ReturnResp --> End([Complete])
+ReturnPatched --> End
+```
+
+**Diagram sources**
+- [webserver_plugin.cpp:161-183](file://plugins/webserver/webserver_plugin.cpp#L161-L183)
+
+**Updated** Enhanced with fc::variant-based JSON parsing for accurate response ID extraction and proper JSON-RPC 2.0 compliance.
 
 ### Enhanced Request Processing Pipeline
-The plugin now includes improved WebSocket and HTTP handler support with better request processing:
+The plugin now includes improved WebSocket and HTTP handler support with better request processing using fc::variant-based JSON parsing:
 
 ```mermaid
 sequenceDiagram
 participant Client as "Client"
 participant Handler as "HTTP/WebSocket Handler"
-participant Parser as "JSON Parser"
+participant Parser as "fc : : variant Parser"
 participant Classifier as "Request Classifier"
 participant Cache as "Cache System"
 participant API as "JSON-RPC API"
 Client->>Handler : Raw Request
-Handler->>Parser : Parse JSON
-Parser-->>Handler : Parsed Request
+Handler->>Parser : fc : : json : : from_string
+Parser-->>Handler : fc : : variant Request
 Handler->>Classifier : Check Mutating API
 Classifier-->>Handler : Cache Decision
 alt Cacheable Request
@@ -285,7 +319,7 @@ end
 **Diagram sources**
 - [webserver_plugin.cpp:353-496](file://plugins/webserver/webserver_plugin.cpp#L353-L496)
 
-**Updated** Enhanced with improved request processing pipeline that includes better cache handling and response ID management.
+**Updated** Enhanced with fc::variant-based JSON parsing, robust error handling, and improved cache management.
 
 ### Thread Pool Management
 The plugin uses the appbase scheduler for request processing, providing a dedicated thread pool separate from the main application thread:
@@ -302,6 +336,9 @@ class webserver_plugin_impl {
 +handle_ws_message()
 +handle_http_message()
 +is_cacheable_request()
++make_cache_key()
++extract_request_id()
++patch_response_id()
 }
 class ThreadGroup {
 +create_thread(function)
@@ -315,7 +352,7 @@ webserver_plugin_impl --> ThreadGroup : "uses"
 - [webserver_plugin.cpp:115](file://plugins/webserver/webserver_plugin.cpp#L115)
 - [webserver_plugin.cpp:117-120](file://plugins/webserver/webserver_plugin.cpp#L117-L120)
 
-**Updated** Enhanced with actual thread pool implementation details and the new `is_cacheable_request` method.
+**Updated** Enhanced with comprehensive fc::variant-based JSON parsing methods and improved cache management capabilities.
 
 **Section sources**
 - [webserver_plugin.cpp:113-157](file://plugins/webserver/webserver_plugin.cpp#L113-L157)
@@ -350,27 +387,35 @@ A[Boost.Asio]
 B[websocketpp]
 C[FC Library]
 D[AppBase Framework]
+E[fc::json::from_string]
+F[fc::variant]
 end
 subgraph "Internal Dependencies"
-E[JSON-RPC Plugin]
-F[Chain Plugin]
-G[Application Core]
+G[JSON-RPC Plugin]
+H[Chain Plugin]
+I[Application Core]
 end
 subgraph "Webserver Plugin"
-H[webserver_plugin]
-I[is_cacheable_request]
-J[Request Classifier]
-K[Mutating API Blacklist]
+J[webserver_plugin]
+K[is_cacheable_request]
+L[make_cache_key]
+M[extract_request_id]
+N[patch_response_id]
+O[fc::variant Parser]
 end
-H --> E
-H --> F
-H --> G
-H --> A
-H --> B
-H --> C
-H --> D
-I --> J
-J --> K
+J --> G
+J --> H
+J --> I
+J --> A
+J --> B
+J --> C
+J --> D
+J --> E
+J --> F
+K --> L
+L --> M
+M --> N
+N --> O
 ```
 
 **Diagram sources**
@@ -379,7 +424,7 @@ J --> K
 - [webserver_plugin.cpp:84-105](file://plugins/webserver/webserver_plugin.cpp#L84-L105)
 
 ### JSON-RPC Integration Details
-The plugin integrates with the JSON-RPC system through method registration and call delegation:
+The plugin integrates with the JSON-RPC system through method registration and call delegation using fc::json::from_string for proper JSON parsing:
 
 ```mermaid
 sequenceDiagram
@@ -401,7 +446,7 @@ WS-->>Client : Send response
 - [webserver_plugin.cpp:303](file://plugins/webserver/webserver_plugin.cpp#L303)
 - [webserver_plugin.cpp:347](file://plugins/webserver/webserver_plugin.cpp#L347)
 
-**Updated** Enhanced with actual implementation details showing the method registration and call delegation process.
+**Updated** Enhanced with fc::json::from_string-based JSON parsing and robust error handling.
 
 **Section sources**
 - [webserver_plugin.hpp:38](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L38)
@@ -412,14 +457,14 @@ WS-->>Client : Send response
 The webserver plugin implements several performance optimization strategies with intelligent caching control:
 
 ### Intelligent Caching Strategy
-- **Request Classification**: Automatic determination of cacheable vs non-cacheable requests based on API mutability
-- **SHA256 Hash Keys**: Unique request identification for cache entries using cryptographic hashing
+- **Request Classification**: Automatic determination of cacheable vs non-cacheable requests based on API mutability using fc::variant parsing
+- **SHA256 Hash Keys**: Unique request identification for cache entries using cryptographic hashing with fc::json::from_string
 - **Block-Based Invalidation**: Cache cleared on each new block to prevent stale data through blockchain event subscription
 - **Thread-Safe Operations**: Mutex protection for concurrent access across multiple worker threads
 - **Eviction Policy**: Automatic cache clearing when maximum size is reached to prevent memory exhaustion
 - **Selective Caching**: Prevents cache pollution from mutating API calls (network_broadcast_api, debug_node)
-- **Id-Independent Keys**: Prevents cache bypass attacks via id rotation patterns
-- **String-Based Detection**: Reliable mutating API detection using string parsing instead of complex object traversal
+- **Id-Independent Keys**: Prevents cache bypass attacks via id rotation patterns using fc::variant-based key generation
+- **Robust JSON Parsing**: Reliable fc::json::from_string-based request parsing instead of complex object traversal
 
 ### Concurrency Model
 - **Separate IO Services**: HTTP and WebSocket servers use dedicated io_service instances for isolation
@@ -432,8 +477,9 @@ The webserver plugin implements several performance optimization strategies with
 - **RAII Patterns**: Automatic cleanup on plugin shutdown through destructor implementations
 - **Cache Size Limits**: Configurable maximum cache size to prevent unbounded memory growth
 - **Blacklist Optimization**: Reduces unnecessary cache storage for mutating API calls
+- **fc::variant Efficiency**: Optimized fc::variant usage for JSON parsing and manipulation
 
-**Updated** Enhanced with detailed implementation showing actual performance optimization strategies and intelligent caching mechanisms including id-independent keys and string-based mutating API detection.
+**Updated** Enhanced with fc::variant-based JSON parsing, robust cache validation, and comprehensive performance optimizations.
 
 **Section sources**
 - [webserver-plugin.md:29-64](file://documentation/webserver-plugin.md#L29-L64)
@@ -455,10 +501,10 @@ The webserver plugin provides multiple layers of security for production deploym
 - **Mutating API Protection**: Automatic blacklist prevents caching of state-changing operations
 
 ### Input Validation
-- **JSON-RPC Validation**: Built-in validation of JSON-RPC 2.0 compliance
+- **JSON-RPC Validation**: Built-in validation of JSON-RPC 2.0 compliance using fc::json::from_string
 - **Method Whitelisting**: Only registered API methods are callable
 - **Parameter Validation**: Type checking and parameter validation for API calls
-- **Request Classification**: Automatic detection of potentially malicious mutating requests
+- **Request Classification**: Automatic detection of potentially malicious mutating requests using fc::variant parsing
 
 ### Resource Protection
 - **Thread Pool Limits**: Configurable thread pool size prevents resource exhaustion
@@ -466,8 +512,9 @@ The webserver plugin provides multiple layers of security for production deploym
 - **Connection Limits**: WebSocket connections managed through proper thread pool utilization
 - **Blacklist Enforcement**: Prevents cache poisoning from mutating API calls
 - **Cache Bypass Prevention**: Id-independent keys prevent cache bypass attacks via request id rotation
+- **Robust Error Handling**: Comprehensive fc::variant-based error handling prevents crashes
 
-**Updated** Enhanced with practical deployment guidance and security best practices including intelligent request classification and cache bypass prevention.
+**Updated** Enhanced with fc::variant-based JSON parsing, robust error handling, and comprehensive security measures.
 
 **Section sources**
 - [webserver-plugin.md:77-108](file://documentation/webserver-plugin.md#L77-L108)
@@ -557,19 +604,20 @@ public-api = account_by_key
 - Consider hardware resource allocation
 
 ### Error Handling Patterns
-The plugin implements comprehensive error handling with intelligent request classification:
+The plugin implements comprehensive error handling with intelligent request classification using fc::variant-based JSON parsing:
 
 ```mermaid
 flowchart TD
-Request[Incoming Request] --> Parse[Parse JSON-RPC]
-Parse --> Valid{Valid JSON-RPC?}
+Request[Incoming Request] --> Parse[fc::json::from_string]
+Parse --> Valid{Valid JSON?}
 Valid --> |No| ParseError[Return Parse Error]
 Valid --> |Yes| Classify[Classify Request Type]
 Classify --> Mutating{Mutating API?}
 Mutating --> |Yes| ProcessDirect[Process Directly]
 Mutating --> |No| CacheCheck[Check Cache]
 CacheCheck --> CacheHit{Cache Hit?}
-CacheHit --> |Yes| SendCached[Send Cached Response]
+CacheHit --> |Yes| PatchID[Patch Response ID]
+PatchID --> SendCached[Send Cached Response]
 CacheHit --> |No| Process[Process Request]
 ProcessDirect --> SendResponse[Send Response]
 Process --> Success{Success?}
@@ -587,7 +635,7 @@ ParseError --> Complete
 - [webserver_plugin.cpp:329](file://plugins/webserver/webserver_plugin.cpp#L329)
 - [webserver_plugin.cpp:303](file://plugins/webserver/webserver_plugin.cpp#L303)
 
-**Updated** Enhanced with actual error handling implementation details and intelligent request classification.
+**Updated** Enhanced with fc::variant-based JSON parsing, robust error handling, and intelligent request classification.
 
 ### Debugging and Monitoring
 - **Log Levels**: Configure appropriate log levels for debugging
@@ -596,8 +644,9 @@ ParseError --> Complete
 - **Error Analysis**: Review error logs for common issues
 - **Request Classification**: Monitor which requests are classified as mutating vs non-mutating
 - **Cache Efficiency**: Monitor cache key generation and collision rates
+- **fc::variant Parsing**: Monitor JSON parsing performance and error rates
 
-**Updated** Enhanced with actual implementation details and monitoring capabilities including request classification metrics.
+**Updated** Enhanced with fc::variant-based JSON parsing monitoring and comprehensive debugging capabilities.
 
 **Section sources**
 - [webserver_plugin.cpp:285](file://plugins/webserver/webserver_plugin.cpp#L285)
@@ -649,7 +698,7 @@ The diagnostic logging system uses ANSI escape sequences for visual distinction:
 - **Error Tracking**: Comprehensive error logging with timing context
 - **Performance Insights**: Easy identification of slow operations through timing data
 
-**Updated** Enhanced with detailed implementation of ANSI color-coded diagnostic logging system.
+**Updated** Enhanced with fc::variant-based JSON parsing and comprehensive diagnostic logging.
 
 **Section sources**
 - [plugin.cpp:258-288](file://plugins/json_rpc/plugin.cpp#L258-L288)
@@ -666,9 +715,11 @@ Key strengths of the implementation include:
 - **Security Features**: Multiple layers of security including intelligent request classification for mutating APIs
 - **Enhanced Diagnostics**: ANSI color-coded logging system for improved developer experience
 - **Extensible Design**: Clean separation of concerns enabling easy maintenance and enhancement
-- **Performance Optimizations**: Major improvements to caching mechanism with id-independent keys and string-based mutating API detection
+- **Performance Optimizations**: Major improvements to caching mechanism with id-independent keys and fc::variant-based JSON parsing
 - **Robust Request Processing**: Enhanced WebSocket/HTTP handler support with improved request classification and cache management
+- **fc::variant Integration**: Comprehensive fc::variant-based JSON parsing and manipulation for optimal performance
+- **Comprehensive Error Handling**: Robust fc::json::from_string-based error handling preventing crashes and improving reliability
 
-The plugin serves as an excellent foundation for building applications that require programmatic access to VIZ blockchain data and operations, with performance characteristics suitable for both private deployments and public API services. Its sophisticated caching mechanism with intelligent request classification, multi-threaded architecture, comprehensive error handling, and enhanced diagnostic logging make it a production-ready solution for enterprise-grade blockchain applications.
+The plugin serves as an excellent foundation for building applications that require programmatic access to VIZ blockchain data and operations, with performance characteristics suitable for both private deployments and public API services. Its sophisticated caching mechanism with intelligent request classification, multi-threaded architecture, comprehensive error handling, fc::variant-based JSON parsing, and enhanced diagnostic logging make it a production-ready solution for enterprise-grade blockchain applications.
 
-**Updated** Enhanced conclusion reflecting the expanded implementation details, intelligent request classification system, selective caching mechanisms, enhanced WebSocket/HTTP handler support, and major performance optimizations including id-independent cache keys and string-based mutating API detection.
+**Updated** Enhanced conclusion reflecting the expanded implementation details, fc::variant-based JSON parsing, intelligent request classification system, selective caching mechanisms, enhanced WebSocket/HTTP handler support, and major performance optimizations including id-independent cache keys and comprehensive cache configuration options.
