@@ -83,25 +83,134 @@ namespace graphene {
 
             // API prefixes whose responses must never be cached because
             // the calls are mutating (broadcast, locks, etc.).
+            // Checks body for these strings to catch both "method":"network_broadcast_api.xxx"
+            // and "call" format with params:["network_broadcast_api",...]
             static bool is_cacheable_request(const std::string& body) {
-                // Quick JSON-RPC "method" extraction without a full parse.
-                // Looks for "method" key and checks the value prefix.
-                auto pos = body.find("\"method\"");
-                if (pos == std::string::npos) return true; // not JSON-RPC — let it through uncached via normal path
-                pos = body.find(':', pos + 8);
-                if (pos == std::string::npos) return true;
-                // skip whitespace and opening quote
-                pos = body.find('"', pos + 1);
-                if (pos == std::string::npos) return true;
-                ++pos; // start of method name
-                auto end = body.find('"', pos);
-                if (end == std::string::npos) return true;
-                std::string method = body.substr(pos, end - pos);
-
-                // Blacklist mutating API namespaces
-                if (method.compare(0, 23, "network_broadcast_api.") == 0) return false;
-                if (method.compare(0, 10, "debug_node") == 0) return false;
+                if (body.find("network_broadcast_api") != std::string::npos) return false;
+                if (body.find("debug_node") != std::string::npos) return false;
                 return true;
+            }
+
+            // Extract the "id" value from a JSON-RPC request as a raw string fragment.
+            // Returns "" if no id field is found.
+            static std::string extract_request_id(const std::string& body) {
+                auto pos = body.find("\"id\"");
+                if (pos == std::string::npos) return "";
+                auto colon = body.find(':', pos + 4);
+                if (colon == std::string::npos) return "";
+                auto val_start = body.find_first_not_of(" \t\n\r", colon + 1);
+                if (val_start == std::string::npos) return "";
+
+                if (body[val_start] == '"') {
+                    for (size_t i = val_start + 1; i < body.size(); ++i) {
+                        if (body[i] == '\\' && i + 1 < body.size()) { ++i; continue; }
+                        if (body[i] == '"') {
+                            return body.substr(val_start, i - val_start + 1);
+                        }
+                    }
+                    return "";
+                }
+
+                auto val_end = body.find_first_of(",} \t\n\r", val_start);
+                if (val_end == std::string::npos) val_end = body.size();
+                return body.substr(val_start, val_end - val_start);
+            }
+
+            // Generate a cache key from the request body that is independent of the "id" field.
+            // This allows identical method/params with different IDs to share cache entries,
+            // preventing cache bypass via id rotation (spam attack pattern).
+            static std::string make_cache_key(const std::string& body) {
+                // For batch requests (starting with '['), use full body hash
+                // since batch responses have interleaved IDs.
+                if (!body.empty() && body[0] == '[') {
+                    return fc::sha256::hash(body).str();
+                }
+
+                std::string key_material;
+
+                // Extract "method" value
+                auto method_pos = body.find("\"method\"");
+                if (method_pos != std::string::npos) {
+                    auto colon = body.find(':', method_pos + 8);
+                    if (colon != std::string::npos) {
+                        auto quote_start = body.find('"', colon + 1);
+                        if (quote_start != std::string::npos) {
+                            auto quote_end = body.find('"', quote_start + 1);
+                            if (quote_end != std::string::npos) {
+                                key_material = body.substr(quote_start, quote_end - quote_start + 1);
+                            }
+                        }
+                    }
+                }
+
+                // Extract "params" value
+                auto params_pos = body.find("\"params\"");
+                if (params_pos != std::string::npos) {
+                    auto colon = body.find(':', params_pos + 8);
+                    if (colon != std::string::npos) {
+                        auto val_start = body.find_first_not_of(" \t\n\r", colon + 1);
+                        if (val_start != std::string::npos && val_start < body.size()) {
+                            char open = body[val_start];
+                            if (open == '[' || open == '{') {
+                                char close = (open == '[') ? ']' : '}';
+                                int depth = 0;
+                                bool in_string = false;
+                                for (size_t i = val_start; i < body.size(); ++i) {
+                                    if (body[i] == '\\' && in_string && i + 1 < body.size()) { ++i; continue; }
+                                    if (body[i] == '"') in_string = !in_string;
+                                    if (!in_string) {
+                                        if (body[i] == open) depth++;
+                                        else if (body[i] == close) {
+                                            depth--;
+                                            if (depth == 0) {
+                                                key_material += body.substr(val_start, i - val_start + 1);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                auto val_end = body.find_first_of(",} \t\n\r", val_start);
+                                if (val_end == std::string::npos) val_end = body.size();
+                                key_material += body.substr(val_start, val_end - val_start);
+                            }
+                        }
+                    }
+                }
+
+                return fc::sha256::hash(key_material).str();
+            }
+
+            // Replace the "id" value in a JSON-RPC response string with a new one,
+            // ensuring the response id matches the request id per JSON-RPC 2.0 spec.
+            static std::string patch_response_id(const std::string& response, const std::string& new_id) {
+                if (new_id.empty()) return response;
+
+                auto pos = response.rfind("\"id\"");
+                if (pos == std::string::npos) return response;
+
+                auto colon = response.find(':', pos + 4);
+                if (colon == std::string::npos) return response;
+
+                auto val_start = response.find_first_not_of(" \t\n\r", colon + 1);
+                if (val_start == std::string::npos) return response;
+
+                size_t val_end = std::string::npos;
+                if (response[val_start] == '"') {
+                    for (size_t i = val_start + 1; i < response.size(); ++i) {
+                        if (response[i] == '\\' && i + 1 < response.size()) { ++i; continue; }
+                        if (response[i] == '"') {
+                            val_end = i + 1;
+                            break;
+                        }
+                    }
+                    if (val_end == std::string::npos || val_end <= val_start) return response;
+                } else {
+                    val_end = response.find_first_of(",} \t\n\r", val_start);
+                    if (val_end == std::string::npos) val_end = response.size();
+                }
+
+                return response.substr(0, val_start) + new_id + response.substr(val_end);
             }
 
             // Cache entry for JSON-RPC responses
@@ -284,15 +393,19 @@ namespace graphene {
                             auto body = msg->get_payload();
                             bool cacheable = is_cacheable_request(body);
 
-                            // Generate cache key from request body
+                            // Generate id-independent cache key from request body
                             std::string request_hash;
+                            std::string request_id;
                             if (cacheable) {
-                                request_hash = fc::sha256::hash(body).str();
+                                request_hash = make_cache_key(body);
+                                request_id = extract_request_id(body);
 
                                 // Check cache first
                                 auto cached_response = get_cached_response(request_hash);
                                 if (cached_response.valid()) {
-                                    auto ec = con->send(*cached_response);
+                                    // Patch the id in cached response to match request
+                                    std::string patched = patch_response_id(*cached_response, request_id);
+                                    auto ec = con->send(patched);
                                     if (ec) {
                                         throw websocketpp::exception(ec);
                                     }
@@ -328,15 +441,19 @@ namespace graphene {
                     auto body = con->get_request_body();
                     bool cacheable = is_cacheable_request(body);
 
-                    // Generate cache key from request body
+                    // Generate id-independent cache key from request body
                     std::string request_hash;
+                    std::string request_id;
                     if (cacheable) {
-                        request_hash = fc::sha256::hash(body).str();
+                        request_hash = make_cache_key(body);
+                        request_id = extract_request_id(body);
 
                         // Check cache first
                         auto cached_response = get_cached_response(request_hash);
                         if (cached_response.valid()) {
-                            con->set_body(*cached_response);
+                            // Patch the id in cached response to match request
+                            std::string patched = patch_response_id(*cached_response, request_id);
+                            con->set_body(patched);
                             con->set_status(websocketpp::http::status_code::ok);
                             con->send_http_response();
                             return;
