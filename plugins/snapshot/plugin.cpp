@@ -2064,7 +2064,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
                  ("p", best->endpoint_str)("a", retry + 1)("m", max_connect_retries));
             std::cerr << "   Connect retry " << (retry + 1) << "/" << max_connect_retries << "...\n";
             try { sock.close(); } catch (...) {}
-            sock = fc::tcp_socket();
+            sock.open();
             fc::usleep(fc::seconds(2));
         }
     }
