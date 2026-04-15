@@ -73,12 +73,16 @@ Provides the JSON-RPC 2.0 framework for API method registration and dispatching.
 **Category:** Infrastructure
 **Dependencies:** `json_rpc`
 
-HTTP/WebSocket server that accepts JSON-RPC requests.
+HTTP/WebSocket server that accepts JSON-RPC requests with built-in response caching.
 
 **Purpose:**
 - Serves HTTP and WebSocket connections
 - Routes requests to `json_rpc` plugin
 - Handles CORS, timeouts, connection limits
+- Caches read-only JSON-RPC responses with id-independent cache keys
+- Patches response IDs to match request IDs per JSON-RPC 2.0 spec
+- Clears cache on each new block to maintain consistency
+- Filters out mutating APIs (`network_broadcast_api.*`, `debug_node.*`) from cache
 
 **JSON-RPC:** None (transport only)
 
@@ -87,7 +91,15 @@ HTTP/WebSocket server that accepts JSON-RPC requests.
 webserver-http-endpoint = 0.0.0.0:8090
 webserver-ws-endpoint = 0.0.0.0:8091
 webserver-thread-pool-size = 32
+webserver-cache-enabled = true
+webserver-cache-size = 10000
 ```
+
+**Cache behavior:**
+- Cache keys are derived from `method` + `params` only (excluding `id`), preventing bypass via ID rotation spam
+- Uses `fc::json::from_string` for robust JSON parsing — invalid JSON bypasses cache
+- Mutating APIs are detected in both direct (`"method":"network_broadcast_api.xxx"`) and call-style (`"method":"call","params":["network_broadcast_api",...]`) formats
+- Cached responses have their `id` field patched before sending to match the client's request ID
 
 ---
 

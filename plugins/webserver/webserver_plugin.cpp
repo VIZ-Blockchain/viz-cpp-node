@@ -83,99 +83,76 @@ namespace graphene {
 
             // API prefixes whose responses must never be cached because
             // the calls are mutating (broadcast, locks, etc.).
-            // Checks body for these strings to catch both "method":"network_broadcast_api.xxx"
-            // and "call" format with params:["network_broadcast_api",...]
-            static bool is_cacheable_request(const std::string& body) {
-                if (body.find("network_broadcast_api") != std::string::npos) return false;
-                if (body.find("debug_node") != std::string::npos) return false;
+            // Uses proper JSON parsing to reliably detect both
+            //   "method":"network_broadcast_api.xxx"  and  "method":"call","params":["network_broadcast_api",...]
+            static bool is_cacheable_request(const fc::variant& request) {
+                try {
+                    if (!request.is_object()) return true;
+                    const auto& obj = request.get_object();
+
+                    // Check top-level method
+                    if (obj.contains("method")) {
+                        std::string method = obj["method"].as_string();
+                        if (method.find("network_broadcast_api") != std::string::npos) return false;
+                        if (method.find("debug_node") != std::string::npos) return false;
+                    }
+
+                    // Check params for call-style requests: params[0] is the API name
+                    if (obj.contains("params") && obj["params"].is_array()) {
+                        const auto& params = obj["params"].get_array();
+                        if (!params.empty() && params[0].is_string()) {
+                            std::string api_name = params[0].as_string();
+                            if (api_name.find("network_broadcast_api") != std::string::npos) return false;
+                            if (api_name.find("debug_node") != std::string::npos) return false;
+                        }
+                    }
+                } catch (...) {
+                    // Malformed request — don't cache
+                    return false;
+                }
                 return true;
             }
 
-            // Extract the "id" value from a JSON-RPC request as a raw string fragment.
+            // Extract the "id" value from a parsed JSON-RPC request as a raw string
+            // suitable for injecting into a response (preserves quotes for string ids).
             // Returns "" if no id field is found.
-            static std::string extract_request_id(const std::string& body) {
-                auto pos = body.find("\"id\"");
-                if (pos == std::string::npos) return "";
-                auto colon = body.find(':', pos + 4);
-                if (colon == std::string::npos) return "";
-                auto val_start = body.find_first_not_of(" \t\n\r", colon + 1);
-                if (val_start == std::string::npos) return "";
-
-                if (body[val_start] == '"') {
-                    for (size_t i = val_start + 1; i < body.size(); ++i) {
-                        if (body[i] == '\\' && i + 1 < body.size()) { ++i; continue; }
-                        if (body[i] == '"') {
-                            return body.substr(val_start, i - val_start + 1);
-                        }
-                    }
+            static std::string extract_request_id(const fc::variant& request) {
+                try {
+                    if (!request.is_object()) return "";
+                    const auto& obj = request.get_object();
+                    if (!obj.contains("id")) return "";
+                    const auto& id = obj["id"];
+                    // Return the JSON-serialized form of the id value
+                    // so it can be directly spliced into a response.
+                    return fc::json::to_string(id);
+                } catch (...) {
                     return "";
                 }
-
-                auto val_end = body.find_first_of(",} \t\n\r", val_start);
-                if (val_end == std::string::npos) val_end = body.size();
-                return body.substr(val_start, val_end - val_start);
             }
 
-            // Generate a cache key from the request body that is independent of the "id" field.
-            // This allows identical method/params with different IDs to share cache entries,
-            // preventing cache bypass via id rotation (spam attack pattern).
-            static std::string make_cache_key(const std::string& body) {
-                // For batch requests (starting with '['), use full body hash
-                // since batch responses have interleaved IDs.
-                if (!body.empty() && body[0] == '[') {
-                    return fc::sha256::hash(body).str();
+            // Generate a cache key from a parsed JSON-RPC request that is independent
+            // of the "id" field. Uses only method + params so that identical calls with
+            // different IDs share the same cache entry, preventing cache bypass via
+            // id rotation (spam attack pattern).
+            static std::string make_cache_key(const fc::variant& request) {
+                // For batch requests (array), use full body hash
+                if (request.is_array()) {
+                    return fc::sha256::hash(fc::json::to_string(request)).str();
                 }
 
                 std::string key_material;
+                try {
+                    if (!request.is_object()) return fc::sha256::hash(key_material).str();
+                    const auto& obj = request.get_object();
 
-                // Extract "method" value
-                auto method_pos = body.find("\"method\"");
-                if (method_pos != std::string::npos) {
-                    auto colon = body.find(':', method_pos + 8);
-                    if (colon != std::string::npos) {
-                        auto quote_start = body.find('"', colon + 1);
-                        if (quote_start != std::string::npos) {
-                            auto quote_end = body.find('"', quote_start + 1);
-                            if (quote_end != std::string::npos) {
-                                key_material = body.substr(quote_start, quote_end - quote_start + 1);
-                            }
-                        }
+                    if (obj.contains("method")) {
+                        key_material += fc::json::to_string(obj["method"]);
                     }
-                }
-
-                // Extract "params" value
-                auto params_pos = body.find("\"params\"");
-                if (params_pos != std::string::npos) {
-                    auto colon = body.find(':', params_pos + 8);
-                    if (colon != std::string::npos) {
-                        auto val_start = body.find_first_not_of(" \t\n\r", colon + 1);
-                        if (val_start != std::string::npos && val_start < body.size()) {
-                            char open = body[val_start];
-                            if (open == '[' || open == '{') {
-                                char close = (open == '[') ? ']' : '}';
-                                int depth = 0;
-                                bool in_string = false;
-                                for (size_t i = val_start; i < body.size(); ++i) {
-                                    if (body[i] == '\\' && in_string && i + 1 < body.size()) { ++i; continue; }
-                                    if (body[i] == '"') in_string = !in_string;
-                                    if (!in_string) {
-                                        if (body[i] == open) depth++;
-                                        else if (body[i] == close) {
-                                            depth--;
-                                            if (depth == 0) {
-                                                key_material += body.substr(val_start, i - val_start + 1);
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                auto val_end = body.find_first_of(",} \t\n\r", val_start);
-                                if (val_end == std::string::npos) val_end = body.size();
-                                key_material += body.substr(val_start, val_end - val_start);
-                            }
-                        }
+                    if (obj.contains("params")) {
+                        key_material += fc::json::to_string(obj["params"]);
                     }
+                } catch (...) {
+                    // On any parse error, use empty key material
                 }
 
                 return fc::sha256::hash(key_material).str();
@@ -186,31 +163,23 @@ namespace graphene {
             static std::string patch_response_id(const std::string& response, const std::string& new_id) {
                 if (new_id.empty()) return response;
 
-                auto pos = response.rfind("\"id\"");
-                if (pos == std::string::npos) return response;
+                // Parse response properly to find and replace id
+                try {
+                    auto resp = fc::json::from_string(response);
+                    if (!resp.is_object()) return response;
+                    auto& obj = resp.get_object();
+                    if (!obj.contains("id")) return response;
 
-                auto colon = response.find(':', pos + 4);
-                if (colon == std::string::npos) return response;
-
-                auto val_start = response.find_first_not_of(" \t\n\r", colon + 1);
-                if (val_start == std::string::npos) return response;
-
-                size_t val_end = std::string::npos;
-                if (response[val_start] == '"') {
-                    for (size_t i = val_start + 1; i < response.size(); ++i) {
-                        if (response[i] == '\\' && i + 1 < response.size()) { ++i; continue; }
-                        if (response[i] == '"') {
-                            val_end = i + 1;
-                            break;
-                        }
-                    }
-                    if (val_end == std::string::npos || val_end <= val_start) return response;
-                } else {
-                    val_end = response.find_first_of(",} \t\n\r", val_start);
-                    if (val_end == std::string::npos) val_end = response.size();
+                    // Replace id value and re-serialize
+                    auto id_var = fc::json::from_string(new_id);
+                    // We need to mutate the object — convert to mutable_variant_object
+                    fc::mutable_variant_object mobj(obj);
+                    mobj["id"] = id_var;
+                    return fc::json::to_string(mobj);
+                } catch (...) {
+                    // Fallback: if parsing fails, return response as-is
+                    return response;
                 }
-
-                return response.substr(0, val_start) + new_id + response.substr(val_end);
             }
 
             // Cache entry for JSON-RPC responses
@@ -391,14 +360,28 @@ namespace graphene {
                     try {
                         if (msg->get_opcode() == websocketpp::frame::opcode::text) {
                             auto body = msg->get_payload();
-                            bool cacheable = is_cacheable_request(body);
+
+                            // Parse JSON once for all cache operations
+                            fc::variant parsed;
+                            try {
+                                parsed = fc::json::from_string(body);
+                            } catch (...) {
+                                // Invalid JSON — skip cache, let json_rpc handle the error
+                                api->call(body, [con](const std::string &data){
+                                    auto ec = con->send(data);
+                                    if (ec) throw websocketpp::exception(ec);
+                                });
+                                return;
+                            }
+
+                            bool cacheable = is_cacheable_request(parsed);
 
                             // Generate id-independent cache key from request body
                             std::string request_hash;
                             std::string request_id;
                             if (cacheable) {
-                                request_hash = make_cache_key(body);
-                                request_id = extract_request_id(body);
+                                request_hash = make_cache_key(parsed);
+                                request_id = extract_request_id(parsed);
 
                                 // Check cache first
                                 auto cached_response = get_cached_response(request_hash);
@@ -439,14 +422,36 @@ namespace graphene {
 
                 thread_pool_ios.post([con, this]() {
                     auto body = con->get_request_body();
-                    bool cacheable = is_cacheable_request(body);
+
+                    // Parse JSON once for all cache operations
+                    fc::variant parsed;
+                    try {
+                        parsed = fc::json::from_string(body);
+                    } catch (...) {
+                        // Invalid JSON — skip cache, let json_rpc handle the error
+                        try {
+                            api->call(body, [con](const std::string &data){
+                                con->set_body(data);
+                                con->set_status(websocketpp::http::status_code::ok);
+                                con->send_http_response();
+                            });
+                        } catch (fc::exception &e) {
+                            edump((e));
+                            con->set_body("Could not call API");
+                            con->set_status(websocketpp::http::status_code::not_found);
+                            try { con->send_http_response(); } catch (...) {}
+                        }
+                        return;
+                    }
+
+                    bool cacheable = is_cacheable_request(parsed);
 
                     // Generate id-independent cache key from request body
                     std::string request_hash;
                     std::string request_id;
                     if (cacheable) {
-                        request_hash = make_cache_key(body);
-                        request_id = extract_request_id(body);
+                        request_hash = make_cache_key(parsed);
+                        request_id = extract_request_id(parsed);
 
                         // Check cache first
                         auto cached_response = get_cached_response(request_hash);
