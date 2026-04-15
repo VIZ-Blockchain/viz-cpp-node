@@ -88,13 +88,14 @@ sync-snapshot-from-trusted-peer = true
 The node will:
 1. Query all trusted peers for their latest snapshot (30-second timeout per peer)
 2. Select the peer with the highest block number
-3. Download the snapshot in 1 MB chunks with progress logging (30-second timeout per operation)
-4. Verify the checksum
-5. Load the snapshot and start syncing from that block
+3. Wait briefly for the server to release the query session, then connect for download (up to 3 retries with 2-second delays if the server's anti-spam check hasn't cleared the previous session yet)
+4. Download the snapshot in 1 MB chunks with progress logging (5-minute timeout per chunk)
+5. Verify the checksum
+6. Load the snapshot and start syncing from that block
 
 If no trusted peers respond, the node will **retry automatically** every `stalled-sync-timeout-minutes` minutes (default: 5) until a snapshot becomes available. The node will not fall back to genesis sync.
 
-**Note on Timeouts:** All P2P snapshot operations have a 30-second timeout. If a peer doesn't respond within this time (e.g., accepts TCP connection but never sends data), the node will skip that peer and try the next one. This prevents indefinite hangs when some peers are unresponsive.
+**Note on Timeouts:** Peer queries use a 30-second timeout. Chunk downloads use a 5-minute timeout to support slow connections (minimum ~3.4 KB/s). If a peer doesn't respond within the timeout (e.g., accepts TCP connection but never sends data), the node will skip that peer and try the next one.
 
 ### Trust Model
 
@@ -107,7 +108,7 @@ If no trusted peers respond, the node will **retry automatically** every `stalle
 The snapshot TCP server has built-in anti-spam measures:
 
 - **Max 5 concurrent connections**: The server accepts up to 5 simultaneous connections, each handled in a separate fiber (via `fc::async`). Additional connections are rejected.
-- **1 active session per IP**: If an IP already has an active download in progress, additional connections from the same IP are rejected. Session tracking is protected by a mutex for thread safety across fibers.
+- **1 active session per IP**: If an IP already has an active download in progress, additional connections from the same IP are rejected. Sessions are eagerly released via RAII when the connection handler exits, minimizing the window where a legitimate reconnection (e.g., query → download) could be falsely rejected.
 - **Rate limiting (3 connections/hour per IP)**: Each IP is limited to 3 connections per hour. Exceeding this triggers a rejection with a warning log. This prevents abuse where a client repeatedly connects to waste server bandwidth.
 - **Enforced connection timeout (60s)**: Each connection has a hard deadline. The timeout is checked before each I/O operation (initial request read, each chunk transfer). Slow or stalled clients are disconnected when the deadline expires, freeing the session slot.
 - **Trusted peers bypass nothing**: Anti-spam rules apply equally to all connections (trusted and untrusted). Trust enforcement (`allow-snapshot-serving-only-trusted`) is checked first; anti-spam is checked after.

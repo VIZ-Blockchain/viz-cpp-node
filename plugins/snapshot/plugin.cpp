@@ -749,7 +749,7 @@ public:
     void start_server();
     void stop_server();
     void accept_loop();
-    void handle_connection(fc::tcp_socket& sock, fc::time_point deadline);
+    void handle_connection(fc::tcp_socket& sock, fc::time_point deadline, uint32_t remote_ip);
     void update_snapshot_cache(const fc::path& snap_path);
 
     fc::path find_latest_snapshot();
@@ -1770,17 +1770,18 @@ void snapshot_plugin::plugin_impl::accept_loop() {
             auto deadline = fc::time_point::now() + fc::seconds(CONNECTION_TIMEOUT_SEC);
             fc::async([this, sock_ptr, remote_ip, deadline]() {
                 try {
-                    handle_connection(*sock_ptr, deadline);
+                    handle_connection(*sock_ptr, deadline, remote_ip);
                 } catch (const fc::exception& e) {
                     wlog("Snapshot server: error handling connection: ${e}", ("e", e.to_detail_string()));
                 } catch (const std::exception& e) {
                     wlog("Snapshot server: error handling connection: ${e}", ("e", e.what()));
                 }
 
-                // Cleanup under mutex
+                // Session cleanup is handled eagerly by handle_connection's RAII guard.
+                // Only clean up connection count and socket here.
                 {
                     fc::scoped_lock<fc::mutex> lock(sessions_mutex);
-                    active_sessions.erase(remote_ip);
+                    active_sessions.erase(remote_ip);  // no-op if already erased by guard
                 }
                 active_connection_count.fetch_sub(1);
                 try { sock_ptr->close(); } catch (...) {}
@@ -1796,9 +1797,27 @@ void snapshot_plugin::plugin_impl::accept_loop() {
     }
 }
 
-void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::time_point deadline) {
+void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::time_point deadline, uint32_t remote_ip) {
     auto remote = sock.remote_endpoint();
     std::string remote_str = std::string(remote.get_address()) + ":" + std::to_string(remote.port());
+
+    // RAII guard: eagerly remove from active_sessions when this function exits.
+    // This prevents race conditions where a client reconnects before the async
+    // fiber wrapper has a chance to clean up the session.
+    struct session_guard {
+        snapshot_plugin::plugin_impl& self;
+        uint32_t ip;
+        bool released = false;
+        session_guard(snapshot_plugin::plugin_impl& s, uint32_t i) : self(s), ip(i) {}
+        ~session_guard() { release(); }
+        void release() {
+            if (!released) {
+                released = true;
+                fc::scoped_lock<fc::mutex> lock(self.sessions_mutex);
+                self.active_sessions.erase(ip);
+            }
+        }
+    } guard(*this, remote_ip);
 
     ilog("Snapshot server: handling connection from ${remote}", ("remote", remote_str));
 
@@ -2014,15 +2033,35 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
               << ", " << (best->compressed_size / 1048576) << " MB)\n";
 
     // Phase 2: Download snapshot in chunks
+    // Brief delay to allow server-side cleanup of Phase 1 session.
+    // The server's anti-spam check rejects duplicate sessions per IP, and the
+    // Phase 1 handler fiber may not have cleaned up yet after we closed the socket.
+    fc::usleep(fc::seconds(2));
+
     std::cerr << "   Downloading snapshot...\n";
     fc::tcp_socket sock;
     auto ep = fc::ip::endpoint::from_string(best->endpoint_str);
 
-    // Connect with timeout
-    auto connect_future = fc::async([&sock, &ep]() {
-        sock.connect_to(ep);
-    });
-    connect_future.wait(SNAPSHOT_PEER_TIMEOUT);
+    // Connect with retry — the server may briefly reject if Phase 1 session
+    // cleanup hasn't completed yet (anti-spam duplicate session check).
+    const int max_connect_retries = 3;
+    for (int retry = 0; retry < max_connect_retries; ++retry) {
+        try {
+            auto connect_future = fc::async([&sock, &ep]() {
+                sock.connect_to(ep);
+            });
+            connect_future.wait(SNAPSHOT_PEER_TIMEOUT);
+            break;  // connected
+        } catch (...) {
+            if (retry + 1 >= max_connect_retries) throw;
+            wlog("Phase 2 connect to ${p} failed (attempt ${a}/${m}), retrying...",
+                 ("p", best->endpoint_str)("a", retry + 1)("m", max_connect_retries));
+            std::cerr << "   Connect retry " << (retry + 1) << "/" << max_connect_retries << "...\n";
+            try { sock.close(); } catch (...) {}
+            sock = fc::tcp_socket();
+            fc::usleep(fc::seconds(2));
+        }
+    }
 
     // Request info again to establish session
     send_message_empty(sock, snapshot_info_request);
