@@ -283,7 +283,7 @@ namespace graphene {
 
                 switch (result) {
                     case block_production_condition::produced:
-                        ilog("Generated block #${n} with timestamp ${t} at time ${c} by ${w}", (capture));
+                        ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w}\033[0m", (capture));
                         break;
                     case block_production_condition::not_synced:
                         // This log-record is commented, because it outputs very often

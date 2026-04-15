@@ -259,18 +259,18 @@ namespace graphene {
                     dump_rpc_time(const fc::variant& data)
                         : data_(data) {
 
-                        dlog("data: ${data}", ("data", fc::json::to_string(data_)));
+                        dlog("\033[90mdata: ${data}\033[0m", ("data", fc::json::to_string(data_)));
                     }
 
                     ~dump_rpc_time() {
                         if (error_.empty()) {
                             dlog(
-                                "elapsed: ${time} sec, data: ${data}",
+                                "\033[90melapsed: ${time} sec, data: ${data}\033[0m",
                                 ("data", fc::json::to_string(data_))
                                 ("time", double((fc::time_point::now() - start_).count()) / 1000000.0));
                         } else {
                             dlog(
-                                "elapsed: ${time} sec, error: '${error}', data: ${data}",
+                                "\033[90melapsed: ${time} sec, error: '${error}', data: ${data}\033[0m",
                                 ("data", fc::json::to_string(data_))
                                 ("error", error_)
                                 ("time", double((fc::time_point::now() - start_).count()) / 1000000.0));
@@ -353,7 +353,7 @@ namespace graphene {
 
                     FC_ASSERT(method_itr != _method_reindex.end(), "Could not find method ${method_name}", ("method_name", method_name));
 
-                    return _method_reindex[method_name];                        
+                    return _method_reindex[method_name];
                 }
 
                 map<string, api_description> _registered_apis;
@@ -365,7 +365,7 @@ namespace graphene {
                 // For example:
                 // Let's get a tolstoy_api get_dynamic_global_properties method
                 // So, when we trying to call it, we actually have to call database_api get_dynamic_global_properties
-                // That's why we need to store method's parent. 
+                // That's why we need to store method's parent.
                 std::unordered_map < std::string, std::string> _method_reindex;
             };
 

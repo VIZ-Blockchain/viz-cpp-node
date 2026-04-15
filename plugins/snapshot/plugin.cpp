@@ -46,6 +46,12 @@ namespace graphene { namespace plugins { namespace snapshot {
 using namespace graphene::chain;
 using graphene::protocol::signed_block;
 
+// ANSI color codes for console log messages
+#define CLOG_GREEN  "\033[92m"   // snapshot export
+#define CLOG_ORANGE "\033[33m"   // snapshot import
+#define CLOG_YELLOW "\033[93m"   // snapshot serving / P2P transfer
+#define CLOG_RESET  "\033[0m"
+
 // ============================================================================
 // Import helpers: read individual fields from variant into chainbase objects
 // ============================================================================
@@ -781,7 +787,7 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
             arr.push_back(std::move(v)); \
         } \
         state[name] = std::move(arr); \
-        ilog("Exported ${n} ${type} objects", ("n", state[name].get_array().size())("type", name)); \
+        ilog(CLOG_GREEN "Exported ${n} ${type} objects" CLOG_RESET, ("n", state[name].get_array().size())("type", name)); \
     }
 
     // CRITICAL objects
@@ -864,7 +870,7 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
 }
 
 void snapshot_plugin::plugin_impl::create_snapshot(const fc::path& output_path) {
-    ilog("Creating snapshot at ${path}...", ("path", output_path.string()));
+    ilog(CLOG_GREEN "Creating snapshot at ${path}..." CLOG_RESET, ("path", output_path.string()));
 
     db.with_strong_read_lock([&]() {
         write_snapshot_to_file(output_path);
@@ -888,7 +894,7 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(const fc::path& output
     header.last_irreversible_block_num = lib;
     header.snapshot_creation_time = fc::time_point_sec(fc::time_point::now());
 
-    ilog("Snapshot at block ${b} (LIB: ${lib})", ("b", head)("lib", lib));
+    ilog(CLOG_GREEN "Snapshot at block ${b} (LIB: ${lib})" CLOG_RESET, ("b", head)("lib", lib));
 
     // Serialize all state
     auto state = serialize_state();
@@ -926,7 +932,7 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(const fc::path& output
     std::string compressed = fc::zlib_compress(snapshot_json);
     auto compress_elapsed = double((fc::time_point::now() - compress_start).count()) / 1000000.0;
 
-    ilog("Compressed snapshot: ${orig} -> ${comp} bytes (${ratio}%, ${time} sec)",
+    ilog(CLOG_GREEN "Compressed snapshot: ${orig} -> ${comp} bytes (${ratio}%, ${time} sec)" CLOG_RESET,
         ("orig", snapshot_json.size())
         ("comp", compressed.size())
         ("ratio", 100 - (compressed.size() * 100 / snapshot_json.size()))
@@ -938,7 +944,7 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(const fc::path& output
         auto parent = output_path.parent_path();
         if (!parent.string().empty() && !boost::filesystem::exists(parent)) {
             boost::filesystem::create_directories(parent);
-            ilog("Created snapshot directory: ${d}", ("d", parent.string()));
+            ilog(CLOG_GREEN "Created snapshot directory: ${d}" CLOG_RESET, ("d", parent.string()));
             out.open(output_path.string(), std::ios::binary);
         }
     }
@@ -957,7 +963,7 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(const fc::path& output
 #endif
 
     auto end = fc::time_point::now();
-    ilog("Snapshot created successfully: ${path} (${size} bytes compressed, ${time} sec)",
+    ilog(CLOG_GREEN "Snapshot created successfully: ${path} (${size} bytes compressed, ${time} sec)" CLOG_RESET,
         ("path", output_path.string())
         ("size", compressed.size())
         ("time", double((end - start).count()) / 1000000.0));
@@ -1002,7 +1008,7 @@ void snapshot_plugin::plugin_impl::update_snapshot_cache(const fc::path& snap_pa
         cached_snap_size = file_size;
         cached_snap_checksum = enc.result();
         cached_snap_block_num = block_num;
-        ilog("Snapshot cache updated: block ${b}, size ${s}, checksum ${c}",
+        ilog(CLOG_GREEN "Snapshot cache updated: block ${b}, size ${s}, checksum ${c}" CLOG_RESET,
              ("b", block_num)("s", file_size)("c", std::string(cached_snap_checksum)));
     } catch (const std::exception& e) {
         wlog("Failed to update snapshot cache: ${e}", ("e", e.what()));
@@ -1010,7 +1016,7 @@ void snapshot_plugin::plugin_impl::update_snapshot_cache(const fc::path& snap_pa
 }
 
 void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
-    ilog("Loading snapshot from ${path}...", ("path", input_path.string()));
+    ilog(CLOG_ORANGE "Loading snapshot from ${path}..." CLOG_RESET, ("path", input_path.string()));
     std::cerr << "   Loading snapshot from " << input_path.string() << "...\n";
 
     auto start = fc::time_point::now();
@@ -1024,7 +1030,7 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     in.close();
 
     std::cerr << "   Read " << (content.size() / 1048576) << " MB from file\n";
-    ilog("Read ${size} bytes from snapshot file", ("size", content.size()));
+    ilog(CLOG_ORANGE "Read ${size} bytes from snapshot file" CLOG_RESET, ("size", content.size()));
 
     // Decompress zlib
     std::cerr << "   Decompressing...\n";
@@ -1037,7 +1043,7 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     content.clear();
     content.shrink_to_fit();
 
-    ilog("Decompressed snapshot: ${comp} -> ${orig} bytes (${time} sec)",
+    ilog(CLOG_ORANGE "Decompressed snapshot: ${comp} -> ${orig} bytes (${time} sec)" CLOG_RESET,
         ("comp", compressed_size)
         ("orig", json_content.size())
         ("time", decompress_elapsed));
@@ -1063,7 +1069,7 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         "Chain ID mismatch: snapshot=${s}, node=${n}",
         ("s", std::string(header.chain_id))("n", std::string(db.get_chain_id())));
 
-    ilog("Snapshot header validated: block=${b}, LIB=${lib}, chain_id=${cid}",
+    ilog(CLOG_ORANGE "Snapshot header validated: block=${b}, LIB=${lib}, chain_id=${cid}" CLOG_RESET,
         ("b", header.snapshot_block_num)("lib", header.last_irreversible_block_num)
         ("cid", std::string(header.chain_id)));
     std::cerr << "   Snapshot: block " << header.snapshot_block_num
@@ -1076,7 +1082,7 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     FC_ASSERT(computed_checksum == header.payload_checksum,
         "Snapshot checksum mismatch: computed=${c}, header=${h}",
         ("c", std::string(computed_checksum))("h", std::string(header.payload_checksum)));
-    ilog("Snapshot checksum verified");
+    ilog(CLOG_ORANGE "Snapshot checksum verified" CLOG_RESET);
     std::cerr << "   Snapshot checksum verified OK\n";
 
     const auto& state = snapshot["state"].get_object();
@@ -1089,7 +1095,7 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         // that would conflict with the snapshot's objects. Singletons (dgp, witness_schedule,
         // hardfork_property) and block_summaries are handled separately (modify-in-place).
         {
-            ilog("Clearing genesis objects before snapshot import...");
+            ilog(CLOG_ORANGE "Clearing genesis objects before snapshot import..." CLOG_RESET);
             const auto& acc_idx = db.get_index<account_index>().indices();
             while (!acc_idx.empty()) { db.remove(*acc_idx.begin()); }
 
@@ -1105,152 +1111,152 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         // CRITICAL - singleton objects (modify existing)
         if (state.contains("dynamic_global_property")) {
             detail::import_dynamic_global_properties(db, state["dynamic_global_property"].get_array());
-            ilog("Imported dynamic_global_property");
+            ilog(CLOG_ORANGE "Imported dynamic_global_property" CLOG_RESET);
         }
         if (state.contains("witness_schedule")) {
             detail::import_witness_schedule(db, state["witness_schedule"].get_array());
-            ilog("Imported witness_schedule");
+            ilog(CLOG_ORANGE "Imported witness_schedule" CLOG_RESET);
         }
         if (state.contains("hardfork_property")) {
             detail::import_hardfork_property(db, state["hardfork_property"].get_array());
-            ilog("Imported hardfork_property");
+            ilog(CLOG_ORANGE "Imported hardfork_property" CLOG_RESET);
         }
 
         // CRITICAL - multi-instance objects
         if (state.contains("account")) {
             auto n = detail::import_accounts(db, state["account"].get_array());
-            ilog("Imported ${n} accounts", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} accounts" CLOG_RESET, ("n", n));
         }
         if (state.contains("account_authority")) {
             auto n = detail::import_account_authorities(db, state["account_authority"].get_array());
-            ilog("Imported ${n} account authorities", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} account authorities" CLOG_RESET, ("n", n));
         }
         if (state.contains("witness")) {
             auto n = detail::import_witnesses(db, state["witness"].get_array());
-            ilog("Imported ${n} witnesses", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} witnesses" CLOG_RESET, ("n", n));
         }
         if (state.contains("witness_vote")) {
             auto n = detail::import_witness_votes(db, state["witness_vote"].get_array());
-            ilog("Imported ${n} witness votes", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} witness votes" CLOG_RESET, ("n", n));
         }
         if (state.contains("block_summary")) {
             auto n = detail::import_block_summaries(db, state["block_summary"].get_array());
-            ilog("Imported ${n} block summaries", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} block summaries" CLOG_RESET, ("n", n));
         }
         if (state.contains("content")) {
             auto n = detail::import_contents(db, state["content"].get_array());
-            ilog("Imported ${n} contents", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} contents" CLOG_RESET, ("n", n));
         }
         if (state.contains("content_vote")) {
             auto n = detail::import_content_votes(db, state["content_vote"].get_array());
-            ilog("Imported ${n} content votes", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} content votes" CLOG_RESET, ("n", n));
         }
         if (state.contains("block_post_validation")) {
             auto n = detail::import_block_post_validations(db, state["block_post_validation"].get_array());
-            ilog("Imported ${n} block post validations", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} block post validations" CLOG_RESET, ("n", n));
         }
 
         // IMPORTANT objects
         if (state.contains("transaction")) {
             auto n = detail::import_transactions(db, state["transaction"].get_array());
-            ilog("Imported ${n} transactions", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} transactions" CLOG_RESET, ("n", n));
         }
         if (state.contains("vesting_delegation")) {
             auto n = detail::import_simple_objects<vesting_delegation_object, vesting_delegation_index>(db, state["vesting_delegation"].get_array());
-            ilog("Imported ${n} vesting delegations", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} vesting delegations" CLOG_RESET, ("n", n));
         }
         if (state.contains("vesting_delegation_expiration")) {
             auto n = detail::import_simple_objects<vesting_delegation_expiration_object, vesting_delegation_expiration_index>(db, state["vesting_delegation_expiration"].get_array());
-            ilog("Imported ${n} vesting delegation expirations", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} vesting delegation expirations" CLOG_RESET, ("n", n));
         }
         if (state.contains("fix_vesting_delegation")) {
             auto n = detail::import_simple_objects<fix_vesting_delegation_object, fix_vesting_delegation_index>(db, state["fix_vesting_delegation"].get_array());
-            ilog("Imported ${n} fix vesting delegations", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} fix vesting delegations" CLOG_RESET, ("n", n));
         }
         if (state.contains("withdraw_vesting_route")) {
             auto n = detail::import_simple_objects<withdraw_vesting_route_object, withdraw_vesting_route_index>(db, state["withdraw_vesting_route"].get_array());
-            ilog("Imported ${n} withdraw vesting routes", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} withdraw vesting routes" CLOG_RESET, ("n", n));
         }
         if (state.contains("escrow")) {
             auto n = detail::import_simple_objects<escrow_object, escrow_index>(db, state["escrow"].get_array());
-            ilog("Imported ${n} escrows", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} escrows" CLOG_RESET, ("n", n));
         }
         if (state.contains("proposal")) {
             auto n = detail::import_proposals(db, state["proposal"].get_array());
-            ilog("Imported ${n} proposals", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} proposals" CLOG_RESET, ("n", n));
         }
         if (state.contains("required_approval")) {
             auto n = detail::import_simple_objects<required_approval_object, required_approval_index>(db, state["required_approval"].get_array());
-            ilog("Imported ${n} required approvals", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} required approvals" CLOG_RESET, ("n", n));
         }
         if (state.contains("committee_request")) {
             auto n = detail::import_committee_requests(db, state["committee_request"].get_array());
-            ilog("Imported ${n} committee requests", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} committee requests" CLOG_RESET, ("n", n));
         }
         if (state.contains("committee_vote")) {
             auto n = detail::import_simple_objects<committee_vote_object, committee_vote_index>(db, state["committee_vote"].get_array());
-            ilog("Imported ${n} committee votes", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} committee votes" CLOG_RESET, ("n", n));
         }
         if (state.contains("invite")) {
             auto n = detail::import_invites(db, state["invite"].get_array());
-            ilog("Imported ${n} invites", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} invites" CLOG_RESET, ("n", n));
         }
         if (state.contains("award_shares_expire")) {
             auto n = detail::import_simple_objects<award_shares_expire_object, award_shares_expire_index>(db, state["award_shares_expire"].get_array());
-            ilog("Imported ${n} award shares expire objects", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} award shares expire objects" CLOG_RESET, ("n", n));
         }
         if (state.contains("paid_subscription")) {
             auto n = detail::import_paid_subscriptions(db, state["paid_subscription"].get_array());
-            ilog("Imported ${n} paid subscriptions", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} paid subscriptions" CLOG_RESET, ("n", n));
         }
         if (state.contains("paid_subscribe")) {
             auto n = detail::import_simple_objects<paid_subscribe_object, paid_subscribe_index>(db, state["paid_subscribe"].get_array());
-            ilog("Imported ${n} paid subscribes", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} paid subscribes" CLOG_RESET, ("n", n));
         }
         if (state.contains("witness_penalty_expire")) {
             auto n = detail::import_simple_objects<witness_penalty_expire_object, witness_penalty_expire_index>(db, state["witness_penalty_expire"].get_array());
-            ilog("Imported ${n} witness penalty expire objects", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} witness penalty expire objects" CLOG_RESET, ("n", n));
         }
 
         // OPTIONAL objects
         if (state.contains("content_type")) {
             auto n = detail::import_content_types(db, state["content_type"].get_array());
-            ilog("Imported ${n} content types", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} content types" CLOG_RESET, ("n", n));
         }
         if (state.contains("account_metadata")) {
             auto n = detail::import_account_metadata(db, state["account_metadata"].get_array());
-            ilog("Imported ${n} account metadata objects", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} account metadata objects" CLOG_RESET, ("n", n));
         }
         if (state.contains("master_authority_history")) {
             auto n = detail::import_master_authority_history(db, state["master_authority_history"].get_array());
-            ilog("Imported ${n} master authority history objects", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} master authority history objects" CLOG_RESET, ("n", n));
         }
         if (state.contains("account_recovery_request")) {
             auto n = detail::import_account_recovery_requests(db, state["account_recovery_request"].get_array());
-            ilog("Imported ${n} account recovery requests", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} account recovery requests" CLOG_RESET, ("n", n));
         }
         if (state.contains("change_recovery_account_request")) {
             auto n = detail::import_simple_objects<change_recovery_account_request_object, change_recovery_account_request_index>(db, state["change_recovery_account_request"].get_array());
-            ilog("Imported ${n} change recovery account requests", ("n", n));
+            ilog(CLOG_ORANGE "Imported ${n} change recovery account requests" CLOG_RESET, ("n", n));
         }
 
         // Set the chainbase revision to match the snapshot head block
         db.set_revision(header.snapshot_block_num);
 
-        ilog("All objects imported successfully");
+        ilog(CLOG_ORANGE "All objects imported successfully" CLOG_RESET);
     });
 
     // Seed fork_db with head block from snapshot
     if (state.contains("fork_db_head_block")) {
         auto head_block = state["fork_db_head_block"].as<signed_block>();
         db.get_fork_db().start_block(head_block);
-        ilog("Fork database seeded with head block ${n}", ("n", header.snapshot_block_num));
+        ilog(CLOG_ORANGE "Fork database seeded with head block ${n}" CLOG_RESET, ("n", header.snapshot_block_num));
     }
 
     auto end = fc::time_point::now();
     auto total_elapsed = double((end - start).count()) / 1000000.0;
     std::cerr << "   Snapshot loaded successfully in " << total_elapsed << " sec\n";
-    ilog("Snapshot loaded successfully in ${t} sec", ("t", total_elapsed));
+    ilog(CLOG_ORANGE "Snapshot loaded successfully in ${t} sec" CLOG_RESET, ("t", total_elapsed));
 }
 
 void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::signed_block& b) {
@@ -1278,7 +1284,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     // Handle deferred (pending) snapshot from a previous block
     if (snapshot_pending && !is_syncing) {
         if (!is_witness_producing_soon()) {
-            ilog("Creating deferred snapshot now (witness no longer scheduled): ${p}", ("p", pending_snapshot_path));
+            ilog(CLOG_GREEN "Creating deferred snapshot now (witness no longer scheduled): ${p}" CLOG_RESET, ("p", pending_snapshot_path));
             try {
                 fc::path output(pending_snapshot_path);
                 write_snapshot_to_file(output);
@@ -1290,7 +1296,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             snapshot_pending = false;
             pending_snapshot_path.clear();
         } else {
-            ilog("Snapshot still deferred at block ${b}: witness scheduled to produce next block", ("b", block_num));
+            ilog(CLOG_GREEN "Snapshot still deferred at block ${b}: witness scheduled to produce next block" CLOG_RESET, ("b", block_num));
         }
     }
 
@@ -1305,11 +1311,11 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             output = fc::path("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         }
         if (is_witness_producing_soon()) {
-            ilog("Deferring snapshot-at-block ${b}: witness scheduled to produce next block", ("b", block_num));
+            ilog(CLOG_GREEN "Deferring snapshot-at-block ${b}: witness scheduled to produce next block" CLOG_RESET, ("b", block_num));
             snapshot_pending = true;
             pending_snapshot_path = output.string();
         } else {
-            ilog("Reached snapshot-at-block ${b}, creating snapshot: ${p}", ("b", block_num)("p", output.string()));
+            ilog(CLOG_GREEN "Reached snapshot-at-block ${b}, creating snapshot: ${p}" CLOG_RESET, ("b", block_num)("p", output.string()));
             try {
                 write_snapshot_to_file(output);
                 update_snapshot_cache(output);
@@ -1325,11 +1331,11 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
         fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         if (is_witness_producing_soon()) {
-            ilog("Deferring periodic snapshot at block ${b}: witness scheduled to produce next block", ("b", block_num));
+            ilog(CLOG_GREEN "Deferring periodic snapshot at block ${b}: witness scheduled to produce next block" CLOG_RESET, ("b", block_num));
             snapshot_pending = true;
             pending_snapshot_path = output.string();
         } else {
-            ilog("Periodic snapshot at block ${b}: ${p}", ("b", block_num)("p", output.string()));
+            ilog(CLOG_GREEN "Periodic snapshot at block ${b}: ${p}" CLOG_RESET, ("b", block_num)("p", output.string()));
             try {
                 write_snapshot_to_file(output);
                 update_snapshot_cache(output);
@@ -1349,7 +1355,7 @@ void snapshot_plugin::plugin_impl::start_stalled_sync_detection() {
     stalled_sync_check_future = fc::async([this]() {
         check_stalled_sync_loop();
     }, "stalled_sync_check");
-    ilog("Stalled sync detection started (timeout: ${m} min)", ("m", stalled_sync_timeout_minutes));
+    ilog(CLOG_YELLOW "Stalled sync detection started (timeout: ${m} min)" CLOG_RESET, ("m", stalled_sync_timeout_minutes));
 }
 
 void snapshot_plugin::plugin_impl::stop_stalled_sync_detection() {
@@ -1359,7 +1365,7 @@ void snapshot_plugin::plugin_impl::stop_stalled_sync_detection() {
     if (stalled_sync_check_future.valid()) {
         stalled_sync_check_future.cancel_and_wait();
     }
-    ilog("Stalled sync detection stopped");
+    ilog(CLOG_YELLOW "Stalled sync detection stopped" CLOG_RESET);
 }
 
 void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
@@ -1391,7 +1397,7 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
 
                     if (!snapshot_path.empty() && stalled_sync_check_running.load()) {
                         std::cerr << "   Newer snapshot found. Clearing state and re-importing...\n";
-                        ilog("Newer snapshot downloaded, reloading...");
+                        ilog(CLOG_YELLOW "Newer snapshot downloaded, reloading..." CLOG_RESET);
 
                         // Stop the check temporarily during reload
                         stalled_sync_check_running.store(false);
@@ -1403,13 +1409,13 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                         last_block_received_time = fc::time_point::now();
 
                         std::cerr << "   === Snapshot reload complete (block " << db.head_block_num() << ") ===\n";
-                        ilog("Snapshot reload complete at block ${n}", ("n", db.head_block_num()));
+                        ilog(CLOG_YELLOW "Snapshot reload complete at block ${n}" CLOG_RESET, ("n", db.head_block_num()));
 
                         // Restart the check
                         stalled_sync_check_running.store(true);
                     } else {
                         std::cerr << "   No newer snapshot available from peers. Continuing with P2P sync...\n";
-                        ilog("No newer snapshot available, continuing P2P sync");
+                        ilog(CLOG_YELLOW "No newer snapshot available, continuing P2P sync" CLOG_RESET);
                         // Reset timer to avoid immediate retry
                         last_block_received_time = fc::time_point::now();
                     }
@@ -1641,7 +1647,7 @@ void snapshot_plugin::plugin_impl::cleanup_old_snapshots() {
             auto mtime = boost::filesystem::last_write_time(itr->path());
             uint64_t age_sec = static_cast<uint64_t>(now - mtime);
             if (age_sec > max_age_sec) {
-                ilog("Removing old snapshot (${days}d old): ${f}",
+                ilog(CLOG_GREEN "Removing old snapshot (${days}d old): ${f}" CLOG_RESET,
                      ("days", age_sec / 86400)("f", filename));
                 boost::filesystem::remove(itr->path());
                 ++removed;
@@ -1652,7 +1658,7 @@ void snapshot_plugin::plugin_impl::cleanup_old_snapshots() {
     }
 
     if (removed > 0) {
-        ilog("Snapshot cleanup: removed ${n} old snapshot(s)", ("n", removed));
+        ilog(CLOG_GREEN "Snapshot cleanup: removed ${n} old snapshot(s)" CLOG_RESET, ("n", removed));
     }
 }
 
@@ -1670,7 +1676,7 @@ void snapshot_plugin::plugin_impl::start_server() {
     tcp_srv->listen(ep);
     server_running = true;
 
-    ilog("Snapshot TCP server listening on ${ep}", ("ep", snapshot_serve_endpoint_str));
+    ilog(CLOG_YELLOW "Snapshot TCP server listening on ${ep}" CLOG_RESET, ("ep", snapshot_serve_endpoint_str));
 
     accept_loop_future = fc::async([this]() {
         accept_loop();
@@ -1761,7 +1767,7 @@ void snapshot_plugin::plugin_impl::accept_loop() {
             }
             active_connection_count.fetch_add(1);
 
-            ilog("Snapshot server: accepted connection from ${ip}:${port}",
+            ilog(CLOG_YELLOW "Snapshot server: accepted connection from ${ip}:${port}" CLOG_RESET,
                  ("ip", std::string(remote.get_address()))("port", remote.port()));
 
             // Handle connection asynchronously in a separate fiber.
@@ -1819,7 +1825,7 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
         }
     } guard(*this, remote_ip);
 
-    ilog("Snapshot server: handling connection from ${remote}", ("remote", remote_str));
+    ilog(CLOG_YELLOW "Snapshot server: handling connection from ${remote}" CLOG_RESET, ("remote", remote_str));
 
     // Check deadline before initial read
     if (fc::time_point::now() > deadline) {
@@ -1837,7 +1843,7 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
     }
     uint32_t msg_type = std::get<1>(msg_result);
 
-    ilog("Snapshot server: received message type ${type} from ${remote}",
+    ilog(CLOG_YELLOW "Snapshot server: received message type ${type} from ${remote}" CLOG_RESET,
          ("type", msg_type)("remote", remote_str));
 
     if (msg_type == snapshot_info_request) {
@@ -1845,17 +1851,17 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
         if (cached_snap_path.empty() || !fc::exists(fc::path(cached_snap_path))) {
             fc::path snap_path = find_latest_snapshot();
             if (snap_path.string().empty() || !fc::exists(snap_path)) {
-                ilog("Snapshot server: no snapshot available, sending NOT_AVAILABLE to ${remote}",
+                ilog(CLOG_YELLOW "Snapshot server: no snapshot available, sending NOT_AVAILABLE to ${remote}" CLOG_RESET,
                      ("remote", remote_str));
                 send_message_empty(sock, snapshot_not_available);
-                ilog("Snapshot server: sent snapshot_not_available to ${remote}", ("remote", remote_str));
+                ilog(CLOG_YELLOW "Snapshot server: sent snapshot_not_available to ${remote}" CLOG_RESET, ("remote", remote_str));
                 return;
             }
             update_snapshot_cache(snap_path);
         }
 
         if (cached_snap_size == 0) {
-            ilog("Snapshot server: snapshot has zero size, sending NOT_AVAILABLE to ${remote}",
+            ilog(CLOG_YELLOW "Snapshot server: snapshot has zero size, sending NOT_AVAILABLE to ${remote}" CLOG_RESET,
                  ("remote", remote_str));
             send_message_empty(sock, snapshot_not_available);
             return;
@@ -1866,11 +1872,11 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
         reply.checksum = cached_snap_checksum;
         reply.compressed_size = cached_snap_size;
 
-        ilog("Snapshot server: offering snapshot at block ${b}, size ${s} bytes to ${remote}",
+        ilog(CLOG_YELLOW "Snapshot server: offering snapshot at block ${b}, size ${s} bytes to ${remote}" CLOG_RESET,
              ("b", cached_snap_block_num)("s", cached_snap_size)("remote", remote_str));
 
         send_message(sock, snapshot_info_reply, pack_to_vec(reply));
-        ilog("Snapshot server: sent snapshot_info_reply to ${remote}", ("remote", remote_str));
+        ilog(CLOG_YELLOW "Snapshot server: sent snapshot_info_reply to ${remote}" CLOG_RESET, ("remote", remote_str));
 
         std::string serve_path = cached_snap_path;
         uint64_t file_size = cached_snap_size;
@@ -1928,7 +1934,7 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
             } catch (const fc::eof_exception&) {
                 // Client disconnected — normal for info-only queries (Phase 1)
                 if (bytes_sent == 0) {
-                    ilog("Snapshot server: client disconnected after info query (normal)");
+                    ilog(CLOG_YELLOW "Snapshot server: client disconnected after info query (normal)" CLOG_RESET);
                 } else {
                     wlog("Snapshot server: client disconnected during transfer at ${b}/${t} bytes",
                          ("b", bytes_sent)("t", file_size));
@@ -1938,7 +1944,7 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
         }
 
         auto serve_elapsed = double((fc::time_point::now() - serve_start).count()) / 1000000.0;
-        ilog("Snapshot server: served ${s} bytes in ${t} sec", ("s", bytes_sent)("t", serve_elapsed));
+        ilog(CLOG_YELLOW "Snapshot server: served ${s} bytes in ${t} sec" CLOG_RESET, ("s", bytes_sent)("t", serve_elapsed));
     }
 }
 
@@ -1963,7 +1969,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     for (const auto& peer_str : trusted_snapshot_peers) {
         try {
             std::cerr << "   Connecting to peer " << peer_str << "...\n";
-            ilog("Querying snapshot info from peer ${p}...", ("p", peer_str));
+            ilog(CLOG_YELLOW "Querying snapshot info from peer ${p}..." CLOG_RESET, ("p", peer_str));
             fc::tcp_socket sock;
             auto ep = fc::ip::endpoint::from_string(peer_str);
 
@@ -1998,12 +2004,12 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
                 auto info = unpack_from_vec<snapshot_info_reply_data>(resp_payload);
                 std::cerr << "   Peer " << peer_str << ": snapshot at block "
                           << info.block_num << " (" << (info.compressed_size / 1048576) << " MB)\n";
-                ilog("Peer ${p}: snapshot at block ${b}, size ${s} bytes",
+                ilog(CLOG_YELLOW "Peer ${p}: snapshot at block ${b}, size ${s} bytes" CLOG_RESET,
                      ("p", peer_str)("b", info.block_num)("s", info.compressed_size));
                 available_peers.push_back({peer_str, info.block_num, info.checksum, info.compressed_size});
             } else if (resp_msg_type == snapshot_not_available) {
                 std::cerr << "   Peer " << peer_str << ": no snapshot available\n";
-                ilog("Peer ${p}: no snapshot available", ("p", peer_str));
+                ilog(CLOG_YELLOW "Peer ${p}: no snapshot available" CLOG_RESET, ("p", peer_str));
             }
 
             sock.close();
@@ -2026,7 +2032,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     auto best = std::max_element(available_peers.begin(), available_peers.end(),
         [](const peer_info& a, const peer_info& b) { return a.block_num < b.block_num; });
 
-    ilog("Selected peer ${p} with snapshot at block ${b} (${s} bytes)",
+    ilog(CLOG_YELLOW "Selected peer ${p} with snapshot at block ${b} (${s} bytes)" CLOG_RESET,
          ("p", best->endpoint_str)("b", best->block_num)("s", best->compressed_size));
     std::cerr << "   Selected peer " << best->endpoint_str
               << " (block " << best->block_num
@@ -2078,7 +2084,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
     if (!boost::filesystem::exists(dir)) {
         boost::filesystem::create_directories(dir);
-        ilog("Created snapshot directory: ${d}", ("d", dir));
+        ilog(CLOG_YELLOW "Created snapshot directory: ${d}" CLOG_RESET, ("d", dir));
     }
     std::string temp_path = dir + "/snapshot-download-temp.vizjson";
     std::ofstream out(temp_path, std::ios::binary);
@@ -2116,7 +2122,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
             std::cerr << "   Downloaded " << (offset / 1048576) << "/" << (total_size / 1048576) << " MB (" << percent << "%)\n";
             last_printed_percent = static_cast<int>(percent);
         }
-        ilog("Downloaded ${offset}/${total} bytes (${pct}%)",
+        ilog(CLOG_YELLOW "Downloaded ${offset}/${total} bytes (${pct}%)" CLOG_RESET,
              ("offset", offset)("total", total_size)("pct", percent));
 
         if (reply.is_last) break;
@@ -2128,7 +2134,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 
     auto download_elapsed = double((fc::time_point::now() - download_start).count()) / 1000000.0;
     std::cerr << "   Download complete: " << (offset / 1048576) << " MB in " << download_elapsed << " sec\n";
-    ilog("Download complete: ${s} bytes in ${t} sec", ("s", offset)("t", download_elapsed));
+    ilog(CLOG_YELLOW "Download complete: ${s} bytes in ${t} sec" CLOG_RESET, ("s", offset)("t", download_elapsed));
 
     // Verify checksum by streaming file in chunks (avoids loading entire file into memory)
     std::cerr << "   Verifying checksum...\n";
@@ -2152,7 +2158,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
             "Snapshot checksum mismatch after download: computed=${c}, expected=${e}",
             ("c", std::string(computed))("e", std::string(best->checksum)));
     }
-    ilog("Snapshot checksum verified");
+    ilog(CLOG_YELLOW "Snapshot checksum verified" CLOG_RESET);
     std::cerr << "   Checksum verified OK\n";
 
     // Rename to final path
@@ -2160,7 +2166,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     boost::filesystem::rename(temp_path, final_path);
 
     std::cerr << "   Snapshot saved to " << final_path << "\n";
-    ilog("Snapshot saved to ${p}", ("p", final_path));
+    ilog(CLOG_YELLOW "Snapshot saved to ${p}" CLOG_RESET, ("p", final_path));
     return final_path;
 }
 

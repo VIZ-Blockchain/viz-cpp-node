@@ -97,7 +97,7 @@ namespace chain {
 
     bool plugin::plugin_impl::accept_block(const protocol::signed_block &block, bool currently_syncing, uint32_t skip) {
         if (currently_syncing && block.block_num() % 10000 == 0) {
-            ilog("Syncing Blockchain --- Got block: #${n} time: ${t} producer: ${p}",
+            ilog("\033[93mSyncing Blockchain --- Got block: #${n} time: ${t} producer: ${p}\033[0m",
                  ("t", block.timestamp)("n", block.block_num())("p", block.witness));
         }
 
