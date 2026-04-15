@@ -13,12 +13,9 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced caching control system with intelligent request classification for mutating vs non-mutating JSON-RPC API calls
-- Added `is_cacheable_request` function for automatic request categorization
-- Implemented blacklist for mutating API calls (network_broadcast_api, debug_node)
-- Improved WebSocket/HTTP request handling with intelligent caching decisions
-- Updated response caching mechanisms with selective caching based on request type
-- Enhanced security considerations with mutating API access control
+- Enhanced JSON RPC plugin with ANSI gray color codes for diagnostic logs, particularly around RPC timing and data processing
+- Improved developer experience with visual distinction between normal operation and diagnostic information
+- Enhanced logging capabilities for RPC timing measurements and data processing diagnostics
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -31,12 +28,13 @@
 8. [Security Considerations](#security-considerations)
 9. [Configuration Guide](#configuration-guide)
 10. [Troubleshooting Guide](#troubleshooting-guide)
-11. [Conclusion](#conclusion)
+11. [Logging and Diagnostics](#logging-and-diagnostics)
+12. [Conclusion](#conclusion)
 
 ## Introduction
 The Webserver Plugin provides HTTP and WebSocket endpoints for JSON-RPC API access to the VIZ blockchain node. It serves as a bridge between external clients and the internal JSON-RPC system, offering both persistent WebSocket connections for real-time updates and standard HTTP endpoints for traditional API calls. The plugin includes an intelligent caching mechanisms that automatically classifies requests as mutating or non-mutating, optimizing performance for frequently accessed read-only API methods while preventing cache pollution from state-changing operations.
 
-**Updated** Enhanced with intelligent request classification system and selective caching based on API mutability.
+**Updated** Enhanced with improved diagnostic logging capabilities through ANSI color coding for better developer experience.
 
 ## Project Structure
 The webserver plugin is organized within the plugins/webserver directory structure, following the standard VIZ plugin architecture pattern:
@@ -149,7 +147,7 @@ The architecture implements several key design patterns:
 - **Observer Pattern**: Chain event subscription for automatic cache management on block application
 - **Blacklist Pattern**: Mutating API detection and prevention of cache pollution
 
-**Updated** Enhanced with intelligent request classification and selective caching mechanisms.
+**Updated** Enhanced with improved diagnostic logging capabilities through ANSI color coding.
 
 ## Detailed Component Analysis
 
@@ -533,6 +531,56 @@ ParseError --> Complete
 - [webserver_plugin.cpp:329](file://plugins/webserver/webserver_plugin.cpp#L329)
 - [webserver_plugin.cpp:303](file://plugins/webserver/webserver_plugin.cpp#L303)
 
+## Logging and Diagnostics
+
+### Enhanced Diagnostic Logging
+The JSON RPC plugin now includes enhanced diagnostic logging with ANSI gray color codes to help developers quickly distinguish between normal operation and diagnostic information:
+
+```mermaid
+sequenceDiagram
+participant Client as "Client"
+participant JSONRPC as "JSON-RPC Plugin"
+participant Timer as "dump_rpc_time"
+participant Logger as "Diagnostic Logger"
+Client->>JSONRPC : JSON-RPC Request
+JSONRPC->>Timer : Create timer instance
+Timer->>Logger : Log colored diagnostic data
+Logger-->>Timer : Colored output : "data : ${data}"
+Timer->>JSONRPC : Process request
+JSONRPC->>Timer : Handle completion
+alt Success
+Timer->>Logger : Log elapsed time and data
+Logger-->>Client : Colored output : "elapsed : ${time} sec, data : ${data}"
+else Error
+Timer->>Logger : Log elapsed time, error, and data
+Logger-->>Client : Colored output : "elapsed : ${time} sec, error : '${error}', data : ${data}"
+end
+```
+
+**Diagram sources**
+- [plugin.cpp:258-288](file://plugins/json_rpc/plugin.cpp#L258-L288)
+
+### ANSI Color Coding Features
+The diagnostic logging system uses ANSI escape sequences for visual distinction:
+
+- **Gray Color Codes**: `\033[90m` for diagnostic information
+- **Reset Code**: `\033[0m` to restore normal terminal colors
+- **Timing Information**: Elapsed time measurements in seconds
+- **Data Processing**: Request/response data visualization
+- **Error Context**: Error messages with associated timing data
+
+### Developer Experience Improvements
+- **Visual Separation**: Gray-colored diagnostic logs help distinguish from normal application logs
+- **Real-time Timing**: Precise timing measurements for request processing
+- **Data Visibility**: Structured logging of request/response data
+- **Error Tracking**: Comprehensive error logging with timing context
+- **Performance Insights**: Easy identification of slow operations through timing data
+
+**Updated** Enhanced with detailed implementation of ANSI color-coded diagnostic logging system.
+
+**Section sources**
+- [plugin.cpp:258-288](file://plugins/json_rpc/plugin.cpp#L258-L288)
+
 ## Conclusion
 The Webserver Plugin provides a robust, high-performance solution for exposing VIZ blockchain functionality through HTTP and WebSocket interfaces. Its architecture emphasizes scalability through concurrent processing, reliability through comprehensive error handling, and efficiency through intelligent caching mechanisms with request classification. The plugin's modular design and extensive configuration options make it suitable for various deployment scenarios, from development environments to production public API services.
 
@@ -543,8 +591,9 @@ Key strengths of the implementation include:
 - **Flexible Deployment**: Separate HTTP and WebSocket endpoints with independent configuration
 - **Production Ready**: Comprehensive error handling and graceful degradation
 - **Security Features**: Multiple layers of security including intelligent request classification for mutating APIs
+- **Enhanced Diagnostics**: ANSI color-coded logging system for improved developer experience
 - **Extensible Design**: Clean separation of concerns enabling easy maintenance and enhancement
 
-The plugin serves as an excellent foundation for building applications that require programmatic access to VIZ blockchain data and operations, with performance characteristics suitable for both private deployments and public API services. Its sophisticated caching mechanism with intelligent request classification, multi-threaded architecture, and comprehensive error handling make it a production-ready solution for enterprise-grade blockchain applications.
+The plugin serves as an excellent foundation for building applications that require programmatic access to VIZ blockchain data and operations, with performance characteristics suitable for both private deployments and public API services. Its sophisticated caching mechanism with intelligent request classification, multi-threaded architecture, comprehensive error handling, and enhanced diagnostic logging make it a production-ready solution for enterprise-grade blockchain applications.
 
-**Updated** Enhanced conclusion reflecting the expanded implementation details, intelligent request classification system, and selective caching mechanisms.
+**Updated** Enhanced conclusion reflecting the expanded implementation details, intelligent request classification system, selective caching mechanisms, and enhanced diagnostic logging capabilities with ANSI color coding.

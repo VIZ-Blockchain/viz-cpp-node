@@ -21,15 +21,18 @@
 - [operation_notification.hpp](file://libraries/chain/include/graphene/chain/operation_notification.hpp)
 - [plugin.cpp](file://plugins/chain/plugin.cpp)
 - [snapshot_plugin.cpp](file://plugins/snapshot/plugin.cpp)
+- [node.cpp](file://libraries/network/node.cpp)
+- [witness.cpp](file://plugins/witness/witness.cpp)
+- [console_appender.cpp](file://thirdparty/fc/src/log/console_appender.cpp)
+- [main.cpp](file://programs/vizd/main.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive documentation for snapshot loading support and DLT mode functionality
-- Updated chain plugin startup sequence to cover snapshot import and creation phases
-- Enhanced error handling documentation for snapshot operations
-- Added DLT rolling block log implementation details
-- Updated database initialization process to include snapshot mode
+- Enhanced logging system documentation with ANSI yellow color codes for blockchain synchronization messages
+- Updated troubleshooting guide to include color-coded log interpretation
+- Added comprehensive logging color scheme documentation for operational visibility
+- Updated performance considerations to include logging overhead analysis
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -38,14 +41,15 @@
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Snapshot Loading and DLT Mode](#snapshot-loading-and-dlt-mode)
-7. [Dependency Analysis](#dependency-analysis)
-8. [Performance Considerations](#performance-considerations)
-9. [Troubleshooting Guide](#troubleshooting-guide)
-10. [Conclusion](#conclusion)
-11. [Appendices](#appendices)
+7. [Logging System and Operational Visibility](#logging-system-and-operational-visibility)
+8. [Dependency Analysis](#dependency-analysis)
+9. [Performance Considerations](#performance-considerations)
+10. [Troubleshooting Guide](#troubleshooting-guide)
+11. [Conclusion](#conclusion)
+12. [Appendices](#appendices)
 
 ## Introduction
-This document describes the Chain Library, the core blockchain state management system. It explains how the database persists blockchain state, validates blocks and transactions, resolves forks, and stores blocks efficiently. The library now includes enhanced snapshot loading capabilities, DLT (Data Ledger Technology) mode support, and improved error handling during snapshot operations. It also documents the data model (objects and indices), the evaluator system for operation processing, and the observer pattern used for event-driven notifications. Practical examples and performance optimization techniques are included to help developers integrate and operate the Chain Library effectively.
+This document describes the Chain Library, the core blockchain state management system. It explains how the database persists blockchain state, validates blocks and transactions, resolves forks, and stores blocks efficiently. The library now includes enhanced snapshot loading capabilities, DLT (Data Ledger Technology) mode support, improved error handling during snapshot operations, and a comprehensive logging system with ANSI color codes for enhanced operational visibility. It also documents the data model (objects and indices), the evaluator system for operation processing, and the observer pattern used for event-driven notifications. Practical examples and performance optimization techniques are included to help developers integrate and operate the Chain Library effectively.
 
 ## Project Structure
 The Chain Library is organized around a central database class that orchestrates:
@@ -57,6 +61,7 @@ The Chain Library is organized around a central database class that orchestrates
 - Evaluator registry for operation processing
 - Observer signals for event-driven integrations
 - Snapshot loading and state restoration capabilities
+- Enhanced logging system with color-coded synchronization messages
 
 ```mermaid
 graph TB
@@ -81,6 +86,12 @@ ON["operation_notification.hpp"]
 SNAP["snapshot_plugin.cpp"]
 CHAINPLUG["chain plugin.cpp"]
 end
+subgraph "Logging System"
+LOG["console_appender.cpp"]
+MAIN["main.cpp"]
+SYNC["node.cpp"]
+WITNESS["witness.cpp"]
+end
 DB --> FDB
 DB --> BLK
 DB --> DLT
@@ -95,6 +106,10 @@ DB --> CEV
 DB --> ON
 CHAINPLUG --> SNAP
 CHAINPLUG --> DB
+SNAP --> LOG
+SYNC --> LOG
+WITNESS --> LOG
+MAIN --> LOG
 ```
 
 **Diagram sources**
@@ -117,6 +132,8 @@ CHAINPLUG --> DB
 - [operation_notification.hpp:11-26](file://libraries/chain/include/graphene/chain/operation_notification.hpp#L11-L26)
 - [plugin.cpp:360-432](file://plugins/chain/plugin.cpp#L360-L432)
 - [snapshot_plugin.cpp:980-1200](file://plugins/snapshot/plugin.cpp#L980-L1200)
+- [console_appender.cpp:132-154](file://thirdparty/fc/src/log/console_appender.cpp#L132-L154)
+- [main.cpp:234-253](file://programs/vizd/main.cpp#L234-L253)
 
 **Section sources**
 - [database.hpp:36-561](file://libraries/chain/include/graphene/chain/database.hpp#L36-L561)
@@ -131,6 +148,7 @@ CHAINPLUG --> DB
 - Evaluator System: Registry and base classes for operation processing with a standardized interface.
 - Observer Pattern: Signals for pre/post operation application, applied block, and transaction events.
 - Snapshot Plugin: Handles state restoration from snapshots and manages snapshot lifecycle.
+- Logging System: Comprehensive color-coded logging with ANSI escape sequences for enhanced operational visibility.
 
 Key responsibilities:
 - Persistence: ChainBase-backed storage with configurable shared memory sizing and periodic revision alignment.
@@ -139,6 +157,7 @@ Key responsibilities:
 - Eventing: Notifications for plugins and observers.
 - State Restoration: Snapshot loading for rapid node startup and state recovery.
 - DLT Operations: Selective block retention for compliance and archival purposes.
+- Operational Visibility: Color-coded logging for synchronization progress and system status.
 
 **Section sources**
 - [database.hpp:56-110](file://libraries/chain/include/graphene/chain/database.hpp#L56-L110)
@@ -157,6 +176,7 @@ The Chain Library composes several subsystems with enhanced snapshot and DLT cap
 - object model defines schema and indices
 - evaluators apply operations atomically within undo sessions
 - snapshot plugin handles state restoration and validation
+- logging system provides color-coded operational visibility
 
 ```mermaid
 sequenceDiagram
@@ -165,6 +185,7 @@ participant DB as "database"
 participant FDB as "fork_database"
 participant BLK as "block_log"
 participant DLT as "dlt_block_log"
+participant LOG as "Logging System"
 participant OBS as "Observers"
 App->>DB : push_block(signed_block)
 DB->>FDB : push_block()
@@ -176,6 +197,7 @@ end
 loop push new fork blocks
 DB->>DB : apply_block()
 DB->>OBS : notify_applied_block()
+DB->>LOG : Emit colored sync progress
 end
 else same fork
 DB->>DB : apply_block()
@@ -190,6 +212,7 @@ DB->>OBS : notify_applied_block()
 - [fork_database.cpp:33-90](file://libraries/chain/fork_database.cpp#L33-L90)
 - [block_log.cpp:253-257](file://libraries/chain/block_log.cpp#L253-L257)
 - [dlt_block_log.cpp:211-230](file://libraries/chain/dlt_block_log.cpp#L211-L230)
+- [console_appender.cpp:132-154](file://thirdparty/fc/src/log/console_appender.cpp#L132-L154)
 
 **Section sources**
 - [database.cpp:800-925](file://libraries/chain/database.cpp#L800-L925)
@@ -611,6 +634,92 @@ Enhanced error handling during snapshot operations:
 - [plugin.cpp:391-417](file://plugins/chain/plugin.cpp#L391-L417)
 - [snapshot_plugin.cpp:1014-1032](file://plugins/snapshot/plugin.cpp#L1014-L1032)
 
+## Logging System and Operational Visibility
+
+### Enhanced Logging Infrastructure
+The Chain Library now features a comprehensive logging system with ANSI color codes designed to improve operational visibility during blockchain synchronization and state management operations.
+
+#### Color-Coded Log Categories
+The logging system uses distinct ANSI color codes for different operational contexts:
+
+- **Green (✓)**: Successful operations, block generation, and positive confirmations
+- **Brown/Yellow (⚠)**: Warning conditions, synchronization progress, and informational messages  
+- **Cyan (✗)**: Error conditions and critical failures
+- **Default**: Debug-level information and internal operations
+
+#### Synchronization Progress Messages
+Blockchain synchronization messages utilize yellow color coding for enhanced visibility:
+
+- **Yellow ANSI Codes**: `\033[93m` for synchronization progress indicators
+- **Orange ANSI Codes**: `\033[33m` for snapshot import operations
+- **Green ANSI Codes**: `\033[92m` for successful block generation
+
+#### Implementation Details
+The logging system leverages the FC (Fast Crypto) framework's console appender with enhanced color support:
+
+```mermaid
+flowchart TD
+Start(["Log Message"]) --> CheckLevel{"Check Log Level"}
+CheckLevel --> |Debug| ColorGreen["Apply Green Color"]
+CheckLevel --> |Warn| ColorYellow["Apply Yellow/Brown Color"]
+CheckLevel --> |Error| ColorCyan["Apply Cyan Color"]
+ColorGreen --> Print["Print Colored Message"]
+ColorYellow --> Print
+ColorCyan --> Print
+Print --> Reset["Reset Color Code"]
+```
+
+**Diagram sources**
+- [console_appender.cpp:132-154](file://thirdparty/fc/src/log/console_appender.cpp#L132-L154)
+- [main.cpp:234-253](file://programs/vizd/main.cpp#L234-L253)
+
+#### Synchronization Progress Indicators
+During blockchain synchronization, the system provides color-coded progress updates:
+
+- **Yellow messages** indicate synchronization progress and block acceptance
+- **Green messages** confirm successful block generation by witnesses
+- **Orange messages** highlight snapshot import operations
+- **Default messages** show internal synchronization mechanics
+
+#### Color Scheme Configuration
+The logging system supports configurable color schemes through program options:
+
+- Console appenders support level-specific color assignments
+- Default color mappings include debug (green), warn (brown/yellow), and error (cyan)
+- Custom color configurations can be specified in logging configuration files
+
+**Section sources**
+- [console_appender.cpp:132-154](file://thirdparty/fc/src/log/console_appender.cpp#L132-L154)
+- [main.cpp:234-253](file://programs/vizd/main.cpp#L234-L253)
+- [snapshot_plugin.cpp:1018-1032](file://plugins/snapshot/plugin.cpp#L1018-L1032)
+- [witness.cpp:286](file://plugins/witness/witness.cpp#L286)
+
+### Enhanced Troubleshooting with Color Coding
+The color-coded logging system significantly improves troubleshooting capabilities:
+
+#### Visual Progress Tracking
+- **Yellow progress bars**: Show synchronization completion percentages
+- **Green confirmations**: Highlight successful operations
+- **Orange warnings**: Indicate snapshot import progress
+- **Red alerts**: Signal critical errors requiring immediate attention
+
+#### Operational Context Clarity
+Different log levels use distinct colors to provide immediate context:
+- **Debug (Green)**: Low-level operational details
+- **Info/Warn (Yellow/Brown)**: Synchronization progress and warnings
+- **Error (Cyan)**: Critical failures and exceptions
+
+#### Terminal Output Enhancement
+The ANSI color codes provide immediate visual feedback in terminal environments:
+- Color-coded timestamps for better temporal tracking
+- Distinct color schemes for different log sources
+- Improved readability during high-volume logging scenarios
+
+**Section sources**
+- [node.cpp:3446-3456](file://libraries/network/node.cpp#L3446-L3456)
+- [snapshot_plugin.cpp:1770-1771](file://plugins/snapshot/plugin.cpp#L1770-L1771)
+- [witness.cpp:286](file://plugins/witness/witness.cpp#L286)
+
 ## Dependency Analysis
 The database depends on:
 - fork_database for chain selection
@@ -620,6 +729,7 @@ The database depends on:
 - evaluator registry for operation application
 - observer signals for event emission
 - snapshot plugin for state restoration
+- logging system for operational visibility
 
 ```mermaid
 graph LR
@@ -637,6 +747,9 @@ DB --> CEV["chain_evaluator.hpp"]
 DB --> ON["operation_notification.hpp"]
 CHAINPLUG["chain plugin.cpp"] --> SNAP["snapshot_plugin.cpp"]
 CHAINPLUG --> DB
+LOGSYS["console_appender.cpp"] --> MAIN["main.cpp"]
+LOGSYS --> SYNC["node.cpp"]
+LOGSYS --> WITNESS["witness.cpp"]
 ```
 
 **Diagram sources**
@@ -656,6 +769,8 @@ CHAINPLUG --> DB
 - [operation_notification.hpp:1-27](file://libraries/chain/include/graphene/chain/operation_notification.hpp#L1-L27)
 - [plugin.cpp:1-526](file://plugins/chain/plugin.cpp#L1-L526)
 - [snapshot_plugin.cpp:1-1976](file://plugins/snapshot/plugin.cpp#L1-L1976)
+- [console_appender.cpp:132-154](file://thirdparty/fc/src/log/console_appender.cpp#L132-L154)
+- [main.cpp:234-253](file://programs/vizd/main.cpp#L234-L253)
 
 **Section sources**
 - [database.hpp:1-561](file://libraries/chain/include/graphene/chain/database.hpp#L1-L561)
@@ -670,6 +785,7 @@ CHAINPLUG --> DB
 - Undo sessions: Use short-lived sessions to minimize rollback overhead; squash temporary sessions after successful application.
 - DLT mode optimization: Configure `_dlt_block_log_max_blocks` appropriately to balance storage requirements and performance.
 - Snapshot loading: Use snapshot mode for rapid node startup, especially for large blockchains.
+- **New**: Logging performance: Color-coded logging adds minimal overhead while significantly improving operational visibility and troubleshooting efficiency.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -681,6 +797,7 @@ Common issues and remedies:
 - Snapshot import failures: Check shared_memory.bin existence and snapshot file accessibility; the system gracefully falls back to normal startup.
 - DLT mode errors: Verify DLT block log configuration and ensure sufficient disk space for rolling window retention.
 - Chain ID mismatches: Snapshot loading validates chain ID compatibility; ensure using correct snapshot for target network.
+- **New**: Color-coded log interpretation: Use yellow messages for synchronization progress, green for successful operations, orange for snapshot operations, and red for critical errors to quickly identify operational status.
 
 **Section sources**
 - [database.cpp:232-248](file://libraries/chain/database.cpp#L232-L248)
@@ -691,7 +808,7 @@ Common issues and remedies:
 - [snapshot_plugin.cpp:1018-1020](file://plugins/snapshot/plugin.cpp#L1018-L1020)
 
 ## Conclusion
-The Chain Library provides a robust, modular framework for blockchain state management with enhanced snapshot loading capabilities and DLT mode support. Its design separates concerns across database orchestration, fork handling, durable storage, typed object models, operation processing, and event-driven observation. The addition of snapshot loading enables rapid node startup and state restoration, while DLT mode provides selective block retention for compliance and archival purposes. By leveraging ChainBase for persistence, fork_database for consensus, block_log for storage, and the new DLT block log for selective retention, it achieves high throughput, reliability, and regulatory compliance. Developers can extend functionality via evaluators and observe state changes through signals, enabling flexible plugin architectures with enhanced operational capabilities.
+The Chain Library provides a robust, modular framework for blockchain state management with enhanced snapshot loading capabilities and DLT mode support. Its design separates concerns across database orchestration, fork handling, durable storage, typed object models, operation processing, and event-driven observation. The addition of snapshot loading enables rapid node startup and state restoration, while DLT mode provides selective block retention for compliance and archival purposes. The enhanced logging system with ANSI color codes significantly improves operational visibility during synchronization and troubleshooting. By leveraging ChainBase for persistence, fork_database for consensus, block_log for storage, the new DLT block log for selective retention, and comprehensive color-coded logging for operational insights, it achieves high throughput, reliability, and regulatory compliance. Developers can extend functionality via evaluators and observe state changes through signals, enabling flexible plugin architectures with enhanced operational capabilities.
 
 ## Appendices
 
@@ -702,7 +819,7 @@ The Chain Library provides a robust, modular framework for blockchain state mana
   - **New**: Open from snapshot using `open_from_snapshot()` for rapid initialization.
 - Push block:
   - Validate block (merkle and size), push to fork database, resolve forks if needed, apply block, persist to block log, emit applied block signal.
-  - **Enhanced**: In DLT mode, selectively write irreversible blocks to DLT block log.
+  - **Enhanced**: In DLT mode, selectively write irreversible blocks to DLT block log with color-coded progress updates.
 - Push transaction:
   - Validate transaction size, apply within a pending session, record changes, and emit pending/applied transaction signals.
 - Query state:
@@ -710,9 +827,14 @@ The Chain Library provides a robust, modular framework for blockchain state mana
 - Fork resolution:
   - Compute branches from current head to a candidate fork head, pop blocks until common ancestor, then push new fork blocks.
 - **New**: Snapshot operations:
-  - Load snapshot state via callback during startup
+  - Load snapshot state via callback during startup with orange/yellow color-coded progress indicators
   - Validate snapshot integrity and chain compatibility
   - Handle snapshot file lifecycle (renaming, cleanup)
+- **New**: Color-coded logging:
+  - Yellow messages for synchronization progress and block acceptance
+  - Green messages for successful block generation
+  - Orange messages for snapshot import operations
+  - Red messages for error conditions
 
 **Section sources**
 - [database.cpp:206-350](file://libraries/chain/database.cpp#L206-L350)
@@ -729,8 +851,9 @@ The Chain Library provides a robust, modular framework for blockchain state mana
 - Keep fork cache bounded: Adjust maximum fork size to control memory footprint.
 - Batch operations: Group related operations to minimize undo session overhead.
 - **New**: Configure DLT mode: Set `_dlt_block_log_max_blocks` to balance storage and performance.
-- **New**: Optimize snapshot loading: Use appropriate snapshot files and monitor import performance.
+- **New**: Optimize snapshot loading: Use appropriate snapshot files and monitor import performance with color-coded progress indicators.
 - **New**: Manage DLT storage: Regularly monitor DLT block log size and adjust retention policies.
+- **New**: Logging optimization: Color-coded logging adds minimal overhead while providing significant operational benefits.
 
 **Section sources**
 - [database.cpp:368-430](file://libraries/chain/database.cpp#L368-L430)
@@ -756,3 +879,31 @@ Usage scenarios:
 - [plugin.cpp:234-236](file://plugins/chain/plugin.cpp#L234-L236)
 - [database.hpp:57-64](file://libraries/chain/include/graphene/chain/database.hpp#L57-L64)
 - [dlt_block_log.cpp:161-230](file://libraries/chain/dlt_block_log.cpp#L161-L230)
+
+### Color-Coded Logging Reference
+**New Section** Comprehensive reference for color-coded logging system
+
+#### ANSI Color Codes Used
+- **`\033[92m`** (Green): Successful operations, block generation confirmations
+- **`\033[33m`** (Orange): Snapshot import operations and P2P transfer progress
+- **`\033[93m`** (Yellow): Synchronization progress, warnings, and informational messages
+- **`\033[96m`** (Cyan): Error conditions and critical failures
+- **`\033[0m`** (Reset): Reset color formatting
+
+#### Log Message Categories
+- **Synchronization Progress**: Yellow messages for block acceptance and sync progress
+- **Snapshot Operations**: Orange messages for import/export operations
+- **Block Generation**: Green messages for successful block production
+- **Error Conditions**: Cyan messages for critical failures
+- **Debug Information**: Default color for low-level operational details
+
+#### Terminal Compatibility
+- ANSI color codes work in Unix/Linux terminals with proper color support
+- Windows terminals may require ANSI emulation for full color support
+- Non-color terminals automatically fall back to plain text output
+
+**Section sources**
+- [snapshot_plugin.cpp:50-53](file://plugins/snapshot/plugin.cpp#L50-L53)
+- [console_appender.cpp:132-154](file://thirdparty/fc/src/log/console_appender.cpp#L132-L154)
+- [node.cpp:3446-3456](file://libraries/network/node.cpp#L3446-L3456)
+- [witness.cpp:286](file://plugins/witness/witness.cpp#L286)
