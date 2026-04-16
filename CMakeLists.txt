@@ -268,5 +268,3 @@ if(LOW_MEMORY_NODE)
 else()
     message(STATUS "\n\n             CONFIGURED FOR FULL NODE                \n\n")
 endif()
-
-
