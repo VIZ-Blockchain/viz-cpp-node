@@ -1,8 +1,8 @@
 FROM phusion/baseimage:noble-1.0.3 AS builder
 
 ENV LANG=en_US.UTF-8
-ENV APPDIR /usr/local/src/viz/
-ENV HOME /var/lib/vizd
+ENV APPDIR=/usr/local/src/viz/
+ENV HOME=/var/lib/vizd
 
 RUN \
     apt-get update && \
@@ -36,7 +36,6 @@ COPY libraries $APPDIR/libraries
 
 RUN \
     cd $APPDIR && \
-    git submodule deinit -f . && \
     git submodule update --init --recursive -f && \
     mkdir build && \
     cd build && \
