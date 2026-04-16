@@ -16,7 +16,17 @@ RUN \
         cmake \
         git \
         ccache \
-        libboost-all-dev \
+        libboost-chrono-dev \
+        libboost-context-dev \
+        libboost-coroutine-dev \
+        libboost-date-time-dev \
+        libboost-filesystem-dev \
+        libboost-iostreams-dev \
+        libboost-locale-dev \
+        libboost-program-options-dev \
+        libboost-serialization-dev \
+        libboost-system-dev \
+        libboost-thread-dev \
         libreadline-dev \
         libssl-dev \
         libtool \
@@ -47,7 +57,7 @@ RUN \
         -DENABLE_MONGO_PLUGIN=FALSE \
         .. \
     && \
-    make -j1
+    make -j$(nproc)
 
 RUN set -xe ;\
     cd $APPDIR/build ;\
