@@ -778,6 +778,14 @@ private:
     fc::mutable_variant_object serialize_state();
 };
 
+// Out-of-class definitions for static constexpr members (required for ODR-use in C++14)
+constexpr uint32_t snapshot_plugin::plugin_impl::MAX_SESSIONS_PER_IP;
+constexpr uint64_t snapshot_plugin::plugin_impl::MAX_SNAPSHOT_SIZE;
+constexpr uint32_t snapshot_plugin::plugin_impl::MAX_CONNECTIONS_PER_HOUR;
+constexpr uint64_t snapshot_plugin::plugin_impl::RATE_LIMIT_WINDOW_SEC;
+constexpr uint32_t snapshot_plugin::plugin_impl::MAX_CONCURRENT_CONNECTIONS;
+constexpr uint32_t snapshot_plugin::plugin_impl::CONNECTION_TIMEOUT_SEC;
+
 fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     fc::mutable_variant_object state;
 
