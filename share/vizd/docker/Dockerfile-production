@@ -26,6 +26,7 @@ RUN \
         libboost-program-options-dev \
         libboost-serialization-dev \
         libboost-system-dev \
+        libboost-test-dev \
         libboost-thread-dev \
         libreadline-dev \
         libssl-dev \
