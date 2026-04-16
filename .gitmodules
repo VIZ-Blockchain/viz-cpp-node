@@ -5,6 +5,8 @@
 [submodule "thirdparty/chainbase"]
 	path = thirdparty/chainbase
 	url = https://github.com/VIZ-Blockchain/chainbase.git
+	branch = lib-boost-1.71
 [submodule "thirdparty/appbase"]
 	path = thirdparty/appbase
 	url = https://github.com/VIZ-Blockchain/appbase.git
+	branch = lib-boost-1.71
