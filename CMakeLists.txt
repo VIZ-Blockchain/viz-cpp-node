@@ -1,6 +1,6 @@
 # Defines VIZ library target.
 project(VIZ)
-cmake_minimum_required(VERSION 2.8.12)
+cmake_minimum_required(VERSION 3.16)
 
 set(CHAIN_NAME "VIZ")
 
@@ -41,7 +41,6 @@ list(APPEND BOOST_COMPONENTS thread
         system
         filesystem
         program_options
-        signals
         serialization
         chrono
         unit_test_framework
@@ -94,14 +93,11 @@ if(WIN32)
     set(BOOST_ALL_DYN_LINK OFF) # force dynamic linking for all libraries
 endif(WIN32)
 
-find_package(Boost 1.57 REQUIRED COMPONENTS ${BOOST_COMPONENTS})
-# For Boost 1.53 on windows, coroutine was not in BOOST_LIBRARYDIR and do not need it to build,  but if boost versin >= 1.54, find coroutine otherwise will cause link errors
-if(NOT "${Boost_VERSION}" MATCHES "1.53(.*)")
-    set(BOOST_LIBRARIES_TEMP ${Boost_LIBRARIES})
-    find_package(Boost 1.54 REQUIRED COMPONENTS coroutine)
-    list(APPEND BOOST_COMPONENTS coroutine)
-    set(Boost_LIBRARIES ${BOOST_LIBRARIES_TEMP} ${Boost_LIBRARIES})
-endif()
+find_package(Boost 1.71 REQUIRED COMPONENTS ${BOOST_COMPONENTS})
+set(BOOST_LIBRARIES_TEMP ${Boost_LIBRARIES})
+find_package(Boost 1.71 REQUIRED COMPONENTS coroutine)
+list(APPEND BOOST_COMPONENTS coroutine)
+set(Boost_LIBRARIES ${BOOST_LIBRARIES_TEMP} ${Boost_LIBRARIES})
 
 find_program(CCACHE_FOUND ccache)
 if(CCACHE_FOUND)

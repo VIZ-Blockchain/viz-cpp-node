@@ -1,4 +1,4 @@
-FROM phusion/baseimage:bionic-1.0.0 as builder
+FROM phusion/baseimage:noble-1.0.3 as builder
 
 ENV LANG=en_US.UTF-8
 ENV APPDIR /usr/local/src/viz/
@@ -26,8 +26,9 @@ RUN \
         pkg-config \
         python3 \
         python3-dev \
-        python3-pip && \
-    pip3 install gcovr
+        python3-pip \
+        python3-venv && \
+    python3 -m pip install --break-system-packages gcovr
 
 # Explicitly copy needed files to avoid re-building when changing other files
 COPY .git $APPDIR/.git
@@ -64,7 +65,7 @@ RUN \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/*
 
-FROM phusion/baseimage:bionic-1.0.0 as production
+FROM phusion/baseimage:noble-1.0.3 as production
 COPY --from=builder /usr/local /usr/local
 
 RUN set -xe ;\
