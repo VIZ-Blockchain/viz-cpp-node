@@ -23,7 +23,6 @@
 #include <boost/multi_index/key_extractors.hpp>
 #include <boost/multi_index/random_access_index.hpp>
 #include <boost/multi_index/sequenced_index.hpp>
-#include <boost/optional.hpp>
 
 #include <fc/crypto/sha1.hpp>
 
@@ -128,5 +127,5 @@ namespace mongo_db {
     inline void format_value(document& doc, const std::string& name, const fc::safe<T>& value) {
         doc << name << static_cast<int64_t>(value.value);
     }
-    
+
 }}} // graphene::plugins::mongo_db
