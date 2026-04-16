@@ -16,11 +16,122 @@ recommended for witnesses and seed-nodes.
 
 ## Building under Docker
 
-We ship a Dockerfile.  This builds both common node type binaries.
+We ship Dockerfiles for building production and testnet images.
 
-    git clone https://github.com/viz-world/viz-world
-    cd viz-world
-    docker build -t viz-world/viz-world .
+### Prerequisites
+
+- Docker installed and running
+- Docker Hub account (for pushing images)
+- Git with submodules initialized
+
+### Available Dockerfiles
+
+| Dockerfile | Purpose | Image Tag |
+|------------|---------|----------|
+| `share/vizd/docker/Dockerfile-production` | Mainnet node | `vizblockchain/vizd:latest` |
+| `share/vizd/docker/Dockerfile-testnet` | Testnet node | `vizblockchain/vizd:testnet` |
+
+### Building Locally
+
+Clone the repository with submodules:
+
+```bash
+git clone --recursive https://github.com/VIZ-Blockchain/viz-cpp-node
+cd viz-cpp-node
+```
+
+If you already cloned without `--recursive`, initialize submodules:
+
+```bash
+git submodule update --init --recursive
+```
+
+Build the production image:
+
+```bash
+docker build -t vizblockchain/vizd:latest -f share/vizd/docker/Dockerfile-production .
+```
+
+Build the testnet image:
+
+```bash
+docker build -t vizblockchain/vizd:testnet -f share/vizd/docker/Dockerfile-testnet .
+```
+
+### Pushing to Docker Hub
+
+1. **Login to Docker Hub:**
+
+```bash
+docker login
+```
+
+Enter your Docker Hub username and password when prompted.
+
+2. **Tag the image (if using a different local tag):**
+
+```bash
+docker tag vizblockchain/vizd:latest YOUR_USERNAME/vizd:latest
+```
+
+3. **Push the image:**
+
+```bash
+# Push to official VIZ repository (requires access)
+docker push vizblockchain/vizd:latest
+
+# Or push to your personal repository
+docker push YOUR_USERNAME/vizd:latest
+```
+
+### Building Specific Versions
+
+To build a specific version or branch:
+
+```bash
+git checkout v1.2.3  # or any tag/branch
+git submodule update --init --recursive
+docker build -t vizblockchain/vizd:1.2.3 -f share/vizd/docker/Dockerfile-production .
+```
+
+### Running the Container
+
+```bash
+# Production node
+docker run -d \
+  --name vizd \
+  -p 8090:8090 -p 8091:8091 -p 2001:2001 \
+  -v /path/to/blockchain:/var/lib/vizd \
+  vizblockchain/vizd:latest
+
+# Testnet node
+docker run -d \
+  --name vizd-testnet \
+  -p 8090:8090 -p 8091:8091 -p 2001:2001 \
+  -v /path/to/testnet-data:/var/lib/vizd \
+  vizblockchain/vizd:testnet
+```
+
+### Troubleshooting
+
+**Mirror sync errors during apt-get:**
+Ubuntu mirrors occasionally fail during sync. The Dockerfile includes retry logic, but if it persists, re-run the build:
+
+```bash
+docker build --no-cache -t vizblockchain/vizd:latest -f share/vizd/docker/Dockerfile-production .
+```
+
+**Submodule issues:**
+Ensure submodules are properly initialized:
+
+```bash
+git submodule deinit -f .
+git submodule update --init --recursive
+```
+
+**GCC alignment errors:**
+If you see `size of array element is not a multiple of its alignment`, ensure you're using the latest code which fixes GCC 12+ compatibility.
+
 
 ## Building on Ubuntu 16.04
 

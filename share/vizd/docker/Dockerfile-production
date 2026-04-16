@@ -47,7 +47,7 @@ RUN \
         -DENABLE_MONGO_PLUGIN=FALSE \
         .. \
     && \
-    make -j$(nproc)
+    make -j1
 
 RUN set -xe ;\
     cd $APPDIR/build ;\
