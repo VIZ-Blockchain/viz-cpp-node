@@ -711,12 +711,12 @@ public:
     bool server_running = false;
 
     // Anti-spam: active sessions per IP (max MAX_SESSIONS_PER_IP concurrent sessions per IP)
-    static const uint32_t MAX_SESSIONS_PER_IP = 2;
+    static constexpr uint32_t MAX_SESSIONS_PER_IP = 2;
     std::map<uint32_t, uint32_t> active_sessions;  // IP -> concurrent session count
 
     // Anti-spam: rate limiting (max N connections per hour per IP)
-    static const uint32_t MAX_CONNECTIONS_PER_HOUR = 6;
-    static const uint64_t RATE_LIMIT_WINDOW_SEC = 3600; // 1 hour
+    static constexpr uint32_t MAX_CONNECTIONS_PER_HOUR = 6;
+    static constexpr uint64_t RATE_LIMIT_WINDOW_SEC = 3600; // 1 hour
     std::map<uint32_t, std::vector<fc::time_point>> connection_history; // IP -> timestamps
 
     // Mutex protecting active_sessions and connection_history.
@@ -731,12 +731,12 @@ public:
     uint32_t cached_snap_block_num = 0;
 
     // Async connection tracking
-    static const uint32_t MAX_CONCURRENT_CONNECTIONS = 5;
-    static const uint32_t CONNECTION_TIMEOUT_SEC = 60;
+    static constexpr uint32_t MAX_CONCURRENT_CONNECTIONS = 5;
+    static constexpr uint32_t CONNECTION_TIMEOUT_SEC = 60;
     std::atomic<uint32_t> active_connection_count{0};
 
     // Max snapshot file size for download (2 GB)
-    static const uint64_t MAX_SNAPSHOT_SIZE = 2ULL * 1024 * 1024 * 1024;
+    static constexpr uint64_t MAX_SNAPSHOT_SIZE = 2ULL * 1024 * 1024 * 1024;
 
     boost::signals2::scoped_connection applied_block_conn;
 
