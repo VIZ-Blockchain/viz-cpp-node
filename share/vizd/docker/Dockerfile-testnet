@@ -5,35 +5,38 @@ ENV APPDIR=/usr/local/src/viz/
 ENV HOME=/var/lib/vizd
 
 RUN \
-    for i in 1 2 3; do apt-get update && break || sleep 5; done && \
-    apt-get install -y --no-install-recommends \
-        autoconf \
-        automake \
-        autotools-dev \
-        binutils \
-        bsdmainutils \
-        build-essential \
-        cmake \
-        git \
-        ccache \
-        libboost-chrono-dev \
-        libboost-context-dev \
-        libboost-coroutine-dev \
-        libboost-date-time-dev \
-        libboost-filesystem-dev \
-        libboost-iostreams-dev \
-        libboost-locale-dev \
-        libboost-program-options-dev \
-        libboost-serialization-dev \
-        libboost-system-dev \
-        libboost-test-dev \
-        libboost-thread-dev \
-        libreadline-dev \
-        libssl-dev \
-        libtool \
-        ncurses-dev \
-        pbzip2 \
-        pkg-config && \
+    for i in 1 2 3; do \
+        apt-get update && \
+        apt-get install -y --no-install-recommends \
+            autoconf \
+            automake \
+            autotools-dev \
+            binutils \
+            bsdmainutils \
+            build-essential \
+            cmake \
+            git \
+            ccache \
+            libboost-chrono-dev \
+            libboost-context-dev \
+            libboost-coroutine-dev \
+            libboost-date-time-dev \
+            libboost-filesystem-dev \
+            libboost-iostreams-dev \
+            libboost-locale-dev \
+            libboost-program-options-dev \
+            libboost-serialization-dev \
+            libboost-system-dev \
+            libboost-test-dev \
+            libboost-thread-dev \
+            libreadline-dev \
+            libssl-dev \
+            libtool \
+            ncurses-dev \
+            pbzip2 \
+            pkg-config && \
+        break || sleep 10; \
+    done && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
