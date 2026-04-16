@@ -151,6 +151,65 @@ Files stored in the blockchain data directory:
 - `dlt_block_log` -- block data (same format as `block_log`)
 - `dlt_block_log.index` -- offset-aware index
 
+## Trusted Seeds Diagnostic Test
+
+The `test-trusted-seeds` option probes all configured `trusted-snapshot-peer` endpoints at startup and reports connectivity metrics, then exits. It is intended as a diagnostic tool to verify that snapshot seeds are reachable and performant before deploying a node.
+
+### What Is Measured
+
+For each trusted peer:
+- **Connection time** — TCP handshake duration in milliseconds
+- **Latency** — Round-trip time for an info-request / info-reply in milliseconds
+- **Snapshot info** — Block number, compressed size, checksum (if snapshot is available)
+- **Download speed** — Throughput measured from a single 1 MB chunk download in KB/s
+- **Status** — `REACHABLE`, `NO_SNAPSHOT`, `TIMEOUT`, or `ERROR`
+
+### Configuration
+
+```ini
+plugin = snapshot
+
+trusted-snapshot-peer = 80.87.202.57:8092
+trusted-snapshot-peer = seed2.example.com:8092
+
+# Enable the diagnostic test (node exits after testing)
+test-trusted-seeds = true
+```
+
+Or as a CLI flag:
+
+```bash
+vizd --plugin snapshot --trusted-snapshot-peer 80.87.202.57:8092 --test-trusted-seeds true
+```
+
+### Example Output
+
+```
+[test-trusted-seeds] Testing 2 trusted peer(s)...
+
+[test-trusted-seeds] Peer 1/2: 80.87.202.57:8092
+  Connection: 45 ms
+  Latency (info request): 120 ms
+  Snapshot: block 18500000, size 156 MB, checksum abc123456789...
+  Download speed (1 MB probe): 2450 KB/s
+
+[test-trusted-seeds] Peer 2/2: 192.168.1.10:8092
+  Connection: timeout (30s)
+
+=== Trusted Seeds Test Summary === (2 peer(s))
+  80.87.202.57:8092    REACHABLE   connect=45ms  latency=120ms  speed=2450KB/s  block=18500000  size=156MB
+  192.168.1.10:8092    TIMEOUT
+
+Test complete. Exiting.
+```
+
+### Notes
+
+- The node exits after the test is complete. This option is **not** for normal operation.
+- If no `trusted-snapshot-peer` entries are configured, the node exits immediately with a warning.
+- The speed probe downloads one 1 MB chunk. Actual full-download speed may differ slightly.
+- The test runs before the snapshot TCP server starts, so it does not affect other connected clients.
+
 ## Stalled Sync Detection (DLT Mode)
 
 For DLT mode nodes that may fall behind the network, automatic stalled sync detection can re-download a newer snapshot when P2P sync is no longer possible (peers have pruned old blocks).
@@ -201,6 +260,7 @@ stalled-sync-timeout-minutes = 5
 | `sync-snapshot-from-trusted-peer` | false | Download snapshot on empty state (config.ini or CLI) |
 | `enable-stalled-sync-detection` | false | Auto-detect stalled sync and re-download snapshot |
 | `stalled-sync-timeout-minutes` | 5 | Timeout for stalled sync detection and startup retry interval |
+| `test-trusted-seeds` | false | Probe all trusted peers at startup (connect time, latency, speed) and exit |
 | `dlt-block-log-max-blocks` | 100000 | Rolling DLT block_log window size (0 = disabled) |
 
 ### CLI options

@@ -699,6 +699,9 @@ public:
     std::vector<std::string> trusted_snapshot_peers;
     bool sync_snapshot_from_trusted_peer = false;
 
+    // Diagnostic: test all trusted peers and exit
+    bool test_trusted_seeds = false;
+
     // Parsed trusted IPs for server-side trust enforcement
     std::set<uint32_t> trusted_ips;  // numeric IP addresses
 
@@ -707,11 +710,12 @@ public:
     fc::future<void> accept_loop_future;
     bool server_running = false;
 
-    // Anti-spam: active sessions per IP (max 1 concurrent session per IP)
-    std::set<uint32_t> active_sessions;  // IPs with active connections
+    // Anti-spam: active sessions per IP (max MAX_SESSIONS_PER_IP concurrent sessions per IP)
+    static const uint32_t MAX_SESSIONS_PER_IP = 2;
+    std::map<uint32_t, uint32_t> active_sessions;  // IP -> concurrent session count
 
     // Anti-spam: rate limiting (max N connections per hour per IP)
-    static const uint32_t MAX_CONNECTIONS_PER_HOUR = 3;
+    static const uint32_t MAX_CONNECTIONS_PER_HOUR = 6;
     static const uint64_t RATE_LIMIT_WINDOW_SEC = 3600; // 1 hour
     std::map<uint32_t, std::vector<fc::time_point>> connection_history; // IP -> timestamps
 
@@ -760,6 +764,7 @@ public:
 
     fc::path find_latest_snapshot();
     std::string download_snapshot_from_peers();
+    void test_all_trusted_peers();
     void cleanup_old_snapshots();
 
 private:
@@ -1480,10 +1485,18 @@ bool read_exact_with_timeout(fc::tcp_socket& sock, char* buf, size_t len, const 
             n = read_future.wait(remaining);
         } catch (const fc::timeout_exception&) {
             return false; // Timeout
+        } catch (const fc::exception&) {
+            // Socket error (closed, reset, etc.) - return false to indicate failure
+            return false;
+        } catch (const std::exception&) {
+            // Standard exception - return false to indicate failure
+            return false;
         }
 
         if (n == 0) {
-            FC_THROW("Connection closed while reading");
+            // Connection closed while reading - return false instead of throwing
+            // so callers can handle it gracefully
+            return false;
         }
         total += n;
     }
@@ -1742,15 +1755,17 @@ void snapshot_plugin::plugin_impl::accept_loop() {
             {
                 fc::scoped_lock<fc::mutex> lock(sessions_mutex);
 
-                // Anti-spam: reject if this IP already has an active session
-                if (active_sessions.count(remote_ip)) {
-                    wlog("Snapshot server: rejected duplicate session from ${ip} (already connected)",
-                         ("ip", std::string(remote.get_address())));
+                // Anti-spam: reject if this IP already has MAX_SESSIONS_PER_IP active sessions
+                auto sess_it = active_sessions.find(remote_ip);
+                if (sess_it != active_sessions.end() && sess_it->second >= MAX_SESSIONS_PER_IP) {
+                    wlog("Snapshot server: rejected connection from ${ip} (${n} active sessions, limit ${l})",
+                         ("ip", std::string(remote.get_address()))
+                         ("n", sess_it->second)("l", MAX_SESSIONS_PER_IP));
                     sock_ptr->close();
                     continue;
                 }
 
-                // Anti-spam: rate limiting (max 3 connections per hour per IP)
+                // Anti-spam: rate limiting (max MAX_CONNECTIONS_PER_HOUR connections per hour per IP)
                 {
                     auto now = fc::time_point::now();
                     auto cutoff = now - fc::seconds(RATE_LIMIT_WINDOW_SEC);
@@ -1777,8 +1792,8 @@ void snapshot_plugin::plugin_impl::accept_loop() {
                     }
                 }
 
-                // Register active session
-                active_sessions.insert(remote_ip);
+                // Register active session (increment count)
+                active_sessions[remote_ip]++;
             }
             active_connection_count.fetch_add(1);
 
@@ -1802,7 +1817,15 @@ void snapshot_plugin::plugin_impl::accept_loop() {
                 // Only clean up connection count and socket here.
                 {
                     fc::scoped_lock<fc::mutex> lock(sessions_mutex);
-                    active_sessions.erase(remote_ip);  // no-op if already erased by guard
+                    // Fallback: decrement count (no-op if already zeroed by RAII guard)
+                    auto it = active_sessions.find(remote_ip);
+                    if (it != active_sessions.end()) {
+                        if (it->second > 1) {
+                            it->second--;
+                        } else {
+                            active_sessions.erase(it);
+                        }
+                    }
                 }
                 active_connection_count.fetch_sub(1);
                 try { sock_ptr->close(); } catch (...) {}
@@ -1822,7 +1845,7 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
     auto remote = sock.remote_endpoint();
     std::string remote_str = std::string(remote.get_address()) + ":" + std::to_string(remote.port());
 
-    // RAII guard: eagerly remove from active_sessions when this function exits.
+    // RAII guard: eagerly decrement active session count when this function exits.
     // This prevents race conditions where a client reconnects before the async
     // fiber wrapper has a chance to clean up the session.
     struct session_guard {
@@ -1835,7 +1858,14 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
             if (!released) {
                 released = true;
                 fc::scoped_lock<fc::mutex> lock(self.sessions_mutex);
-                self.active_sessions.erase(ip);
+                auto it = self.active_sessions.find(ip);
+                if (it != self.active_sessions.end()) {
+                    if (it->second > 1) {
+                        it->second--;
+                    } else {
+                        self.active_sessions.erase(it);
+                    }
+                }
             }
         }
     } guard(*this, remote_ip);
@@ -1868,8 +1898,16 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
             if (snap_path.string().empty() || !fc::exists(snap_path)) {
                 ilog(CLOG_YELLOW "Snapshot server: no snapshot available, sending NOT_AVAILABLE to ${remote}" CLOG_RESET,
                      ("remote", remote_str));
-                send_message_empty(sock, snapshot_not_available);
-                ilog(CLOG_YELLOW "Snapshot server: sent snapshot_not_available to ${remote}" CLOG_RESET, ("remote", remote_str));
+                try {
+                    send_message_empty(sock, snapshot_not_available);
+                    ilog(CLOG_YELLOW "Snapshot server: sent snapshot_not_available to ${remote}" CLOG_RESET, ("remote", remote_str));
+                } catch (const fc::exception& e) {
+                    wlog("Snapshot server: error sending NOT_AVAILABLE to ${remote}: ${e}",
+                         ("remote", remote_str)("e", e.to_detail_string()));
+                } catch (const std::exception& e) {
+                    wlog("Snapshot server: error sending NOT_AVAILABLE to ${remote}: ${e}",
+                         ("remote", remote_str)("e", e.what()));
+                }
                 return;
             }
             update_snapshot_cache(snap_path);
@@ -1878,7 +1916,15 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
         if (cached_snap_size == 0) {
             ilog(CLOG_YELLOW "Snapshot server: snapshot has zero size, sending NOT_AVAILABLE to ${remote}" CLOG_RESET,
                  ("remote", remote_str));
-            send_message_empty(sock, snapshot_not_available);
+            try {
+                send_message_empty(sock, snapshot_not_available);
+            } catch (const fc::exception& e) {
+                wlog("Snapshot server: error sending NOT_AVAILABLE to ${remote}: ${e}",
+                     ("remote", remote_str)("e", e.to_detail_string()));
+            } catch (const std::exception& e) {
+                wlog("Snapshot server: error sending NOT_AVAILABLE to ${remote}: ${e}",
+                     ("remote", remote_str)("e", e.what()));
+            }
             return;
         }
 
@@ -1890,8 +1936,18 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
         ilog(CLOG_YELLOW "Snapshot server: offering snapshot at block ${b}, size ${s} bytes to ${remote}" CLOG_RESET,
              ("b", cached_snap_block_num)("s", cached_snap_size)("remote", remote_str));
 
-        send_message(sock, snapshot_info_reply, pack_to_vec(reply));
-        ilog(CLOG_YELLOW "Snapshot server: sent snapshot_info_reply to ${remote}" CLOG_RESET, ("remote", remote_str));
+        try {
+            send_message(sock, snapshot_info_reply, pack_to_vec(reply));
+            ilog(CLOG_YELLOW "Snapshot server: sent snapshot_info_reply to ${remote}" CLOG_RESET, ("remote", remote_str));
+        } catch (const fc::exception& e) {
+            wlog("Snapshot server: error sending snapshot_info_reply to ${remote}: ${e}",
+                 ("remote", remote_str)("e", e.to_detail_string()));
+            return;
+        } catch (const std::exception& e) {
+            wlog("Snapshot server: error sending snapshot_info_reply to ${remote}: ${e}",
+                 ("remote", remote_str)("e", e.what()));
+            return;
+        }
 
         std::string serve_path = cached_snap_path;
         uint64_t file_size = cached_snap_size;
@@ -1955,6 +2011,16 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
                          ("b", bytes_sent)("t", file_size));
                 }
                 return;
+            } catch (const fc::exception& e) {
+                // Handle other socket errors (broken pipe, connection reset, etc.)
+                wlog("Snapshot server: socket error during transfer to ${remote}: ${e}",
+                     ("remote", remote_str)("e", e.to_detail_string()));
+                return;
+            } catch (const std::exception& e) {
+                // Handle standard exceptions
+                wlog("Snapshot server: standard exception during transfer to ${remote}: ${e}",
+                     ("remote", remote_str)("e", e.what()));
+                return;
             }
         }
 
@@ -2001,7 +2067,19 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
                 continue;
             }
 
-            send_message_empty(sock, snapshot_info_request);
+            try {
+                send_message_empty(sock, snapshot_info_request);
+            } catch (const fc::exception& e) {
+                std::cerr << "   Peer " << peer_str << ": send failed\n";
+                wlog("Failed to send info request to peer ${p}: ${e}", ("p", peer_str)("e", e.to_detail_string()));
+                sock.close();
+                continue;
+            } catch (const std::exception& e) {
+                std::cerr << "   Peer " << peer_str << ": send failed\n";
+                wlog("Failed to send info request to peer ${p}: ${e}", ("p", peer_str)("e", e.what()));
+                sock.close();
+                continue;
+            }
 
             // Read response with timeout
             auto resp_result = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
@@ -2085,7 +2163,15 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     }
 
     // Request info again to establish session
-    send_message_empty(sock, snapshot_info_request);
+    try {
+        send_message_empty(sock, snapshot_info_request);
+    } catch (const fc::exception& e) {
+        FC_THROW("Failed to send Phase 2 info request to peer ${p}: ${e}",
+            ("p", best->endpoint_str)("e", e.to_detail_string()));
+    } catch (const std::exception& e) {
+        FC_THROW("Failed to send Phase 2 info request to peer ${p}: ${e}",
+            ("p", best->endpoint_str)("e", e.what()));
+    }
     auto info_result = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
     FC_ASSERT(std::get<0>(info_result), "Timeout waiting for peer response during download");
     FC_ASSERT(std::get<1>(info_result) == snapshot_info_reply, "Unexpected response from peer during download");
@@ -2118,7 +2204,15 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
         req.offset = offset;
         req.chunk_size = chunk_size;
 
-        send_message(sock, snapshot_data_request, pack_to_vec(req));
+        try {
+            send_message(sock, snapshot_data_request, pack_to_vec(req));
+        } catch (const fc::exception& e) {
+            FC_THROW("Failed to send chunk request to peer ${p} at offset ${o}: ${e}",
+                ("p", best->endpoint_str)("o", offset)("e", e.to_detail_string()));
+        } catch (const std::exception& e) {
+            FC_THROW("Failed to send chunk request to peer ${p} at offset ${o}: ${e}",
+                ("p", best->endpoint_str)("o", offset)("e", e.what()));
+        }
         // Use longer timeout for chunk download to support slow connections.
         // 1 MB chunk with 5 min timeout = min 3.4 KB/s required (very slow connections OK).
         auto data_result = read_message_with_timeout(sock, 64 * 1024 * 1024, fc::minutes(5));
@@ -2186,6 +2280,182 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 }
 
 // ============================================================================
+// Snapshot trusted-seeds diagnostic test
+// ============================================================================
+
+void snapshot_plugin::plugin_impl::test_all_trusted_peers() {
+    const size_t n_peers = trusted_snapshot_peers.size();
+    std::cerr << "\n[test-trusted-seeds] Testing " << n_peers << " trusted peer(s)...\n";
+    ilog("[test-trusted-seeds] Testing ${n} trusted peer(s)", ("n", n_peers));
+
+    // Result record for summary table
+    struct peer_result {
+        std::string endpoint;
+        std::string status;       // REACHABLE, NO_SNAPSHOT, TIMEOUT, ERROR
+        double connect_ms  = -1;
+        double latency_ms  = -1;
+        double speed_kbps  = -1;
+        uint32_t block_num = 0;
+        uint64_t size_mb   = 0;
+    };
+    std::vector<peer_result> results;
+
+    for (size_t idx = 0; idx < n_peers; ++idx) {
+        const std::string& peer_str = trusted_snapshot_peers[idx];
+        peer_result res;
+        res.endpoint = peer_str;
+
+        std::cerr << "\n[test-trusted-seeds] Peer " << (idx + 1) << "/" << n_peers << ": " << peer_str << "\n";
+        ilog("[test-trusted-seeds] Probing peer ${p}", ("p", peer_str));
+
+        try {
+            fc::tcp_socket sock;
+            auto ep = fc::ip::endpoint::from_string(peer_str);
+
+            // --- 1. Measure TCP connect time ---
+            auto t_connect_start = fc::time_point::now();
+            auto connect_future = fc::async([&sock, &ep]() {
+                sock.connect_to(ep);
+            });
+            try {
+                connect_future.wait(SNAPSHOT_PEER_TIMEOUT);
+            } catch (const fc::timeout_exception&) {
+                res.status = "TIMEOUT";
+                std::cerr << "  Connection: timeout (" << (SNAPSHOT_PEER_TIMEOUT.count() / 1000000) << "s)\n";
+                results.push_back(res);
+                continue;
+            }
+            auto t_connect_end = fc::time_point::now();
+            res.connect_ms = double((t_connect_end - t_connect_start).count()) / 1000.0;
+            std::cerr << "  Connection: " << int(res.connect_ms) << " ms\n";
+
+            // --- 2. Measure info-request round-trip latency ---
+            auto t_latency_start = fc::time_point::now();
+            try {
+                send_message_empty(sock, snapshot_info_request);
+            } catch (const std::exception& se) {
+                res.status = "ERROR";
+                std::cerr << "  Send failed: " << se.what() << "\n";
+                sock.close();
+                results.push_back(res);
+                continue;
+            }
+
+            auto resp = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
+            auto t_latency_end = fc::time_point::now();
+
+            if (!std::get<0>(resp)) {
+                res.status = "TIMEOUT";
+                std::cerr << "  Info response: timeout\n";
+                sock.close();
+                results.push_back(res);
+                continue;
+            }
+            res.latency_ms = double((t_latency_end - t_latency_start).count()) / 1000.0;
+            std::cerr << "  Latency (info request): " << int(res.latency_ms) << " ms\n";
+
+            uint32_t resp_type = std::get<1>(resp);
+
+            if (resp_type == snapshot_not_available) {
+                res.status = "NO_SNAPSHOT";
+                std::cerr << "  Snapshot: not available\n";
+                sock.close();
+                results.push_back(res);
+                continue;
+            }
+
+            if (resp_type != snapshot_info_reply) {
+                res.status = "ERROR";
+                std::cerr << "  Unexpected response type: " << resp_type << "\n";
+                sock.close();
+                results.push_back(res);
+                continue;
+            }
+
+            auto info = unpack_from_vec<snapshot_info_reply_data>(std::get<2>(resp));
+            res.block_num = info.block_num;
+            res.size_mb   = info.compressed_size / (1024 * 1024);
+            std::cerr << "  Snapshot: block " << info.block_num
+                      << ", size " << res.size_mb << " MB"
+                      << ", checksum " << std::string(info.checksum).substr(0, 12) << "...\n";
+
+            // --- 3. Measure download speed with a single 1 MB chunk ---
+            if (info.compressed_size > 0) {
+                snapshot_data_request_data req;
+                req.block_num  = info.block_num;
+                req.offset     = 0;
+                req.chunk_size = 1048576; // 1 MB
+
+                auto t_speed_start = fc::time_point::now();
+                bool speed_ok = true;
+                try {
+                    send_message(sock, snapshot_data_request, pack_to_vec(req));
+                } catch (const std::exception& se) {
+                    speed_ok = false;
+                    std::cerr << "  Speed test: send failed: " << se.what() << "\n";
+                }
+
+                if (speed_ok) {
+                    auto chunk_result = read_message_with_timeout(sock, 64 * 1024 * 1024, fc::minutes(5));
+                    if (std::get<0>(chunk_result) && std::get<1>(chunk_result) == snapshot_data_reply) {
+                        auto chunk = unpack_from_vec<snapshot_data_reply_data>(std::get<2>(chunk_result));
+                        double elapsed_sec = double((fc::time_point::now() - t_speed_start).count()) / 1000000.0;
+                        if (elapsed_sec > 0.0 && !chunk.data.empty()) {
+                            res.speed_kbps = (chunk.data.size() / 1024.0) / elapsed_sec;
+                        }
+                        std::cerr << "  Download speed (1 MB probe): " << int(res.speed_kbps) << " KB/s\n";
+                    } else {
+                        std::cerr << "  Speed test: no chunk response\n";
+                    }
+                }
+            }
+
+            res.status = "REACHABLE";
+            sock.close();
+
+        } catch (const fc::exception& e) {
+            res.status = "ERROR";
+            std::cerr << "  Error: " << e.to_detail_string() << "\n";
+            wlog("[test-trusted-seeds] peer ${p} error: ${e}", ("p", peer_str)("e", e.to_detail_string()));
+        } catch (const std::exception& e) {
+            res.status = "ERROR";
+            std::cerr << "  Error: " << e.what() << "\n";
+            wlog("[test-trusted-seeds] peer ${p} error: ${e}", ("p", peer_str)("e", e.what()));
+        }
+
+        results.push_back(res);
+    }
+
+    // --- Summary table ---
+    std::cerr << "\n=== Trusted Seeds Test Summary ==="
+                 " (" << n_peers << " peer(s))\n";
+    ilog("[test-trusted-seeds] Summary:");
+    for (const auto& r : results) {
+        std::string line = "  " + r.endpoint;
+        // pad endpoint to 26 chars for alignment
+        while (line.size() < 28) line += ' ';
+        line += r.status;
+        while (line.size() < 42) line += ' ';
+        if (r.connect_ms >= 0)
+            line += "connect=" + std::to_string(int(r.connect_ms)) + "ms  ";
+        if (r.latency_ms >= 0)
+            line += "latency=" + std::to_string(int(r.latency_ms)) + "ms  ";
+        if (r.speed_kbps >= 0)
+            line += "speed=" + std::to_string(int(r.speed_kbps)) + "KB/s  ";
+        if (r.block_num > 0)
+            line += "block=" + std::to_string(r.block_num) + "  ";
+        if (r.size_mb > 0)
+            line += "size=" + std::to_string(r.size_mb) + "MB";
+        std::cerr << line << "\n";
+        ilog("[test-trusted-seeds] ${l}", ("l", line));
+    }
+    std::cerr << "\nTest complete. Exiting.\n";
+    ilog("[test-trusted-seeds] Test complete. Exiting.");
+
+    appbase::app().quit();
+}
+
+// ============================================================================
 // Plugin interface
 // ============================================================================
 
@@ -2219,6 +2489,9 @@ void snapshot_plugin::set_program_options(
             "Enable automatic detection of stalled sync and re-download snapshot from trusted peers (DLT mode)")
         ("stalled-sync-timeout-minutes", bpo::value<uint32_t>()->default_value(5),
             "Timeout in minutes before considering sync stalled and triggering re-download (requires enable-stalled-sync-detection)")
+        ("test-trusted-seeds", bpo::value<bool>()->default_value(false),
+            "Test connectivity to all trusted-snapshot-peer endpoints at startup: reports TCP connect time, "
+            "info-request latency, and 1 MB download speed. Node exits after testing.")
     ;
     cli.add_options()
         ("snapshot", bpo::value<std::string>(),
@@ -2279,6 +2552,12 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     my->stalled_sync_timeout_minutes = options.at("stalled-sync-timeout-minutes").as<uint32_t>();
     if (my->enable_stalled_sync_detection) {
         ilog("Stalled sync detection enabled: timeout ${m} minutes", ("m", my->stalled_sync_timeout_minutes));
+    }
+
+    // Trusted seeds diagnostic test
+    my->test_trusted_seeds = options.at("test-trusted-seeds").as<bool>();
+    if (my->test_trusted_seeds) {
+        ilog("test-trusted-seeds enabled: will probe all trusted peers at startup and exit");
     }
 
     if (options.count("trusted-snapshot-peer")) {
@@ -2406,6 +2685,19 @@ void snapshot_plugin::plugin_startup() {
     // Note: --sync-snapshot-from-trusted-peer is handled via snapshot_p2p_sync_callback
     // registered in plugin_initialize(). It runs during chain plugin's startup when
     // state is empty (head_block_num == 0), before on_sync().
+
+    // If test-trusted-seeds is enabled, probe all trusted peers and exit.
+    // This runs before the TCP server starts so we do not interfere with normal serving.
+    if (my->test_trusted_seeds) {
+        if (my->trusted_snapshot_peers.empty()) {
+            std::cerr << "[test-trusted-seeds] No trusted-snapshot-peer entries configured. Exiting.\n";
+            wlog("[test-trusted-seeds] No trusted-snapshot-peer entries configured.");
+            appbase::app().quit();
+            return;
+        }
+        my->test_all_trusted_peers();
+        return;
+    }
 
     // Start snapshot TCP server if enabled
     if (my->allow_snapshot_serving) {
