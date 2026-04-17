@@ -10,7 +10,16 @@
 - [snapshot.json](file://share/vizd/snapshot.json)
 - [snapshot-testnet.json](file://share/vizd/snapshot-testnet.json)
 - [snapshot-plugin.md](file://documentation/snapshot-plugin.md)
+- [plugin.cpp](file://plugins/chain/plugin.cpp)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Updated architecture overview to reflect modular layering (interface, serialization, network protocol, database components)
+- Added documentation for enhanced extensibility and maintainability features
+- Updated integration section to show programmatic state restoration through chain plugin callbacks
+- Enhanced troubleshooting guide with new diagnostic capabilities
+- Updated performance considerations for modular architecture benefits
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -18,16 +27,19 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+6. [Integration with Chain Plugin](#integration-with-chain-plugin)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
 
 ## Introduction
 
 The Snapshot Plugin System is a comprehensive solution for VIZ blockchain nodes that enables efficient state synchronization through distributed ledger technology (DLT). This system provides mechanisms for creating, loading, serving, and downloading blockchain state snapshots, significantly reducing bootstrap times and enabling rapid node initialization.
 
 The plugin addresses the fundamental challenge of blockchain bootstrapping by allowing nodes to jump directly to a recent state rather than replaying thousands of blocks. This is particularly crucial for VIZ's social media and content platform characteristics, where rapid deployment and scaling are essential.
+
+**Updated** The system has been refactored into modular layers with enhanced extensibility and maintainability, integrating snapshot loading API with chain plugin for programmatic state restoration.
 
 ## Project Structure
 
@@ -75,21 +87,27 @@ F --> G
 
 The snapshot plugin consists of several interconnected components that work together to provide comprehensive state synchronization capabilities:
 
-### Plugin Interface Layer
+### Modular Layer Architecture
+The plugin has been refactored into distinct functional layers:
+
+#### Interface Layer
 The main plugin class provides the primary interface for external systems to interact with the snapshot functionality. It implements the appbase plugin interface and exposes methods for loading and creating snapshots programmatically.
 
-### Serialization Engine
+#### Serialization Engine Layer
 A sophisticated serialization system handles the conversion of blockchain state objects to/from compressed JSON format. This engine manages different object types with varying memory layouts and special data structures.
 
-### Network Protocol Implementation
+#### Network Protocol Layer
 The plugin implements a custom TCP protocol for peer-to-peer snapshot distribution, including message framing, authentication, and transfer optimization.
 
-### Database Integration
+#### Database Integration Layer
 Deep integration with the VIZ blockchain database ensures seamless state transitions and maintains consistency during snapshot operations.
+
+**Updated** The modular architecture provides enhanced extensibility and maintainability through clear separation of concerns between interface, serialization, network, and database components.
 
 **Section sources**
 - [plugin.hpp:42-76](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L42-L76)
 - [snapshot_types.hpp:16-52](file://plugins/snapshot/include/graphene/plugins/snapshot/snapshot_types.hpp#L16-L52)
+- [snapshot_serializer.hpp:30-158](file://plugins/snapshot/include/graphene/plugins/snapshot/snapshot_serializer.hpp#L30-L158)
 
 ## Architecture Overview
 
@@ -131,11 +149,11 @@ S --> T[Snapshot Files]
 end
 ```
 
+**Updated** The architecture emphasizes separation of concerns with clear boundaries between serialization, networking, and database operations. The modular design enables independent development and testing of each component while maintaining system coherence.
+
 **Diagram sources**
 - [plugin.cpp:675-780](file://plugins/snapshot/plugin.cpp#L675-L780)
 - [snapshot_serializer.hpp:37-107](file://plugins/snapshot/include/graphene/plugins/snapshot/snapshot_serializer.hpp#L37-L107)
-
-The architecture emphasizes separation of concerns with clear boundaries between serialization, networking, and database operations. This design enables independent development and testing of each component while maintaining system coherence.
 
 **Section sources**
 - [plugin.cpp:675-780](file://plugins/snapshot/plugin.cpp#L675-L780)
@@ -170,11 +188,11 @@ FileSys-->>Plugin : success
 Plugin-->>CLI : completion_status
 ```
 
+**Updated** The creation process handles over 30 different object types, from critical singleton objects to optional metadata. Each object type receives specialized treatment based on its memory layout and data structure complexity, demonstrating the modular architecture's flexibility.
+
 **Diagram sources**
 - [plugin.cpp:885-987](file://plugins/snapshot/plugin.cpp#L885-L987)
 - [plugin.cpp:789-883](file://plugins/snapshot/plugin.cpp#L789-L883)
-
-The creation process handles over 30 different object types, from critical singleton objects to optional metadata. Each object type receives specialized treatment based on its memory layout and data structure complexity.
 
 ### Snapshot Loading and Validation
 
@@ -198,10 +216,10 @@ SetRevision --> SeedForkDB["Seed Fork Database"]
 SeedForkDB --> Complete([Load Complete])
 ```
 
+**Updated** The loading process includes extensive validation steps to ensure data integrity and compatibility with the current node configuration, showcasing the robustness of the modular design.
+
 **Diagram sources**
 - [plugin.cpp:1046-1288](file://plugins/snapshot/plugin.cpp#L1046-L1288)
-
-The loading process includes extensive validation steps to ensure data integrity and compatibility with the current node configuration.
 
 ### Network Protocol Implementation
 
@@ -229,11 +247,11 @@ end
 Note over Client,Server : Connection Closed
 ```
 
+**Updated** The protocol includes sophisticated anti-spam protection mechanisms and supports large file transfers through chunked delivery, demonstrating the network layer's modular design.
+
 **Diagram sources**
 - [plugin.cpp:1902-2038](file://plugins/snapshot/plugin.cpp#L1902-L2038)
 - [plugin.cpp:1470-1599](file://plugins/snapshot/plugin.cpp#L1470-L1599)
-
-The protocol includes sophisticated anti-spam protection mechanisms and supports large file transfers through chunked delivery.
 
 ### Configuration and Options
 
@@ -255,6 +273,43 @@ The plugin supports extensive configuration through both command-line arguments 
 **Section sources**
 - [plugin.cpp:2473-2510](file://plugins/snapshot/plugin.cpp#L2473-L2510)
 - [snapshot-plugin.md:247-273](file://documentation/snapshot-plugin.md#L247-L273)
+
+## Integration with Chain Plugin
+
+**Updated** The snapshot plugin has been integrated with the chain plugin through a sophisticated callback system that enables programmatic state restoration:
+
+The integration works through three key callback mechanisms registered during plugin initialization:
+
+### Snapshot Loading Callback
+```mermaid
+sequenceDiagram
+participant Chain as Chain Plugin
+participant Snapshot as Snapshot Plugin
+participant DB as Database
+Chain->>Chain : Detect --snapshot option
+Chain->>Snapshot : Register snapshot_load_callback
+Snapshot->>Chain : Callback registered
+Chain->>Chain : During startup, check for callback
+Chain->>Snapshot : Execute snapshot_load_callback()
+Snapshot->>DB : load_snapshot_from_snapshot_file()
+DB-->>Snapshot : State restored
+Snapshot-->>Chain : Success
+Chain->>Chain : Continue normal startup
+```
+
+**Diagram sources**
+- [plugin.cpp:2601-2612](file://plugins/snapshot/plugin.cpp#L2601-L2612)
+- [plugin.cpp:396-417](file://plugins/chain/plugin.cpp#L396-L417)
+
+### Snapshot Creation Callback
+The snapshot plugin registers a callback that executes during chain plugin startup to create snapshots after full database load, ensuring proper state capture.
+
+### P2P Snapshot Sync Callback
+For nodes with empty state, the snapshot plugin registers a callback that downloads and loads snapshots from trusted peers before normal P2P synchronization begins.
+
+**Section sources**
+- [plugin.cpp:2598-2680](file://plugins/snapshot/plugin.cpp#L2598-L2680)
+- [plugin.cpp:364-432](file://plugins/chain/plugin.cpp#L364-L432)
 
 ## Dependency Analysis
 
@@ -286,17 +341,17 @@ N --> P[Shared Library]
 end
 ```
 
+**Updated** The dependency graph reveals a clean separation between core blockchain functionality and plugin-specific features. The plugin relies on established VIZ infrastructure while maintaining independence from external systems, demonstrating the benefits of the modular architecture.
+
 **Diagram sources**
 - [CMakeLists.txt:27-38](file://plugins/snapshot/CMakeLists.txt#L27-L38)
-
-The dependency graph reveals a clean separation between core blockchain functionality and plugin-specific features. The plugin relies on established VIZ infrastructure while maintaining independence from external systems.
 
 **Section sources**
 - [CMakeLists.txt:27-38](file://plugins/snapshot/CMakeLists.txt#L27-L38)
 
 ## Performance Considerations
 
-The snapshot plugin implements several performance optimization strategies:
+The snapshot plugin implements several performance optimization strategies through its modular architecture:
 
 ### Compression and Storage Efficiency
 - Uses zlib compression to reduce snapshot file sizes by approximately 70-80%
@@ -317,6 +372,8 @@ The snapshot plugin implements several performance optimization strategies:
 - Streaming JSON parsing prevents loading entire snapshots into memory
 - Efficient object copying mechanisms handle complex data structures
 - Automatic cleanup of temporary files and resources
+
+**Updated** The modular architecture enhances performance by enabling independent optimization of each layer while maintaining system cohesion.
 
 ## Troubleshooting Guide
 
@@ -350,6 +407,8 @@ The plugin includes comprehensive diagnostic capabilities:
 - **Stalled Sync Detection**: Automatically recovers from network partitions
 - **Progress Monitoring**: Real-time feedback during long-running operations
 
+**Updated** The modular architecture provides enhanced diagnostic capabilities through separate layers for serialization, networking, and database operations, enabling more precise troubleshooting.
+
 **Section sources**
 - [plugin.cpp:2294-2464](file://plugins/snapshot/plugin.cpp#L2294-L2464)
 - [plugin.cpp:1378-1464](file://plugins/snapshot/plugin.cpp#L1378-L1464)
@@ -358,6 +417,10 @@ The plugin includes comprehensive diagnostic capabilities:
 
 The Snapshot Plugin System represents a sophisticated solution for blockchain state synchronization that significantly improves the VIZ node bootstrapping experience. Through careful architectural design, comprehensive feature coverage, and robust error handling, it enables efficient deployment and scaling of VIZ-based applications.
 
+**Updated** The recent architectural refactoring into modular layers (interface, serialization, network protocol, database components) has enhanced extensibility and maintainability while integrating snapshot loading API with chain plugin for programmatic state restoration.
+
 Key strengths of the system include its modular architecture, extensive configuration options, and built-in performance optimizations. The plugin seamlessly integrates with existing VIZ infrastructure while providing powerful new capabilities for state management and peer-to-peer synchronization.
 
-The implementation demonstrates best practices in blockchain plugin development, including proper resource management, error handling, and user experience considerations. Future enhancements could focus on additional compression algorithms, enhanced security features, and expanded monitoring capabilities.
+The implementation demonstrates best practices in blockchain plugin development, including proper resource management, error handling, and user experience considerations. The modular design enables independent development and testing of each component while maintaining system coherence, representing a significant advancement in extensibility and maintainability.
+
+Future enhancements could focus on additional compression algorithms, enhanced security features, and expanded monitoring capabilities, leveraging the solid foundation provided by the modular architecture.

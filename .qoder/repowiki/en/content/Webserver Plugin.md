@@ -13,6 +13,7 @@
 
 ## Update Summary
 **Changes Made**
+- Modernized Boost library usage by replacing boost::bind with std::bind and std::placeholders in thread pool creation and WebSocket message handlers
 - Enhanced JSON-RPC response caching system with proper fc::variant-based JSON parsing using fc::json::from_string
 - Implemented id-independent cache keys to prevent cache bypass attacks via id rotation
 - Improved cache validation with comprehensive error handling for malformed requests
@@ -38,7 +39,7 @@
 ## Introduction
 The Webserver Plugin provides HTTP and WebSocket endpoints for JSON-RPC API access to the VIZ blockchain node. It serves as a bridge between external clients and the internal JSON-RPC system, offering both persistent WebSocket connections for real-time updates and standard HTTP endpoints for traditional API calls. The plugin includes an intelligent caching mechanisms that automatically classifies requests as mutating or non-mutating using robust fc::variant-based JSON parsing, optimizing performance for frequently accessed read-only API methods while preventing cache pollution from state-changing operations.
 
-**Updated** Enhanced with major performance optimizations to the JSON-RPC caching mechanism, including fc::variant-based JSON parsing, id-independent keys, robust request classification, comprehensive cache validation, and improved WebSocket/HTTP handler support with proper JSON-RPC 2.0 compliance.
+**Updated** Enhanced with major performance optimizations to the JSON-RPC caching mechanism, including fc::variant-based JSON parsing, id-independent keys, robust request classification, comprehensive cache validation, improved WebSocket/HTTP handler support with proper JSON-RPC 2.0 compliance, and modernized Boost library usage with std::bind and std::placeholders for better C++11 compatibility.
 
 ## Project Structure
 The webserver plugin is organized within the plugins/webserver directory structure, following the standard VIZ plugin architecture pattern:
@@ -52,7 +53,7 @@ subgraph "Dependencies"
 E[json_rpc/plugin.hpp] --> F[JSON-RPC Plugin]
 G[appbase/application.hpp] --> H[Application Framework]
 I[websocketpp/server.hpp] --> J[WebSocket Library]
-K[boost::asio] --> L[Asynchronous I/O]
+K[std::bind/std::placeholders] --> L[C++11 Standard Bindings]
 M[fc::json::from_string] --> N[Proper JSON Parsing]
 O[fc::variant] --> P[Robust Data Structures]
 end
@@ -67,11 +68,11 @@ end
 
 **Diagram sources**
 - [webserver_plugin.hpp:1-62](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L1-L62)
-- [webserver_plugin.cpp:1-484](file://plugins/webserver/webserver_plugin.cpp#L1-L484)
+- [webserver_plugin.cpp:1-605](file://plugins/webserver/webserver_plugin.cpp#L1-L605)
 
 **Section sources**
 - [webserver_plugin.hpp:1-62](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L1-L62)
-- [webserver_plugin.cpp:1-484](file://plugins/webserver/webserver_plugin.cpp#L1-L484)
+- [webserver_plugin.cpp:1-605](file://plugins/webserver/webserver_plugin.cpp#L1-L605)
 
 ## Core Components
 The webserver plugin consists of several key components working together to provide HTTP and WebSocket API services:
@@ -82,9 +83,9 @@ The primary interface is the `webserver_plugin` class that inherits from appbase
 ### Implementation Container
 The `webserver_plugin_impl` struct contains all the internal state and functionality, including:
 - HTTP and WebSocket server instances with separate io_service instances
-- Thread pool management for concurrent request processing using appbase scheduler
+- Thread pool management for concurrent request processing using appbase scheduler with modernized std::bind bindings
 - Intelligent response caching mechanism with request classification and block-based invalidation using fc::variant parsing
-- Connection handling for both HTTP and WebSocket protocols
+- Connection handling for both HTTP and WebSocket protocols with std::bind-based message handlers
 - Signal connections for blockchain event monitoring and cache management
 
 ### JSON-RPC Integration
@@ -92,10 +93,10 @@ The plugin integrates with the JSON-RPC plugin to handle API method dispatching 
 
 **Section sources**
 - [webserver_plugin.hpp:32-57](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L32-L57)
-- [webserver_plugin.cpp:113-157](file://plugins/webserver/webserver_plugin.cpp#L113-L157)
+- [webserver_plugin.cpp:190-234](file://plugins/webserver/webserver_plugin.cpp#L190-L234)
 
 ## Architecture Overview
-The webserver plugin follows a sophisticated multi-threaded architecture designed for high concurrency and reliability with intelligent caching control using fc::variant-based JSON parsing:
+The webserver plugin follows a sophisticated multi-threaded architecture designed for high concurrency and reliability with intelligent caching control using fc::variant-based JSON parsing and modernized std::bind bindings:
 
 ```mermaid
 graph TB
@@ -106,7 +107,7 @@ end
 subgraph "Webserver Plugin"
 C[HTTP Server Thread]
 D[WebSocket Server Thread]
-E[Thread Pool]
+E[Thread Pool with std::bind]
 F[Intelligent Cache System]
 G[Request Classifier]
 H[fc::variant Parser]
@@ -155,23 +156,98 @@ R --> F
 ```
 
 **Diagram sources**
-- [webserver_plugin.cpp:84-105](file://plugins/webserver/webserver_plugin.cpp#L84-L105)
-- [webserver_plugin.cpp:133-159](file://plugins/webserver/webserver_plugin.cpp#L133-L159)
-- [webserver_plugin.cpp:161-183](file://plugins/webserver/webserver_plugin.cpp#L161-L183)
-- [webserver_plugin.cpp:466-474](file://plugins/webserver/webserver_plugin.cpp#L466-L474)
+- [webserver_plugin.cpp:190-234](file://plugins/webserver/webserver_plugin.cpp#L190-L234)
+- [webserver_plugin.cpp:236-289](file://plugins/webserver/webserver_plugin.cpp#L236-L289)
+- [webserver_plugin.cpp:352-416](file://plugins/webserver/webserver_plugin.cpp#L352-L416)
+- [webserver_plugin.cpp:418-495](file://plugins/webserver/webserver_plugin.cpp#L418-L495)
 
 The architecture implements several key design patterns:
 - **Separation of Concerns**: HTTP and WebSocket servers run in separate threads with dedicated io_service instances
-- **Thread Pool Pattern**: Concurrent request processing with configurable thread count using appbase scheduler
+- **Thread Pool Pattern**: Concurrent request processing with configurable thread count using appbase scheduler and modernized std::bind bindings
 - **Intelligent Caching Pattern**: Request classification system with automatic cache control based on API mutability using fc::variant parsing
 - **Observer Pattern**: Chain event subscription for automatic cache management on block application
 - **Blacklist Pattern**: Mutating API detection and prevention of cache pollution using fc::variant-based method analysis
 - **fc::variant Pattern**: Robust JSON parsing and manipulation using fc library variants for optimal performance
 - **Error Handling Pattern**: Comprehensive fc::json::from_string-based error handling preventing crashes and improving reliability
 
-**Updated** Enhanced with fc::variant-based JSON parsing, response ID patching, comprehensive error handling capabilities, and improved cache management using fc::variant objects.
+**Updated** Enhanced with fc::variant-based JSON parsing, response ID patching, comprehensive error handling capabilities, improved cache management using fc::variant objects, and modernized std::bind-based thread pool management.
 
 ## Detailed Component Analysis
+
+### Modernized Thread Pool Management
+The plugin uses the appbase scheduler for request processing with modernized std::bind bindings, providing a dedicated thread pool separate from the main application thread:
+
+```mermaid
+classDiagram
+class webserver_plugin_impl {
++thread_pool_size_t thread_pool_size
++asio : : io_service thread_pool_ios
++asio : : io_service : : work thread_pool_work
++vector<std : : thread> worker_threads
++start_webserver()
++stop_webserver()
++handle_ws_message()
++handle_http_message()
++is_cacheable_request()
++make_cache_key()
++extract_request_id()
++patch_response_id()
++fc : : variant Parser
+}
+class ThreadGroup {
++create_thread(std : : bind)
++join_all()
++ioservice scheduler
+}
+webserver_plugin_impl --> ThreadGroup : "uses modernized std : : bind"
+```
+
+**Diagram sources**
+- [webserver_plugin.cpp:190-197](file://plugins/webserver/webserver_plugin.cpp#L190-L197)
+
+**Updated** Enhanced with comprehensive fc::variant-based JSON parsing methods, improved cache management capabilities, robust fc::variant object handling, and modernized std::bind-based thread pool management using std::placeholders.
+
+### Enhanced WebSocket Message Handlers
+The plugin implements modernized std::bind-based WebSocket message handlers with proper std::placeholders for parameter binding:
+
+```mermaid
+sequenceDiagram
+participant WS as "WebSocket Server"
+participant Handler as "std : : bind Handler"
+participant Parser as "fc : : json : : from_string Parser"
+participant Variant as "fc : : variant Request"
+participant Classifier as "Request Classifier"
+participant Cache as "Cache System"
+participant API as "JSON-RPC API"
+WS->>Handler : WebSocket Message
+Handler->>Parser : fc : : json : : from_string
+Parser-->>Handler : fc : : variant Request
+Handler->>Variant : Process request object
+Handler->>Classifier : Check Mutating API
+Classifier-->>Handler : Cache Decision
+alt Cacheable Request
+Handler->>Cache : Lookup Cache
+Cache-->>Handler : Cache Hit/Miss
+alt Cache Hit
+Handler->>WS : Return Cached Response
+else Cache Miss
+Handler->>API : Process Request
+API-->>Handler : Response
+Handler->>Cache : Store Response
+Handler->>WS : Return Response
+end
+else Non-Cacheable Request
+Handler->>API : Process Request
+API-->>Handler : Response
+Handler->>WS : Return Response
+end
+```
+
+**Diagram sources**
+- [webserver_plugin.cpp:236-289](file://plugins/webserver/webserver_plugin.cpp#L236-L289)
+- [webserver_plugin.cpp:352-416](file://plugins/webserver/webserver_plugin.cpp#L352-L416)
+
+**Updated** Enhanced with fc::variant-based JSON parsing, robust error handling, improved cache management, comprehensive fc::variant object processing, and modernized std::bind-based WebSocket message handlers using std::placeholders.
 
 ### Intelligent Request Classification System
 The plugin implements an advanced request classification system that automatically determines whether a JSON-RPC request should be cached based on its API mutability using robust fc::variant parsing:
@@ -209,9 +285,9 @@ Server-->>Client : Send response
 ```
 
 **Diagram sources**
-- [webserver_plugin.cpp:86-105](file://plugins/webserver/webserver_plugin.cpp#L86-L105)
-- [webserver_plugin.cpp:285](file://plugins/webserver/webserver_plugin.cpp#L285)
-- [webserver_plugin.cpp:329](file://plugins/webserver/webserver_plugin.cpp#L329)
+- [webserver_plugin.cpp:87-113](file://plugins/webserver/webserver_plugin.cpp#L87-L113)
+- [webserver_plugin.cpp:352-416](file://plugins/webserver/webserver_plugin.cpp#L352-L416)
+- [webserver_plugin.cpp:418-495](file://plugins/webserver/webserver_plugin.cpp#L418-L495)
 
 **Updated** Enhanced with fc::variant-based JSON parsing and robust request classification logic using fc::variant objects for method extraction and blacklist checking.
 
@@ -244,9 +320,9 @@ ReturnResponse --> End
 ```
 
 **Diagram sources**
-- [webserver_plugin.cpp:239-273](file://plugins/webserver/webserver_plugin.cpp#L239-L273)
-- [webserver_plugin.cpp:86-105](file://plugins/webserver/webserver_plugin.cpp#L86-L105)
-- [webserver_plugin.cpp:161-183](file://plugins/webserver/webserver_plugin.cpp#L161-L183)
+- [webserver_plugin.cpp:207-234](file://plugins/webserver/webserver_plugin.cpp#L207-L234)
+- [webserver_plugin.cpp:87-113](file://plugins/webserver/webserver_plugin.cpp#L87-L113)
+- [webserver_plugin.cpp:136-158](file://plugins/webserver/webserver_plugin.cpp#L136-L158)
 
 **Updated** Enhanced with fc::variant-based JSON parsing, response ID patching, comprehensive cache validation, and improved error handling using fc::variant objects.
 
@@ -273,7 +349,7 @@ CacheKey --> UseKey[Use for Cache Lookup]
 ```
 
 **Diagram sources**
-- [webserver_plugin.cpp:133-159](file://plugins/webserver/webserver_plugin.cpp#L133-L159)
+- [webserver_plugin.cpp:136-158](file://plugins/webserver/webserver_plugin.cpp#L136-L158)
 
 **Updated** Enhanced with fc::variant-based JSON parsing and id-independent cache key generation that prevents cache bypass attacks using fc::variant objects for method and parameter extraction.
 
@@ -294,12 +370,12 @@ ReturnPatched --> End
 ```
 
 **Diagram sources**
-- [webserver_plugin.cpp:161-183](file://plugins/webserver/webserver_plugin.cpp#L161-L183)
+- [webserver_plugin.cpp:160-182](file://plugins/webserver/webserver_plugin.cpp#L160-L182)
 
 **Updated** Enhanced with fc::variant-based JSON parsing for accurate response ID extraction and proper JSON-RPC 2.0 compliance using fc::variant objects.
 
 ### Enhanced Request Processing Pipeline
-The plugin now includes improved WebSocket and HTTP handler support with better request processing using fc::variant-based JSON parsing:
+The plugin now includes improved WebSocket and HTTP handler support with better request processing using fc::variant-based JSON parsing and modernized std::bind bindings:
 
 ```mermaid
 sequenceDiagram
@@ -335,48 +411,9 @@ end
 ```
 
 **Diagram sources**
-- [webserver_plugin.cpp:353-496](file://plugins/webserver/webserver_plugin.cpp#L353-L496)
+- [webserver_plugin.cpp:352-495](file://plugins/webserver/webserver_plugin.cpp#L352-L495)
 
-**Updated** Enhanced with fc::variant-based JSON parsing, robust error handling, improved cache management, and comprehensive fc::variant object processing.
-
-### Thread Pool Management
-The plugin uses the appbase scheduler for request processing, providing a dedicated thread pool separate from the main application thread:
-
-```mermaid
-classDiagram
-class webserver_plugin_impl {
-+thread_pool_size_t thread_pool_size
-+asio : : io_service thread_pool_ios
-+asio : : io_service : : work thread_pool_work
-+vector<boost : : thread> worker_threads
-+start_webserver()
-+stop_webserver()
-+handle_ws_message()
-+handle_http_message()
-+is_cacheable_request()
-+make_cache_key()
-+extract_request_id()
-+patch_response_id()
-+fc : : variant Parser
-}
-class ThreadGroup {
-+create_thread(function)
-+join_all()
-+ioservice scheduler
-}
-webserver_plugin_impl --> ThreadGroup : "uses"
-```
-
-**Diagram sources**
-- [webserver_plugin.cpp:115](file://plugins/webserver/webserver_plugin.cpp#L115)
-- [webserver_plugin.cpp:117-120](file://plugins/webserver/webserver_plugin.cpp#L117-L120)
-
-**Updated** Enhanced with comprehensive fc::variant-based JSON parsing methods, improved cache management capabilities, and robust fc::variant object handling.
-
-**Section sources**
-- [webserver_plugin.cpp:113-157](file://plugins/webserver/webserver_plugin.cpp#L113-L157)
-- [webserver_plugin.cpp:239-273](file://plugins/webserver/webserver_plugin.cpp#L239-L273)
-- [webserver_plugin.cpp:86-105](file://plugins/webserver/webserver_plugin.cpp#L86-L105)
+**Updated** Enhanced with fc::variant-based JSON parsing, robust error handling, improved cache management, comprehensive fc::variant object processing, and modernized std::bind-based handler implementations.
 
 ### Configuration and Options
 The plugin supports extensive configuration through command-line options and configuration files with enhanced processing order:
@@ -393,11 +430,11 @@ The plugin supports extensive configuration through command-line options and con
 **Updated** Enhanced with actual implementation details and current default values, including improved rpc-endpoint processing order that prioritizes specific endpoints over deprecated combined endpoints.
 
 **Section sources**
-- [webserver_plugin.cpp:382-396](file://plugins/webserver/webserver_plugin.cpp#L382-L396)
+- [webserver_plugin.cpp:503-517](file://plugins/webserver/webserver_plugin.cpp#L503-L517)
 - [webserver-plugin.md:111-124](file://documentation/webserver-plugin.md#L111-L124)
 
 ## Dependency Analysis
-The webserver plugin has well-defined dependencies that enable its functionality with enhanced fc::variant integration:
+The webserver plugin has well-defined dependencies that enable its functionality with enhanced fc::variant integration and modernized std::bind usage:
 
 ```mermaid
 graph LR
@@ -409,47 +446,51 @@ D[AppBase Framework]
 E[fc::json::from_string]
 F[fc::variant]
 G[fc::mutable_variant_object]
+H[std::bind/std::placeholders]
 end
 subgraph "Internal Dependencies"
-H[JSON-RPC Plugin]
-I[Chain Plugin]
-J[Application Core]
+I[JSON-RPC Plugin]
+J[Chain Plugin]
+K[Application Core]
 end
 subgraph "Webserver Plugin"
-K[webserver_plugin]
-L[is_cacheable_request]
-M[make_cache_key]
-N[extract_request_id]
-O[patch_response_id]
-P[fc::variant Parser]
-Q[Cache Key Generator]
-R[Response ID Patcher]
+L[webserver_plugin]
+M[is_cacheable_request]
+N[make_cache_key]
+O[extract_request_id]
+P[patch_response_id]
+Q[fc::variant Parser]
+R[Cache Key Generator]
+S[Response ID Patcher]
+T[std::bind Message Handlers]
 end
-J --> H
 J --> I
 J --> K
-K --> A
-K --> B
-K --> C
-K --> D
-K --> E
-K --> F
-K --> G
-L --> M
+J --> L
+L --> A
+L --> B
+L --> C
+L --> D
+L --> E
+L --> F
+L --> G
+L --> H
 M --> N
 N --> O
 O --> P
 P --> Q
 Q --> R
+R --> S
+S --> T
 ```
 
 **Diagram sources**
-- [webserver_plugin.hpp:3-8](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L3-L8)
+- [webserver_plugin.hpp:3-9](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L3-L9)
 - [webserver_plugin.cpp:12-31](file://plugins/webserver/webserver_plugin.cpp#L12-L31)
-- [webserver_plugin.cpp:84-105](file://plugins/webserver/webserver_plugin.cpp#L84-L105)
+- [webserver_plugin.cpp:87-113](file://plugins/webserver/webserver_plugin.cpp#L87-L113)
 
 ### JSON-RPC Integration Details
-The plugin integrates with the JSON-RPC system through method registration and call delegation using fc::json::from_string for proper JSON parsing with enhanced fc::variant object handling:
+The plugin integrates with the JSON-RPC system through method registration and call delegation using fc::json::from_string for proper JSON parsing with enhanced fc::variant object handling and modernized std::bind-based handler implementations:
 
 ```mermaid
 sequenceDiagram
@@ -468,18 +509,18 @@ WS-->>Client : Send response
 
 **Diagram sources**
 - [plugin.cpp:180-200](file://plugins/json_rpc/plugin.cpp#L180-L200)
-- [webserver_plugin.cpp:303](file://plugins/webserver/webserver_plugin.cpp#L303)
-- [webserver_plugin.cpp:347](file://plugins/webserver/webserver_plugin.cpp#L347)
+- [webserver_plugin.cpp:398](file://plugins/webserver/webserver_plugin.cpp#L398)
+- [webserver_plugin.cpp:468](file://plugins/webserver/webserver_plugin.cpp#L468)
 
-**Updated** Enhanced with fc::json::from_string-based JSON parsing, robust error handling, and comprehensive fc::variant object processing.
+**Updated** Enhanced with fc::json::from_string-based JSON parsing, robust error handling, comprehensive fc::variant object processing, and modernized std::bind-based handler implementations.
 
 **Section sources**
 - [webserver_plugin.hpp:38](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L38)
-- [webserver_plugin.cpp:147](file://plugins/webserver/webserver_plugin.cpp#L147)
+- [webserver_plugin.cpp:224](file://plugins/webserver/webserver_plugin.cpp#L224)
 - [plugin.cpp:159-178](file://plugins/json_rpc/plugin.cpp#L159-L178)
 
 ## Performance Considerations
-The webserver plugin implements several performance optimization strategies with intelligent caching control using fc::variant-based JSON parsing:
+The webserver plugin implements several performance optimization strategies with intelligent caching control using fc::variant-based JSON parsing and modernized std::bind bindings:
 
 ### Intelligent Caching Strategy
 - **Request Classification**: Automatic determination of cacheable vs non-cacheable requests based on API mutability using fc::variant parsing
@@ -491,10 +532,11 @@ The webserver plugin implements several performance optimization strategies with
 - **Id-Independent Keys**: Prevents cache bypass attacks via id rotation patterns using fc::variant-based key generation
 - **Robust JSON Parsing**: Reliable fc::json::from_string-based request parsing instead of complex object traversal
 - **fc::variant Efficiency**: Optimized fc::variant usage for JSON parsing and manipulation with proper object lifetime management
+- **Modernized Bindings**: Efficient std::bind usage with std::placeholders for better C++11 compatibility and performance
 
 ### Concurrency Model
 - **Separate IO Services**: HTTP and WebSocket servers use dedicated io_service instances for isolation
-- **Configurable Thread Pool**: Adjustable worker thread count based on workload using appbase scheduler
+- **Configurable Thread Pool**: Adjustable worker thread count based on workload using appbase scheduler with modernized std::bind bindings
 - **Non-blocking Operations**: Async processing prevents thread starvation and improves throughput
 - **Connection Pooling**: Efficient WebSocket connection handling with proper resource management
 
@@ -504,16 +546,17 @@ The webserver plugin implements several performance optimization strategies with
 - **Cache Size Limits**: Configurable maximum cache size to prevent unbounded memory growth
 - **Blacklist Optimization**: Reduces unnecessary cache storage for mutating API calls
 - **fc::variant Efficiency**: Optimized fc::variant usage for JSON parsing and manipulation with proper memory management
+- **Modernized Bindings**: Efficient std::bind usage with std::placeholders for better performance and C++11 compatibility
 
-**Updated** Enhanced with fc::variant-based JSON parsing, robust cache validation, comprehensive performance optimizations, and improved fc::variant object handling.
+**Updated** Enhanced with fc::variant-based JSON parsing, robust cache validation, comprehensive performance optimizations, improved fc::variant object handling, and modernized std::bind-based thread pool management.
 
 **Section sources**
 - [webserver-plugin.md:29-64](file://documentation/webserver-plugin.md#L29-L64)
-- [webserver_plugin.cpp:255-273](file://plugins/webserver/webserver_plugin.cpp#L255-L273)
-- [webserver_plugin.cpp:86-105](file://plugins/webserver/webserver_plugin.cpp#L86-L105)
+- [webserver_plugin.cpp:207-234](file://plugins/webserver/webserver_plugin.cpp#L207-L234)
+- [webserver_plugin.cpp:87-113](file://plugins/webserver/webserver_plugin.cpp#L87-L113)
 
 ## Security Considerations
-The webserver plugin provides multiple layers of security for production deployments with enhanced API access control using fc::variant-based JSON parsing:
+The webserver plugin provides multiple layers of security for production deployments with enhanced API access control using fc::variant-based JSON parsing and modernized std::bind bindings:
 
 ### Network Security
 - **Localhost Binding**: Recommended practice for internal services using 127.0.0.1 binding
@@ -540,8 +583,9 @@ The webserver plugin provides multiple layers of security for production deploym
 - **Cache Bypass Prevention**: Id-independent keys prevent cache bypass attacks via request id rotation
 - **Robust Error Handling**: Comprehensive fc::variant-based error handling prevents crashes
 - **Malformed Request Protection**: Invalid JSON requests are handled gracefully without cache pollution
+- **Modernized Bindings**: Efficient std::bind usage with std::placeholders for better performance and security
 
-**Updated** Enhanced with fc::variant-based JSON parsing, robust error handling, comprehensive security measures, and improved fc::variant object validation.
+**Updated** Enhanced with fc::variant-based JSON parsing, robust error handling, comprehensive security measures, improved fc::variant object validation, and modernized std::bind-based security implementations.
 
 **Section sources**
 - [webserver-plugin.md:77-108](file://documentation/webserver-plugin.md#L77-L108)
@@ -658,11 +702,11 @@ ParseError --> Complete
 ```
 
 **Diagram sources**
-- [webserver_plugin.cpp:285](file://plugins/webserver/webserver_plugin.cpp#L285)
-- [webserver_plugin.cpp:329](file://plugins/webserver/webserver_plugin.cpp#L329)
-- [webserver_plugin.cpp:303](file://plugins/webserver/webserver_plugin.cpp#L303)
+- [webserver_plugin.cpp:352-416](file://plugins/webserver/webserver_plugin.cpp#L352-L416)
+- [webserver_plugin.cpp:418-495](file://plugins/webserver/webserver_plugin.cpp#L418-L495)
+- [webserver_plugin.cpp:398](file://plugins/webserver/webserver_plugin.cpp#L398)
 
-**Updated** Enhanced with fc::variant-based JSON parsing, robust error handling, intelligent request classification, and comprehensive fc::variant object processing.
+**Updated** Enhanced with fc::variant-based JSON parsing, robust error handling, intelligent request classification, comprehensive fc::variant object processing, and modernized std::bind-based error handling implementations.
 
 ### Debugging and Monitoring
 - **Log Levels**: Configure appropriate log levels for debugging
@@ -673,13 +717,14 @@ ParseError --> Complete
 - **Cache Efficiency**: Monitor cache key generation and collision rates
 - **fc::variant Parsing**: Monitor JSON parsing performance and error rates
 - **Configuration Processing**: Monitor rpc-endpoint processing order and endpoint resolution
+- **Modernized Bindings**: Monitor std::bind usage and std::placeholders performance
 
-**Updated** Enhanced with fc::variant-based JSON parsing monitoring, comprehensive debugging capabilities, and improved configuration processing diagnostics.
+**Updated** Enhanced with fc::variant-based JSON parsing monitoring, comprehensive debugging capabilities, improved configuration processing diagnostics, and modernized std::bind-based monitoring implementations.
 
 **Section sources**
-- [webserver_plugin.cpp:285](file://plugins/webserver/webserver_plugin.cpp#L285)
-- [webserver_plugin.cpp:329](file://plugins/webserver/webserver_plugin.cpp#L329)
-- [webserver_plugin.cpp:303](file://plugins/webserver/webserver_plugin.cpp#L303)
+- [webserver_plugin.cpp:352-416](file://plugins/webserver/webserver_plugin.cpp#L352-L416)
+- [webserver_plugin.cpp:418-495](file://plugins/webserver/webserver_plugin.cpp#L418-L495)
+- [webserver_plugin.cpp:398](file://plugins/webserver/webserver_plugin.cpp#L398)
 
 ## Logging and Diagnostics
 
@@ -735,7 +780,7 @@ The diagnostic logging system uses ANSI escape sequences for visual distinction:
 The Webserver Plugin provides a robust, high-performance solution for exposing VIZ blockchain functionality through HTTP and WebSocket interfaces. Its architecture emphasizes scalability through concurrent processing, reliability through comprehensive error handling, and efficiency through intelligent caching mechanisms with request classification using fc::variant-based JSON parsing. The plugin's modular design and extensive configuration options make it suitable for various deployment scenarios, from development environments to production public API services.
 
 Key strengths of the implementation include:
-- **High Concurrency**: Thread pool architecture supporting thousands of concurrent requests
+- **High Concurrency**: Thread pool architecture supporting thousands of concurrent requests with modernized std::bind bindings
 - **Intelligent Caching**: Block-aware cache invalidation with automatic request classification preventing stale data using fc::variant parsing
 - **Selective Caching**: Automatic blacklist for mutating API calls (network_broadcast_api, debug_node) preventing cache pollution
 - **Flexible Deployment**: Separate HTTP and WebSocket endpoints with independent configuration
@@ -744,11 +789,13 @@ Key strengths of the implementation include:
 - **Enhanced Diagnostics**: ANSI color-coded logging system for improved developer experience
 - **Extensible Design**: Clean separation of concerns enabling easy maintenance and enhancement
 - **Performance Optimizations**: Major improvements to caching mechanism with id-independent keys and fc::variant-based JSON parsing
-- **Robust Request Processing**: Enhanced WebSocket/HTTP handler support with improved request classification and cache management
+- **Robust Request Processing**: Enhanced WebSocket/HTTP handler support with improved request classification and cache management using modernized std::bind bindings
 - **fc::variant Integration**: Comprehensive fc::variant-based JSON parsing and manipulation for optimal performance
 - **Comprehensive Error Handling**: Robust fc::json::from_string-based error handling preventing crashes and improving reliability
 - **Enhanced Configuration Management**: Improved rpc-endpoint processing order with proper endpoint resolution and deprecation warnings
+- **Modernized C++11 Compatibility**: Efficient std::bind usage with std::placeholders for better C++11 compatibility and performance
+- **Efficient Thread Pool Management**: Modernized std::bind-based thread pool management with std::placeholders for optimal performance
 
-The plugin serves as an excellent foundation for building applications that require programmatic access to VIZ blockchain data and operations, with performance characteristics suitable for both private deployments and public API services. Its sophisticated caching mechanism with intelligent request classification, multi-threaded architecture, comprehensive error handling, fc::variant-based JSON parsing, enhanced diagnostic logging, and improved configuration management make it a production-ready solution for enterprise-grade blockchain applications.
+The plugin serves as an excellent foundation for building applications that require programmatic access to VIZ blockchain data and operations, with performance characteristics suitable for both private deployments and public API services. Its sophisticated caching mechanism with intelligent request classification, multi-threaded architecture with modernized std::bind bindings, comprehensive error handling, fc::variant-based JSON parsing, enhanced diagnostic logging, improved configuration management with rpc-endpoint processing order changes, and efficient std::bind-based thread pool management make it a production-ready solution for enterprise-grade blockchain applications.
 
-**Updated** Enhanced conclusion reflecting the expanded implementation details, fc::variant-based JSON parsing, intelligent request classification system, selective caching mechanisms, enhanced WebSocket/HTTP handler support, major performance optimizations including id-independent cache keys, comprehensive cache configuration options, and improved configuration management with rpc-endpoint processing order changes.
+**Updated** Enhanced conclusion reflecting the expanded implementation details, fc::variant-based JSON parsing, intelligent request classification system, selective caching mechanisms, enhanced WebSocket/HTTP handler support with modernized std::bind bindings, major performance optimizations including id-independent cache keys, comprehensive cache configuration options, improved configuration management with rpc-endpoint processing order changes, and modernized C++11 compatibility with std::bind and std::placeholders usage.

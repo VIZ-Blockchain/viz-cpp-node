@@ -9,7 +9,16 @@
 - [libraries/wallet/CMakeLists.txt](file://libraries/wallet/CMakeLists.txt)
 - [programs/cli_wallet/CMakeLists.txt](file://programs/cli_wallet/CMakeLists.txt)
 - [programs/build_helpers/configure_build.py](file://programs/build_helpers/configure_build.py)
+- [thirdparty/fc/CMakeLists.txt](file://thirdparty/fc/CMakeLists.txt)
+- [documentation/building.md](file://documentation/building.md)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Updated Linux configuration section to document the new `-DBOOST_BIND_GLOBAL_PLACEHOLDERS` compatibility flag
+- Enhanced troubleshooting section with information about Boost binding issues
+- Added cross-reference to the fc library's Boost compatibility flag
+- Updated platform-specific compiler flags documentation
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -26,7 +35,7 @@
 This document provides comprehensive platform-specific CMake configuration guidance for the VIZ CPP Node build system. It covers compiler and linker settings per platform, static linking options, required libraries, and troubleshooting steps for common issues. The focus areas include:
 - Windows with MSVC and MinGW toolchains
 - macOS with libc++ and C++14
-- Linux with GCC, pthread, rt, and OpenSSL detection
+- Linux with GCC, pthread, rt, OpenSSL detection, and Boost compatibility flags
 - Compiler version requirements and platform-specific dependency resolution
 
 ## Project Structure
@@ -46,12 +55,12 @@ Root --> Programs
 ```
 
 **Diagram sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L1-L277)
-- [libraries/CMakeLists.txt](file://libraries/CMakeLists.txt#L1-L8)
+- [CMakeLists.txt:1-271](file://CMakeLists.txt#L1-L271)
+- [libraries/CMakeLists.txt:1-8](file://libraries/CMakeLists.txt#L1-L8)
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L1-L277)
-- [libraries/CMakeLists.txt](file://libraries/CMakeLists.txt#L1-L8)
+- [CMakeLists.txt:1-271](file://CMakeLists.txt#L1-L271)
+- [libraries/CMakeLists.txt:1-8](file://libraries/CMakeLists.txt#L1-L8)
 
 ## Core Components
 - Top-level CMake configuration sets compiler requirements, optional build features, and platform-specific flags.
@@ -64,9 +73,9 @@ Key platform-specific behaviors:
 - Platform-specific include/link flags for Windows, macOS, and Linux.
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L11-L20)
-- [CMakeLists.txt](file://CMakeLists.txt#L52-L54)
-- [CMakeLists.txt](file://CMakeLists.txt#L158-L202)
+- [CMakeLists.txt:11-20](file://CMakeLists.txt#L11-L20)
+- [CMakeLists.txt:52-54](file://CMakeLists.txt#L52-L54)
+- [CMakeLists.txt:158-202](file://CMakeLists.txt#L158-L202)
 
 ## Architecture Overview
 The build system applies platform-specific logic early, then composes targets across thirdparty, libraries, plugins, and programs. Windows, macOS, and Linux branches configure flags, libraries, and linkers differently.
@@ -84,7 +93,7 @@ MacFlags["C++14, libc++, -Wall, -Wno-conversion, -Wno-deprecated-declarations"]
 MacReadline["Optional readline detection"]
 end
 subgraph "Linux"
-LinFlags["C++14, -Wall"]
+LinFlags["C++14, -Wall, -DBOOST_BIND_GLOBAL_PLACEHOLDERS"]
 LinPthreads["pthread library"]
 LinRT["rt library"]
 OpenSSLDetect["crypto_library fallback to 'crypto' if not found"]
@@ -105,7 +114,7 @@ Root --> LinStatic
 ```
 
 **Diagram sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L112-L202)
+- [CMakeLists.txt:112-202](file://CMakeLists.txt#L112-L202)
 
 ## Detailed Component Analysis
 
@@ -137,10 +146,10 @@ WinStatic --> End
 ```
 
 **Diagram sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L123-L156)
+- [CMakeLists.txt:123-156](file://CMakeLists.txt#L123-L156)
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L112-L156)
+- [CMakeLists.txt:112-156](file://CMakeLists.txt#L112-L156)
 
 ### macOS Configuration (Apple Platforms)
 - Compiler flags:
@@ -160,23 +169,26 @@ SkipReadline --> EndMac
 ```
 
 **Diagram sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L166-L170)
+- [CMakeLists.txt:166-170](file://CMakeLists.txt#L166-L170)
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L166-L170)
+- [CMakeLists.txt:166-170](file://CMakeLists.txt#L166-L170)
 
 ### Linux Configuration (GNU Toolchain)
 - Compiler flags:
   - C++14 standard and general warnings.
+  - **Updated**: Added `-DBOOST_BIND_GLOBAL_PLACEHOLDERS` flag to address Boost library binding issues in modern C++ environments.
 - Required libraries:
   - pthread library linkage.
   - rt library linkage.
   - OpenSSL detection fallback to the crypto library if not found by find_package.
 - Optional static linking of standard C++ and C runtime when enabled.
 
+**Updated** The Linux configuration now includes a compatibility flag specifically designed to address Boost library binding issues that arise with newer C++ standards. This flag ensures proper compilation with modern Boost versions and C++ standards.
+
 ```mermaid
 flowchart TD
-StartLin(["Configure on Linux"]) --> LinFlags["Set C++14 and -Wall"]
+StartLin(["Configure on Linux"]) --> LinFlags["Set C++14 and -Wall<br/>-DBOOST_BIND_GLOBAL_PLACEHOLDERS"]
 LinFlags --> Pthread["Ensure pthread library"]
 Pthread --> RTlib["Ensure rt library"]
 RTlib --> OpenSSL["If OpenSSL not detected, default to 'crypto'"]
@@ -187,10 +199,10 @@ LinStatic --> EndLin
 ```
 
 **Diagram sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L171-L184)
+- [CMakeLists.txt:168-184](file://CMakeLists.txt#L168-L184)
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L171-L184)
+- [CMakeLists.txt:168-184](file://CMakeLists.txt#L168-L184)
 
 ### Static Linking Option
 - A dedicated build mode enables full static linking of standard C++ and C runtime libraries on both Windows and Linux platforms.
@@ -209,13 +221,13 @@ Root-->>Dev : Configure with static linking
 
 **Diagram sources**
 - [programs/build_helpers/configure_build.py](file://programs/build_helpers/configure_build.py#L170)
-- [CMakeLists.txt](file://CMakeLists.txt#L153-L155)
-- [CMakeLists.txt](file://CMakeLists.txt#L181-L183)
+- [CMakeLists.txt:153-155](file://CMakeLists.txt#L153-L155)
+- [CMakeLists.txt:181-183](file://CMakeLists.txt#L181-L183)
 
 **Section sources**
 - [programs/build_helpers/configure_build.py](file://programs/build_helpers/configure_build.py#L170)
-- [CMakeLists.txt](file://CMakeLists.txt#L153-L155)
-- [CMakeLists.txt](file://CMakeLists.txt#L181-L183)
+- [CMakeLists.txt:153-155](file://CMakeLists.txt#L153-L155)
+- [CMakeLists.txt:181-183](file://CMakeLists.txt#L181-L183)
 
 ### Library Targets and Platform-Aware Settings
 - Library targets are built with platform-specific compile flags and link dependencies.
@@ -236,20 +248,20 @@ RootLibs --> Wallet
 ```
 
 **Diagram sources**
-- [libraries/chain/CMakeLists.txt](file://libraries/chain/CMakeLists.txt#L130-L132)
+- [libraries/chain/CMakeLists.txt:130-132](file://libraries/chain/CMakeLists.txt#L130-L132)
 - [libraries/chain/CMakeLists.txt](file://libraries/chain/CMakeLists.txt#L127)
-- [libraries/network/CMakeLists.txt](file://libraries/network/CMakeLists.txt#L46-L48)
+- [libraries/network/CMakeLists.txt:46-48](file://libraries/network/CMakeLists.txt#L46-L48)
 - [libraries/network/CMakeLists.txt](file://libraries/network/CMakeLists.txt#L39)
-- [libraries/wallet/CMakeLists.txt](file://libraries/wallet/CMakeLists.txt#L73-L75)
-- [libraries/wallet/CMakeLists.txt](file://libraries/wallet/CMakeLists.txt#L50-L70)
+- [libraries/wallet/CMakeLists.txt:73-75](file://libraries/wallet/CMakeLists.txt#L73-L75)
+- [libraries/wallet/CMakeLists.txt:50-70](file://libraries/wallet/CMakeLists.txt#L50-L70)
 
 **Section sources**
-- [libraries/chain/CMakeLists.txt](file://libraries/chain/CMakeLists.txt#L130-L132)
+- [libraries/chain/CMakeLists.txt:130-132](file://libraries/chain/CMakeLists.txt#L130-L132)
 - [libraries/chain/CMakeLists.txt](file://libraries/chain/CMakeLists.txt#L127)
-- [libraries/network/CMakeLists.txt](file://libraries/network/CMakeLists.txt#L46-L48)
+- [libraries/network/CMakeLists.txt:46-48](file://libraries/network/CMakeLists.txt#L46-L48)
 - [libraries/network/CMakeLists.txt](file://libraries/network/CMakeLists.txt#L39)
-- [libraries/wallet/CMakeLists.txt](file://libraries/wallet/CMakeLists.txt#L73-L75)
-- [libraries/wallet/CMakeLists.txt](file://libraries/wallet/CMakeLists.txt#L50-L70)
+- [libraries/wallet/CMakeLists.txt:73-75](file://libraries/wallet/CMakeLists.txt#L73-L75)
+- [libraries/wallet/CMakeLists.txt:50-70](file://libraries/wallet/CMakeLists.txt#L50-L70)
 
 ### Executable Targets and Platform-Specific Libraries
 - CLI wallet links to network, chain, protocol, utilities, wallet, multiple internal plugins, fc, and platform-specific libraries.
@@ -271,12 +283,12 @@ CLI-->>CMake : Target ready for build
 ```
 
 **Diagram sources**
-- [programs/cli_wallet/CMakeLists.txt](file://programs/cli_wallet/CMakeLists.txt#L21-L41)
-- [programs/cli_wallet/CMakeLists.txt](file://programs/cli_wallet/CMakeLists.txt#L2-L8)
+- [programs/cli_wallet/CMakeLists.txt:21-41](file://programs/cli_wallet/CMakeLists.txt#L21-L41)
+- [programs/cli_wallet/CMakeLists.txt:2-8](file://programs/cli_wallet/CMakeLists.txt#L2-L8)
 
 **Section sources**
-- [programs/cli_wallet/CMakeLists.txt](file://programs/cli_wallet/CMakeLists.txt#L21-L41)
-- [programs/cli_wallet/CMakeLists.txt](file://programs/cli_wallet/CMakeLists.txt#L2-L8)
+- [programs/cli_wallet/CMakeLists.txt:21-41](file://programs/cli_wallet/CMakeLists.txt#L21-L41)
+- [programs/cli_wallet/CMakeLists.txt:2-8](file://programs/cli_wallet/CMakeLists.txt#L2-L8)
 
 ## Dependency Analysis
 - Compiler and toolchain:
@@ -285,35 +297,42 @@ CLI-->>CMake : Target ready for build
 - Boost:
   - Static usage is enabled by default.
   - Coroutine component is conditionally added for newer Boost versions.
+  - **Updated**: Both top-level CMake configuration and fc library include `-DBOOST_BIND_GLOBAL_PLACEHOLDERS` to address Boost binding compatibility issues in modern C++ environments.
 - Platform libraries:
   - Windows: TCL integration via environment-driven discovery.
   - macOS: optional readline linkage.
   - Linux: pthread and rt linkage; OpenSSL fallback to crypto.
+
+**Updated** The Boost compatibility fix is implemented at two levels: the main CMake configuration for Linux builds and the fc library's CMake configuration, ensuring comprehensive coverage across the entire build system.
 
 ```mermaid
 graph TB
 Compilers["Compiler Checks<br/>GCC >= 4.8<br/>Clang >= 3.3"]
 BoostCfg["Boost Static Usage Enabled"]
 CoroutineFix["Conditional coroutine component for Boost >= 1.54"]
+BoostCompat["Boost Compatibility Flags<br/>-DBOOST_BIND_GLOBAL_PLACEHOLDERS<br/>in both main and fc libraries"]
 PlatformLibs["Platform Libraries<br/>Windows: TCL<br/>macOS: readline<br/>Linux: pthread, rt, crypto"]
 Root["CMakeLists.txt"]
 Root --> Compilers
 Root --> BoostCfg
 Root --> CoroutineFix
+Root --> BoostCompat
 Root --> PlatformLibs
 ```
 
 **Diagram sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L12-L20)
+- [CMakeLists.txt:12-20](file://CMakeLists.txt#L12-L20)
 - [CMakeLists.txt](file://CMakeLists.txt#L52)
-- [CMakeLists.txt](file://CMakeLists.txt#L99-L104)
-- [CMakeLists.txt](file://CMakeLists.txt#L160-L180)
+- [CMakeLists.txt:99-104](file://CMakeLists.txt#L99-L104)
+- [CMakeLists.txt:168-170](file://CMakeLists.txt#L168-L170)
+- [thirdparty/fc/CMakeLists.txt:340-341](file://thirdparty/fc/CMakeLists.txt#L340-L341)
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L12-L20)
+- [CMakeLists.txt:12-20](file://CMakeLists.txt#L12-L20)
 - [CMakeLists.txt](file://CMakeLists.txt#L52)
-- [CMakeLists.txt](file://CMakeLists.txt#L99-L104)
-- [CMakeLists.txt](file://CMakeLists.txt#L160-L180)
+- [CMakeLists.txt:99-104](file://CMakeLists.txt#L99-L104)
+- [CMakeLists.txt:168-170](file://CMakeLists.txt#L168-L170)
+- [thirdparty/fc/CMakeLists.txt:340-341](file://thirdparty/fc/CMakeLists.txt#L340-L341)
 
 ## Performance Considerations
 - Optimization flags:
@@ -323,8 +342,6 @@ Root --> PlatformLibs
   - Enables full static linking of standard C++ and C runtime libraries when requested.
 - Build acceleration:
   - Optional ccache usage if available.
-
-[No sources needed since this section provides general guidance]
 
 ## Troubleshooting Guide
 Common platform-specific issues and resolutions:
@@ -347,13 +364,20 @@ Common platform-specific issues and resolutions:
     - If find_package cannot locate OpenSSL, the configuration defaults to linking against the crypto library; adjust package configuration or pass explicit hints if necessary.
   - Static linking failures:
     - When enabling full static linking, ensure all transitive dependencies are also statically available.
+  - **Updated** Boost binding issues:
+    - If experiencing Boost library binding errors with modern C++ standards, the `-DBOOST_BIND_GLOBAL_PLACEHOLDERS` flag is automatically included in Linux builds to resolve compatibility issues. This flag is also present in the fc library configuration for comprehensive coverage.
+
+**Updated** Added troubleshooting guidance for Boost binding issues that the new compatibility flag addresses.
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L132-L145)
-- [CMakeLists.txt](file://CMakeLists.txt#L130-L132)
-- [CMakeLists.txt](file://CMakeLists.txt#L160-L164)
-- [CMakeLists.txt](file://CMakeLists.txt#L174-L180)
-- [CMakeLists.txt](file://CMakeLists.txt#L181-L183)
+- [CMakeLists.txt:132-145](file://CMakeLists.txt#L132-L145)
+- [CMakeLists.txt:130-132](file://CMakeLists.txt#L130-L132)
+- [CMakeLists.txt:160-164](file://CMakeLists.txt#L160-L164)
+- [CMakeLists.txt:174-180](file://CMakeLists.txt#L174-L180)
+- [CMakeLists.txt:181-183](file://CMakeLists.txt#L181-L183)
+- [thirdparty/fc/CMakeLists.txt:340-341](file://thirdparty/fc/CMakeLists.txt#L340-L341)
 
 ## Conclusion
-The VIZ CPP Node build system applies robust, platform-aware configuration to ensure reliable builds across Windows, macOS, and Linux. By enforcing compiler versions, integrating platform-specific libraries, and supporting a static-linking mode, the system accommodates diverse deployment scenarios. Use the platform-specific guidance and troubleshooting tips herein to resolve typical build issues and tailor configurations to your environment.
+The VIZ CPP Node build system applies robust, platform-aware configuration to ensure reliable builds across Windows, macOS, and Linux. By enforcing compiler versions, integrating platform-specific libraries, and supporting a static-linking mode, the system accommodates diverse deployment scenarios. 
+
+**Updated** The recent addition of the `-DBOOST_BIND_GLOBAL_PLACEHOLDERS` compatibility flag enhances Linux build reliability by addressing Boost library binding issues that commonly occur with modern C++ standards. This dual-layer implementation (both in the main CMake configuration and the fc library) ensures comprehensive compatibility across the entire build system. Use the platform-specific guidance and troubleshooting tips herein to resolve typical build issues and tailor configurations to your environment.

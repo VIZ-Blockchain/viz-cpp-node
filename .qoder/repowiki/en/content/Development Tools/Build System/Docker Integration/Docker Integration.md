@@ -19,6 +19,13 @@
 - [CMakeLists.txt](file://CMakeLists.txt)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Updated GitHub Actions workflow configurations to reflect major version upgrades (actions/checkout v2→v4, docker/build-push-action v1→v6)
+- Added docker/login-action@v3 for enhanced authentication in CI/CD pipelines
+- Improved error handling and workflow configurations for better build reliability and security
+- Enhanced CI/CD pipeline documentation with current best practices
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
@@ -32,10 +39,10 @@
 10. [Appendices](#appendices)
 
 ## Introduction
-This document provides comprehensive Docker integration guidance for the VIZ CPP Node across development and production environments. It covers multi-stage Dockerfiles for production, testnet, low-memory, and MongoDB-enabled builds, the GitHub Actions CI/CD pipeline for automated Docker builds, container orchestration patterns, volume mounting for persistence, network configuration, environment variable usage, and the relationship between Docker configurations and CMake build options. Practical examples are included for running development containers, connecting to test networks, and deploying production nodes. Security considerations and troubleshooting tips are also provided.
+This document provides comprehensive Docker integration guidance for the VIZ CPP Node across development and production environments. It covers multi-stage Dockerfiles for production, testnet, low-memory, and MongoDB-enabled builds, the GitHub Actions CI/CD pipeline for automated Docker builds with enhanced security and reliability, container orchestration patterns, volume mounting for persistence, network configuration, environment variable usage, and the relationship between Docker configurations and CMake build options. Practical examples are included for running development containers, connecting to test networks, and deploying production nodes. Security considerations and troubleshooting tips are also provided.
 
 ## Project Structure
-The Docker integration is centered around four primary Dockerfiles under share/vizd/docker, each tailored to a specific deployment profile. Supporting assets include configuration templates, scripts, snapshots, and seednode lists. The CI/CD pipeline is defined via GitHub Actions workflows.
+The Docker integration is centered around four primary Dockerfiles under share/vizd/docker, each tailored to a specific deployment profile. Supporting assets include configuration templates, scripts, snapshots, and seednode lists. The CI/CD pipeline is defined via GitHub Actions workflows with enhanced security and reliability features.
 
 ```mermaid
 graph TB
@@ -55,9 +62,9 @@ CfgTest["config_testnet.ini"]
 CfgMongo["config_mongo.ini"]
 CfgDebug["config_debug.ini"]
 end
-subgraph "CI/CD"
-GHMain[".github/workflows/docker-main.yml"]
-GHPR[".github/workflows/docker-pr-build.yml"]
+subgraph "Enhanced CI/CD"
+GHMain[".github/workflows/docker-main.yml<br/>v4 checkout + v6 build-push + v3 login"]
+GHPR[".github/workflows/docker-pr-build.yml<br/>v4 checkout + v6 build-push + v3 login"]
 end
 DProd --> Script
 DProd --> Seed
@@ -81,28 +88,28 @@ GHPR --> DTest
 ```
 
 **Diagram sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L1-L88)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L1-L88)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L1-L82)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L1-L111)
-- [vizd.sh](file://share/vizd/vizd.sh#L1-L82)
-- [seednodes](file://share/vizd/seednodes#L1-L6)
-- [snapshot.json](file://share/vizd/snapshot.json#L1-L174)
-- [snapshot-testnet.json](file://share/vizd/snapshot-testnet.json#L1-L35)
-- [config.ini](file://share/vizd/config/config.ini#L1-L130)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L1-L135)
-- [config_debug.ini](file://share/vizd/config/config_debug.ini#L1-L126)
-- [docker-main.yml](file://.github/workflows/docker-main.yml#L1-L41)
-- [docker-pr-build.yml](file://.github/workflows/docker-pr-build.yml#L1-L24)
+- [Dockerfile-production:1-98](file://share/vizd/docker/Dockerfile-production#L1-L98)
+- [Dockerfile-testnet:1-98](file://share/vizd/docker/Dockerfile-testnet#L1-L98)
+- [Dockerfile-lowmem:1-80](file://share/vizd/docker/Dockerfile-lowmem#L1-L80)
+- [Dockerfile-mongo:1-109](file://share/vizd/docker/Dockerfile-mongo#L1-L109)
+- [vizd.sh:1-98](file://share/vizd/vizd.sh#L1-L98)
+- [seednodes:1-6](file://share/vizd/seednodes#L1-L6)
+- [snapshot.json:1-174](file://share/vizd/snapshot.json#L1-L174)
+- [snapshot-testnet.json:1-35](file://share/vizd/snapshot-testnet.json#L1-L35)
+- [config.ini:1-130](file://share/vizd/config/config.ini#L1-L130)
+- [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_mongo.ini:1-135](file://share/vizd/config/config_mongo.ini#L1-L135)
+- [config_debug.ini:1-126](file://share/vizd/config/config_debug.ini#L1-L126)
+- [docker-main.yml:1-53](file://.github/workflows/docker-main.yml#L1-L53)
+- [docker-pr-build.yml:1-30](file://.github/workflows/docker-pr-build.yml#L1-L30)
 
 **Section sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L1-L88)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L1-L88)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L1-L82)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L1-L111)
-- [docker-main.yml](file://.github/workflows/docker-main.yml#L1-L41)
-- [docker-pr-build.yml](file://.github/workflows/docker-pr-build.yml#L1-L24)
+- [Dockerfile-production:1-98](file://share/vizd/docker/Dockerfile-production#L1-L98)
+- [Dockerfile-testnet:1-98](file://share/vizd/docker/Dockerfile-testnet#L1-L98)
+- [Dockerfile-lowmem:1-80](file://share/vizd/docker/Dockerfile-lowmem#L1-L80)
+- [Dockerfile-mongo:1-109](file://share/vizd/docker/Dockerfile-mongo#L1-L109)
+- [docker-main.yml:1-53](file://.github/workflows/docker-main.yml#L1-L53)
+- [docker-pr-build.yml:1-30](file://.github/workflows/docker-pr-build.yml#L1-L30)
 
 ## Core Components
 - Multi-stage Dockerfiles:
@@ -110,9 +117,10 @@ GHPR --> DTest
   - Testnet: Similar to production but enables testnet-specific configuration and snapshot.
   - Low-memory: Optimized for constrained environments using a low-memory build option.
   - MongoDB-enabled: Installs MongoDB C/C++ drivers and enables the mongo_db plugin.
-- CI/CD:
-  - Automated Docker builds for master branch (production and testnet).
-  - PR builds for testnet images with ref tagging.
+- Enhanced CI/CD:
+  - Automated Docker builds for master branch (production and testnet) with improved security using docker/login-action@v3.
+  - PR builds for production images with ref tagging using latest GitHub Actions versions.
+  - Robust error handling and authentication mechanisms for reliable builds.
 - Runtime:
   - A service wrapper script initializes configuration, applies optional seed nodes, and starts the node with environment-driven endpoints and optional witness settings.
   - Configuration templates define RPC endpoints, P2P endpoints, plugin sets, logging, and optional MongoDB connection.
@@ -136,29 +144,30 @@ Volumes:
 - /etc/vizd: Configuration directory
 
 **Section sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L66-L88)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L67-L88)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L60-L82)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L89-L111)
-- [vizd.sh](file://share/vizd/vizd.sh#L1-L82)
-- [config.ini](file://share/vizd/config/config.ini#L1-L130)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L1-L135)
-- [docker-main.yml](file://.github/workflows/docker-main.yml#L1-L41)
-- [docker-pr-build.yml](file://.github/workflows/docker-pr-build.yml#L1-L24)
+- [Dockerfile-production:76-98](file://share/vizd/docker/Dockerfile-production#L76-L98)
+- [Dockerfile-testnet:77-98](file://share/vizd/docker/Dockerfile-testnet#L77-L98)
+- [Dockerfile-lowmem:58-80](file://share/vizd/docker/Dockerfile-lowmem#L58-L80)
+- [Dockerfile-mongo:87-109](file://share/vizd/docker/Dockerfile-mongo#L87-L109)
+- [vizd.sh:1-98](file://share/vizd/vizd.sh#L1-L98)
+- [config.ini:1-130](file://share/vizd/config/config.ini#L1-L130)
+- [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_mongo.ini:1-135](file://share/vizd/config/config_mongo.ini#L1-L135)
+- [docker-main.yml:1-53](file://.github/workflows/docker-main.yml#L1-L53)
+- [docker-pr-build.yml:1-30](file://.github/workflows/docker-pr-build.yml#L1-L30)
 
 ## Architecture Overview
-The Docker-based deployment architecture separates build-time and runtime concerns:
+The Docker-based deployment architecture separates build-time and runtime concerns with enhanced CI/CD security:
 - Build-time: Multi-stage Dockerfiles compile the node with CMake options selected per variant.
 - Runtime: A minimal base image runs the node under a service supervisor, with volumes for persistence and configuration overlays.
+- CI/CD: Enhanced GitHub Actions workflows with improved authentication, error handling, and build reliability.
 
 ```mermaid
 graph TB
-subgraph "Build Stages"
-B1["Stage 1: Builder Base<br/>Install deps, clone repo, cmake configure"]
+subgraph "Enhanced Build Stages"
+B1["Stage 1: Builder Base<br/>Install deps, clone repo, cmake configure<br/>actions/checkout@v4 + docker/login-action@v3"]
 B2["Stage 2: Install Artifacts<br/>make install, cleanup"]
 end
-subgraph "Runtime Image"
+subgraph "Enhanced Runtime Image"
 R1["Minimal Base"]
 R2["Copy /usr/local from builder"]
 R3["Add user, cache dirs, service wrapper"]
@@ -168,10 +177,12 @@ B1 --> B2 --> R2 --> R3 --> R4
 ```
 
 **Diagram sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L1-L88)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L1-L88)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L1-L82)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L1-L111)
+- [Dockerfile-production:1-98](file://share/vizd/docker/Dockerfile-production#L1-L98)
+- [Dockerfile-testnet:1-98](file://share/vizd/docker/Dockerfile-testnet#L1-L98)
+- [Dockerfile-lowmem:1-80](file://share/vizd/docker/Dockerfile-lowmem#L1-L80)
+- [Dockerfile-mongo:1-109](file://share/vizd/docker/Dockerfile-mongo#L1-L109)
+- [docker-main.yml:17-21](file://.github/workflows/docker-main.yml#L17-L21)
+- [docker-pr-build.yml:15-19](file://.github/workflows/docker-pr-build.yml#L15-L19)
 
 ## Detailed Component Analysis
 
@@ -200,46 +211,57 @@ Stage2 --> End(["Image Ready"])
 ```
 
 **Diagram sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L40-L59)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L40-L55)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L39-L53)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L31-L58)
-- [CMakeLists.txt](file://CMakeLists.txt#L56-L89)
+- [Dockerfile-production:51-69](file://share/vizd/docker/Dockerfile-production#L51-L69)
+- [Dockerfile-testnet:51-65](file://share/vizd/docker/Dockerfile-testnet#L51-L65)
+- [Dockerfile-lowmem:37-51](file://share/vizd/docker/Dockerfile-lowmem#L37-L51)
+- [Dockerfile-mongo:66-80](file://share/vizd/docker/Dockerfile-mongo#L66-L80)
+- [CMakeLists.txt:56-89](file://CMakeLists.txt#L56-L89)
 
 **Section sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L40-L59)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L40-L55)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L39-L53)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L31-L58)
-- [CMakeLists.txt](file://CMakeLists.txt#L56-L89)
+- [Dockerfile-production:51-69](file://share/vizd/docker/Dockerfile-production#L51-L69)
+- [Dockerfile-testnet:51-65](file://share/vizd/docker/Dockerfile-testnet#L51-L65)
+- [Dockerfile-lowmem:37-51](file://share/vizd/docker/Dockerfile-lowmem#L37-L51)
+- [Dockerfile-mongo:66-80](file://share/vizd/docker/Dockerfile-mongo#L66-L80)
+- [CMakeLists.txt:56-89](file://CMakeLists.txt#L56-L89)
 
-### CI/CD Pipeline (GitHub Actions)
-Automated Docker builds are configured for:
-- Master branch: Builds production and testnet images and pushes to the registry with appropriate tags.
-- Pull requests: Builds a testnet image and tags it with the PR ref for review.
+### Enhanced CI/CD Pipeline (GitHub Actions)
+Automated Docker builds are configured with enhanced security and reliability:
+- Master branch: Builds production and testnet images with improved authentication using docker/login-action@v3 and pushes to the registry with appropriate tags.
+- Pull requests: Builds a production image and tags it with the PR ref for review using latest GitHub Actions versions.
+
+**Updated** Enhanced with major version upgrades and improved security measures
 
 ```mermaid
 sequenceDiagram
 participant Dev as "Developer"
 participant GH as "GitHub"
 participant Act as "Actions Runner"
+participant Auth as "docker/login-action@v3"
+participant Build as "docker/build-push-action@v6"
 participant Reg as "Container Registry"
 Dev->>GH : Push to master
 GH->>Act : Trigger docker-main.yml
-Act->>Reg : Build and push production image (latest)
-Act->>Reg : Build and push testnet image (testnet)
+Act->>Auth : Authenticate with Docker Hub
+Auth->>Reg : Login with credentials
+Act->>Build : Build and push production image (latest)
+Build->>Reg : Push with docker/build-push-action@v6
+Act->>Build : Build and push testnet image (testnet)
+Build->>Reg : Push with docker/build-push-action@v6
 Dev->>GH : Open PR
 GH->>Act : Trigger docker-pr-build.yml
-Act->>Reg : Build and push testnet image (ref-tagged)
+Act->>Auth : Authenticate with Docker Hub
+Auth->>Reg : Login with credentials
+Act->>Build : Build and push production image (ref-tagged)
+Build->>Reg : Push with docker/build-push-action@v6
 ```
 
 **Diagram sources**
-- [docker-main.yml](file://.github/workflows/docker-main.yml#L1-L41)
-- [docker-pr-build.yml](file://.github/workflows/docker-pr-build.yml#L1-L24)
+- [docker-main.yml:17-31](file://.github/workflows/docker-main.yml#L17-L31)
+- [docker-pr-build.yml:15-29](file://.github/workflows/docker-pr-build.yml#L15-L29)
 
 **Section sources**
-- [docker-main.yml](file://.github/workflows/docker-main.yml#L1-L41)
-- [docker-pr-build.yml](file://.github/workflows/docker-pr-build.yml#L1-L24)
+- [docker-main.yml:1-53](file://.github/workflows/docker-main.yml#L1-L53)
+- [docker-pr-build.yml:1-30](file://.github/workflows/docker-pr-build.yml#L1-L30)
 
 ### Container Runtime and Environment Variables
 The container entrypoint script orchestrates node startup:
@@ -261,10 +283,10 @@ Node-->>Entrypoint : stdout/stderr
 ```
 
 **Diagram sources**
-- [vizd.sh](file://share/vizd/vizd.sh#L1-L82)
+- [vizd.sh:1-98](file://share/vizd/vizd.sh#L1-L98)
 
 **Section sources**
-- [vizd.sh](file://share/vizd/vizd.sh#L1-L82)
+- [vizd.sh:1-98](file://share/vizd/vizd.sh#L1-L98)
 
 ### Configuration Templates and Plugin Sets
 Configuration files define RPC endpoints, plugin sets, logging, and optional MongoDB URI. The testnet configuration enables witness production and includes a default witness and private key suitable for automated testing.
@@ -274,9 +296,9 @@ Configuration files define RPC endpoints, plugin sets, logging, and optional Mon
 - MongoDB: Adds mongo_db plugin and a MongoDB URI for external connectivity.
 
 **Section sources**
-- [config.ini](file://share/vizd/config/config.ini#L1-L130)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L1-L135)
+- [config.ini:1-130](file://share/vizd/config/config.ini#L1-L130)
+- [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_mongo.ini:1-135](file://share/vizd/config/config_mongo.ini#L1-L135)
 
 ### Volume Mounting and Persistence
 - /var/lib/vizd: Contains blockchain data, logs, and configuration overrides.
@@ -287,11 +309,11 @@ Practical guidance:
 - Place a custom config.ini into /etc/vizd to override defaults; it will be copied into the data directory on first run.
 
 **Section sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L74-L88)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L75-L88)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L68-L82)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L97-L111)
-- [vizd.sh](file://share/vizd/vizd.sh#L40-L43)
+- [Dockerfile-production:97-98](file://share/vizd/docker/Dockerfile-production#L97-L98)
+- [Dockerfile-testnet:97-98](file://share/vizd/docker/Dockerfile-testnet#L97-L98)
+- [Dockerfile-lowmem:79-80](file://share/vizd/docker/Dockerfile-lowmem#L79-L80)
+- [Dockerfile-mongo:108-109](file://share/vizd/docker/Dockerfile-mongo#L108-L109)
+- [vizd.sh:40-43](file://share/vizd/vizd.sh#L40-L43)
 
 ### Network Configuration and Connectivity
 - Exposed ports: 8090 (HTTP RPC), 8091 (WebSocket RPC), 2001 (P2P).
@@ -299,16 +321,16 @@ Practical guidance:
 - P2P endpoint binding: Defaults to 0.0.0.0:2001; overrideable via VIZD_P2P_ENDPOINT.
 - RPC endpoint binding: Defaults to 0.0.0.0:8090; overrideable via VIZD_RPC_ENDPOINT.
 
-For MongoDB-enabled deployments, the configuration template includes a MongoDB URI suitable for connecting to a MongoDB instance reachable from the container’s network namespace.
+For MongoDB-enabled deployments, the configuration template includes a MongoDB URI suitable for connecting to a MongoDB instance reachable from the container's network namespace.
 
 **Section sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L79-L85)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L79-L85)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L73-L79)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L102-L108)
-- [vizd.sh](file://share/vizd/vizd.sh#L62-L72)
-- [seednodes](file://share/vizd/seednodes#L1-L6)
-- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L71-L72)
+- [Dockerfile-production:89-95](file://share/vizd/docker/Dockerfile-production#L89-L95)
+- [Dockerfile-testnet:89-95](file://share/vizd/docker/Dockerfile-testnet#L89-L95)
+- [Dockerfile-lowmem:71-77](file://share/vizd/docker/Dockerfile-lowmem#L71-L77)
+- [Dockerfile-mongo:100-106](file://share/vizd/docker/Dockerfile-mongo#L100-L106)
+- [vizd.sh:62-72](file://share/vizd/vizd.sh#L62-L72)
+- [seednodes:1-6](file://share/vizd/seednodes#L1-L6)
+- [config_mongo.ini:71-72](file://share/vizd/config/config_mongo.ini#L71-L72)
 
 ### Practical Examples
 
@@ -349,7 +371,9 @@ For MongoDB-enabled deployments, the configuration template includes a MongoDB U
 [No sources needed since this section provides practical examples without analyzing specific files]
 
 ## Dependency Analysis
-The Docker build depends on CMake options to select features and plugins. The CI/CD pipeline depends on Docker Hub credentials and the presence of the Dockerfiles.
+The Docker build depends on CMake options to select features and plugins. The CI/CD pipeline depends on Docker Hub credentials and the presence of the Dockerfiles with enhanced authentication security.
+
+**Updated** Enhanced with improved authentication and build action versions
 
 ```mermaid
 graph LR
@@ -362,24 +386,24 @@ CMake --> DP
 CMake --> DT
 CMake --> DL
 CMake --> DM
-GHMain["docker-main.yml"] --> DP
+GHMain["docker-main.yml<br/>v4 checkout + v6 build-push + v3 login"] --> DP
 GHMain --> DT
-GHPR["docker-pr-build.yml"] --> DT
+GHPR["docker-pr-build.yml<br/>v4 checkout + v6 build-push + v3 login"] --> DT
 ```
 
 **Diagram sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L56-L89)
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L46-L51)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L46-L52)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L45-L50)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L74-L79)
-- [docker-main.yml](file://.github/workflows/docker-main.yml#L1-L41)
-- [docker-pr-build.yml](file://.github/workflows/docker-pr-build.yml#L1-L24)
+- [CMakeLists.txt:56-89](file://CMakeLists.txt#L56-L89)
+- [Dockerfile-production:56-61](file://share/vizd/docker/Dockerfile-production#L56-L61)
+- [Dockerfile-testnet:56-62](file://share/vizd/docker/Dockerfile-testnet#L56-L62)
+- [Dockerfile-lowmem:43-48](file://share/vizd/docker/Dockerfile-lowmem#L43-L48)
+- [Dockerfile-mongo:72-77](file://share/vizd/docker/Dockerfile-mongo#L72-L77)
+- [docker-main.yml:17-31](file://.github/workflows/docker-main.yml#L17-L31)
+- [docker-pr-build.yml:15-29](file://.github/workflows/docker-pr-build.yml#L15-L29)
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L56-L89)
-- [docker-main.yml](file://.github/workflows/docker-main.yml#L1-L41)
-- [docker-pr-build.yml](file://.github/workflows/docker-pr-build.yml#L1-L24)
+- [CMakeLists.txt:56-89](file://CMakeLists.txt#L56-L89)
+- [docker-main.yml:1-53](file://.github/workflows/docker-main.yml#L1-L53)
+- [docker-pr-build.yml:1-30](file://.github/workflows/docker-pr-build.yml#L1-L30)
 
 ## Performance Considerations
 - Multi-stage builds minimize final image size by discarding build tools and build artifacts after installation.
@@ -387,6 +411,7 @@ GHPR["docker-pr-build.yml"] --> DT
 - Low-memory builds reduce shared memory sizing and related overhead for constrained environments.
 - MongoDB builds include static drivers to avoid runtime dependency resolution overhead.
 - Caching: ccache is enabled during CMake configuration to speed up rebuilds when iterating on changes.
+- Enhanced CI/CD: Latest GitHub Actions versions provide improved build performance and reliability.
 
 [No sources needed since this section provides general guidance]
 
@@ -404,18 +429,24 @@ Common issues and resolutions:
   - Confirm VIZD_WITNESS_NAME and VIZD_PRIVATE_KEY are set and match the configured witness and private key in the configuration.
 - MongoDB plugin errors:
   - Ensure the MongoDB URI is reachable from the container network and matches the configuration template.
+- CI/CD build failures:
+  - Verify Docker Hub credentials are properly configured; check docker-login-action@v3 authentication.
+  - Ensure actions/checkout@v4 and docker/build-push-action@v6 are compatible with your repository structure.
 
 Operational checks:
 - Inspect container logs for startup errors.
 - Verify configuration file presence in /var/lib/vizd after first run.
 - Monitor RPC and P2P endpoints availability.
+- Check GitHub Actions workflow logs for authentication and build errors.
 
 **Section sources**
-- [vizd.sh](file://share/vizd/vizd.sh#L1-L82)
-- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L71-L72)
+- [vizd.sh:1-98](file://share/vizd/vizd.sh#L1-L98)
+- [config_mongo.ini:71-72](file://share/vizd/config/config_mongo.ini#L71-L72)
+- [docker-main.yml:21-24](file://.github/workflows/docker-main.yml#L21-L24)
+- [docker-pr-build.yml:19-22](file://.github/workflows/docker-pr-build.yml#L19-L22)
 
 ## Conclusion
-The Docker integration for VIZ CPP Node provides flexible, reproducible deployments across production, testnet, low-memory, and MongoDB-enabled scenarios. Multi-stage builds, CI/CD automation, and robust runtime configuration enable efficient development and operations. By leveraging volumes, environment variables, and configuration templates, teams can deploy reliable nodes with predictable performance and minimal operational overhead.
+The Docker integration for VIZ CPP Node provides flexible, reproducible deployments across production, testnet, low-memory, and MongoDB-enabled scenarios. Enhanced multi-stage builds, modernized CI/CD automation with improved security and reliability, and robust runtime configuration enable efficient development and operations. By leveraging volumes, environment variables, and configuration templates, teams can deploy reliable nodes with predictable performance and minimal operational overhead. The recent upgrades to GitHub Actions workflows ensure better build reliability and security for automated Docker image creation.
 
 [No sources needed since this section summarizes without analyzing specific files]
 
@@ -430,8 +461,8 @@ The Docker integration for VIZ CPP Node provides flexible, reproducible deployme
 - VIZD_EXTRA_OPTS: Additional CLI options appended to the node process.
 
 **Section sources**
-- [vizd.sh](file://share/vizd/vizd.sh#L17-L37)
-- [vizd.sh](file://share/vizd/vizd.sh#L62-L72)
+- [vizd.sh:17-37](file://share/vizd/vizd.sh#L17-L37)
+- [vizd.sh:62-72](file://share/vizd/vizd.sh#L62-L72)
 
 ### Appendix B: CMake Options and Docker Variants Mapping
 - BUILD_TESTNET: Selects testnet configuration and snapshot.
@@ -441,8 +472,21 @@ The Docker integration for VIZ CPP Node provides flexible, reproducible deployme
 - CMAKE_BUILD_TYPE=Release: Optimized release build.
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L56-L89)
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L46-L51)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L46-L52)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L45-L50)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L74-L79)
+- [CMakeLists.txt:56-89](file://CMakeLists.txt#L56-L89)
+- [Dockerfile-production:56-61](file://share/vizd/docker/Dockerfile-production#L56-L61)
+- [Dockerfile-testnet:56-62](file://share/vizd/docker/Dockerfile-testnet#L56-L62)
+- [Dockerfile-lowmem:43-48](file://share/vizd/docker/Dockerfile-lowmem#L43-L48)
+- [Dockerfile-mongo:72-77](file://share/vizd/docker/Dockerfile-mongo#L72-L77)
+
+### Appendix C: Enhanced GitHub Actions Workflow Versions
+**Updated** Current workflow versions and security enhancements
+
+- actions/checkout@v4: Latest checkout action with improved performance and security
+- docker/login-action@v3: Enhanced authentication with better credential handling
+- docker/build-push-action@v6: Latest build and push action with improved reliability
+- Error handling: Better failure detection and reporting in CI/CD pipelines
+- Authentication: Secure Docker Hub credentials management through GitHub Secrets
+
+**Section sources**
+- [docker-main.yml:17-21](file://.github/workflows/docker-main.yml#L17-L21)
+- [docker-pr-build.yml:19-22](file://.github/workflows/docker-pr-build.yml#L19-L22)
