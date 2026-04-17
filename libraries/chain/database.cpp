@@ -1012,14 +1012,23 @@ namespace graphene { namespace chain {
                 // The sync mechanism works on a separate path and is not affected
                 // by returning false here.
                 //
-                // We check is_known_block(new_block.previous) rather than
-                // find_block_id_for_num() so that fork blocks whose parent exists
-                // in fork_db (but not on the preferred chain) are still accepted.
+                // We always allow blocks whose previous == head_block_id() because:
+                //   - We know our head block ID from database state even if fork_db
+                //     is empty (DLT mode restart).
+                //   - fork_db skips the link check when _head is null, so these
+                //     blocks will be accepted and correctly become the new head.
+                //   - This covers the critical sync case: the very first block after
+                //     head must always be accepted for sync to make progress.
+                //
+                // For other blocks, we check _fork_db.is_known_block() (not
+                // database::is_known_block) because in DLT mode the full
+                // is_known_block() returns false for blocks whose data isn't on
+                // disk, even though they may exist in fork_db.
                 if (new_block.block_num() > head_block_num() &&
                     new_block.previous != block_id_type() &&
-                    !is_known_block(new_block.previous)) {
-                    // Parent block is completely unknown to us — block can never
-                    // link.  Only log at debug level to avoid spam during sync.
+                    new_block.previous != head_block_id() &&
+                    !_fork_db.is_known_block(new_block.previous)) {
+                    // Parent block is completely unknown — block can never link.
                     dlog("Rejecting unlinkable block ${n} (parent unknown, head=${h})",
                          ("n", new_block.block_num())("h", head_block_num()));
                     return false;
