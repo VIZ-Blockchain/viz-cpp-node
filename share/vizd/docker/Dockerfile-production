@@ -29,12 +29,16 @@ RUN \
             libboost-system-dev \
             libboost-test-dev \
             libboost-thread-dev \
+            libbz2-dev \
+            liblzma-dev \
+            libzstd-dev \
             libreadline-dev \
             libssl-dev \
             libtool \
             ncurses-dev \
             pbzip2 \
-            pkg-config && \
+            pkg-config \
+            zlib1g-dev && \
         break || sleep 10; \
     done && \
     apt-get clean && \
