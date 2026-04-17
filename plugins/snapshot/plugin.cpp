@@ -1595,6 +1595,18 @@ const char* deny_reason_to_string(uint32_t reason) {
     }
 }
 
+/// Serialize a struct to vector<char> via fc::raw::pack
+template<typename T>
+std::vector<char> pack_to_vec(const T& obj) {
+    return fc::raw::pack(obj);
+}
+
+/// Deserialize a struct from vector<char> via fc::raw::unpack
+template<typename T>
+T unpack_from_vec(const std::vector<char>& data) {
+    return fc::raw::unpack<T>(data);
+}
+
 /// Send a snapshot_access_denied message with the given reason, then flush.
 /// Best-effort: silently ignores send errors (the socket is about to be closed).
 void send_access_denied(fc::tcp_socket& sock, uint32_t reason) {
@@ -1654,18 +1666,6 @@ std::tuple<bool, uint32_t, std::vector<char>> read_message_with_timeout(
         }
     }
     return {true, msg_type, std::move(payload)};
-}
-
-/// Serialize a struct to vector<char> via fc::raw::pack
-template<typename T>
-std::vector<char> pack_to_vec(const T& obj) {
-    return fc::raw::pack(obj);
-}
-
-/// Deserialize a struct from vector<char> via fc::raw::unpack
-template<typename T>
-T unpack_from_vec(const std::vector<char>& data) {
-    return fc::raw::unpack<T>(data);
 }
 
 } // anonymous namespace
