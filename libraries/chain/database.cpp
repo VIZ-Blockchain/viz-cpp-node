@@ -1165,6 +1165,7 @@ namespace graphene { namespace chain {
                     auto session = start_undo_session();
                     apply_block(new_block, skip);
                     session.push();
+                    ilog("Applied block ${n}, new head=${h}", ("n", new_block.block_num())("h", head_block_num()));
                 }
                 catch (const fc::exception &e) {
                     elog("Failed to push new block:\n${e}", ("e", e.to_detail_string()));
