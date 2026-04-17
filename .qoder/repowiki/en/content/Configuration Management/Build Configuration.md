@@ -10,10 +10,11 @@
 - [CMakeLists.txt](file://CMakeLists.txt)
 - [building.md](file://documentation/building.md)
 - [.travis.yml](file://.travis.yml)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo)
-- [docker-main.yml](file://.github/workflows/docker-main.yml)
+- [share/vizd/docker/Dockerfile-production](file://share/vizd/docker/Dockerfile-production)
+- [share/vizd/docker/Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet)
+- [share/vizd/docker/Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem)
+- [share/vizd/docker/Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo)
+- [.github/workflows/docker-main.yml](file://.github/workflows/docker-main.yml)
 - [libraries/CMakeLists.txt](file://libraries/CMakeLists.txt)
 - [plugins/CMakeLists.txt](file://plugins/CMakeLists.txt)
 - [programs/CMakeLists.txt](file://programs/CMakeLists.txt)
@@ -108,7 +109,7 @@ Platform specifics:
 - macOS/Linux: C++ standard selection, libc++ vs libstdc++, threading/crypto libraries, Ninja color diagnostics
 
 **Section sources**
-- [CMakeLists.txt:1-277](file://CMakeLists.txt#L1-L277)
+- [CMakeLists.txt:1-271](file://CMakeLists.txt#L1-L271)
 - [building.md:3-212](file://documentation/building.md#L3-L212)
 
 ## Architecture Overview
@@ -166,7 +167,7 @@ Toolchains and generators:
 - Visual Studio and MinGW toolchains supported per documentation
 
 **Section sources**
-- [CMakeLists.txt:1-277](file://CMakeLists.txt#L1-L277)
+- [CMakeLists.txt:1-271](file://CMakeLists.txt#L1-L271)
 - [building.md:3-212](file://documentation/building.md#L3-L212)
 
 ### Build Variants and Feature Toggles
@@ -298,10 +299,10 @@ Dockerfiles:
 
 **Section sources**
 - [.travis.yml:1-46](file://.travis.yml#L1-L46)
-- [docker-main.yml:1-41](file://.github/workflows/docker-main.yml#L1-L41)
-- [Dockerfile-testnet:46-54](file://share/vizd/docker/Dockerfile-testnet#L46-L54)
-- [Dockerfile-lowmem:45-53](file://share/vizd/docker/Dockerfile-lowmem#L45-L53)
-- [Dockerfile-mongo:74-82](file://share/vizd/docker/Dockerfile-mongo#L74-L82)
+- [.github/workflows/docker-main.yml:1-41](file://.github/workflows/docker-main.yml#L1-L41)
+- [share/vizd/docker/Dockerfile-testnet:46-54](file://share/vizd/docker/Dockerfile-testnet#L46-L54)
+- [share/vizd/docker/Dockerfile-lowmem:45-53](file://share/vizd/docker/Dockerfile-lowmem#L45-L53)
+- [share/vizd/docker/Dockerfile-mongo:74-82](file://share/vizd/docker/Dockerfile-mongo#L74-L82)
 
 ## Dependency Analysis
 The build system composes targets in a layered fashion. The top-level CMake orchestrates thirdparty, libraries, plugins, and programs. The vizd executable depends on core libraries and selected plugins.
@@ -441,9 +442,9 @@ The VIZ CPP Node build system is designed for portability and flexibility across
 **Updated** Docker configurations have been streamlined to support the enhanced submodule management and improved dependency resolution.
 
 **Section sources**
-- [Dockerfile-testnet:46-54](file://share/vizd/docker/Dockerfile-testnet#L46-L54)
-- [Dockerfile-lowmem:45-53](file://share/vizd/docker/Dockerfile-lowmem#L45-L53)
-- [Dockerfile-mongo:74-82](file://share/vizd/docker/Dockerfile-mongo#L74-L82)
+- [share/vizd/docker/Dockerfile-testnet:46-54](file://share/vizd/docker/Dockerfile-testnet#L46-L54)
+- [share/vizd/docker/Dockerfile-lowmem:45-53](file://share/vizd/docker/Dockerfile-lowmem#L45-L53)
+- [share/vizd/docker/Dockerfile-mongo:74-82](file://share/vizd/docker/Dockerfile-mongo#L74-L82)
 - [.travis.yml:12-42](file://.travis.yml#L12-L42)
-- [docker-main.yml:11-41](file://.github/workflows/docker-main.yml#L11-L41)
+- [.github/workflows/docker-main.yml:11-41](file://.github/workflows/docker-main.yml#L11-L41)
 - [.gitmodules:1-13](file://.gitmodules#L1-L13)

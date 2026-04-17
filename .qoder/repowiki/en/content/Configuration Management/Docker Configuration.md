@@ -17,6 +17,14 @@
 - [README.md](file://README.md)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Updated compression library dependencies section to reflect libbz2-dev, liblzma-dev, libzstd-dev, and zlib1g-dev additions
+- Added documentation for sed command pattern fixes for test subdirectory removal
+- Updated base image information to reflect newer phusion/baseimage:noble-1.0.3 variants
+- Enhanced dependency analysis to include compression library requirements
+- Updated troubleshooting section with compression-related issues
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
@@ -62,24 +70,24 @@ DFLowMem --> CfgProd
 ```
 
 **Diagram sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L1-L88)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L1-L88)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L1-L82)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L1-L111)
-- [vizd.sh](file://share/vizd/vizd.sh#L1-L82)
-- [config.ini](file://share/vizd/config/config.ini#L1-L130)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L1-L135)
+- [Dockerfile-production:1-103](file://share/vizd/docker/Dockerfile-production#L1-L103)
+- [Dockerfile-testnet:1-103](file://share/vizd/docker/Dockerfile-testnet#L1-L103)
+- [Dockerfile-lowmem:1-85](file://share/vizd/docker/Dockerfile-lowmem#L1-L85)
+- [Dockerfile-mongo:1-114](file://share/vizd/docker/Dockerfile-mongo#L1-L114)
+- [vizd.sh:1-98](file://share/vizd/vizd.sh#L1-L98)
+- [config.ini:1-130](file://share/vizd/config/config.ini#L1-L130)
+- [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_mongo.ini:1-135](file://share/vizd/config/config_mongo.ini#L1-L135)
 
 **Section sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L1-L88)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L1-L88)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L1-L82)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L1-L111)
-- [vizd.sh](file://share/vizd/vizd.sh#L1-L82)
-- [config.ini](file://share/vizd/config/config.ini#L1-L130)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L1-L135)
+- [Dockerfile-production:1-103](file://share/vizd/docker/Dockerfile-production#L1-L103)
+- [Dockerfile-testnet:1-103](file://share/vizd/docker/Dockerfile-testnet#L1-L103)
+- [Dockerfile-lowmem:1-85](file://share/vizd/docker/Dockerfile-lowmem#L1-L85)
+- [Dockerfile-mongo:1-114](file://share/vizd/docker/Dockerfile-mongo#L1-L114)
+- [vizd.sh:1-98](file://share/vizd/vizd.sh#L1-L98)
+- [config.ini:1-130](file://share/vizd/config/config.ini#L1-L130)
+- [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_mongo.ini:1-135](file://share/vizd/config/config_mongo.ini#L1-L135)
 
 ## Core Components
 - Production image: Built from Dockerfile-production, targeting the mainnet with standard configuration and exposed ports for RPC and P2P.
@@ -90,21 +98,21 @@ DFLowMem --> CfgProd
 Key runtime behavior is orchestrated by the entrypoint script (vizd.sh), which sets up user permissions, applies environment overrides, initializes optional cached blockchain data, and starts the node with appropriate endpoints and arguments.
 
 **Section sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L66-L88)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L67-L88)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L60-L82)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L89-L111)
-- [vizd.sh](file://share/vizd/vizd.sh#L1-L82)
+- [Dockerfile-production:81-103](file://share/vizd/docker/Dockerfile-production#L81-L103)
+- [Dockerfile-testnet:82-103](file://share/vizd/docker/Dockerfile-testnet#L82-L103)
+- [Dockerfile-lowmem:63-85](file://share/vizd/docker/Dockerfile-lowmem#L63-L85)
+- [Dockerfile-mongo:92-114](file://share/vizd/docker/Dockerfile-mongo#L92-L114)
+- [vizd.sh:1-98](file://share/vizd/vizd.sh#L1-L98)
 
 ## Architecture Overview
 The container architecture consists of:
-- Base image: phusion/baseimage variants for Debian-based environments.
-- Build stage: installs build dependencies, clones repository, initializes submodules, builds release binaries, and installs artifacts.
+- Base image: phusion/baseimage:noble-1.0.3 variants for Debian-based environments.
+- Build stage: installs build dependencies including compression libraries (libbz2-dev, liblzma-dev, libzstd-dev, zlib1g-dev), clones repository, initializes submodules, removes test subdirectories, builds release binaries, and installs artifacts.
 - Runtime stage: creates a non-root user, prepares cache and config directories, exposes RPC and P2P ports, defines persistent volumes, and starts the node via an init service.
 
 ```mermaid
 graph TB
-Base["phusion/baseimage<br/>Debian-based runtime"]
+Base["phusion/baseimage:noble-1.0.3<br/>Debian-based runtime"]
 Builder["Builder Stage<br/>Install deps, build, install"]
 Runtime["Runtime Stage<br/>User, cache, config, expose ports, volumes"]
 Builder --> Base
@@ -112,10 +120,10 @@ Base --> Runtime
 ```
 
 **Diagram sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L1-L88)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L1-L88)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L1-L82)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L1-L111)
+- [Dockerfile-production:1-103](file://share/vizd/docker/Dockerfile-production#L1-L103)
+- [Dockerfile-testnet:1-103](file://share/vizd/docker/Dockerfile-testnet#L1-L103)
+- [Dockerfile-lowmem:1-85](file://share/vizd/docker/Dockerfile-lowmem#L1-L85)
+- [Dockerfile-mongo:1-114](file://share/vizd/docker/Dockerfile-mongo#L1-L114)
 
 ## Detailed Component Analysis
 
@@ -126,7 +134,7 @@ Base --> Runtime
   - Exposed ports: RPC HTTP (8090), RPC WS (8091), P2P (2001).
   - Persistent volumes: /var/lib/vizd (blockchain data), /etc/vizd (configuration).
   - Entrypoint script: sets defaults and starts node.
-  - Reference: [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L1-L88), [vizd.sh](file://share/vizd/vizd.sh#L1-L82), [config.ini](file://share/vizd/config/config.ini#L1-L130)
+  - Reference: [Dockerfile-production:1-103](file://share/vizd/docker/Dockerfile-production#L1-L103), [vizd.sh:1-98](file://share/vizd/vizd.sh#L1-L98), [config.ini:1-130](file://share/vizd/config/config.ini#L1-L130)
 
 - Testnet image
   - Purpose: Run on the testnet.
@@ -134,14 +142,14 @@ Base --> Runtime
   - Exposed ports: same as production.
   - Persistent volumes: same as production.
   - Entrypoint script: same behavior, with testnet-specific defaults.
-  - Reference: [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L1-L88), [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
+  - Reference: [Dockerfile-testnet:1-103](file://share/vizd/docker/Dockerfile-testnet#L1-L103), [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
 
 - Low-memory image
   - Purpose: Constrained environments.
   - Build parameters: LOW_MEMORY_NODE enabled, MongoDB disabled.
   - Exposed ports: same as production.
   - Persistent volumes: same as production.
-  - Reference: [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L1-L82)
+  - Reference: [Dockerfile-lowmem:1-85](file://share/vizd/docker/Dockerfile-lowmem#L1-L85)
 
 - MongoDB-enabled image
   - Purpose: Enable historical indexing and analytics via MongoDB.
@@ -149,7 +157,7 @@ Base --> Runtime
   - Exposed ports: same as production.
   - Persistent volumes: same as production.
   - MongoDB URI: configured in the MongoDB-enabled config.
-  - Reference: [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L1-L111), [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L1-L135)
+  - Reference: [Dockerfile-mongo:1-114](file://share/vizd/docker/Dockerfile-mongo#L1-L114), [config_mongo.ini:1-135](file://share/vizd/config/config_mongo.ini#L1-L135)
 
 ```mermaid
 flowchart TD
@@ -166,17 +174,17 @@ RuntimeStage --> Entrypoint["Start via vizd.sh"]
 ```
 
 **Diagram sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L40-L59)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L40-L55)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L39-L53)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L31-L82)
-- [vizd.sh](file://share/vizd/vizd.sh#L1-L82)
+- [Dockerfile-production:55-74](file://share/vizd/docker/Dockerfile-production#L55-L74)
+- [Dockerfile-testnet:55-74](file://share/vizd/docker/Dockerfile-testnet#L55-L74)
+- [Dockerfile-lowmem:41-60](file://share/vizd/docker/Dockerfile-lowmem#L41-L60)
+- [Dockerfile-mongo:62-90](file://share/vizd/docker/Dockerfile-mongo#L62-L90)
+- [vizd.sh:1-98](file://share/vizd/vizd.sh#L1-L98)
 
 **Section sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L1-L88)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L1-L88)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L1-L82)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L1-L111)
+- [Dockerfile-production:1-103](file://share/vizd/docker/Dockerfile-production#L1-L103)
+- [Dockerfile-testnet:1-103](file://share/vizd/docker/Dockerfile-testnet#L1-L103)
+- [Dockerfile-lowmem:1-85](file://share/vizd/docker/Dockerfile-lowmem#L1-L85)
+- [Dockerfile-mongo:1-114](file://share/vizd/docker/Dockerfile-mongo#L1-L114)
 
 ### Environment Variables
 The container supports the following environment variables to customize runtime behavior:
@@ -190,9 +198,9 @@ The container supports the following environment variables to customize runtime 
 Behavior is implemented in the entrypoint script, which constructs arguments, copies the packaged config into the data directory, and starts the node with the chosen endpoints and optional cached blockchain initialization.
 
 **Section sources**
-- [vizd.sh](file://share/vizd/vizd.sh#L13-L81)
-- [config.ini](file://share/vizd/config/config.ini#L16-L20)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L16-L20)
+- [vizd.sh:13-97](file://share/vizd/vizd.sh#L13-L97)
+- [config.ini:16-20](file://share/vizd/config/config.ini#L16-L20)
+- [config_testnet.ini:16-20](file://share/vizd/config/config_testnet.ini#L16-L20)
 
 ### Volume Mounting Strategies
 Persistent data storage relies on two primary volumes:
@@ -212,11 +220,11 @@ Exposed ports:
 These are defined in the Dockerfiles and used by the entrypoint script.
 
 **Section sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L74-L87)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L75-L87)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L68-L81)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L97-L110)
-- [vizd.sh](file://share/vizd/vizd.sh#L62-L72)
+- [Dockerfile-production:94-103](file://share/vizd/docker/Dockerfile-production#L94-L103)
+- [Dockerfile-testnet:94-103](file://share/vizd/docker/Dockerfile-testnet#L94-L103)
+- [Dockerfile-lowmem:76-85](file://share/vizd/docker/Dockerfile-lowmem#L76-L85)
+- [Dockerfile-mongo:105-114](file://share/vizd/docker/Dockerfile-mongo#L105-L114)
+- [vizd.sh:62-72](file://share/vizd/vizd.sh#L62-L72)
 
 ### Network Configuration
 - Default RPC endpoints are configurable via environment variables; otherwise, defaults bind to 0.0.0.0 on ports 8090 (HTTP) and 8091 (WS).
@@ -225,12 +233,12 @@ These are defined in the Dockerfiles and used by the entrypoint script.
 - Seed nodes are either taken from the packaged seednodes file or overridden via VIZD_SEED_NODES.
 
 **Section sources**
-- [vizd.sh](file://share/vizd/vizd.sh#L62-L72)
-- [config.ini](file://share/vizd/config/config.ini#L1-L20)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L20)
+- [vizd.sh:62-72](file://share/vizd/vizd.sh#L62-L72)
+- [config.ini:1-20](file://share/vizd/config/config.ini#L1-L20)
+- [config_testnet.ini:1-20](file://share/vizd/config/config_testnet.ini#L1-L20)
 
 ### Image Customization and Base Image Selection
-- Base image: phusion/baseimage variants are used across images. The production and testnet images use a newer variant, while the low-memory and MongoDB images use an older variant.
+- Base image: phusion/baseimage:noble-1.0.3 variants are used across all images, providing a modern Debian-based runtime environment.
 - Build customization:
   - Production: standard build with MongoDB disabled.
   - Testnet: enables BUILD_TESTNET.
@@ -239,12 +247,12 @@ These are defined in the Dockerfiles and used by the entrypoint script.
 - Debug configurations: separate debug configs are provided for development and MongoDB-enabled debug setups.
 
 **Section sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L1-L88)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L1-L88)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L1-L82)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L31-L82)
-- [config_debug.ini](file://share/vizd/config/config_debug.ini#L1-L126)
-- [config_debug_mongo.ini](file://share/vizd/config/config_debug_mongo.ini#L1-L135)
+- [Dockerfile-production:1-103](file://share/vizd/docker/Dockerfile-production#L1-L103)
+- [Dockerfile-testnet:1-103](file://share/vizd/docker/Dockerfile-testnet#L1-L103)
+- [Dockerfile-lowmem:1-85](file://share/vizd/docker/Dockerfile-lowmem#L1-L85)
+- [Dockerfile-mongo:1-114](file://share/vizd/docker/Dockerfile-mongo#L1-L114)
+- [config_debug.ini:1-135](file://share/vizd/config/config_debug.ini#L1-L135)
+- [config_debug_mongo.ini:1-135](file://share/vizd/config/config_debug_mongo.ini#L1-L135)
 
 ### Security Considerations
 - Non-root execution: the runtime stage creates a dedicated non-root user and sets ownership on cache and data directories.
@@ -253,10 +261,10 @@ These are defined in the Dockerfiles and used by the entrypoint script.
 - Network exposure: restrict inbound access to RPC and P2P ports using firewalls and reverse proxies as appropriate.
 
 **Section sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L69-L77)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L70-L77)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L63-L71)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L92-L100)
+- [Dockerfile-production:84-87](file://share/vizd/docker/Dockerfile-production#L84-L87)
+- [Dockerfile-testnet:85-88](file://share/vizd/docker/Dockerfile-testnet#L85-L88)
+- [Dockerfile-lowmem:66-69](file://share/vizd/docker/Dockerfile-lowmem#L66-L69)
+- [Dockerfile-mongo:95-98](file://share/vizd/docker/Dockerfile-mongo#L95-L98)
 
 ### Monitoring and Logging
 - Logging configuration is defined in the packaged config files. Logs are written to files under the data directory according to the configured appenders and loggers.
@@ -264,51 +272,49 @@ These are defined in the Dockerfiles and used by the entrypoint script.
 - Health checks and metrics are not defined in the images; deploy external monitoring and alerting as needed.
 
 **Section sources**
-- [config.ini](file://share/vizd/config/config.ini#L111-L130)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L113-L132)
-- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L116-L135)
-- [config_debug.ini](file://share/vizd/config/config_debug.ini#L107-L126)
-- [config_debug_mongo.ini](file://share/vizd/config/config_debug_mongo.ini#L116-L135)
+- [config.ini:111-130](file://share/vizd/config/config.ini#L111-L130)
+- [config_testnet.ini:113-132](file://share/vizd/config/config_testnet.ini#L113-L132)
+- [config_mongo.ini:116-135](file://share/vizd/config/config_mongo.ini#L116-L135)
+- [config_debug.ini:107-135](file://share/vizd/config/config_debug.ini#L107-L135)
+- [config_debug_mongo.ini:116-135](file://share/vizd/config/config_debug_mongo.ini#L116-L135)
 
 ### Practical Deployment Patterns
 - Standalone container
   - Run the production image and map ports 8090, 8091, and 2001.
   - Override RPC/P2P endpoints via environment variables if needed.
   - Persist data via a bind mount to /var/lib/vizd.
-  - Reference: [README.md](file://README.md#L21-L29), [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L74-L87)
+  - Reference: [README.md:21-29](file://README.md#L21-L29), [Dockerfile-production:94-103](file://share/vizd/docker/Dockerfile-production#L94-L103)
 
 - Testnet node
   - Use the testnet image tag and adjust seed nodes if required.
-  - Reference: [README.md](file://README.md#L16-L20), [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L75-L87)
+  - Reference: [README.md:16-20](file://README.md#L16-L20), [Dockerfile-testnet:94-103](file://share/vizd/docker/Dockerfile-testnet#L94-L103)
 
 - Witness node
   - Set VIZD_WITNESS_NAME and VIZD_PRIVATE_KEY to operate a witness.
-  - Reference: [vizd.sh](file://share/vizd/vizd.sh#L31-L37)
+  - Reference: [vizd.sh:31-37](file://share/vizd/vizd.sh#L31-L37)
 
 - MongoDB analytics node
   - Use the MongoDB-enabled image and configure mongodb-uri in the mounted config.
-  - Reference: [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L97-L110), [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L71-L72)
+  - Reference: [Dockerfile-mongo:105-114](file://share/vizd/docker/Dockerfile-mongo#L105-L114), [config_mongo.ini:71-72](file://share/vizd/config/config_mongo.ini#L71-L72)
 
 - Development environment
   - Use debug configurations and enable debug plugins for development and testing.
-  - Reference: [config_debug.ini](file://share/vizd/config/config_debug.ini#L69-L126), [config_debug_mongo.ini](file://share/vizd/config/config_debug_mongo.ini#L69-L135)
+  - Reference: [config_debug.ini:69-135](file://share/vizd/config/config_debug.ini#L69-L135), [config_debug_mongo.ini:69-135](file://share/vizd/config/config_debug_mongo.ini#L69-L135)
 
 **Section sources**
-- [README.md](file://README.md#L12-L53)
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L74-L87)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L75-L87)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L97-L110)
-- [vizd.sh](file://share/vizd/vizd.sh#L31-L37)
-- [config_debug.ini](file://share/vizd/config/config_debug.ini#L69-L126)
-- [config_debug_mongo.ini](file://share/vizd/config/config_debug_mongo.ini#L69-L135)
+- [README.md:12-53](file://README.md#L12-L53)
+- [Dockerfile-production:94-103](file://share/vizd/docker/Dockerfile-production#L94-L103)
+- [Dockerfile-testnet:94-103](file://share/vizd/docker/Dockerfile-testnet#L94-L103)
+- [Dockerfile-mongo:105-114](file://share/vizd/docker/Dockerfile-mongo#L105-L114)
+- [vizd.sh:31-37](file://share/vizd/vizd.sh#L31-L37)
+- [config_debug.ini:69-135](file://share/vizd/config/config_debug.ini#L69-L135)
+- [config_debug_mongo.ini:69-135](file://share/vizd/config/config_debug_mongo.ini#L69-L135)
 
 ### Container Orchestration and Multi-Container Scenarios
 - Single-node deployment: run one container with mapped volumes and ports.
 - Multi-node deployment: run multiple containers with distinct data directories and optionally different seed nodes.
 - MongoDB stack: when using the MongoDB-enabled image, deploy a MongoDB instance alongside the node container and configure the mongodb-uri accordingly.
 - Reverse proxy: front RPC endpoints with a reverse proxy for TLS termination and rate limiting.
-
-[No sources needed since this section provides general guidance]
 
 ### Docker Registry Usage, Versioning, and Updates
 - Official image repository: vizblockchain/vizd on Docker Hub.
@@ -324,15 +330,18 @@ These are defined in the Dockerfiles and used by the entrypoint script.
   - Recreate the container with updated image and preserved volumes.
 
 **Section sources**
-- [README.md](file://README.md#L14-L20)
-- [docker-main.yml](file://.github/workflows/docker-main.yml#L1-L41)
-- [docker-pr-build.yml](file://.github/workflows/docker-pr-build.yml#L1-L24)
+- [README.md:14-20](file://README.md#L14-L20)
+- [docker-main.yml:1-53](file://.github/workflows/docker-main.yml#L1-L53)
+- [docker-pr-build.yml:1-30](file://.github/workflows/docker-pr-build.yml#L1-L30)
 
 ## Dependency Analysis
 The runtime depends on:
 - Entrypoint script for argument construction and startup.
 - Configuration files for RPC endpoints, plugins, and logging.
 - Persistent volumes for blockchain data and configuration.
+- Compression libraries (libbz2-dev, liblzma-dev, libzstd-dev, zlib1g-dev) for efficient blockchain data processing.
+
+**Updated** Added compression library dependencies to support modern blockchain data compression formats.
 
 ```mermaid
 graph LR
@@ -346,62 +355,68 @@ Script --> CfgMongo["config_mongo.ini"]
 ```
 
 **Diagram sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L74-L76)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L76-L77)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L99-L100)
-- [vizd.sh](file://share/vizd/vizd.sh#L39-L42)
-- [config.ini](file://share/vizd/config/config.ini#L1-L130)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L1-L135)
+- [Dockerfile-production:94-96](file://share/vizd/docker/Dockerfile-production#L94-L96)
+- [Dockerfile-testnet:95-97](file://share/vizd/docker/Dockerfile-testnet#L95-L97)
+- [Dockerfile-mongo:106-108](file://share/vizd/docker/Dockerfile-mongo#L106-L108)
+- [vizd.sh:39-42](file://share/vizd/vizd.sh#L39-L42)
+- [config.ini:1-130](file://share/vizd/config/config.ini#L1-L130)
+- [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_mongo.ini:1-135](file://share/vizd/config/config_mongo.ini#L1-L135)
 
 **Section sources**
-- [vizd.sh](file://share/vizd/vizd.sh#L1-L82)
-- [config.ini](file://share/vizd/config/config.ini#L1-L130)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L1-L135)
+- [vizd.sh:1-98](file://share/vizd/vizd.sh#L1-L98)
+- [config.ini:1-130](file://share/vizd/config/config.ini#L1-L130)
+- [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_mongo.ini:1-135](file://share/vizd/config/config_mongo.ini#L1-L135)
 
 ## Performance Considerations
 - Shared memory sizing: tune shared-file-size and related parameters in the configuration to balance memory usage and performance.
 - Plugin selection: disable unused plugins to reduce overhead.
 - Single write thread: the configuration encourages single-write-thread to mitigate lock contention.
 - Low-memory variant: use the low-memory image when running on constrained hardware.
+- Compression library optimization: modern compression libraries (libbz2, liblzma, libzstd, zlib) provide efficient blockchain data compression and decompression.
 
-[No sources needed since this section provides general guidance]
+**Updated** Added compression library optimization considerations for improved blockchain data processing performance.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
 - Ports already in use
   - Ensure host ports 8090, 8091, and 2001 are free or remap to different host ports.
   - Verify container port exposure matches published ports.
-  - References: [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L79-L87), [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L79-L87)
+  - References: [Dockerfile-production:94-103](file://share/vizd/docker/Dockerfile-production#L94-L103), [Dockerfile-testnet:94-103](file://share/vizd/docker/Dockerfile-testnet#L94-L103)
 
 - Permission denied on data directory
   - Confirm the non-root user owns /var/lib/vizd after initial run.
-  - Reference: [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L70-L72)
+  - Reference: [Dockerfile-production:84-87](file://share/vizd/docker/Dockerfile-production#L84-L87)
 
 - No connectivity to peers
   - Override seed nodes via VIZD_SEED_NODES or mount a custom seednodes file.
-  - Reference: [vizd.sh](file://share/vizd/vizd.sh#L17-L29), [README.md](file://README.md#L31-L39)
+  - Reference: [vizd.sh:17-29](file://share/vizd/vizd.sh#L17-L29), [README.md:31-39](file://README.md#L31-L39)
 
 - Blockchain initialization delays
   - Cached blockchain data may be unpacked on first run; allow time for decompression.
-  - Reference: [vizd.sh](file://share/vizd/vizd.sh#L44-L53)
+  - Reference: [vizd.sh:44-53](file://share/vizd/vizd.sh#L44-L53)
 
 - MongoDB plugin connectivity
   - Ensure mongodb-uri is reachable from the container network and credentials are correct.
-  - Reference: [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L71-L72), [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L97-L100)
+  - Reference: [config_mongo.ini:71-72](file://share/vizd/config/config_mongo.ini#L71-L72), [Dockerfile-mongo:105-108](file://share/vizd/docker/Dockerfile-mongo#L105-L108)
+
+- Compression library issues
+  - Verify compression libraries (libbz2, liblzma, libzstd, zlib) are properly installed and accessible.
+  - Check for compatibility between compression formats and blockchain data versions.
+  - Reference: [Dockerfile-production:32-41](file://share/vizd/docker/Dockerfile-production#L32-L41), [Dockerfile-testnet:32-41](file://share/vizd/docker/Dockerfile-testnet#L32-L41)
+
+**Updated** Added compression library troubleshooting section to address potential issues with blockchain data compression.
 
 **Section sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L70-L87)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L70-L87)
-- [vizd.sh](file://share/vizd/vizd.sh#L17-L53)
-- [README.md](file://README.md#L31-L39)
-- [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L71-L72)
+- [Dockerfile-production:84-103](file://share/vizd/docker/Dockerfile-production#L84-L103)
+- [Dockerfile-testnet:85-103](file://share/vizd/docker/Dockerfile-testnet#L85-L103)
+- [vizd.sh:17-53](file://share/vizd/vizd.sh#L17-L53)
+- [README.md:31-39](file://README.md#L31-L39)
+- [config_mongo.ini:71-72](file://share/vizd/config/config_mongo.ini#L71-L72)
 
 ## Conclusion
 The VIZ C++ Node provides multiple Docker images tailored for production, testnet, low-memory, and MongoDB-enabled deployments. By leveraging environment variables, persistent volumes, and the packaged configurations, operators can quickly deploy reliable and secure nodes. Automated CI builds maintain official images, and the modular design allows for flexible customization and operational patterns.
-
-[No sources needed since this section summarizes without analyzing specific files]
 
 ## Appendices
 
@@ -414,7 +429,7 @@ The VIZ C++ Node provides multiple Docker images tailored for production, testne
 - VIZD_EXTRA_OPTS: Additional CLI options.
 
 **Section sources**
-- [vizd.sh](file://share/vizd/vizd.sh#L17-L81)
+- [vizd.sh:17-97](file://share/vizd/vizd.sh#L17-L97)
 
 ### Ports Reference
 - RPC HTTP: 8090
@@ -422,7 +437,34 @@ The VIZ C++ Node provides multiple Docker images tailored for production, testne
 - P2P: 2001
 
 **Section sources**
-- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L79-L87)
-- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L79-L87)
-- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L73-L81)
-- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L102-L110)
+- [Dockerfile-production:94-103](file://share/vizd/docker/Dockerfile-production#L94-L103)
+- [Dockerfile-testnet:94-103](file://share/vizd/docker/Dockerfile-testnet#L94-L103)
+- [Dockerfile-lowmem:76-85](file://share/vizd/docker/Dockerfile-lowmem#L76-L85)
+- [Dockerfile-mongo:105-114](file://share/vizd/docker/Dockerfile-mongo#L105-L114)
+
+### Compression Library Dependencies
+The Docker images now include modern compression library dependencies:
+- libbz2-dev: Bzip2 compression support for blockchain data
+- liblzma-dev: LZMA compression support for efficient data compression
+- libzstd-dev: Zstandard compression for high-speed compression/decompression
+- zlib1g-dev: Standard zlib compression library for compatibility
+
+These libraries are essential for processing modern blockchain data formats and provide optimal compression ratios and performance.
+
+**Section sources**
+- [Dockerfile-production:32-41](file://share/vizd/docker/Dockerfile-production#L32-L41)
+- [Dockerfile-testnet:32-41](file://share/vizd/docker/Dockerfile-testnet#L32-L41)
+- [Dockerfile-lowmem:19-29](file://share/vizd/docker/Dockerfile-lowmem#L19-L29)
+- [Dockerfile-mongo:19-29](file://share/vizd/docker/Dockerfile-mongo#L19-L29)
+
+### Sed Command Pattern Fixes
+All Dockerfiles now include sed command pattern fixes to remove test subdirectories during the build process:
+- `sed -i '/add_subdirectory(tests)/d' thirdparty/fc/CMakeLists.txt`
+
+This ensures that test subdirectories are excluded from compilation, reducing build time and image size while maintaining functionality.
+
+**Section sources**
+- [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L58)
+- [Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L58)
+- [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L44)
+- [Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L73)
