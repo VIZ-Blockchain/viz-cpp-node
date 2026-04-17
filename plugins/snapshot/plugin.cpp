@@ -1548,6 +1548,29 @@ void send_message_empty(fc::tcp_socket& sock, uint32_t msg_type) {
     send_message(sock, msg_type, empty);
 }
 
+/// Convert snapshot_deny_reason to human-readable string.
+const char* deny_reason_to_string(uint32_t reason) {
+    switch (reason) {
+        case deny_untrusted:       return "untrusted IP";
+        case deny_max_connections: return "server at max concurrent connections";
+        case deny_session_limit:   return "too many active sessions from this IP";
+        case deny_rate_limited:    return "rate limit exceeded (too many connections per hour)";
+        default:                   return "unknown reason";
+    }
+}
+
+/// Send a snapshot_access_denied message with the given reason, then flush.
+/// Best-effort: silently ignores send errors (the socket is about to be closed).
+void send_access_denied(fc::tcp_socket& sock, uint32_t reason) {
+    try {
+        snapshot_access_denied_data denial;
+        denial.reason = reason;
+        send_message(sock, snapshot_access_denied, pack_to_vec(denial));
+    } catch (...) {
+        // Best-effort: client may have already disconnected
+    }
+}
+
 /// Read a message: returns (msg_type, payload).
 /// max_payload_size limits the accepted payload (default 64 MB for data replies,
 /// use 64 KB for control/request messages to prevent memory abuse).
@@ -1746,6 +1769,7 @@ void snapshot_plugin::plugin_impl::accept_loop() {
                 if (trusted_ips.find(remote_ip) == trusted_ips.end()) {
                     wlog("Snapshot server: rejected untrusted connection from ${ip}",
                          ("ip", std::string(remote.get_address())));
+                    send_access_denied(*sock_ptr, deny_untrusted);
                     sock_ptr->close();
                     continue;
                 }
@@ -1755,6 +1779,7 @@ void snapshot_plugin::plugin_impl::accept_loop() {
             if (active_connection_count.load() >= MAX_CONCURRENT_CONNECTIONS) {
                 wlog("Snapshot server: max concurrent connections reached, rejecting ${ip}",
                      ("ip", std::string(remote.get_address())));
+                send_access_denied(*sock_ptr, deny_max_connections);
                 sock_ptr->close();
                 continue;
             }
@@ -1769,6 +1794,7 @@ void snapshot_plugin::plugin_impl::accept_loop() {
                     wlog("Snapshot server: rejected connection from ${ip} (${n} active sessions, limit ${l})",
                          ("ip", std::string(remote.get_address()))
                          ("n", sess_it->second)("l", MAX_SESSIONS_PER_IP));
+                    send_access_denied(*sock_ptr, deny_session_limit);
                     sock_ptr->close();
                     continue;
                 }
@@ -1793,6 +1819,7 @@ void snapshot_plugin::plugin_impl::accept_loop() {
                     } else if (history.size() >= MAX_CONNECTIONS_PER_HOUR) {
                         wlog("Snapshot server: rate limit exceeded for ${ip} (${n} connections in last hour)",
                              ("ip", std::string(remote.get_address()))("n", history.size()));
+                        send_access_denied(*sock_ptr, deny_rate_limited);
                         sock_ptr->close();
                         continue;
                     } else {
@@ -2078,13 +2105,30 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
             try {
                 send_message_empty(sock, snapshot_info_request);
             } catch (const fc::exception& e) {
-                std::cerr << "   Peer " << peer_str << ": send failed\n";
-                wlog("Failed to send info request to peer ${p}: ${e}", ("p", peer_str)("e", e.to_detail_string()));
+                // Send failed — server may have rejected us with an access-denied message.
+                // Try a brief read to see if the server sent a denial before closing.
+                auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
+                if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
+                    auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
+                    std::cerr << "   Peer " << peer_str << ": access denied (" << deny_reason_to_string(denial.reason) << ")\n";
+                    wlog("Peer ${p} denied access: ${r}", ("p", peer_str)("r", deny_reason_to_string(denial.reason)));
+                } else {
+                    std::cerr << "   Peer " << peer_str << ": send failed\n";
+                    wlog("Failed to send info request to peer ${p}: ${e}", ("p", peer_str)("e", e.to_detail_string()));
+                }
                 sock.close();
                 continue;
             } catch (const std::exception& e) {
-                std::cerr << "   Peer " << peer_str << ": send failed\n";
-                wlog("Failed to send info request to peer ${p}: ${e}", ("p", peer_str)("e", e.what()));
+                // Send failed — try reading denial message
+                auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
+                if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
+                    auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
+                    std::cerr << "   Peer " << peer_str << ": access denied (" << deny_reason_to_string(denial.reason) << ")\n";
+                    wlog("Peer ${p} denied access: ${r}", ("p", peer_str)("r", deny_reason_to_string(denial.reason)));
+                } else {
+                    std::cerr << "   Peer " << peer_str << ": send failed\n";
+                    wlog("Failed to send info request to peer ${p}: ${e}", ("p", peer_str)("e", e.what()));
+                }
                 sock.close();
                 continue;
             }
@@ -2111,6 +2155,10 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
             } else if (resp_msg_type == snapshot_not_available) {
                 std::cerr << "   Peer " << peer_str << ": no snapshot available\n";
                 ilog(CLOG_YELLOW "Peer ${p}: no snapshot available" CLOG_RESET, ("p", peer_str));
+            } else if (resp_msg_type == snapshot_access_denied) {
+                auto denial = unpack_from_vec<snapshot_access_denied_data>(resp_payload);
+                std::cerr << "   Peer " << peer_str << ": access denied (" << deny_reason_to_string(denial.reason) << ")\n";
+                wlog("Peer ${p} denied access: ${r}", ("p", peer_str)("r", deny_reason_to_string(denial.reason)));
             }
 
             sock.close();
@@ -2174,14 +2222,35 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     try {
         send_message_empty(sock, snapshot_info_request);
     } catch (const fc::exception& e) {
+        // Send failed — server may have rejected us with an access-denied message.
+        auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
+        if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
+            auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
+            FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
+                ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
+        }
         FC_THROW("Failed to send Phase 2 info request to peer ${p}: ${e}",
             ("p", best->endpoint_str)("e", e.to_detail_string()));
     } catch (const std::exception& e) {
+        auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
+        if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
+            auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
+            FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
+                ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
+        }
         FC_THROW("Failed to send Phase 2 info request to peer ${p}: ${e}",
             ("p", best->endpoint_str)("e", e.what()));
     }
     auto info_result = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
     FC_ASSERT(std::get<0>(info_result), "Timeout waiting for peer response during download");
+
+    // Check for access denied response
+    if (std::get<1>(info_result) == snapshot_access_denied) {
+        auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(info_result));
+        FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
+            ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
+    }
+
     FC_ASSERT(std::get<1>(info_result) == snapshot_info_reply, "Unexpected response from peer during download");
 
     // Validate snapshot size against maximum
@@ -2342,8 +2411,17 @@ void snapshot_plugin::plugin_impl::test_all_trusted_peers() {
             try {
                 send_message_empty(sock, snapshot_info_request);
             } catch (const std::exception& se) {
-                res.status = "ERROR";
-                std::cerr << "  Send failed: " << se.what() << "\n";
+                // Send failed — server may have rejected with access-denied message
+                auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
+                if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
+                    auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
+                    res.status = "DENIED";
+                    std::cerr << "  Access denied: " << deny_reason_to_string(denial.reason) << "\n";
+                    wlog("[test-trusted-seeds] peer ${p} denied: ${r}", ("p", peer_str)("r", deny_reason_to_string(denial.reason)));
+                } else {
+                    res.status = "ERROR";
+                    std::cerr << "  Send failed: " << se.what() << "\n";
+                }
                 sock.close();
                 results.push_back(res);
                 continue;
@@ -2367,6 +2445,16 @@ void snapshot_plugin::plugin_impl::test_all_trusted_peers() {
             if (resp_type == snapshot_not_available) {
                 res.status = "NO_SNAPSHOT";
                 std::cerr << "  Snapshot: not available\n";
+                sock.close();
+                results.push_back(res);
+                continue;
+            }
+
+            if (resp_type == snapshot_access_denied) {
+                auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(resp));
+                res.status = "DENIED";
+                std::cerr << "  Access denied: " << deny_reason_to_string(denial.reason) << "\n";
+                wlog("[test-trusted-seeds] peer ${p} denied: ${r}", ("p", peer_str)("r", deny_reason_to_string(denial.reason)));
                 sock.close();
                 results.push_back(res);
                 continue;
