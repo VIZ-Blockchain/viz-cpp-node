@@ -1081,7 +1081,7 @@ namespace graphene { namespace chain {
                     new_block.previous != head_block_id() &&
                     !_fork_db.is_known_block(new_block.previous)) {
                     // Parent block is completely unknown — block can never link.
-                    ilog("Rejecting unlinkable block ${n} (parent unknown, head=${h})",
+                    dlog("Rejecting unlinkable block ${n} (parent unknown, head=${h})",
                          ("n", new_block.block_num())("h", head_block_num()));
                     return false;
                 }
@@ -1165,7 +1165,6 @@ namespace graphene { namespace chain {
                     auto session = start_undo_session();
                     apply_block(new_block, skip);
                     session.push();
-                    ilog("Applied block ${n}, new head=${h}", ("n", new_block.block_num())("h", head_block_num()));
                 }
                 catch (const fc::exception &e) {
                     elog("Failed to push new block:\n${e}", ("e", e.to_detail_string()));

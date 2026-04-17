@@ -122,13 +122,10 @@ namespace graphene {
                             head_block_num = chain.db().head_block_num();
                         });
                         if (sync_mode)
-                        {
                             fc_ilog(fc::logger::get("sync"),
                                     "chain pushing sync block #${block_num} ${block_hash}, head is ${head}",
                                     ("block_num", blk_msg.block.block_num())("block_hash", blk_msg.block_id)("head",
                                                                                                              head_block_num));
-                            ilog("Sync block #${n} received, head=${h}", ("n", blk_msg.block.block_num())("h", head_block_num));
-                        }
                         else
                             fc_ilog(fc::logger::get("sync"),
                                     "chain pushing block #${block_num} ${block_hash}, head is ${head}",
