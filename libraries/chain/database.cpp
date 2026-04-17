@@ -1000,6 +1000,31 @@ namespace graphene { namespace chain {
                     // to the normal push logic which may trigger a fork switch.
                 }
 
+                // Early rejection for blocks far ahead of our head whose parent we
+                // don't know.  When a node is far behind (e.g. after snapshot import
+                // at block N while the network is at block N+1000), broadcast blocks
+                // arrive that are way ahead.  If we push them into fork_db, they
+                // throw unlinkable_block_exception which triggers P2P sync restart,
+                // clearing the sync queue and preventing any forward progress.
+                //
+                // Instead, silently reject these blocks so the sync mechanism can
+                // fetch blocks sequentially without being constantly interrupted.
+                // The sync mechanism works on a separate path and is not affected
+                // by returning false here.
+                //
+                // We check is_known_block(new_block.previous) rather than
+                // find_block_id_for_num() so that fork blocks whose parent exists
+                // in fork_db (but not on the preferred chain) are still accepted.
+                if (new_block.block_num() > head_block_num() &&
+                    new_block.previous != block_id_type() &&
+                    !is_known_block(new_block.previous)) {
+                    // Parent block is completely unknown to us — block can never
+                    // link.  Only log at debug level to avoid spam during sync.
+                    dlog("Rejecting unlinkable block ${n} (parent unknown, head=${h})",
+                         ("n", new_block.block_num())("h", head_block_num()));
+                    return false;
+                }
+
                 if (!(skip & skip_fork_db)) {
                     shared_ptr<fork_item> new_head = _fork_db.push_block(new_block);
                     _maybe_warn_multiple_production(new_head->num);
