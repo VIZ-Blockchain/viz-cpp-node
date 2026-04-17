@@ -1271,6 +1271,42 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         // Set the chainbase revision to match the snapshot head block
         db.set_revision(header.snapshot_block_num);
 
+        // Treat the snapshot head as irreversible: set LIB = head_block_num.
+        // After snapshot import, fork_db only contains the head block.
+        // If LIB < head, P2P synopsis starts from LIB and peers send us
+        // blocks in the [LIB, head] range.  Those blocks can't link in
+        // fork_db because their predecessors are missing, causing
+        // unlinkable_block_exception and endless sync restarts.
+        //
+        // Setting LIB = head tells P2P "we have everything up to head"
+        // so peers only send us blocks AFTER head, which link correctly
+        // (their `previous` is the head block already in fork_db).
+        //
+        // This is safe because:
+        //   - The snapshot comes from a trusted master; the state is
+        //     authoritative.
+        //   - By the time the slave processes the snapshot, those blocks
+        //     are deep enough to be effectively irreversible.
+        //   - In DLT mode we don't have block data for the LIB..head
+        //     range anyway, so we couldn't switch forks even if we wanted to.
+        {
+            const auto& dgpo = db.get<dynamic_global_property_object>();
+            uint32_t old_lib = dgpo.last_irreversible_block_num;
+            db.modify(dgpo, [&](dynamic_global_property_object& obj) {
+                obj.last_irreversible_block_num = obj.head_block_number;
+                obj.last_irreversible_block_id = block_id_type();
+                obj.last_irreversible_block_ref_num = 0;
+                obj.last_irreversible_block_ref_prefix = 0;
+            });
+            // Commit all undo state up to the new LIB so chainbase
+            // revisions are consistent and the undo stack is empty.
+            db.commit(header.snapshot_block_num);
+            ilog(CLOG_ORANGE "LIB promoted to head block ${h} (was ${old_lib}) for P2P sync" CLOG_RESET,
+                 ("h", header.snapshot_block_num)("old_lib", old_lib));
+            std::cerr << "   LIB promoted to head block " << header.snapshot_block_num
+                      << " (was " << old_lib << ") for P2P sync\n";
+        }
+
         ilog(CLOG_ORANGE "All objects imported successfully" CLOG_RESET);
     });
 
