@@ -71,6 +71,7 @@ RUN \
     cd $APPDIR && \
     git submodule deinit -f . && \
     git submodule update --init --recursive -f && \
+    sed -i '/^add_subdirectory(tests)/d' thirdparty/fc/CMakeLists.txt && \
     mkdir build && \
     cd build && \
     cmake \
