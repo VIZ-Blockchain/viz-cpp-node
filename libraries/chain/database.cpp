@@ -994,6 +994,18 @@ namespace graphene { namespace chain {
                         //Only switch forks if new_head is actually higher than head
                         if (new_head->data.block_num() > head_block_num()) {
                             // wlog( "Switching to fork: ${id}", ("id",new_head->data.id()) );
+                            // Ensure the current head block exists in the fork DB before attempting fork switch.
+                            // During initial sync or after fork DB trimming, head_block_id() may not be
+                            // present in the fork DB, making it impossible to compute the branch back
+                            // to the common ancestor. In that case, the block is unlinkable from our
+                            // current state and should be rejected.
+                            if (!_fork_db.is_known_block(head_block_id())) {
+                                wlog("Cannot switch forks: current head block ${h} is not in the fork database (likely still syncing or fork DB trimmed). Rejecting block ${id} at height ${n}",
+                                     ("h", head_block_id())("id", new_head->data.id())("n", new_head->data.block_num()));
+                                _fork_db.remove(new_head->data.id());
+                                FC_THROW_EXCEPTION(unlinkable_block_exception,
+                                                   "current head block not in fork database, cannot switch forks");
+                            }
                             auto branches = _fork_db.fetch_branch_from(new_head->data.id(), head_block_id());
 
                             // pop blocks until we hit the forked block
