@@ -151,6 +151,47 @@ Files stored in the blockchain data directory:
 - `dlt_block_log` -- block data (same format as `block_log`)
 - `dlt_block_log.index` -- offset-aware index
 
+## P2P Sync After Snapshot Import (DLT Mode)
+
+When a node starts from a snapshot, it loads state at the snapshot's block height but has no block history. P2P sync must then fetch all subsequent blocks from the network. Several fixes ensure this works reliably:
+
+### LIB Promotion
+
+After snapshot import, LIB (Last Irreversible Block) is promoted to equal the head block number. This ensures that P2P's blockchain synopsis starts from the snapshot's head, causing peers to only offer blocks after the snapshot point (which can link correctly in the fork database).
+
+### Fork Database Seeding
+
+- **Fresh snapshot import**: The fork database (`fork_db`) is seeded with the head block so incoming blocks can link to it.
+- **DLT mode restart**: On restart, `fork_db` is in-memory and empty. The node tries to seed it from the `dlt_block_log` if the head block is covered. If not (e.g., first restart after snapshot import), the early rejection logic (below) handles the empty `fork_db` case.
+
+### Early Block Rejection in `_push_block`
+
+When a node is far behind the network, it receives two types of blocks simultaneously:
+- **Sync blocks** (sequential, starting from head+1) — must be accepted
+- **Broadcast blocks** (real-time, potentially thousands ahead) — must be rejected silently
+
+Three early-rejection checks in `_push_block` prevent sync disruption:
+
+1. **Duplicate blocks**: If a block is at or before head and its ID matches our chain, it's already applied — skip silently (prevents unnecessary `fork_db` push attempts that would throw `unlinkable_block_exception`).
+
+2. **Far-ahead blocks with unknown parent**: If a block's `previous` is neither our `head_block_id()` nor in `fork_db`, the block can never link. Return `false` silently instead of throwing, which prevents P2P sync restart.
+
+3. **Immediate successor always allowed**: Blocks whose `previous == head_block_id()` always pass — this is the critical sync case where the next sequential block must be accepted, even when `fork_db` is empty after a restart.
+
+### `is_known_block()` in DLT Mode
+
+In DLT mode, the `block_summary` table (TAPOS buffer, 65536 entries) survives snapshot import, but block data may not be available on disk. Simply returning `true` from `block_summary` would mislead P2P peers into requesting blocks the node can't serve.
+
+The DLT mode fix checks `block_summary` as a hint, then verifies the block is on the **preferred chain** via `find_block_id_for_num()`. This allows P2P's `has_item()` to correctly identify blocks we already have (enabling proper sync negotiation) while preventing false positives for blocks we can't serve.
+
+### Fork Database Bug Fixes
+
+Several bugs in `fork_database` were fixed that previously prevented out-of-order block caching from working:
+- **Dead code fix**: `_unlinked_index.insert()` was after `throw` (unreachable) — moved before the throw
+- **Missing `_push_next()` call**: After inserting a new block, previously-unlinkable blocks that can now link were never resolved — added the call
+- **Duplicate block check**: Added early return if a block already exists in the index
+- **`reset()` cleanup**: Added `_unlinked_index.clear()` to properly clear the unlinked cache on reset
+
 ## Trusted Seeds Diagnostic Test
 
 The `test-trusted-seeds` option probes all configured `trusted-snapshot-peer` endpoints at startup and reports connectivity metrics, then exits. It is intended as a diagnostic tool to verify that snapshot seeds are reachable and performant before deploying a node.
