@@ -1797,7 +1797,16 @@ void snapshot_plugin::plugin_impl::accept_loop() {
 
             if (!server_running) break;
 
-            auto remote = sock_ptr->remote_endpoint();
+            // Client may disconnect immediately after accept completes, causing
+            // remote_endpoint() to throw "Transport endpoint is not connected".
+            // Handle this gracefully — just skip the connection.
+            fc::ip::endpoint remote;
+            try {
+                remote = sock_ptr->remote_endpoint();
+            } catch (...) {
+                try { sock_ptr->close(); } catch (...) {}
+                continue;
+            }
             uint32_t remote_ip = static_cast<uint32_t>(remote.get_address());
 
             // Trust enforcement
