@@ -985,6 +985,21 @@ namespace graphene { namespace chain {
 
         bool database::_push_block(const signed_block &new_block, uint32_t skip) {
             try {
+                // Early rejection: if the block is at or before our head block number
+                // and its ID matches the block on our preferred chain, it's already
+                // applied. This prevents unnecessary fork_db push attempts that would
+                // fail with unlinkable_block_exception (common after snapshot import
+                // where fork_db only contains the head block).
+                if (new_block.block_num() <= head_block_num()) {
+                    block_id_type existing_id = find_block_id_for_num(new_block.block_num());
+                    if (existing_id == new_block.id()) {
+                        ilog("Ignoring block ${n} that is already on our chain", ("n", new_block.block_num()));
+                        return false;
+                    }
+                    // Block is at or before head but on a different fork — fall through
+                    // to the normal push logic which may trigger a fork switch.
+                }
+
                 if (!(skip & skip_fork_db)) {
                     shared_ptr<fork_item> new_head = _fork_db.push_block(new_block);
                     _maybe_warn_multiple_production(new_head->num);
