@@ -1511,7 +1511,7 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
             break;
         } catch (const std::exception& e) {
             elog("Error in stalled sync check: ${e}", ("e", e.what()));
-            fc::usleep(fc::seconds(10));
+            fc::usleep(fc::seconds(5));
         }
     }
 }
@@ -1523,7 +1523,7 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
 namespace {
 
 /// Timeout for snapshot peer operations (connect, read, write)
-const fc::microseconds SNAPSHOT_PEER_TIMEOUT = fc::seconds(30);
+const fc::microseconds SNAPSHOT_PEER_TIMEOUT = fc::seconds(5);
 
 /// Read exactly `len` bytes from a tcp_socket with timeout.
 /// Returns true on success, false on timeout.
