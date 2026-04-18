@@ -712,6 +712,14 @@ public:
     fc::future<void> accept_loop_future;
     bool server_running = false;
 
+    // Dedicated thread for snapshot server fibers.
+    // fc::async() schedules fibers on fc::thread::current(), but the main thread
+    // never runs the fc fiber scheduler (it's blocked in io_serv->run()).
+    // Without a dedicated thread, accept_loop and handle_connection fibers
+    // are queued but never executed — connections hang forever.
+    // This mirrors the P2P plugin's approach (p2p_thread).
+    std::unique_ptr<fc::thread> server_thread;
+
     // Accept loop watchdog: detects and restarts dead accept loops
     fc::future<void> watchdog_future;
     std::atomic<bool> watchdog_running{false};
@@ -1775,6 +1783,11 @@ void snapshot_plugin::plugin_impl::start_server() {
 
     auto ep = fc::ip::endpoint::from_string(snapshot_serve_endpoint_str);
 
+    // Create a dedicated fc::thread for server fibers.
+    // The main thread never runs the fc fiber scheduler (it's in io_serv->run()),
+    // so fibers scheduled via fc::async() on the main thread would never execute.
+    server_thread = std::make_unique<fc::thread>("snapshot_server");
+
     tcp_srv = std::make_unique<fc::tcp_server>();
     tcp_srv->set_reuse_address();
     tcp_srv->listen(ep);
@@ -1783,13 +1796,13 @@ void snapshot_plugin::plugin_impl::start_server() {
 
     ilog(CLOG_YELLOW "Snapshot TCP server listening on ${ep}" CLOG_RESET, ("ep", snapshot_serve_endpoint_str));
 
-    accept_loop_future = fc::async([this]() {
+    accept_loop_future = server_thread->async([this]() {
         accept_loop();
     }, "snapshot_accept_loop");
 
     // Start watchdog to detect and restart dead accept loops
     watchdog_running.store(true);
-    watchdog_future = fc::async([this, ep]() {
+    watchdog_future = server_thread->async([this, ep]() {
         while (watchdog_running.load() && server_running) {
             fc::usleep(fc::seconds(WATCHDOG_CHECK_INTERVAL_SEC));
             if (!watchdog_running.load() || !server_running) break;
@@ -1828,7 +1841,7 @@ void snapshot_plugin::plugin_impl::start_server() {
                 ilog(CLOG_YELLOW "Snapshot server: accept loop restarted on ${ep}" CLOG_RESET,
                      ("ep", snapshot_serve_endpoint_str));
 
-                accept_loop_future = fc::async([this]() {
+                accept_loop_future = server_thread->async([this]() {
                     accept_loop();
                 }, "snapshot_accept_loop");
 
@@ -1851,6 +1864,12 @@ void snapshot_plugin::plugin_impl::stop_server() {
     if (accept_loop_future.valid() && !accept_loop_future.ready()) {
         accept_loop_future.cancel("shutdown");
         try { accept_loop_future.wait(); } catch (...) {}
+    }
+    // Shut down the dedicated server thread after all fibers are canceled.
+    // This ensures no fibers are still running when the thread exits.
+    if (server_thread) {
+        try { server_thread->quit(); } catch (...) {}
+        server_thread.reset();
     }
 }
 
@@ -1994,7 +2013,7 @@ void snapshot_plugin::plugin_impl::accept_loop() {
             // iteration and lives until the async fiber completes.
             auto deadline = fc::time_point::now() + fc::seconds(CONNECTION_TIMEOUT_SEC);
             try {
-                fc::async([this, sock_ptr, remote_ip, deadline]() {
+                server_thread->async([this, sock_ptr, remote_ip, deadline]() {
                     try {
                         handle_connection(*sock_ptr, deadline, remote_ip);
                     } catch (const fc::exception& e) {
