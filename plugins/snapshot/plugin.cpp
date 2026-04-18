@@ -705,7 +705,7 @@ public:
     bool test_trusted_seeds = false;
 
     // Parsed trusted IPs for server-side trust enforcement
-    std::set<uint32_t> trusted_ips;  // numeric IP addresses
+    std::set<uint32_t> trusted_ips;  // numeric IP addresses (from snapshot-serve-allow-ip)
 
     // TCP server
     std::unique_ptr<fc::tcp_server> tcp_srv;
@@ -1884,8 +1884,9 @@ void snapshot_plugin::plugin_impl::accept_loop() {
             // Trust enforcement (always active, even with anti-spam disabled)
             if (allow_snapshot_serving_only_trusted) {
                 if (trusted_ips.find(remote_ip) == trusted_ips.end()) {
-                    wlog("Snapshot server: rejected untrusted connection from ${ip}",
-                         ("ip", std::string(remote.get_address())));
+                    wlog("Snapshot server: rejected untrusted connection from ${ip} "
+                         "(not in snapshot-serve-allow-ip list, ${n} IPs allowed)",
+                         ("ip", std::string(remote.get_address()))("n", trusted_ips.size()));
                     send_access_denied(*sock_ptr, deny_untrusted);
                     try { sock_ptr->close(); } catch (...) {}
                     continue;
@@ -2755,11 +2756,15 @@ void snapshot_plugin::set_program_options(
         ("allow-snapshot-serving", bpo::value<bool>()->default_value(false),
             "Enable serving snapshots over TCP to other nodes")
         ("allow-snapshot-serving-only-trusted", bpo::value<bool>()->default_value(false),
-            "Restrict snapshot serving to trusted peers only (from trusted-snapshot-peer list)")
+            "Restrict snapshot serving to trusted IPs only (from snapshot-serve-allow-ip list)")
 ("disable-snapshot-anti-spam", bpo::value<bool>()->default_value(false),
             "Disable anti-spam checks for snapshot serving (rate limits, session limits). Use only on trusted networks.")
         ("snapshot-serve-endpoint", bpo::value<std::string>()->default_value("0.0.0.0:8092"),
             "TCP endpoint for the snapshot serving listener")
+("snapshot-serve-allow-ip", bpo::value<std::vector<std::string>>()->composing(),
+            "IP address allowed to connect for snapshot serving (used with allow-snapshot-serving-only-trusted). "
+            "Can be specified multiple times. IMPORTANT: These are the IPs of the CLIENTS that connect to you, "
+            "NOT your own IP or the IPs in trusted-snapshot-peer.")
         ("trusted-snapshot-peer", bpo::value<std::vector<std::string>>()->composing(),
             "Trusted peer endpoint for snapshot sync (IP:port). Can be specified multiple times.")
         ("sync-snapshot-from-trusted-peer", bpo::value<bool>()->default_value(false),
@@ -2842,26 +2847,44 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
 
     if (options.count("trusted-snapshot-peer")) {
         my->trusted_snapshot_peers = options.at("trusted-snapshot-peer").as<std::vector<std::string>>();
-        // Parse trusted IPs for server-side trust enforcement
-        for (const auto& peer_str : my->trusted_snapshot_peers) {
-            try {
-                auto ep = fc::ip::endpoint::from_string(peer_str);
-                my->trusted_ips.insert(static_cast<uint32_t>(ep.get_address()));
-            } catch (const fc::exception& e) {
-                wlog("Failed to parse trusted-snapshot-peer '${p}': ${e}",
-                     ("p", peer_str)("e", e.to_detail_string()));
-            }
-        }
         if (!my->trusted_snapshot_peers.empty()) {
-            ilog("Trusted snapshot peers: ${n} configured", ("n", my->trusted_snapshot_peers.size()));
+            ilog("Trusted snapshot peers: ${n} configured (for downloading snapshots FROM)",
+                 ("n", my->trusted_snapshot_peers.size()));
+        }
+    }
+
+    // Parse trusted IPs for server-side trust enforcement
+    // These are the IPs of CLIENTS that are allowed to connect and download snapshots.
+    // IMPORTANT: This is separate from trusted-snapshot-peer, which lists the servers
+    // this node connects TO as a client. The IPs here are the clients that connect to US.
+    if (options.count("snapshot-serve-allow-ip")) {
+        auto allow_ips = options.at("snapshot-serve-allow-ip").as<std::vector<std::string>>();
+        for (const auto& ip_str : allow_ips) {
+            try {
+                auto addr = fc::ip::address(ip_str);
+                my->trusted_ips.insert(static_cast<uint32_t>(addr));
+                ilog("Snapshot serve: allowed IP ${ip}", ("ip", ip_str));
+            } catch (const fc::exception& e) {
+                wlog("Failed to parse snapshot-serve-allow-ip '${p}': ${e}",
+                     ("p", ip_str)("e", e.to_detail_string()));
+            }
         }
     }
 
     if (my->allow_snapshot_serving) {
         ilog("Snapshot serving enabled on ${ep}", ("ep", my->snapshot_serve_endpoint_str));
         if (my->allow_snapshot_serving_only_trusted) {
-            ilog("Snapshot serving restricted to trusted peers only (${n} IPs)",
-                 ("n", my->trusted_ips.size()));
+            if (my->trusted_ips.empty()) {
+                elog(CLOG_RED "Snapshot serving is restricted to trusted IPs only, but NO IPs are configured! "
+                     "Set snapshot-serve-allow-ip to the IPs of clients that should be allowed to download. "
+                     "All connections will be rejected until IPs are added." CLOG_RESET);
+            } else {
+                ilog("Snapshot serving restricted to trusted IPs only (${n} IPs):",
+                     ("n", my->trusted_ips.size()));
+                for (auto ip_u32 : my->trusted_ips) {
+                    ilog("  Allowed client IP: ${ip}", ("ip", std::string(fc::ip::address(ip_u32))));
+                }
+            }
         } else {
             ilog("Snapshot serving open to anyone (public gate)");
         }
