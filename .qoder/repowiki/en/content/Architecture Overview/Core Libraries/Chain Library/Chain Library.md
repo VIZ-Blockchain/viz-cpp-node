@@ -29,6 +29,8 @@
 
 ## Update Summary
 **Changes Made**
+- Enhanced blockchain synchronization logging with new `sync_start_logged` guard variable to prevent duplicate sync start messages
+- Increased logging frequency from every 10,000 blocks to every 500 blocks during synchronization for better progress monitoring
 - Enhanced logging system documentation with ANSI yellow color codes for blockchain synchronization messages
 - Updated troubleshooting guide to include color-coded log interpretation
 - Added comprehensive logging color scheme documentation for operational visibility
@@ -41,7 +43,7 @@
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Snapshot Loading and DLT Mode](#snapshot-loading-and-dlt-mode)
-7. [Logging System and Operational Visibility](#logging-system-and-operational-visibility)
+7. [Enhanced Logging System and Operational Visibility](#enhanced-logging-system-and-operational-visibility)
 8. [Dependency Analysis](#dependency-analysis)
 9. [Performance Considerations](#performance-considerations)
 10. [Troubleshooting Guide](#troubleshooting-guide)
@@ -148,7 +150,7 @@ MAIN --> LOG
 - Evaluator System: Registry and base classes for operation processing with a standardized interface.
 - Observer Pattern: Signals for pre/post operation application, applied block, and transaction events.
 - Snapshot Plugin: Handles state restoration from snapshots and manages snapshot lifecycle.
-- Logging System: Comprehensive color-coded logging with ANSI escape sequences for enhanced operational visibility.
+- Enhanced Logging System: Comprehensive color-coded logging with ANSI escape sequences for enhanced operational visibility and progress monitoring.
 
 Key responsibilities:
 - Persistence: ChainBase-backed storage with configurable shared memory sizing and periodic revision alignment.
@@ -157,7 +159,7 @@ Key responsibilities:
 - Eventing: Notifications for plugins and observers.
 - State Restoration: Snapshot loading for rapid node startup and state recovery.
 - DLT Operations: Selective block retention for compliance and archival purposes.
-- Operational Visibility: Color-coded logging for synchronization progress and system status.
+- Operational Visibility: Color-coded logging for synchronization progress and system status with enhanced frequency monitoring.
 
 **Section sources**
 - [database.hpp:56-110](file://libraries/chain/include/graphene/chain/database.hpp#L56-L110)
@@ -176,7 +178,7 @@ The Chain Library composes several subsystems with enhanced snapshot and DLT cap
 - object model defines schema and indices
 - evaluators apply operations atomically within undo sessions
 - snapshot plugin handles state restoration and validation
-- logging system provides color-coded operational visibility
+- enhanced logging system provides color-coded operational visibility with improved synchronization monitoring
 
 ```mermaid
 sequenceDiagram
@@ -197,7 +199,7 @@ end
 loop push new fork blocks
 DB->>DB : apply_block()
 DB->>OBS : notify_applied_block()
-DB->>LOG : Emit colored sync progress
+DB->>LOG : Emit colored sync progress (every 500 blocks)
 end
 else same fork
 DB->>DB : apply_block()
@@ -634,7 +636,7 @@ Enhanced error handling during snapshot operations:
 - [plugin.cpp:391-417](file://plugins/chain/plugin.cpp#L391-L417)
 - [snapshot_plugin.cpp:1014-1032](file://plugins/snapshot/plugin.cpp#L1014-L1032)
 
-## Logging System and Operational Visibility
+## Enhanced Logging System and Operational Visibility
 
 ### Enhanced Logging Infrastructure
 The Chain Library now features a comprehensive logging system with ANSI color codes designed to improve operational visibility during blockchain synchronization and state management operations.
@@ -654,29 +656,43 @@ Blockchain synchronization messages utilize yellow color coding for enhanced vis
 - **Orange ANSI Codes**: `\033[33m` for snapshot import operations
 - **Green ANSI Codes**: `\033[92m` for successful block generation
 
+#### Enhanced Synchronization Monitoring
+**Updated** The synchronization system now includes improved monitoring with:
+
+- **Guard Variable**: `sync_start_logged` prevents duplicate sync start messages
+- **Increased Frequency**: Progress logging occurs every 500 blocks instead of every 10,000 blocks
+- **Color-Coded Progress**: Yellow messages for synchronization progress and block acceptance
+- **Comprehensive Coverage**: Both sync start and ongoing progress messages are color-coded
+
 #### Implementation Details
 The logging system leverages the FC (Fast Crypto) framework's console appender with enhanced color support:
 
 ```mermaid
 flowchart TD
-Start(["Log Message"]) --> CheckLevel{"Check Log Level"}
-CheckLevel --> |Debug| ColorGreen["Apply Green Color"]
-CheckLevel --> |Warn| ColorYellow["Apply Yellow/Brown Color"]
-CheckLevel --> |Error| ColorCyan["Apply Cyan Color"]
-ColorGreen --> Print["Print Colored Message"]
-ColorYellow --> Print
-ColorCyan --> Print
-Print --> Reset["Reset Color Code"]
+Start(["Block Processing"]) --> CheckSync{"Currently Syncing?"}
+CheckSync --> |Yes| CheckGuard{"sync_start_logged?"}
+CheckGuard --> |No| LogStart["Log Sync Start (Green)"]
+LogStart --> SetGuard["Set sync_start_logged = true"]
+SetGuard --> CheckFreq{"block_num() % 500 == 0?"}
+CheckGuard --> |Yes| CheckFreq
+CheckFreq --> |Yes| LogProgress["Log Progress (Yellow)"]
+CheckFreq --> |No| Skip["Skip Logging"]
+CheckSync --> |No| ResetGuard["Reset sync_start_logged = false"]
+ResetGuard --> Continue["Continue Processing"]
+LogProgress --> Continue
+Skip --> Continue
 ```
 
 **Diagram sources**
+- [plugin.cpp:100-113](file://plugins/chain/plugin.cpp#L100-L113)
 - [console_appender.cpp:132-154](file://thirdparty/fc/src/log/console_appender.cpp#L132-L154)
 - [main.cpp:234-253](file://programs/vizd/main.cpp#L234-L253)
 
 #### Synchronization Progress Indicators
-During blockchain synchronization, the system provides color-coded progress updates:
+During blockchain synchronization, the system provides enhanced color-coded progress updates:
 
-- **Yellow messages** indicate synchronization progress and block acceptance
+- **Green messages** indicate synchronization start (only logged once per sync session)
+- **Yellow messages** indicate synchronization progress every 500 blocks
 - **Green messages** confirm successful block generation by witnesses
 - **Orange messages** highlight snapshot import operations
 - **Default messages** show internal synchronization mechanics
@@ -689,16 +705,18 @@ The logging system supports configurable color schemes through program options:
 - Custom color configurations can be specified in logging configuration files
 
 **Section sources**
+- [plugin.cpp:58-113](file://plugins/chain/plugin.cpp#L58-L113)
 - [console_appender.cpp:132-154](file://thirdparty/fc/src/log/console_appender.cpp#L132-L154)
 - [main.cpp:234-253](file://programs/vizd/main.cpp#L234-L253)
 - [snapshot_plugin.cpp:1018-1032](file://plugins/snapshot/plugin.cpp#L1018-L1032)
 - [witness.cpp:286](file://plugins/witness/witness.cpp#L286)
 
 ### Enhanced Troubleshooting with Color Coding
-The color-coded logging system significantly improves troubleshooting capabilities:
+The enhanced color-coded logging system significantly improves troubleshooting capabilities:
 
 #### Visual Progress Tracking
-- **Yellow progress bars**: Show synchronization completion percentages
+- **Green sync start messages**: Show when synchronization begins (logged once per session)
+- **Yellow progress bars**: Show synchronization completion every 500 blocks
 - **Green confirmations**: Highlight successful operations
 - **Orange warnings**: Indicate snapshot import progress
 - **Red alerts**: Signal critical errors requiring immediate attention
@@ -714,6 +732,7 @@ The ANSI color codes provide immediate visual feedback in terminal environments:
 - Color-coded timestamps for better temporal tracking
 - Distinct color schemes for different log sources
 - Improved readability during high-volume logging scenarios
+- Guard variable prevents log spam during sync sessions
 
 **Section sources**
 - [node.cpp:3446-3456](file://libraries/network/node.cpp#L3446-L3456)
@@ -729,7 +748,7 @@ The database depends on:
 - evaluator registry for operation application
 - observer signals for event emission
 - snapshot plugin for state restoration
-- logging system for operational visibility
+- enhanced logging system for operational visibility
 
 ```mermaid
 graph LR
@@ -785,7 +804,8 @@ LOGSYS --> WITNESS["witness.cpp"]
 - Undo sessions: Use short-lived sessions to minimize rollback overhead; squash temporary sessions after successful application.
 - DLT mode optimization: Configure `_dlt_block_log_max_blocks` appropriately to balance storage requirements and performance.
 - Snapshot loading: Use snapshot mode for rapid node startup, especially for large blockchains.
-- **New**: Logging performance: Color-coded logging adds minimal overhead while significantly improving operational visibility and troubleshooting efficiency.
+- **New**: Enhanced logging performance: Color-coded logging with guard variables and increased frequency provides better operational visibility with minimal overhead while significantly improving troubleshooting efficiency.
+- **New**: Synchronization monitoring: The `sync_start_logged` guard prevents duplicate messages and reduces log volume during sync sessions.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -797,7 +817,8 @@ Common issues and remedies:
 - Snapshot import failures: Check shared_memory.bin existence and snapshot file accessibility; the system gracefully falls back to normal startup.
 - DLT mode errors: Verify DLT block log configuration and ensure sufficient disk space for rolling window retention.
 - Chain ID mismatches: Snapshot loading validates chain ID compatibility; ensure using correct snapshot for target network.
-- **New**: Color-coded log interpretation: Use yellow messages for synchronization progress, green for successful operations, orange for snapshot operations, and red for critical errors to quickly identify operational status.
+- **New**: Enhanced color-coded log interpretation: Use green messages for synchronization start (once per session), yellow messages for synchronization progress every 500 blocks, green for successful operations, orange for snapshot operations, and red for critical errors to quickly identify operational status.
+- **New**: Synchronization monitoring: The guard variable prevents duplicate sync start messages and ensures consistent progress reporting every 500 blocks.
 
 **Section sources**
 - [database.cpp:232-248](file://libraries/chain/database.cpp#L232-L248)
@@ -808,7 +829,7 @@ Common issues and remedies:
 - [snapshot_plugin.cpp:1018-1020](file://plugins/snapshot/plugin.cpp#L1018-L1020)
 
 ## Conclusion
-The Chain Library provides a robust, modular framework for blockchain state management with enhanced snapshot loading capabilities and DLT mode support. Its design separates concerns across database orchestration, fork handling, durable storage, typed object models, operation processing, and event-driven observation. The addition of snapshot loading enables rapid node startup and state restoration, while DLT mode provides selective block retention for compliance and archival purposes. The enhanced logging system with ANSI color codes significantly improves operational visibility during synchronization and troubleshooting. By leveraging ChainBase for persistence, fork_database for consensus, block_log for storage, the new DLT block log for selective retention, and comprehensive color-coded logging for operational insights, it achieves high throughput, reliability, and regulatory compliance. Developers can extend functionality via evaluators and observe state changes through signals, enabling flexible plugin architectures with enhanced operational capabilities.
+The Chain Library provides a robust, modular framework for blockchain state management with enhanced snapshot loading capabilities and DLT mode support. Its design separates concerns across database orchestration, fork handling, durable storage, typed object models, operation processing, and event-driven observation. The addition of snapshot loading enables rapid node startup and state restoration, while DLT mode provides selective block retention for compliance and archival purposes. The enhanced logging system with ANSI color codes significantly improves operational visibility during synchronization and troubleshooting, featuring guard variables to prevent duplicate messages and increased frequency monitoring for better progress tracking. By leveraging ChainBase for persistence, fork_database for consensus, block_log for storage, the new DLT block log for selective retention, and comprehensive color-coded logging for operational insights, it achieves high throughput, reliability, and regulatory compliance. Developers can extend functionality via evaluators and observe state changes through signals, enabling flexible plugin architectures with enhanced operational capabilities.
 
 ## Appendices
 
@@ -819,7 +840,7 @@ The Chain Library provides a robust, modular framework for blockchain state mana
   - **New**: Open from snapshot using `open_from_snapshot()` for rapid initialization.
 - Push block:
   - Validate block (merkle and size), push to fork database, resolve forks if needed, apply block, persist to block log, emit applied block signal.
-  - **Enhanced**: In DLT mode, selectively write irreversible blocks to DLT block log with color-coded progress updates.
+  - **Enhanced**: In DLT mode, selectively write irreversible blocks to DLT block log with color-coded progress updates every 500 blocks.
 - Push transaction:
   - Validate transaction size, apply within a pending session, record changes, and emit pending/applied transaction signals.
 - Query state:
@@ -830,8 +851,9 @@ The Chain Library provides a robust, modular framework for blockchain state mana
   - Load snapshot state via callback during startup with orange/yellow color-coded progress indicators
   - Validate snapshot integrity and chain compatibility
   - Handle snapshot file lifecycle (renaming, cleanup)
-- **New**: Color-coded logging:
-  - Yellow messages for synchronization progress and block acceptance
+- **New**: Enhanced color-coded logging:
+  - Green messages for synchronization start (logged once per session via guard variable)
+  - Yellow messages for synchronization progress every 500 blocks
   - Green messages for successful block generation
   - Orange messages for snapshot import operations
   - Red messages for error conditions
@@ -853,7 +875,7 @@ The Chain Library provides a robust, modular framework for blockchain state mana
 - **New**: Configure DLT mode: Set `_dlt_block_log_max_blocks` to balance storage and performance.
 - **New**: Optimize snapshot loading: Use appropriate snapshot files and monitor import performance with color-coded progress indicators.
 - **New**: Manage DLT storage: Regularly monitor DLT block log size and adjust retention policies.
-- **New**: Logging optimization: Color-coded logging adds minimal overhead while providing significant operational benefits.
+- **New**: Enhanced logging optimization: Color-coded logging with guard variables and increased frequency provides better operational benefits with minimal overhead.
 
 **Section sources**
 - [database.cpp:368-430](file://libraries/chain/database.cpp#L368-L430)
@@ -880,29 +902,33 @@ Usage scenarios:
 - [database.hpp:57-64](file://libraries/chain/include/graphene/chain/database.hpp#L57-L64)
 - [dlt_block_log.cpp:161-230](file://libraries/chain/dlt_block_log.cpp#L161-L230)
 
-### Color-Coded Logging Reference
-**New Section** Comprehensive reference for color-coded logging system
+### Enhanced Color-Coded Logging Reference
+**New Section** Comprehensive reference for enhanced color-coded logging system
 
 #### ANSI Color Codes Used
-- **`\033[92m`** (Green): Successful operations, block generation confirmations
+- **`\033[92m`** (Green): Successful operations, block generation confirmations, and synchronization start messages
 - **`\033[33m`** (Orange): Snapshot import operations and P2P transfer progress
-- **`\033[93m`** (Yellow): Synchronization progress, warnings, and informational messages
+- **`\033[93m`** (Yellow): Synchronization progress, warnings, and informational messages (every 500 blocks)
 - **`\033[96m`** (Cyan): Error conditions and critical failures
 - **`\033[0m`** (Reset): Reset color formatting
 
-#### Log Message Categories
-- **Synchronization Progress**: Yellow messages for block acceptance and sync progress
+#### Enhanced Log Message Categories
+- **Synchronization Start**: Green messages for sync start (logged once per session via `sync_start_logged` guard)
+- **Synchronization Progress**: Yellow messages for block acceptance and sync progress every 500 blocks
 - **Snapshot Operations**: Orange messages for import/export operations
 - **Block Generation**: Green messages for successful block production
 - **Error Conditions**: Cyan messages for critical failures
 - **Debug Information**: Default color for low-level operational details
 
-#### Terminal Compatibility
-- ANSI color codes work in Unix/Linux terminals with proper color support
-- Windows terminals may require ANSI emulation for full color support
-- Non-color terminals automatically fall back to plain text output
+#### Guard Variables and Frequency Control
+- **`sync_start_logged`**: Boolean guard variable to prevent duplicate sync start messages
+- **Logging Frequency**: Progress logging occurs every 500 blocks instead of every 10,000 blocks for better monitoring
+- **Terminal Compatibility**: ANSI color codes work in Unix/Linux terminals with proper color support
+- **Windows Compatibility**: Windows terminals may require ANSI emulation for full color support
+- **Fallback Behavior**: Non-color terminals automatically fall back to plain text output
 
 **Section sources**
+- [plugin.cpp:58-113](file://plugins/chain/plugin.cpp#L58-L113)
 - [snapshot_plugin.cpp:50-53](file://plugins/snapshot/plugin.cpp#L50-L53)
 - [console_appender.cpp:132-154](file://thirdparty/fc/src/log/console_appender.cpp#L132-L154)
 - [node.cpp:3446-3456](file://libraries/network/node.cpp#L3446-L3456)

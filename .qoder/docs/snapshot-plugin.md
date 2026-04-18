@@ -459,7 +459,7 @@ If the node has 0 blocks and no `trusted-snapshot-peer` is configured, a console
 
 ### How P2P sync works
 
-1. **Query phase**: The node connects to each trusted peer, sends a `snapshot_info_request`, and collects metadata (block number, checksum, compressed size). Progress is logged to console.
+1. **Query phase**: The node connects to each trusted peer (5-second timeout per operation: connect, send, read), sends a `snapshot_info_request`, and collects metadata (block number, checksum, compressed size). Progress is logged to console.
 2. **Selection**: Picks the peer with the highest block number.
 3. **Download phase**: Downloads the snapshot in 1 MB chunks, writing to a temp file. Download progress is printed to console every 5% (size in MB and percentage).
 4. **Verification**: Streams the downloaded file through SHA-256 to verify checksum (without loading into memory).
@@ -474,6 +474,7 @@ All operations happen during `chain::plugin_startup()`, **before** P2P and witne
 - **Trusted peer list**: Connections are only accepted from/to configured trusted peers.
 - **Anti-spam**: Rate limiting (max connections per hour per IP), max 5 concurrent connections (each in a separate fiber with mutex-protected session tracking), 60-second enforced connection deadline (checked before each I/O operation, not just post-hoc).
 - **Payload limits**: Control messages limited to 64 KB, only data replies allow up to 64 MB.
+- **Dedicated server thread**: The TCP server runs all fibers (accept loop, watchdog, connection handlers) on a dedicated `fc::thread`, ensuring they are not blocked by the main thread's `io_serv->run()` loop.
 
 ## Recommended Production Config
 
@@ -651,7 +652,7 @@ The snapshot plugin required changes to several core components:
 | `database.hpp/cpp` | Added `open_from_snapshot()`, `initialize_hardforks()`, `get_fork_db()`, `_dlt_mode` flag with `set_dlt_mode()` setter; DLT mode skips block_log writes and detects empty block_log on restart; `is_known_block()` in DLT mode checks block_summary then verifies preferred chain via `find_block_id_for_num()` (prevents both lying to peers and breaking sync negotiation); DLT restart seeds fork_db from dlt_block_log when available; early rejection in `_push_block`: duplicate blocks (at/before head, same ID), far-ahead broadcast blocks (parent unknown and not head_block_id), with immediate successor (`previous == head_block_id()`) always allowed; DLT block log gap logging via `wlog`; DLT block log empty-skip logic for fresh snapshot imports |
 | `dlt_block_log.hpp/cpp` | New class: offset-aware rolling block log with 8-byte header index, `truncate_before()` for rotation, read/write with mutex locking |
 | `chain plugin` | Added `snapshot_load_callback`, `snapshot_create_callback`, `snapshot_p2p_sync_callback`; restart safety (shared_memory check + `.used` rename + file existence check); LIB promotion after snapshot import (LIB = head_block_num for correct P2P synopsis); `dlt-block-log-max-blocks` config option; diagnostic warning when node has 0 blocks and no snapshot sync configured |
-| `snapshot plugin` | Full implementation: create/load/periodic snapshots; P2P TCP sync (serve + download with concurrent fiber handling via `fc::async`); anti-spam (rate limiting, mutex-protected session tracking, enforced per-operation connection deadline); cached snapshot info; streaming SHA-256 checksum; built-in rotation (`snapshot-max-age-days`); elapsed time logging for all operations; console progress logging for download/import; `sync-snapshot-from-trusted-peer` defaults to `false` (opt-in); auto-creates snapshot directory; periodic snapshots only trigger on live blocks (skipped during P2P sync); memory optimization: compressed data freed immediately after decompression |
+| `snapshot plugin` | Full implementation: create/load/periodic snapshots; P2P TCP sync (serve + download with concurrent fiber handling on a dedicated `fc::thread`); 5-second peer operation timeout (connect, send, read); anti-spam (rate limiting, mutex-protected session tracking, enforced per-operation connection deadline); cached snapshot info; streaming SHA-256 checksum; built-in rotation (`snapshot-max-age-days`); elapsed time logging for all operations; console progress logging for download/import; `sync-snapshot-from-trusted-peer` defaults to `false` (opt-in); auto-creates snapshot directory; periodic snapshots only trigger on live blocks (skipped during P2P sync); memory optimization: compressed data freed immediately after decompression |
 | `content_object.hpp` | Added missing `FC_REFLECT` for `content_object`, `content_type_object`, `content_vote_object` |
 | `witness_objects.hpp` | Added missing `FC_REFLECT` for `witness_vote_object` |
 | `proposal_object.hpp` | Added missing `FC_REFLECT` for `required_approval_object` |

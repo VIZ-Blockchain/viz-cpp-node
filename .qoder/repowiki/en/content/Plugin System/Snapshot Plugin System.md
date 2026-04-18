@@ -21,6 +21,8 @@
 - Implemented comprehensive snapshot access control features with detailed denial reasons
 - Enhanced snapshot creation and loading with witness-aware deferral and anti-spam protection
 - Added stalled sync detection for DLT mode with automatic snapshot re-download capabilities
+- Integrated snapshot reload functionality for automatic recovery from network partitions
+- Enhanced P2P fallback mechanisms with improved peer selection and retry logic
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -41,7 +43,7 @@ The Snapshot Plugin System is a comprehensive solution for VIZ blockchain nodes 
 
 The plugin addresses the fundamental challenge of blockchain bootstrapping by allowing nodes to jump directly to a recent state rather than replaying thousands of blocks. This is particularly crucial for VIZ's social media and content platform characteristics, where rapid deployment and scaling are essential.
 
-**Updated** The system has been enhanced with comprehensive access control mechanisms including detailed denial reasons, improved security through anti-spam protection, robust resource management for snapshot distribution services, and advanced P2P synchronization reliability features.
+**Updated** The system has been enhanced with comprehensive access control mechanisms including detailed denial reasons, improved security through anti-spam protection, robust resource management for snapshot distribution services, and advanced P2P synchronization reliability features. The recent additions include DLT mode integration with rolling block log support, stalled sync detection for automatic recovery, and enhanced P2P fallback mechanisms.
 
 ## Project Structure
 
@@ -104,7 +106,7 @@ The plugin implements a custom TCP protocol for peer-to-peer snapshot distributi
 #### Database Integration Layer
 Deep integration with the VIZ blockchain database ensures seamless state transitions and maintains consistency during snapshot operations.
 
-**Updated** The modular architecture provides enhanced extensibility and maintainability through clear separation of concerns between interface, serialization, network, and database components.
+**Updated** The modular architecture provides enhanced extensibility and maintainability through clear separation of concerns between interface, serialization, network, and database components. The recent additions include DLT mode support, stalled sync detection, and improved P2P fallback mechanisms.
 
 **Section sources**
 - [plugin.hpp:42-76](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L42-L76)
@@ -156,7 +158,7 @@ V --> W[Snapshot Files]
 end
 ```
 
-**Updated** The architecture emphasizes separation of concerns with clear boundaries between serialization, networking, database operations, and security controls. The modular design enables independent development and testing of each component while maintaining system coherence.
+**Updated** The architecture emphasizes separation of concerns with clear boundaries between serialization, networking, database operations, and security controls. The modular design enables independent development and testing of each component while maintaining system coherence. Recent enhancements include DLT mode integration, stalled sync detection, and improved P2P fallback mechanisms.
 
 **Diagram sources**
 - [plugin.cpp:675-780](file://plugins/snapshot/plugin.cpp#L675-L780)
@@ -195,7 +197,7 @@ FileSys-->>Plugin : success
 Plugin-->>CLI : completion_status
 ```
 
-**Updated** The creation process handles over 30 different object types, from critical singleton objects to optional metadata. Each object type receives specialized treatment based on its memory layout and data structure complexity, demonstrating the modular architecture's flexibility.
+**Updated** The creation process handles over 30 different object types, from critical singleton objects to optional metadata. Each object type receives specialized treatment based on its memory layout and data structure complexity, demonstrating the modular architecture's flexibility. The recent enhancements include witness-aware deferral to prevent missed block production slots and improved anti-spam protection.
 
 **Diagram sources**
 - [plugin.cpp:885-987](file://plugins/snapshot/plugin.cpp#L885-L987)
@@ -223,7 +225,7 @@ SetRevision --> SeedForkDB["Seed Fork Database"]
 SeedForkDB --> Complete([Load Complete])
 ```
 
-**Updated** The loading process includes extensive validation steps to ensure data integrity and compatibility with the current node configuration, showcasing the robustness of the modular design.
+**Updated** The loading process includes extensive validation steps to ensure data integrity and compatibility with the current node configuration, showcasing the robustness of the modular design. Recent improvements include enhanced LIB promotion for DLT mode and improved fork database seeding for reliable P2P synchronization.
 
 **Diagram sources**
 - [plugin.cpp:1046-1288](file://plugins/snapshot/plugin.cpp#L1046-L1288)
@@ -271,7 +273,7 @@ end
 Note over Client,Server : Connection Closed
 ```
 
-**Updated** The protocol includes sophisticated anti-spam protection mechanisms, trust enforcement, and detailed denial reasons. The security layer provides comprehensive access control with specific reason codes for different violation types.
+**Updated** The protocol includes sophisticated anti-spam protection mechanisms, trust enforcement, and detailed denial reasons. The security layer provides comprehensive access control with specific reason codes for different violation types. Recent enhancements include improved peer selection algorithms and enhanced retry logic for automatic recovery.
 
 **Diagram sources**
 - [plugin.cpp:1902-2038](file://plugins/snapshot/plugin.cpp#L1902-L2038)
@@ -294,6 +296,7 @@ The plugin supports extensive configuration through both command-line arguments 
 | `enable-stalled-sync-detection` | bool | false | Auto-detect stalled sync |
 | `stalled-sync-timeout-minutes` | uint32 | 5 | Timeout for stalled sync |
 | `test-trusted-seeds` | bool | false | Test trusted peers connectivity |
+| `dlt-block-log-max-blocks` | uint32 | 100000 | Rolling DLT block log window |
 
 **Section sources**
 - [plugin.cpp:2473-2510](file://plugins/snapshot/plugin.cpp#L2473-L2510)
@@ -365,7 +368,7 @@ The access control system implements multiple anti-spam mechanisms:
 
 ## Integration with Chain Plugin
 
-**Updated** The snapshot plugin has been integrated with the chain plugin through a sophisticated callback system that enables programmatic state restoration:
+**Updated** The snapshot plugin has been integrated with the chain plugin through a sophisticated callback system that enables programmatic state restoration and enhanced P2P synchronization.
 
 The integration works through three key callback mechanisms registered during plugin initialization:
 
@@ -394,7 +397,7 @@ Chain->>Chain : Continue normal startup
 The snapshot plugin registers a callback that executes during chain plugin startup to create snapshots after full database load, ensuring proper state capture.
 
 ### P2P Snapshot Sync Callback
-For nodes with empty state, the snapshot plugin registers a callback that downloads and loads snapshots from trusted peers before normal P2P synchronization begins.
+For nodes with empty state, the snapshot plugin registers a callback that downloads and loads snapshots from trusted peers before normal P2P synchronization begins. **Enhanced** with automatic retry logic and improved peer selection algorithms.
 
 **Section sources**
 - [plugin.cpp:2598-2680](file://plugins/snapshot/plugin.cpp#L2598-L2680)
@@ -430,7 +433,7 @@ N --> P[Shared Library]
 end
 ```
 
-**Updated** The dependency graph reveals a clean separation between core blockchain functionality and plugin-specific features. The plugin relies on established VIZ infrastructure while maintaining independence from external systems, demonstrating the benefits of the modular architecture.
+**Updated** The dependency graph reveals a clean separation between core blockchain functionality and plugin-specific features. The plugin relies on established VIZ infrastructure while maintaining independence from external systems, demonstrating the benefits of the modular architecture. Recent enhancements include improved DLT mode dependencies and enhanced P2P integration.
 
 **Diagram sources**
 - [CMakeLists.txt:27-38](file://plugins/snapshot/CMakeLists.txt#L27-L38)
@@ -462,7 +465,7 @@ The snapshot plugin implements several performance optimization strategies throu
 - Efficient object copying mechanisms handle complex data structures
 - Automatic cleanup of temporary files and resources
 
-**Updated** The modular architecture enhances performance by enabling independent optimization of each layer while maintaining system cohesion. The access control mechanisms are designed to minimize performance impact while providing comprehensive security.
+**Updated** The modular architecture enhances performance by enabling independent optimization of each layer while maintaining system cohesion. The access control mechanisms are designed to minimize performance impact while providing comprehensive security. Recent improvements include DLT mode optimizations and enhanced P2P synchronization performance.
 
 ### Security Performance Considerations
 - Access control checks are performed efficiently using hash maps for IP lookups
@@ -532,6 +535,11 @@ The snapshot plugin implements several performance optimization strategies throu
 - **Cause**: Previous fork database implementation issues
 - **Solution**: Update to latest version with bug fixes
 
+**Automatic Recovery from Network Partitions**
+- **Symptom**: Node cannot sync due to network partition
+- **Cause**: Peers no longer have required blocks
+- **Solution**: Enable stalled sync detection with automatic snapshot re-download
+
 ### Diagnostic Tools
 
 The plugin includes comprehensive diagnostic capabilities:
@@ -541,7 +549,7 @@ The plugin includes comprehensive diagnostic capabilities:
 - **Progress Monitoring**: Real-time feedback during long-running operations
 - **Access Control Logging**: Detailed logs for denial reasons and security events
 
-**Updated** The modular architecture provides enhanced diagnostic capabilities through separate layers for serialization, networking, database operations, and security controls, enabling more precise troubleshooting.
+**Updated** The modular architecture provides enhanced diagnostic capabilities through separate layers for serialization, networking, database operations, and security controls, enabling more precise troubleshooting. Recent improvements include enhanced P2P fallback diagnostics and improved stalled sync detection monitoring.
 
 **Section sources**
 - [plugin.cpp:2294-2464](file://plugins/snapshot/plugin.cpp#L2294-L2464)
@@ -551,10 +559,10 @@ The plugin includes comprehensive diagnostic capabilities:
 
 The Snapshot Plugin System represents a sophisticated solution for blockchain state synchronization that significantly improves the VIZ node bootstrapping experience. Through careful architectural design, comprehensive feature coverage, and robust error handling, it enables efficient deployment and scaling of VIZ-based applications.
 
-**Updated** The recent enhancement with comprehensive access control mechanisms including detailed denial reasons has significantly improved the security and resource management capabilities of the snapshot distribution services. The system now provides robust protection against abuse while maintaining efficient operation.
+**Updated** The recent enhancement with comprehensive access control mechanisms including detailed denial reasons has significantly improved the security and resource management capabilities of the snapshot distribution services. The system now provides robust protection against abuse while maintaining efficient operation. The addition of DLT mode integration, stalled sync detection, automatic recovery capabilities, and improved P2P fallback mechanisms makes it an essential component for modern VIZ blockchain deployments.
 
 Key strengths of the system include its modular architecture, extensive configuration options, built-in performance optimizations, and comprehensive security features. The plugin seamlessly integrates with existing VIZ infrastructure while providing powerful new capabilities for state management and peer-to-peer synchronization.
 
 The implementation demonstrates best practices in blockchain plugin development, including proper resource management, error handling, user experience considerations, and security through layered access control. The modular design enables independent development and testing of each component while maintaining system coherence, representing a significant advancement in extensibility and maintainability.
 
-Future enhancements could focus on additional compression algorithms, enhanced security features, expanded monitoring capabilities, and more sophisticated access control policies, leveraging the solid foundation provided by the modular architecture with comprehensive access control mechanisms.
+Future enhancements could focus on additional compression algorithms, enhanced security features, expanded monitoring capabilities, and more sophisticated access control policies, leveraging the solid foundation provided by the modular architecture with comprehensive access control mechanisms and DLT mode integration.
