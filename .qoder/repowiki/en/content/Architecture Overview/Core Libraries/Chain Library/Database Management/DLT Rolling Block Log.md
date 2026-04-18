@@ -10,16 +10,18 @@
 - [database.hpp](file://libraries/chain/include/graphene/chain/database.hpp)
 - [snapshot_plugin.cpp](file://plugins/snapshot/plugin.cpp)
 - [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
+- [fork_database.cpp](file://libraries/chain/fork_database.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Implemented comprehensive memory safety improvements replacing unsafe uint64_t pointer casting with std::memcpy operations throughout the DLT block log implementation
-- Added sophisticated crash recovery mechanisms with .bak file restoration for atomic file operations during truncation
-- Enhanced cross-platform compatibility through standardized file operations and memory-mapped file handling
-- Strengthened error handling with FC_ASSERT and FC_THROW_EXCEPTION macros for robust validation
-- Improved file recovery procedures with automatic cleanup of stale temporary files
-- Enhanced P2P fallback mechanisms with detailed logging and graceful error handling for DLT mode scenarios
+- Enhanced DLT mode fork database seeding functionality that automatically seeds fork database from dlt_block_log when chain starts from fresh snapshot import
+- Improved block availability checking logic with enhanced DLT mode support and better error handling
+- Strengthened error handling for DLT mode operations with graceful fallback mechanisms
+- Enhanced P2P fallback mechanisms with detailed logging and improved block serving capabilities
+- Improved fork database integration with DLT mode operations and automatic seed detection
+- Added stalled sync detection for DLT nodes to automatically detect and recover from stalled P2P sync
+- Enhanced snapshot plugin integration with DLT mode support and improved error handling
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -35,8 +37,11 @@
 11. [Dependency Analysis](#dependency_analysis)
 12. [Performance Considerations](#performance-considerations)
 13. [Enhanced Error Handling and Fallback Mechanisms](#enhanced-error-handling-and-fallback-mechanisms)
-14. [Troubleshooting Guide](#troubleshooting-guide)
-15. [Conclusion](#conclusion)
+14. [DLT Mode Fork Database Seeding](#dlt-mode-fork-database-seeding)
+15. [Enhanced Block Availability Checking](#enhanced-block-availability-checking)
+16. [Stalled Sync Detection for DLT Nodes](#stalled-sync-detection-for-dlt-nodes)
+17. [Troubleshooting Guide](#troubleshooting-guide)
+18. [Conclusion](#conclusion)
 
 ## Introduction
 This document explains the comprehensive DLT (Data Ledger Technology) Rolling Block Log implementation used by VIZ blockchain nodes to maintain a sliding window of recent irreversible blocks with selective retention policies and automatic pruning capabilities. The DLT mode provides advanced support for snapshot-based nodes, enabling efficient serving of recent blocks to P2P peers while maintaining configurable retention windows and automated cleanup mechanisms. Recent enhancements include critical memory safety improvements replacing unsafe pointer casts with std::memcpy operations, comprehensive crash recovery mechanisms with .bak file restoration, enhanced cross-platform compatibility, and strengthened validation logic throughout the implementation.
@@ -50,6 +55,7 @@ subgraph "Chain Layer"
 DLT["dlt_block_log.hpp/.cpp"]
 BL["block_log.cpp"]
 DB["database.cpp"]
+FD["fork_database.cpp"]
 END
 subgraph "Plugins"
 CP["plugins/chain/plugin.cpp"]
@@ -64,7 +70,9 @@ SP --> DB
 PP --> DB
 DB --> DLT
 DB --> BL
+DB --> FD
 DLT -.-> BL
+FD -.-> DB
 CP --> DH
 SP --> DH
 PP --> DH
@@ -75,6 +83,7 @@ PP --> DH
 - [dlt_block_log.cpp:1-454](file://libraries/chain/dlt_block_log.cpp#L1-L454)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [database.cpp:220-271](file://libraries/chain/database.cpp#L220-L271)
+- [fork_database.cpp:1-258](file://libraries/chain/fork_database.cpp#L1-L258)
 - [plugin.cpp:320-330](file://plugins/chain/plugin.cpp#L320-L330)
 - [database.hpp:60-70](file://libraries/chain/include/graphene/chain/database.hpp#L60-L70)
 - [snapshot_plugin.cpp:1960-2039](file://plugins/snapshot/plugin.cpp#L1960-L2039)
@@ -85,6 +94,7 @@ PP --> DH
 - [dlt_block_log.cpp:1-454](file://libraries/chain/dlt_block_log.cpp#L1-L454)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [database.cpp:220-271](file://libraries/chain/database.cpp#L220-L271)
+- [fork_database.cpp:1-258](file://libraries/chain/fork_database.cpp#L1-L258)
 - [plugin.cpp:320-330](file://plugins/chain/plugin.cpp#L320-L330)
 - [database.hpp:60-70](file://libraries/chain/include/graphene/chain/database.hpp#L60-L70)
 - [snapshot_plugin.cpp:1960-2039](file://plugins/snapshot/plugin.cpp#L1960-L2039)
@@ -93,17 +103,19 @@ PP --> DH
 ## Core Components
 - **DLT Rolling Block Log API**: Provides comprehensive methods for opening/closing, appending blocks, selective reading by block number, querying head/start/end indices, and intelligent truncation with retention policies.
 - **Advanced Memory-Safe Implementation**: Manages sophisticated memory-mapped files for data and offset-aware index storage using std::memcpy operations instead of unsafe pointer casts, maintains head state with automatic validation, reconstructs indexes when inconsistencies are detected, and performs safe truncation with temporary files and atomic operations.
-- **Integrated Database System**: Seamlessly opens both DLT rolling block log and primary block log during normal and snapshot modes, implements fallback block retrieval when primary block log is empty, and coordinates DLT mode detection and operation with enhanced error handling.
+- **Integrated Database System**: Seamlessly opens both DLT rolling block log and primary block log during normal and snapshot modes, implements fallback block retrieval when primary block log is empty, coordinates DLT mode detection and operation with enhanced error handling, and includes automatic fork database seeding functionality.
+- **Enhanced Fork Database Integration**: Provides sophisticated fork database management with automatic seeding from DLT block log, improved block availability checking logic, and enhanced P2P fallback mechanisms.
 - **Comprehensive Chain Plugin Configuration**: Exposes runtime options for configuring maximum blocks to retain, selective retention policies, and automatic pruning thresholds with flexible parameter management.
 - **Enhanced Snapshot Plugin Integration**: Provides improved block verification, checksum validation, and seamless transition to DLT mode after snapshot import with enhanced error handling.
 - **Improved P2P Fallback Mechanisms**: Implements graceful fallback from primary block log to DLT rolling block log with detailed error reporting and logging for DLT mode scenarios.
+- **Stalled Sync Detection**: Implements automatic detection and recovery from stalled P2P sync for DLT nodes, with configurable timeout settings and automatic snapshot reload capabilities.
 
 **Enhanced Key Capabilities**:
 - Offset-aware index layout supporting arbitrary start block numbers with intelligent retention policies
 - Append-only storage with position checks ensuring sequential integrity and selective block management
 - Automatic index reconstruction with conflict resolution and selective retention enforcement
 - Safe truncation with temporary files, atomic swapping, and intelligent pruning based on configured limits
-- Comprehensive DLT mode support with fallback mechanisms and selective block serving
+- Comprehensive DLT mode support with automatic fork database seeding and fallback mechanisms
 - Enhanced block identification and verification during snapshot operations
 - Improved error handling and validation for DLT mode operations
 - Graceful fallback mechanisms with detailed logging for P2P block serving operations
@@ -111,14 +123,19 @@ PP --> DH
 - **Critical Memory Safety Improvements**: Replaced all unsafe uint64_t pointer casts with std::memcpy operations for cross-platform compatibility
 - **Comprehensive Crash Recovery**: Implemented .bak file restoration mechanisms for atomic file operations during truncation
 - **Enhanced Cross-Platform Compatibility**: Standardized file operations and memory-mapped file handling across platforms
+- **Automatic Fork Database Seeding**: Enhanced DLT mode fork database seeding functionality that automatically seeds fork database from dlt_block_log when chain starts from fresh snapshot import
+- **Improved Block Availability Checking**: Enhanced block availability checking logic with better DLT mode support and error handling
+- **Stalled Sync Detection**: Automatic detection and recovery from stalled P2P sync with configurable timeouts and snapshot reload capabilities
 
 **Section sources**
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
 - [dlt_block_log.cpp:18-278](file://libraries/chain/dlt_block_log.cpp#L18-L278)
 - [database.cpp:230-231](file://libraries/chain/database.cpp#L230-L231)
+- [fork_database.cpp:24-28](file://libraries/chain/fork_database.cpp#L24-L28)
 - [plugin.cpp:327-329](file://plugins/chain/plugin.cpp#L327-L329)
 - [snapshot_plugin.cpp:1968-1970](file://plugins/snapshot/plugin.cpp#L1968-L1970)
 - [p2p_plugin.cpp:265-272](file://plugins/p2p/p2p_plugin.cpp#L265-L272)
+- [snapshot_plugin.cpp:1414-1500](file://plugins/snapshot/plugin.cpp#L1414-L1500)
 
 ## Architecture Overview
 The DLT rolling block log operates in conjunction with the primary block log, providing comprehensive support for snapshot-based nodes with selective retention policies and automatic pruning. During normal operation, the database opens both logs and validates them. In DLT mode (after snapshot import), the primary block log remains empty while the database holds state; the DLT rolling block log serves as a fallback with intelligent retention management and enhanced block verification. The P2P layer now includes improved error handling with graceful fallback mechanisms and detailed logging for DLT mode scenarios.
@@ -132,6 +149,7 @@ participant SP as "Snapshot Plugin"
 participant PP as "P2P Plugin"
 participant DLT as "DLT Block Log"
 participant BL as "Block Log"
+participant FD as "Fork Database"
 App->>Chain : Start node
 Chain->>DB : open(data_dir, ...)
 DB->>BL : open("block_log")
@@ -141,6 +159,7 @@ DB->>DB : validate against chain state
 else Empty block log (DLT mode)
 DB->>DB : set _dlt_mode=true
 DB->>DB : skip block log validation
+DB->>FD : seed from dlt_block_log head
 end
 App->>DB : fetch_block_by_number(n)
 DB->>BL : read_block_by_num(n)
@@ -170,6 +189,7 @@ DB-->>App : block
 - [dlt_block_log.cpp:313-328](file://libraries/chain/dlt_block_log.cpp#L313-L328)
 - [snapshot_plugin.cpp:1968-1970](file://plugins/snapshot/plugin.cpp#L1968-L1970)
 - [p2p_plugin.cpp:259-286](file://plugins/p2p/p2p_plugin.cpp#L259-L286)
+- [fork_database.cpp:24-28](file://libraries/chain/fork_database.cpp#L24-L28)
 
 ## Detailed Component Analysis
 
@@ -291,7 +311,7 @@ Cleanup --> TEnd([Complete])
 - [dlt_block_log.cpp:356-411](file://libraries/chain/dlt_block_log.cpp#L356-L411)
 
 ### Integrated Database Operations
-The database seamlessly integrates DLT block log alongside block_log.cpp, coordinating fallback retrieval, DLT mode detection, selective retention enforcement, and automatic pruning with comprehensive state management and enhanced error handling.
+The database seamlessly integrates DLT block log alongside block_log.cpp, coordinating fallback retrieval, DLT mode detection, selective retention enforcement, automatic pruning with comprehensive state management and enhanced error handling.
 
 ```mermaid
 sequenceDiagram
@@ -305,6 +325,7 @@ DB->>DB : validate chain state
 else Empty BL (DLT mode)
 DB->>DB : set _dlt_mode=true
 DB->>DB : skip validation
+DB->>DB : seed fork_db from dlt_block_log
 end
 DB->>DLT : read_block_by_num(n) (fallback)
 DB->>DB : check retention limits
@@ -316,10 +337,12 @@ end
 **Diagram sources**
 - [database.cpp:230-268](file://libraries/chain/database.cpp#L230-L268)
 - [database.cpp:560-627](file://libraries/chain/database.cpp#L560-L627)
+- [database.cpp:266-292](file://libraries/chain/database.cpp#L266-L292)
 
 **Section sources**
 - [database.cpp:230-268](file://libraries/chain/database.cpp#L230-L268)
 - [database.cpp:560-627](file://libraries/chain/database.cpp#L560-L627)
+- [database.cpp:266-292](file://libraries/chain/database.cpp#L266-L292)
 
 ### Enhanced Snapshot Plugin Integration
 The snapshot plugin provides comprehensive integration with DLT mode operations, including improved block verification, checksum validation, and seamless transition to DLT mode after snapshot import with enhanced error handling.
@@ -330,10 +353,14 @@ The snapshot plugin provides comprehensive integration with DLT mode operations,
 - Seamless transition to DLT mode with proper state initialization
 - Better integration with database layer for DLT mode operations
 - Enhanced fallback mechanisms for block verification and serving
+- Stalled sync detection for automatic recovery from stalled P2P sync
+- Automatic snapshot reload capabilities with DLT mode support
 
 **Section sources**
 - [snapshot_plugin.cpp:1968-1970](file://plugins/snapshot/plugin.cpp#L1968-L1970)
 - [snapshot_plugin.cpp:942-1054](file://plugins/snapshot/plugin.cpp#L942-L1054)
+- [snapshot_plugin.cpp:1414-1500](file://plugins/snapshot/plugin.cpp#L1414-L1500)
+- [snapshot_plugin.cpp:2790-2791](file://plugins/snapshot/plugin.cpp#L2790-L2791)
 
 ## Memory Safety and Cross-Platform Enhancements
 
@@ -472,12 +499,14 @@ The DLT rolling block log implementation has comprehensive dependencies across m
 - plugin.cpp configures DLT rolling block log with runtime parameter management and validation
 - snapshot_plugin.cpp provides enhanced integration with DLT mode operations and block verification
 - p2p_plugin.cpp implements enhanced error handling and graceful fallback mechanisms for DLT mode scenarios
+- fork_database.cpp provides enhanced fork database management with automatic seeding capabilities
 
 ```mermaid
 graph LR
 DLT_H["dlt_block_log.hpp"] --> DLT_CPP["dlt_block_log.cpp"]
 DLT_CPP --> BL_CPP["block_log.cpp"]
 DLT_CPP --> DB_CPP["database.cpp"]
+DLT_CPP --> FD_CPP["fork_database.cpp"]
 CP_CPP["plugins/chain/plugin.cpp"] --> DB_CPP
 SP_CPP["plugins/snapshot/plugin.cpp"] --> DB_CPP
 PP_CPP["plugins/p2p/p2p_plugin.cpp"] --> DB_CPP
@@ -489,6 +518,7 @@ DB_CPP --> DH_HPP["database.hpp"]
 - [dlt_block_log.cpp:1-7](file://libraries/chain/dlt_block_log.cpp#L1-L7)
 - [block_log.cpp:1-6](file://libraries/chain/block_log.cpp#L1-L6)
 - [database.cpp:1-10](file://libraries/chain/database.cpp#L1-L10)
+- [fork_database.cpp:1-6](file://libraries/chain/fork_database.cpp#L1-L6)
 - [plugin.cpp:1-10](file://plugins/chain/plugin.cpp#L1-L10)
 - [snapshot_plugin.cpp:1960-2039](file://plugins/snapshot/plugin.cpp#L1960-L2039)
 - [p2p_plugin.cpp:1-10](file://plugins/p2p/p2p_plugin.cpp#L1-L10)
@@ -499,6 +529,7 @@ DB_CPP --> DH_HPP["database.hpp"]
 - [dlt_block_log.cpp:1-7](file://libraries/chain/dlt_block_log.cpp#L1-L7)
 - [block_log.cpp:1-6](file://libraries/chain/block_log.cpp#L1-L6)
 - [database.cpp:1-10](file://libraries/chain/database.cpp#L1-L10)
+- [fork_database.cpp:1-6](file://libraries/chain/fork_database.cpp#L1-L6)
 - [plugin.cpp:1-10](file://plugins/chain/plugin.cpp#L1-L10)
 - [snapshot_plugin.cpp:1960-2039](file://plugins/snapshot/plugin.cpp#L1960-L2039)
 - [p2p_plugin.cpp:1-10](file://plugins/p2p/p2p_plugin.cpp#L1-L10)
@@ -536,16 +567,19 @@ CheckBL --> HasHead{"Head block present?"}
 HasHead --> |Yes| ValidateState["Validate chain state"]
 HasHead --> |No| SetDLT["Set DLT mode"]
 SetDLT --> SkipValidation["Skip block log validation"]
-SkipValidation --> LogDLT["Log DLT mode activation"]
+SkipValidation --> SeedForkDB["Seed fork_db from dlt_block_log"]
+SeedForkDB --> LogDLT["Log DLT mode activation"]
 LogDLT --> Ready["Ready for DLT operations"]
 ```
 
 **Diagram sources**
 - [database.cpp:250-271](file://libraries/chain/database.cpp#L250-L271)
+- [database.cpp:266-292](file://libraries/chain/database.cpp#L266-L292)
 
 **Section sources**
 - [database.cpp:259-268](file://libraries/chain/database.cpp#L259-L268)
 - [database.cpp:262-267](file://libraries/chain/database.cpp#L262-L267)
+- [database.cpp:266-292](file://libraries/chain/database.cpp#L266-L292)
 
 ### Enhanced P2P Fallback Implementation
 The P2P plugin now includes significantly enhanced error handling specifically designed for DLT mode scenarios. When serving blocks to peers in DLT mode, the system gracefully handles cases where block data may not be available for certain ranges, providing detailed logging and appropriate error responses with comprehensive error reporting.
@@ -622,6 +656,147 @@ The DLT block log implementation now includes enhanced validation logic with com
 - [dlt_block_log.cpp:241-249](file://libraries/chain/dlt_block_log.cpp#L241-L249)
 - [dlt_block_log.cpp:320-325](file://libraries/chain/dlt_block_log.cpp#L320-L325)
 
+## DLT Mode Fork Database Seeding
+
+### Automatic Fork Database Seeding Functionality
+The DLT mode now includes sophisticated automatic fork database seeding functionality that enhances P2P synchronization capabilities. When the database detects DLT mode (empty block log with existing chain state), it attempts to seed the fork database from the DLT block log head, enabling immediate P2P synchronization.
+
+**Enhanced Fork Database Seeding Features**:
+- Automatic detection of DLT mode conditions during database initialization
+- Intelligent validation of DLT block log head against current chain state
+- Conditional seeding of fork database when DLT block log covers the head block
+- Graceful fallback to minimal fork database entry when DLT block log is incomplete
+- Comprehensive logging of seeding operations and their outcomes
+- Enhanced P2P synchronization capabilities through proper fork database state
+
+```mermaid
+flowchart TD
+DLTMode["DLT Mode Detected"] --> CheckHead["Check DLT Block Log Head"]
+CheckHead --> ValidHead{"Head Block Valid?"}
+ValidHead --> |Yes| CheckMatch["Check Block ID Match"]
+CheckMatch --> |Match| SeedForkDB["Seed Fork Database from DLT Head"]
+CheckMatch --> |No| MinimalEntry["Create Minimal Fork Entry"]
+ValidHead --> |No| MinimalEntry
+SeedForkDB --> LogSuccess["Log Successful Seeding"]
+MinimalEntry --> LogFallback["Log Fallback Behavior"]
+LogSuccess --> Ready["P2P Sync Ready"]
+LogFallback --> Ready
+```
+
+**Diagram sources**
+- [database.cpp:266-292](file://libraries/chain/database.cpp#L266-L292)
+
+**Section sources**
+- [database.cpp:266-292](file://libraries/chain/database.cpp#L266-L292)
+
+### Enhanced Fork Database Integration
+The fork database now integrates more closely with DLT mode operations, providing automatic seeding capabilities and improved block availability checking logic. The fork database can be seeded from DLT block log data or created as minimal entries for P2P synchronization.
+
+**Enhanced Fork Database Features**:
+- Automatic seeding from DLT block log head when available
+- Minimal fork database entries for P2P synchronization in DLT mode
+- Improved block availability checking with DLT mode awareness
+- Enhanced error handling for fork database operations
+- Better integration with DLT block log for seamless operation
+
+**Section sources**
+- [fork_database.cpp:24-28](file://libraries/chain/fork_database.cpp#L24-L28)
+- [database.cpp:266-292](file://libraries/chain/database.cpp#L266-L292)
+
+## Enhanced Block Availability Checking
+
+### Improved DLT Mode Block Availability Logic
+The block availability checking logic has been significantly enhanced to provide better support for DLT mode operations. The system now uses block_summary objects as hints and verifies block availability against the preferred chain, with special handling for DLT mode scenarios.
+
+**Enhanced Block Availability Features**:
+- DLT mode-aware block availability checking with improved logic
+- Block summary object verification for faster block existence checks
+- Preferred chain verification to ensure blocks are part of the main chain
+- Enhanced error handling for DLT mode block availability issues
+- Improved fallback mechanisms for block retrieval operations
+
+```mermaid
+flowchart TD
+CheckAvailability["Check Block Availability"] --> CheckDLTMode{"In DLT Mode?"}
+CheckDLTMode --> |No| NormalCheck["Standard Block Summary Check"]
+CheckDLTMode --> |Yes| DLTCheck["DLT Mode Block Summary Check"]
+NormalCheck --> VerifyBlock["Verify Block Exists"]
+DLTCheck --> VerifySummary["Verify Block Summary"]
+VerifySummary --> VerifyChain["Verify Preferred Chain"]
+VerifyChain --> FinalResult["Return Availability Result"]
+VerifyBlock --> FinalResult
+```
+
+**Diagram sources**
+- [database.cpp:560-595](file://libraries/chain/database.cpp#L560-L595)
+
+**Section sources**
+- [database.cpp:560-595](file://libraries/chain/database.cpp#L560-L595)
+
+### Enhanced Block Retrieval Chain
+The block retrieval chain has been improved to provide better fallback mechanisms and error handling. The system now follows a more sophisticated chain of fallbacks: fork database → block log → DLT block log → error, with enhanced validation at each step.
+
+**Enhanced Block Retrieval Features**:
+- Improved block retrieval chain with better error handling
+- Enhanced validation of block IDs at each stage
+- Better integration between fork database and DLT block log
+- Improved error reporting for block retrieval failures
+- Enhanced fallback mechanisms for different block sources
+
+**Section sources**
+- [database.cpp:656-697](file://libraries/chain/database.cpp#L656-L697)
+
+## Stalled Sync Detection for DLT Nodes
+
+### Automatic Stalled Sync Detection and Recovery
+The snapshot plugin now includes sophisticated stalled sync detection capabilities specifically designed for DLT nodes. This feature automatically monitors P2P sync progress and can detect when the node becomes stalled, triggering automatic recovery mechanisms.
+
+**Stalled Sync Detection Features**:
+- Configurable timeout settings for detecting stalled P2P sync
+- Automatic detection of no block reception for extended periods
+- Integration with trusted peer network for automatic snapshot reload
+- Graceful recovery through snapshot reload without manual intervention
+- Comprehensive logging of stalled sync events and recovery actions
+- Automatic restart of sync detection after recovery
+
+```mermaid
+flowchart TD
+StartSync["Start P2P Sync"] --> Monitor["Monitor Block Reception"]
+Monitor --> ReceiveBlock["Receive Block"]
+ReceiveBlock --> UpdateTimer["Update Last Block Time"]
+UpdateTimer --> Monitor
+Monitor --> Stalled{"Stalled Timeout Reached?"}
+Stalled --> |No| Monitor
+Stalled --> |Yes| CheckPeers["Query Trusted Peers for Newer Snapshot"]
+CheckPeers --> NewSnapshot{"Newer Snapshot Available?"}
+NewSnapshot --> |No| ContinueSync["Continue P2P Sync"]
+NewSnapshot --> |Yes| ReloadSnapshot["Reload Snapshot and Enable DLT Mode"]
+ReloadSnapshot --> RestartDetection["Restart Stalled Sync Detection"]
+ContinueSync --> Monitor
+```
+
+**Diagram sources**
+- [snapshot_plugin.cpp:1435-1500](file://plugins/snapshot/plugin.cpp#L1435-L1500)
+- [snapshot_plugin.cpp:2790-2791](file://plugins/snapshot/plugin.cpp#L2790-L2791)
+
+**Section sources**
+- [snapshot_plugin.cpp:1414-1500](file://plugins/snapshot/plugin.cpp#L1414-L1500)
+- [snapshot_plugin.cpp:2790-2791](file://plugins/snapshot/plugin.cpp#L2790-L2791)
+
+### Enhanced Configuration Options
+The stalled sync detection system provides comprehensive configuration options for operators to tune the behavior according to their network conditions and requirements.
+
+**Configuration Options**:
+- `enable-stalled-sync-detection`: Enable/disable stalled sync detection (default: false)
+- `stalled-sync-timeout-minutes`: Timeout period before considering sync stalled (default: 5 minutes)
+- Integration with trusted peer network for automatic snapshot discovery
+- Automatic snapshot reload without manual intervention
+- Comprehensive logging and monitoring capabilities
+
+**Section sources**
+- [snapshot_plugin.cpp:2691-2696](file://plugins/snapshot/plugin.cpp#L2691-L2696)
+- [snapshot_plugin.cpp:2863-2866](file://plugins/snapshot/plugin.cpp#L2863-L2866)
+
 ## Troubleshooting Guide
 Comprehensive troubleshooting guidance for DLT-specific scenarios, retention policy issues, automatic pruning failures, and configuration problems with systematic diagnostic approaches and enhanced error reporting.
 
@@ -639,12 +814,28 @@ Comprehensive troubleshooting guidance for DLT-specific scenarios, retention pol
 - **Memory Safety Issues**: Unsafe pointer cast errors resolved through std::memcpy operations
 - **Crash Recovery Problems**: .bak file restoration failures and atomic operation issues
 - **Cross-Platform Compatibility**: Platform-specific file operation problems
+- **Fork Database Seeding Failures**: Issues with automatic DLT mode fork database seeding
+- **Enhanced Block Availability Problems**: DLT mode block availability checking failures
+- **Improved Error Handling**: Better error reporting and logging throughout the system
+- **Stalled Sync Detection Issues**: Timeout configuration problems and recovery failures
+- **Snapshot Reload Failures**: Automatic snapshot reload mechanism issues
 
 **Section sources**
 - [dlt_block_log.cpp:161-209](file://libraries/chain/dlt_block_log.cpp#L161-L209)
 - [dlt_block_log.cpp:356-411](file://libraries/chain/dlt_block_log.cpp#L356-L411)
 - [database.cpp:259-268](file://libraries/chain/database.cpp#L259-L268)
 - [p2p_plugin.cpp:265-272](file://plugins/p2p/p2p_plugin.cpp#L265-L272)
+- [database.cpp:266-292](file://libraries/chain/database.cpp#L266-L292)
+- [database.cpp:560-595](file://libraries/chain/database.cpp#L560-L595)
+- [snapshot_plugin.cpp:1435-1500](file://plugins/snapshot/plugin.cpp#L1435-L1500)
 
 ## Conclusion
-The DLT Rolling Block Log provides a comprehensive, offset-aware append-only storage mechanism specifically designed for snapshot-based nodes with advanced selective retention policies and automatic pruning capabilities. Recent enhancements include critical memory safety improvements replacing unsafe pointer casts with std::memcpy operations throughout the implementation, comprehensive crash recovery mechanisms with .bak file restoration for atomic file operations, enhanced cross-platform compatibility through standardized file operations, and strengthened validation logic with comprehensive error reporting. The enhanced P2P fallback mechanisms now provide graceful handling of DLT mode scenarios where block data may not be available for certain ranges, with detailed logging and appropriate error responses including specific messages like "Block ${id} not available in DLT mode (no block data for this range)". Its sophisticated integration with the database ensures seamless fallback when the primary block log is empty, while configurable limits, intelligent retention enforcement, and automatic cleanup mechanisms help manage disk usage efficiently. The implementation leverages advanced memory-mapped files, strict position validation using std::memcpy operations, and comprehensive error handling to deliver reliable performance and data integrity for modern blockchain operations. The improved error handling and fallback mechanisms ensure that DLT mode operations are robust, well-documented, and provide excellent user experience for both operators and P2P peers with comprehensive logging and graceful degradation capabilities. The critical memory safety improvements eliminate undefined behavior risks, while the crash recovery mechanisms ensure data integrity even during unexpected system failures.
+The DLT Rolling Block Log provides a comprehensive, offset-aware append-only storage mechanism specifically designed for snapshot-based nodes with advanced selective retention policies and automatic pruning capabilities. Recent enhancements include critical memory safety improvements replacing unsafe pointer casts with std::memcpy operations throughout the implementation, comprehensive crash recovery mechanisms with .bak file restoration for atomic file operations, enhanced cross-platform compatibility through standardized file operations, and strengthened validation logic with comprehensive error reporting. The enhanced P2P fallback mechanisms now provide graceful handling of DLT mode scenarios where block data may not be available for certain ranges, with detailed logging and appropriate error responses including specific messages like "Block ${id} not available in DLT mode (no block data for this range)". 
+
+The most significant enhancement is the automatic DLT mode fork database seeding functionality that automatically seeds the fork database from the DLT block log when the chain starts from a fresh snapshot import. This enhancement ensures that P2P synchronization works immediately by providing the necessary fork database state even when the DLT block log doesn't cover the head block yet. The system includes intelligent validation to ensure that the DLT block log head matches the current chain state before seeding, and falls back to creating minimal fork database entries when the DLT block log is incomplete.
+
+Additionally, the enhanced block availability checking logic provides improved DLT mode support with better block existence verification and preferred chain validation. The system now uses block_summary objects as hints and verifies block availability against the preferred chain, with special handling for DLT mode scenarios where block data may not be available for certain ranges.
+
+The addition of stalled sync detection for DLT nodes provides automatic monitoring and recovery from stalled P2P sync scenarios, with configurable timeout settings and automatic snapshot reload capabilities. This feature enhances the reliability and uptime of DLT nodes by automatically detecting and recovering from network connectivity issues.
+
+Its sophisticated integration with the database ensures seamless fallback when the primary block log is empty, while configurable limits, intelligent retention enforcement, and automatic cleanup mechanisms help manage disk usage efficiently. The implementation leverages advanced memory-mapped files, strict position validation using std::memcpy operations, and comprehensive error handling to deliver reliable performance and data integrity for modern blockchain operations. The improved error handling and fallback mechanisms ensure that DLT mode operations are robust, well-documented, and provide excellent user experience for both operators and P2P peers with comprehensive logging and graceful degradation capabilities. The critical memory safety improvements eliminate undefined behavior risks, while the crash recovery mechanisms ensure data integrity even during unexpected system failures. The enhanced fork database seeding and block availability checking logic provide comprehensive support for DLT mode operations, making the system more reliable and user-friendly for snapshot-based node operations. The stalled sync detection feature further enhances the system's resilience and operational efficiency by automatically handling network connectivity issues without manual intervention.

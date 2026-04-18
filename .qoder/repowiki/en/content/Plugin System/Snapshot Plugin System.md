@@ -15,11 +15,12 @@
 
 ## Update Summary
 **Changes Made**
-- Updated architecture overview to reflect modular layering (interface, serialization, network protocol, database components)
-- Added documentation for enhanced extensibility and maintainability features
-- Updated integration section to show programmatic state restoration through chain plugin callbacks
-- Enhanced troubleshooting guide with new diagnostic capabilities
-- Updated performance considerations for modular architecture benefits
+- Enhanced P2P synchronization reliability with comprehensive early block rejection logic
+- Improved fork database handling with bug fixes and LIB promotion optimizations
+- Added DLT mode optimizations with rolling block log support and improved block validation
+- Implemented comprehensive snapshot access control features with detailed denial reasons
+- Enhanced snapshot creation and loading with witness-aware deferral and anti-spam protection
+- Added stalled sync detection for DLT mode with automatic snapshot re-download capabilities
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -27,11 +28,12 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Integration with Chain Plugin](#integration-with-chain-plugin)
-7. [Dependency Analysis](#dependency-analysis)
-8. [Performance Considerations](#performance-considerations)
-9. [Troubleshooting Guide](#troubleshooting-guide)
-10. [Conclusion](#conclusion)
+6. [Access Control and Security Mechanisms](#access-control-and-security-mechanisms)
+7. [Integration with Chain Plugin](#integration-with-chain-plugin)
+8. [Dependency Analysis](#dependency-analysis)
+9. [Performance Considerations](#performance-considerations)
+10. [Troubleshooting Guide](#troubleshooting-guide)
+11. [Conclusion](#conclusion)
 
 ## Introduction
 
@@ -39,7 +41,7 @@ The Snapshot Plugin System is a comprehensive solution for VIZ blockchain nodes 
 
 The plugin addresses the fundamental challenge of blockchain bootstrapping by allowing nodes to jump directly to a recent state rather than replaying thousands of blocks. This is particularly crucial for VIZ's social media and content platform characteristics, where rapid deployment and scaling are essential.
 
-**Updated** The system has been refactored into modular layers with enhanced extensibility and maintainability, integrating snapshot loading API with chain plugin for programmatic state restoration.
+**Updated** The system has been enhanced with comprehensive access control mechanisms including detailed denial reasons, improved security through anti-spam protection, robust resource management for snapshot distribution services, and advanced P2P synchronization reliability features.
 
 ## Project Structure
 
@@ -97,7 +99,7 @@ The main plugin class provides the primary interface for external systems to int
 A sophisticated serialization system handles the conversion of blockchain state objects to/from compressed JSON format. This engine manages different object types with varying memory layouts and special data structures.
 
 #### Network Protocol Layer
-The plugin implements a custom TCP protocol for peer-to-peer snapshot distribution, including message framing, authentication, and transfer optimization.
+The plugin implements a custom TCP protocol for peer-to-peer snapshot distribution, including message framing, authentication, and transfer optimization. **Enhanced** with comprehensive access control mechanisms and denial reasons.
 
 #### Database Integration Layer
 Deep integration with the VIZ blockchain database ensures seamless state transitions and maintains consistency during snapshot operations.
@@ -124,32 +126,37 @@ B --> D[Serialization Engine]
 B --> E[Network Protocol]
 B --> F[Database Manager]
 end
+subgraph "Security Layer"
+E --> G[Access Control]
+G --> H[Trust Enforcement]
+G --> I[Anti-Spam Protection]
+end
 subgraph "Serialization Layer"
-D --> G[Object Exporter]
-D --> H[Object Importer]
-G --> I[JSON Serializer]
-H --> J[Object Constructor]
+D --> J[Object Exporter]
+D --> K[Object Importer]
+J --> L[JSON Serializer]
+K --> M[Object Constructor]
 end
 subgraph "Network Layer"
-E --> K[TCP Server]
-E --> L[TCP Client]
-K --> M[Anti-Spam Protection]
-L --> N[Peer Discovery]
+E --> N[TCP Server]
+E --> O[TCP Client]
+N --> P[Connection Management]
+O --> Q[Peer Discovery]
 end
 subgraph "Database Layer"
-F --> O[Chainbase Integration]
-F --> P[Fork Database]
-O --> Q[Object Indexes]
-P --> R[Block Validation]
+F --> R[Chainbase Integration]
+F --> S[Fork Database]
+R --> T[Object Indexes]
+S --> U[Block Validation]
 end
 subgraph "Storage Layer"
-I --> S[File System]
-J --> S
-S --> T[Snapshot Files]
+L --> V[File System]
+M --> V
+V --> W[Snapshot Files]
 end
 ```
 
-**Updated** The architecture emphasizes separation of concerns with clear boundaries between serialization, networking, and database operations. The modular design enables independent development and testing of each component while maintaining system coherence.
+**Updated** The architecture emphasizes separation of concerns with clear boundaries between serialization, networking, database operations, and security controls. The modular design enables independent development and testing of each component while maintaining system coherence.
 
 **Diagram sources**
 - [plugin.cpp:675-780](file://plugins/snapshot/plugin.cpp#L675-L780)
@@ -223,31 +230,48 @@ SeedForkDB --> Complete([Load Complete])
 
 ### Network Protocol Implementation
 
-The snapshot protocol provides efficient peer-to-peer distribution with robust error handling:
+The snapshot protocol provides efficient peer-to-peer distribution with robust error handling and comprehensive access control:
 
 ```mermaid
 sequenceDiagram
 participant Client as Client Node
 participant Server as Server Node
 participant AntiSpam as Anti-Spam
-participant Storage as Storage
+participant Security as Security Layer
 Client->>Server : SNAPSHOT_INFO_REQUEST
+Server->>Security : Check Trust Status
+Security-->>Server : Trusted/Untrusted
+alt Untrusted IP
+Server->>Client : SNAPSHOT_ACCESS_DENIED (untrusted)
+else Trusted IP
 Server->>AntiSpam : Check Rate Limits
 AntiSpam-->>Server : Allow/Deny
-Server->>Storage : Find Latest Snapshot
-Storage-->>Server : Snapshot Info
+alt Rate Limit Exceeded
+Server->>Client : SNAPSHOT_ACCESS_DENIED (rate_limited)
+else Within Limits
+Server->>Server : Check Session Limits
+alt Too Many Active Sessions
+Server->>Client : SNAPSHOT_ACCESS_DENIED (session_limit)
+else Within Session Limits
+Server->>Server : Check Concurrent Connections
+alt Max Connections Reached
+Server->>Client : SNAPSHOT_ACCESS_DENIED (max_connections)
+else Within Connection Limits
+Server->>Server : Find Latest Snapshot
 Server-->>Client : SNAPSHOT_INFO_REPLY
 Client->>Server : SNAPSHOT_DATA_REQUEST(offset, size)
 loop Until Complete
-Server->>Storage : Read Chunk
-Storage-->>Server : Chunk Data
+Server->>Server : Read Chunk
 Server-->>Client : SNAPSHOT_DATA_REPLY
 Client->>Server : Next Request
+end
+end
+end
 end
 Note over Client,Server : Connection Closed
 ```
 
-**Updated** The protocol includes sophisticated anti-spam protection mechanisms and supports large file transfers through chunked delivery, demonstrating the network layer's modular design.
+**Updated** The protocol includes sophisticated anti-spam protection mechanisms, trust enforcement, and detailed denial reasons. The security layer provides comprehensive access control with specific reason codes for different violation types.
 
 **Diagram sources**
 - [plugin.cpp:1902-2038](file://plugins/snapshot/plugin.cpp#L1902-L2038)
@@ -269,10 +293,75 @@ The plugin supports extensive configuration through both command-line arguments 
 | `sync-snapshot-from-trusted-peer` | bool | false | Download snapshot on empty state |
 | `enable-stalled-sync-detection` | bool | false | Auto-detect stalled sync |
 | `stalled-sync-timeout-minutes` | uint32 | 5 | Timeout for stalled sync |
+| `test-trusted-seeds` | bool | false | Test trusted peers connectivity |
 
 **Section sources**
 - [plugin.cpp:2473-2510](file://plugins/snapshot/plugin.cpp#L2473-L2510)
 - [snapshot-plugin.md:247-273](file://documentation/snapshot-plugin.md#L247-L273)
+
+## Access Control and Security Mechanisms
+
+**Updated** The snapshot plugin now includes comprehensive access control mechanisms with detailed denial reasons for enhanced security and resource management.
+
+### Access Control Architecture
+
+The access control system provides multiple layers of security enforcement:
+
+```mermaid
+flowchart TD
+Start([Incoming Connection]) --> CheckTrust{"Allow Only Trusted?"}
+CheckTrust --> |Yes| ValidateTrust{"IP in Trusted List?"}
+CheckTrust --> |No| CheckConcurrent{"Concurrent Connections < 5?"}
+ValidateTrust --> |No| DenyUntrusted["Send DENY_UNTRUSTED"]
+ValidateTrust --> |Yes| CheckConcurrent
+CheckConcurrent --> |No| DenyMaxConnections["Send DENY_MAX_CONNECTIONS"]
+CheckConcurrent --> |Yes| CheckSession{"Active Sessions < 2/IP?"}
+CheckSession --> |No| DenySessionLimit["Send DENY_SESSION_LIMIT"]
+CheckSession --> |Yes| CheckRate{"Connections < 6/Hour/IP?"}
+CheckRate --> |No| DenyRateLimited["Send DENY_RATE_LIMITED"]
+CheckRate --> |Yes| Accept["Accept Connection"]
+DenyUntrusted --> Close["Close Connection"]
+DenyMaxConnections --> Close
+DenySessionLimit --> Close
+DenyRateLimited --> Close
+Accept --> Process["Process Snapshot Request"]
+```
+
+### Denial Reason Codes
+
+The system provides specific denial reasons for different violation types:
+
+| Reason Code | Enum Value | Description |
+|-------------|------------|-------------|
+| `deny_untrusted` | 1 | IP address not in trusted list |
+| `deny_max_connections` | 2 | Server has reached maximum concurrent connections (5) |
+| `deny_session_limit` | 3 | Too many active sessions from this IP (2 per IP limit) |
+| `deny_rate_limited` | 4 | Too many connections per hour from this IP (6 per hour limit) |
+
+### Anti-Spam Protection Features
+
+The access control system implements multiple anti-spam mechanisms:
+
+#### Connection Throttling
+- **Maximum Concurrent Connections**: 5 simultaneous connections
+- **Per-IP Session Limit**: 2 active sessions per IP address
+- **Rate Limiting**: 6 connections per hour per IP address
+
+#### Session Management
+- **Active Session Tracking**: Monitors concurrent sessions per IP
+- **Connection History**: Tracks connection timestamps for rate limiting
+- **RAII Session Guards**: Ensures proper cleanup of session resources
+
+#### Trust Enforcement
+- **Trusted IP Validation**: Maintains whitelist of approved IP addresses
+- **Dynamic Trust Updates**: Supports runtime updates to trusted peer lists
+- **Consistent Enforcement**: Anti-spam rules apply uniformly to all connections
+
+**Section sources**
+- [plugin.hpp:24-34](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L24-L34)
+- [plugin.cpp:1587-1596](file://plugins/snapshot/plugin.cpp#L1587-L1596)
+- [plugin.cpp:1610-1620](file://plugins/snapshot/plugin.cpp#L1610-L1620)
+- [plugin.cpp:1812-1877](file://plugins/snapshot/plugin.cpp#L1812-L1877)
 
 ## Integration with Chain Plugin
 
@@ -373,7 +462,12 @@ The snapshot plugin implements several performance optimization strategies throu
 - Efficient object copying mechanisms handle complex data structures
 - Automatic cleanup of temporary files and resources
 
-**Updated** The modular architecture enhances performance by enabling independent optimization of each layer while maintaining system cohesion.
+**Updated** The modular architecture enhances performance by enabling independent optimization of each layer while maintaining system cohesion. The access control mechanisms are designed to minimize performance impact while providing comprehensive security.
+
+### Security Performance Considerations
+- Access control checks are performed efficiently using hash maps for IP lookups
+- Session tracking uses atomic counters for thread-safe operations
+- Rate limiting maintains minimal memory overhead through sliding window algorithm
 
 ## Troubleshooting Guide
 
@@ -399,6 +493,45 @@ The snapshot plugin implements several performance optimization strategies throu
 - **Cause**: Corrupted snapshot file or tampering
 - **Solution**: Recreate snapshot from source or download from trusted peer
 
+### Access Control Issues
+
+**Connection Denied - Untrusted IP**
+- **Symptom**: Clients receive `SNAPSHOT_ACCESS_DENIED` with reason "untrusted IP"
+- **Cause**: Client IP not in `trusted-snapshot-peer` list
+- **Solution**: Add client IP to trusted list or disable trust enforcement
+
+**Connection Denied - Maximum Connections**
+- **Symptom**: Server responds with "server at max concurrent connections"
+- **Cause**: 5 concurrent connections already active
+- **Solution**: Reduce concurrent clients or increase connection limits
+
+**Connection Denied - Session Limit**
+- **Symptom**: "too many active sessions from this IP" error
+- **Cause**: Client already has 2 active sessions
+- **Solution**: Wait for session cleanup or reduce concurrent sessions
+
+**Connection Denied - Rate Limited**
+- **Symptom**: "rate limit exceeded (too many connections per hour)" error
+- **Cause**: Client exceeded 6 connections per hour limit
+- **Solution**: Wait for rate limit window to reset or reduce connection frequency
+
+### P2P Synchronization Issues
+
+**Stalled Sync Detection**
+- **Symptom**: Node stops receiving blocks after extended period
+- **Cause**: Peers have pruned old blocks in DLT mode
+- **Solution**: Enable `enable-stalled-sync-detection` and configure trusted peers
+
+**Early Block Rejection**
+- **Symptom**: Sync blocks not being accepted despite availability
+- **Cause**: Fork database empty after snapshot import
+- **Solution**: Verify LIB promotion and fork database seeding
+
+**Fork Database Bugs**
+- **Symptom**: Out-of-order blocks not linking correctly
+- **Cause**: Previous fork database implementation issues
+- **Solution**: Update to latest version with bug fixes
+
 ### Diagnostic Tools
 
 The plugin includes comprehensive diagnostic capabilities:
@@ -406,8 +539,9 @@ The plugin includes comprehensive diagnostic capabilities:
 - **Trusted Seeds Test**: Validates connectivity and performance of configured peers
 - **Stalled Sync Detection**: Automatically recovers from network partitions
 - **Progress Monitoring**: Real-time feedback during long-running operations
+- **Access Control Logging**: Detailed logs for denial reasons and security events
 
-**Updated** The modular architecture provides enhanced diagnostic capabilities through separate layers for serialization, networking, and database operations, enabling more precise troubleshooting.
+**Updated** The modular architecture provides enhanced diagnostic capabilities through separate layers for serialization, networking, database operations, and security controls, enabling more precise troubleshooting.
 
 **Section sources**
 - [plugin.cpp:2294-2464](file://plugins/snapshot/plugin.cpp#L2294-L2464)
@@ -417,10 +551,10 @@ The plugin includes comprehensive diagnostic capabilities:
 
 The Snapshot Plugin System represents a sophisticated solution for blockchain state synchronization that significantly improves the VIZ node bootstrapping experience. Through careful architectural design, comprehensive feature coverage, and robust error handling, it enables efficient deployment and scaling of VIZ-based applications.
 
-**Updated** The recent architectural refactoring into modular layers (interface, serialization, network protocol, database components) has enhanced extensibility and maintainability while integrating snapshot loading API with chain plugin for programmatic state restoration.
+**Updated** The recent enhancement with comprehensive access control mechanisms including detailed denial reasons has significantly improved the security and resource management capabilities of the snapshot distribution services. The system now provides robust protection against abuse while maintaining efficient operation.
 
-Key strengths of the system include its modular architecture, extensive configuration options, and built-in performance optimizations. The plugin seamlessly integrates with existing VIZ infrastructure while providing powerful new capabilities for state management and peer-to-peer synchronization.
+Key strengths of the system include its modular architecture, extensive configuration options, built-in performance optimizations, and comprehensive security features. The plugin seamlessly integrates with existing VIZ infrastructure while providing powerful new capabilities for state management and peer-to-peer synchronization.
 
-The implementation demonstrates best practices in blockchain plugin development, including proper resource management, error handling, and user experience considerations. The modular design enables independent development and testing of each component while maintaining system coherence, representing a significant advancement in extensibility and maintainability.
+The implementation demonstrates best practices in blockchain plugin development, including proper resource management, error handling, user experience considerations, and security through layered access control. The modular design enables independent development and testing of each component while maintaining system coherence, representing a significant advancement in extensibility and maintainability.
 
-Future enhancements could focus on additional compression algorithms, enhanced security features, and expanded monitoring capabilities, leveraging the solid foundation provided by the modular architecture.
+Future enhancements could focus on additional compression algorithms, enhanced security features, expanded monitoring capabilities, and more sophisticated access control policies, leveraging the solid foundation provided by the modular architecture with comprehensive access control mechanisms.
