@@ -56,6 +56,8 @@ namespace chain {
 
         bool single_write_thread = false;
 
+        bool sync_start_logged = false; // guard to log sync start only once
+
         plugin_impl() {
             // get default settings
             read_wait_micro = db.read_wait_micro();
@@ -96,9 +98,18 @@ namespace chain {
     }
 
     bool plugin::plugin_impl::accept_block(const protocol::signed_block &block, bool currently_syncing, uint32_t skip) {
-        if (currently_syncing && block.block_num() % 10000 == 0) {
-            ilog("\033[93mSyncing Blockchain --- Got block: #${n} time: ${t} producer: ${p}\033[0m",
-                 ("t", block.timestamp)("n", block.block_num())("p", block.witness));
+        if (currently_syncing) {
+            if (!sync_start_logged) {
+                ilog("\033[92m>>> Syncing Blockchain started from block #${n}\033[0m", ("n", block.block_num()));
+                sync_start_logged = true;
+            }
+
+            if (block.block_num() % 500 == 0) {
+                ilog("\033[93mSyncing Blockchain --- Got block: #${n} time: ${t} producer: ${p}\033[0m",
+                     ("t", block.timestamp)("n", block.block_num())("p", block.witness));
+            }
+        } else {
+            sync_start_logged = false; // reset guard when not syncing
         }
 
         check_time_in_block(block);
