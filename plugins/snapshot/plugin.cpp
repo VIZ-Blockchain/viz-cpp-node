@@ -1789,7 +1789,7 @@ void snapshot_plugin::plugin_impl::start_server() {
 
     // Start watchdog to detect and restart dead accept loops
     watchdog_running.store(true);
-    watchdog_future = fc::async([this]() {
+    watchdog_future = fc::async([this, ep]() {
         while (watchdog_running.load() && server_running) {
             fc::usleep(fc::seconds(WATCHDOG_CHECK_INTERVAL_SEC));
             if (!watchdog_running.load() || !server_running) break;
