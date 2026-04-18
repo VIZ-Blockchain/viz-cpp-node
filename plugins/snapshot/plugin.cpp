@@ -1815,7 +1815,7 @@ void snapshot_plugin::plugin_impl::accept_loop() {
                     wlog("Snapshot server: rejected untrusted connection from ${ip}",
                          ("ip", std::string(remote.get_address())));
                     send_access_denied(*sock_ptr, deny_untrusted);
-                    sock_ptr->close();
+                    try { sock_ptr->close(); } catch (...) {}
                     continue;
                 }
             }
@@ -1825,13 +1825,37 @@ void snapshot_plugin::plugin_impl::accept_loop() {
                 wlog("Snapshot server: max concurrent connections reached, rejecting ${ip}",
                      ("ip", std::string(remote.get_address())));
                 send_access_denied(*sock_ptr, deny_max_connections);
-                sock_ptr->close();
+                try { sock_ptr->close(); } catch (...) {}
                 continue;
             }
 
-            // All anti-spam checks under mutex (active_sessions + connection_history)
+            // Anti-spam checks: determine rejection reason under mutex, then
+            // send denial and close socket OUTSIDE the mutex to avoid blocking
+            // I/O while holding the lock (which could stall the accept loop).
+            uint32_t deny_reason = 0;  // 0 = accepted, non-zero = rejection reason
+
             {
                 fc::scoped_lock<fc::mutex> lock(sessions_mutex);
+
+                // Periodic cleanup: prune stale connection_history entries for ALL IPs.
+                // Without this, entries for IPs that never reconnect accumulate forever,
+                // causing unbounded memory growth over days of operation.
+                {
+                    auto now = fc::time_point::now();
+                    auto cutoff = now - fc::seconds(RATE_LIMIT_WINDOW_SEC);
+                    for (auto it = connection_history.begin(); it != connection_history.end(); ) {
+                        auto& hist = it->second;
+                        hist.erase(
+                            std::remove_if(hist.begin(), hist.end(),
+                                [&cutoff](const fc::time_point& t) { return t < cutoff; }),
+                            hist.end());
+                        if (hist.empty()) {
+                            it = connection_history.erase(it);
+                        } else {
+                            ++it;
+                        }
+                    }
+                }
 
                 // Anti-spam: reject if this IP already has MAX_SESSIONS_PER_IP active sessions
                 auto sess_it = active_sessions.find(remote_ip);
@@ -1839,13 +1863,11 @@ void snapshot_plugin::plugin_impl::accept_loop() {
                     wlog("Snapshot server: rejected connection from ${ip} (${n} active sessions, limit ${l})",
                          ("ip", std::string(remote.get_address()))
                          ("n", sess_it->second)("l", MAX_SESSIONS_PER_IP));
-                    send_access_denied(*sock_ptr, deny_session_limit);
-                    sock_ptr->close();
-                    continue;
+                    deny_reason = deny_session_limit;
                 }
 
                 // Anti-spam: rate limiting (max MAX_CONNECTIONS_PER_HOUR connections per hour per IP)
-                {
+                if (deny_reason == 0) {
                     auto now = fc::time_point::now();
                     auto cutoff = now - fc::seconds(RATE_LIMIT_WINDOW_SEC);
                     auto& history = connection_history[remote_ip];
@@ -1856,25 +1878,32 @@ void snapshot_plugin::plugin_impl::accept_loop() {
                             [&cutoff](const fc::time_point& t) { return t < cutoff; }),
                         history.end());
 
-                    // Clean up empty entries to prevent unbounded map growth
                     if (history.empty()) {
                         connection_history.erase(remote_ip);
-                        // Re-check rate limit with fresh entry
+                        // Fresh entry after pruning — always allow
                         connection_history[remote_ip].push_back(now);
                     } else if (history.size() >= MAX_CONNECTIONS_PER_HOUR) {
                         wlog("Snapshot server: rate limit exceeded for ${ip} (${n} connections in last hour)",
                              ("ip", std::string(remote.get_address()))("n", history.size()));
-                        send_access_denied(*sock_ptr, deny_rate_limited);
-                        sock_ptr->close();
-                        continue;
+                        deny_reason = deny_rate_limited;
                     } else {
                         history.push_back(now);
                     }
                 }
 
-                // Register active session (increment count)
-                active_sessions[remote_ip]++;
+                // Register active session only if accepted
+                if (deny_reason == 0) {
+                    active_sessions[remote_ip]++;
+                }
             }
+
+            // Handle rejection OUTSIDE the mutex (no blocking I/O under lock)
+            if (deny_reason != 0) {
+                send_access_denied(*sock_ptr, deny_reason);
+                try { sock_ptr->close(); } catch (...) {}
+                continue;
+            }
+
             active_connection_count.fetch_add(1);
 
             ilog(CLOG_YELLOW "Snapshot server: accepted connection from ${ip}:${port}" CLOG_RESET,
@@ -1884,20 +1913,32 @@ void snapshot_plugin::plugin_impl::accept_loop() {
             // The socket is heap-allocated (shared_ptr) so it survives the accept_loop
             // iteration and lives until the async fiber completes.
             auto deadline = fc::time_point::now() + fc::seconds(CONNECTION_TIMEOUT_SEC);
-            fc::async([this, sock_ptr, remote_ip, deadline]() {
-                try {
-                    handle_connection(*sock_ptr, deadline, remote_ip);
-                } catch (const fc::exception& e) {
-                    wlog("Snapshot server: error handling connection: ${e}", ("e", e.to_detail_string()));
-                } catch (const std::exception& e) {
-                    wlog("Snapshot server: error handling connection: ${e}", ("e", e.what()));
-                }
+            try {
+                fc::async([this, sock_ptr, remote_ip, deadline]() {
+                    try {
+                        handle_connection(*sock_ptr, deadline, remote_ip);
+                    } catch (const fc::exception& e) {
+                        wlog("Snapshot server: error handling connection: ${e}", ("e", e.to_detail_string()));
+                    } catch (const std::exception& e) {
+                        wlog("Snapshot server: error handling connection: ${e}", ("e", e.what()));
+                    } catch (...) {
+                        wlog("Snapshot server: unknown error handling connection");
+                    }
 
-                // Session cleanup is handled eagerly by handle_connection's RAII guard.
-                // Only clean up connection count and socket here.
+                    // Session cleanup is handled by handle_connection's RAII guard.
+                    // Only clean up connection count and socket here.
+                    active_connection_count.fetch_sub(1);
+                    try { sock_ptr->close(); } catch (...) {}
+                }, "snapshot_handle_connection");
+            } catch (...) {
+                // fc::async failed (e.g. resource exhaustion) — clean up to prevent
+                // active_connection_count and active_sessions from leaking permanently.
+                // Without this, repeated failures would eventually saturate
+                // MAX_CONCURRENT_CONNECTIONS and block ALL new connections.
+                wlog("Snapshot server: failed to spawn connection handler, cleaning up");
+                active_connection_count.fetch_sub(1);
                 {
                     fc::scoped_lock<fc::mutex> lock(sessions_mutex);
-                    // Fallback: decrement count (no-op if already zeroed by RAII guard)
                     auto it = active_sessions.find(remote_ip);
                     if (it != active_sessions.end()) {
                         if (it->second > 1) {
@@ -1907,15 +1948,26 @@ void snapshot_plugin::plugin_impl::accept_loop() {
                         }
                     }
                 }
-                active_connection_count.fetch_sub(1);
                 try { sock_ptr->close(); } catch (...) {}
-            }, "snapshot_handle_connection");
+            }
 
         } catch (const fc::canceled_exception&) {
             break;
         } catch (const fc::exception& e) {
             if (server_running) {
                 wlog("Snapshot server: accept error: ${e}", ("e", e.to_detail_string()));
+            }
+        } catch (const std::exception& e) {
+            // CRITICAL: Without this catch, any std::exception (e.g. std::bad_alloc
+            // from map/vector operations) would kill the accept loop permanently.
+            // After the loop dies, tcp_srv is still listening but nobody calls
+            // accept() — clients get connection timeouts with no error in the log.
+            if (server_running) {
+                elog("Snapshot server: accept error (std::exception): ${e}", ("e", e.what()));
+            }
+        } catch (...) {
+            if (server_running) {
+                elog("Snapshot server: unknown accept error");
             }
         }
     }
