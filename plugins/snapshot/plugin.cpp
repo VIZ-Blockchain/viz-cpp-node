@@ -50,6 +50,7 @@ using graphene::protocol::signed_block;
 #define CLOG_GREEN  "\033[92m"   // snapshot export
 #define CLOG_ORANGE "\033[33m"   // snapshot import
 #define CLOG_YELLOW "\033[93m"   // snapshot serving / P2P transfer
+#define CLOG_RED    "\033[91m"   // critical errors
 #define CLOG_RESET  "\033[0m"
 
 // ============================================================================
@@ -695,6 +696,7 @@ public:
     // Snapshot P2P sync config
     bool allow_snapshot_serving = false;
     bool allow_snapshot_serving_only_trusted = false;
+    bool disable_snapshot_anti_spam = false;  // Skip all anti-spam checks (for trusted networks)
     std::string snapshot_serve_endpoint_str = "0.0.0.0:8092";
     std::vector<std::string> trusted_snapshot_peers;
     bool sync_snapshot_from_trusted_peer = false;
@@ -703,12 +705,26 @@ public:
     bool test_trusted_seeds = false;
 
     // Parsed trusted IPs for server-side trust enforcement
-    std::set<uint32_t> trusted_ips;  // numeric IP addresses
+    std::set<uint32_t> trusted_ips;  // numeric IP addresses (from snapshot-serve-allow-ip)
 
     // TCP server
     std::unique_ptr<fc::tcp_server> tcp_srv;
     fc::future<void> accept_loop_future;
     bool server_running = false;
+
+    // Dedicated thread for snapshot server fibers.
+    // fc::async() schedules fibers on fc::thread::current(), but the main thread
+    // never runs the fc fiber scheduler (it's blocked in io_serv->run()).
+    // Without a dedicated thread, accept_loop and handle_connection fibers
+    // are queued but never executed — connections hang forever.
+    // This mirrors the P2P plugin's approach (p2p_thread).
+    std::unique_ptr<fc::thread> server_thread;
+
+    // Accept loop watchdog: detects and restarts dead accept loops
+    fc::future<void> watchdog_future;
+    std::atomic<bool> watchdog_running{false};
+    static constexpr uint32_t WATCHDOG_CHECK_INTERVAL_SEC = 30;
+    std::atomic<fc::time_point> last_accept_activity{fc::time_point::now()};
 
     // Anti-spam: active sessions per IP (max MAX_SESSIONS_PER_IP concurrent sessions per IP)
     static constexpr uint32_t MAX_SESSIONS_PER_IP = 2;
@@ -785,6 +801,7 @@ constexpr uint32_t snapshot_plugin::plugin_impl::MAX_CONNECTIONS_PER_HOUR;
 constexpr uint64_t snapshot_plugin::plugin_impl::RATE_LIMIT_WINDOW_SEC;
 constexpr uint32_t snapshot_plugin::plugin_impl::MAX_CONCURRENT_CONNECTIONS;
 constexpr uint32_t snapshot_plugin::plugin_impl::CONNECTION_TIMEOUT_SEC;
+constexpr uint32_t snapshot_plugin::plugin_impl::WATCHDOG_CHECK_INTERVAL_SEC;
 
 fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     fc::mutable_variant_object state;
@@ -1271,6 +1288,42 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         // Set the chainbase revision to match the snapshot head block
         db.set_revision(header.snapshot_block_num);
 
+        // Treat the snapshot head as irreversible: set LIB = head_block_num.
+        // After snapshot import, fork_db only contains the head block.
+        // If LIB < head, P2P synopsis starts from LIB and peers send us
+        // blocks in the [LIB, head] range.  Those blocks can't link in
+        // fork_db because their predecessors are missing, causing
+        // unlinkable_block_exception and endless sync restarts.
+        //
+        // Setting LIB = head tells P2P "we have everything up to head"
+        // so peers only send us blocks AFTER head, which link correctly
+        // (their `previous` is the head block already in fork_db).
+        //
+        // This is safe because:
+        //   - The snapshot comes from a trusted master; the state is
+        //     authoritative.
+        //   - By the time the slave processes the snapshot, those blocks
+        //     are deep enough to be effectively irreversible.
+        //   - In DLT mode we don't have block data for the LIB..head
+        //     range anyway, so we couldn't switch forks even if we wanted to.
+        {
+            const auto& dgpo = db.get<dynamic_global_property_object>();
+            uint32_t old_lib = dgpo.last_irreversible_block_num;
+            db.modify(dgpo, [&](dynamic_global_property_object& obj) {
+                obj.last_irreversible_block_num = obj.head_block_number;
+                obj.last_irreversible_block_id = block_id_type();
+                obj.last_irreversible_block_ref_num = 0;
+                obj.last_irreversible_block_ref_prefix = 0;
+            });
+            // Commit all undo state up to the new LIB so chainbase
+            // revisions are consistent and the undo stack is empty.
+            db.commit(header.snapshot_block_num);
+            ilog(CLOG_ORANGE "LIB promoted to head block ${h} (was ${old_lib}) for P2P sync" CLOG_RESET,
+                 ("h", header.snapshot_block_num)("old_lib", old_lib));
+            std::cerr << "   LIB promoted to head block " << header.snapshot_block_num
+                      << " (was " << old_lib << ") for P2P sync\n";
+        }
+
         ilog(CLOG_ORANGE "All objects imported successfully" CLOG_RESET);
     });
 
@@ -1458,7 +1511,7 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
             break;
         } catch (const std::exception& e) {
             elog("Error in stalled sync check: ${e}", ("e", e.what()));
-            fc::usleep(fc::seconds(10));
+            fc::usleep(fc::seconds(5));
         }
     }
 }
@@ -1470,7 +1523,7 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
 namespace {
 
 /// Timeout for snapshot peer operations (connect, read, write)
-const fc::microseconds SNAPSHOT_PEER_TIMEOUT = fc::seconds(30);
+const fc::microseconds SNAPSHOT_PEER_TIMEOUT = fc::seconds(5);
 
 /// Read exactly `len` bytes from a tcp_socket with timeout.
 /// Returns true on success, false on timeout.
@@ -1548,6 +1601,41 @@ void send_message_empty(fc::tcp_socket& sock, uint32_t msg_type) {
     send_message(sock, msg_type, empty);
 }
 
+/// Convert snapshot_deny_reason to human-readable string.
+const char* deny_reason_to_string(uint32_t reason) {
+    switch (reason) {
+        case deny_untrusted:       return "untrusted IP";
+        case deny_max_connections: return "server at max concurrent connections";
+        case deny_session_limit:   return "too many active sessions from this IP";
+        case deny_rate_limited:    return "rate limit exceeded (too many connections per hour)";
+        default:                   return "unknown reason";
+    }
+}
+
+/// Serialize a struct to vector<char> via fc::raw::pack
+template<typename T>
+std::vector<char> pack_to_vec(const T& obj) {
+    return fc::raw::pack(obj);
+}
+
+/// Deserialize a struct from vector<char> via fc::raw::unpack
+template<typename T>
+T unpack_from_vec(const std::vector<char>& data) {
+    return fc::raw::unpack<T>(data);
+}
+
+/// Send a snapshot_access_denied message with the given reason, then flush.
+/// Best-effort: silently ignores send errors (the socket is about to be closed).
+void send_access_denied(fc::tcp_socket& sock, uint32_t reason) {
+    try {
+        snapshot_access_denied_data denial;
+        denial.reason = reason;
+        send_message(sock, snapshot_access_denied, pack_to_vec(denial));
+    } catch (...) {
+        // Best-effort: client may have already disconnected
+    }
+}
+
 /// Read a message: returns (msg_type, payload).
 /// max_payload_size limits the accepted payload (default 64 MB for data replies,
 /// use 64 KB for control/request messages to prevent memory abuse).
@@ -1595,18 +1683,6 @@ std::tuple<bool, uint32_t, std::vector<char>> read_message_with_timeout(
         }
     }
     return {true, msg_type, std::move(payload)};
-}
-
-/// Serialize a struct to vector<char> via fc::raw::pack
-template<typename T>
-std::vector<char> pack_to_vec(const T& obj) {
-    return fc::raw::pack(obj);
-}
-
-/// Deserialize a struct from vector<char> via fc::raw::unpack
-template<typename T>
-T unpack_from_vec(const std::vector<char>& data) {
-    return fc::raw::unpack<T>(data);
 }
 
 } // anonymous namespace
@@ -1707,20 +1783,81 @@ void snapshot_plugin::plugin_impl::start_server() {
 
     auto ep = fc::ip::endpoint::from_string(snapshot_serve_endpoint_str);
 
+    // Create a dedicated fc::thread for server fibers.
+    // The main thread never runs the fc fiber scheduler (it's in io_serv->run()),
+    // so fibers scheduled via fc::async() on the main thread would never execute.
+    server_thread = std::make_unique<fc::thread>("snapshot_server");
+
     tcp_srv = std::make_unique<fc::tcp_server>();
     tcp_srv->set_reuse_address();
     tcp_srv->listen(ep);
     server_running = true;
+    last_accept_activity.store(fc::time_point::now());
 
     ilog(CLOG_YELLOW "Snapshot TCP server listening on ${ep}" CLOG_RESET, ("ep", snapshot_serve_endpoint_str));
 
-    accept_loop_future = fc::async([this]() {
+    accept_loop_future = server_thread->async([this]() {
         accept_loop();
     }, "snapshot_accept_loop");
+
+    // Start watchdog to detect and restart dead accept loops
+    watchdog_running.store(true);
+    watchdog_future = server_thread->async([this, ep]() {
+        while (watchdog_running.load() && server_running) {
+            fc::usleep(fc::seconds(WATCHDOG_CHECK_INTERVAL_SEC));
+            if (!watchdog_running.load() || !server_running) break;
+
+            auto last = last_accept_activity.load();
+            auto now = fc::time_point::now();
+            auto idle_sec = static_cast<int64_t>((now - last).count() / 1000000);
+
+            // Check if accept loop future has completed (loop died)
+            if (accept_loop_future.valid() && accept_loop_future.ready()) {
+                elog(CLOG_RED "Snapshot server: accept loop has DIED! Idle ${s} sec. Restarting..." CLOG_RESET,
+                     ("s", idle_sec));
+
+                // Clean up old state before restarting
+                try { accept_loop_future.wait(); } catch (...) {}
+
+                if (!server_running) break;
+
+                // Restart accept loop on a fresh server socket
+                try {
+                    if (tcp_srv) tcp_srv->close();
+                } catch (...) {}
+
+                tcp_srv = std::make_unique<fc::tcp_server>();
+                tcp_srv->set_reuse_address();
+                tcp_srv->listen(ep);
+
+                // Reset all anti-spam state to clear any corruption
+                {
+                    fc::scoped_lock<fc::mutex> lock(sessions_mutex);
+                    active_sessions.clear();
+                    connection_history.clear();
+                }
+                active_connection_count.store(0);
+
+                ilog(CLOG_YELLOW "Snapshot server: accept loop restarted on ${ep}" CLOG_RESET,
+                     ("ep", snapshot_serve_endpoint_str));
+
+                accept_loop_future = server_thread->async([this]() {
+                    accept_loop();
+                }, "snapshot_accept_loop");
+
+                last_accept_activity.store(fc::time_point::now());
+            }
+        }
+    }, "snapshot_watchdog");
 }
 
 void snapshot_plugin::plugin_impl::stop_server() {
     server_running = false;
+    watchdog_running.store(false);
+    if (watchdog_future.valid() && !watchdog_future.ready()) {
+        watchdog_future.cancel("shutdown");
+        try { watchdog_future.wait(); } catch (...) {}
+    }
     if (tcp_srv) {
         tcp_srv->close();
     }
@@ -1728,9 +1865,18 @@ void snapshot_plugin::plugin_impl::stop_server() {
         accept_loop_future.cancel("shutdown");
         try { accept_loop_future.wait(); } catch (...) {}
     }
+    // Shut down the dedicated server thread after all fibers are canceled.
+    // This ensures no fibers are still running when the thread exits.
+    if (server_thread) {
+        try { server_thread->quit(); } catch (...) {}
+        server_thread.reset();
+    }
 }
 
 void snapshot_plugin::plugin_impl::accept_loop() {
+    ilog(CLOG_YELLOW "Snapshot server: accept loop started" CLOG_RESET);
+    int accept_count = 0;
+
     while (server_running) {
         try {
             auto sock_ptr = std::make_shared<fc::tcp_socket>();
@@ -1738,94 +1884,160 @@ void snapshot_plugin::plugin_impl::accept_loop() {
 
             if (!server_running) break;
 
-            auto remote = sock_ptr->remote_endpoint();
-            uint32_t remote_ip = static_cast<uint32_t>(remote.get_address());
+            // Update watchdog activity timestamp
+            last_accept_activity.store(fc::time_point::now());
+            accept_count++;
 
-            // Trust enforcement
-            if (allow_snapshot_serving_only_trusted) {
-                if (trusted_ips.find(remote_ip) == trusted_ips.end()) {
-                    wlog("Snapshot server: rejected untrusted connection from ${ip}",
-                         ("ip", std::string(remote.get_address())));
-                    sock_ptr->close();
-                    continue;
-                }
-            }
-
-            // Reject if max concurrent connections reached
-            if (active_connection_count.load() >= MAX_CONCURRENT_CONNECTIONS) {
-                wlog("Snapshot server: max concurrent connections reached, rejecting ${ip}",
-                     ("ip", std::string(remote.get_address())));
-                sock_ptr->close();
+            // Client may disconnect immediately after accept completes, causing
+            // remote_endpoint() to throw "Transport endpoint is not connected".
+            // Handle this gracefully — just skip the connection.
+            fc::ip::endpoint remote;
+            try {
+                remote = sock_ptr->remote_endpoint();
+            } catch (...) {
+                try { sock_ptr->close(); } catch (...) {}
                 continue;
             }
+            uint32_t remote_ip = static_cast<uint32_t>(remote.get_address());
 
-            // All anti-spam checks under mutex (active_sessions + connection_history)
-            {
-                fc::scoped_lock<fc::mutex> lock(sessions_mutex);
+            // Trust enforcement (always active, even with anti-spam disabled)
+            if (allow_snapshot_serving_only_trusted) {
+                if (trusted_ips.find(remote_ip) == trusted_ips.end()) {
+                    wlog("Snapshot server: rejected untrusted connection from ${ip} "
+                         "(not in snapshot-serve-allow-ip list, ${n} IPs allowed)",
+                         ("ip", std::string(remote.get_address()))("n", trusted_ips.size()));
+                    send_access_denied(*sock_ptr, deny_untrusted);
+                    try { sock_ptr->close(); } catch (...) {}
+                    continue;
+                }
+            }
 
-                // Anti-spam: reject if this IP already has MAX_SESSIONS_PER_IP active sessions
-                auto sess_it = active_sessions.find(remote_ip);
-                if (sess_it != active_sessions.end() && sess_it->second >= MAX_SESSIONS_PER_IP) {
-                    wlog("Snapshot server: rejected connection from ${ip} (${n} active sessions, limit ${l})",
-                         ("ip", std::string(remote.get_address()))
-                         ("n", sess_it->second)("l", MAX_SESSIONS_PER_IP));
-                    sock_ptr->close();
+            // Anti-spam checks — skip entirely if disabled via config
+            if (!disable_snapshot_anti_spam) {
+                // Reject if max concurrent connections reached
+                if (active_connection_count.load() >= MAX_CONCURRENT_CONNECTIONS) {
+                    wlog("Snapshot server: max concurrent connections reached, rejecting ${ip}",
+                         ("ip", std::string(remote.get_address())));
+                    send_access_denied(*sock_ptr, deny_max_connections);
+                    try { sock_ptr->close(); } catch (...) {}
                     continue;
                 }
 
-                // Anti-spam: rate limiting (max MAX_CONNECTIONS_PER_HOUR connections per hour per IP)
+                // Anti-spam checks: determine rejection reason under mutex, then
+                // send denial and close socket OUTSIDE the mutex to avoid blocking
+                // I/O while holding the lock (which could stall the accept loop).
+                uint32_t deny_reason = 0;  // 0 = accepted, non-zero = rejection reason
+
                 {
-                    auto now = fc::time_point::now();
-                    auto cutoff = now - fc::seconds(RATE_LIMIT_WINDOW_SEC);
-                    auto& history = connection_history[remote_ip];
+                    fc::scoped_lock<fc::mutex> lock(sessions_mutex);
 
-                    // Prune old entries outside the window
-                    history.erase(
-                        std::remove_if(history.begin(), history.end(),
-                            [&cutoff](const fc::time_point& t) { return t < cutoff; }),
-                        history.end());
+                    // Periodic cleanup: prune stale connection_history entries for ALL IPs.
+                    // Without this, entries for IPs that never reconnect accumulate forever,
+                    // causing unbounded memory growth over days of operation.
+                    {
+                        auto now = fc::time_point::now();
+                        auto cutoff = now - fc::seconds(RATE_LIMIT_WINDOW_SEC);
+                        for (auto it = connection_history.begin(); it != connection_history.end(); ) {
+                            auto& hist = it->second;
+                            hist.erase(
+                                std::remove_if(hist.begin(), hist.end(),
+                                    [&cutoff](const fc::time_point& t) { return t < cutoff; }),
+                                hist.end());
+                            if (hist.empty()) {
+                                it = connection_history.erase(it);
+                            } else {
+                                ++it;
+                            }
+                        }
+                    }
 
-                    // Clean up empty entries to prevent unbounded map growth
-                    if (history.empty()) {
-                        connection_history.erase(remote_ip);
-                        // Re-check rate limit with fresh entry
-                        connection_history[remote_ip].push_back(now);
-                    } else if (history.size() >= MAX_CONNECTIONS_PER_HOUR) {
-                        wlog("Snapshot server: rate limit exceeded for ${ip} (${n} connections in last hour)",
-                             ("ip", std::string(remote.get_address()))("n", history.size()));
-                        sock_ptr->close();
-                        continue;
-                    } else {
-                        history.push_back(now);
+                    // Anti-spam: reject if this IP already has MAX_SESSIONS_PER_IP active sessions
+                    auto sess_it = active_sessions.find(remote_ip);
+                    if (sess_it != active_sessions.end() && sess_it->second >= MAX_SESSIONS_PER_IP) {
+                        wlog("Snapshot server: rejected connection from ${ip} (${n} active sessions, limit ${l})",
+                             ("ip", std::string(remote.get_address()))
+                             ("n", sess_it->second)("l", MAX_SESSIONS_PER_IP));
+                        deny_reason = deny_session_limit;
+                    }
+
+                    // Anti-spam: rate limiting (max MAX_CONNECTIONS_PER_HOUR connections per hour per IP)
+                    if (deny_reason == 0) {
+                        auto now = fc::time_point::now();
+                        auto cutoff = now - fc::seconds(RATE_LIMIT_WINDOW_SEC);
+                        auto& history = connection_history[remote_ip];
+
+                        // Prune old entries outside the window
+                        history.erase(
+                            std::remove_if(history.begin(), history.end(),
+                                [&cutoff](const fc::time_point& t) { return t < cutoff; }),
+                            history.end());
+
+                        if (history.empty()) {
+                            connection_history.erase(remote_ip);
+                            // Fresh entry after pruning — always allow
+                            connection_history[remote_ip].push_back(now);
+                        } else if (history.size() >= MAX_CONNECTIONS_PER_HOUR) {
+                            wlog("Snapshot server: rate limit exceeded for ${ip} (${n} connections in last hour)",
+                                 ("ip", std::string(remote.get_address()))("n", history.size()));
+                            deny_reason = deny_rate_limited;
+                        } else {
+                            history.push_back(now);
+                        }
+                    }
+
+                    // Register active session only if accepted
+                    if (deny_reason == 0) {
+                        active_sessions[remote_ip]++;
                     }
                 }
 
-                // Register active session (increment count)
+                // Handle rejection OUTSIDE the mutex (no blocking I/O under lock)
+                if (deny_reason != 0) {
+                    send_access_denied(*sock_ptr, deny_reason);
+                    try { sock_ptr->close(); } catch (...) {}
+                    continue;
+                }
+            } else {
+                // Anti-spam disabled — always accept, just register session
+                fc::scoped_lock<fc::mutex> lock(sessions_mutex);
                 active_sessions[remote_ip]++;
             }
+
             active_connection_count.fetch_add(1);
 
-            ilog(CLOG_YELLOW "Snapshot server: accepted connection from ${ip}:${port}" CLOG_RESET,
-                 ("ip", std::string(remote.get_address()))("port", remote.port()));
+            ilog(CLOG_YELLOW "Snapshot server: accepted connection from ${ip}:${port} (total ${n})" CLOG_RESET,
+                 ("ip", std::string(remote.get_address()))("port", remote.port())("n", accept_count));
 
             // Handle connection asynchronously in a separate fiber.
             // The socket is heap-allocated (shared_ptr) so it survives the accept_loop
             // iteration and lives until the async fiber completes.
             auto deadline = fc::time_point::now() + fc::seconds(CONNECTION_TIMEOUT_SEC);
-            fc::async([this, sock_ptr, remote_ip, deadline]() {
-                try {
-                    handle_connection(*sock_ptr, deadline, remote_ip);
-                } catch (const fc::exception& e) {
-                    wlog("Snapshot server: error handling connection: ${e}", ("e", e.to_detail_string()));
-                } catch (const std::exception& e) {
-                    wlog("Snapshot server: error handling connection: ${e}", ("e", e.what()));
-                }
+            try {
+                server_thread->async([this, sock_ptr, remote_ip, deadline]() {
+                    try {
+                        handle_connection(*sock_ptr, deadline, remote_ip);
+                    } catch (const fc::exception& e) {
+                        wlog("Snapshot server: error handling connection: ${e}", ("e", e.to_detail_string()));
+                    } catch (const std::exception& e) {
+                        wlog("Snapshot server: error handling connection: ${e}", ("e", e.what()));
+                    } catch (...) {
+                        wlog("Snapshot server: unknown error handling connection");
+                    }
 
-                // Session cleanup is handled eagerly by handle_connection's RAII guard.
-                // Only clean up connection count and socket here.
+                    // Session cleanup is handled by handle_connection's RAII guard.
+                    // Only clean up connection count and socket here.
+                    active_connection_count.fetch_sub(1);
+                    try { sock_ptr->close(); } catch (...) {}
+                }, "snapshot_handle_connection");
+            } catch (...) {
+                // fc::async failed (e.g. resource exhaustion) — clean up to prevent
+                // active_connection_count and active_sessions from leaking permanently.
+                // Without this, repeated failures would eventually saturate
+                // MAX_CONCURRENT_CONNECTIONS and block ALL new connections.
+                wlog("Snapshot server: failed to spawn connection handler, cleaning up");
+                active_connection_count.fetch_sub(1);
                 {
                     fc::scoped_lock<fc::mutex> lock(sessions_mutex);
-                    // Fallback: decrement count (no-op if already zeroed by RAII guard)
                     auto it = active_sessions.find(remote_ip);
                     if (it != active_sessions.end()) {
                         if (it->second > 1) {
@@ -1835,18 +2047,31 @@ void snapshot_plugin::plugin_impl::accept_loop() {
                         }
                     }
                 }
-                active_connection_count.fetch_sub(1);
                 try { sock_ptr->close(); } catch (...) {}
-            }, "snapshot_handle_connection");
+            }
 
         } catch (const fc::canceled_exception&) {
             break;
         } catch (const fc::exception& e) {
             if (server_running) {
-                wlog("Snapshot server: accept error: ${e}", ("e", e.to_detail_string()));
+                elog("Snapshot server: accept error: ${e}", ("e", e.to_detail_string()));
+            }
+        } catch (const std::exception& e) {
+            // CRITICAL: Without this catch, any std::exception (e.g. std::bad_alloc
+            // from map/vector operations) would kill the accept loop permanently.
+            // After the loop dies, tcp_srv is still listening but nobody calls
+            // accept() — clients get connection timeouts with no error in the log.
+            if (server_running) {
+                elog("Snapshot server: accept error (std::exception): ${e}", ("e", e.what()));
+            }
+        } catch (...) {
+            if (server_running) {
+                elog("Snapshot server: unknown accept error");
             }
         }
     }
+
+    ilog("Snapshot server: accept loop exiting after ${n} connections", ("n", accept_count));
 }
 
 void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::time_point deadline, uint32_t remote_ip) {
@@ -1879,6 +2104,9 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
     } guard(*this, remote_ip);
 
     ilog(CLOG_YELLOW "Snapshot server: handling connection from ${remote}" CLOG_RESET, ("remote", remote_str));
+
+    // Update watchdog activity (connection is being processed)
+    last_accept_activity.store(fc::time_point::now());
 
     // Check deadline before initial read
     if (fc::time_point::now() > deadline) {
@@ -2078,13 +2306,30 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
             try {
                 send_message_empty(sock, snapshot_info_request);
             } catch (const fc::exception& e) {
-                std::cerr << "   Peer " << peer_str << ": send failed\n";
-                wlog("Failed to send info request to peer ${p}: ${e}", ("p", peer_str)("e", e.to_detail_string()));
+                // Send failed — server may have rejected us with an access-denied message.
+                // Try a brief read to see if the server sent a denial before closing.
+                auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
+                if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
+                    auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
+                    std::cerr << "   Peer " << peer_str << ": access denied (" << deny_reason_to_string(denial.reason) << ")\n";
+                    wlog("Peer ${p} denied access: ${r}", ("p", peer_str)("r", deny_reason_to_string(denial.reason)));
+                } else {
+                    std::cerr << "   Peer " << peer_str << ": send failed\n";
+                    wlog("Failed to send info request to peer ${p}: ${e}", ("p", peer_str)("e", e.to_detail_string()));
+                }
                 sock.close();
                 continue;
             } catch (const std::exception& e) {
-                std::cerr << "   Peer " << peer_str << ": send failed\n";
-                wlog("Failed to send info request to peer ${p}: ${e}", ("p", peer_str)("e", e.what()));
+                // Send failed — try reading denial message
+                auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
+                if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
+                    auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
+                    std::cerr << "   Peer " << peer_str << ": access denied (" << deny_reason_to_string(denial.reason) << ")\n";
+                    wlog("Peer ${p} denied access: ${r}", ("p", peer_str)("r", deny_reason_to_string(denial.reason)));
+                } else {
+                    std::cerr << "   Peer " << peer_str << ": send failed\n";
+                    wlog("Failed to send info request to peer ${p}: ${e}", ("p", peer_str)("e", e.what()));
+                }
                 sock.close();
                 continue;
             }
@@ -2111,6 +2356,10 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
             } else if (resp_msg_type == snapshot_not_available) {
                 std::cerr << "   Peer " << peer_str << ": no snapshot available\n";
                 ilog(CLOG_YELLOW "Peer ${p}: no snapshot available" CLOG_RESET, ("p", peer_str));
+            } else if (resp_msg_type == snapshot_access_denied) {
+                auto denial = unpack_from_vec<snapshot_access_denied_data>(resp_payload);
+                std::cerr << "   Peer " << peer_str << ": access denied (" << deny_reason_to_string(denial.reason) << ")\n";
+                wlog("Peer ${p} denied access: ${r}", ("p", peer_str)("r", deny_reason_to_string(denial.reason)));
             }
 
             sock.close();
@@ -2174,14 +2423,35 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     try {
         send_message_empty(sock, snapshot_info_request);
     } catch (const fc::exception& e) {
+        // Send failed — server may have rejected us with an access-denied message.
+        auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
+        if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
+            auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
+            FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
+                ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
+        }
         FC_THROW("Failed to send Phase 2 info request to peer ${p}: ${e}",
             ("p", best->endpoint_str)("e", e.to_detail_string()));
     } catch (const std::exception& e) {
+        auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
+        if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
+            auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
+            FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
+                ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
+        }
         FC_THROW("Failed to send Phase 2 info request to peer ${p}: ${e}",
             ("p", best->endpoint_str)("e", e.what()));
     }
     auto info_result = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
     FC_ASSERT(std::get<0>(info_result), "Timeout waiting for peer response during download");
+
+    // Check for access denied response
+    if (std::get<1>(info_result) == snapshot_access_denied) {
+        auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(info_result));
+        FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
+            ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
+    }
+
     FC_ASSERT(std::get<1>(info_result) == snapshot_info_reply, "Unexpected response from peer during download");
 
     // Validate snapshot size against maximum
@@ -2342,8 +2612,17 @@ void snapshot_plugin::plugin_impl::test_all_trusted_peers() {
             try {
                 send_message_empty(sock, snapshot_info_request);
             } catch (const std::exception& se) {
-                res.status = "ERROR";
-                std::cerr << "  Send failed: " << se.what() << "\n";
+                // Send failed — server may have rejected with access-denied message
+                auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
+                if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
+                    auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
+                    res.status = "DENIED";
+                    std::cerr << "  Access denied: " << deny_reason_to_string(denial.reason) << "\n";
+                    wlog("[test-trusted-seeds] peer ${p} denied: ${r}", ("p", peer_str)("r", deny_reason_to_string(denial.reason)));
+                } else {
+                    res.status = "ERROR";
+                    std::cerr << "  Send failed: " << se.what() << "\n";
+                }
                 sock.close();
                 results.push_back(res);
                 continue;
@@ -2367,6 +2646,16 @@ void snapshot_plugin::plugin_impl::test_all_trusted_peers() {
             if (resp_type == snapshot_not_available) {
                 res.status = "NO_SNAPSHOT";
                 std::cerr << "  Snapshot: not available\n";
+                sock.close();
+                results.push_back(res);
+                continue;
+            }
+
+            if (resp_type == snapshot_access_denied) {
+                auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(resp));
+                res.status = "DENIED";
+                std::cerr << "  Access denied: " << deny_reason_to_string(denial.reason) << "\n";
+                wlog("[test-trusted-seeds] peer ${p} denied: ${r}", ("p", peer_str)("r", deny_reason_to_string(denial.reason)));
                 sock.close();
                 results.push_back(res);
                 continue;
@@ -2486,9 +2775,15 @@ void snapshot_plugin::set_program_options(
         ("allow-snapshot-serving", bpo::value<bool>()->default_value(false),
             "Enable serving snapshots over TCP to other nodes")
         ("allow-snapshot-serving-only-trusted", bpo::value<bool>()->default_value(false),
-            "Restrict snapshot serving to trusted peers only (from trusted-snapshot-peer list)")
+            "Restrict snapshot serving to trusted IPs only (from snapshot-serve-allow-ip list)")
+("disable-snapshot-anti-spam", bpo::value<bool>()->default_value(false),
+            "Disable anti-spam checks for snapshot serving (rate limits, session limits). Use only on trusted networks.")
         ("snapshot-serve-endpoint", bpo::value<std::string>()->default_value("0.0.0.0:8092"),
             "TCP endpoint for the snapshot serving listener")
+("snapshot-serve-allow-ip", bpo::value<std::vector<std::string>>()->composing(),
+            "IP address allowed to connect for snapshot serving (used with allow-snapshot-serving-only-trusted). "
+            "Can be specified multiple times. IMPORTANT: These are the IPs of the CLIENTS that connect to you, "
+            "NOT your own IP or the IPs in trusted-snapshot-peer.")
         ("trusted-snapshot-peer", bpo::value<std::vector<std::string>>()->composing(),
             "Trusted peer endpoint for snapshot sync (IP:port). Can be specified multiple times.")
         ("sync-snapshot-from-trusted-peer", bpo::value<bool>()->default_value(false),
@@ -2552,6 +2847,7 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     // Snapshot P2P sync config
     my->allow_snapshot_serving = options.at("allow-snapshot-serving").as<bool>();
     my->allow_snapshot_serving_only_trusted = options.at("allow-snapshot-serving-only-trusted").as<bool>();
+    my->disable_snapshot_anti_spam = options.at("disable-snapshot-anti-spam").as<bool>();
     my->snapshot_serve_endpoint_str = options.at("snapshot-serve-endpoint").as<std::string>();
     my->sync_snapshot_from_trusted_peer = options.at("sync-snapshot-from-trusted-peer").as<bool>();
 
@@ -2570,28 +2866,49 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
 
     if (options.count("trusted-snapshot-peer")) {
         my->trusted_snapshot_peers = options.at("trusted-snapshot-peer").as<std::vector<std::string>>();
-        // Parse trusted IPs for server-side trust enforcement
-        for (const auto& peer_str : my->trusted_snapshot_peers) {
-            try {
-                auto ep = fc::ip::endpoint::from_string(peer_str);
-                my->trusted_ips.insert(static_cast<uint32_t>(ep.get_address()));
-            } catch (const fc::exception& e) {
-                wlog("Failed to parse trusted-snapshot-peer '${p}': ${e}",
-                     ("p", peer_str)("e", e.to_detail_string()));
-            }
-        }
         if (!my->trusted_snapshot_peers.empty()) {
-            ilog("Trusted snapshot peers: ${n} configured", ("n", my->trusted_snapshot_peers.size()));
+            ilog("Trusted snapshot peers: ${n} configured (for downloading snapshots FROM)",
+                 ("n", my->trusted_snapshot_peers.size()));
+        }
+    }
+
+    // Parse trusted IPs for server-side trust enforcement
+    // These are the IPs of CLIENTS that are allowed to connect and download snapshots.
+    // IMPORTANT: This is separate from trusted-snapshot-peer, which lists the servers
+    // this node connects TO as a client. The IPs here are the clients that connect to US.
+    if (options.count("snapshot-serve-allow-ip")) {
+        auto allow_ips = options.at("snapshot-serve-allow-ip").as<std::vector<std::string>>();
+        for (const auto& ip_str : allow_ips) {
+            try {
+                auto addr = fc::ip::address(ip_str);
+                my->trusted_ips.insert(static_cast<uint32_t>(addr));
+                ilog("Snapshot serve: allowed IP ${ip}", ("ip", ip_str));
+            } catch (const fc::exception& e) {
+                wlog("Failed to parse snapshot-serve-allow-ip '${p}': ${e}",
+                     ("p", ip_str)("e", e.to_detail_string()));
+            }
         }
     }
 
     if (my->allow_snapshot_serving) {
         ilog("Snapshot serving enabled on ${ep}", ("ep", my->snapshot_serve_endpoint_str));
         if (my->allow_snapshot_serving_only_trusted) {
-            ilog("Snapshot serving restricted to trusted peers only (${n} IPs)",
-                 ("n", my->trusted_ips.size()));
+            if (my->trusted_ips.empty()) {
+                elog(CLOG_RED "Snapshot serving is restricted to trusted IPs only, but NO IPs are configured! "
+                     "Set snapshot-serve-allow-ip to the IPs of clients that should be allowed to download. "
+                     "All connections will be rejected until IPs are added." CLOG_RESET);
+            } else {
+                ilog("Snapshot serving restricted to trusted IPs only (${n} IPs):",
+                     ("n", my->trusted_ips.size()));
+                for (auto ip_u32 : my->trusted_ips) {
+                    ilog("  Allowed client IP: ${ip}", ("ip", std::string(fc::ip::address(ip_u32))));
+                }
+            }
         } else {
             ilog("Snapshot serving open to anyone (public gate)");
+        }
+        if (my->disable_snapshot_anti_spam) {
+            ilog("Snapshot anti-spam DISABLED — no rate limits or session limits enforced");
         }
     }
 

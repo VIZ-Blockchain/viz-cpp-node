@@ -1,33 +1,48 @@
-FROM phusion/baseimage:bionic-1.0.0 as builder
+FROM phusion/baseimage:noble-1.0.3 AS builder
 
 ENV LANG=en_US.UTF-8
-ENV APPDIR /usr/local/src/viz/
-ENV HOME /var/lib/vizd
+ENV APPDIR=/usr/local/src/viz/
+ENV HOME=/var/lib/vizd
 
 RUN \
-    apt-get update && \
-    apt-get install -y \
-        autoconf \
-        automake \
-        autotools-dev \
-        binutils \
-        bsdmainutils \
-        build-essential \
-        cmake \
-        doxygen \
-        git \
-        ccache \
-        libboost-all-dev \
-        libreadline-dev \
-        libssl-dev \
-        libtool \
-        ncurses-dev \
-        pbzip2 \
-        pkg-config \
-        python3 \
-        python3-dev \
-        python3-pip && \
-    pip3 install gcovr
+    for i in 1 2 3; do \
+        apt-get update && \
+        apt-get install -y --no-install-recommends \
+            autoconf \
+            automake \
+            autotools-dev \
+            binutils \
+            bsdmainutils \
+            build-essential \
+            cmake \
+            git \
+            ccache \
+            libboost-chrono-dev \
+            libboost-context-dev \
+            libboost-coroutine-dev \
+            libboost-date-time-dev \
+            libboost-filesystem-dev \
+            libboost-iostreams-dev \
+            libboost-locale-dev \
+            libboost-program-options-dev \
+            libboost-serialization-dev \
+            libboost-system-dev \
+            libboost-test-dev \
+            libboost-thread-dev \
+            libbz2-dev \
+            liblzma-dev \
+            libzstd-dev \
+            libreadline-dev \
+            libssl-dev \
+            libtool \
+            ncurses-dev \
+            pbzip2 \
+            pkg-config \
+            zlib1g-dev && \
+        break || sleep 10; \
+    done && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Explicitly copy needed files to avoid re-building when changing other files
 COPY .git $APPDIR/.git
@@ -39,8 +54,8 @@ COPY libraries $APPDIR/libraries
 
 RUN \
     cd $APPDIR && \
-    git submodule deinit -f . && \
     git submodule update --init --recursive -f && \
+    sed -i '/add_subdirectory(tests)/d' thirdparty/fc/CMakeLists.txt && \
     mkdir build && \
     cd build && \
     cmake \
@@ -64,7 +79,7 @@ RUN \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/*
 
-FROM phusion/baseimage:bionic-1.0.0 as production
+FROM phusion/baseimage:noble-1.0.3 AS production
 COPY --from=builder /usr/local /usr/local
 
 RUN set -xe ;\

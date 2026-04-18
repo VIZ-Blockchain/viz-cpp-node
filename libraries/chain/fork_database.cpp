@@ -11,6 +11,7 @@ namespace graphene {
         void fork_database::reset() {
             _head.reset();
             _index.clear();
+            _unlinked_index.clear();
         }
 
         void fork_database::pop_block() {
@@ -38,13 +39,21 @@ namespace graphene {
             catch (const unlinkable_block_exception &e) {
                 wlog("Pushing block to fork database that failed to link: ${id}, ${num}", ("id", b.id())("num", b.block_num()));
                 wlog("Head: ${num}, ${id}", ("num", _head->data.block_num())("id", _head->data.id()));
-                throw;
                 _unlinked_index.insert(item);
+                throw;
             }
             return _head;
         }
 
         void fork_database::_push_block(const item_ptr &item) {
+            // Skip if this block already exists in the index (e.g., after snapshot
+            // import the head block was seeded via start_block, and P2P may re-send it)
+            auto &id_index = _index.get<block_id>();
+            auto existing_itr = id_index.find(item->id);
+            if (existing_itr != id_index.end()) {
+                return;
+            }
+
             if (_head) // make sure the block is within the range that we are caching
             {
                 FC_ASSERT(item->num > std::max<int64_t>(0,
@@ -68,6 +77,10 @@ namespace graphene {
             if (!_head || item->num > _head->num) {
                 _head = item;
             }
+
+            // After inserting a new block, check if any previously-unlinkable
+            // blocks in the _unlinked_index can now be linked to this one.
+            _push_next(item);
         }
 
 /**

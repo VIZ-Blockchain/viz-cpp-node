@@ -258,12 +258,38 @@ namespace graphene { namespace chain {
 
                         } else {
                             // DLT mode: block_log is empty but chainbase has state (loaded from snapshot).
-                            // Skip block_log validation and fork_db seeding.
-                            // P2P will seed fork_db with the first received block.
                             set_dlt_mode(true);
                             wlog("DLT mode detected: block log is empty but database has state at block ${n}. "
                                  "Skipping block log validation.",
                                  ("n", head_block_num()));
+
+                            // Seed fork_db from dlt_block_log or chain state so P2P sync
+                            // works immediately. Without this, fork_db is empty and:
+                            //   - is_known_block() returns false for our head block
+                            //   - P2P synopsis generation fails
+                            //   - Sync blocks can't link (no parent in fork_db)
+                            if (head_block_num() > 0) {
+                                auto dlt_head = _dlt_block_log.head();
+                                if (dlt_head && dlt_head->block_num() >= head_block_num()) {
+                                    auto head_from_dlt = _dlt_block_log.read_block_by_num(head_block_num());
+                                    if (head_from_dlt && head_from_dlt->id() == head_block_id()) {
+                                        _fork_db.start_block(*head_from_dlt);
+                                        ilog("DLT mode: fork_db seeded from dlt_block_log at block ${n}", ("n", head_block_num()));
+                                    }
+                                }
+                                if (!_fork_db.head()) {
+                                    // dlt_block_log doesn't cover head block yet (normal after fresh
+                                    // snapshot import). Construct a minimal fork_db entry from the
+                                    // head_block_id. We can't reconstruct the full signed_block, but
+                                    // we can create a fork_item with enough data for P2P to work.
+                                    // The early rejection check in _push_block() allows blocks whose
+                                    // previous == head_block_id(), which is sufficient for the first
+                                    // sync block to be accepted.
+                                    ilog("DLT mode: dlt_block_log does not cover head block ${n}, "
+                                         "fork_db will be empty until first block is applied",
+                                         ("n", head_block_num()));
+                                }
+                            }
                         }
                     }
                     end = fc::time_point::now();
@@ -525,9 +551,18 @@ namespace graphene { namespace chain {
                 // is guaranteed to be in block_log.
                 // In DLT mode, block_summary survives snapshot import but block data may
                 // not be available (block_log empty, dlt_block_log may not cover the range).
-                // Returning true here would lie to P2P peers who then fail to fetch the block.
-                // So in DLT mode, skip the block_summary shortcut and fall through to
-                // fetch_block_by_id() which checks actual data availability.
+                // Returning true here would lie to P2P peers who then fail to fetch the block
+                // via get_item().
+                //
+                // However, in DLT mode we still need is_known_block() to return true for
+                // blocks on our own chain so that P2P's has_item() works correctly during
+                // sync negotiation. Without this, the sync mechanism can't skip blocks we
+                // already have, and the synopsis exchange breaks.
+                //
+                // Solution: in DLT mode, check block_summary as a hint, then verify the
+                // block is actually on our preferred chain (which means we have its state).
+                // This is safe because blocks on our preferred chain are part of our state
+                // even if we can't serve their full data to peers.
                 if (!_dlt_mode) {
                     uint32_t block_num = protocol::block_header::num_from_id(id);
                     if (block_num > 0) {
@@ -535,6 +570,23 @@ namespace graphene { namespace chain {
                         const auto* bs = find<block_summary_object, by_id>(bsid);
                         if (bs != nullptr && bs->block_id == id) {
                             return true;
+                        }
+                    }
+                } else {
+                    // DLT mode: use block_summary as a hint, then verify the block
+                    // is on our preferred chain by checking if its block_num maps
+                    // to this exact block_id.
+                    uint32_t block_num = protocol::block_header::num_from_id(id);
+                    if (block_num > 0 && block_num <= head_block_num()) {
+                        block_summary_id_type bsid = block_num & 0xFFFF;
+                        const auto* bs = find<block_summary_object, by_id>(bsid);
+                        if (bs != nullptr && bs->block_id == id) {
+                            // Verify it's on our preferred chain — block_summary could
+                            // have stale entries from a fork
+                            block_id_type chain_id = find_block_id_for_num(block_num);
+                            if (chain_id == id) {
+                                return true;
+                            }
                         }
                     }
                 }
@@ -985,6 +1037,55 @@ namespace graphene { namespace chain {
 
         bool database::_push_block(const signed_block &new_block, uint32_t skip) {
             try {
+                // Early rejection: if the block is at or before our head block number
+                // and its ID matches the block on our preferred chain, it's already
+                // applied. This prevents unnecessary fork_db push attempts that would
+                // fail with unlinkable_block_exception (common after snapshot import
+                // where fork_db only contains the head block).
+                if (new_block.block_num() <= head_block_num()) {
+                    block_id_type existing_id = find_block_id_for_num(new_block.block_num());
+                    if (existing_id == new_block.id()) {
+                        ilog("Ignoring block ${n} that is already on our chain", ("n", new_block.block_num()));
+                        return false;
+                    }
+                    // Block is at or before head but on a different fork — fall through
+                    // to the normal push logic which may trigger a fork switch.
+                }
+
+                // Early rejection for blocks far ahead of our head whose parent we
+                // don't know.  When a node is far behind (e.g. after snapshot import
+                // at block N while the network is at block N+1000), broadcast blocks
+                // arrive that are way ahead.  If we push them into fork_db, they
+                // throw unlinkable_block_exception which triggers P2P sync restart,
+                // clearing the sync queue and preventing any forward progress.
+                //
+                // Instead, silently reject these blocks so the sync mechanism can
+                // fetch blocks sequentially without being constantly interrupted.
+                // The sync mechanism works on a separate path and is not affected
+                // by returning false here.
+                //
+                // We always allow blocks whose previous == head_block_id() because:
+                //   - We know our head block ID from database state even if fork_db
+                //     is empty (DLT mode restart).
+                //   - fork_db skips the link check when _head is null, so these
+                //     blocks will be accepted and correctly become the new head.
+                //   - This covers the critical sync case: the very first block after
+                //     head must always be accepted for sync to make progress.
+                //
+                // For other blocks, we check _fork_db.is_known_block() (not
+                // database::is_known_block) because in DLT mode the full
+                // is_known_block() returns false for blocks whose data isn't on
+                // disk, even though they may exist in fork_db.
+                if (new_block.block_num() > head_block_num() &&
+                    new_block.previous != block_id_type() &&
+                    new_block.previous != head_block_id() &&
+                    !_fork_db.is_known_block(new_block.previous)) {
+                    // Parent block is completely unknown — block can never link.
+                    dlog("Rejecting unlinkable block ${n} (parent unknown, head=${h})",
+                         ("n", new_block.block_num())("h", head_block_num()));
+                    return false;
+                }
+
                 if (!(skip & skip_fork_db)) {
                     shared_ptr<fork_item> new_head = _fork_db.push_block(new_block);
                     _maybe_warn_multiple_production(new_head->num);
@@ -994,6 +1095,18 @@ namespace graphene { namespace chain {
                         //Only switch forks if new_head is actually higher than head
                         if (new_head->data.block_num() > head_block_num()) {
                             // wlog( "Switching to fork: ${id}", ("id",new_head->data.id()) );
+                            // Ensure the current head block exists in the fork DB before attempting fork switch.
+                            // During initial sync or after fork DB trimming, head_block_id() may not be
+                            // present in the fork DB, making it impossible to compute the branch back
+                            // to the common ancestor. In that case, the block is unlinkable from our
+                            // current state and should be rejected.
+                            if (!_fork_db.is_known_block(head_block_id())) {
+                                wlog("Cannot switch forks: current head block ${h} is not in the fork database (likely still syncing or fork DB trimmed). Rejecting block ${id} at height ${n}",
+                                     ("h", head_block_id())("id", new_head->data.id())("n", new_head->data.block_num()));
+                                _fork_db.remove(new_head->data.id());
+                                FC_THROW_EXCEPTION(unlinkable_block_exception,
+                                                   "current head block not in fork database, cannot switch forks");
+                            }
                             auto branches = _fork_db.fetch_branch_from(new_head->data.id(), head_block_id());
 
                             // pop blocks until we hit the forked block
@@ -1311,7 +1424,7 @@ namespace graphene { namespace chain {
             }
         }
 
-        inline const void database::push_virtual_operation(const operation &op, bool force) {
+        const void database::push_virtual_operation(const operation &op, bool force) {
             if (!force && _skip_virtual_ops ) {
                 return;
             }

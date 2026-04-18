@@ -17,7 +17,20 @@ namespace graphene { namespace plugins { namespace snapshot {
         snapshot_info_reply    = 2,
         snapshot_data_request  = 3,
         snapshot_data_reply    = 4,
-        snapshot_not_available = 5
+        snapshot_not_available = 5,
+        snapshot_access_denied = 6
+    };
+
+    /// Reason codes for snapshot_access_denied messages
+    enum snapshot_deny_reason : uint32_t {
+        deny_untrusted        = 1,  // IP not in trusted list
+        deny_max_connections  = 2,  // Server at max concurrent connections
+        deny_session_limit    = 3,  // Too many active sessions from this IP
+        deny_rate_limited     = 4   // Too many connections per hour from this IP
+    };
+
+    struct snapshot_access_denied_data {
+        uint32_t reason = 0;  // snapshot_deny_reason
     };
 
     struct snapshot_info_reply_data {
@@ -85,3 +98,6 @@ FC_REFLECT((graphene::plugins::snapshot::snapshot_data_request_data),
 
 FC_REFLECT((graphene::plugins::snapshot::snapshot_data_reply_data),
     (offset)(data)(is_last))
+
+FC_REFLECT((graphene::plugins::snapshot::snapshot_access_denied_data),
+    (reason))

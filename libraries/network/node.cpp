@@ -1422,7 +1422,7 @@ namespace graphene {
                     fc::time_point handshaking_disconnect_threshold =
                             fc::time_point::now() -
                             fc::seconds(handshaking_timeout);
-                    for (const peer_connection_ptr handshaking_peer : _handshaking_connections) {
+                    for (const peer_connection_ptr& handshaking_peer : _handshaking_connections) {
                         if (handshaking_peer->connection_initiation_time <
                             handshaking_disconnect_threshold &&
                             handshaking_peer->get_last_message_received_time() <
@@ -1825,13 +1825,13 @@ namespace graphene {
                     dlog("is_already_connected_to_id returning true because the peer is us");
                     return true;
                 }
-                for (const peer_connection_ptr active_peer : _active_connections) {
+                for (const peer_connection_ptr& active_peer : _active_connections) {
                     if (node_id == active_peer->node_id) {
                         dlog("is_already_connected_to_id returning true because the peer is already in our active list");
                         return true;
                     }
                 }
-                for (const peer_connection_ptr handshaking_peer : _handshaking_connections) {
+                for (const peer_connection_ptr& handshaking_peer : _handshaking_connections) {
                     if (node_id == handshaking_peer->node_id) {
                         dlog("is_already_connected_to_id returning true because the peer is already in our handshaking list");
                         return true;
@@ -2951,7 +2951,7 @@ namespace graphene {
 
                     bool we_advertised_this_item_to_a_peer = false;
                     bool we_requested_this_item_from_a_peer = false;
-                    for (const peer_connection_ptr peer : _active_connections) {
+                    for (const peer_connection_ptr& peer : _active_connections) {
                         if (peer->inventory_advertised_to_peer.find(advertised_item_id) !=
                             peer->inventory_advertised_to_peer.end()) {
                             we_advertised_this_item_to_a_peer = true;

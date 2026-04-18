@@ -10,9 +10,9 @@
 #include <fc/crypto/sha256.hpp>
 
 #include <boost/asio.hpp>
-#include <boost/optional.hpp>
-#include <boost/bind.hpp>
 #include <boost/preprocessor/stringize.hpp>
+
+#include <functional>
 
 #include <websocketpp/config/asio_client.hpp>
 #include <websocketpp/config/asio.hpp>
@@ -38,7 +38,6 @@ namespace graphene {
 
             using std::map;
             using std::string;
-            using boost::optional;
             using boost::asio::ip::tcp;
             using std::shared_ptr;
             using websocketpp::connection_hdl;
@@ -193,7 +192,7 @@ namespace graphene {
                 boost::thread_group& thread_pool = appbase::app().scheduler();
                 webserver_plugin_impl(thread_pool_size_t thread_pool_size) : thread_pool_work(this->thread_pool_ios) {
                     for (uint32_t i = 0; i < thread_pool_size; ++i) {
-                        thread_pool.create_thread(boost::bind(&asio::io_service::run, &thread_pool_ios));
+                        thread_pool.create_thread(std::bind(static_cast<std::size_t(asio::io_service::*)()>(&asio::io_service::run), &thread_pool_ios));
                     }
                 }
 
@@ -244,10 +243,10 @@ namespace graphene {
                             ws_server.init_asio(&ws_ios);
                             ws_server.set_reuse_addr(true);
 
-                            ws_server.set_message_handler(boost::bind(&webserver_plugin_impl::handle_ws_message, this, &ws_server, _1, _2));
+                            ws_server.set_message_handler(std::bind(&webserver_plugin_impl::handle_ws_message, this, &ws_server, std::placeholders::_1, std::placeholders::_2));
 
                             if (http_endpoint && http_endpoint == ws_endpoint) {
-                                ws_server.set_http_handler(boost::bind(&webserver_plugin_impl::handle_http_message, this, &ws_server, _1));
+                                ws_server.set_http_handler(std::bind(&webserver_plugin_impl::handle_http_message, this, &ws_server, std::placeholders::_1));
                                 ilog("start listending for http requests");
                             }
 
