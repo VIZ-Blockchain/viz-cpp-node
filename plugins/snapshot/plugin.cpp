@@ -1363,22 +1363,21 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     };
 
     // Handle deferred (pending) snapshot from a previous block
+    // The witness check was already performed once when the snapshot was originally
+    // deferred. We do NOT re-check is_witness_producing_soon() here to avoid an
+    // infinite deferral loop where the witness is always scheduled soon.
     if (snapshot_pending && !is_syncing) {
-        if (!is_witness_producing_soon()) {
-            ilog(CLOG_GREEN "Creating deferred snapshot now (witness no longer scheduled): ${p}" CLOG_RESET, ("p", pending_snapshot_path));
-            try {
-                fc::path output(pending_snapshot_path);
-                write_snapshot_to_file(output);
-                update_snapshot_cache(output);
-                cleanup_old_snapshots();
-            } catch (const fc::exception& e) {
-                elog("Failed to create deferred snapshot: ${e}", ("e", e.to_detail_string()));
-            }
-            snapshot_pending = false;
-            pending_snapshot_path.clear();
-        } else {
-            ilog(CLOG_GREEN "Snapshot still deferred at block ${b}: witness scheduled to produce next block" CLOG_RESET, ("b", block_num));
+        ilog(CLOG_GREEN "Creating deferred snapshot now (one-defer limit): ${p}" CLOG_RESET, ("p", pending_snapshot_path));
+        try {
+            fc::path output(pending_snapshot_path);
+            write_snapshot_to_file(output);
+            update_snapshot_cache(output);
+            cleanup_old_snapshots();
+        } catch (const fc::exception& e) {
+            elog("Failed to create deferred snapshot: ${e}", ("e", e.to_detail_string()));
         }
+        snapshot_pending = false;
+        pending_snapshot_path.clear();
     }
 
     // Check --snapshot-at-block: one-time snapshot at exact block
