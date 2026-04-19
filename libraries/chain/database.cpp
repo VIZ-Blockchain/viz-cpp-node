@@ -1376,25 +1376,39 @@ namespace graphene { namespace chain {
 
             const auto &hfp = get_hardfork_property_object();
 
-            if (hfp.current_hardfork_version <
-                CHAIN_HARDFORK_VERSION // Binary is newer hardfork than has been applied
-                && (witness.hardfork_version_vote !=
-                    _hardfork_versions[hfp.last_hardfork + 1] ||
-                    witness.hardfork_time_vote !=
-                    _hardfork_times[hfp.last_hardfork +
-                                    1])) // Witness vote does not match binary configuration
-            {
-                // Make vote match binary configuration
-                pending_block.extensions.insert(block_header_extensions(hardfork_version_vote(_hardfork_versions[
-                        hfp.last_hardfork + 1], _hardfork_times[
-                        hfp.last_hardfork + 1])));
-            } else if (hfp.current_hardfork_version ==
-                       CHAIN_HARDFORK_VERSION // Binary does not know of a new hardfork
-                       && witness.hardfork_version_vote >
-                          CHAIN_HARDFORK_VERSION) // Voting for hardfork in the future, that we do not know of...
-            {
-                // Make vote match binary configuration. This is vote to not apply the new hardfork.
-                pending_block.extensions.insert(block_header_extensions(hardfork_version_vote(_hardfork_versions[hfp.last_hardfork], _hardfork_times[hfp.last_hardfork])));
+            // Emergency committee witness should NOT vote for future hardforks
+            // via block extensions. Its on-chain vote is set to
+            // current_hardfork_version (status quo) and is synced every
+            // schedule update. Auto-injection would overwrite this and
+            // make committee vote for the next hardfork, defeating its
+            // neutral-voter design.
+            const auto &dgp_block = get_dynamic_global_properties();
+            bool is_emergency_committee =
+                has_hardfork(CHAIN_HARDFORK_12) &&
+                dgp_block.emergency_consensus_active &&
+                witness_owner == CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+
+            if (!is_emergency_committee) {
+                if (hfp.current_hardfork_version <
+                    CHAIN_HARDFORK_VERSION // Binary is newer hardfork than has been applied
+                    && (witness.hardfork_version_vote !=
+                        _hardfork_versions[hfp.last_hardfork + 1] ||
+                        witness.hardfork_time_vote !=
+                        _hardfork_times[hfp.last_hardfork +
+                                        1])) // Witness vote does not match binary configuration
+                {
+                    // Make vote match binary configuration
+                    pending_block.extensions.insert(block_header_extensions(hardfork_version_vote(_hardfork_versions[
+                            hfp.last_hardfork + 1], _hardfork_times[
+                            hfp.last_hardfork + 1])));
+                } else if (hfp.current_hardfork_version ==
+                           CHAIN_HARDFORK_VERSION // Binary does not know of a new hardfork
+                           && witness.hardfork_version_vote >
+                              CHAIN_HARDFORK_VERSION) // Voting for hardfork in the future, that we do not know of...
+                {
+                    // Make vote match binary configuration. This is vote to not apply the new hardfork.
+                    pending_block.extensions.insert(block_header_extensions(hardfork_version_vote(_hardfork_versions[hfp.last_hardfork], _hardfork_times[hfp.last_hardfork])));
+                }
             }
 
             if (!(skip & skip_witness_signature)) {
@@ -1824,6 +1838,12 @@ namespace graphene { namespace chain {
                 if (itr->signing_key == public_key_type()) {
                     continue;
                 }
+                // Exclude committee/emergency witness from top witness selection.
+                // It fills gaps via the hybrid schedule, not through normal voting.
+                if (has_hardfork(CHAIN_HARDFORK_12) &&
+                    itr->owner == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                    continue;
+                }
                 selected_voted.insert(itr->id);
                 active_witnesses.push_back(itr->owner);
                 modify(*itr, [&](witness_object &wo) { wo.schedule = witness_object::top; });
@@ -1845,6 +1865,12 @@ namespace graphene { namespace chain {
                 if (sitr->signing_key == public_key_type()) {
                     continue;
                 } /// skip witnesses without a valid block signing key
+
+                // Exclude committee/emergency witness from support selection
+                if (has_hardfork(CHAIN_HARDFORK_12) &&
+                    sitr->owner == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                    continue;
+                }
 
                 if (selected_voted.find(sitr->id) == selected_voted.end()) {
                     support_witnesses.push_back(sitr->owner);
@@ -1883,8 +1909,23 @@ namespace graphene { namespace chain {
             flat_map<version, uint32_t, std::greater<version>> witness_versions;
             flat_map<std::tuple<hardfork_version, time_point_sec>, uint32_t> hardfork_version_votes;
 
+            const dynamic_global_property_object &_dgp = get_dynamic_global_properties();
+
             for (uint32_t i = 0; i < wso.num_scheduled_witnesses; i+=CHAIN_BLOCK_WITNESS_REPEAT) {
-                auto witness = get_witness(wso.current_shuffled_witnesses[i]);
+                auto wname = wso.current_shuffled_witnesses[i];
+
+                // During emergency mode, exclude committee witness from hardfork vote tally.
+                // Committee occupies multiple schedule slots but is a single entity with
+                // default (0.0.0) version fields. Counting it would:
+                //   - Inflate its vote weight (counted once per slot, not once per witness)
+                //   - Drag majority_version to 0.0.0
+                //   - Block any hardfork from reaching CHAIN_HARDFORK_REQUIRED_WITNESSES
+                if (has_hardfork(CHAIN_HARDFORK_12) && _dgp.emergency_consensus_active &&
+                    wname == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                    continue;
+                }
+
+                auto witness = get_witness(wname);
                 if (witness_versions.find(witness.running_version) ==
                     witness_versions.end()) {
                     witness_versions[witness.running_version] = 1;
@@ -2013,17 +2054,27 @@ namespace graphene { namespace chain {
 
                 modify(emergency_wso, [&](witness_schedule_object &_wso) {
                     uint32_t real_witness_slots = 0;
+                    uint32_t committee_slots = 0;
 
-                    for (int i = 0; i < _wso.num_scheduled_witnesses;
+                    // First pass: replace unavailable/empty slots with committee
+                    // Iterate the FULL schedule (CHAIN_MAX_WITNESSES), not just
+                    // num_scheduled_witnesses, because the normal schedule may have
+                    // set num_scheduled_witnesses < CHAIN_MAX_WITNESSES when fewer
+                    // witnesses have valid signing keys.
+                    for (int i = 0; i < CHAIN_MAX_WITNESSES;
                          i += CHAIN_BLOCK_WITNESS_REPEAT) {
-                        const auto &wname = _wso.current_shuffled_witnesses[i];
+                        // Read from slot i, but only if within current num_scheduled_witnesses
+                        const auto &wname = (i < _wso.num_scheduled_witnesses)
+                            ? _wso.current_shuffled_witnesses[i]
+                            : account_name_type();
+
                         if (wname == account_name_type()) {
                             // Empty slot -> assign committee
-                            for (int j = 0; j < CHAIN_BLOCK_WITNESS_REPEAT &&
-                                 (i+j) < _wso.num_scheduled_witnesses; ++j) {
+                            for (int j = 0; j < CHAIN_BLOCK_WITNESS_REPEAT; ++j) {
                                 _wso.current_shuffled_witnesses[i+j] =
                                     CHAIN_EMERGENCY_WITNESS_ACCOUNT;
                             }
+                            committee_slots++;
                             continue;
                         }
 
@@ -2032,21 +2083,45 @@ namespace graphene { namespace chain {
                             w->signing_key != public_key_type();
 
                         if (!witness_available) {
-                            for (int j = 0; j < CHAIN_BLOCK_WITNESS_REPEAT &&
-                                 (i+j) < _wso.num_scheduled_witnesses; ++j) {
+                            for (int j = 0; j < CHAIN_BLOCK_WITNESS_REPEAT; ++j) {
                                 _wso.current_shuffled_witnesses[i+j] =
                                     CHAIN_EMERGENCY_WITNESS_ACCOUNT;
                             }
+                            committee_slots++;
                         } else {
                             real_witness_slots++;
                         }
                     }
 
+                    // Expand num_scheduled_witnesses to CHAIN_MAX_WITNESSES so that
+                    // committee slots are included in the production cycle.
+                    _wso.num_scheduled_witnesses = CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT;
+                    _wso.next_shuffle_block_num =
+                        head_block_num() + _wso.num_scheduled_witnesses;
+
                     ilog("Emergency hybrid schedule: ${r} real witness slots, "
                          "${c} committee slots",
                          ("r", real_witness_slots)
-                         ("c", CHAIN_MAX_WITNESSES - real_witness_slots));
+                         ("c", committee_slots));
                 });
+
+                // Sync committee witness props/hardfork-vote with the latest median
+                // and current hardfork state. This runs every schedule update so that
+                // if real witnesses change their chain_properties during emergency, the
+                // committee's props stay in sync and don't skew the next median
+                // computation. Also keeps hardfork vote aligned with the currently
+                // applied on-chain version.
+                auto committee_wit_itr = get_index<witness_index>().indices().get<by_name>().find(CHAIN_EMERGENCY_WITNESS_ACCOUNT);
+                if (committee_wit_itr != get_index<witness_index>().indices().get<by_name>().end()) {
+                    const auto &latest_hfp = get_hardfork_property_object();
+                    const auto &latest_wso = get_witness_schedule_object();
+                    modify(*committee_wit_itr, [&](witness_object &w) {
+                        w.props = latest_wso.median_props;
+                        w.running_version = CHAIN_VERSION;
+                        w.hardfork_version_vote = latest_hfp.current_hardfork_version;
+                        w.hardfork_time_vote = latest_hfp.processed_hardforks[latest_hfp.last_hardfork];
+                    });
+                }
 
                 // EXIT CONDITION: LIB has advanced past emergency_consensus_start_block.
                 // This means 75% of real witnesses are producing consistently.
@@ -2070,12 +2145,27 @@ namespace graphene { namespace chain {
 
         void database::update_median_witness_props() {
             const witness_schedule_object &wso = get_witness_schedule_object();
+            const dynamic_global_property_object &median_dgp = get_dynamic_global_properties();
 
-            /// fetch all witness objects
+            /// fetch all witness objects (excluding committee during emergency)
             vector<const witness_object *> active;
             active.reserve(wso.num_scheduled_witnesses);
             for (int i = 0; i < wso.num_scheduled_witnesses; i+=CHAIN_BLOCK_WITNESS_REPEAT) {
-                active.push_back(&get_witness(wso.current_shuffled_witnesses[i]));
+                const auto &wname = wso.current_shuffled_witnesses[i];
+                // During emergency mode, exclude committee witness from median computation.
+                // Committee has default chain_properties (zero fees, zero sizes) and
+                // occupies multiple schedule slots, which would skew the median.
+                if (has_hardfork(CHAIN_HARDFORK_12) && median_dgp.emergency_consensus_active &&
+                    wname == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                    continue;
+                }
+                active.push_back(&get_witness(wname));
+            }
+
+            if (active.empty()) {
+                // All committee, no real witnesses to compute median from.
+                // Keep existing median_props unchanged.
+                return;
             }
 
             chain_properties_hf9 median_props;
@@ -4126,9 +4216,24 @@ namespace graphene { namespace chain {
                     missed_blocks--;
                     for (uint32_t i = 0; i < missed_blocks; ++i) {
                         const auto &witness_missed = get_witness(get_scheduled_witness(i + 1));
+
+                        // During emergency mode, skip penalties for offline witnesses.
+                        // The hybrid schedule assigns committee to fill their slots, but
+                        // their slots still get counted as "missed" when committee produces.
+                        // Without this guard, offline witnesses accumulate penalties and
+                        // eventually get signing_key=null (shutdown), which defeats the
+                        // purpose of emergency penalty reset and prevents recovery.
+                        bool is_emergency_offline_witness =
+                            has_hardfork(CHAIN_HARDFORK_12) &&
+                            _dgp.emergency_consensus_active &&
+                            witness_missed.owner != b.witness &&
+                            witness_missed.owner != CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+
                         modify(witness_missed, [&](witness_object &w) {
                             w.current_run = 0;
-                            if(witness_missed.owner != b.witness){
+                            if(is_emergency_offline_witness) {
+                                // Only reset current_run; skip all penalties and shutdown
+                            } else if(witness_missed.owner != b.witness){
                                 // total_missed does not increment when witness_missed.owner == b.witness
                                 // because a low total_missed is a "prestige" item and a witness that
                                 // restarts a dead network is "rewarded" by not having total_missed
@@ -4262,11 +4367,33 @@ namespace graphene { namespace chain {
                                 w.signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY;
                                 w.created = head_block_time();
                                 w.schedule = witness_object::top;
+                                // Set running version to match the binary
+                                w.running_version = CHAIN_VERSION;
+                                // Vote for the CURRENTLY APPLIED hardfork version, not
+                                // CHAIN_HARDFORK_VERSION (which may be ahead). This makes
+                                // committee a neutral voter that reinforces the status quo
+                                // and does not push for a new hardfork on its own.
+                                const auto &hfp = get_hardfork_property_object();
+                                w.hardfork_version_vote = hfp.current_hardfork_version;
+                                w.hardfork_time_vote = hfp.processed_hardforks[hfp.last_hardfork];
+                                // Copy the current median chain properties so that the
+                                // committee witness does not skew the median when it's
+                                // counted in update_median_witness_props(). With median
+                                // props, N committee entries are invisible to the median
+                                // computation (they just reinforce the existing median).
+                                w.props = get_witness_schedule_object().median_props;
                             });
                         } else {
                             modify(*wit_itr, [&](witness_object &w) {
                                 w.signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY;
                                 w.schedule = witness_object::top;
+                                // Update version fields on re-activation too
+                                w.running_version = CHAIN_VERSION;
+                                const auto &hfp = get_hardfork_property_object();
+                                w.hardfork_version_vote = hfp.current_hardfork_version;
+                                w.hardfork_time_vote = hfp.processed_hardforks[hfp.last_hardfork];
+                                // Sync chain properties with current median
+                                w.props = get_witness_schedule_object().median_props;
                             });
                         }
 

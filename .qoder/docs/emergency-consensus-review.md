@@ -1,6 +1,6 @@
 # Emergency Consensus Recovery — Implementation Review
 
-## Status: Implemented (Hardfork 12, version 3.1.0)
+## Status: Implemented (Hardfork 12, version 3.1.0) — Bugs Found and Fixed
 
 Research source: [consensus-emergency-recovery.md](../research/consensus-emergency-recovery.md)
 
@@ -9,6 +9,8 @@ Research source: [consensus-emergency-recovery.md](../research/consensus-emergen
 ## System Overview
 
 Hardfork 12 adds an automatic on-chain **Emergency Consensus Mode** that activates when the VIZ network stalls for >1 hour (no LIB advancement). A well-known committee key (`VIZ75CRHVHPwYiUESy1bgN3KhVFbZCQQRA9jT6TnpzKAmpxMPD6Xv`) becomes the block producer, keeping the chain alive until real witnesses return. The system requires **zero manual intervention** to enter or exit.
+
+The committee witness is a **neutral voter**: it copies the current median chain properties and votes for the currently applied hardfork version (not a future one). This ensures that committee slots in the schedule don't skew governance parameters or push unvoted hardforks.
 
 ### Key Files Modified
 
@@ -53,6 +55,12 @@ Hardfork 12 adds an automatic on-chain **Emergency Consensus Mode** that activat
                     │  Hybrid schedule:             │
                     │   • Real witnesses keep slots │
                     │   • Committee fills gaps      │
+                    │   • Expand to full 21 slots   │
+                    │   • Sync committee props/vote │
+                    │                               │
+                    │  Skip committee in:           │
+                    │   • Hardfork vote tally       │
+                    │   • Median props computation  │
                     │                               │
                     │  Exit check:                  │
                     │   LIB > emergency_start_block?│
@@ -150,8 +158,9 @@ Hardfork 12 adds an automatic on-chain **Emergency Consensus Mode** that activat
 
 **Emergency behavior**:
 1. On emergency activation, **all penalties are reset**: `penalty_percent = 0`, `counted_votes = votes`, `current_run = 0`. All `witness_penalty_expire_object` entries are removed.
-2. However, `signing_key` reset is **not** reversed by emergency mode. Witnesses with null keys appear in the hybrid schedule but their slots are filled by committee (since `signing_key == null` triggers committee substitution in `update_witness_schedule()`).
-3. Witnesses must broadcast `witness_update_operation` to re-register their signing key.
+2. **During emergency, offline witnesses do NOT accumulate new missed-block penalties**. The `update_global_dynamic_data()` penalty/shutdown logic is skipped for witnesses that are not the block producer and not the committee account. This prevents the `signing_key = null` shutdown from re-triggering after the initial penalty reset.
+3. However, `signing_key` reset from **before** emergency activation is **not** reversed. Witnesses with null keys have their slots filled by committee (since `signing_key == null` triggers committee substitution in `update_witness_schedule()`).
+4. Witnesses must broadcast `witness_update_operation` to re-register their signing key.
 
 **Recovery**: Emergency blocks **allow transactions** (not forced empty). So witnesses can:
 1. Connect their node to the P2P network.
@@ -160,6 +169,65 @@ Hardfork 12 adds an automatic on-chain **Emergency Consensus Mode** that activat
 4. On the next schedule update, the witness gets their slot back in the hybrid schedule.
 
 **This is intentional**: `signing_key = null` is a consensus-level safety mechanism. Automatically restoring it would bypass the witness's explicit consent to re-enter production.
+
+---
+
+## Bugs Found and Fixed
+
+The following bugs were discovered during code review of the emergency consensus implementation, specifically for the scenario of **1 node running 11 top witnesses** with other witnesses expected to join later.
+
+### B1 (Critical): Hybrid Schedule Doesn't Expand `num_scheduled_witnesses`
+
+**Problem**: `update_witness_schedule()` sets `num_scheduled_witnesses` to the count of witnesses with valid signing keys (e.g., 11). The hybrid override loop only iterated up to `num_scheduled_witnesses`, so empty slots at indices 11-20 were never visited and never assigned to committee. After the first schedule round, committee disappeared from production entirely.
+
+**Fix**: The hybrid override now iterates the full `CHAIN_MAX_WITNESSES` range, reads entries beyond `num_scheduled_witnesses` as empty, assigns committee to all empty/unavailable slots, and sets `num_scheduled_witnesses = CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT`.
+
+### B2 (Critical): Committee Over-Counted in Hardfork Vote Tally
+
+**Problem**: With `CHAIN_BLOCK_WITNESS_REPEAT = 1`, the hardfork vote tally iterates every schedule slot. Committee filling 10 slots caused `get_witness("committee")` to be called 10 times, incrementing the committee's vote count by 10. The committee's default `hardfork_version_vote = 0.0.0` dominated the tally and blocked any hardfork from reaching `CHAIN_HARDFORK_REQUIRED_WITNESSES = 17`.
+
+**Fix**: The hardfork vote tally now skips `CHAIN_EMERGENCY_WITNESS_ACCOUNT` during emergency mode. Only real witnesses' votes count toward hardfork adoption.
+
+### B3 (High): Committee Skews Median Chain Properties
+
+**Problem**: `update_median_witness_props()` collected all schedule entries including 10 committee copies. The committee's default `chain_properties` (zero fees, zero sizes, zero penalties) skewed the median, enabling spam attacks and removing miss penalties.
+
+**Fix** (two-part):
+1. The committee witness is initialized with `props = median_props` (current median), and re-synced every schedule update. This makes committee entries neutral — they reinforce the existing median rather than distorting it.
+2. As defense-in-depth, `update_median_witness_props()` skips committee entries during emergency mode. This ensures the median reflects only real witnesses' preferences.
+
+### B4 (High): Offline Witnesses Accumulate Penalties During Emergency
+
+**Problem**: When committee produced a block, the `missed_blocks` loop in `update_global_dynamic_data()` applied penalties to offline witnesses for every missed slot. After 200 missed blocks (~10 minutes), their `signing_key` was set to null again — the same problem that emergency activation's penalty reset tried to solve.
+
+**Fix**: During emergency mode, the penalty/shutdown logic is skipped for witnesses that are not the block producer and not the committee. Only `current_run` is reset; `total_missed`, `penalty_percent`, and `signing_key` shutdown do not apply.
+
+### B5 (Medium): Committee Could Be Selected as Top/Support Witness
+
+**Problem**: The top/support witness selection iterated by `counted_votes`. If the committee witness ever received votes, it could compete for a production slot, displacing a real witness.
+
+**Fix**: Both top and support witness selection loops now explicitly exclude `CHAIN_EMERGENCY_WITNESS_ACCOUNT`.
+
+### B6 (Medium): Committee Hardfork Vote Auto-Injected via Block Extensions
+
+**Problem**: `_generate_block()` auto-injects a `hardfork_version_vote` extension when the witness's on-chain vote doesn't match the binary's configured next hardfork. For the committee witness (which votes for `current_hardfork_version`), this extension overwrote the on-chain vote to the next hardfork version via `process_header_extensions()`, defeating the neutral-voter design.
+
+**Fix**: When the block producer is the emergency committee, hardfork vote auto-injection is skipped entirely. The committee's on-chain vote stays at `current_hardfork_version` and is re-synced every schedule update.
+
+### Committee Neutral Voter Design
+
+After all fixes, the committee witness has these properties:
+
+| Field | Value | Rationale |
+|---|---|---|
+| `signing_key` | `CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY` | Required for block production |
+| `running_version` | `CHAIN_VERSION` | Matches the binary |
+| `hardfork_version_vote` | `current_hardfork_version` | Votes for status quo, not future hardforks |
+| `hardfork_time_vote` | `processed_hardforks[last_hardfork]` | Time the current hardfork was applied |
+| `props` | `median_props` (current) | Copies current median, doesn't skew it |
+| `schedule` | `top` | Required for hybrid schedule assignment |
+
+The committee's props and hardfork vote are re-synced every schedule update (`update_witness_schedule()`) to stay aligned with the latest median and hardfork state.
 
 ---
 
@@ -237,8 +305,8 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 |---|---|
 | **Precondition** | 21 witnesses active, network healthy |
 | **Action** | Shut down all 21 witnesses. Wait >1 hour. Start 1 node with emergency key. Gradually restart witnesses. |
-| **Expected** | Emergency activates at LIB+3600s. Committee produces blocks. Witnesses re-register via `witness_update_operation`. When 16+ produce → LIB advances → emergency exits. |
-| **Components** | Activation, hybrid schedule, LIB freeze, penalty reset, exit condition |
+| **Expected** | Emergency activates at LIB+3600s. Committee produces blocks (full 21-slot hybrid schedule). Offline witnesses do NOT accumulate penalties. Committee props synced to median, hardfork vote synced to current version. Witnesses re-register via `witness_update_operation`. When 16+ produce → LIB advances → emergency exits. |
+| **Components** | Activation, hybrid schedule (full expansion), LIB freeze, penalty skip, committee neutral voter, exit condition |
 
 ### T2: 2-Way Partition (Majority/Minority)
 
@@ -300,8 +368,8 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 |---|---|
 | **Precondition** | Emergency active. All witnesses had `signing_key` nullified by missed-block shutdown. |
 | **Action** | Witness operator broadcasts `witness_update_operation` via CLI wallet during emergency. |
-| **Expected** | Transaction included in emergency block. Witness object updated with new signing key. Next schedule update: witness gets their slot in hybrid schedule instead of committee. Witness begins producing. |
-| **Components** | Transaction processing during emergency, hybrid schedule update, penalty reset |
+| **Expected** | Transaction included in emergency block. Witness object updated with new signing key. Next schedule update: witness gets their slot in hybrid schedule instead of committee. Witness begins producing. Offline witnesses do NOT get `signing_key` nullified again during emergency (penalty/shutdown skipped). |
+| **Components** | Transaction processing during emergency, hybrid schedule update, penalty skip during emergency |
 
 ### T9: Snapshot Restore + Emergency Interaction
 
@@ -327,7 +395,7 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 |---|---|
 | **Precondition** | HF12 active. All 21 witnesses online. Network healthy. |
 | **Action** | Normal operation for extended period. Occasional witness restarts. |
-| **Expected** | Emergency never activates (LIB advances every few seconds). Three-state safety: healthy mode enforces safe defaults regardless of `enable-stale-production` config. Vote-weighted comparison active but functionally equivalent to longest-chain (same witnesses on both sides of any micro-fork). |
+| **Expected** | Emergency never activates (LIB advances every few seconds). Three-state safety: healthy mode enforces safe defaults regardless of `enable-stale-production` config. Vote-weighted comparison active but functionally equivalent to longest-chain (same witnesses on both sides of any micro-fork). Committee exclusion in hardfork tally and median props is a no-op (committee not in schedule). |
 | **Components** | No-regression, three-state safety (healthy mode), vote-weighted comparison |
 
 ### T12: `enable-stale-production` Ignored in Healthy Mode
@@ -338,3 +406,21 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 | **Action** | Network partition isolates this witness. |
 | **Expected** | Participation rate ≥33% → healthy mode → `enable-stale-production` is **ignored**. Witness stops producing when it detects it's isolated (no recent blocks). **This is the core micro-fork prevention feature.** |
 | **Components** | Three-state safety (healthy mode auto-enforces safe defaults) |
+
+### T13: Partial Witness Set (11 Top Witnesses on 1 Node)
+
+| | |
+|---|---|
+| **Precondition** | Network stalled >1 hour. 1 node with 11 top witnesses + emergency key. 10 other witnesses offline. |
+| **Action** | Emergency activates. 11 real witnesses produce at their slots. Committee fills the other 10 slots. Over time, other witnesses re-join. |
+| **Expected** | Hybrid schedule expands to full 21 slots (11 real + 10 committee). Committee witness has `props = median_props` and `hardfork_version_vote = current_hardfork_version` — neutral voter. Hardfork vote tally excludes committee (only 11 real votes counted). Median props computed from real witnesses only. Offline witnesses don't accumulate penalties. When 16+ real witnesses are producing, LIB advances past `emergency_consensus_start_block` → emergency exits. |
+| **Components** | Hybrid schedule expansion, committee neutral voter, hardfork tally exclusion, median props exclusion, penalty skip, LIB computation with partial witnesses |
+
+### T14: Committee Hardfork Vote Neutrality
+
+| | |
+|---|---|
+| **Precondition** | Emergency active. Binary version includes a pending hardfork (e.g., HF13) that has not been applied on-chain yet. 11 real witnesses running HF13 binary. |
+| **Action** | Committee produces blocks. Verify committee's on-chain `hardfork_version_vote` stays at the current applied version. |
+| **Expected** | Committee's block headers do NOT contain `hardfork_version_vote` extensions. `process_header_extensions()` does not update the committee's on-chain vote. Committee vote stays at `current_hardfork_version` (e.g., HF12). Only real witnesses' votes count toward HF13 adoption (need 17 of them). Committee props/hardfork vote re-synced every schedule update. |
+| **Components** | Hardfork vote auto-injection skip, process_header_extensions, committee props sync |
