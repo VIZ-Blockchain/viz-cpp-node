@@ -15,14 +15,12 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced P2P synchronization reliability with comprehensive early block rejection logic
-- Improved fork database handling with bug fixes and LIB promotion optimizations
-- Added DLT mode optimizations with rolling block log support and improved block validation
-- Implemented comprehensive snapshot access control features with detailed denial reasons
-- Enhanced snapshot creation and loading with witness-aware deferral and anti-spam protection
-- Added stalled sync detection for DLT mode with automatic snapshot re-download capabilities
-- Integrated snapshot reload functionality for automatic recovery from network partitions
-- Enhanced P2P fallback mechanisms with improved peer selection and retry logic
+- Enhanced emergency consensus handling with forward-compatible fields for emergency consensus activation
+- Added comprehensive watchdog mechanism for detecting and restarting dead accept loops
+- Implemented dedicated server thread architecture mirroring P2P plugin's approach
+- Introduced new anti-spam configuration options including disable-snapshot-anti-spam and snapshot-serve-allow-ip
+- Enhanced access control system with improved trust enforcement and session management
+- Added comprehensive documentation for emergency consensus features and watchdog mechanisms
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -30,12 +28,15 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Access Control and Security Mechanisms](#access-control-and-security-mechanisms)
-7. [Integration with Chain Plugin](#integration-with-chain-plugin)
-8. [Dependency Analysis](#dependency-analysis)
-9. [Performance Considerations](#performance-considerations)
-10. [Troubleshooting Guide](#troubleshooting-guide)
-11. [Conclusion](#conclusion)
+6. [Emergency Consensus Handling](#emergency-consensus-handling)
+7. [Enhanced Anti-Spam Protection](#enhanced-anti-spam-protection)
+8. [Watchdog Mechanism](#watchdog-mechanism)
+9. [Access Control and Security Mechanisms](#access-control-and-security-mechanisms)
+10. [Integration with Chain Plugin](#integration-with-chain-plugin)
+11. [Dependency Analysis](#dependency-analysis)
+12. [Performance Considerations](#performance-considerations)
+13. [Troubleshooting Guide](#troubleshooting-guide)
+14. [Conclusion](#conclusion)
 
 ## Introduction
 
@@ -43,7 +44,7 @@ The Snapshot Plugin System is a comprehensive solution for VIZ blockchain nodes 
 
 The plugin addresses the fundamental challenge of blockchain bootstrapping by allowing nodes to jump directly to a recent state rather than replaying thousands of blocks. This is particularly crucial for VIZ's social media and content platform characteristics, where rapid deployment and scaling are essential.
 
-**Updated** The system has been enhanced with comprehensive access control mechanisms including detailed denial reasons, improved security through anti-spam protection, robust resource management for snapshot distribution services, and advanced P2P synchronization reliability features. The recent additions include DLT mode integration with rolling block log support, stalled sync detection for automatic recovery, and enhanced P2P fallback mechanisms.
+**Updated** The system has been enhanced with comprehensive emergency consensus handling, watchdog mechanisms for server reliability, dedicated server thread architecture, and advanced anti-spam protection with new configuration options. The recent additions include forward-compatible emergency consensus fields, improved trust enforcement, and robust resource management for snapshot distribution services.
 
 ## Project Structure
 
@@ -106,7 +107,7 @@ The plugin implements a custom TCP protocol for peer-to-peer snapshot distributi
 #### Database Integration Layer
 Deep integration with the VIZ blockchain database ensures seamless state transitions and maintains consistency during snapshot operations.
 
-**Updated** The modular architecture provides enhanced extensibility and maintainability through clear separation of concerns between interface, serialization, network, and database components. The recent additions include DLT mode support, stalled sync detection, and improved P2P fallback mechanisms.
+**Updated** The modular architecture provides enhanced extensibility and maintainability through clear separation of concerns between interface, serialization, network, and database components. The recent additions include emergency consensus handling, watchdog mechanisms, and improved anti-spam protection.
 
 **Section sources**
 - [plugin.hpp:42-76](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L42-L76)
@@ -156,9 +157,13 @@ L --> V[File System]
 M --> V
 V --> W[Snapshot Files]
 end
+subgraph "Reliability Layer"
+N --> X[Watchdog Mechanism]
+X --> Y[Dedicated Server Thread]
+end
 ```
 
-**Updated** The architecture emphasizes separation of concerns with clear boundaries between serialization, networking, database operations, and security controls. The modular design enables independent development and testing of each component while maintaining system coherence. Recent enhancements include DLT mode integration, stalled sync detection, and improved P2P fallback mechanisms.
+**Updated** The architecture emphasizes separation of concerns with clear boundaries between serialization, networking, database operations, and security controls. The modular design enables independent development and testing of each component while maintaining system coherence. Recent enhancements include watchdog mechanisms, dedicated server threads, and comprehensive emergency consensus handling.
 
 **Diagram sources**
 - [plugin.cpp:675-780](file://plugins/snapshot/plugin.cpp#L675-L780)
@@ -273,7 +278,7 @@ end
 Note over Client,Server : Connection Closed
 ```
 
-**Updated** The protocol includes sophisticated anti-spam protection mechanisms, trust enforcement, and detailed denial reasons. The security layer provides comprehensive access control with specific reason codes for different violation types. Recent enhancements include improved peer selection algorithms and enhanced retry logic for automatic recovery.
+**Updated** The protocol includes sophisticated anti-spam protection mechanisms, trust enforcement, and detailed denial reasons. The security layer provides comprehensive access control with specific reason codes for different violation types. Recent enhancements include watchdog mechanisms for server reliability and improved peer selection algorithms.
 
 **Diagram sources**
 - [plugin.cpp:1902-2038](file://plugins/snapshot/plugin.cpp#L1902-L2038)
@@ -297,10 +302,150 @@ The plugin supports extensive configuration through both command-line arguments 
 | `stalled-sync-timeout-minutes` | uint32 | 5 | Timeout for stalled sync |
 | `test-trusted-seeds` | bool | false | Test trusted peers connectivity |
 | `dlt-block-log-max-blocks` | uint32 | 100000 | Rolling DLT block log window |
+| `disable-snapshot-anti-spam` | bool | false | Disable anti-spam checks |
+| `snapshot-serve-allow-ip` | string[] | [] | Allowed client IPs for serving |
+
+**Updated** The configuration system now includes new options for enhanced anti-spam protection and emergency consensus handling. The `disable-snapshot-anti-spam` option allows disabling all anti-spam checks for trusted networks, while `snapshot-serve-allow-ip` provides granular control over client IP permissions.
 
 **Section sources**
 - [plugin.cpp:2473-2510](file://plugins/snapshot/plugin.cpp#L2473-L2510)
 - [snapshot-plugin.md:247-273](file://documentation/snapshot-plugin.md#L247-L273)
+
+## Emergency Consensus Handling
+
+**Updated** The snapshot plugin now includes comprehensive emergency consensus handling with forward-compatible fields for emergency consensus activation.
+
+### Emergency Consensus Fields
+
+The dynamic global property object now includes emergency consensus fields for enhanced network resilience:
+
+```mermaid
+flowchart TD
+Start([Dynamic Global Property Import]) --> CheckFields["Check for Emergency Consensus Fields"]
+CheckFields --> HasFields{"Emergency Consensus Fields Present?"}
+HasFields --> |Yes| ImportFields["Import emergency_consensus_active<br/>and emergency_consensus_start_block"]
+HasFields --> |No| SetDefaults["Set defaults:<br/>emergency_consensus_active = false<br/>emergency_consensus_start_block = 0"]
+ImportFields --> ContinueProcessing["Continue with Normal Processing"]
+SetDefaults --> ContinueProcessing
+ContinueProcessing --> Complete([Import Complete])
+```
+
+### Forward-Compatible Design
+
+The emergency consensus handling implements a forward-compatible approach:
+
+- **Backward Compatibility**: Nodes without emergency consensus fields gracefully handle snapshots from newer nodes
+- **Default Values**: Missing fields are assigned sensible defaults
+- **Runtime Activation**: Emergency consensus can be activated dynamically without requiring snapshot regeneration
+
+**Section sources**
+- [plugin.cpp:165-176](file://plugins/snapshot/plugin.cpp#L165-L176)
+
+## Enhanced Anti-Spam Protection
+
+**Updated** The snapshot plugin now includes comprehensive anti-spam protection with new configuration options and improved trust enforcement mechanisms.
+
+### Anti-Spam Architecture
+
+The anti-spam system provides multiple layers of protection against abuse:
+
+```mermaid
+flowchart TD
+Start([Incoming Connection]) --> CheckAntiSpam{"Anti-Spam Enabled?"}
+CheckAntiSpam --> |No| CheckTrust{"Allow Only Trusted?"}
+CheckAntiSpam --> |Yes| CheckConcurrent{"Concurrent Connections < 5?"}
+CheckTrust --> |Yes| ValidateTrust{"IP in Trusted List?"}
+CheckTrust --> |No| CheckSession{"Active Sessions < 2/IP?"}
+CheckConcurrent --> |No| DenyMaxConnections["Send DENY_MAX_CONNECTIONS"]
+CheckConcurrent --> |Yes| CheckSession
+CheckSession --> |No| DenySessionLimit["Send DENY_SESSION_LIMIT"]
+CheckSession --> |Yes| CheckRate{"Connections < 6/Hour/IP?"}
+CheckRate --> |No| DenyRateLimited["Send DENY_RATE_LIMITED"]
+CheckRate --> |Yes| Accept["Accept Connection"]
+ValidateTrust --> |No| DenyUntrusted["Send DENY_UNTRUSTED"]
+ValidateTrust --> |Yes| Accept
+Accept --> Process["Process Snapshot Request"]
+```
+
+### New Configuration Options
+
+The anti-spam system introduces several new configuration options:
+
+#### disable-snapshot-anti-spam
+- **Purpose**: Disable all anti-spam checks for snapshot serving
+- **Use Case**: Trusted networks where anti-spam protection is not needed
+- **Security Implications**: Removes all rate limiting and session management
+
+#### snapshot-serve-allow-ip
+- **Purpose**: Specify which client IPs are allowed to connect for snapshot serving
+- **Use Case**: Private networks with controlled access
+- **Implementation**: Maintains whitelist of approved client IP addresses
+
+### Enhanced Trust Enforcement
+
+The trust enforcement system now operates independently of anti-spam protection:
+
+- **Separate Logic**: Trust validation occurs before anti-spam checks
+- **Whitelist Management**: Dynamic updates to trusted IP lists
+- **Consistent Enforcement**: Anti-spam rules apply uniformly regardless of trust status
+
+**Section sources**
+- [plugin.cpp:1587-1596](file://plugins/snapshot/plugin.cpp#L1587-L1596)
+- [plugin.cpp:1610-1620](file://plugins/snapshot/plugin.cpp#L1610-L1620)
+- [plugin.cpp:1812-1877](file://plugins/snapshot/plugin.cpp#L1812-L1877)
+
+## Watchdog Mechanism
+
+**Updated** The snapshot plugin now includes a comprehensive watchdog mechanism for detecting and restarting dead accept loops, ensuring server reliability and continuous operation.
+
+### Watchdog Architecture
+
+The watchdog system provides continuous monitoring and automatic recovery:
+
+```mermaid
+sequenceDiagram
+participant Watchdog as Watchdog Thread
+participant Server as Snapshot Server
+participant AcceptLoop as Accept Loop
+Watchdog->>Watchdog : Start monitoring loop
+loop Every 30 Seconds
+Watchdog->>Server : Check last_accept_activity
+Server-->>Watchdog : Last activity timestamp
+Watchdog->>Watchdog : Calculate idle time
+alt Accept Loop Dead
+Watchdog->>Server : Restart accept loop
+Server->>Server : Clean up old state
+Server->>Server : Create new server socket
+Server->>Server : Reset anti-spam state
+Server->>Server : Start fresh accept loop
+else Accept Loop Alive
+Watchdog->>Watchdog : Continue monitoring
+end
+end
+```
+
+### Watchdog Features
+
+The watchdog mechanism includes several key features:
+
+#### Dead Accept Loop Detection
+- **Monitoring Interval**: Checks every 30 seconds
+- **Activity Tracking**: Monitors last accept loop activity timestamp
+- **Automatic Restart**: Restarts dead accept loops with full cleanup
+
+#### Graceful Recovery
+- **State Cleanup**: Resets all anti-spam state to prevent corruption
+- **Socket Recreation**: Creates fresh server sockets for new connections
+- **Thread Safety**: Properly shuts down dedicated server thread before restart
+
+#### Reliability Enhancements
+- **Memory Leak Prevention**: Prevents accumulation of stale session data
+- **Resource Management**: Ensures proper cleanup of all server resources
+- **Continuous Operation**: Maintains server availability even during accept loop failures
+
+**Section sources**
+- [plugin.cpp:735-740](file://plugins/snapshot/plugin.cpp#L735-L740)
+- [plugin.cpp:1814-1862](file://plugins/snapshot/plugin.cpp#L1814-L1862)
 
 ## Access Control and Security Mechanisms
 
@@ -433,7 +578,7 @@ N --> P[Shared Library]
 end
 ```
 
-**Updated** The dependency graph reveals a clean separation between core blockchain functionality and plugin-specific features. The plugin relies on established VIZ infrastructure while maintaining independence from external systems, demonstrating the benefits of the modular architecture. Recent enhancements include improved DLT mode dependencies and enhanced P2P integration.
+**Updated** The dependency graph reveals a clean separation between core blockchain functionality and plugin-specific features. The plugin relies on established VIZ infrastructure while maintaining independence from external systems, demonstrating the benefits of the modular architecture. Recent enhancements include watchdog dependencies and enhanced P2P integration.
 
 **Diagram sources**
 - [CMakeLists.txt:27-38](file://plugins/snapshot/CMakeLists.txt#L27-L38)
@@ -465,12 +610,13 @@ The snapshot plugin implements several performance optimization strategies throu
 - Efficient object copying mechanisms handle complex data structures
 - Automatic cleanup of temporary files and resources
 
-**Updated** The modular architecture enhances performance by enabling independent optimization of each layer while maintaining system cohesion. The access control mechanisms are designed to minimize performance impact while providing comprehensive security. Recent improvements include DLT mode optimizations and enhanced P2P synchronization performance.
+**Updated** The modular architecture enhances performance by enabling independent optimization of each layer while maintaining system cohesion. The watchdog mechanism and enhanced anti-spam protections are designed to minimize performance impact while providing comprehensive security. Recent improvements include dedicated server thread optimizations and emergency consensus handling efficiency.
 
 ### Security Performance Considerations
 - Access control checks are performed efficiently using hash maps for IP lookups
 - Session tracking uses atomic counters for thread-safe operations
 - Rate limiting maintains minimal memory overhead through sliding window algorithm
+- Watchdog mechanism operates with minimal CPU overhead through efficient monitoring
 
 ## Troubleshooting Guide
 
@@ -518,6 +664,35 @@ The snapshot plugin implements several performance optimization strategies throu
 - **Cause**: Client exceeded 6 connections per hour limit
 - **Solution**: Wait for rate limit window to reset or reduce connection frequency
 
+### Watchdog and Server Issues
+
+**Accept Loop Dead**
+- **Symptom**: Server appears to stop accepting connections
+- **Cause**: Accept loop fiber died or became unresponsive
+- **Solution**: Watchdog automatically restarts accept loop with full cleanup
+
+**Server Thread Issues**
+- **Symptom**: Server becomes unresponsive or crashes
+- **Cause**: Resource exhaustion or memory leaks in server thread
+- **Solution**: Watchdog detects and restarts server thread with clean state
+
+**Anti-Spam State Corruption**
+- **Symptom**: Anti-spam counters show inconsistent values
+- **Cause**: Memory corruption or race conditions
+- **Solution**: Watchdog resets anti-spam state during restart
+
+### Emergency Consensus Issues
+
+**Emergency Consensus Not Activating**
+- **Symptom**: Emergency consensus fields ignored during import
+- **Cause**: Missing emergency consensus fields in snapshot
+- **Solution**: Use snapshots from nodes with emergency consensus support
+
+**Forward Compatibility Problems**
+- **Symptom**: New emergency consensus fields cause import errors
+- **Cause**: Old nodes lack emergency consensus support
+- **Solution**: Upgrade nodes to support emergency consensus fields
+
 ### P2P Synchronization Issues
 
 **Stalled Sync Detection**
@@ -546,10 +721,11 @@ The plugin includes comprehensive diagnostic capabilities:
 
 - **Trusted Seeds Test**: Validates connectivity and performance of configured peers
 - **Stalled Sync Detection**: Automatically recovers from network partitions
-- **Progress Monitoring**: Real-time feedback during long-running operations
+- **Watchdog Monitoring**: Real-time server health and accept loop status
 - **Access Control Logging**: Detailed logs for denial reasons and security events
+- **Emergency Consensus Monitoring**: Tracks emergency consensus activation status
 
-**Updated** The modular architecture provides enhanced diagnostic capabilities through separate layers for serialization, networking, database operations, and security controls, enabling more precise troubleshooting. Recent improvements include enhanced P2P fallback diagnostics and improved stalled sync detection monitoring.
+**Updated** The modular architecture provides enhanced diagnostic capabilities through separate layers for serialization, networking, database operations, and security controls, enabling more precise troubleshooting. Recent improvements include watchdog monitoring, enhanced P2P fallback diagnostics, and emergency consensus status tracking.
 
 **Section sources**
 - [plugin.cpp:2294-2464](file://plugins/snapshot/plugin.cpp#L2294-L2464)
@@ -559,10 +735,10 @@ The plugin includes comprehensive diagnostic capabilities:
 
 The Snapshot Plugin System represents a sophisticated solution for blockchain state synchronization that significantly improves the VIZ node bootstrapping experience. Through careful architectural design, comprehensive feature coverage, and robust error handling, it enables efficient deployment and scaling of VIZ-based applications.
 
-**Updated** The recent enhancement with comprehensive access control mechanisms including detailed denial reasons has significantly improved the security and resource management capabilities of the snapshot distribution services. The system now provides robust protection against abuse while maintaining efficient operation. The addition of DLT mode integration, stalled sync detection, automatic recovery capabilities, and improved P2P fallback mechanisms makes it an essential component for modern VIZ blockchain deployments.
+**Updated** The recent enhancements with comprehensive emergency consensus handling, watchdog mechanisms, dedicated server thread architecture, and improved anti-spam protection have significantly strengthened the security, reliability, and resource management capabilities of the snapshot distribution services. The system now provides robust protection against abuse while maintaining efficient operation, with comprehensive monitoring and automatic recovery capabilities.
 
 Key strengths of the system include its modular architecture, extensive configuration options, built-in performance optimizations, and comprehensive security features. The plugin seamlessly integrates with existing VIZ infrastructure while providing powerful new capabilities for state management and peer-to-peer synchronization.
 
 The implementation demonstrates best practices in blockchain plugin development, including proper resource management, error handling, user experience considerations, and security through layered access control. The modular design enables independent development and testing of each component while maintaining system coherence, representing a significant advancement in extensibility and maintainability.
 
-Future enhancements could focus on additional compression algorithms, enhanced security features, expanded monitoring capabilities, and more sophisticated access control policies, leveraging the solid foundation provided by the modular architecture with comprehensive access control mechanisms and DLT mode integration.
+Future enhancements could focus on additional compression algorithms, enhanced security features, expanded monitoring capabilities, and more sophisticated access control policies, leveraging the solid foundation provided by the modular architecture with comprehensive emergency consensus handling, watchdog mechanisms, and advanced anti-spam protection.
