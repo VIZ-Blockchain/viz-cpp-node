@@ -6,6 +6,7 @@
 #include <graphene/chain/chain_objects.hpp>
 #include <graphene/chain/chain_object_types.hpp>
 #include <graphene/chain/witness_objects.hpp>
+#include <graphene/chain/hardfork.hpp>
 #include <graphene/time/time.hpp>
 
 #include <graphene/utilities/key_conversion.hpp>
@@ -127,6 +128,11 @@ namespace graphene {
                         ("required-participation", bpo::value<uint32_t>()->default_value(33 * CHAIN_1_PERCENT), "Percent of witnesses (0-99) that must be participating in order to produce blocks")
                         ("witness,w", bpo::value<vector<string>>()->composing()->multitoken(), ("name of witness controlled by this node (e.g. " + witness_id_example + " )").c_str())
                         ("private-key", bpo::value<vector<string>>()->composing()->multitoken(), "WIF PRIVATE KEY to be used by one or more witnesses")
+                        ("emergency-private-key", bpo::value<vector<string>>()->composing()->multitoken(),
+                         "WIF PRIVATE KEY for emergency consensus block production. "
+                         "Only used when the network enters emergency consensus mode "
+                         "(no blocks for >1 hour since last irreversible block). "
+                         "Multiple nodes can safely have this key.")
                         ;
 
                 config_file_options.add(command_line_options);
@@ -161,6 +167,19 @@ namespace graphene {
                             FC_ASSERT(private_key.valid(), "unable to parse private key");
                             pimpl->_private_keys[private_key->get_public_key()] = *private_key;
                         }
+                    }
+
+                    if (options.count("emergency-private-key")) {
+                        const std::vector<std::string> keys = options["emergency-private-key"].as<std::vector<std::string>>();
+                        for (const std::string &wif_key : keys) {
+                            fc::optional<fc::ecc::private_key> private_key = graphene::utilities::wif_to_key(wif_key);
+                            FC_ASSERT(private_key.valid(), "unable to parse emergency private key");
+                            pimpl->_private_keys[private_key->get_public_key()] = *private_key;
+                        }
+                        // Add the committee account to our witness set so we produce blocks
+                        // when the schedule assigns committee slots during emergency mode
+                        pimpl->_witnesses.insert(CHAIN_EMERGENCY_WITNESS_ACCOUNT);
+                        ilog("Emergency private key loaded. Will produce blocks during emergency consensus mode.");
                     }
 
                     ilog("witness plugin:  plugin_initialize() end");
@@ -329,12 +348,56 @@ namespace graphene {
                 fc::time_point now_fine = graphene::time::now();
                 fc::time_point_sec now = now_fine + fc::microseconds( 500000 );
 
-                // If the next block production opportunity is in the present or future, we're synced.
-                if (!_production_enabled) {
-                    if (db.get_slot_time(1) >= now) {
+                // === HARDFORK 12: THREE-STATE SAFETY ENFORCEMENT ===
+                const auto &dgp = db.get_dynamic_global_properties();
+
+                if (db.has_hardfork(CHAIN_HARDFORK_12)) {
+                    if (dgp.emergency_consensus_active) {
+                        // EMERGENCY MODE: auto-bypass both stale and participation checks.
+                        // The consensus layer has determined emergency mode is needed.
                         _production_enabled = true;
                     } else {
-                        return block_production_condition::not_synced;
+                        uint32_t prate = db.witness_participation_rate();
+                        if (prate >= 33 * CHAIN_1_PERCENT) {
+                            // HEALTHY NETWORK: enforce safe defaults automatically.
+                            // Even if operator has enable-stale-production=true in config,
+                            // it's overridden because the network doesn't need it.
+                            if (!_production_enabled) {
+                                if (db.get_slot_time(1) >= now) {
+                                    _production_enabled = true;
+                                } else {
+                                    return block_production_condition::not_synced;
+                                }
+                            }
+                            // Participation is already >= 33%, no need to check again
+                        } else {
+                            // DISTRESSED NETWORK (participation < 33%, not yet emergency):
+                            // Honor manual config overrides -- operator may be trying to
+                            // accelerate recovery before the 1-hour timeout.
+                            if (!_production_enabled) {
+                                if (_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
+                                    // enable-stale-production=true -> skip sync check
+                                    _production_enabled = true;
+                                } else if (db.get_slot_time(1) >= now) {
+                                    _production_enabled = true;
+                                } else {
+                                    return block_production_condition::not_synced;
+                                }
+                            }
+                            if (prate < _required_witness_participation) {
+                                capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
+                                return block_production_condition::low_participation;
+                            }
+                        }
+                    }
+                } else {
+                    // Pre-hardfork 12: use legacy behavior with config-based overrides
+                    if (!_production_enabled) {
+                        if (db.get_slot_time(1) >= now) {
+                            _production_enabled = true;
+                        } else {
+                            return block_production_condition::not_synced;
+                        }
                     }
                 }
 
@@ -433,10 +496,13 @@ namespace graphene {
                     return block_production_condition::no_private_key;
                 }
 
-                uint32_t prate = db.witness_participation_rate();
-                if (prate < _required_witness_participation) {
-                    capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
-                    return block_production_condition::low_participation;
+                // Pre-HF12 participation check (legacy behavior)
+                if (!db.has_hardfork(CHAIN_HARDFORK_12)) {
+                    uint32_t prate = db.witness_participation_rate();
+                    if (prate < _required_witness_participation) {
+                        capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
+                        return block_production_condition::low_participation;
+                    }
                 }
 
                 if (llabs((scheduled_time - now).count()) > fc::milliseconds(500).count()) {
@@ -450,16 +516,25 @@ namespace graphene {
                 {
                     auto existing_blocks = db.get_fork_db().fetch_block_by_number(db.head_block_num() + 1);
                     if (existing_blocks.size() > 0) {
-                        // Check if any existing block at this height was produced by a different witness
-                        // on a different parent (true fork), not just a duplicate of our own
                         bool has_competing_block = false;
-                        for (const auto &eb : existing_blocks) {
-                            if (eb->data.witness != scheduled_witness &&
-                                eb->data.previous != db.head_block_id()) {
-                                has_competing_block = true;
-                                break;
+
+                        if (dgp.emergency_consensus_active) {
+                            // During emergency mode: ANY block at this height is competing.
+                            // Multiple nodes with the emergency key may have produced.
+                            // Defer to the deterministic hash-based resolution in fork_db.
+                            has_competing_block = true;
+                        } else {
+                            // Normal mode: only count blocks from different witnesses
+                            // on a different parent as competing (existing logic)
+                            for (const auto &eb : existing_blocks) {
+                                if (eb->data.witness != scheduled_witness &&
+                                    eb->data.previous != db.head_block_id()) {
+                                    has_competing_block = true;
+                                    break;
+                                }
                             }
                         }
+
                         if (has_competing_block) {
                             capture("height", db.head_block_num() + 1)("scheduled_witness", scheduled_witness);
                             wlog("Skipping block production at height ${h} due to existing competing block "

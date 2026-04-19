@@ -161,6 +161,18 @@ inline uint32_t import_dynamic_global_properties(
         obj.inflation_calc_block_num = v["inflation_calc_block_num"].as_uint64();
         obj.inflation_witness_percent = static_cast<int16_t>(v["inflation_witness_percent"].as_int64());
         obj.inflation_ratio = static_cast<int16_t>(v["inflation_ratio"].as_int64());
+
+        // HF12: forward-compatible handling of emergency consensus fields
+        if (v.get_object().contains("emergency_consensus_active")) {
+            obj.emergency_consensus_active = v["emergency_consensus_active"].as_bool();
+        } else {
+            obj.emergency_consensus_active = false;
+        }
+        if (v.get_object().contains("emergency_consensus_start_block")) {
+            obj.emergency_consensus_start_block = v["emergency_consensus_start_block"].as_uint64();
+        } else {
+            obj.emergency_consensus_start_block = 0;
+        }
     });
     return 1;
 }

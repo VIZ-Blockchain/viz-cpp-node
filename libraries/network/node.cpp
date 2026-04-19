@@ -3425,6 +3425,14 @@ namespace graphene {
                     const message_hash_type &message_hash) {
                 fc::time_point message_receive_time = fc::time_point::now();
 
+                // HF12: P2P anti-spam — silently discard blocks from soft-banned peers
+                if (originating_peer->fork_rejected_until > message_receive_time) {
+                    dlog("Discarding block from soft-banned peer ${endpoint} (ban expires in ${sec}s)",
+                         ("endpoint", originating_peer->get_remote_endpoint())
+                         ("sec", (originating_peer->fork_rejected_until - message_receive_time).count() / 1000000));
+                    return;
+                }
+
                 dlog("received a block from peer ${endpoint}, passing it to client", ("endpoint", originating_peer->get_remote_endpoint()));
                 std::set<peer_connection_ptr> peers_to_disconnect;
                 std::string disconnect_reason;
@@ -3548,15 +3556,25 @@ namespace graphene {
                             ("num", block_message_to_process.block.block_num())
                                     ("id", block_message_to_process.block_id));
 
-                    disconnect_exception = e;
-                    disconnect_reason = "You offered me a block that I have deemed to be invalid";
+                    // HF12: soft-ban peers instead of disconnecting during fork rejection
+                    // This prevents cascading disconnections during emergency consensus
+                    if (e.code() == unlinkable_block_exception::code_enum::code_value ||
+                        block_message_to_process.block.block_num() <= _delegate->get_block_number(_delegate->get_head_block_id())) {
+                        wlog("Soft-banning peer ${endpoint} for 1 hour due to fork rejection",
+                             ("endpoint", originating_peer->get_remote_endpoint()));
+                        originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
+                        originating_peer->inhibit_fetching_sync_blocks = true;
+                    } else {
+                        disconnect_exception = e;
+                        disconnect_reason = "You offered me a block that I have deemed to be invalid";
 
-                    peers_to_disconnect.insert(originating_peer->shared_from_this());
-                    for (const peer_connection_ptr &peer : _active_connections) {
-                        if (!peer->ids_of_items_to_get.empty() &&
-                            peer->ids_of_items_to_get.front() ==
-                            block_message_to_process.block_id) {
-                            peers_to_disconnect.insert(peer);
+                        peers_to_disconnect.insert(originating_peer->shared_from_this());
+                        for (const peer_connection_ptr &peer : _active_connections) {
+                            if (!peer->ids_of_items_to_get.empty() &&
+                                peer->ids_of_items_to_get.front() ==
+                                block_message_to_process.block_id) {
+                                peers_to_disconnect.insert(peer);
+                            }
                         }
                     }
                 }

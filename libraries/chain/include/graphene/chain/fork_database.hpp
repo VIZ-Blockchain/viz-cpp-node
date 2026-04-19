@@ -54,7 +54,7 @@ namespace graphene {
         public:
             typedef vector<item_ptr> branch_type;
             /// The maximum number of blocks that may be skipped in an out-of-order push
-            const static int MAX_BLOCK_REORDERING = 1024;
+            const static int MAX_BLOCK_REORDERING = 2400;
 
             fork_database();
 
@@ -108,13 +108,26 @@ namespace graphene {
 
             void set_max_size(uint32_t s);
 
+            /**
+             * Set emergency consensus mode flag.
+             * During emergency mode, deterministic hash-based tie-breaking
+             * is used when two blocks compete at the same height.
+             */
+            void set_emergency_mode(bool active);
+
+            bool is_emergency_mode() const {
+                return _emergency_consensus_active;
+            }
+
         private:
             /** @return a pointer to the newly pushed item */
             void _push_block(const item_ptr &b);
 
             void _push_next(const item_ptr &newly_inserted);
 
-            uint32_t _max_size = 1024;
+            uint32_t _max_size = 2400;
+
+            bool _emergency_consensus_active = false;
 
             fork_multi_index_type _unlinked_index;
             fork_multi_index_type _index;

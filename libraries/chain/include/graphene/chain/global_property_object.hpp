@@ -130,6 +130,19 @@ namespace graphene {
              * The number of accounts who can use bandwidth reserve assigned by witnesses consensus
              */
             uint32_t bandwidth_reserve_candidates = 1;
+
+            /**
+             * Emergency consensus mode state.
+             * When active, the committee account produces blocks to maintain
+             * chain continuity during prolonged network stalls.
+             */
+            bool emergency_consensus_active = false;
+
+            /**
+             * Block number at which emergency consensus mode was activated.
+             * Zero if never activated. Used to compute duration and for exit condition.
+             */
+            uint32_t emergency_consensus_start_block = 0;
         };
 
         typedef multi_index_container <
@@ -175,5 +188,7 @@ FC_REFLECT((graphene::chain::dynamic_global_property_object),
                 (inflation_calc_block_num)
                 (inflation_witness_percent)
                 (inflation_ratio)
+                (emergency_consensus_active)
+                (emergency_consensus_start_block)
 )
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::dynamic_global_property_object, graphene::chain::dynamic_global_property_index)

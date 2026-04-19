@@ -1093,7 +1093,47 @@ namespace graphene { namespace chain {
                     if (new_head->data.previous != head_block_id()) {
                         //If the newly pushed block is the same height as head, we get head back in new_head
                         //Only switch forks if new_head is actually higher than head
-                        if (new_head->data.block_num() > head_block_num()) {
+                        bool should_switch = false;
+                        if (has_hardfork(CHAIN_HARDFORK_12)) {
+                            // HF12: Vote-weighted chain comparison
+                            // Primary criterion: sum of raw votes of unique non-committee witnesses per branch
+                            // Secondary criterion (tie): longer chain wins
+                            if (new_head->data.block_num() >= head_block_num() &&
+                                _fork_db.is_known_block(head_block_id())) {
+                                auto branches = _fork_db.fetch_branch_from(new_head->data.id(), head_block_id());
+
+                                auto compute_branch_weight = [&](const fork_database::branch_type& branch) -> share_type {
+                                    flat_set<account_name_type> seen_witnesses;
+                                    share_type total_weight = 0;
+                                    for (const auto& item : branch) {
+                                        const auto& wit_name = item->data.witness;
+                                        if (wit_name == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
+                                        if (seen_witnesses.insert(wit_name).second) {
+                                            try {
+                                                const auto& wit_obj = get_witness(wit_name);
+                                                total_weight += wit_obj.votes;
+                                            } catch (...) {}
+                                        }
+                                    }
+                                    return total_weight;
+                                };
+
+                                share_type new_weight = compute_branch_weight(branches.first);
+                                share_type old_weight = compute_branch_weight(branches.second);
+
+                                if (new_weight > old_weight) {
+                                    should_switch = true;
+                                } else if (new_weight == old_weight) {
+                                    // Tie: longer chain wins
+                                    should_switch = (new_head->data.block_num() > head_block_num());
+                                }
+                                // else: old branch has more vote weight, don't switch
+                            }
+                        } else {
+                            // Pre-HF12: simple longest-chain rule
+                            should_switch = (new_head->data.block_num() > head_block_num());
+                        }
+                        if (should_switch) {
                             // wlog( "Switching to fork: ${id}", ("id",new_head->data.id()) );
                             // Ensure the current head block exists in the fork DB before attempting fork switch.
                             // During initial sync or after fork DB trimming, head_block_id() may not be
@@ -1962,6 +2002,70 @@ namespace graphene { namespace chain {
             });
 
             update_median_witness_props();
+
+            // === HARDFORK 12: EMERGENCY HYBRID SCHEDULE ===
+            // After normal schedule update, apply hybrid schedule during emergency mode.
+            // Real witnesses keep their slots; committee fills gaps for offline witnesses.
+            const dynamic_global_property_object &emergency_dgp = get_dynamic_global_properties();
+
+            if (has_hardfork(CHAIN_HARDFORK_12) && emergency_dgp.emergency_consensus_active) {
+                const witness_schedule_object &emergency_wso = get_witness_schedule_object();
+
+                modify(emergency_wso, [&](witness_schedule_object &_wso) {
+                    uint32_t real_witness_slots = 0;
+
+                    for (int i = 0; i < _wso.num_scheduled_witnesses;
+                         i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                        const auto &wname = _wso.current_shuffled_witnesses[i];
+                        if (wname == account_name_type()) {
+                            // Empty slot -> assign committee
+                            for (int j = 0; j < CHAIN_BLOCK_WITNESS_REPEAT &&
+                                 (i+j) < _wso.num_scheduled_witnesses; ++j) {
+                                _wso.current_shuffled_witnesses[i+j] =
+                                    CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                            }
+                            continue;
+                        }
+
+                        const auto *w = find_witness(wname);
+                        bool witness_available = w &&
+                            w->signing_key != public_key_type();
+
+                        if (!witness_available) {
+                            for (int j = 0; j < CHAIN_BLOCK_WITNESS_REPEAT &&
+                                 (i+j) < _wso.num_scheduled_witnesses; ++j) {
+                                _wso.current_shuffled_witnesses[i+j] =
+                                    CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                            }
+                        } else {
+                            real_witness_slots++;
+                        }
+                    }
+
+                    ilog("Emergency hybrid schedule: ${r} real witness slots, "
+                         "${c} committee slots",
+                         ("r", real_witness_slots)
+                         ("c", CHAIN_MAX_WITNESSES - real_witness_slots));
+                });
+
+                // EXIT CONDITION: LIB has advanced past emergency_consensus_start_block.
+                // This means 75% of real witnesses are producing consistently.
+                uint32_t current_lib = emergency_dgp.last_irreversible_block_num;
+                if (current_lib > emergency_dgp.emergency_consensus_start_block) {
+                    modify(emergency_dgp, [&](dynamic_global_property_object &_dgp) {
+                        _dgp.emergency_consensus_active = false;
+                    });
+
+                    // Notify fork_db that emergency mode has ended
+                    _fork_db.set_emergency_mode(false);
+
+                    ilog("EMERGENCY CONSENSUS MODE deactivated at block ${b}. "
+                         "LIB has advanced to ${lib}, past emergency start ${start}.",
+                         ("b", head_block_num())
+                         ("lib", current_lib)
+                         ("start", emergency_dgp.emergency_consensus_start_block));
+                }
+            }
         }
 
         void database::update_median_witness_props() {
@@ -4121,6 +4225,90 @@ namespace graphene { namespace chain {
                         ("head", _dgp.head_block_number)
                         ("max_undo", CHAIN_MAX_UNDO_HISTORY));
                 }
+
+                // === HARDFORK 12: EMERGENCY CONSENSUS MODE ACTIVATION ===
+                if (has_hardfork(CHAIN_HARDFORK_12) && !_dgp.emergency_consensus_active) {
+                    // Check if we should enter emergency mode:
+                    // More than CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC seconds have elapsed
+                    // since the last irreversible block timestamp.
+                    fc::time_point_sec lib_time;
+                    if (_dgp.last_irreversible_block_num > 0) {
+                        auto lib_block = fetch_block_by_number(_dgp.last_irreversible_block_num);
+                        if (lib_block.valid()) {
+                            lib_time = lib_block->timestamp;
+                        } else {
+                            lib_time = _dgp.genesis_time;
+                        }
+                    } else {
+                        lib_time = _dgp.genesis_time;
+                    }
+
+                    uint32_t seconds_since_lib = (b.timestamp - lib_time).to_seconds();
+
+                    if (seconds_since_lib >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC) {
+                        // Enter emergency consensus mode
+                        modify(_dgp, [&](dynamic_global_property_object &dgp) {
+                            dgp.emergency_consensus_active = true;
+                            dgp.emergency_consensus_start_block = b.block_num();
+                        });
+
+                        // Change 5: Ensure emergency witness object exists with correct key
+                        const auto &witness_by_name = get_index<witness_index>().indices().get<by_name>();
+                        auto wit_itr = witness_by_name.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT);
+
+                        if (wit_itr == witness_by_name.end()) {
+                            create<witness_object>([&](witness_object &w) {
+                                w.owner = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                                w.signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY;
+                                w.created = head_block_time();
+                                w.schedule = witness_object::top;
+                            });
+                        } else {
+                            modify(*wit_itr, [&](witness_object &w) {
+                                w.signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY;
+                                w.schedule = witness_object::top;
+                            });
+                        }
+
+                        // Change 7: Reset all witness penalties and re-enable shut-down witnesses
+                        const auto &witness_idx = get_index<witness_index>().indices().get<by_id>();
+                        for (auto witr = witness_idx.begin(); witr != witness_idx.end(); ++witr) {
+                            if (witr->owner == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
+                            modify(*witr, [&](witness_object &w) {
+                                w.penalty_percent = 0;
+                                w.counted_votes = w.votes;
+                                w.current_run = 0;
+                            });
+                        }
+
+                        // Remove all pending penalty expiration objects
+                        const auto &penalty_idx = get_index<witness_penalty_expire_index>().indices().get<by_id>();
+                        auto pen_itr = penalty_idx.begin();
+                        while (pen_itr != penalty_idx.end()) {
+                            const auto &current = *pen_itr;
+                            ++pen_itr;
+                            remove(current);
+                        }
+
+                        // Override witness schedule: all slots -> emergency witness
+                        const witness_schedule_object &wso = get_witness_schedule_object();
+                        modify(wso, [&](witness_schedule_object &_wso) {
+                            for (int i = 0; i < _wso.num_scheduled_witnesses; i++) {
+                                _wso.current_shuffled_witnesses[i] = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                            }
+                        });
+
+                        // Notify fork_db about emergency mode
+                        _fork_db.set_emergency_mode(true);
+
+                        ilog("EMERGENCY CONSENSUS MODE activated at block ${b}. "
+                             "No blocks for ${sec} seconds since LIB ${lib}. "
+                             "Emergency witness: ${w}",
+                             ("b", b.block_num())("sec", seconds_since_lib)
+                             ("lib", _dgp.last_irreversible_block_num)
+                             ("w", CHAIN_EMERGENCY_WITNESS_ACCOUNT));
+                    }
+                }
             } FC_CAPTURE_AND_RETHROW()
         }
 
@@ -4128,6 +4316,12 @@ namespace graphene { namespace chain {
         //if count of validation is more than 2/3 of witnesses, then update last irreversible block num
         void database::check_block_post_validation_chain(){
             try {
+                // Don't advance LIB via post-validation chain during emergency mode
+                const dynamic_global_property_object &emergency_dpo2 = get_dynamic_global_properties();
+                if (has_hardfork(CHAIN_HARDFORK_12) && emergency_dpo2.emergency_consensus_active) {
+                    return;
+                }
+
                 const auto& validation_list = get_index<block_post_validation_index>().indices().get<by_id>();
                 if(!validation_list.empty()){
                     const dynamic_global_property_object &dpo = get_dynamic_global_properties();
@@ -4259,6 +4453,12 @@ namespace graphene { namespace chain {
         //if count of validation is more than 2/3 of witnesses, then update last irreversible block num
         void database::apply_block_post_validation(block_id_type block_id, const account_name_type &witness_account){
             try {
+                // Don't advance LIB via post-validation during emergency mode
+                const dynamic_global_property_object &emergency_dpo = get_dynamic_global_properties();
+                if (has_hardfork(CHAIN_HARDFORK_12) && emergency_dpo.emergency_consensus_active) {
+                    return;
+                }
+
                 const auto& validation_list = get_index<block_post_validation_index>().indices().get<by_id>();
                 if(!validation_list.empty()){
                     auto itr = validation_list.begin();
@@ -4495,6 +4695,104 @@ namespace graphene { namespace chain {
             try {
                 const dynamic_global_property_object &dpo = get_dynamic_global_properties();
                 const witness_schedule_object &wso = get_witness_schedule_object();
+
+                // === HARDFORK 12: EMERGENCY LIB COMPUTATION ===
+                // During emergency mode, compute LIB using ONLY real witnesses
+                // (exclude committee). This ensures:
+                // 1. PARTITION SAFETY: committee-only chains keep LIB frozen
+                // 2. GRADUAL RECOVERY: real witnesses returning via hybrid schedule
+                //    advance LIB naturally -> emergency exits
+                if (has_hardfork(CHAIN_HARDFORK_12) && dpo.emergency_consensus_active) {
+                    // Collect ONLY real (non-committee) witnesses from schedule
+                    vector<const witness_object *> real_wit_objs;
+                    for (int i = 0; i < wso.num_scheduled_witnesses;
+                         i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                        const auto &wname = wso.current_shuffled_witnesses[i];
+                        if (wname != CHAIN_EMERGENCY_WITNESS_ACCOUNT &&
+                            wname != account_name_type()) {
+                            real_wit_objs.push_back(
+                                &get_witness(wname));
+                        }
+                    }
+
+                    if (real_wit_objs.empty()) {
+                        // All committee -- LIB stays frozen
+                        // Expand fork_db to accommodate emergency blocks
+                        uint32_t emergency_fork_db_size = std::min(
+                            dpo.head_block_number -
+                                dpo.last_irreversible_block_num + 1,
+                            uint32_t(CHAIN_MAX_UNDO_HISTORY));
+                        _fork_db.set_max_size(emergency_fork_db_size);
+                        return;
+                    }
+
+                    // Compute LIB using real witnesses only.
+                    // Threshold: 75% of REAL witnesses (not total schedule).
+                    size_t offset =
+                        ((CHAIN_100_PERCENT - CHAIN_IRREVERSIBLE_THRESHOLD) *
+                         real_wit_objs.size() / CHAIN_100_PERCENT);
+
+                    std::nth_element(
+                        real_wit_objs.begin(),
+                        real_wit_objs.begin() + offset,
+                        real_wit_objs.end(),
+                        [](const witness_object *a, const witness_object *b) {
+                            return a->last_supported_block_num <
+                                   b->last_supported_block_num;
+                        });
+
+                    uint32_t new_lib =
+                        real_wit_objs[offset]->last_supported_block_num;
+
+                    if (new_lib > dpo.last_irreversible_block_num) {
+                        // Real witnesses have advanced LIB!
+                        ilog("Emergency LIB advance: ${old} -> ${new} "
+                             "(${n} real witnesses producing)",
+                             ("old", dpo.last_irreversible_block_num)
+                             ("new", new_lib)
+                             ("n", real_wit_objs.size()));
+
+                        modify(dpo, [&](dynamic_global_property_object &_dpo) {
+                            _dpo.last_irreversible_block_num = new_lib;
+                            _dpo.last_irreversible_block_id = block_id_type();
+                            _dpo.last_irreversible_block_ref_num = 0;
+                            _dpo.last_irreversible_block_ref_prefix = 0;
+                        });
+
+                        commit(dpo.last_irreversible_block_num);
+
+                        if (!(skip & skip_block_log) && !_dlt_mode) {
+                            const auto &tmp_head = _block_log.head();
+                            uint64_t log_head_num = 0;
+                            if (tmp_head) {
+                                log_head_num = tmp_head->block_num();
+                            }
+                            if (log_head_num < dpo.last_irreversible_block_num) {
+                                while (log_head_num < dpo.last_irreversible_block_num) {
+                                    std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
+                                            log_head_num + 1);
+                                    FC_ASSERT(block, "Current fork in the fork database does not contain the last_irreversible_block");
+                                    _block_log.append(block->data);
+                                    log_head_num++;
+                                }
+                                _block_log.flush();
+                            }
+                        }
+
+                        _fork_db.set_max_size(dpo.head_block_number -
+                                              dpo.last_irreversible_block_num + 1);
+                        return;
+                    } else {
+                        // Not enough real witnesses yet -- keep LIB frozen
+                        uint32_t emergency_fork_db_size = std::min(
+                            dpo.head_block_number -
+                                dpo.last_irreversible_block_num + 1,
+                            uint32_t(CHAIN_MAX_UNDO_HISTORY));
+                        _fork_db.set_max_size(emergency_fork_db_size);
+                        return;
+                    }
+                }
+                // === END HARDFORK 12 EMERGENCY LIB ===
 
                 vector<const witness_object *> wit_objs;
                 wit_objs.reserve(wso.num_scheduled_witnesses);

@@ -2,7 +2,7 @@
 
 #define CHAIN_STARTUP_VERSION                 (version(1, 0, 0))
 #define CHAIN_HARDFORK_STARTUP_VERSION        (hardfork_version(CHAIN_STARTUP_VERSION))
-#define CHAIN_VERSION                         (version(3, 0, 0))
+#define CHAIN_VERSION                         (version(3, 1, 0))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
 #define CHAIN_NAME                            "VIZ"
@@ -106,6 +106,21 @@
 #define CHAIN_BLOCK_SIZE                      (CHAIN_MAX_BLOCK_SIZE_LIMIT*CHAIN_BLOCK_INTERVAL) // initial block size, preset to max block size limit
 
 #define CHAIN_MAX_UNDO_HISTORY                10000
+
+/// Emergency consensus mode: activates when no block has been produced for
+/// this many seconds since the last irreversible block.
+#define CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC    3600  // 1 hour
+
+/// The witness account name that produces blocks during emergency mode
+#define CHAIN_EMERGENCY_WITNESS_ACCOUNT          CHAIN_COMMITTEE_ACCOUNT  // "committee"
+
+/// The public key used to sign blocks during emergency mode
+#define CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY_STR   "VIZ75CRHVHPwYiUESy1bgN3KhVFbZCQQRA9jT6TnpzKAmpxMPD6Xv"
+#define CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY       (graphene::protocol::public_key_type(CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY_STR))
+
+/// Number of consecutive blocks produced by the emergency witness that
+/// triggers automatic exit from emergency mode (witnesses have rejoined).
+#define CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS       21  // 1 full round of 21 witnesses
 
 #define CHAIN_IRREVERSIBLE_THRESHOLD          (75 * CHAIN_1_PERCENT)
 /** Irreversibility only counts blocks produced if wit.current_run >= CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN */

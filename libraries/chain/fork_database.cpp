@@ -77,6 +77,14 @@ namespace graphene {
             if (!_head || item->num > _head->num) {
                 _head = item;
             }
+            // During emergency mode, deterministic hash tie-breaking:
+            // When two blocks compete at the same height (multiple emergency
+            // producers), prefer the lower block_id hash. This ensures all
+            // nodes converge regardless of P2P arrival order.
+            else if (item->num == _head->num && item->id < _head->id &&
+                     _emergency_consensus_active) {
+                _head = item;
+            }
 
             // After inserting a new block, check if any previously-unlinkable
             // blocks in the _unlinked_index can now be linked to this one.
@@ -247,6 +255,10 @@ namespace graphene {
 
         void fork_database::set_head(shared_ptr<fork_item> h) {
             _head = h;
+        }
+
+        void fork_database::set_emergency_mode(bool active) {
+            _emergency_consensus_active = active;
         }
 
         void fork_database::remove(block_id_type id) {
