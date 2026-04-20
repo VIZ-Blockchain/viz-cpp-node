@@ -458,11 +458,13 @@ namespace graphene { namespace chain {
             }
 
             uint64_t max_mem = max_memory();
+            uint64_t free_mem_before = free_memory();
 
             size_t new_max = max_mem + _inc_shared_memory_size;
             wlog(
-                "Memory is almost full on block ${block}, increasing to ${mem}M",
-                ("block", current_block_num)("mem", new_max / (1024 * 1024)));
+                "Memory is almost full on block ${block}, increasing to ${mem}M (was ${free_before}M free, ${max_before}M total)",
+                ("block", current_block_num)("mem", new_max / (1024 * 1024))
+                ("free_before", free_mem_before / (1024 * 1024))("max_before", max_mem / (1024 * 1024)));
             resize(new_max);
 
             uint64_t free_mem = free_memory();
@@ -1288,6 +1290,25 @@ namespace graphene { namespace chain {
             FC_ASSERT(scheduled_witness == witness_owner);
 
             const auto &witness_obj = get_witness(witness_owner);
+
+            // Pre-check: ensure the witness account exists before generating the block.
+            // If the account is missing from the database (shared memory corruption),
+            // the block will be produced but fail to apply internally (process_funds
+            // calls get_account which would throw "unknown key").
+            const auto* witness_acct = find_account(witness_owner);
+            if (!witness_acct) {
+                auto& acc_idx = get_index<account_index>().indices().get<by_name>();
+                elog("CRITICAL: Witness ${w} account object MISSING from database! "
+                     "This is impossible state - shared memory may be corrupted. "
+                     "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
+                     "account_index_size=${idx_size}",
+                     ("w", witness_owner)("k", witness_obj.signing_key)
+                     ("m", witness_obj.total_missed)("p", witness_obj.penalty_percent)
+                     ("lc", witness_obj.last_confirmed_block_num)
+                     ("idx_size", acc_idx.size()));
+                FC_ASSERT(false, "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected. Node must be restarted with replay.",
+                          ("w", witness_owner));
+            }
 
             if (!(skip & skip_witness_signature))
                 FC_ASSERT(witness_obj.signing_key ==
@@ -2801,7 +2822,20 @@ namespace graphene { namespace chain {
                 });
 
                 const auto& cwit = get_witness( props.current_witness );
-                auto witness_reward_shares = create_vesting(get_account(cwit.owner), asset(witness_reward, TOKEN_SYMBOL));
+                const auto* witness_account = find_account(cwit.owner);
+                if (!witness_account) {
+                    auto& acc_idx = get_index<account_index>().indices().get<by_name>();
+                    elog("CRITICAL: Witness ${w} account object MISSING from database! "
+                         "This is impossible state - shared memory may be corrupted. "
+                         "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
+                         "account_index_size=${idx_size}",
+                         ("w", cwit.owner)("k", cwit.signing_key)("m", cwit.total_missed)
+                         ("p", cwit.penalty_percent)("lc", cwit.last_confirmed_block_num)
+                         ("idx_size", acc_idx.size()));
+                    FC_ASSERT(false, "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected. Node must be restarted with replay.",
+                              ("w", cwit.owner));
+                }
+                auto witness_reward_shares = create_vesting(*witness_account, asset(witness_reward, TOKEN_SYMBOL));
                 push_virtual_operation(witness_reward_operation(cwit.owner,witness_reward_shares));
             }
             else{
@@ -2835,7 +2869,20 @@ namespace graphene { namespace chain {
                     });
 
                     const auto& cwit = get_witness( props.current_witness );
-                    auto witness_reward_shares = create_vesting(get_account(cwit.owner), asset(witness_reward, TOKEN_SYMBOL));
+                    const auto* witness_account = find_account(cwit.owner);
+                    if (!witness_account) {
+                        auto& acc_idx = get_index<account_index>().indices().get<by_name>();
+                        elog("CRITICAL: Witness ${w} account object MISSING from database (HF4 path)! "
+                             "This is impossible state - shared memory may be corrupted. "
+                             "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
+                             "account_index_size=${idx_size}",
+                             ("w", cwit.owner)("k", cwit.signing_key)("m", cwit.total_missed)
+                             ("p", cwit.penalty_percent)("lc", cwit.last_confirmed_block_num)
+                             ("idx_size", acc_idx.size()));
+                        FC_ASSERT(false, "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected. Node must be restarted with replay.",
+                                  ("w", cwit.owner));
+                    }
+                    auto witness_reward_shares = create_vesting(*witness_account, asset(witness_reward, TOKEN_SYMBOL));
                     push_virtual_operation(witness_reward_operation(cwit.owner,witness_reward_shares));
                 }
                 else{
@@ -4255,6 +4302,9 @@ namespace graphene { namespace chain {
                                 if (head_block_num() -
                                     w.last_confirmed_block_num >
                                     CHAIN_MAX_WITNESS_MISSED_BLOCKS) {
+                                    elog("Witness ${w} missed too many blocks (${missed} since last confirmed ${lc}), blanking signing_key (was ${k})",
+                                         ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
+                                         ("lc", w.last_confirmed_block_num)("k", w.signing_key));
                                     w.signing_key = public_key_type();
                                     push_virtual_operation(shutdown_witness_operation(w.owner));
                                 }
