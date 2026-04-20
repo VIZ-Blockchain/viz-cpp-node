@@ -33,7 +33,9 @@ snapshot-every-n-blocks = 100000
 snapshot-dir = /var/lib/vizd/snapshots
 ```
 
-**Witness-Aware Deferral:** When the node is also a block-producing witness, periodic snapshot creation is automatically deferred if the witness is scheduled to produce within the next 4 slots (~12 seconds). This covers the typical snapshot creation time (~10 seconds) plus a safety margin, preventing snapshot serialization (which holds the database write lock) from causing the witness to miss its production slot. The snapshot is created once the witness is no longer scheduled in the near-term slots.
+**Witness-Aware Deferral:** When the node is also a block-producing witness, periodic snapshot creation is automatically deferred if the witness is scheduled to produce within the next 4 slots (~12 seconds). This covers the typical snapshot creation time (~10 seconds) plus a safety margin, preventing snapshot serialization from causing the witness to miss its production slot. The snapshot is created once the witness is no longer scheduled in the near-term slots.
+
+**Non-Blocking Snapshot Creation:** Snapshot creation runs asynchronously on a dedicated background thread. Only the database read phase (serialization of state) holds a read lock (~1 second); compression and file I/O run without any lock. This means block processing is only briefly paused during the read phase, and API/P2P reads are never blocked — eliminating the read-lock timeouts and `unlinkable_block_exception` errors that occurred when snapshot creation ran synchronously inside the write-lock scope.
 
 ### Snapshot at Specific Block
 
@@ -191,6 +193,23 @@ Several bugs in `fork_database` were fixed that previously prevented out-of-orde
 - **Missing `_push_next()` call**: After inserting a new block, previously-unlinkable blocks that can now link were never resolved — added the call
 - **Duplicate block check**: Added early return if a block already exists in the index
 - **`reset()` cleanup**: Added `_unlinked_index.clear()` to properly clear the unlinked cache on reset
+
+### Async Snapshot Creation Fix
+
+Snapshot creation previously ran **synchronously** inside `on_applied_block`, which is called within the database write-lock scope of `push_block()`. This caused the write lock to be held for the entire 3+ second snapshot duration, blocking all other threads from reading the database.
+
+**Symptoms:**
+- "Read lock timeout" / "No more retries for read lock" in API and P2P threads
+- `unlinkable_block_exception` for P2P blocks that arrived during the stall (triggering sync restarts with peers)
+- Witness block production continuing (on the same thread) while P2P blocks were blocked
+
+**Fix:**
+- Snapshot creation now runs **asynchronously** on a dedicated `fc::thread` — the `on_applied_block` callback returns immediately, releasing the write lock
+- `create_snapshot` is split into two phases:
+  - **Phase 1 (read lock, ~1 second)**: Serializes all database state into local variables. Block processing waits during this brief phase, but API/P2P reads proceed concurrently
+  - **Phase 2 (no lock, ~2 seconds)**: Compression, checksum computation, and file I/O. Block processing and API reads run normally
+- `snapshot_in_progress` atomic flag prevents overlapping snapshots
+- Plugin shutdown waits for any in-progress snapshot to complete before quitting
 
 ## Trusted Seeds Diagnostic Test
 

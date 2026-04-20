@@ -152,6 +152,8 @@ Snapshot creation, loading, and P2P sync for fast node bootstrap and crash recov
 
 **JSON-RPC:** None
 
+**Non-blocking snapshot creation:** Snapshot creation runs asynchronously on a dedicated background thread. Only the database read phase (serialization) holds a read lock (~1 second); compression and file I/O run without any lock. This eliminates read-lock timeouts and `unlinkable_block_exception` errors that occurred when snapshots ran synchronously inside the write-lock scope.
+
 **CLI options:**
 | Option | Type | Description |
 |--------|------|-------------|

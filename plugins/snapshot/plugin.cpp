@@ -705,6 +705,7 @@ public:
     // Deferred snapshot creation (to avoid interrupting witness block production)
     bool snapshot_pending = false;        // deferred snapshot flag
     std::string pending_snapshot_path;    // path for deferred snapshot
+    std::atomic<bool> snapshot_in_progress{false}; // async snapshot creation guard
 
     // Snapshot P2P sync config
     bool allow_snapshot_serving = false;
@@ -732,6 +733,14 @@ public:
     // are queued but never executed — connections hang forever.
     // This mirrors the P2P plugin's approach (p2p_thread).
     std::unique_ptr<fc::thread> server_thread;
+
+    // Dedicated thread for async snapshot creation.
+    // fc::async() on the main thread won't execute because io_serv->run()
+    // never pumps the fc fiber scheduler.  This thread runs snapshot I/O
+    // (which can take 3+ seconds) outside the write-lock scope so the main
+    // thread is not blocked and API/P2P reads don't time out.
+    std::unique_ptr<fc::thread> snapshot_thread;
+    fc::future<void> snapshot_future;
 
     // Accept loop watchdog: detects and restarts dead accept loops
     fc::future<void> watchdog_future;
@@ -798,7 +807,7 @@ public:
 
 private:
     // Core snapshot serialization (caller must hold appropriate lock)
-    void write_snapshot_to_file(const fc::path& output_path);
+    void write_snapshot_to_file(const fc::path& output_path, const snapshot_header& header, const fc::mutable_variant_object& state);
 
     // Export: convert all objects to variants and write to file
     fc::variant export_index_to_variant(const std::string& type_name);
@@ -915,59 +924,73 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
 void snapshot_plugin::plugin_impl::create_snapshot(const fc::path& output_path) {
     ilog(CLOG_GREEN "Creating snapshot at ${path}..." CLOG_RESET, ("path", output_path.string()));
 
+    // Phase 1: read database state under a read lock.
+    // We capture everything that needs the DB into local variables, then
+    // release the lock so block processing can resume ASAP.  Compression
+    // and file I/O operate on the captured data and need no lock.
+    snapshot_header header;
+    fc::mutable_variant_object state;
+    auto read_start = fc::time_point::now();
+
     db.with_strong_read_lock([&]() {
-        write_snapshot_to_file(output_path);
+        uint32_t lib = db.last_non_undoable_block_num();
+        uint32_t head = db.head_block_num();
+
+        header.version = SNAPSHOT_FORMAT_VERSION;
+        header.chain_id = db.get_chain_id();
+        header.snapshot_block_num = head;
+        header.snapshot_block_id = db.head_block_id();
+        header.snapshot_block_time = db.head_block_time();
+        header.last_irreversible_block_num = lib;
+        header.snapshot_creation_time = fc::time_point_sec(fc::time_point::now());
+
+        ilog(CLOG_GREEN "Snapshot at block ${b} (LIB: ${lib})" CLOG_RESET, ("b", head)("lib", lib));
+
+        state = serialize_state();
+
+        // Build object counts
+        for (auto itr = state.begin(); itr != state.end(); ++itr) {
+            if (itr->value().is_array()) {
+                header.object_counts[itr->key()] = static_cast<uint32_t>(itr->value().get_array().size());
+            }
+        }
+
+        // Add the head block for fork_db seeding
+        auto head_block = db.fetch_block_by_number(head);
+        if (head_block.valid()) {
+            fc::variant block_var;
+            fc::to_variant(*head_block, block_var);
+            state["fork_db_head_block"] = std::move(block_var);
+        }
     });
+
+    auto read_elapsed = double((fc::time_point::now() - read_start).count()) / 1000000.0;
+    ilog(CLOG_GREEN "Snapshot DB read completed in ${t} sec, lock released" CLOG_RESET, ("t", read_elapsed));
+
+    // Phase 2: compression + file I/O — no database lock needed.
+    write_snapshot_to_file(output_path, header, state);
     update_snapshot_cache(output_path);
 }
 
-void snapshot_plugin::plugin_impl::write_snapshot_to_file(const fc::path& output_path) {
+void snapshot_plugin::plugin_impl::write_snapshot_to_file(
+        const fc::path& output_path,
+        const snapshot_header& header,
+        const fc::mutable_variant_object& state) {
     auto start = fc::time_point::now();
-
-    // Get LIB info
-    uint32_t lib = db.last_non_undoable_block_num();
-    uint32_t head = db.head_block_num();
-
-    // Build header
-    snapshot_header header;
-    header.version = SNAPSHOT_FORMAT_VERSION;
-    header.chain_id = db.get_chain_id();
-    header.snapshot_block_num = head;
-    header.snapshot_block_id = db.head_block_id();
-    header.snapshot_block_time = db.head_block_time();
-    header.last_irreversible_block_num = lib;
-    header.snapshot_creation_time = fc::time_point_sec(fc::time_point::now());
-
-    ilog(CLOG_GREEN "Snapshot at block ${b} (LIB: ${lib})" CLOG_RESET, ("b", head)("lib", lib));
-
-    // Serialize all state
-    auto state = serialize_state();
-
-    // Build object counts
-    for (auto itr = state.begin(); itr != state.end(); ++itr) {
-        if (itr->value().is_array()) {
-            header.object_counts[itr->key()] = static_cast<uint32_t>(itr->value().get_array().size());
-        }
-    }
-
-    // Add the head block for fork_db seeding
-    auto head_block = db.fetch_block_by_number(head);
-    if (head_block.valid()) {
-        fc::variant block_var;
-        fc::to_variant(*head_block, block_var);
-        state["fork_db_head_block"] = std::move(block_var);
-    }
 
     // Compute checksum of serialized state
     std::string state_json = fc::json::to_string(state);
-    header.payload_checksum = fc::sha256::hash(state_json.data(), state_json.size());
+
+    // Make a mutable copy of the header so we can fill in the checksum
+    snapshot_header hdr = header;
+    hdr.payload_checksum = fc::sha256::hash(state_json.data(), state_json.size());
 
     // Build final snapshot object
     fc::mutable_variant_object snapshot;
     fc::variant header_var;
-    fc::to_variant(header, header_var);
+    fc::to_variant(hdr, header_var);
     snapshot["header"] = std::move(header_var);
-    snapshot["state"] = std::move(state);
+    snapshot["state"] = state;
 
     // Write to file with zlib compression
     std::string snapshot_json = fc::json::to_string(fc::variant(snapshot));
@@ -1375,22 +1398,45 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         return false;
     };
 
+    // Helper lambda: schedule snapshot creation asynchronously so it does NOT
+    // run inside the write-lock scope of push_block().  The snapshot only reads
+    // the database, so it can safely use a read lock on a background thread.
+    // This prevents the 3+ second snapshot from blocking the main thread and
+    // causing read-lock timeouts for API / P2P threads.
+    //
+    // We use a dedicated fc::thread because fc::async() on the main thread
+    // would never execute (main thread is in io_serv->run(), not the fc
+    // fiber scheduler).
+    auto schedule_async_snapshot = [&](const fc::path& output, const char* label) {
+        if (snapshot_in_progress.exchange(true)) {
+            wlog("Snapshot already in progress, skipping %s snapshot at ${p}", label)("p", output.string());
+            return;
+        }
+        if (!snapshot_thread) {
+            snapshot_thread = std::make_unique<fc::thread>("async_snapshot");
+        }
+        ilog(CLOG_GREEN "Scheduling async %s snapshot: ${p}" CLOG_RESET, label)("p", output.string());
+        snapshot_future = snapshot_thread->async([this, output, label]() {
+            try {
+                create_snapshot(output);
+                cleanup_old_snapshots();
+            } catch (const fc::exception& e) {
+                elog("Failed to create %s snapshot: ${e}", label)("e", e.to_detail_string());
+            }
+            snapshot_in_progress = false;
+        }, "async_snapshot");
+    };
+
     // Handle deferred (pending) snapshot from a previous block
     // The witness check was already performed once when the snapshot was originally
     // deferred. We do NOT re-check is_witness_producing_soon() here to avoid an
     // infinite deferral loop where the witness is always scheduled soon.
     if (snapshot_pending && !is_syncing) {
-        ilog(CLOG_GREEN "Creating deferred snapshot now (one-defer limit): ${p}" CLOG_RESET, ("p", pending_snapshot_path));
-        try {
-            fc::path output(pending_snapshot_path);
-            write_snapshot_to_file(output);
-            update_snapshot_cache(output);
-            cleanup_old_snapshots();
-        } catch (const fc::exception& e) {
-            elog("Failed to create deferred snapshot: ${e}", ("e", e.to_detail_string()));
-        }
+        fc::path output(pending_snapshot_path);
         snapshot_pending = false;
         pending_snapshot_path.clear();
+        ilog(CLOG_GREEN "Creating deferred snapshot now (one-defer limit): ${p}" CLOG_RESET, ("p", output.string()));
+        schedule_async_snapshot(output, "deferred");
     }
 
     // Check --snapshot-at-block: one-time snapshot at exact block
@@ -1409,13 +1455,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             pending_snapshot_path = output.string();
         } else {
             ilog(CLOG_GREEN "Reached snapshot-at-block ${b}, creating snapshot: ${p}" CLOG_RESET, ("b", block_num)("p", output.string()));
-            try {
-                write_snapshot_to_file(output);
-                update_snapshot_cache(output);
-                cleanup_old_snapshots();
-            } catch (const fc::exception& e) {
-                elog("Failed to create snapshot at block ${b}: ${e}", ("b", block_num)("e", e.to_detail_string()));
-            }
+            schedule_async_snapshot(output, "at-block");
         }
     }
 
@@ -1429,13 +1469,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             pending_snapshot_path = output.string();
         } else {
             ilog(CLOG_GREEN "Periodic snapshot at block ${b}: ${p}" CLOG_RESET, ("b", block_num)("p", output.string()));
-            try {
-                write_snapshot_to_file(output);
-                update_snapshot_cache(output);
-                cleanup_old_snapshots();
-            } catch (const fc::exception& e) {
-                elog("Failed to create periodic snapshot at block ${b}: ${e}", ("b", block_num)("e", e.to_detail_string()));
-            }
+            schedule_async_snapshot(output, "periodic");
         }
     }
 }
@@ -3097,6 +3131,16 @@ void snapshot_plugin::plugin_shutdown() {
     // Stop stalled sync detection before server to avoid callbacks during shutdown
     my->stop_stalled_sync_detection();
     my->stop_server();
+
+    // Wait for in-progress async snapshot to finish, then tear down the thread
+    if (my->snapshot_thread) {
+        try {
+            if (my->snapshot_future.valid())
+                my->snapshot_future.wait();
+        } catch (...) {}
+        my->snapshot_thread->quit();
+        my->snapshot_thread.reset();
+    }
 }
 
 std::string snapshot_plugin::get_snapshot_path() const {
