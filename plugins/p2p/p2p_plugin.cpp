@@ -133,10 +133,10 @@ namespace graphene {
                                                                                                              head_block_num));
 
                         try {
-                            // TODO: in the case where this block is valid but on a fork that's too old for us to switch to,
-                            // you can help the network code out by throwing a block_older_than_undo_history exception.
-                            // when the network code sees that, it will stop trying to push blocks from that chain, but
-                            // leave that peer connected so that they can get sync blocks from us
+                            // When a block is too old for our fork database (e.g. a peer
+                            // sending stale blocks from a dead fork), convert to
+                            // block_older_than_undo_history so the network layer will
+                            // inhibit/soft-ban the peer instead of restarting sync.
                             bool result = chain.accept_block(blk_msg.block, sync_mode, (block_producer | force_validate)
                                                                                        ? database::skip_nothing
                                                                                        : database::skip_transaction_signatures);
@@ -148,6 +148,14 @@ namespace graphene {
                             }
 
                             return result;
+                        } catch (const graphene::chain::block_too_old_exception &e) {
+                            fc_elog(fc::logger::get("sync"),
+                                    "Block ${n} is too old for fork database (head=${head}): ${e}",
+                                    ("n", blk_msg.block.block_num())("head", head_block_num)("e", e.to_detail_string()));
+                            wlog("Block ${n} is too old for fork database, banning peer",
+                                 ("n", blk_msg.block.block_num()));
+                            FC_THROW_EXCEPTION(graphene::network::block_older_than_undo_history,
+                                "Block is too old for fork database: ${e}", ("e", e.to_detail_string()));
                         } catch (const graphene::network::unlinkable_block_exception &e) {
                             // translate to a graphene::network exception
                             fc_elog(fc::logger::get("sync"), "Error when pushing block, current head block is ${head}:\n${e}", ("e", e.to_detail_string())("head", head_block_num));

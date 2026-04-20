@@ -3251,9 +3251,10 @@ namespace graphene {
                         if (peer->ids_of_items_being_processed.find(block_message_to_send.block_id) !=
                             peer->ids_of_items_being_processed.end()) {
                             if (discontinue_fetching_blocks_from_peer) {
-                                wlog("inhibiting fetching sync blocks from peer ${endpoint} because it is on a fork that's too old",
+                                wlog("Soft-banning peer ${endpoint} for 1 hour: on a fork that's too old",
                                         ("endpoint", peer->get_remote_endpoint()));
                                 peer->inhibit_fetching_sync_blocks = true;
+                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
                             } else {
                                 peers_to_disconnect[peer] = std::make_pair(std::string("You offered us a block that we reject as invalid"), fc::oexception(handle_message_exception));
                             }
@@ -3564,6 +3565,17 @@ namespace graphene {
                 }
                 catch (const unlinkable_block_exception &e) {
                     restart_sync_exception = e;
+                }
+                catch (const block_older_than_undo_history &e) {
+                    // Peer sent us a block that is too old for our fork database.
+                    // This typically happens when a peer is stuck on a dead fork and
+                    // keeps broadcasting stale blocks.  Soft-ban them for 1 hour
+                    // instead of restarting sync or disconnecting.
+                    wlog("Soft-banning peer ${endpoint} for 1 hour: sent block #${num} that is too old for our fork database",
+                         ("endpoint", originating_peer->get_remote_endpoint())
+                         ("num", block_message_to_process.block.block_num()));
+                    originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
+                    originating_peer->inhibit_fetching_sync_blocks = true;
                 }
                 catch (const fc::exception &e) {
                     // client rejected the block.  Disconnect the client and any other clients that offered us this block
