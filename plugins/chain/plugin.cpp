@@ -369,7 +369,7 @@ namespace chain {
                             }
                         }
                     }
-                    if (!best_path.empty()) {
+                    if (!best_path.string().empty()) {
                         my->snapshot_path = best_path.string();
                         ilog("Chain plugin: auto-discovered latest snapshot: ${p}", ("p", my->snapshot_path));
                     } else {
