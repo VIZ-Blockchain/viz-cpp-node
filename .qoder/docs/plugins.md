@@ -42,6 +42,15 @@ The fundamental plugin that manages the blockchain database, block validation, a
 
 **JSON-RPC:** None (internal only)
 
+**CLI options:**
+| Option | Type | Description |
+|--------|------|-------------|
+| `--replay-blockchain` | `bool` | Clear chain database and replay all blocks |
+| `--replay-if-corrupted` | `bool` (default: `true`) | Replay all blocks if shared memory is corrupted |
+| `--force-replay-blockchain` | `bool` | Force clear chain database and replay all blocks |
+| `--replay-from-snapshot` | `bool` | Crash recovery: import snapshot and replay dlt_block_log |
+| `--resync-blockchain` | `bool` | Clear chain database and block log |
+
 **Config options:**
 ```ini
 shared-file-size = 2G
@@ -124,6 +133,45 @@ p2p-endpoint = 0.0.0.0:2001
 p2p-seed-node = seed.viz.world:2001
 p2p-max-connections = 200
 ```
+
+---
+
+### `snapshot`
+**Status:** Active
+**Category:** Infrastructure
+**Dependencies:** `chain`
+
+Snapshot creation, loading, and P2P sync for fast node bootstrap and crash recovery in DLT mode.
+
+**Purpose:**
+- Create JSON snapshots of blockchain state
+- Load state from snapshots (near-instant startup)
+- Serve snapshots to other nodes over TCP
+- Download snapshots from trusted peers
+- Crash recovery via snapshot + dlt_block_log replay
+
+**JSON-RPC:** None
+
+**CLI options:**
+| Option | Type | Description |
+|--------|------|-------------|
+| `--snapshot <path>` | `string` | Load state from a snapshot file (DLT mode) |
+| `--snapshot-auto-latest` | `bool` | Auto-discover latest snapshot in `snapshot-dir` |
+| `--replay-from-snapshot` | `bool` | Crash recovery: import snapshot + replay dlt_block_log |
+| `--create-snapshot <path>` | `string` | Create a snapshot and exit |
+| `--sync-snapshot-from-trusted-peer` | `bool` | Download snapshot from trusted peers on empty state |
+
+**Config options:**
+```ini
+snapshot-dir = /data/snapshots
+snapshot-every-n-blocks = 28800
+snapshot-max-age-days = 90
+allow-snapshot-serving = false
+trusted-snapshot-peer = seed1.viz.world:8092
+dlt-block-log-max-blocks = 100000
+```
+
+See [snapshot-plugin.md](snapshot-plugin.md) for full documentation.
 
 ---
 
@@ -723,6 +771,7 @@ mongodb-db-name = viz
 | `json_rpc` | Active | No | Core |
 | `webserver` | Active | No | Infrastructure |
 | `p2p` | Active | No | Infrastructure |
+| `snapshot` | Active | No | Infrastructure |
 | `database_api` | Active | Yes | API |
 | `network_broadcast_api` | Active | Yes | API |
 | `witness_api` | Active | Yes | API |
@@ -912,4 +961,9 @@ plugin = webserver
 plugin = database_api
 plugin = network_broadcast_api
 plugin = witness_api
+plugin = snapshot
+
+snapshot-every-n-blocks = 28800
+snapshot-dir = /data/snapshots
+dlt-block-log-max-blocks = 100000
 ```
