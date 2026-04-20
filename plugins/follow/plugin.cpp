@@ -236,7 +236,7 @@ namespace graphene {
                 void post_operation(const operation_notification &op_obj, plugin &self) {
                     try {
                         op_obj.op.visit(post_operation_visitor(self, database()));
-                    } catch (fc::assert_exception) {
+                    } catch (const fc::assert_exception&) {
                         if (database().is_producing()) {
                             throw;
                         }

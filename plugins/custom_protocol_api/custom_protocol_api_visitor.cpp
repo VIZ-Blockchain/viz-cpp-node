@@ -16,7 +16,7 @@ namespace graphene { namespace plugins { namespace custom_protocol_api {
         for (const auto &i : op.required_regular_auths) {
             accounts.emplace_back(i);
         }
-        for (const auto i : accounts) {
+        for (const auto& i : accounts) {
             bool find=false;
             const auto &idx = _db.get_index<custom_protocol_index>().indices().get<by_account_custom_sequence_block_num>();
             auto itr = idx.lower_bound(boost::make_tuple(i, uint64_t(-1) ));

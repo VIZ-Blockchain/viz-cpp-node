@@ -1,0 +1,836 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "block-log-spec.json",
+  "title": "VIZ Block Log File Format Specification",
+  "description": "Machine-readable specification for VIZ blockchain block log files",
+  "version": "1.0.0",
+
+  "definitions": {
+    "varint": {
+      "type": "object",
+      "description": "Variable-length integer encoding (fc::unsigned_int)",
+      "properties": {
+        "type": { "const": "varint" },
+        "encoding": { "const": "protobuf-style" },
+        "maxBytes": { "const": 5 },
+        "description": {
+          "const": "7 bits per byte, MSB=1 means more bytes follow. Each byte: [7 data bits][1 continuation bit]"
+        }
+      }
+    },
+
+    "zigzag_varint": {
+      "type": "object",
+      "description": "Signed variable-length integer (fc::signed_int)",
+      "properties": {
+        "type": { "const": "zigzag_varint" },
+        "encoding": { "const": "zigzag + varint" },
+        "description": {
+          "const": "Zigzag encode: (n << 1) ^ (n >> 31), then varint"
+        }
+      }
+    },
+
+    "uint8": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "uint8" },
+        "size": { "const": 1 },
+        "endian": { "const": "none" }
+      }
+    },
+
+    "uint16_le": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "uint16" },
+        "size": { "const": 2 },
+        "endian": { "const": "little" }
+      }
+    },
+
+    "uint32_le": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "uint32" },
+        "size": { "const": 4 },
+        "endian": { "const": "little" }
+      }
+    },
+
+    "uint64_le": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "uint64" },
+        "size": { "const": 8 },
+        "endian": { "const": "little" },
+        "jsType": { "const": "BigInt" }
+      }
+    },
+
+    "ripemd160": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "ripemd160" },
+        "size": { "const": 20 },
+        "description": { "const": "20-byte RIPEMD-160 hash" }
+      }
+    },
+
+    "sha256": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "sha256" },
+        "size": { "const": 32 },
+        "description": { "const": "32-byte SHA-256 hash" }
+      }
+    },
+
+    "compact_signature": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "compact_signature" },
+        "size": { "const": 65 },
+        "description": { "const": "secp256k1 compact signature: [1 byte recovery id][32 bytes r][32 bytes s]" }
+      }
+    },
+
+    "time_point_sec": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "time_point_sec" },
+        "size": { "const": 4 },
+        "description": { "const": "Unix timestamp in seconds (uint32_t)" }
+      }
+    },
+
+    "fc_string": {
+      "type": "object",
+      "description": "fc::raw serialized string",
+      "properties": {
+        "type": { "const": "fc_string" },
+        "structure": {
+          "type": "array",
+          "items": [
+            { "$ref": "#/definitions/varint", "description": "Length in bytes" },
+            { "type": "object", "properties": { "type": { "const": "bytes" }, "encoding": { "const": "utf-8" } } }
+          ]
+        }
+      }
+    },
+
+    "fc_vector": {
+      "type": "object",
+      "description": "fc::raw serialized vector<T>",
+      "properties": {
+        "type": { "const": "fc_vector" },
+        "elementType": { "type": "object" },
+        "structure": {
+          "type": "array",
+          "items": [
+            { "$ref": "#/definitions/varint", "description": "Element count" },
+            { "type": "object", "description": "Repeated element type" }
+          ]
+        }
+      }
+    },
+
+    "block_header": {
+      "type": "object",
+      "description": "block_header structure",
+      "properties": {
+        "name": { "const": "block_header" },
+        "fields": {
+          "type": "array",
+          "items": [
+            {
+              "name": "previous",
+              "type": { "$ref": "#/definitions/ripemd160" },
+              "description": "Hash of previous block (block_id_type)"
+            },
+            {
+              "name": "timestamp",
+              "type": { "$ref": "#/definitions/time_point_sec" },
+              "description": "Block creation time"
+            },
+            {
+              "name": "witness",
+              "type": { "$ref": "#/definitions/fc_string" },
+              "description": "Witness account name"
+            },
+            {
+              "name": "transaction_merkle_root",
+              "type": { "$ref": "#/definitions/ripemd160" },
+              "description": "Merkle root of transactions (checksum_type)"
+            },
+            {
+              "name": "extensions",
+              "type": { "$ref": "#/definitions/fc_vector" },
+              "description": "Block header extensions (usually empty)"
+            }
+          ]
+        }
+      }
+    },
+
+    "signed_block_header": {
+      "type": "object",
+      "description": "signed_block_header extends block_header",
+      "properties": {
+        "name": { "const": "signed_block_header" },
+        "extends": { "$ref": "#/definitions/block_header" },
+        "additionalFields": {
+          "type": "array",
+          "items": [
+            {
+              "name": "witness_signature",
+              "type": { "$ref": "#/definitions/compact_signature" },
+              "description": "Witness signature"
+            }
+          ]
+        }
+      }
+    },
+
+    "transaction": {
+      "type": "object",
+      "description": "transaction structure",
+      "properties": {
+        "name": { "const": "transaction" },
+        "fields": {
+          "type": "array",
+          "items": [
+            {
+              "name": "ref_block_num",
+              "type": { "$ref": "#/definitions/uint16_le" },
+              "description": "Reference block number"
+            },
+            {
+              "name": "ref_block_prefix",
+              "type": { "$ref": "#/definitions/uint32_le" },
+              "description": "Reference block prefix"
+            },
+            {
+              "name": "expiration",
+              "type": { "$ref": "#/definitions/time_point_sec" },
+              "description": "Transaction expiration"
+            },
+            {
+              "name": "operations",
+              "type": { "$ref": "#/definitions/fc_vector" },
+              "description": "List of operations (static_variant)"
+            },
+            {
+              "name": "extensions",
+              "type": { "$ref": "#/definitions/fc_vector" },
+              "description": "Transaction extensions (usually empty)"
+            }
+          ]
+        }
+      }
+    },
+
+    "signed_transaction": {
+      "type": "object",
+      "description": "signed_transaction extends transaction",
+      "properties": {
+        "name": { "const": "signed_transaction" },
+        "extends": { "$ref": "#/definitions/transaction" },
+        "additionalFields": {
+          "type": "array",
+          "items": [
+            {
+              "name": "signatures",
+              "type": {
+                "type": "object",
+                "properties": {
+                  "type": { "const": "fc_vector" },
+                  "elementType": { "$ref": "#/definitions/compact_signature" }
+                }
+              },
+              "description": "Transaction signatures"
+            }
+          ]
+        }
+      }
+    },
+
+    "signed_block": {
+      "type": "object",
+      "description": "signed_block extends signed_block_header",
+      "properties": {
+        "name": { "const": "signed_block" },
+        "extends": { "$ref": "#/definitions/signed_block_header" },
+        "additionalFields": {
+          "type": "array",
+          "items": [
+            {
+              "name": "transactions",
+              "type": {
+                "type": "object",
+                "properties": {
+                  "type": { "const": "fc_vector" },
+                  "elementType": { "$ref": "#/definitions/signed_transaction" }
+                }
+              },
+              "description": "List of transactions in block"
+            }
+          ]
+        }
+      }
+    },
+
+    "block_log_entry": {
+      "type": "object",
+      "description": "Single block entry in block_log",
+      "properties": {
+        "name": { "const": "block_log_entry" },
+        "structure": {
+          "type": "array",
+          "items": [
+            {
+              "name": "block_data",
+              "type": { "$ref": "#/definitions/signed_block" },
+              "description": "Serialized signed_block"
+            },
+            {
+              "name": "position_marker",
+              "type": { "$ref": "#/definitions/uint64_le" },
+              "description": "Offset of this block's start position in the file"
+            }
+          ]
+        }
+      }
+    },
+
+    "block_log_index_entry": {
+      "type": "object",
+      "description": "Entry in block_log.index",
+      "properties": {
+        "name": { "const": "block_log_index_entry" },
+        "structure": {
+          "type": "array",
+          "items": [
+            {
+              "name": "position",
+              "type": { "$ref": "#/definitions/uint64_le" },
+              "description": "File offset of block in block_log"
+            }
+          ]
+        }
+      }
+    }
+  },
+
+  "file_formats": {
+    "block_log": {
+      "description": "Main block data file",
+      "filename": "block_log",
+      "structure": {
+        "type": "sequence",
+        "description": "Sequence of block_log_entry structures",
+        "entry": { "$ref": "#/definitions/block_log_entry" }
+      },
+      "features": {
+        "head_block_position": {
+          "description": "Last 8 bytes contain position of head block",
+          "offset": "file_size - 8",
+          "type": { "$ref": "#/definitions/uint64_le" }
+        },
+        "backward_scan": {
+          "description": "Can scan backwards by reading position markers",
+          "method": "Read last 8 bytes for position, seek to position, read block, repeat"
+        }
+      },
+      "index_file": "block_log.index"
+    },
+
+    "block_log_index": {
+      "description": "Index file for block_log",
+      "filename": "block_log.index",
+      "structure": {
+        "type": "array",
+        "entry": { "$ref": "#/definitions/block_log_index_entry" },
+        "entry_size": 8
+      },
+      "lookup": {
+        "description": "Find position of block N",
+        "formula": "offset = 8 * (N - 1)",
+        "example": {
+          "block_1": "offset 0",
+          "block_2": "offset 8",
+          "block_1000000": "offset 7999992"
+        }
+      },
+      "validation": {
+        "description": "Last entry should match last position in block_log",
+        "check": "read_last_uint64(block_log) == read_last_uint64(block_log.index)"
+      }
+    },
+
+    "dlt_block_log": {
+      "description": "DLT rolling block data file (same format as block_log)",
+      "filename": "dlt_block_log",
+      "structure": {
+        "type": "sequence",
+        "description": "Sequence of block_log_entry structures (starts at arbitrary block number)",
+        "entry": { "$ref": "#/definitions/block_log_entry" }
+      },
+      "index_file": "dlt_block_log.index",
+      "notes": [
+        "Same binary format as block_log",
+        "Can start at any block number",
+        "Supports truncation of old blocks"
+      ]
+    },
+
+    "dlt_block_log_index": {
+      "description": "Index file for dlt_block_log (offset-aware)",
+      "filename": "dlt_block_log.index",
+      "structure": {
+        "type": "object",
+        "fields": [
+          {
+            "name": "header",
+            "offset": 0,
+            "size": 8,
+            "type": { "$ref": "#/definitions/uint64_le" },
+            "description": "start_block_num - the first block number in this log"
+          },
+          {
+            "name": "entries",
+            "offset": 8,
+            "type": "array",
+            "entry": { "$ref": "#/definitions/block_log_index_entry" },
+            "entry_size": 8,
+            "description": "Array of block positions"
+          }
+        ]
+      },
+      "lookup": {
+        "description": "Find position of block N",
+        "formula": "offset = 8 + 8 * (N - start_block_num)",
+        "prerequisite": "Read header first to get start_block_num",
+        "example": {
+          "start_block_num": 10000000,
+          "block_10000000": "offset 8",
+          "block_10000001": "offset 16",
+          "block_10050000": "offset 400008"
+        }
+      }
+    }
+  },
+
+  "algorithms": {
+    "read_head_block": {
+      "description": "Read the most recent (head) block from block_log or dlt_block_log",
+      "steps": [
+        { "step": 1, "action": "Get file size" },
+        { "step": 2, "action": "Seek to position: file_size - 8" },
+        { "step": 3, "action": "Read uint64_t position (little-endian)" },
+        { "step": 4, "action": "Seek to that position" },
+        { "step": 5, "action": "Deserialize signed_block" }
+      ]
+    },
+
+    "read_block_by_number": {
+      "description": "Read a specific block by number using the index",
+      "steps": [
+        { "step": 1, "action": "Calculate index offset: 8 * (N - 1) for block_log, or 8 + 8 * (N - start_block_num) for dlt_block_log" },
+        { "step": 2, "action": "Read uint64_t position from index file" },
+        { "step": 3, "action": "Seek to position in data file" },
+        { "step": 4, "action": "Deserialize signed_block" }
+      ]
+    },
+
+    "scan_all_blocks": {
+      "description": "Sequential scan of all blocks",
+      "steps": [
+        { "step": 1, "action": "Start at position 0" },
+        { "step": 2, "action": "Deserialize signed_block" },
+        { "step": 3, "action": "Read uint64_t position marker (should match current position)" },
+        { "step": 4, "action": "Next block at: current_position + block_size + 8" },
+        { "step": 5, "action": "Repeat until end of file" }
+      ]
+    },
+
+    "reconstruct_index": {
+      "description": "Reconstruct index file from data file",
+      "steps": [
+        { "step": 1, "action": "Scan all blocks sequentially" },
+        { "step": 2, "action": "Record each block's start position" },
+        { "step": 3, "action": "For block_log: write positions array starting at offset 0" },
+        { "step": 4, "action": "For dlt_block_log: write start_block_num header (8 bytes), then positions array" }
+      ]
+    },
+
+    "get_block_number": {
+      "description": "Extract block number from a signed_block",
+      "method": "block_num = num_from_id(block.previous) + 1",
+      "num_from_id": {
+        "description": "Extract block number from block_id_type",
+        "input": "20-byte ripemd160 hash",
+        "output": "uint32_t",
+        "method": "Read first 4 bytes as little-endian uint32_t"
+      },
+      "genesis_block": {
+        "description": "Genesis block has previous = all zeros",
+        "block_num": 1
+      }
+    }
+  },
+
+  "javascript_types": {
+    "block_log_reader": {
+      "description": "TypeScript/JavaScript interface for block log reader",
+      "interface": {
+        "name": "BlockLogReader",
+        "methods": [
+          {
+            "name": "open",
+            "params": [{ "name": "dataPath", "type": "string" }, { "name": "indexPath", "type": "string" }],
+            "returns": "void"
+          },
+          {
+            "name": "close",
+            "params": [],
+            "returns": "void"
+          },
+          {
+            "name": "readBlock",
+            "params": [{ "name": "position", "type": "bigint" }],
+            "returns": "{ block: SignedBlock, nextPosition: bigint }"
+          },
+          {
+            "name": "readBlockByNum",
+            "params": [{ "name": "blockNum", "type": "number" }],
+            "returns": "SignedBlock | null"
+          },
+          {
+            "name": "readHead",
+            "params": [],
+            "returns": "SignedBlock"
+          },
+          {
+            "name": "getHeadBlockNum",
+            "params": [],
+            "returns": "number"
+          },
+          {
+            "name": "getStartBlockNum",
+            "params": [],
+            "returns": "number",
+            "description": "Returns 1 for block_log, or start_block_num for dlt_block_log"
+          }
+        ]
+      }
+    },
+
+    "signed_block": {
+      "description": "TypeScript interface for signed_block",
+      "interface": {
+        "name": "SignedBlock",
+        "extends": "SignedBlockHeader",
+        "properties": [
+          { "name": "transactions", "type": "SignedTransaction[]" }
+        ]
+      }
+    },
+
+    "signed_block_header": {
+      "description": "TypeScript interface for signed_block_header",
+      "interface": {
+        "name": "SignedBlockHeader",
+        "extends": "BlockHeader",
+        "properties": [
+          { "name": "witness_signature", "type": "Buffer" }
+        ]
+      }
+    },
+
+    "block_header": {
+      "description": "TypeScript interface for block_header",
+      "interface": {
+        "name": "BlockHeader",
+        "properties": [
+          { "name": "previous", "type": "Buffer", "size": 20 },
+          { "name": "timestamp", "type": "Date" },
+          { "name": "witness", "type": "string" },
+          { "name": "transaction_merkle_root", "type": "Buffer", "size": 20 },
+          { "name": "extensions", "type": "any[]" }
+        ]
+      }
+    },
+
+    "signed_transaction": {
+      "description": "TypeScript interface for signed_transaction",
+      "interface": {
+        "name": "SignedTransaction",
+        "extends": "Transaction",
+        "properties": [
+          { "name": "signatures", "type": "Buffer[]" }
+        ]
+      }
+    },
+
+    "transaction": {
+      "description": "TypeScript interface for transaction",
+      "interface": {
+        "name": "Transaction",
+        "properties": [
+          { "name": "ref_block_num", "type": "number" },
+          { "name": "ref_block_prefix", "type": "number" },
+          { "name": "expiration", "type": "Date" },
+          { "name": "operations", "type": "Operation[]" },
+          { "name": "extensions", "type": "any[]" }
+        ]
+      }
+    },
+
+    "operation": {
+      "description": "TypeScript interface for operation (static_variant)",
+      "interface": {
+        "name": "Operation",
+        "properties": [
+          { "name": "typeId", "type": "number", "description": "Operation type index (0-63)" },
+          { "name": "typeName", "type": "string", "description": "Operation name" },
+          { "name": "isVirtual", "type": "boolean" },
+          { "name": "data", "type": "object", "description": "Operation-specific data" }
+        ]
+      }
+    }
+  },
+
+  "operations": {
+    "description": "VIZ protocol operation definitions",
+    "serialization": {
+      "format": "static_variant",
+      "structure": [
+        { "name": "type_index", "type": "varint", "description": "Operation type ID (0-63)" },
+        { "name": "operation_data", "type": "operation_specific", "description": "Fields depend on operation type" }
+      ]
+    },
+    "type_ids": [
+      { "id": 0, "name": "vote_operation", "isVirtual": false, "status": "deprecated" },
+      { "id": 1, "name": "content_operation", "isVirtual": false, "status": "deprecated" },
+      { "id": 2, "name": "transfer_operation", "isVirtual": false, "status": "active" },
+      { "id": 3, "name": "transfer_to_vesting_operation", "isVirtual": false, "status": "active" },
+      { "id": 4, "name": "withdraw_vesting_operation", "isVirtual": false, "status": "active" },
+      { "id": 5, "name": "account_update_operation", "isVirtual": false, "status": "active" },
+      { "id": 6, "name": "witness_update_operation", "isVirtual": false, "status": "active" },
+      { "id": 7, "name": "account_witness_vote_operation", "isVirtual": false, "status": "active" },
+      { "id": 8, "name": "account_witness_proxy_operation", "isVirtual": false, "status": "active" },
+      { "id": 9, "name": "delete_content_operation", "isVirtual": false, "status": "deprecated" },
+      { "id": 10, "name": "custom_operation", "isVirtual": false, "status": "active" },
+      { "id": 11, "name": "set_withdraw_vesting_route_operation", "isVirtual": false, "status": "active" },
+      { "id": 12, "name": "request_account_recovery_operation", "isVirtual": false, "status": "active" },
+      { "id": 13, "name": "recover_account_operation", "isVirtual": false, "status": "active" },
+      { "id": 14, "name": "change_recovery_account_operation", "isVirtual": false, "status": "active" },
+      { "id": 15, "name": "escrow_transfer_operation", "isVirtual": false, "status": "active" },
+      { "id": 16, "name": "escrow_dispute_operation", "isVirtual": false, "status": "active" },
+      { "id": 17, "name": "escrow_release_operation", "isVirtual": false, "status": "active" },
+      { "id": 18, "name": "escrow_approve_operation", "isVirtual": false, "status": "active" },
+      { "id": 19, "name": "delegate_vesting_shares_operation", "isVirtual": false, "status": "active" },
+      { "id": 20, "name": "account_create_operation", "isVirtual": false, "status": "active" },
+      { "id": 21, "name": "account_metadata_operation", "isVirtual": false, "status": "active" },
+      { "id": 22, "name": "proposal_create_operation", "isVirtual": false, "status": "active" },
+      { "id": 23, "name": "proposal_update_operation", "isVirtual": false, "status": "active" },
+      { "id": 24, "name": "proposal_delete_operation", "isVirtual": false, "status": "active" },
+      { "id": 25, "name": "chain_properties_update_operation", "isVirtual": false, "status": "active" },
+      { "id": 26, "name": "author_reward_operation", "isVirtual": true, "status": "active" },
+      { "id": 27, "name": "curation_reward_operation", "isVirtual": true, "status": "active" },
+      { "id": 28, "name": "content_reward_operation", "isVirtual": true, "status": "active" },
+      { "id": 29, "name": "fill_vesting_withdraw_operation", "isVirtual": true, "status": "active" },
+      { "id": 30, "name": "shutdown_witness_operation", "isVirtual": true, "status": "active" },
+      { "id": 31, "name": "hardfork_operation", "isVirtual": true, "status": "active" },
+      { "id": 32, "name": "content_payout_update_operation", "isVirtual": true, "status": "active" },
+      { "id": 33, "name": "content_benefactor_reward_operation", "isVirtual": true, "status": "active" },
+      { "id": 34, "name": "return_vesting_delegation_operation", "isVirtual": true, "status": "active" },
+      { "id": 35, "name": "committee_worker_create_request_operation", "isVirtual": false, "status": "active" },
+      { "id": 36, "name": "committee_worker_cancel_request_operation", "isVirtual": false, "status": "active" },
+      { "id": 37, "name": "committee_vote_request_operation", "isVirtual": false, "status": "active" },
+      { "id": 38, "name": "committee_cancel_request_operation", "isVirtual": true, "status": "active" },
+      { "id": 39, "name": "committee_approve_request_operation", "isVirtual": true, "status": "active" },
+      { "id": 40, "name": "committee_payout_request_operation", "isVirtual": true, "status": "active" },
+      { "id": 41, "name": "committee_pay_request_operation", "isVirtual": true, "status": "active" },
+      { "id": 42, "name": "witness_reward_operation", "isVirtual": true, "status": "active" },
+      { "id": 43, "name": "create_invite_operation", "isVirtual": false, "status": "active" },
+      { "id": 44, "name": "claim_invite_balance_operation", "isVirtual": false, "status": "active" },
+      { "id": 45, "name": "invite_registration_operation", "isVirtual": false, "status": "active" },
+      { "id": 46, "name": "versioned_chain_properties_update_operation", "isVirtual": false, "status": "active" },
+      { "id": 47, "name": "award_operation", "isVirtual": false, "status": "active" },
+      { "id": 48, "name": "receive_award_operation", "isVirtual": true, "status": "active" },
+      { "id": 49, "name": "benefactor_award_operation", "isVirtual": true, "status": "active" },
+      { "id": 50, "name": "set_paid_subscription_operation", "isVirtual": false, "status": "active" },
+      { "id": 51, "name": "paid_subscribe_operation", "isVirtual": false, "status": "active" },
+      { "id": 52, "name": "paid_subscription_action_operation", "isVirtual": true, "status": "active" },
+      { "id": 53, "name": "cancel_paid_subscription_operation", "isVirtual": true, "status": "active" },
+      { "id": 54, "name": "set_account_price_operation", "isVirtual": false, "status": "active" },
+      { "id": 55, "name": "set_subaccount_price_operation", "isVirtual": false, "status": "active" },
+      { "id": 56, "name": "buy_account_operation", "isVirtual": false, "status": "active" },
+      { "id": 57, "name": "account_sale_operation", "isVirtual": true, "status": "active" },
+      { "id": 58, "name": "use_invite_balance_operation", "isVirtual": false, "status": "active" },
+      { "id": 59, "name": "expire_escrow_ratification_operation", "isVirtual": true, "status": "active" },
+      { "id": 60, "name": "fixed_award_operation", "isVirtual": false, "status": "active" },
+      { "id": 61, "name": "target_account_sale_operation", "isVirtual": false, "status": "active" },
+      { "id": 62, "name": "bid_operation", "isVirtual": true, "status": "active" },
+      { "id": 63, "name": "outbid_operation", "isVirtual": true, "status": "active" }
+    ],
+    "common_types": {
+      "asset": {
+        "description": "Token amount with symbol",
+        "fields": [
+          { "name": "amount", "type": "int64", "description": "Amount in satoshis" },
+          { "name": "symbol", "type": "uint64", "description": "Asset symbol identifier" }
+        ],
+        "symbols": {
+          "VIZ": "0x0000000000000003",
+          "SHARES": "0x0000000000000004"
+        }
+      },
+      "authority": {
+        "description": "Multi-signature authority",
+        "fields": [
+          { "name": "weight_threshold", "type": "uint32" },
+          { "name": "account_auths", "type": "flat_set<pair<account_name_type, uint16>>" },
+          { "name": "key_auths", "type": "flat_set<pair<public_key_type, uint16>>" }
+        ]
+      },
+      "public_key_type": {
+        "description": "secp256k1 compressed public key",
+        "size": 33
+      },
+      "beneficiary_route_type": {
+        "description": "Beneficiary route for awards",
+        "fields": [
+          { "name": "account", "type": "account_name_type" },
+          { "name": "weight", "type": "uint16" }
+        ]
+      }
+    },
+    "operation_schemas": {
+      "transfer_operation": {
+        "id": 2,
+        "fields": [
+          { "name": "from", "type": "account_name_type" },
+          { "name": "to", "type": "account_name_type" },
+          { "name": "amount", "type": "asset" },
+          { "name": "memo", "type": "string" }
+        ]
+      },
+      "account_create_operation": {
+        "id": 20,
+        "fields": [
+          { "name": "fee", "type": "asset" },
+          { "name": "delegation", "type": "asset" },
+          { "name": "creator", "type": "account_name_type" },
+          { "name": "new_account_name", "type": "account_name_type" },
+          { "name": "master", "type": "authority" },
+          { "name": "active", "type": "authority" },
+          { "name": "regular", "type": "authority" },
+          { "name": "memo_key", "type": "public_key_type" },
+          { "name": "json_metadata", "type": "string" },
+          { "name": "referrer", "type": "account_name_type" },
+          { "name": "extensions", "type": "extensions_type" }
+        ]
+      },
+      "witness_update_operation": {
+        "id": 6,
+        "fields": [
+          { "name": "owner", "type": "account_name_type" },
+          { "name": "url", "type": "string" },
+          { "name": "block_signing_key", "type": "public_key_type" }
+        ]
+      },
+      "award_operation": {
+        "id": 47,
+        "fields": [
+          { "name": "initiator", "type": "account_name_type" },
+          { "name": "receiver", "type": "account_name_type" },
+          { "name": "energy", "type": "uint16" },
+          { "name": "custom_sequence", "type": "uint64" },
+          { "name": "memo", "type": "string" },
+          { "name": "beneficiaries", "type": "vector<beneficiary_route_type>" }
+        ]
+      },
+      "transfer_to_vesting_operation": {
+        "id": 3,
+        "fields": [
+          { "name": "from", "type": "account_name_type" },
+          { "name": "to", "type": "account_name_type" },
+          { "name": "amount", "type": "asset" }
+        ]
+      },
+      "delegate_vesting_shares_operation": {
+        "id": 19,
+        "fields": [
+          { "name": "delegator", "type": "account_name_type" },
+          { "name": "delegatee", "type": "account_name_type" },
+          { "name": "vesting_shares", "type": "asset" }
+        ]
+      },
+      "create_invite_operation": {
+        "id": 43,
+        "fields": [
+          { "name": "creator", "type": "account_name_type" },
+          { "name": "balance", "type": "asset" },
+          { "name": "invite_key", "type": "public_key_type" }
+        ]
+      },
+      "custom_operation": {
+        "id": 10,
+        "fields": [
+          { "name": "required_active_auths", "type": "flat_set<account_name_type>" },
+          { "name": "required_regular_auths", "type": "flat_set<account_name_type>" },
+          { "name": "id", "type": "string" },
+          { "name": "json", "type": "string" }
+        ]
+      },
+      "author_reward_operation": {
+        "id": 26,
+        "isVirtual": true,
+        "fields": [
+          { "name": "author", "type": "account_name_type" },
+          { "name": "permlink", "type": "string" },
+          { "name": "token_payout", "type": "asset" },
+          { "name": "vesting_payout", "type": "asset" }
+        ]
+      },
+      "witness_reward_operation": {
+        "id": 42,
+        "isVirtual": true,
+        "fields": [
+          { "name": "witness", "type": "account_name_type" },
+          { "name": "shares", "type": "asset" }
+        ]
+      }
+    }
+  },
+
+  "constants": {
+    "CHAIN_BLOCK_SIZE": {
+      "value": 1048576,
+      "description": "Maximum block size in bytes (1 MB)"
+    },
+    "MIN_VALID_FILE_SIZE": {
+      "value": 8,
+      "description": "Minimum valid file size (at least one position marker)"
+    },
+    "INDEX_HEADER_SIZE": {
+      "value": 8,
+      "description": "DLT index header size (start_block_num)"
+    },
+    "SIGNATURE_SIZE": {
+      "value": 65,
+      "description": "Compact signature size in bytes"
+    },
+    "HASH_SIZE_RIPEMD160": {
+      "value": 20,
+      "description": "RIPEMD-160 hash size in bytes"
+    },
+    "HASH_SIZE_SHA256": {
+      "value": 32,
+      "description": "SHA-256 hash size in bytes"
+    }
+  }
+}

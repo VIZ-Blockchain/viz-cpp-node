@@ -50,9 +50,13 @@ namespace chain {
 
         bool skip_virtual_ops = false;
 
+        std::string snapshot_path; // --snapshot: load state from snapshot file
+
         graphene::chain::database db;
 
         bool single_write_thread = false;
+
+        bool sync_start_logged = false; // guard to log sync start only once
 
         plugin_impl() {
             // get default settings
@@ -94,9 +98,18 @@ namespace chain {
     }
 
     bool plugin::plugin_impl::accept_block(const protocol::signed_block &block, bool currently_syncing, uint32_t skip) {
-        if (currently_syncing && block.block_num() % 10000 == 0) {
-            ilog("Syncing Blockchain --- Got block: #${n} time: ${t} producer: ${p}",
-                 ("t", block.timestamp)("n", block.block_num())("p", block.witness));
+        if (currently_syncing) {
+            if (!sync_start_logged) {
+                ilog("\033[92m>>> Syncing Blockchain started from block #${n}\033[0m", ("n", block.block_num()));
+                sync_start_logged = true;
+            }
+
+            if (block.block_num() % 500 == 0) {
+                ilog("\033[93mSyncing Blockchain --- Got block: #${n} time: ${t} producer: ${p}\033[0m",
+                     ("t", block.timestamp)("n", block.block_num())("p", block.witness));
+            }
+        } else {
+            sync_start_logged = false; // reset guard when not syncing
         }
 
         check_time_in_block(block);
@@ -228,6 +241,9 @@ namespace chain {
             ) (
                 "enable-plugins-on-push-transaction", boost::program_options::value<bool>()->default_value(false),
                 "enable calling of plugins for operations on push_transaction"
+            ) (
+                "dlt-block-log-max-blocks", boost::program_options::value<uint32_t>()->default_value(100000),
+                "Number of recent blocks to keep in the DLT rolling block_log (0 = disabled)"
             );
         cli.add_options()
             (
@@ -311,6 +327,17 @@ namespace chain {
                 my->loaded_checkpoints[item.first] = item.second;
             }
         }
+
+        // Check if snapshot plugin has a load path configured
+        if (options.count("snapshot")) {
+            my->snapshot_path = options.at("snapshot").as<std::string>();
+            ilog("Chain plugin: will load state from snapshot: ${p}", ("p", my->snapshot_path));
+        }
+
+        // DLT rolling block_log config
+        if (options.count("dlt-block-log-max-blocks")) {
+            my->db._dlt_block_log_max_blocks = options.at("dlt-block-log-max-blocks").as<uint32_t>();
+        }
     }
 
     void plugin::plugin_startup() {
@@ -345,6 +372,77 @@ namespace chain {
 
         my->db.enable_plugins_on_push_transaction(my->enable_plugins_on_push_transaction);
 
+        // ========== Snapshot loading path ==========
+        if (!my->snapshot_path.empty()) {
+            // Check if shared_memory already has state from a previous run.
+            // If so, skip snapshot import and use normal open path.
+            // This prevents re-importing an old snapshot on container restart
+            // when --snapshot is still in the command line (e.g. VIZD_EXTRA_OPTS).
+            auto shm_path = my->shared_memory_dir / "shared_memory.bin";
+            if (boost::filesystem::exists(shm_path) && boost::filesystem::file_size(shm_path) > 0) {
+                wlog("Shared memory already exists at ${p}. Skipping snapshot import, using normal startup.",
+                     ("p", shm_path.string()));
+                wlog("To force re-import, delete shared_memory first (--resync-blockchain) or remove the shared_memory file.");
+            } else if (!boost::filesystem::exists(my->snapshot_path)) {
+                // Snapshot file not found -- maybe it was already consumed (.used) or path is wrong.
+                // Fall through to normal startup instead of wiping state and failing.
+                wlog("Snapshot file not found: ${p}. Skipping snapshot import, using normal startup.",
+                     ("p", my->snapshot_path));
+            } else {
+                ilog("Opening database in snapshot mode...");
+                try {
+                    my->db.open_from_snapshot(
+                        data_dir,
+                        my->shared_memory_dir,
+                        CHAIN_INIT_SUPPLY,
+                        my->shared_memory_size,
+                        chainbase::database::read_write);
+
+                    ilog("Database opened for snapshot import. Loading snapshot state...");
+                } catch (const fc::exception& e) {
+                    elog("Failed to open database for snapshot: ${e}", ("e", e.to_detail_string()));
+                    throw;
+                }
+
+                // Load snapshot state via callback (set by snapshot plugin during initialize)
+                // This MUST happen before on_sync() so that P2P starts syncing from the
+                // snapshot head block, not from genesis.
+                if (snapshot_load_callback) {
+                    try {
+                        snapshot_load_callback();
+                    } catch (const fc::exception& e) {
+                        elog("FATAL: Failed to load snapshot: ${e}", ("e", e.to_detail_string()));
+                        elog("The snapshot file may be corrupted or incompatible. "
+                             "Check the file path and try again.");
+                        appbase::app().quit();
+                        return;
+                    } catch (const std::exception& e) {
+                        elog("FATAL: Failed to load snapshot: ${e}", ("e", e.what()));
+                        appbase::app().quit();
+                        return;
+                    }
+                } else {
+                    elog("--snapshot specified but no snapshot_load_callback registered. "
+                         "Is the snapshot plugin enabled?");
+                    throw std::runtime_error("Snapshot plugin not configured");
+                }
+
+                // Rename snapshot file to .used so subsequent restarts skip it
+                try {
+                    std::string used_path = my->snapshot_path + ".used";
+                    boost::filesystem::rename(my->snapshot_path, used_path);
+                    ilog("Snapshot file renamed to ${p}", ("p", used_path));
+                } catch (const std::exception& e) {
+                    wlog("Could not rename snapshot file to .used: ${e}", ("e", e.what()));
+                }
+
+                ilog("Started on blockchain with ${n} blocks (from snapshot)", ("n", my->db.head_block_num()));
+                on_sync();
+                return;
+            }
+        }
+
+        // ========== Normal startup path ==========
         try {
             ilog("Opening shared memory from ${path}", ("path", my->shared_memory_dir.generic_string()));
             my->db.open(data_dir, my->shared_memory_dir, CHAIN_INIT_SUPPLY, my->shared_memory_size, chainbase::database::read_write/*, my->validate_invariants*/ );
@@ -386,6 +484,44 @@ namespace chain {
         }
 
         ilog("Started on blockchain with ${n} blocks", ("n", my->db.head_block_num()));
+
+        // If --create-snapshot callback is registered, create snapshot and quit
+        // BEFORE on_sync() — so P2P/witness never start.
+        if (snapshot_create_callback) {
+            snapshot_create_callback();
+            return;
+        }
+
+        // If state is empty and P2P snapshot sync callback is registered,
+        // download and load snapshot from trusted peers before on_sync().
+        if (my->db.head_block_num() == 0 && snapshot_p2p_sync_callback) {
+            std::cerr << "   Node has no state (0 blocks). Requesting snapshot from trusted peers...\n";
+            ilog("Node has no state. Triggering P2P snapshot sync from trusted peers...");
+            try {
+                snapshot_p2p_sync_callback();
+            } catch (const fc::exception& e) {
+                elog("FATAL: P2P snapshot sync failed: ${e}", ("e", e.to_detail_string()));
+                std::cerr << "   FATAL: P2P snapshot sync failed: " << e.what() << "\n";
+                appbase::app().quit();
+                return;
+            } catch (const std::exception& e) {
+                elog("FATAL: P2P snapshot sync failed: ${e}", ("e", e.what()));
+                std::cerr << "   FATAL: P2P snapshot sync failed: " << e.what() << "\n";
+                appbase::app().quit();
+                return;
+            }
+            std::cerr << "   P2P snapshot sync complete. Started on blockchain with "
+                      << my->db.head_block_num() << " blocks\n";
+            ilog("Started on blockchain with ${n} blocks (from P2P snapshot sync)", ("n", my->db.head_block_num()));
+        } else if (my->db.head_block_num() == 0 && !snapshot_p2p_sync_callback) {
+            wlog("Node has no state (0 blocks) and no P2P snapshot sync configured.");
+            wlog("Will sync from genesis via P2P (this will be very slow for mature chains).");
+            wlog("To bootstrap from a trusted peer, configure 'trusted-snapshot-peer' in config.ini.");
+            std::cerr << "   WARNING: Node has 0 blocks and no snapshot sync configured.\n";
+            std::cerr << "   Will sync from genesis via P2P (very slow for mature chains).\n";
+            std::cerr << "   Add 'trusted-snapshot-peer = <ip>:<port>' to config.ini for fast bootstrap.\n";
+        }
+
         on_sync();
     }
 

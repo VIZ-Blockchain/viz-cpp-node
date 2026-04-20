@@ -41,6 +41,7 @@ target_link_libraries(
         graphene::invite_api
         graphene::paid_subscription_api
         graphene::custom_protocol_api
+        graphene::snapshot
         ${MONGO_LIB}
         graphene_protocol
         fc

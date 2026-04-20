@@ -93,9 +93,9 @@ namespace graphene {
                             _db._pending_tx.push_back( tx );
                             postponed_txs++;
                         }
-                        if( postponed_txs++ ) {
-                            wlog( "Postponed ${p} pending transactions. ${a} were applied.", ("p", postponed_txs)("a", applied_txs) );
-                        }
+                    }
+                    if( postponed_txs > 0 ) {
+                        wlog( "Postponed ${p} pending transactions. ${a} were applied.", ("p", postponed_txs)("a", applied_txs) );
                     }
                 }
 

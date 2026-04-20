@@ -18,6 +18,14 @@
 - [share/vizd/vizd.sh](file://share/vizd/vizd.sh)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Updated CMake minimum version requirement from 2.8.12 to 3.16
+- Updated Boost library requirement from 1.57 to 1.71
+- Removed deprecated Windows-specific Boost 1.53 compatibility logic
+- Added coroutine component requirement to Boost components
+- Updated Docker build configurations to use Boost 1.71 packages
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
@@ -56,23 +64,23 @@ Root --> PRG
 ```
 
 **Diagram sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L210-L213)
-- [thirdparty/CMakeLists.txt](file://thirdparty/CMakeLists.txt#L1-L3)
-- [libraries/CMakeLists.txt](file://libraries/CMakeLists.txt#L1-L8)
-- [plugins/CMakeLists.txt](file://plugins/CMakeLists.txt#L1-L12)
-- [programs/CMakeLists.txt](file://programs/CMakeLists.txt#L1-L8)
+- [CMakeLists.txt:206-209](file://CMakeLists.txt#L206-L209)
+- [thirdparty/CMakeLists.txt:1-3](file://thirdparty/CMakeLists.txt#L1-L3)
+- [libraries/CMakeLists.txt:1-8](file://libraries/CMakeLists.txt#L1-L8)
+- [plugins/CMakeLists.txt:1-12](file://plugins/CMakeLists.txt#L1-L12)
+- [programs/CMakeLists.txt:1-8](file://programs/CMakeLists.txt#L1-L8)
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L1-L277)
-- [libraries/CMakeLists.txt](file://libraries/CMakeLists.txt#L1-L8)
-- [plugins/CMakeLists.txt](file://plugins/CMakeLists.txt#L1-L12)
-- [thirdparty/CMakeLists.txt](file://thirdparty/CMakeLists.txt#L1-L3)
-- [programs/CMakeLists.txt](file://programs/CMakeLists.txt#L1-L8)
+- [CMakeLists.txt:1-271](file://CMakeLists.txt#L1-L271)
+- [libraries/CMakeLists.txt:1-8](file://libraries/CMakeLists.txt#L1-L8)
+- [plugins/CMakeLists.txt:1-12](file://plugins/CMakeLists.txt#L1-L12)
+- [thirdparty/CMakeLists.txt:1-3](file://thirdparty/CMakeLists.txt#L1-L3)
+- [programs/CMakeLists.txt:1-8](file://programs/CMakeLists.txt#L1-L8)
 
 ## Core Components
 - Top-level CMake project:
-  - Enforces minimum compiler versions for GCC and Clang.
-  - Configures Boost usage, optional static/shared libraries, and PCH support.
+  - Enforces minimum CMake version 3.16 and compiler versions for GCC and Clang.
+  - Configures Boost usage with version 1.71 and coroutine component requirement, optional static/shared libraries, and PCH support.
   - Provides compile-time options: BUILD_TESTNET, LOW_MEMORY_NODE, CHAINBASE_CHECK_LOCKING, ENABLE_MONGO_PLUGIN.
   - Sets platform-specific flags for Windows (MSVC/Mingw), macOS, and Linux.
   - Enables ccache globally when available.
@@ -85,10 +93,10 @@ Root --> PRG
   - newplugin.py: scaffolds a new plugin directory and files.
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L1-L277)
-- [programs/build_helpers/configure_build.py](file://programs/build_helpers/configure_build.py#L1-L202)
-- [programs/build_helpers/cat_parts.py](file://programs/build_helpers/cat_parts.py#L1-L74)
-- [programs/util/newplugin.py](file://programs/util/newplugin.py#L1-L251)
+- [CMakeLists.txt:1-271](file://CMakeLists.txt#L1-L271)
+- [programs/build_helpers/configure_build.py:1-202](file://programs/build_helpers/configure_build.py#L1-L202)
+- [programs/build_helpers/cat_parts.py:1-74](file://programs/build_helpers/cat_parts.py#L1-L74)
+- [programs/util/newplugin.py:1-251](file://programs/util/newplugin.py#L1-L251)
 
 ## Architecture Overview
 The build pipeline integrates CMake configuration, platform detection, dependency discovery, and helper tools to produce binaries and optionally packaging artifacts.
@@ -125,17 +133,18 @@ CMake --> Inst
 ```
 
 **Diagram sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L210-L213)
-- [programs/build_helpers/configure_build.py](file://programs/build_helpers/configure_build.py#L143-L195)
-- [programs/build_helpers/cat_parts.py](file://programs/build_helpers/cat_parts.py#L11-L69)
-- [programs/util/newplugin.py](file://programs/util/newplugin.py#L225-L246)
+- [CMakeLists.txt:206-209](file://CMakeLists.txt#L206-L209)
+- [programs/build_helpers/configure_build.py:143-195](file://programs/build_helpers/configure_build.py#L143-L195)
+- [programs/build_helpers/cat_parts.py:11-69](file://programs/build_helpers/cat_parts.py#L11-L69)
+- [programs/util/newplugin.py:225-246](file://programs/util/newplugin.py#L225-L246)
 
 ## Detailed Component Analysis
 
 ### CMake Configuration and Options
 Key behaviors:
+- CMake minimum version: Requires CMake 3.16 or higher for modern C++ features and improved dependency management.
 - Compiler enforcement: Fails early if GCC < 4.8 or Clang < 3.3.
-- Boost configuration: Uses a curated component list and supports static usage; adds coroutine when available.
+- Boost configuration: Uses Boost 1.71 with coroutine component requirement; supports static usage; removes deprecated 1.53 compatibility logic.
 - Platform flags:
   - Windows (MSVC): Adds warning suppressions, disables safe-seh, ensures debug info, locates TCL.
   - Windows (MinGW): Enables C++11, permissive mode, SSE4.2, big obj, sets Release/Debug optimization flags, supports full static build.
@@ -155,18 +164,19 @@ Build targets:
 - The top-level project includes subprojects for thirdparty, libraries, plugins, and programs. Programs include build_helpers, cli_wallet, vizd, js_operation_serializer, size_checker, and util.
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L11-L20)
-- [CMakeLists.txt](file://CMakeLists.txt#L38-L50)
-- [CMakeLists.txt](file://CMakeLists.txt#L52-L81)
-- [CMakeLists.txt](file://CMakeLists.txt#L83-L89)
-- [CMakeLists.txt](file://CMakeLists.txt#L91-L156)
-- [CMakeLists.txt](file://CMakeLists.txt#L158-L202)
-- [CMakeLists.txt](file://CMakeLists.txt#L204-L208)
-- [CMakeLists.txt](file://CMakeLists.txt#L210-L213)
-- [programs/CMakeLists.txt](file://programs/CMakeLists.txt#L1-L8)
-- [libraries/CMakeLists.txt](file://libraries/CMakeLists.txt#L1-L8)
-- [plugins/CMakeLists.txt](file://plugins/CMakeLists.txt#L1-L12)
-- [thirdparty/CMakeLists.txt](file://thirdparty/CMakeLists.txt#L1-L3)
+- [CMakeLists.txt:2-3](file://CMakeLists.txt#L2-L3)
+- [CMakeLists.txt:11-20](file://CMakeLists.txt#L11-L20)
+- [CMakeLists.txt:38-49](file://CMakeLists.txt#L38-L49)
+- [CMakeLists.txt:51-53](file://CMakeLists.txt#L51-L53)
+- [CMakeLists.txt:55-80](file://CMakeLists.txt#L55-L80)
+- [CMakeLists.txt:82-88](file://CMakeLists.txt#L82-L88)
+- [CMakeLists.txt:96-100](file://CMakeLists.txt#L96-L100)
+- [CMakeLists.txt:108-152](file://CMakeLists.txt#L108-L152)
+- [CMakeLists.txt:154-198](file://CMakeLists.txt#L154-L198)
+- [programs/CMakeLists.txt:1-8](file://programs/CMakeLists.txt#L1-L8)
+- [libraries/CMakeLists.txt:1-8](file://libraries/CMakeLists.txt#L1-L8)
+- [plugins/CMakeLists.txt:1-12](file://plugins/CMakeLists.txt#L1-L12)
+- [thirdparty/CMakeLists.txt:1-3](file://thirdparty/CMakeLists.txt#L1-L3)
 
 ### Cross-Platform Compilation Flags and Toolchains
 - Windows:
@@ -180,23 +190,24 @@ Build targets:
 - Debug build: defines DEBUG automatically.
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L123-L156)
-- [CMakeLists.txt](file://CMakeLists.txt#L166-L184)
-- [CMakeLists.txt](file://CMakeLists.txt#L190-L201)
+- [CMakeLists.txt:108-152](file://CMakeLists.txt#L108-L152)
+- [CMakeLists.txt:154-198](file://CMakeLists.txt#L154-L198)
 
 ### Dependency Management
-- Boost: Required components include thread, date_time, system, filesystem, program_options, signals, serialization, chrono, unit_test_framework, context, locale. Static usage is preferred; coroutine is conditionally added for non-1.53 versions.
+- Boost: Required version 1.71 with components including thread, date_time, system, filesystem, program_options, serialization, chrono, unit_test_framework, context, locale, and coroutine. Static usage is preferred; coroutine is now a mandatory component for Boost >= 1.71.
 - OpenSSL: Optional via OPENSSL_ROOT_DIR; used when present.
 - Readline: Found on non-Windows platforms; included if available.
 - Crypto library: Defaults to crypto on Linux; configurable.
 - ccache: Detected and used globally for compile/link steps when available.
 
+**Updated** Enhanced Boost dependency requirements with version 1.71 and mandatory coroutine component
+
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L38-L50)
-- [CMakeLists.txt](file://CMakeLists.txt#L97-L104)
-- [CMakeLists.txt](file://CMakeLists.txt#L106-L110)
-- [CMakeLists.txt](file://CMakeLists.txt#L160-L164)
-- [CMakeLists.txt](file://CMakeLists.txt#L176-L180)
+- [CMakeLists.txt:38-49](file://CMakeLists.txt#L38-L49)
+- [CMakeLists.txt:96-100](file://CMakeLists.txt#L96-L100)
+- [CMakeLists.txt:102-106](file://CMakeLists.txt#L102-L106)
+- [CMakeLists.txt:156-160](file://CMakeLists.txt#L156-L160)
+- [CMakeLists.txt:172-176](file://CMakeLists.txt#L172-L176)
 
 ### Build Targets
 - Programs:
@@ -212,9 +223,9 @@ Build targets:
   - Discovered dynamically via scanning for subdirectories with CMakeLists.txt.
 
 **Section sources**
-- [programs/CMakeLists.txt](file://programs/CMakeLists.txt#L1-L8)
-- [libraries/CMakeLists.txt](file://libraries/CMakeLists.txt#L1-L8)
-- [plugins/CMakeLists.txt](file://plugins/CMakeLists.txt#L1-L12)
+- [programs/CMakeLists.txt:1-8](file://programs/CMakeLists.txt#L1-L8)
+- [libraries/CMakeLists.txt:1-8](file://libraries/CMakeLists.txt#L1-L8)
+- [plugins/CMakeLists.txt:1-12](file://plugins/CMakeLists.txt#L1-L12)
 
 ### Build Helper Tools
 
@@ -247,11 +258,11 @@ CMake-->>Dev : Configure result and build instructions
 ```
 
 **Diagram sources**
-- [programs/build_helpers/configure_build.py](file://programs/build_helpers/configure_build.py#L35-L119)
-- [programs/build_helpers/configure_build.py](file://programs/build_helpers/configure_build.py#L143-L195)
+- [programs/build_helpers/configure_build.py:35-119](file://programs/build_helpers/configure_build.py#L35-L119)
+- [programs/build_helpers/configure_build.py:143-195](file://programs/build_helpers/configure_build.py#L143-L195)
 
 **Section sources**
-- [programs/build_helpers/configure_build.py](file://programs/build_helpers/configure_build.py#L1-L202)
+- [programs/build_helpers/configure_build.py:1-202](file://programs/build_helpers/configure_build.py#L1-L202)
 
 #### cat_parts.py
 - Purpose: Concatenates files from a directory tree into a single output file, preserving order and skipping non-files.
@@ -279,10 +290,10 @@ UpToDate --> Done
 ```
 
 **Diagram sources**
-- [programs/build_helpers/cat_parts.py](file://programs/build_helpers/cat_parts.py#L11-L69)
+- [programs/build_helpers/cat_parts.py:11-69](file://programs/build_helpers/cat_parts.py#L11-L69)
 
 **Section sources**
-- [programs/build_helpers/cat_parts.py](file://programs/build_helpers/cat_parts.py#L1-L74)
+- [programs/build_helpers/cat_parts.py:1-74](file://programs/build_helpers/cat_parts.py#L1-L74)
 
 #### newplugin.py
 - Purpose: Generates boilerplate files for a new plugin under libraries/plugins/<plugin_name>.
@@ -303,10 +314,10 @@ WriteFiles --> Done(["Done"])
 ```
 
 **Diagram sources**
-- [programs/util/newplugin.py](file://programs/util/newplugin.py#L225-L246)
+- [programs/util/newplugin.py:225-246](file://programs/util/newplugin.py#L225-L246)
 
 **Section sources**
-- [programs/util/newplugin.py](file://programs/util/newplugin.py#L1-L251)
+- [programs/util/newplugin.py:1-251](file://programs/util/newplugin.py#L1-L251)
 
 ### Docker-Based Builds
 The repository ships Dockerfiles for multiple environments:
@@ -320,6 +331,8 @@ Each Dockerfile:
 - Copies only necessary source files to reduce rebuilds.
 - Runs cmake with explicit options and compiles with parallel jobs.
 - Installs artifacts and prepares runtime configuration files and volumes.
+
+**Updated** Docker configurations now use Boost 1.71 packages (libboost-coroutine-dev, libboost-context-dev) instead of older versions
 
 ```mermaid
 graph TB
@@ -343,16 +356,16 @@ Runtime --> User --> Vars --> Cfg
 ```
 
 **Diagram sources**
-- [share/vizd/docker/Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L1-L88)
-- [share/vizd/docker/Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L1-L82)
-- [share/vizd/docker/Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L1-L111)
-- [share/vizd/docker/Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L1-L88)
+- [share/vizd/docker/Dockerfile-production:1-98](file://share/vizd/docker/Dockerfile-production#L1-L98)
+- [share/vizd/docker/Dockerfile-lowmem:1-80](file://share/vizd/docker/Dockerfile-lowmem#L1-L80)
+- [share/vizd/docker/Dockerfile-mongo:1-109](file://share/vizd/docker/Dockerfile-mongo#L1-L109)
+- [share/vizd/docker/Dockerfile-testnet:1-98](file://share/vizd/docker/Dockerfile-testnet#L1-L98)
 
 **Section sources**
-- [share/vizd/docker/Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L40-L54)
-- [share/vizd/docker/Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L39-L53)
-- [share/vizd/docker/Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L68-L82)
-- [share/vizd/docker/Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L40-L55)
+- [share/vizd/docker/Dockerfile-production:56-62](file://share/vizd/docker/Dockerfile-production#L56-L62)
+- [share/vizd/docker/Dockerfile-lowmem:43-49](file://share/vizd/docker/Dockerfile-lowmem#L43-L49)
+- [share/vizd/docker/Dockerfile-mongo:72-78](file://share/vizd/docker/Dockerfile-mongo#L72-L78)
+- [share/vizd/docker/Dockerfile-testnet:56-62](file://share/vizd/docker/Dockerfile-testnet#L56-L62)
 
 ## Dependency Analysis
 - Coupling:
@@ -361,7 +374,7 @@ Runtime --> User --> Vars --> Cfg
   - cat_parts.py depends on directory structure and file suffix filtering.
   - newplugin.py depends on the libraries/plugins directory layout.
 - External dependencies:
-  - Boost (required), OpenSSL (optional), Readline (optional), ccache (optional), MongoDB drivers (optional).
+  - Boost 1.71 (required), OpenSSL (optional), Readline (optional), ccache (optional), MongoDB drivers (optional).
 - Indirect dependencies:
   - Plugins are discovered dynamically; their presence affects the build graph.
 
@@ -385,20 +398,20 @@ NEWPy --> Libs
 ```
 
 **Diagram sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L210-L213)
-- [libraries/CMakeLists.txt](file://libraries/CMakeLists.txt#L1-L8)
-- [plugins/CMakeLists.txt](file://plugins/CMakeLists.txt#L1-L12)
-- [thirdparty/CMakeLists.txt](file://thirdparty/CMakeLists.txt#L1-L3)
-- [programs/CMakeLists.txt](file://programs/CMakeLists.txt#L1-L8)
-- [programs/build_helpers/configure_build.py](file://programs/build_helpers/configure_build.py#L143-L195)
-- [programs/build_helpers/cat_parts.py](file://programs/build_helpers/cat_parts.py#L11-L69)
-- [programs/util/newplugin.py](file://programs/util/newplugin.py#L225-L246)
+- [CMakeLists.txt:206-209](file://CMakeLists.txt#L206-L209)
+- [libraries/CMakeLists.txt:1-8](file://libraries/CMakeLists.txt#L1-L8)
+- [plugins/CMakeLists.txt:1-12](file://plugins/CMakeLists.txt#L1-L12)
+- [thirdparty/CMakeLists.txt:1-3](file://thirdparty/CMakeLists.txt#L1-L3)
+- [programs/CMakeLists.txt:1-8](file://programs/CMakeLists.txt#L1-L8)
+- [programs/build_helpers/configure_build.py:143-195](file://programs/build_helpers/configure_build.py#L143-L195)
+- [programs/build_helpers/cat_parts.py:11-69](file://programs/build_helpers/cat_parts.py#L11-L69)
+- [programs/util/newplugin.py:225-246](file://programs/util/newplugin.py#L225-L246)
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L210-L213)
-- [programs/build_helpers/configure_build.py](file://programs/build_helpers/configure_build.py#L143-L195)
-- [programs/build_helpers/cat_parts.py](file://programs/build_helpers/cat_parts.py#L11-L69)
-- [programs/util/newplugin.py](file://programs/util/newplugin.py#L225-L246)
+- [CMakeLists.txt:206-209](file://CMakeLists.txt#L206-L209)
+- [programs/build_helpers/configure_build.py:143-195](file://programs/build_helpers/configure_build.py#L143-L195)
+- [programs/build_helpers/cat_parts.py:11-69](file://programs/build_helpers/cat_parts.py#L11-L69)
+- [programs/util/newplugin.py:225-246](file://programs/util/newplugin.py#L225-L246)
 
 ## Performance Considerations
 - Compiler flags:
@@ -421,18 +434,18 @@ Practical implications:
 - Enable USE_PCH for faster local development cycles.
 
 **Section sources**
-- [CMakeLists.txt](file://CMakeLists.txt#L148-L155)
-- [CMakeLists.txt](file://CMakeLists.txt#L172-L183)
-- [CMakeLists.txt](file://CMakeLists.txt#L52-L54)
-- [CMakeLists.txt](file://CMakeLists.txt#L66-L74)
-- [CMakeLists.txt](file://CMakeLists.txt#L76-L81)
-- [CMakeLists.txt](file://CMakeLists.txt#L27-L31)
-- [CMakeLists.txt](file://CMakeLists.txt#L106-L110)
+- [CMakeLists.txt:144-152](file://CMakeLists.txt#L144-L152)
+- [CMakeLists.txt:176-183](file://CMakeLists.txt#L176-L183)
+- [CMakeLists.txt:51-53](file://CMakeLists.txt#L51-L53)
+- [CMakeLists.txt:65-73](file://CMakeLists.txt#L65-L73)
+- [CMakeLists.txt:75-80](file://CMakeLists.txt#L75-L80)
+- [CMakeLists.txt:102-106](file://CMakeLists.txt#L102-L106)
 
 ## Troubleshooting Guide
 Common issues and resolutions:
 - Boost version mismatch:
-  - Ensure Boost version satisfies minimum requirements and matches expectations; configure_build.py reads boost/version.hpp to infer version.
+  - Ensure Boost version 1.71 or higher satisfies requirements; configure_build.py reads boost/version.hpp to infer version.
+  - **Updated** Minimum Boost version increased from 1.57 to 1.71.
 - Missing OpenSSL:
   - Set OPENSSL_ROOT_DIR to point to the installation prefix.
 - Windows toolchain:
@@ -442,6 +455,7 @@ Common issues and resolutions:
   - Use libc++ and appropriate SDK; ensure Boost and OpenSSL are installed via package managers.
 - Linux:
   - Ensure rt, pthread, and crypto libraries are available; static builds require static variants of libstdc++/libgcc.
+  - **Updated** Docker builds now use libboost-coroutine-dev and libboost-context-dev packages.
 - ccache:
   - If builds fail with unexpected cache behavior, temporarily disable ccache or clear the cache.
 - Plugin discovery:
@@ -450,15 +464,20 @@ Common issues and resolutions:
   - For mongo builds, confirm MongoDB C/C++ drivers are installed prior to cmake invocation.
   - For testnet builds, ensure BUILD_TESTNET is set during configuration.
 
+**Updated** Enhanced Boost dependency requirements and Docker configuration updates
+
 **Section sources**
-- [programs/build_helpers/configure_build.py](file://programs/build_helpers/configure_build.py#L122-L140)
-- [CMakeLists.txt](file://CMakeLists.txt#L97-L104)
-- [CMakeLists.txt](file://CMakeLists.txt#L123-L156)
-- [CMakeLists.txt](file://CMakeLists.txt#L166-L184)
-- [share/vizd/docker/Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L31-L58)
+- [programs/build_helpers/configure_build.py:122-140](file://programs/build_helpers/configure_build.py#L122-L140)
+- [CMakeLists.txt:96-100](file://CMakeLists.txt#L96-L100)
+- [CMakeLists.txt:108-152](file://CMakeLists.txt#L108-L152)
+- [CMakeLists.txt:156-160](file://CMakeLists.txt#L156-L160)
+- [CMakeLists.txt:172-176](file://CMakeLists.txt#L172-L176)
+- [share/vizd/docker/Dockerfile-production:20-22](file://share/vizd/docker/Dockerfile-production#L20-L22)
+- [share/vizd/docker/Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L19)
+- [share/vizd/docker/Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L19)
 
 ## Conclusion
-The VIZ CPP Node build system centers on a robust CMake configuration with strong cross-platform support, clear options for memory and performance tuning, and practical helper tools. Dockerfiles streamline both development and production workflows. By leveraging configure_build.py, developers can quickly set up consistent builds across platforms, while cat_parts.py and newplugin.py automate common tasks. Proper selection of build options and compiler flags yields predictable runtime performance and maintainable deployment artifacts.
+The VIZ CPP Node build system centers on a robust CMake configuration with strong cross-platform support, clear options for memory and performance tuning, and practical helper tools. Recent updates include upgrading to CMake 3.16, Boost 1.71, and adding coroutine component requirements. Dockerfiles streamline both development and production workflows with updated dependency specifications. By leveraging configure_build.py, developers can quickly set up consistent builds across platforms, while cat_parts.py and newplugin.py automate common tasks. Proper selection of build options and compiler flags yields predictable runtime performance and maintainable deployment artifacts.
 
 ## Appendices
 
@@ -495,10 +514,12 @@ The VIZ CPP Node build system centers on a robust CMake configuration with stron
   - Mongo: docker build -f share/vizd/docker/Dockerfile-mongo -t viz-world-mongo .
   - Testnet: docker build -f share/vizd/docker/Dockerfile-testnet -t viz-world-testnet .
 
+**Updated** Enhanced Docker configurations with Boost 1.71 dependencies
+
 **Section sources**
-- [documentation/building.md](file://documentation/building.md#L1-L212)
-- [programs/build_helpers/configure_build.py](file://programs/build_helpers/configure_build.py#L168-L184)
-- [share/vizd/docker/Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L46-L51)
-- [share/vizd/docker/Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L45-L50)
-- [share/vizd/docker/Dockerfile-mongo](file://share/vizd/docker/Dockerfile-mongo#L74-L79)
-- [share/vizd/docker/Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L46-L52)
+- [documentation/building.md:1-323](file://documentation/building.md#L1-L323)
+- [programs/build_helpers/configure_build.py:168-184](file://programs/build_helpers/configure_build.py#L168-L184)
+- [share/vizd/docker/Dockerfile-production:56-62](file://share/vizd/docker/Dockerfile-production#L56-L62)
+- [share/vizd/docker/Dockerfile-lowmem:43-49](file://share/vizd/docker/Dockerfile-lowmem#L43-L49)
+- [share/vizd/docker/Dockerfile-mongo:72-78](file://share/vizd/docker/Dockerfile-mongo#L72-L78)
+- [share/vizd/docker/Dockerfile-testnet:56-62](file://share/vizd/docker/Dockerfile-testnet#L56-L62)

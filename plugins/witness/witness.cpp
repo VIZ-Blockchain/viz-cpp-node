@@ -123,8 +123,8 @@ namespace graphene {
                     string witness_id_example = "initwitness";
 
                 command_line_options.add_options()
-                        ("enable-stale-production", bpo::value<bool>()->implicit_value(false) , "Enable block production, even if the chain is stale.")
-                        ("required-participation", bpo::value<int>()->implicit_value(uint32_t(3 * CHAIN_1_PERCENT)), "Percent of witnesses (0-99) that must be participating in order to produce blocks")
+                        ("enable-stale-production", bpo::value<bool>()->implicit_value(true) , "Enable block production, even if the chain is stale.")
+                        ("required-participation", bpo::value<uint32_t>()->default_value(33 * CHAIN_1_PERCENT), "Percent of witnesses (0-99) that must be participating in order to produce blocks")
                         ("witness,w", bpo::value<vector<string>>()->composing()->multitoken(), ("name of witness controlled by this node (e.g. " + witness_id_example + " )").c_str())
                         ("private-key", bpo::value<vector<string>>()->composing()->multitoken(), "WIF PRIVATE KEY to be used by one or more witnesses")
                         ;
@@ -151,8 +151,7 @@ namespace graphene {
                     }
 
                     if(options.count("required-participation")){
-                        int e = static_cast<int>(options["required-participation"].as<int>());
-                        pimpl->_required_witness_participation = uint32_t(e * CHAIN_1_PERCENT);
+                        pimpl->_required_witness_participation = options["required-participation"].as<uint32_t>();
                     }
 
                     if (options.count("private-key")) {
@@ -203,6 +202,51 @@ namespace graphene {
 
             witness_plugin::~witness_plugin() {}
 
+            bool witness_plugin::is_witness_scheduled_soon() const {
+                try {
+                    if (!pimpl || pimpl->_witnesses.empty() || pimpl->_private_keys.empty()) {
+                        return false;
+                    }
+
+                    auto& db = pimpl->database();
+                    fc::time_point now_fine = graphene::time::now();
+                    fc::time_point_sec now = now_fine + fc::microseconds(500000);
+
+                    uint32_t slot = db.get_slot_at_time(now);
+                    if (slot == 0) {
+                        slot = 1;
+                    }
+
+                    // Check 4 upcoming slots (~12 seconds) to cover snapshot creation time (~10s) + safety margin
+                    for (uint32_t s = slot; s <= slot + 3; ++s) {
+                        string scheduled_witness = db.get_scheduled_witness(s);
+                        if (pimpl->_witnesses.find(scheduled_witness) == pimpl->_witnesses.end()) {
+                            continue;
+                        }
+
+                        const auto& witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
+                        auto itr = witness_by_name.find(scheduled_witness);
+                        if (itr == witness_by_name.end()) {
+                            continue;
+                        }
+
+                        graphene::protocol::public_key_type scheduled_key = itr->signing_key;
+                        if (scheduled_key == graphene::protocol::public_key_type()) {
+                            continue; // Disabled witness (zero key)
+                        }
+
+                        if (pimpl->_private_keys.find(scheduled_key) != pimpl->_private_keys.end()) {
+                            return true; // We have the private key and are scheduled soon
+                        }
+                    }
+                } catch (const fc::exception& e) {
+                    wlog("is_witness_scheduled_soon check failed: ${e}", ("e", e.to_detail_string()));
+                } catch (...) {
+                    wlog("is_witness_scheduled_soon check failed with unknown exception");
+                }
+                return false;
+            }
+
             void witness_plugin::impl::schedule_production_loop() {
                 //Schedule for the next second's tick regardless of chain state
                 // If we would wait less than 50ms, wait for the whole second.
@@ -238,7 +282,7 @@ namespace graphene {
 
                 switch (result) {
                     case block_production_condition::produced:
-                        ilog("Generated block #${n} with timestamp ${t} at time ${c} by ${w}", (capture));
+                        ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w}\033[0m", (capture));
                         break;
                     case block_production_condition::not_synced:
                         // This log-record is commented, because it outputs very often
@@ -262,12 +306,17 @@ namespace graphene {
                         break;
                     case block_production_condition::lag:
                         elog("Not producing block because node didn't wake up within 500ms of the slot time.");
+                        graphene::time::update_ntp_time();  // Force NTP sync on timing issues
                         break;
                     case block_production_condition::consecutive:
                         elog("Not producing block because the last block was generated by the same witness.\nThis node is probably disconnected from the network so block production has been disabled.\nDisable this check with --allow-consecutive option.");
                         break;
                     case block_production_condition::exception_producing_block:
                         elog("Failure when producing block with no transactions");
+                        break;
+                    case block_production_condition::fork_collision:
+                        wlog("Deferred block production due to fork collision; will retry next slot");
+                        graphene::time::update_ntp_time();  // Force NTP sync on fork issues
                         break;
                 }
 
@@ -386,13 +435,39 @@ namespace graphene {
 
                 uint32_t prate = db.witness_participation_rate();
                 if (prate < _required_witness_participation) {
-                    capture("pct", uint32_t(100 * uint64_t(prate) / CHAIN_1_PERCENT));
+                    capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
                     return block_production_condition::low_participation;
                 }
 
                 if (llabs((scheduled_time - now).count()) > fc::milliseconds(500).count()) {
                     capture("scheduled_time", scheduled_time)("now", now);
                     return block_production_condition::lag;
+                }
+
+                // Check if a competing block already exists in the fork database for this block height.
+                // If another block at the same height already exists, it means we are on a fork
+                // and producing would create a collision. Skip production to let fork resolution proceed.
+                {
+                    auto existing_blocks = db.get_fork_db().fetch_block_by_number(db.head_block_num() + 1);
+                    if (existing_blocks.size() > 0) {
+                        // Check if any existing block at this height was produced by a different witness
+                        // on a different parent (true fork), not just a duplicate of our own
+                        bool has_competing_block = false;
+                        for (const auto &eb : existing_blocks) {
+                            if (eb->data.witness != scheduled_witness &&
+                                eb->data.previous != db.head_block_id()) {
+                                has_competing_block = true;
+                                break;
+                            }
+                        }
+                        if (has_competing_block) {
+                            capture("height", db.head_block_num() + 1)("scheduled_witness", scheduled_witness);
+                            wlog("Skipping block production at height ${h} due to existing competing block "
+                                 "in fork database (witness ${w} deferring to allow fork resolution)",
+                                 ("h", db.head_block_num() + 1)("w", scheduled_witness));
+                            return block_production_condition::fork_collision;
+                        }
+                    }
                 }
 
                 int retry = 0;

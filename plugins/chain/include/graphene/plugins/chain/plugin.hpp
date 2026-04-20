@@ -89,6 +89,21 @@ namespace graphene {
                 // This is to synchronize plugins that have the chain plugin as an optional dependency.
                 boost::signals2::signal<void()> on_sync;
 
+                // Callback for snapshot loading. Set by the snapshot plugin during initialize().
+                // Called by the chain plugin during startup() BEFORE on_sync(),
+                // so that the snapshot state is loaded before P2P starts syncing.
+                std::function<void()> snapshot_load_callback;
+
+                // Callback for snapshot creation. Set by the snapshot plugin during initialize().
+                // Called by the chain plugin during startup() AFTER full DB load (including replay),
+                // but BEFORE on_sync(), so that the snapshot is created before P2P/witness start.
+                std::function<void()> snapshot_create_callback;
+
+                // Callback for P2P snapshot sync. Set by the snapshot plugin during initialize()
+                // when --sync-snapshot-from-trusted-peer is enabled. Called by the chain plugin
+                // during startup() when state is empty (head_block_num == 0), BEFORE on_sync().
+                std::function<void()> snapshot_p2p_sync_callback;
+
             private:
                 class plugin_impl;
 

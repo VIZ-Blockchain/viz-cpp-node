@@ -4,6 +4,7 @@
 #include <graphene/chain/node_property_object.hpp>
 #include <graphene/chain/fork_database.hpp>
 #include <graphene/chain/block_log.hpp>
+#include <graphene/chain/dlt_block_log.hpp>
 #include <graphene/chain/hardfork.hpp>
 #include <graphene/protocol/protocol.hpp>
 
@@ -53,6 +54,28 @@ namespace graphene { namespace chain {
 
             bool _log_hardforks = true;
 
+            // DLT mode: node was loaded from a snapshot, block_log is empty/partial.
+            // When true, block_log append operations are skipped.
+            bool _dlt_mode = false;
+
+            /// Set DLT mode flag. Should be called before loading snapshot data
+            /// so that all subsequent code sees a consistent state.
+            void set_dlt_mode(bool enabled) {
+                _dlt_mode = enabled;
+                if (enabled) {
+                    ilog("DLT mode enabled: block_log writes will be skipped");
+                }
+            }
+
+            // DLT rolling block_log: number of recent blocks to keep.
+            // 0 = no DLT block_log (original behavior).
+            // > 0 = keep a rolling window of this many blocks in the separate dlt_block_log.
+            uint32_t _dlt_block_log_max_blocks = 0;
+
+            // Suppress repeated "block not in fork_db" warnings after snapshot import.
+            // Set to true after logging once; resets when the gap is filled.
+            bool _dlt_gap_logged = false;
+
             enum validation_steps {
                 skip_nothing = 0,
                 skip_witness_signature = 1 << 0,  ///< used while reindexing
@@ -81,6 +104,28 @@ namespace graphene { namespace chain {
              * @param data_dir Path to open or create database in
              */
             void open(const fc::path &data_dir, const fc::path &shared_mem_dir, uint64_t initial_supply = CHAIN_INIT_SUPPLY, uint64_t shared_file_size = 0, uint32_t chainbase_flags = 0);
+
+            /**
+             * @brief Open database from a snapshot file
+             *
+             * Initializes the database from a pre-serialized state snapshot,
+             * bypassing full blockchain replay. The snapshot must contain all
+             * consensus-critical objects.
+             */
+            void open_from_snapshot(
+                const fc::path &data_dir,
+                const fc::path &shared_mem_dir,
+                uint64_t initial_supply,
+                uint64_t shared_file_size,
+                uint32_t chainbase_flags);
+
+            /**
+             * @brief Initialize hardfork schedule data
+             *
+             * Must be called after loading state from a snapshot so that
+             * the hardfork version/time arrays are populated correctly.
+             */
+            void initialize_hardforks();
 
             /**
              * @brief Rebuild object graph from block history and open detabase
@@ -239,7 +284,7 @@ namespace graphene { namespace chain {
 
             void notify_post_apply_operation(const operation_notification &note);
 
-            inline const void push_virtual_operation(const operation &op, bool force = false); // vops are not needed for low mem. Force will push them on low mem.
+            const void push_virtual_operation(const operation &op, bool force = false); // vops are not needed for low mem. Force will push them on low mem.
             void notify_applied_block(const signed_block &block);
 
             void notify_on_pending_transaction(const signed_transaction &tx);
@@ -445,6 +490,14 @@ namespace graphene { namespace chain {
 
             const block_log &get_block_log() const;
 
+            fork_database &get_fork_db() {
+                return _fork_db;
+            }
+
+            const fork_database &get_fork_db() const {
+                return _fork_db;
+            }
+
             public_key_type get_witness_key(const account_name_type &name);
 
             void create_block_post_validation(uint32_t block_num, block_id_type block_id, const account_name_type &witness_account);
@@ -525,6 +578,7 @@ namespace graphene { namespace chain {
             protocol::hardfork_version _hardfork_versions[CHAIN_NUM_HARDFORKS + 1];
 
             block_log _block_log;
+            dlt_block_log _dlt_block_log;
 
             // this function needs access to _plugin_index_signal
             template<typename MultiIndexType>

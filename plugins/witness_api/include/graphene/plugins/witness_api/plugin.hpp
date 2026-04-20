@@ -32,7 +32,6 @@
 
 #include <graphene/plugins/json_rpc/utility.hpp>
 #include <graphene/plugins/json_rpc/plugin.hpp>
-#include <boost/optional.hpp>
 
 
 namespace graphene { namespace plugins { namespace witness_api {

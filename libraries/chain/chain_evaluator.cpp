@@ -366,9 +366,9 @@ namespace graphene { namespace chain {
                         auto acc = _db.find< account_object, by_name >( b.account );
                         FC_ASSERT( acc != nullptr, "Beneficiary \"${a}\" must exist.", ("a", b.account) );
 
-                        const auto &b_account = _db.get_account(b.account);
+                        _db.get_account(b.account); // validate existence
                         //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
-                        //    FC_ASSERT(!b_account.valid, "Account flagged as invalid");
+                        //    FC_ASSERT(!b_account.valid, "Account flagged as invalid")
 
                         //pay benefactor
                         auto benefactor_tokens = (tokens.amount * b.weight) / CHAIN_100_PERCENT;
@@ -510,9 +510,9 @@ namespace graphene { namespace chain {
                         auto acc = _db.find< account_object, by_name >( b.account );
                         FC_ASSERT( acc != nullptr, "Beneficiary \"${a}\" must exist.", ("a", b.account) );
 
-                        const auto &b_account = _db.get_account(b.account);
+                        _db.get_account(b.account); // validate existence
                         //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
-                        //    FC_ASSERT(!b_account.valid, "Account flagged as invalid");
+                        //    FC_ASSERT(!b_account.valid, "Account flagged as invalid")
 
                         //pay benefactor
                         auto benefactor_tokens = (tokens.amount * b.weight) / CHAIN_100_PERCENT;
@@ -691,13 +691,13 @@ namespace graphene { namespace chain {
 
                 const auto &from_account = _db.get_account(o.from);
                 //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
-                //    FC_ASSERT(!from_account.valid, "Account flagged as invalid");
-                const auto &to_account = _db.get_account(o.to);
+                //    FC_ASSERT(!from_account.valid, "Account flagged as invalid")
+                _db.get_account(o.to); // validate existence
                 //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
-                //    FC_ASSERT(!to_account.valid, "Account flagged as invalid");
-                const auto &agent_account = _db.get_account(o.agent);
+                //    FC_ASSERT(!to_account.valid, "Account flagged as invalid")
+                _db.get_account(o.agent); // validate existence
                 //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
-                //    FC_ASSERT(!agent_account.valid, "Account flagged as invalid");
+                //    FC_ASSERT(!agent_account.valid, "Account flagged as invalid")
 
                 FC_ASSERT(o.ratification_deadline >
                           _db.head_block_time(), "The escorw ratification deadline must be after head block time.");
@@ -981,9 +981,6 @@ namespace graphene { namespace chain {
             FC_ASSERT(o.vesting_shares.amount >= 0, "Cannot withdraw negative SHARES.");
 
             if (o.vesting_shares.amount == 0) {
-                FC_ASSERT(account.vesting_withdraw_rate.amount !=
-                          0, "This operation would not change the vesting withdraw rate.");
-
                 _db.modify(account, [&](account_object &a) {
                     a.vesting_withdraw_rate = asset(0, SHARES_SYMBOL);
                     a.next_vesting_withdrawal = time_point_sec::maximum();
@@ -1324,6 +1321,9 @@ namespace graphene { namespace chain {
                 int64_t max_vote_denom = dgpo.vote_regeneration_per_day *
                                          CHAIN_ENERGY_REGENERATION_SECONDS /
                                          (60 * 60 * 24);//5
+                if(max_vote_denom <= 0) {
+                    max_vote_denom = 1; // Prevent division by zero on testnet (CHAIN_ENERGY_REGENERATION_SECONDS < 86400)
+                }
                 FC_ASSERT(max_vote_denom > 0);
 
                 // Consensus by median props - flag energy additional cost
@@ -1551,9 +1551,9 @@ namespace graphene { namespace chain {
 
         void request_account_recovery_evaluator::do_apply(const request_account_recovery_operation &o) {
             database &_db = db();
-            const auto &recovery_account = _db.get_account(o.recovery_account);
+            _db.get_account(o.recovery_account); // validate existence
             //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
-            //    FC_ASSERT(!recovery_account.valid, "Account flagged as invalid");
+            //    FC_ASSERT(!recovery_account.valid, "Account flagged as invalid")
             const auto &account_to_recover = _db.get_account(o.account_to_recover);
             //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
             //    FC_ASSERT(!account_to_recover.valid, "Account flagged as invalid");
@@ -1656,9 +1656,9 @@ namespace graphene { namespace chain {
 
         void change_recovery_account_evaluator::do_apply(const change_recovery_account_operation &o) {
             database &_db = db();
-            const auto &new_recovery_account = _db.get_account(o.new_recovery_account); // Simply validate account exists
+            _db.get_account(o.new_recovery_account); // Simply validate account exists
             //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
-            //    FC_ASSERT(!new_recovery_account.valid, "Account flagged as invalid");
+            //    FC_ASSERT(!new_recovery_account.valid, "Account flagged as invalid")
             const auto &account_to_recover = _db.get_account(o.account_to_recover);
             //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
             //    FC_ASSERT(!account_to_recover.valid, "Account flagged as invalid");
@@ -1780,10 +1780,10 @@ namespace graphene { namespace chain {
         void set_account_price_evaluator::do_apply(const set_account_price_operation& op) {
             const auto& account = _db.get_account(op.account);
             //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
-            //    FC_ASSERT(!account.valid, "Account flagged as invalid");
-            const auto& account_seller = _db.get_account(op.account_seller);
+            //    FC_ASSERT(!account.valid, "Account flagged as invalid")
+            _db.get_account(op.account_seller); // validate existence
             //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
-            //    FC_ASSERT(!account_seller.valid, "Account flagged as invalid");
+            //    FC_ASSERT(!account_seller.valid, "Account flagged as invalid")
             if(_db.has_hardfork(CHAIN_HARDFORK_11)){//new auction mechanics while account have time to sale start
                 if(""==account.account_seller){//pay fee if seller is empty
                     const auto& median_props = _db.get_witness_schedule_object().median_props;
@@ -1904,8 +1904,8 @@ namespace graphene { namespace chain {
 
         void target_account_sale_evaluator::do_apply(const target_account_sale_operation& op) {
             const auto& account = _db.get_account(op.account);
-            const auto& account_seller = _db.get_account(op.account_seller);
-            const auto& target_buyer = _db.get_account(op.target_buyer);
+            _db.get_account(op.account_seller); // validate existence
+            _db.get_account(op.target_buyer); // validate existence
 
             if(""==account.account_seller){//pay fee if seller is empty
                 const auto& median_props = _db.get_witness_schedule_object().median_props;
@@ -2059,10 +2059,10 @@ namespace graphene { namespace chain {
         void set_subaccount_price_evaluator::do_apply(const set_subaccount_price_operation& op) {
             const auto& account = _db.get_account(op.account);
             //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
-            //    FC_ASSERT(!account.valid, "Account flagged as invalid");
-            const auto& subaccount_seller = _db.get_account(op.subaccount_seller);
+            //    FC_ASSERT(!account.valid, "Account flagged as invalid")
+            _db.get_account(op.subaccount_seller); // validate existence
             //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
-            //    FC_ASSERT(!subaccount_seller.valid, "Account flagged as invalid");
+            //    FC_ASSERT(!subaccount_seller.valid, "Account flagged as invalid")
             if(_db.has_hardfork(CHAIN_HARDFORK_9)){
                 if(""==account.subaccount_seller){
                     const auto& median_props = _db.get_witness_schedule_object().median_props;

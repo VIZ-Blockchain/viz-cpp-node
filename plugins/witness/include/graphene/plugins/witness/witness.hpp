@@ -27,7 +27,8 @@ namespace graphene {
                     low_participation = 5,
                     lag = 6,
                     consecutive = 7,
-                    exception_producing_block = 8
+                    exception_producing_block = 8,
+                    fork_collision = 9
                 };
             }
 
@@ -57,6 +58,9 @@ namespace graphene {
                 void plugin_startup() override;
 
                 void plugin_shutdown() override;
+
+                /// Returns true if a locally-controlled witness is scheduled to produce in the next slot
+                bool is_witness_scheduled_soon() const;
 
             private:
                 struct impl;
