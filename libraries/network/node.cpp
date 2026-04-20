@@ -3564,7 +3564,22 @@ namespace graphene {
                     throw;
                 }
                 catch (const unlinkable_block_exception &e) {
-                    restart_sync_exception = e;
+                    uint32_t peer_block_num = block_message_to_process.block.block_num();
+                    uint32_t our_head = _delegate->get_block_number(_delegate->get_head_block_id());
+
+                    if (peer_block_num <= our_head) {
+                        // Block is at or below our head — peer is on a stale fork. Soft-ban.
+                        wlog("Soft-banning peer ${endpoint} for 1 hour: "
+                             "unlinkable block #${num} at or below our head #${head}",
+                             ("endpoint", originating_peer->get_remote_endpoint())
+                             ("num", peer_block_num)("head", our_head));
+                        originating_peer->fork_rejected_until =
+                            fc::time_point::now() + fc::seconds(3600);
+                        originating_peer->inhibit_fetching_sync_blocks = true;
+                    } else {
+                        // Block is ahead of us — we may be behind. Resync is justified.
+                        restart_sync_exception = e;
+                    }
                 }
                 catch (const block_older_than_undo_history &e) {
                     // Peer sent us a block that is too old for our fork database.
@@ -3585,8 +3600,7 @@ namespace graphene {
 
                     // HF12: soft-ban peers instead of disconnecting during fork rejection
                     // This prevents cascading disconnections during emergency consensus
-                    if (e.code() == unlinkable_block_exception::code_enum::code_value ||
-                        block_message_to_process.block.block_num() <= _delegate->get_block_number(_delegate->get_head_block_id())) {
+                    if (block_message_to_process.block.block_num() <= _delegate->get_block_number(_delegate->get_head_block_id())) {
                         wlog("Soft-banning peer ${endpoint} for 1 hour due to fork rejection",
                              ("endpoint", originating_peer->get_remote_endpoint()));
                         originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);

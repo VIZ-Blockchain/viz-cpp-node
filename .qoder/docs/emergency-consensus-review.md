@@ -241,6 +241,16 @@ The false activation triggers catastrophic side effects:
 
 **Fix**: In `process_block_during_normal_operation()`, after the `fork_rejected_until` check passes (ban expired), if `inhibit_fetching_sync_blocks` is `true` and `fork_rejected_until` is set and has expired, reset `inhibit_fetching_sync_blocks = false`. The check is targeted: it only resets the flag when `fork_rejected_until` is non-default (i.e., was set by a soft-ban), so `inhibit_fetching_sync_blocks` set for other reasons (missing sync items, old fork) is not affected.
 
+### B9 (Medium): `unlinkable_block_exception` Causes Infinite Resync Instead of Soft-Ban
+
+**Problem**: In `process_block_during_normal_operation()` (`node.cpp`), `unlinkable_block_exception` inherits from `fc::exception` but is caught by a more specific `catch` handler before the general `fc::exception` handler. The specific handler unconditionally sets `restart_sync_exception`, which triggers `start_synchronizing_with_peer()`. The `e.code() == unlinkable_block_exception::code_enum::code_value` check in the `fc::exception` handler was dead code — it could never be reached for unlinkable blocks.
+
+When a peer on a stale fork sends an unlinkable block at or below our head block number, the node enters an infinite resync loop: it requests blocks from the stale peer, cannot link them, requests again, etc.
+
+**Fix** (two-part):
+1. In the `unlinkable_block_exception` catch handler, compare the peer's block number against our head. If the block is at or below our head, the peer is on a stale fork — soft-ban for 1 hour and set `inhibit_fetching_sync_blocks = true`. If the block is ahead of us, resync is justified (keep original behavior).
+2. Remove the dead `unlinkable_block_exception::code_enum::code_value` check from the `fc::exception` handler, leaving only the `block_num <= head` comparison for the soft-ban decision.
+
 ### Committee Neutral Voter Design
 
 After all fixes, the committee witness has these properties:
