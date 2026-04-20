@@ -3031,6 +3031,16 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
 void snapshot_plugin::plugin_startup() {
     ilog("snapshot plugin: starting");
 
+    // Notify chain plugin that we're ready. If the chain plugin deferred snapshot
+    // loading (because snapshot_load_callback wasn't registered yet during its startup),
+    // this triggers the deferred load now.
+    try {
+        auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
+        chain_plug.trigger_snapshot_load();
+    } catch (const std::runtime_error&) {
+        // Chain plugin not registered — nothing to trigger
+    }
+
     // Note: --snapshot loading is handled via snapshot_load_callback registered
     // in plugin_initialize(). It runs during chain plugin's startup, before on_sync(),
     // so that P2P syncs from the snapshot head block, not from genesis.

@@ -49,6 +49,11 @@ namespace graphene {
 
                 void check_time_in_block(const protocol::signed_block &block);
 
+                /// Called by the snapshot plugin after it has registered its callback.
+                /// If chain plugin deferred snapshot loading (callback wasn't set yet during
+                /// plugin_startup), this triggers the deferred load.
+                void trigger_snapshot_load();
+
                 template<typename MultiIndexType>
                 bool has_index() const {
                     return db().has_index<MultiIndexType>();
@@ -108,6 +113,10 @@ namespace graphene {
                 class plugin_impl;
 
                 std::unique_ptr<plugin_impl> my;
+
+                /// Internal: opens database in snapshot mode, loads via callback, calls on_sync().
+                /// @param is_recovery  true for --replay-from-snapshot (includes dlt_block_log replay)
+                void do_snapshot_load(const boost::filesystem::path& data_dir, bool is_recovery);
             };
         }
     }
