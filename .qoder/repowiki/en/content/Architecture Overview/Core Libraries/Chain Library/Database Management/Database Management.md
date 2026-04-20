@@ -19,10 +19,13 @@
 
 ## Update Summary
 **Changes Made**
+- Enhanced emergency consensus implementation with comprehensive automatic network recovery during extended periods without block production
+- Added detailed logging for critical errors and improved error handling throughout the consensus process
+- Implemented automatic emergency mode activation when LIB timestamp exceeds timeout threshold
+- Integrated hybrid witness scheduling system with emergency witness replacement
+- Added LIB monitoring capabilities with safety checks to prevent false activations
 - Enhanced memory management logging with detailed free memory and maximum memory state reporting
 - Improved error detection capabilities in shared memory allocation system with comprehensive logging
-- Added detailed logging of memory states before resizing operations for administrator visibility
-- Enhanced memory management configuration options and monitoring capabilities
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -39,7 +42,7 @@
 ## Introduction
 This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for suppressing repeated warnings, and practical examples of database operations and performance optimization.
 
-**Updated** - Enhanced with comprehensive emergency consensus implementation including automatic recovery procedures, hybrid witness scheduling system, emergency mode detection, and LIB monitoring capabilities. The memory management system now includes enhanced logging capabilities that provide administrators with detailed visibility into memory usage patterns during blockchain operation.
+**Updated** - Enhanced with comprehensive emergency consensus implementation including automatic recovery procedures, hybrid witness scheduling system, emergency mode detection, and LIB monitoring capabilities. The memory management system now includes enhanced logging capabilities that provide administrators with detailed visibility into memory usage patterns during blockchain operation. Critical error logging has been improved throughout the consensus process to ensure comprehensive diagnostics and troubleshooting.
 
 ## Project Structure
 The database subsystem is implemented primarily in the chain library with enhanced support for DLT mode and emergency consensus:
@@ -948,6 +951,26 @@ The emergency consensus system includes comprehensive LIB monitoring:
 **Section sources**
 - [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
 
+### Enhanced Error Logging Throughout Consensus Process
+**New** - The emergency consensus implementation includes comprehensive error logging and critical error handling:
+
+- **Critical Error Logging**: All emergency consensus activation and deactivation events are logged with detailed context including block numbers, timestamps, and witness information
+- **Safety Check Logging**: Extensive logging of safety checks to prevent false activations and deadlocks
+- **Transition Logging**: Detailed logging of emergency mode entry and exit conditions
+- **Witness Management Logging**: Comprehensive logging of emergency witness creation, updates, and penalty management
+- **Schedule Override Logging**: Detailed logging of witness schedule overrides and hybrid scheduling decisions
+- **LIB Monitoring Logging**: Continuous logging of LIB timestamp analysis and recovery detection
+- **Error Recovery Logging**: Logging of error recovery mechanisms and fallback procedures
+
+The enhanced error logging system ensures that operators have comprehensive visibility into emergency consensus operations and can effectively troubleshoot any issues that arise during emergency mode activation or deactivation.
+
+**Section sources**
+- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
+- [database.cpp:4517-4620](file://libraries/chain/database.cpp#L4517-L4620)
+- [database.cpp:2125-2142](file://libraries/chain/database.cpp#L2125-L2142)
+- [database.cpp:4378-4416](file://libraries/chain/database.cpp#L4378-L4416)
+- [database.cpp:2047-2144](file://libraries/chain/database.cpp#L2047-L2144)
+
 ## Dependency Analysis
 The database depends on:
 - chainbase for persistent storage and undo sessions with enhanced memory management
@@ -1019,6 +1042,8 @@ DB --> MEMLOG["enhanced memory management logging"]
 - **LIB Monitoring Overhead**: Emergency consensus monitoring adds minimal overhead while providing critical network health detection.
 - **Emergency Activation Safety**: Multiple safety checks prevent false activations and potential network deadlocks.
 - **Enhanced Memory Management**: Comprehensive logging provides administrators with detailed visibility into memory usage patterns, enabling proactive capacity planning and performance optimization.
+- **Critical Error Logging**: Enhanced emergency consensus logging provides comprehensive diagnostics for troubleshooting without impacting performance.
+- **Safety Check Optimization**: Emergency consensus safety checks are optimized to minimize performance impact while ensuring network stability.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -1045,6 +1070,9 @@ Common issues and remedies:
 - **Memory Management Issues**: Monitor enhanced memory logging to identify potential memory pressure situations and optimize configuration settings.
 - **Memory Resize Failures**: Check that memory resize operations are completing successfully and review detailed logging for resize operations.
 - **Memory State Inconsistencies**: Verify that reserved memory calculations are accurate and that memory state reporting reflects actual system conditions.
+- **Emergency Consensus Logging Issues**: Verify that critical error logs are being generated and that emergency mode activation/deactivation events are properly recorded.
+- **Safety Check Failures**: Monitor emergency consensus safety checks to ensure they're functioning correctly and preventing false activations.
+- **Witness Management Problems**: Verify that emergency witness objects are being created and updated correctly during emergency mode activation.
 
 **Section sources**
 - [database.cpp:800-830](file://libraries/chain/database.cpp#L800-L830)
@@ -1061,10 +1089,10 @@ Common issues and remedies:
 ## Conclusion
 The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support, emergency consensus implementation, and improved error handling. It integrates chainbase for persistent storage, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, and the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals.
 
-**Updated** - The system now includes comprehensive emergency consensus implementation featuring automatic recovery procedures, hybrid witness scheduling system, emergency mode detection, LIB monitoring, and safety safeguards. The emergency consensus system activates automatically when network downtime exceeds CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC threshold, replacing unavailable witnesses with committee members to ensure continuous block production. The hybrid witness scheduling system maintains network stability during recovery periods, while comprehensive LIB monitoring prevents false activations and ensures graceful deactivation when network health is restored.
+**Updated** - The system now includes comprehensive emergency consensus implementation featuring automatic recovery procedures, hybrid witness scheduling system, emergency mode detection, LIB monitoring, and safety safeguards. The emergency consensus system activates automatically when network downtime exceeds CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC threshold, replacing unavailable witnesses with committee members to ensure continuous block production. The hybrid witness scheduling system maintains network stability during recovery periods, while comprehensive LIB monitoring prevents false activations and ensures graceful deactivation when network health is restored. Critical error logging has been enhanced throughout the consensus process to provide comprehensive diagnostics and troubleshooting capabilities.
 
 The enhanced DLT mode detection and block availability checking logic ensures accurate P2P synchronization and prevents false positives in block availability reporting. The new gap suppression mechanism provides intelligent warning management that prevents log spam during normal DLT operations while maintaining comprehensive diagnostic capability for troubleshooting. The automatic state management of the `_dlt_gap_logged` flag ensures optimal logging behavior without manual intervention, making the system more maintainable and operable in production environments. The sophisticated block collision detection system with rate-limiting and scenario differentiation provides enhanced diagnostic capabilities for network health monitoring. The intelligent postponed transaction processing system ensures stable operation under high load conditions with automatic queue management and time-based execution limits.
 
-The emergency consensus implementation represents a significant advancement in blockchain resilience, providing automatic network recovery mechanisms that maintain system integrity during extended downtime while preventing potential deadlocks and false activations. The hybrid witness scheduling system ensures continuous operation by dynamically adapting to witness availability, while comprehensive safety checks protect against network instability and malicious behavior. This implementation makes the VIZ blockchain more robust, fault-tolerant, and suitable for enterprise-grade deployments requiring high availability and automatic recovery capabilities.
+The emergency consensus implementation represents a significant advancement in blockchain resilience, providing automatic network recovery mechanisms that maintain system integrity during extended downtime while preventing potential deadlocks and false activations. The hybrid witness scheduling system ensures continuous operation by dynamically adapting to witness availability, while comprehensive safety checks protect against network instability and malicious behavior. The enhanced error logging system provides comprehensive visibility into emergency consensus operations, enabling effective troubleshooting and maintenance. This implementation makes the VIZ blockchain more robust, fault-tolerant, and suitable for enterprise-grade deployments requiring high availability and automatic recovery capabilities.
 
-**Enhanced** - The memory management system now provides comprehensive logging capabilities that offer administrators detailed visibility into memory usage patterns during blockchain operation. The enhanced `_resize` function logs detailed information about free memory, maximum memory, and reserved memory states before and after resizing operations, enabling proactive capacity planning and performance optimization. The improved error detection capabilities in shared memory allocation provide administrators with crucial information about memory usage patterns, helping prevent memory-related issues before they impact system performance. These enhancements make the database management system more transparent, manageable, and suitable for production environments where memory resource optimization is critical.
+**Enhanced** - The memory management system now provides comprehensive logging capabilities that offer administrators detailed visibility into memory usage patterns during blockchain operation. The enhanced `_resize` function logs detailed information about free memory, maximum memory, and reserved memory states before and after resizing operations, enabling proactive capacity planning and performance optimization. The improved error detection capabilities in shared memory allocation provide administrators with crucial information about memory usage patterns, helping prevent memory-related issues before they impact system performance. The comprehensive emergency consensus logging system ensures that operators have complete visibility into critical error conditions and recovery procedures. These enhancements make the database management system more transparent, manageable, and suitable for production environments where memory resource optimization and comprehensive error diagnostics are critical.
