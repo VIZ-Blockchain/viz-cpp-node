@@ -2828,6 +2828,15 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
         ilog("Snapshot load path: ${p}", ("p", my->snapshot_path));
     }
 
+    // snapshot-dir must be parsed BEFORE --snapshot-auto-latest,
+    // because find_latest_snapshot() reads snapshot_dir to locate files.
+    if (options.count("snapshot-dir")) {
+        my->snapshot_dir = options.at("snapshot-dir").as<std::string>();
+        if (!my->snapshot_dir.empty()) {
+            ilog("Snapshot directory: ${d}", ("d", my->snapshot_dir));
+        }
+    }
+
     my->snapshot_auto_latest = options.at("snapshot-auto-latest").as<bool>();
     if (my->snapshot_auto_latest) {
         if (my->snapshot_path.empty()) {
@@ -2857,13 +2866,6 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
         my->snapshot_every_n_blocks = options.at("snapshot-every-n-blocks").as<uint32_t>();
         if (my->snapshot_every_n_blocks > 0) {
             ilog("Periodic snapshots enabled: every ${n} blocks", ("n", my->snapshot_every_n_blocks));
-        }
-    }
-
-    if (options.count("snapshot-dir")) {
-        my->snapshot_dir = options.at("snapshot-dir").as<std::string>();
-        if (!my->snapshot_dir.empty()) {
-            ilog("Snapshot directory: ${d}", ("d", my->snapshot_dir));
         }
     }
 
