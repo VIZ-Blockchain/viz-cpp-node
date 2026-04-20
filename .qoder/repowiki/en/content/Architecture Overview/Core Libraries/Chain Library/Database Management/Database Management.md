@@ -13,14 +13,16 @@
 - [plugin.cpp](file://plugins/snapshot/plugin.cpp)
 - [db_with.hpp](file://libraries/chain/include/graphene/chain/db_with.hpp)
 - [witness.cpp](file://plugins/witness/witness.cpp)
+- [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
+- [chainbase.cpp](file://thirdparty/chainbase/src/chainbase.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced logging capabilities with rate-limited warnings for block number collisions
-- Sophisticated differentiation between same-parent double production and different-parent fork scenarios
-- Improved postponed transaction processing documentation with time-based execution limits
-- Enhanced DLT gap logging with automatic state management for gap filling detection
+- Enhanced memory management logging with detailed free memory and maximum memory state reporting
+- Improved error detection capabilities in shared memory allocation system with comprehensive logging
+- Added detailed logging of memory states before resizing operations for administrator visibility
+- Enhanced memory management configuration options and monitoring capabilities
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -28,24 +30,29 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+6. [Emergency Consensus Implementation](#emergency-consensus-implementation)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
 
 ## Introduction
 This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for suppressing repeated warnings, and practical examples of database operations and performance optimization.
 
+**Updated** - Enhanced with comprehensive emergency consensus implementation including automatic recovery procedures, hybrid witness scheduling system, emergency mode detection, and LIB monitoring capabilities. The memory management system now includes enhanced logging capabilities that provide administrators with detailed visibility into memory usage patterns during blockchain operation.
+
 ## Project Structure
-The database subsystem is implemented primarily in the chain library with enhanced support for DLT mode and improved error handling:
+The database subsystem is implemented primarily in the chain library with enhanced support for DLT mode and emergency consensus:
 - Core database interface and declarations: libraries/chain/include/graphene/chain/database.hpp
-- Implementation of database operations with enhanced DLT mode support: libraries/chain/database.cpp
+- Implementation of database operations with enhanced DLT mode support and emergency consensus: libraries/chain/database.cpp
 - Block log abstraction: libraries/chain/include/graphene/chain/block_log.hpp and libraries/chain/block_log.cpp
 - DLT block log for rolling window storage: libraries/chain/include/graphene/chain/dlt_block_log.hpp and libraries/chain/dlt_block_log.cpp
 - Fork database for reversible blocks: libraries/chain/include/graphene/chain/fork_database.hpp and libraries/chain/fork_database.cpp
 - Snapshot plugin integration: plugins/snapshot/plugin.cpp for DLT mode initialization
 - Postponed transaction processing: libraries/chain/include/graphene/chain/db_with.hpp for transaction queue management
 - Witness plugin integration: plugins/witness/witness.cpp for block production coordination
+- Protocol configuration: libraries/protocol/include/graphene/protocol/config.hpp for emergency consensus constants
+- Chainbase integration: thirdparty/chainbase/src/chainbase.cpp for shared memory management
 
 ```mermaid
 graph TB
@@ -59,6 +66,8 @@ DLTCPP["dlt_block_log.cpp"]
 FDH["fork_database.hpp"]
 FDCPP["fork_database.cpp"]
 DBWH["db_with.hpp"]
+ENDH["emergency_consensus_constants"]
+CB["chainbase.cpp"]
 end
 subgraph "Plugins"
 SNAPH["snapshot/plugin.cpp"]
@@ -72,6 +81,8 @@ DBCPP --> DLTCPP
 DBCPP --> FDH
 DBCPP --> FDCPP
 DBCPP --> DBWH
+DBCPP --> ENDH
+DBCPP --> CB
 SNAPH --> DBH
 WITNESS --> DBH
 ```
@@ -88,6 +99,8 @@ WITNESS --> DBH
 - [db_with.hpp:1-154](file://libraries/chain/include/graphene/chain/db_with.hpp#L1-L154)
 - [plugin.cpp:2130-2140](file://plugins/snapshot/plugin.cpp#L2130-L2140)
 - [witness.cpp:449-467](file://plugins/witness/witness.cpp#L449-L467)
+- [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
+- [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
 
 **Section sources**
 - [database.hpp:1-615](file://libraries/chain/include/graphene/chain/database.hpp#L1-L615)
@@ -101,17 +114,23 @@ WITNESS --> DBH
 - [db_with.hpp:1-154](file://libraries/chain/include/graphene/chain/db_with.hpp#L1-L154)
 - [plugin.cpp:2130-2140](file://plugins/snapshot/plugin.cpp#L2130-L2140)
 - [witness.cpp:449-467](file://plugins/witness/witness.cpp#L449-L467)
+- [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
+- [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
 
 ## Core Components
-- database class: Public interface for blockchain state management, block and transaction processing, checkpoints, and event notifications with enhanced DLT mode support and improved error handling.
+- database class: Public interface for blockchain state management, block and transaction processing, checkpoints, and event notifications with enhanced DLT mode support, emergency consensus implementation, and improved error handling.
 - block_log: Append-only block storage with random-access indexing.
 - dlt_block_log: Rolling window block storage specifically designed for DLT (snapshot-based) nodes.
-- fork_database: Maintains reversible blocks and supports fork selection and switching.
-- chainbase integration: Provides persistent object storage and undo sessions.
+- fork_database: Maintains reversible blocks and supports fork selection and switching with emergency mode support.
+- chainbase integration: Provides persistent object storage and undo sessions with enhanced memory management.
 - signal_guard: Enhanced signal handling for graceful restart sequence management.
 - **_dlt_gap_logged flag**: New mechanism to suppress repeated warnings about missing blocks in fork database after snapshot import, with automatic reset upon successful DLT block writes.
 - **Enhanced block collision detection**: Sophisticated logging system that differentiates between same-parent double production and different-parent fork scenarios with rate-limiting.
 - **Postponed transaction processing**: Time-based transaction execution with automatic queuing when processing limits are reached.
+- **Emergency consensus mode**: Automatic recovery system that activates when LIB timestamp exceeds timeout threshold, replacing unavailable witnesses with committee members.
+- **Hybrid witness scheduling**: Dynamic witness schedule that combines real witnesses with committee members during emergency periods.
+- **LIB monitoring system**: Continuous monitoring of last irreversible block timestamp to detect network stalls and trigger emergency procedures.
+- **Enhanced Memory Management**: Comprehensive logging system for shared memory allocation with detailed free memory and maximum memory state reporting.
 
 Key responsibilities:
 - Lifecycle: open(), open_from_snapshot(), reindex(), close(), wipe() with improved error handling
@@ -124,6 +143,10 @@ Key responsibilities:
 - **Gap Suppression**: Intelligent warning suppression mechanism that prevents log spam during normal DLT operations while maintaining diagnostic capability
 - **Rate-limited Logging**: Sophisticated collision detection with time-based suppression to prevent log flooding
 - **Smart Transaction Processing**: Automatic transaction queuing and delayed execution based on processing time limits
+- **Emergency Mode Detection**: Automatic activation when LIB timestamp exceeds CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC threshold
+- **Hybrid Witness Scheduling**: Dynamic replacement of unavailable witnesses with committee members during emergencies
+- **LIB Monitoring**: Continuous timestamp analysis to detect network stalls and prevent false emergency activations
+- **Enhanced Memory Management**: Detailed logging of memory states before and after resizing operations for administrator visibility
 
 **Section sources**
 - [database.hpp:61-115](file://libraries/chain/include/graphene/chain/database.hpp#L61-L115)
@@ -133,17 +156,23 @@ Key responsibilities:
 - [fork_database.hpp:53-125](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L125)
 - [database.cpp:929-984](file://libraries/chain/database.cpp#L929-L984)
 - [db_with.hpp:33-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L33-L100)
+- [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
+- [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
 
 ## Architecture Overview
-The database composes four primary subsystems with enhanced DLT mode support and improved error handling:
-- Chainbase: Persistent object database with undo/redo capabilities
-- Fork database: Holds recent blocks for fork resolution
+The database composes four primary subsystems with enhanced DLT mode support, emergency consensus implementation, and improved error handling:
+- Chainbase: Persistent object database with undo/redo capabilities and enhanced memory management
+- Fork database: Holds recent blocks for fork resolution with emergency mode support
 - Block log: Immutable, append-only block storage with index
 - DLT block log: Rolling window block storage for DLT (snapshot-based) nodes
 - Signal guard: Enhanced signal handling for graceful restart sequences
 - **DLT Gap Logger**: New component that manages warning suppression for missing blocks with automatic state management
 - **Enhanced Collision Detection**: Sophisticated logging system for block number collisions with scenario differentiation
 - **Postponed Transaction Manager**: Smart transaction queue management with time-based execution limits
+- **Emergency Consensus Engine**: Automatic recovery system that monitors LIB timestamps and activates emergency procedures
+- **Hybrid Witness Scheduler**: Dynamic witness schedule that combines real witnesses with committee members during emergencies
+- **LIB Monitoring System**: Continuous timestamp analysis to detect network stalls and prevent false emergency activations
+- **Enhanced Memory Management**: Comprehensive logging system for shared memory allocation with detailed state reporting
 
 ```mermaid
 classDiagram
@@ -166,6 +195,13 @@ class database {
 +signal_guard : enhanced error handling
 +_maybe_warn_multiple_production(height)
 +CHIAN_PENDING_TRANSACTION_EXECUTION_LIMIT : time limit constant
++emergency_consensus_activation : automatic recovery system
++hybrid_witness_scheduling : dynamic witness replacement
++lib_monitoring : timestamp analysis
++check_free_memory(skip_print, current_block_num)
++set_min_free_shared_memory_size(value)
++set_inc_shared_memory_size(value)
++set_block_num_check_free_size(value)
 }
 class block_log {
 +open(path)
@@ -190,6 +226,7 @@ class fork_database {
 +set_head(item)
 +fetch_branch_from(first, second)
 +set_max_size(n)
++set_emergency_mode(active)
 }
 class signal_guard {
 +setup()
@@ -204,11 +241,18 @@ class pending_transactions_restorer {
 +applied_txs : uint32_t
 +postponed_txs : uint32_t
 }
+class chainbase {
++free_memory() : size_t
++max_memory() : size_t
++reserved_memory() : size_t
++set_reserved_memory(value)
+}
 database --> block_log : "uses (normal mode)"
 database --> dlt_block_log : "uses (DLT mode)"
-database --> fork_database : "uses"
+database --> fork_database : "uses with emergency support"
 database --> signal_guard : "enhanced restart handling"
 database --> pending_transactions_restorer : "manages postponed tx"
+database --> chainbase : "enhanced memory management"
 ```
 
 **Diagram sources**
@@ -219,6 +263,7 @@ database --> pending_transactions_restorer : "manages postponed tx"
 - [fork_database.hpp:53-125](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L125)
 - [database.cpp:94-184](file://libraries/chain/database.cpp#L94-L184)
 - [db_with.hpp:33-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L33-L100)
+- [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
 
 ## Detailed Component Analysis
 
@@ -553,11 +598,14 @@ Discard --> End
 - [database.cpp:948-970](file://libraries/chain/database.cpp#L948-L970)
 - [database.cpp:3652-3711](file://libraries/chain/database.cpp#L3652-L3711)
 
-### Memory Allocation Strategies and Shared Memory Configuration
-- Auto-resize: When free memory drops below a configured threshold, the system increases shared memory size and logs the change.
-- Free memory monitoring: Periodic checks at configured block intervals log free memory and trigger resizing if needed.
-- Reserved memory: Prevents fragmentation by reserving a portion of available memory.
-- Configuration knobs: Minimum free memory threshold, increment size, and block interval for checks.
+### Enhanced Memory Allocation Strategies and Shared Memory Configuration
+**Updated** - The memory management system now includes comprehensive logging capabilities for shared memory allocation:
+
+- **Auto-resize with Detailed Logging**: When free memory drops below a configured threshold, the system increases shared memory size and logs detailed state information including free memory, maximum memory, and reserved memory before and after resizing operations.
+- **Enhanced Free Memory Monitoring**: Periodic checks at configured block intervals log free memory and trigger resizing if needed, with comprehensive state reporting for administrator visibility.
+- **Reserved Memory Management**: Prevents fragmentation by reserving a portion of available memory and provides detailed logging of reserved memory states.
+- **Configuration Knobs**: Minimum free memory threshold, increment size, and block interval for checks with enhanced monitoring capabilities.
+- **Comprehensive Memory State Reporting**: The `_resize` function now logs detailed information about memory states before and after resizing operations, providing administrators with crucial information about memory usage patterns during blockchain operation.
 
 ```mermaid
 flowchart TD
@@ -577,6 +625,48 @@ Resize --> Exit
 **Section sources**
 - [database.cpp:428-469](file://libraries/chain/database.cpp#L428-L469)
 - [database.cpp:412-422](file://libraries/chain/database.cpp#L412-L422)
+- [database.cpp:454-482](file://libraries/chain/database.cpp#L454-L482)
+- [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
+
+### Enhanced Memory Management Logging System
+**New** - The database now includes comprehensive memory management logging capabilities:
+
+- **Detailed Resize Logging**: The `_resize` function logs comprehensive information including block number, new memory size, free memory before resizing, and maximum memory before resizing.
+- **Post-Resize State Reporting**: After memory resizing, the system logs the current free memory and reserved memory states to provide administrators with immediate feedback on memory allocation changes.
+- **Memory State Consistency**: The system ensures that memory state reporting accounts for reserved memory and provides accurate free memory calculations.
+- **Administrator Visibility**: Enhanced logging provides administrators with detailed insights into memory usage patterns and helps identify potential memory pressure situations before they impact system performance.
+
+```mermaid
+flowchart TD
+Start(["_resize(current_block_num)"]) --> CheckConfig{"_inc_shared_memory_size != 0?"}
+CheckConfig --> |No| LogError["elog('Auto-scaling not configured!')"]
+CheckConfig --> |Yes| GetStates["Get max_mem and free_mem_before"]
+GetStates --> CalculateNew["Calculate new_max = max_mem + _inc_shared_memory_size"]
+CalculateNew --> LogResize["wlog detailed resize information"]
+LogResize --> ResizeFile["resize(new_max)"]
+ResizeFile --> GetPostState["Get free_mem and reserved_mem"]
+GetPostState --> LogState["wlog free and reserved memory states"]
+LogState --> UpdatePrinted["Update _last_free_gb_printed"]
+UpdatePrinted --> Return["Return true"]
+```
+
+**Diagram sources**
+- [database.cpp:454-482](file://libraries/chain/database.cpp#L454-L482)
+
+**Section sources**
+- [database.cpp:454-482](file://libraries/chain/database.cpp#L454-L482)
+
+### Enhanced Memory Management Configuration Options
+**New** - The database now provides enhanced configuration options for memory management:
+
+- **set_min_free_shared_memory_size(value)**: Configures the minimum free memory threshold that triggers automatic resizing operations.
+- **set_inc_shared_memory_size(value)**: Sets the increment size for shared memory file expansion when the minimum free memory threshold is exceeded.
+- **set_block_num_check_free_size(value)**: Configures the block interval for checking free memory and triggering resize operations.
+- **Enhanced Memory Monitoring**: The system provides comprehensive monitoring of memory states with detailed logging and reporting capabilities.
+
+**Section sources**
+- [database.hpp:140-142](file://libraries/chain/include/graphene/chain/database.hpp#L140-L142)
+- [database.cpp:438-448](file://libraries/chain/database.cpp#L438-L448)
 
 ### Checkpoint System for Fast Synchronization
 - Checkpoints: A map of block number to expected block ID is maintained; when a checkpoint matches, the system skips expensive validations and authority checks for subsequent blocks until the last checkpoint.
@@ -669,6 +759,7 @@ These signals are used by plugins to react to blockchain events without tight co
 - **DLT Gap Suppression**: The database now automatically manages gap warnings to prevent log spam during normal operations with intelligent state management
 - **Enhanced Collision Detection**: Sophisticated logging for block number collisions with scenario differentiation and rate-limiting
 - **Postponed Transaction Processing**: Automatic transaction queuing with time-based execution limits and smart recovery
+- **Enhanced Memory Management**: Comprehensive logging of memory states before and after resizing operations for administrator visibility
 - Query helpers:
   - get_block_id_for_num(uint32_t)
   - fetch_block_by_id(block_id_type)
@@ -682,18 +773,198 @@ Note: The above APIs are declared in the header and implemented in the cpp file.
 - [database.hpp:93-141](file://libraries/chain/include/graphene/chain/database.hpp#L93-L141)
 - [database.cpp:458-584](file://libraries/chain/database.cpp#L458-L584)
 
+## Emergency Consensus Implementation
+
+**New** - The database now includes comprehensive emergency consensus implementation for automatic network recovery during extended periods without block production.
+
+### Emergency Consensus Activation Criteria
+The emergency consensus system activates automatically when the network experiences extended downtime:
+
+- **LIB Timestamp Analysis**: System continuously monitors the last irreversible block (LIB) timestamp to detect network stalls
+- **Timeout Threshold**: If no blocks are produced for more than CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC seconds (default: 3600 seconds = 1 hour), emergency mode is triggered
+- **Safety Checks**: Emergency activation is skipped if LIB timestamp cannot be determined (e.g., after snapshot restore when block_log is empty) to prevent false activations
+- **Guard Against Deadlocks**: Prevents emergency mode activation that would cause node deadlocks by ensuring proper LIB availability
+
+```mermaid
+flowchart TD
+Start(["Block Processing"]) --> CheckHF{"Has Hardfork 12?"}
+CheckHF --> |No| Normal["Normal Operation"]
+CheckHF --> |Yes| CheckActive{"Emergency Active?"}
+CheckActive --> |Yes| Normal
+CheckActive --> |No| CheckLIB{"LIB > 0?"}
+CheckLIB --> |No| Skip["Skip Check (No LIB)"]
+CheckLIB --> |Yes| FetchLIB["Fetch LIB Block"]
+FetchLIB --> Valid{"LIB Block Valid?"}
+Valid --> |No| Skip
+Valid --> |Yes| CalcTime["Calculate Time Since LIB"]
+CalcTime --> CheckTimeout{"Time >= Timeout?"}
+CheckTimeout --> |No| Normal
+CheckTimeout --> |Yes| Activate["Activate Emergency Mode"]
+Activate --> CreateWitness["Create/Update Emergency Witness"]
+CreateWitness --> ResetPenalties["Reset Witness Penalties"]
+ResetPenalties --> OverrideSchedule["Override Witness Schedule"]
+OverrideSchedule --> NotifyFork["Notify Fork DB"]
+NotifyFork --> LogActivation["Log Emergency Activation"]
+LogActivation --> Normal
+```
+
+**Diagram sources**
+- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
+- [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
+
+**Section sources**
+- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
+- [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
+
+### Hybrid Witness Scheduling System
+During emergency mode, the system implements a hybrid witness scheduling approach:
+
+- **Real Witness Priority**: Real witnesses maintain their scheduled slots during normal operation
+- **Committee Replacement**: When real witnesses are unavailable (offline, shutdown, or missing signing keys), committee members automatically replace their slots
+- **Full Coverage**: Emergency schedule expands to cover all CHAIN_MAX_WITNESSES slots, ensuring continuous block production
+- **Dynamic Adjustment**: Schedule updates dynamically based on real witness availability and network conditions
+
+```mermaid
+flowchart TD
+Start(["Schedule Update"]) --> CheckEmergency{"Emergency Active?"}
+CheckEmergency --> |No| NormalSchedule["Normal Schedule Update"]
+CheckEmergency --> |Yes| IterateSlots["Iterate All Schedule Slots"]
+IterateSlots --> CheckSlot{"Slot Available?"}
+CheckSlot --> |Yes| KeepReal["Keep Real Witness"]
+CheckSlot --> |No| ReplaceWithCommittee["Replace with Emergency Witness"]
+ReplaceWithCommittee --> ExpandSchedule["Expand to Full Schedule"]
+ExpandSchedule --> SyncProps["Sync Props with Latest Median"]
+SyncProps --> CheckExit{"LIB > Start Block?"}
+CheckExit --> |Yes| Deactivate["Deactivate Emergency Mode"]
+CheckExit --> |No| Continue["Continue Emergency Mode"]
+Deactivate --> NotifyFork["Notify Fork DB"]
+NotifyFork --> LogDeactivation["Log Deactivation"]
+LogDeactivation --> NormalSchedule
+```
+
+**Diagram sources**
+- [database.cpp:2047-2144](file://libraries/chain/database.cpp#L2047-L2144)
+
+**Section sources**
+- [database.cpp:2047-2144](file://libraries/chain/database.cpp#L2047-L2144)
+
+### Emergency Witness Object Management
+The system creates and manages a dedicated emergency witness object:
+
+- **Emergency Witness Account**: Uses CHAIN_EMERGENCY_WITNESS_ACCOUNT (committee account) for emergency operations
+- **Public Key Management**: Assigns CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY for block signing during emergencies
+- **Properties Synchronization**: Copies current median chain properties to prevent skewing median computations
+- **Version Management**: Maintains current binary version and hardfork voting alignment
+- **Penalty Reset**: Emergency witness operates independently of normal penalty systems
+
+```mermaid
+flowchart TD
+Start(["Emergency Activation"]) --> CheckWitness{"Emergency Witness Exists?"}
+CheckWitness --> |No| CreateWitness["Create Emergency Witness"]
+CheckWitness --> |Yes| UpdateWitness["Update Existing Witness"]
+CreateWitness --> SetKey["Set Emergency Public Key"]
+SetKey --> SyncProps["Copy Median Properties"]
+SyncProps --> SyncVersion["Sync Version and Votes"]
+UpdateWitness --> SetKey
+SetKey --> SyncVersion
+SyncVersion --> ResetPenalties["Reset Penalties"]
+ResetPenalties --> RemoveExpire["Remove Penalty Expires"]
+RemoveExpire --> OverrideSchedule["Override Schedule"]
+OverrideSchedule --> NotifyFork["Notify Fork DB"]
+NotifyFork --> LogCreate["Log Witness Creation"]
+LogCreate --> Continue["Continue Operation"]
+```
+
+**Diagram sources**
+- [database.cpp:4378-4416](file://libraries/chain/database.cpp#L4378-L4416)
+
+**Section sources**
+- [database.cpp:4378-4416](file://libraries/chain/database.cpp#L4378-L4416)
+
+### Emergency Mode Deactivation
+Emergency mode automatically deactivates when network recovery is detected:
+
+- **LIB Progress Monitoring**: System continuously monitors last irreversible block advancement
+- **Exit Condition**: When last_irreversible_block_num > emergency_consensus_start_block, emergency mode terminates
+- **Graceful Transition**: Fork database is notified of emergency mode termination
+- **Logging**: Comprehensive logging of emergency period duration and recovery metrics
+
+```mermaid
+flowchart TD
+Start(["LIB Monitoring"]) --> CheckEmergency{"Emergency Active?"}
+CheckEmergency --> |No| Wait["Wait for LIB"]
+CheckEmergency --> |Yes| CheckLIB["Check LIB Advancement"]
+CheckLIB --> Compare{"LIB > Start Block?"}
+Compare --> |No| Wait
+Compare --> |Yes| Deactivate["Deactivate Emergency Mode"]
+Deactivate --> UpdateDGP["Set emergency_consensus_active = false"]
+UpdateDGP --> NotifyFork["Notify Fork DB"]
+NotifyFork --> LogDeactivation["Log Deactivation"]
+LogDeactivation --> Wait
+```
+
+**Diagram sources**
+- [database.cpp:2125-2142](file://libraries/chain/database.cpp#L2125-L2142)
+
+**Section sources**
+- [database.cpp:2125-2142](file://libraries/chain/database.cpp#L2125-L2142)
+
+### Witness Penalty Handling During Emergencies
+Emergency mode includes special handling for witness penalties:
+
+- **Offline Witness Protection**: During emergency mode, penalties for offline witnesses are not applied
+- **Hybrid Schedule Impact**: Committee members filling slots still count as "missed" blocks for normal penalty calculations
+- **Recovery Prevention**: Prevents offline witnesses from accumulating penalties that could lead to permanent shutdown
+- **Network Recovery**: Ensures offline witnesses can recover and resume participation after emergency mode ends
+
+```mermaid
+flowchart TD
+Start(["Witness Missed Blocks"]) --> CheckEmergency{"Emergency Active?"}
+CheckEmergency --> |No| ApplyPenalties["Apply Normal Penalties"]
+CheckEmergency --> |Yes| CheckOffline{"Is Offline Witness?"}
+CheckOffline --> |No| ApplyPenalties
+CheckOffline --> |Yes| CheckProducer{"Is Producer?"}
+CheckProducer --> |Yes| ApplyPenalties
+CheckProducer --> |No| SkipPenalties["Skip Penalties (Emergency)"]
+SkipPenalties --> ResetRun["Reset Current Run"]
+ResetRun --> Continue["Continue Processing"]
+ApplyPenalties --> Continue
+```
+
+**Diagram sources**
+- [database.cpp:4220-4230](file://libraries/chain/database.cpp#L4220-L4230)
+
+**Section sources**
+- [database.cpp:4220-4230](file://libraries/chain/database.cpp#L4220-L4230)
+
+### LIB Monitoring and Safety Mechanisms
+The emergency consensus system includes comprehensive LIB monitoring:
+
+- **Continuous Timestamp Analysis**: Monitors block timestamps to detect network stalls
+- **Safety Guardrails**: Prevents false emergency activations by verifying LIB availability
+- **Genesis Time Protection**: Avoids false activations by falling back to genesis_time considerations
+- **Network Recovery Detection**: Monitors LIB advancement to determine when emergency mode should end
+
+**Section sources**
+- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
+
 ## Dependency Analysis
 The database depends on:
-- chainbase for persistent storage and undo sessions
+- chainbase for persistent storage and undo sessions with enhanced memory management
 - block_log for immutable block storage and random access
 - dlt_block_log for rolling window storage in DLT mode
-- fork_database for reversible blocks and fork resolution
+- fork_database for reversible blocks and fork resolution with emergency mode support
 - protocol types and evaluators for operation processing
 - signal_guard for enhanced error handling during restart sequences
 - snapshot plugin for DLT mode initialization
 - **_dlt_gap_logged flag**: New dependency for managing gap warning suppression with automatic state management
 - **Enhanced collision detection**: Sophisticated logging system with scenario differentiation
 - **Postponed transaction manager**: Smart queue management with time-based execution limits
+- **Emergency consensus engine**: Automatic recovery system with LIB monitoring and safety checks
+- **Hybrid witness scheduler**: Dynamic witness replacement system during emergencies
+- **Emergency witness management**: Dedicated emergency witness object creation and maintenance
+- **Protocol configuration**: Emergency consensus constants and witness definitions
+- **Enhanced memory management**: Comprehensive logging system for shared memory allocation with detailed state reporting
 
 ```mermaid
 graph LR
@@ -708,17 +979,24 @@ DB --> SNAP["snapshot plugin"]
 DB --> GAP["gap suppression flag (_dlt_gap_logged)"]
 DB --> COLL["collision detection system"]
 DB --> POST["postponed transaction manager"]
+DB --> EMER["emergency consensus engine"]
+DB --> HYBRID["hybrid witness scheduler"]
+DB --> WITNESS["emergency witness management"]
+DB --> PROTO["protocol configuration"]
+DB --> MEMLOG["enhanced memory management logging"]
 ```
 
 **Diagram sources**
 - [database.hpp:1-10](file://libraries/chain/include/graphene/chain/database.hpp#L1-L10)
 - [database.cpp:1-30](file://libraries/chain/database.cpp#L1-L30)
 - [database.cpp:94-184](file://libraries/chain/database.cpp#L94-L184)
+- [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
 
 **Section sources**
 - [database.hpp:1-10](file://libraries/chain/include/graphene/chain/database.hpp#L1-L10)
 - [database.cpp:1-30](file://libraries/chain/database.cpp#L1-L30)
 - [database.cpp:94-184](file://libraries/chain/database.cpp#L94-L184)
+- [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
 
 ## Performance Considerations
 - Use skip flags during reindex to bypass expensive validations and improve replay speed.
@@ -737,6 +1015,10 @@ DB --> POST["postponed transaction manager"]
 - **Rate-Limited Collision Detection**: Sophisticated collision logging prevents log flooding while maintaining critical diagnostic information.
 - **Smart Transaction Processing**: Time-based transaction execution limits prevent system overload and ensure responsive operation.
 - **Postponed Queue Management**: Automatic transaction queuing maintains system stability under high load conditions.
+- **Emergency Mode Efficiency**: Hybrid witness scheduling ensures continuous operation with minimal performance impact during network recovery.
+- **LIB Monitoring Overhead**: Emergency consensus monitoring adds minimal overhead while providing critical network health detection.
+- **Emergency Activation Safety**: Multiple safety checks prevent false activations and potential network deadlocks.
+- **Enhanced Memory Management**: Comprehensive logging provides administrators with detailed visibility into memory usage patterns, enabling proactive capacity planning and performance optimization.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -756,6 +1038,13 @@ Common issues and remedies:
 - **Rate-Limiting Issues**: Monitor collision warning suppression to ensure it's functioning properly during sustained fork conditions.
 - **Postponed Transaction Delays**: Check transaction queue processing limits and adjust `CHAIN_PENDING_TRANSACTION_EXECUTION_LIMIT` if necessary.
 - **Witness Production Conflicts**: Monitor witness plugin logs for collision avoidance behavior during fork resolution.
+- **Emergency Mode Activation**: Monitor emergency consensus activation logs and verify LIB timestamp analysis is working correctly.
+- **Hybrid Schedule Issues**: Verify that emergency witness is properly replacing unavailable witnesses during network recovery.
+- **Emergency Mode Deactivation**: Check that LIB advancement is properly detected to trigger emergency mode termination.
+- **Witness Penalty Problems**: During emergency mode, verify that offline witness penalties are properly bypassed to prevent network recovery issues.
+- **Memory Management Issues**: Monitor enhanced memory logging to identify potential memory pressure situations and optimize configuration settings.
+- **Memory Resize Failures**: Check that memory resize operations are completing successfully and review detailed logging for resize operations.
+- **Memory State Inconsistencies**: Verify that reserved memory calculations are accurate and that memory state reporting reflects actual system conditions.
 
 **Section sources**
 - [database.cpp:800-830](file://libraries/chain/database.cpp#L800-L830)
@@ -765,6 +1054,17 @@ Common issues and remedies:
 - [database.cpp:3998-4000](file://libraries/chain/database.cpp#L3998-L4000)
 - [database.cpp:929-984](file://libraries/chain/database.cpp#L929-L984)
 - [db_with.hpp:33-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L33-L100)
+- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
+- [database.cpp:2047-2144](file://libraries/chain/database.cpp#L2047-L2144)
+- [database.cpp:454-482](file://libraries/chain/database.cpp#L454-L482)
 
 ## Conclusion
-The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support and improved error handling. It integrates chainbase for persistent storage, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, and the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals. The snapshot-aware initialization, rolling window management, and graceful failure handling make it particularly suitable for distributed ledger applications requiring efficient synchronization, reduced storage overhead, and resilient operation during restart sequences. The enhanced DLT mode detection and block availability checking logic ensures accurate P2P synchronization and prevents false positives in block availability reporting. The new gap suppression mechanism provides intelligent warning management that prevents log spam during normal DLT operations while maintaining comprehensive diagnostic capability for troubleshooting. The automatic state management of the `_dlt_gap_logged` flag ensures optimal logging behavior without manual intervention, making the system more maintainable and operable in production environments. The sophisticated block collision detection system with rate-limiting and scenario differentiation provides enhanced diagnostic capabilities for network health monitoring. The intelligent postponed transaction processing system ensures stable operation under high load conditions with automatic queue management and time-based execution limits.
+The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support, emergency consensus implementation, and improved error handling. It integrates chainbase for persistent storage, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, and the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals.
+
+**Updated** - The system now includes comprehensive emergency consensus implementation featuring automatic recovery procedures, hybrid witness scheduling system, emergency mode detection, LIB monitoring, and safety safeguards. The emergency consensus system activates automatically when network downtime exceeds CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC threshold, replacing unavailable witnesses with committee members to ensure continuous block production. The hybrid witness scheduling system maintains network stability during recovery periods, while comprehensive LIB monitoring prevents false activations and ensures graceful deactivation when network health is restored.
+
+The enhanced DLT mode detection and block availability checking logic ensures accurate P2P synchronization and prevents false positives in block availability reporting. The new gap suppression mechanism provides intelligent warning management that prevents log spam during normal DLT operations while maintaining comprehensive diagnostic capability for troubleshooting. The automatic state management of the `_dlt_gap_logged` flag ensures optimal logging behavior without manual intervention, making the system more maintainable and operable in production environments. The sophisticated block collision detection system with rate-limiting and scenario differentiation provides enhanced diagnostic capabilities for network health monitoring. The intelligent postponed transaction processing system ensures stable operation under high load conditions with automatic queue management and time-based execution limits.
+
+The emergency consensus implementation represents a significant advancement in blockchain resilience, providing automatic network recovery mechanisms that maintain system integrity during extended downtime while preventing potential deadlocks and false activations. The hybrid witness scheduling system ensures continuous operation by dynamically adapting to witness availability, while comprehensive safety checks protect against network instability and malicious behavior. This implementation makes the VIZ blockchain more robust, fault-tolerant, and suitable for enterprise-grade deployments requiring high availability and automatic recovery capabilities.
+
+**Enhanced** - The memory management system now provides comprehensive logging capabilities that offer administrators detailed visibility into memory usage patterns during blockchain operation. The enhanced `_resize` function logs detailed information about free memory, maximum memory, and reserved memory states before and after resizing operations, enabling proactive capacity planning and performance optimization. The improved error detection capabilities in shared memory allocation provide administrators with crucial information about memory usage patterns, helping prevent memory-related issues before they impact system performance. These enhancements make the database management system more transparent, manageable, and suitable for production environments where memory resource optimization is critical.

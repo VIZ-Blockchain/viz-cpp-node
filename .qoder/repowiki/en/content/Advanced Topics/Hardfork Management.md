@@ -26,7 +26,7 @@
 ## Update Summary
 **Changes Made**
 - Added Emergency Consensus Recovery (HF12) as the latest hardfork implementation
-- Updated hardfork directory structure to include HF12 definition
+- Updated hardfork numbering from 11 to 12 with CHAIN_HARDFORK_12_VERSION and CHAIN_HARDFORK_12_TIME configurations
 - Enhanced witness scheduling logic with emergency mode activation
 - Added emergency consensus recovery mechanisms and three-state safety enforcement
 - Updated CHAIN_NUM_HARDFORKS from 11 to 12 in preamble
