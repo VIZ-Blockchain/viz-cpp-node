@@ -2833,7 +2833,7 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
         if (my->snapshot_path.empty()) {
             // Auto-discover latest snapshot in snapshot-dir
             fc::path latest = my->find_latest_snapshot();
-            if (!latest.empty()) {
+            if (!latest.string().empty()) {
                 my->snapshot_path = latest.string();
                 ilog("Auto-discovered latest snapshot: ${p}", ("p", my->snapshot_path));
             } else {
