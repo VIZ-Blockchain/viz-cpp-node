@@ -5382,6 +5382,9 @@ namespace graphene { namespace chain {
             _hardfork_times[CHAIN_HARDFORK_11] = fc::time_point_sec(CHAIN_HARDFORK_11_TIME);
             _hardfork_versions[CHAIN_HARDFORK_11] = CHAIN_HARDFORK_11_VERSION;
 
+            _hardfork_times[CHAIN_HARDFORK_12] = fc::time_point_sec(CHAIN_HARDFORK_12_TIME);
+            _hardfork_versions[CHAIN_HARDFORK_12] = CHAIN_HARDFORK_12_VERSION;
+
             const auto &hardforks = get_hardfork_property_object();
             FC_ASSERT(
                 hardforks.last_hardfork <= CHAIN_NUM_HARDFORKS,
