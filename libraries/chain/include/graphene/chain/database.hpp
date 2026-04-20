@@ -136,6 +136,15 @@ namespace graphene { namespace chain {
             void reindex(const fc::path &data_dir, const fc::path &shared_mem_dir, uint32_t from_block_num, uint64_t shared_file_size = (
                     1024l * 1024l * 1024l * 8l));
 
+            /**
+             * @brief Rebuild object graph from dlt_block_log after snapshot import
+             *
+             * Replays blocks from the DLT rolling block log starting at from_block_num
+             * through the last available block. Used for crash recovery when shared
+             * memory is corrupted but dlt_block_log has blocks beyond the snapshot.
+             */
+            void reindex_from_dlt(uint32_t from_block_num);
+
             void set_min_free_shared_memory_size(size_t);
             void set_inc_shared_memory_size(size_t);
             void set_block_num_check_free_size(uint32_t);
@@ -489,6 +498,8 @@ namespace graphene { namespace chain {
             void set_flush_interval(uint32_t flush_blocks);
 
             const block_log &get_block_log() const;
+
+            const dlt_block_log &get_dlt_block_log() const { return _dlt_block_log; }
 
             fork_database &get_fork_db() {
                 return _fork_db;

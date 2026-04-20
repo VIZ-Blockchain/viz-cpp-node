@@ -695,6 +695,7 @@ public:
     graphene::chain::database& db;
 
     std::string snapshot_path;        // --snapshot: load from this path
+    bool snapshot_auto_latest = false; // --snapshot-auto-latest: auto-find latest snapshot in snapshot-dir
     std::string create_snapshot_path; // --create-snapshot: create at this path
     uint32_t snapshot_at_block = 0;   // --snapshot-at-block: create when block N is reached
     uint32_t snapshot_every_n_blocks = 0; // --snapshot-every-n-blocks: periodic snapshot
@@ -2810,6 +2811,8 @@ void snapshot_plugin::set_program_options(
     cli.add_options()
         ("snapshot", bpo::value<std::string>(),
             "Load state from snapshot file instead of replaying blockchain")
+        ("snapshot-auto-latest", bpo::bool_switch()->default_value(false),
+            "Auto-discover the latest snapshot in snapshot-dir (use with --replay-from-snapshot)")
         ("create-snapshot", bpo::value<std::string>(),
             "Create a snapshot file at the specified path and exit")
     ;
@@ -2823,6 +2826,22 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     if (options.count("snapshot")) {
         my->snapshot_path = options.at("snapshot").as<std::string>();
         ilog("Snapshot load path: ${p}", ("p", my->snapshot_path));
+    }
+
+    my->snapshot_auto_latest = options.at("snapshot-auto-latest").as<bool>();
+    if (my->snapshot_auto_latest) {
+        if (my->snapshot_path.empty()) {
+            // Auto-discover latest snapshot in snapshot-dir
+            fc::path latest = my->find_latest_snapshot();
+            if (!latest.empty()) {
+                my->snapshot_path = latest.string();
+                ilog("Auto-discovered latest snapshot: ${p}", ("p", my->snapshot_path));
+            } else {
+                elog("--snapshot-auto-latest but no snapshots found in snapshot-dir");
+            }
+        } else {
+            ilog("--snapshot-auto-latest ignored: --snapshot already specified with ${p}", ("p", my->snapshot_path));
+        }
     }
 
     if (options.count("create-snapshot")) {

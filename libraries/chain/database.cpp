@@ -435,6 +435,114 @@ namespace graphene { namespace chain {
 
         }
 
+        void database::reindex_from_dlt(uint32_t from_block_num) {
+            try {
+                // Ensure DLT mode is set (defensive: may already be true from open_from_snapshot)
+                _dlt_mode = true;
+
+                signal_guard sg;
+                _fork_db.reset();
+
+                auto start = fc::time_point::now();
+
+                const auto& dlt_head = _dlt_block_log.head();
+                CHAIN_ASSERT(dlt_head, block_log_exception,
+                    "No blocks in dlt_block_log. Cannot reindex from empty DLT log.");
+
+                uint32_t dlt_start = _dlt_block_log.start_block_num();
+                uint32_t dlt_last = dlt_head->block_num();
+
+                if (from_block_num < dlt_start) {
+                    wlog("DLT replay: requested from_block ${from} is before dlt_block_log start ${start}, adjusting",
+                         ("from", from_block_num)("start", dlt_start));
+                    from_block_num = dlt_start;
+                }
+
+                if (from_block_num > dlt_last) {
+                    ilog("DLT replay: no blocks to replay (from_block ${from} > dlt_head ${head})",
+                         ("from", from_block_num)("head", dlt_last));
+                    return;
+                }
+
+                ilog("Replaying blocks from dlt_block_log (${from}..${to}, ${count} blocks)...",
+                     ("from", from_block_num)("to", dlt_last)("count", dlt_last - from_block_num + 1));
+
+                uint64_t skip_flags =
+                        skip_block_size_check |
+                        skip_witness_signature |
+                        skip_transaction_signatures |
+                        skip_transaction_dupe_check |
+                        skip_tapos_check |
+                        skip_merkle_check |
+                        skip_witness_schedule_check |
+                        skip_authority_check |
+                        skip_validate_operations |
+                        skip_block_log;
+
+                with_strong_write_lock([&]() {
+                    uint32_t cur_block_num = from_block_num;
+                    uint32_t total_blocks = dlt_last - from_block_num + 1;
+                    uint32_t blocks_applied = 0;
+                    int last_pct = -1;
+
+                    set_reserved_memory(1024*1024*1024);
+
+                    while (cur_block_num <= dlt_last) {
+                        if (signal_guard::get_is_interrupted()) {
+                            return;
+                        }
+
+                        auto block_opt = _dlt_block_log.read_block_by_num(cur_block_num);
+                        if (!block_opt) {
+                            elog("DLT replay: block ${n} not found in dlt_block_log, stopping", ("n", cur_block_num));
+                            break;
+                        }
+
+                        apply_block(*block_opt, skip_flags);
+                        blocks_applied++;
+
+                        int pct = (total_blocks > 0) ? (blocks_applied * 100 / total_blocks) : 100;
+                        if (pct != last_pct && pct % 10 == 0) {
+                            auto elapsed = double((fc::time_point::now() - start).count()) / 1000000.0;
+                            std::cerr
+                                << "   " << pct << "%   "
+                                << blocks_applied << " of " << total_blocks
+                                << "   (block " << cur_block_num
+                                << ", " << (free_memory() / (1024 * 1024)) << "M free"
+                                << ", elapsed " << elapsed << " sec)\n";
+                            last_pct = pct;
+                        }
+
+                        if (cur_block_num % 1000 == 0) {
+                            set_revision(head_block_num());
+                        }
+
+                        check_free_memory(true, cur_block_num);
+                        cur_block_num++;
+                    }
+
+                    set_reserved_memory(0);
+                    set_revision(head_block_num());
+                });
+
+                if (signal_guard::get_is_interrupted()) {
+                    sg.restore();
+                    appbase::app().quit();
+                }
+
+                // Seed fork_db with the head block so P2P can link incoming blocks
+                auto final_head = _dlt_block_log.head();
+                if (final_head) {
+                    _fork_db.start_block(*final_head);
+                }
+
+                auto end = fc::time_point::now();
+                ilog("Done replaying from dlt_block_log, head_block=${h}, elapsed time: ${t} sec",
+                     ("h", head_block_num())("t", double((end - start).count()) / 1000000.0));
+            }
+            FC_CAPTURE_AND_RETHROW((from_block_num))
+        }
+
         void database::set_min_free_shared_memory_size(size_t value) {
             _min_free_shared_memory_size = value;
         }
