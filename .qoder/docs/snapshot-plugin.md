@@ -17,6 +17,8 @@ The snapshot plugin enables near-instant node startup by serializing and restori
 | Option | Type | Description |
 |--------|------|-------------|
 | `--snapshot <path>` | `string` | Load state from a snapshot file instead of replaying blockchain. The node opens in DLT mode (no block log). Safe for restarts — skips import if shared_memory already exists, and renames the file to `.used` after successful import. |
+| `--snapshot-auto-latest` | `bool` (default: `false`) | Auto-discover the latest snapshot file in `snapshot-dir` by parsing block numbers from filenames (`snapshot-block-NNNNN.vizjson` or `.json`). Typically used with `--replay-from-snapshot` to avoid specifying the file path manually. Ignored if `--snapshot` is already specified. |
+| `--replay-from-snapshot` | `bool` (default: `false`) | Crash recovery mode: import a snapshot and then replay blocks from `dlt_block_log` to bring the node up to the latest available state. Unlike `--snapshot`, this always wipes shared memory (assumes corruption), does NOT rename the snapshot to `.used`, and replays subsequent blocks from the DLT rolling block log. Requires `--snapshot <path>` or `--snapshot-auto-latest`. |
 | `--create-snapshot <path>` | `string` | Create a snapshot file at the given path using the current database state, then exit. |
 | `--sync-snapshot-from-trusted-peer` | `bool` (default: `false`) | Download and load snapshot from trusted peers when state is empty (`head_block_num == 0`). Requires `trusted-snapshot-peer` to be configured. Defaults to `false` (opt-in) — must be explicitly enabled to prevent accidental state wipe via `chainbase::wipe()`. |
 
@@ -398,6 +400,105 @@ After snapshot import, the node must sync all subsequent blocks from P2P. Severa
 - Duplicate block check added in `_push_block`
 - `_unlinked_index.clear()` added to `reset()`
 
+## Crash Recovery: `--replay-from-snapshot`
+
+When `shared_memory.bin` becomes corrupted (e.g., after an unclean shutdown, disk full, or hardware fault), the node cannot start normally. The standard `--replay-blockchain` replays from `block_log`, which is empty in DLT mode. The `--replay-from-snapshot` option provides a recovery path that combines snapshot import with DLT block log replay.
+
+### The problem
+
+| Scenario | Why it fails |
+|----------|-------------|
+| Normal startup | `shared_memory.bin` has corrupted indices → FC_ASSERT crash |
+| `--replay-blockchain` | Reads from `block_log`, which is empty in DLT mode |
+| `--snapshot <path>` alone | Imports snapshot state but does not replay subsequent blocks from `dlt_block_log` |
+
+### The solution
+
+`--replay-from-snapshot` performs a three-step recovery:
+
+1. **Wipe & import snapshot** — Always wipes `shared_memory.bin` (assumes corruption), opens the database from genesis via `open_from_snapshot()`, and imports the snapshot state.
+2. **Replay dlt_block_log** — If the `dlt_block_log` contains blocks beyond the snapshot's head, they are replayed via `database::reindex_from_dlt()` to bring the node as close to the chain tip as possible.
+3. **Resume P2P sync** — The node emits `on_sync` and begins normal P2P sync from the replayed head block onward.
+
+Unlike `--snapshot`, the recovery mode:
+- Always wipes shared memory (no "already exists" check)
+- Does **not** rename the snapshot file to `.used` (the snapshot may be needed again)
+- Initializes hardforks after snapshot import (before replay)
+- Replays blocks from `dlt_block_log` with standard reindex skip flags
+
+### Usage
+
+```bash
+# Simple: specify the snapshot path explicitly
+vizd --replay-from-snapshot --snapshot /data/snapshots/snapshot-block-79273800.vizjson --plugin snapshot
+
+# Convenient: auto-discover the latest snapshot
+vizd --replay-from-snapshot --snapshot-auto-latest --plugin snapshot
+```
+
+With `--snapshot-auto-latest`, the node scans `snapshot-dir` for files matching `snapshot-block-*.vizjson` or `snapshot-block-*.json`, parses the block number from each filename, and selects the one with the highest block number. This avoids having to manually find and specify the snapshot path.
+
+### What happens during recovery
+
+1. All plugins call `plugin_initialize()`. The **snapshot plugin** registers a `snapshot_load_callback` on the **chain plugin**.
+2. The **chain plugin** `plugin_startup()` detects `--replay-from-snapshot` and validates that a snapshot path is available (via `--snapshot` or `--snapshot-auto-latest`).
+3. The chain plugin opens the database using `open_from_snapshot()` — this wipes shared memory, initializes chainbase, indexes, and evaluators in DLT mode.
+4. The chain plugin calls `snapshot_load_callback()` — the **snapshot plugin** reads the JSON file, validates the header, imports all tracked object types, and calls `initialize_hardforks()`.
+5. The chain plugin calls `initialize_hardforks()` to populate the hardfork schedule arrays.
+6. The chain plugin checks if `dlt_block_log` has blocks beyond the snapshot head. If yes, it calls `database::reindex_from_dlt(snapshot_head + 1)`.
+7. `reindex_from_dlt()` replays each block from the DLT rolling block log with reindex skip flags (no signature checks, no merkle checks, etc.), reporting progress to stderr every 10%.
+8. After replay, the fork database is seeded with the last block from `dlt_block_log`.
+9. The chain plugin emits `on_sync` — P2P starts syncing from the replayed head block.
+
+### Example recovery scenario
+
+A DLT-mode node with periodic snapshots every 100,000 blocks and `dlt-block-log-max-blocks = 100000` crashes at block 79,274,318 with corrupted shared memory:
+
+```
+/data/viz-snapshots/
+  snapshot-block-79273800.vizjson    ← latest snapshot (518 blocks behind crash point)
+
+/blockchain/
+  dlt_block_log.log                  ← contains blocks 79174319..79274318
+  dlt_block_log.index
+  shared_memory.bin                  ← CORRUPTED
+```
+
+Recovery command:
+```bash
+vizd --replay-from-snapshot --snapshot-auto-latest --plugin snapshot
+```
+
+Recovery log output:
+```
+RECOVERY MODE: replaying from snapshot + dlt_block_log...
+Opening database for snapshot import. Please wait...
+Database opened for snapshot import (DLT mode), elapsed time 2.1 sec
+Loading state from snapshot: /data/viz-snapshots/snapshot-block-79273800.vizjson
+Snapshot loaded successfully at block 79273800, elapsed time 12.3 sec
+Snapshot loaded at block 79273800. Initializing hardforks...
+Replaying dlt_block_log from block 79273801 to 79274318...
+   10%   52 of 518   (block 79273852, 3840M free, elapsed 0.8 sec)
+   20%   104 of 518   (block 79273904, 3839M free, elapsed 1.5 sec)
+   ...
+   100%   518 of 518   (block 79274318, 3830M free, elapsed 7.2 sec)
+Done replaying from dlt_block_log, head_block=79274318, elapsed time: 7.3 sec
+Recovery complete. Started on blockchain with 79274318 blocks
+```
+
+The node is now at block 79,274,318 and P2P sync fills the gap to the live chain head.
+
+### Key differences from `--snapshot`
+
+| Aspect | `--snapshot` | `--replay-from-snapshot` |
+|--------|-------------|--------------------------|
+| Purpose | Bootstrap a new node | Recover from corruption |
+| Shared memory check | Skips if already exists | Always wipes and re-imports |
+| Snapshot file rename | Renames to `.used` | Does NOT rename |
+| DLT block log replay | No | Yes, from snapshot_head+1 |
+| Hardfork initialization | In callback | In callback + explicit call |
+| Typical use case | First-time node setup | Crash recovery |
+
 ## P2P Snapshot Sync
 
 Nodes can download snapshots directly from trusted peers over a custom TCP protocol, enabling fully automated bootstrap without manual file transfers.
@@ -636,6 +737,7 @@ Alternatively, add a cron job on the **host** machine:
 | Start with periodic snapshots | Add `snapshot-every-n-blocks` to `~/vizconfig/config.ini`, restart container |
 | One-shot snapshot | `docker run --rm -e VIZD_EXTRA_OPTS="--create-snapshot /var/lib/vizd/snapshots/snap.json --plugin snapshot" ...` |
 | Load from snapshot | `docker run -e VIZD_EXTRA_OPTS="--snapshot /var/lib/vizd/snapshots/snap.json --plugin snapshot" ...` |
+| Crash recovery | `docker run -e VIZD_EXTRA_OPTS="--replay-from-snapshot --snapshot-auto-latest --plugin snapshot" ...` |
 | P2P auto-bootstrap | Add `trusted-snapshot-peer = <ip>:<port>` to config, start container with `--plugin snapshot` |
 | Find snapshots on host | `ls -lt ~/vizhome/snapshots/` |
 | Check snapshot creation logs | `docker logs vizd \| grep -i snapshot` |
@@ -649,10 +751,10 @@ The snapshot plugin required changes to several core components:
 |-----------|--------|
 | `chainbase::generic_index` | Added `set_next_id()` / `next_id()` for ID preservation during import |
 | `fork_database.cpp` | Fixed `_unlinked_index.insert()` dead code (moved before `throw`); added `_push_next(item)` call at end of `_push_block` to resolve previously-unlinkable blocks; added duplicate block check in `_push_block`; added `_unlinked_index.clear()` to `reset()` |
-| `database.hpp/cpp` | Added `open_from_snapshot()`, `initialize_hardforks()`, `get_fork_db()`, `_dlt_mode` flag with `set_dlt_mode()` setter; DLT mode skips block_log writes and detects empty block_log on restart; `is_known_block()` in DLT mode checks block_summary then verifies preferred chain via `find_block_id_for_num()` (prevents both lying to peers and breaking sync negotiation); DLT restart seeds fork_db from dlt_block_log when available; early rejection in `_push_block`: duplicate blocks (at/before head, same ID), far-ahead broadcast blocks (parent unknown and not head_block_id), with immediate successor (`previous == head_block_id()`) always allowed; DLT block log gap logging via `wlog`; DLT block log empty-skip logic for fresh snapshot imports |
+| `database.hpp/cpp` | Added `open_from_snapshot()`, `initialize_hardforks()`, `reindex_from_dlt()`, `get_fork_db()`, `_dlt_mode` flag with `set_dlt_mode()` setter; DLT mode skips block_log writes and detects empty block_log on restart; `is_known_block()` in DLT mode checks block_summary then verifies preferred chain via `find_block_id_for_num()` (prevents both lying to peers and breaking sync negotiation); DLT restart seeds fork_db from dlt_block_log when available; early rejection in `_push_block`: duplicate blocks (at/before head, same ID), far-ahead broadcast blocks (parent unknown and not head_block_id), with immediate successor (`previous == head_block_id()`) always allowed; DLT block log gap logging via `wlog`; DLT block log empty-skip logic for fresh snapshot imports |
 | `dlt_block_log.hpp/cpp` | New class: offset-aware rolling block log with 8-byte header index, `truncate_before()` for rotation, read/write with mutex locking |
-| `chain plugin` | Added `snapshot_load_callback`, `snapshot_create_callback`, `snapshot_p2p_sync_callback`; restart safety (shared_memory check + `.used` rename + file existence check); LIB promotion after snapshot import (LIB = head_block_num for correct P2P synopsis); `dlt-block-log-max-blocks` config option; diagnostic warning when node has 0 blocks and no snapshot sync configured |
-| `snapshot plugin` | Full implementation: create/load/periodic snapshots; P2P TCP sync (serve + download with concurrent fiber handling on a dedicated `fc::thread`); 5-second peer operation timeout (connect, send, read); anti-spam (rate limiting, mutex-protected session tracking, enforced per-operation connection deadline); cached snapshot info; streaming SHA-256 checksum; built-in rotation (`snapshot-max-age-days`); elapsed time logging for all operations; console progress logging for download/import; `sync-snapshot-from-trusted-peer` defaults to `false` (opt-in); auto-creates snapshot directory; periodic snapshots only trigger on live blocks (skipped during P2P sync); memory optimization: compressed data freed immediately after decompression |
+| `chain plugin` | Added `snapshot_load_callback`, `snapshot_create_callback`, `snapshot_p2p_sync_callback`; restart safety (shared_memory check + `.used` rename + file existence check); LIB promotion after snapshot import (LIB = head_block_num for correct P2P synopsis); `dlt-block-log-max-blocks` config option; diagnostic warning when node has 0 blocks and no snapshot sync configured; `--replay-from-snapshot` crash recovery mode (wipes shared_memory, imports snapshot, replays dlt_block_log via `reindex_from_dlt`, does not rename snapshot); `--snapshot-auto-latest` auto-discovery of latest snapshot in `snapshot-dir` |
+| `snapshot plugin` | Full implementation: create/load/periodic snapshots; P2P TCP sync (serve + download with concurrent fiber handling on a dedicated `fc::thread`); 5-second peer operation timeout (connect, send, read); anti-spam (rate limiting, mutex-protected session tracking, enforced per-operation connection deadline); cached snapshot info; streaming SHA-256 checksum; built-in rotation (`snapshot-max-age-days`); elapsed time logging for all operations; console progress logging for download/import; `sync-snapshot-from-trusted-peer` defaults to `false` (opt-in); auto-creates snapshot directory; periodic snapshots only trigger on live blocks (skipped during P2P sync); memory optimization: compressed data freed immediately after decompression; `--snapshot-auto-latest` auto-discovery of latest snapshot file by block number; `find_latest_snapshot()` helper |
 | `content_object.hpp` | Added missing `FC_REFLECT` for `content_object`, `content_type_object`, `content_vote_object` |
 | `witness_objects.hpp` | Added missing `FC_REFLECT` for `witness_vote_object` |
 | `proposal_object.hpp` | Added missing `FC_REFLECT` for `required_approval_object` |

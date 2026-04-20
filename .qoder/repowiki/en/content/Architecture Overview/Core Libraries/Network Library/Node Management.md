@@ -12,7 +12,18 @@
 - [exceptions.hpp](file://libraries/network/include/graphene/network/exceptions.hpp)
 - [stcp_socket.hpp](file://libraries/network/include/graphene/network/stcp_socket.hpp)
 - [message_oriented_connection.hpp](file://libraries/network/include/graphene/network/message_oriented_connection.hpp)
+- [fork_database.hpp](file://libraries/chain/include/graphene/chain/fork_database.hpp)
+- [fork_database.cpp](file://libraries/chain/fork_database.cpp)
+- [database.cpp](file://libraries/chain/database.cpp)
+- [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added comprehensive documentation for emergency consensus network-level improvements
+- Updated peer connection management to include soft-ban functionality
+- Enhanced synchronization logic with automatic flag reset mechanisms
+- Documented network-level emergency mode support and tie-breaking algorithms
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -20,22 +31,24 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+6. [Emergency Consensus Network-Level Improvements](#emergency-consensus-network-level-improvements)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
 
 ## Introduction
-This document describes the Node Management component responsible for orchestrating network peers, maintaining connectivity, and managing blockchain synchronization in the P2P layer. It covers the node.hpp class interface, the node_delegate integration for blockchain callbacks, configuration and lifecycle APIs, peer management, and network broadcasting with inventory tracking. It also includes diagrams, practical examples, and troubleshooting guidance for common startup and connection issues.
+This document describes the Node Management component responsible for orchestrating network peers, maintaining connectivity, and managing blockchain synchronization in the P2P layer. It covers the node.hpp class interface, the node_delegate integration for blockchain callbacks, configuration and lifecycle APIs, peer management, and network broadcasting with inventory tracking. The documentation now includes comprehensive coverage of emergency consensus network-level improvements including soft-ban expiration handling, inhibit_fetching_sync_blocks flag reset logic, and network-level emergency mode support.
 
 ## Project Structure
 The Node Management functionality spans several headers and the implementation source file:
 - Public interface: node.hpp defines the node class, node_delegate interface, and related types.
 - Implementation: node.cpp implements the node lifecycle, peer orchestration, message routing, synchronization, and inventory management.
-- Peer model: peer_connection.hpp defines the peer connection abstraction and state machine.
+- Peer model: peer_connection.hpp defines the peer connection abstraction and state machine with emergency consensus support.
 - Persistence: peer_database.hpp provides persistent peer discovery records.
 - Messaging: message.hpp defines the generic message envelope; core_messages.hpp enumerates core P2P message types.
 - Networking primitives: stcp_socket.hpp and message_oriented_connection.hpp underpin transport and framing.
+- Emergency consensus: fork_database.hpp/cpp and database.cpp implement emergency mode functionality.
 
 ```mermaid
 graph TB
@@ -51,6 +64,11 @@ subgraph "Transport"
 STCP["stcp_socket.hpp"]
 MOC["message_oriented_connection.hpp"]
 end
+subgraph "Emergency Consensus"
+FD["fork_database.hpp<br/>Emergency Mode"]
+DBC["database.cpp<br/>Consensus Logic"]
+CFG["config.hpp<br/>Emergency Constants"]
+end
 N --> NI
 NI --> PC
 NI --> PD
@@ -58,26 +76,33 @@ NI --> MSG
 NI --> CM
 PC --> STCP
 PC --> MOC
+NI --> FD
+FD --> DBC
+DBC --> CFG
 ```
 
 **Diagram sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
-- [node.cpp](file://libraries/network/node.cpp#L869-L905)
-- [peer_connection.hpp](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
+- [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
+- [node.cpp:869-905](file://libraries/network/node.cpp#L869-L905)
+- [peer_connection.hpp:79-354](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
+- [peer_database.hpp:104-134](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
+- [message.hpp:42-114](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
 - [core_messages.hpp](file://libraries/network/include/graphene/network/core_messages.hpp)
+- [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
+- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
+- [config.hpp:110-123](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L123)
 
 **Section sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
-- [node.cpp](file://libraries/network/node.cpp#L869-L905)
+- [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
+- [node.cpp:869-905](file://libraries/network/node.cpp#L869-L905)
 
 ## Core Components
 - node class: Provides P2P orchestration, configuration, peer management, and broadcast APIs.
 - node_delegate interface: Bridges the P2P layer to the blockchain, handling block ingestion, transaction processing, and sync callbacks.
-- peer_connection: Encapsulates a single peer link with state machine, inventory tracking, and rate-limited messaging.
+- peer_connection: Encapsulates a single peer link with state machine, inventory tracking, rate-limited messaging, and emergency consensus support.
 - peer_database: Persistent store of potential peers with connection history and disposition.
 - message: Generic envelope for all P2P messages with hashing and typed serialization.
+- fork_database: Manages blockchain forks with emergency consensus mode support and deterministic tie-breaking.
 
 Key responsibilities:
 - Lifecycle: Construction, configuration loading, listener setup, and graceful shutdown.
@@ -85,16 +110,18 @@ Key responsibilities:
 - Synchronization: Requesting and processing blockchain item IDs, fetching blocks/transactions, and notifying the delegate.
 - Broadcasting: Advertising inventory and sending items to peers.
 - Inventory management: Tracking what peers have, what we need, and what we've recently processed.
+- Emergency consensus: Managing soft-bans, automatic flag resets, and emergency mode operations.
 
 **Section sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
-- [node.cpp](file://libraries/network/node.cpp#L869-L905)
-- [peer_connection.hpp](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
+- [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
+- [node.cpp:869-905](file://libraries/network/node.cpp#L869-L905)
+- [peer_connection.hpp:79-354](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
+- [peer_database.hpp:104-134](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
+- [message.hpp:42-114](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
+- [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
 
 ## Architecture Overview
-The node delegates blockchain integration to a node_delegate and coordinates peers via peer_connection instances. The node maintains separate queues for sync and normal operation, enforces bandwidth and connection limits, and periodically prunes stale peers.
+The node delegates blockchain integration to a node_delegate and coordinates peers via peer_connection instances. The node maintains separate queues for sync and normal operation, enforces bandwidth and connection limits, and periodically prunes stale peers. The emergency consensus system provides network-level resilience through soft-ban mechanisms and deterministic tie-breaking.
 
 ```mermaid
 classDiagram
@@ -159,14 +186,24 @@ class peer_connection {
 +get_total_bytes_received()
 +get_last_message_sent_time()
 +get_last_message_received_time()
++fork_rejected_until fc : : time_point
++inhibit_fetching_sync_blocks bool
+}
+class fork_database {
++set_emergency_mode(active)
++is_emergency_mode() bool
++push_block(block)
++head() shared_ptr
 }
 node --> node_delegate : "calls"
 node --> peer_connection : "manages"
+peer_connection --> fork_database : "uses"
 ```
 
 **Diagram sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
-- [peer_connection.hpp](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
+- [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
+- [peer_connection.hpp:79-354](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
+- [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
 
 ## Detailed Component Analysis
 
@@ -211,21 +248,22 @@ Impl->>Impl : "trigger_p2p_network_connect_loop()"
 ```
 
 **Diagram sources**
-- [node.cpp](file://libraries/network/node.cpp#L952-L1047)
-- [node.cpp](file://libraries/network/node.cpp#L1623-L1654)
-- [node.cpp](file://libraries/network/node.cpp#L2282-L2350)
+- [node.cpp:952-1047](file://libraries/network/node.cpp#L952-L1047)
+- [node.cpp:1623-1654](file://libraries/network/node.cpp#L1623-L1654)
+- [node.cpp:2282-2350](file://libraries/network/node.cpp#L2282-L2350)
 
 **Section sources**
-- [node.cpp](file://libraries/network/node.cpp#L869-L931)
-- [node.cpp](file://libraries/network/node.cpp#L952-L1047)
-- [node.cpp](file://libraries/network/node.cpp#L1623-L1654)
-- [node.cpp](file://libraries/network/node.cpp#L2282-L2350)
+- [node.cpp:869-931](file://libraries/network/node.cpp#L869-L931)
+- [node.cpp:952-1047](file://libraries/network/node.cpp#L952-L1047)
+- [node.cpp:1623-1654](file://libraries/network/node.cpp#L1623-L1654)
+- [node.cpp:2282-2350](file://libraries/network/node.cpp#L2282-L2350)
 
 ### Peer Connection Establishment
 - Outbound: connect_to_endpoint creates a peer_connection and initiates a connect loop; on success, transitions to negotiation and then active.
 - Inbound: accept_loop accepts sockets and starts accept_or_connect_task; after hello exchange, moves to active and starts synchronization.
 - Handshake validation: Verifies signatures, chain ID, fork compatibility, and prevents self-connections and duplicates.
 - Firewall detection: Uses check-firewall messages to infer NAT/firewall status.
+- Emergency consensus: Soft-ban peers on fork rejection with automatic expiration handling.
 
 ```mermaid
 sequenceDiagram
@@ -248,20 +286,21 @@ end
 ```
 
 **Diagram sources**
-- [node.cpp](file://libraries/network/node.cpp#L2029-L2230)
-- [node.cpp](file://libraries/network/node.cpp#L2232-L2250)
-- [node.cpp](file://libraries/network/node.cpp#L2282-L2350)
+- [node.cpp:2029-2230](file://libraries/network/node.cpp#L2029-L2230)
+- [node.cpp:2232-2250](file://libraries/network/node.cpp#L2232-L2250)
+- [node.cpp:2282-2350](file://libraries/network/node.cpp#L2282-L2350)
 
 **Section sources**
-- [node.cpp](file://libraries/network/node.cpp#L2029-L2230)
-- [node.cpp](file://libraries/network/node.cpp#L2232-L2250)
-- [node.cpp](file://libraries/network/node.cpp#L2282-L2350)
+- [node.cpp:2029-2230](file://libraries/network/node.cpp#L2029-L2230)
+- [node.cpp:2232-2250](file://libraries/network/node.cpp#L2232-L2250)
+- [node.cpp:2282-2350](file://libraries/network/node.cpp#L2282-L2350)
 
 ### Network Topology Maintenance
 - Peer selection: Maintains a potential peer database with last-seen timestamps, disposition, and attempt counts; applies exponential backoff and retry windows.
 - Connection caps: Tracks handshaking, active, closing, and terminating sets; enforces desired/max connection counts.
 - Inactivity pruning: Disconnects peers exceeding inactivity thresholds and reschedules outstanding requests to others.
 - Peer advertising: Optionally disables advertising to restrict exposure.
+- Emergency consensus: Implements soft-ban mechanisms to prevent cascading disconnections during network emergencies.
 
 ```mermaid
 flowchart TD
@@ -278,11 +317,11 @@ DoneIter --> |No| Sleep
 ```
 
 **Diagram sources**
-- [node.cpp](file://libraries/network/node.cpp#L952-L1047)
+- [node.cpp:952-1047](file://libraries/network/node.cpp#L952-L1047)
 
 **Section sources**
-- [node.cpp](file://libraries/network/node.cpp#L952-L1047)
-- [node.cpp](file://libraries/network/node.cpp#L1400-L1621)
+- [node.cpp:952-1047](file://libraries/network/node.cpp#L952-L1047)
+- [node.cpp:1400-1621](file://libraries/network/node.cpp#L1400-L1621)
 
 ### Blockchain Integration via node_delegate
 - Block handling: handle_block receives new blocks during sync or normal operation; returns whether a fork switch occurred; populates contained transaction IDs for propagation.
@@ -307,12 +346,12 @@ Impl->>Impl : "broadcast transactions from contained_txs"
 ```
 
 **Diagram sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L79-L80)
-- [node.cpp](file://libraries/network/node.cpp#L3117-L3199)
+- [node.hpp:79-80](file://libraries/network/include/graphene/network/node.hpp#L79-L80)
+- [node.cpp:3117-3199](file://libraries/network/node.cpp#L3117-L3199)
 
 **Section sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L79-L80)
-- [node.cpp](file://libraries/network/node.cpp#L3117-L3199)
+- [node.hpp:79-80](file://libraries/network/include/graphene/network/node.hpp#L79-L80)
+- [node.cpp:3117-3199](file://libraries/network/node.cpp#L3117-L3199)
 
 ### Configuration Methods
 - load_configuration: Reads node_config.json and sets listening endpoint, accept flags, and persistence directory.
@@ -322,9 +361,9 @@ Impl->>Impl : "broadcast transactions from contained_txs"
 - disable_peer_advertising: Restricts outbound peer advertisement.
 
 **Section sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L200-L294)
-- [node.cpp](file://libraries/network/node.cpp#L933-L950)
-- [node.cpp](file://libraries/network/node.cpp#L1686-L1713)
+- [node.hpp:200-294](file://libraries/network/include/graphene/network/node.hpp#L200-L294)
+- [node.cpp:933-950](file://libraries/network/node.cpp#L933-L950)
+- [node.cpp:1686-1713](file://libraries/network/node.cpp#L1686-L1713)
 
 ### Peer Management Functions
 - add_node/connect_to_endpoint: Adds a seed or forces immediate connection.
@@ -334,9 +373,9 @@ Impl->>Impl : "broadcast transactions from contained_txs"
 - get_potential_peers/disable_peer_advertising: Inspect and control peer discovery.
 
 **Section sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L211-L296)
-- [node.cpp](file://libraries/network/node.cpp#L1788-L1841)
-- [node.cpp](file://libraries/network/node.cpp#L2282-L2350)
+- [node.hpp:211-296](file://libraries/network/include/graphene/network/node.hpp#L211-L296)
+- [node.cpp:1788-1841](file://libraries/network/node.cpp#L1788-L1841)
+- [node.cpp:2282-2350](file://libraries/network/node.cpp#L2282-L2350)
 
 ### Network Broadcasting and Inventory
 - broadcast/broadcast_transaction: Queues outgoing messages and triggers inventory advertisement.
@@ -357,43 +396,129 @@ Send --> Deliver["Deliver item via fetch_items_message"]
 ```
 
 **Diagram sources**
-- [node.cpp](file://libraries/network/node.cpp#L1326-L1398)
-- [node.cpp](file://libraries/network/node.cpp#L2830-L2892)
-- [node.cpp](file://libraries/network/node.cpp#L111-L217)
+- [node.cpp:1326-1398](file://libraries/network/node.cpp#L1326-L1398)
+- [node.cpp:2830-2892](file://libraries/network/node.cpp#L2830-L2892)
+- [node.cpp:111-217](file://libraries/network/node.cpp#L111-L217)
 
 **Section sources**
-- [node.cpp](file://libraries/network/node.cpp#L1326-L1398)
-- [node.cpp](file://libraries/network/node.cpp#L2830-L2892)
-- [node.cpp](file://libraries/network/node.cpp#L111-L217)
+- [node.cpp:1326-1398](file://libraries/network/node.cpp#L1326-L1398)
+- [node.cpp:2830-2892](file://libraries/network/node.cpp#L2830-L2892)
+- [node.cpp:111-217](file://libraries/network/node.cpp#L111-L217)
 
-### Examples
+## Emergency Consensus Network-Level Improvements
 
-- Node initialization and startup:
-  - Load configuration from a directory.
-  - Enable listening on a specific endpoint/port.
-  - Trigger outbound connection to seed peers.
-  - Monitor connection count via delegate callback.
+### Soft-Ban Expiration Handling
+The node now implements sophisticated soft-ban mechanisms to prevent cascading disconnections during emergency consensus scenarios. When peers offer blocks that cause fork rejections, the system applies soft-bans instead of immediate disconnections.
 
-- Peer discovery workflow:
-  - Add seed endpoints via add_node.
-  - Allow connect loop to establish connections.
-  - Receive address_message with peer list; update potential peer database.
-  - Transition to active and synchronize.
+Key features:
+- **Soft-ban duration**: 1 hour (3600 seconds) for fork-rejected blocks
+- **Automatic expiration**: Soft-bans automatically expire after the designated period
+- **Flag reset logic**: When soft-bans expire, the inhibit_fetching_sync_blocks flag is automatically reset
+- **Emergency mode protection**: Prevents cascading failures during network emergencies
 
-- Network synchronization process:
-  - Delegate provides blockchain synopsis.
-  - Node requests item IDs, tracks unfetched counts, and fetches blocks.
-  - On acceptance, broadcasts contained transactions.
+```mermaid
+sequenceDiagram
+participant Peer as "Peer Connection"
+participant Node as "Node Implementation"
+participant Delegate as "Blockchain Delegate"
+Peer->>Node : "Block with fork rejection"
+Node->>Node : "Check if fork rejection"
+alt unlinkable_block_exception
+Node->>Peer : "Apply soft-ban (1 hour)"
+Node->>Peer : "Set inhibit_fetching_sync_blocks = true"
+else normal invalid block
+Node->>Peer : "Disconnect peer"
+end
+Note over Node : "After 1 hour"
+Node->>Node : "Check soft-ban expiration"
+Node->>Peer : "Reset inhibit_fetching_sync_blocks = false"
+```
 
-[No sources needed since this subsection provides conceptual examples]
+**Diagram sources**
+- [node.cpp:3574-3595](file://libraries/network/node.cpp#L3574-L3595)
+- [node.cpp:3436-3449](file://libraries/network/node.cpp#L3436-L3449)
+
+### Inhibit Fetching Sync Blocks Flag Reset Logic
+The system includes intelligent flag management to ensure peers can resume normal operations after soft-ban expiration.
+
+Reset conditions:
+- **Soft-ban expiration**: When fork_rejected_until <= current_time
+- **Flag state**: Only reset if inhibit_fetching_sync_blocks is currently true
+- **Peer eligibility**: Only affects peers with non-zero fork_rejected_until timestamps
+
+```mermaid
+flowchart TD
+Start["Block Received"] --> CheckBan{"fork_rejected_until > now?"}
+CheckBan --> |Yes| Discard["Silently discard block"]
+CheckBan --> |No| CheckFlag{"inhibit_fetching_sync_blocks && fork_rejected_until != 0 && fork_rejected_until <= now?"}
+CheckFlag --> |Yes| ResetFlag["Reset inhibit_fetching_sync_blocks = false"]
+CheckFlag --> |No| ProcessBlock["Process block normally"]
+ResetFlag --> Log["Log flag reset"]
+Log --> ProcessBlock
+```
+
+**Diagram sources**
+- [node.cpp:3428-3449](file://libraries/network/node.cpp#L3428-L3449)
+
+### Network-Level Emergency Mode Support
+The emergency consensus system provides comprehensive network-level resilience through multiple coordinated mechanisms.
+
+#### Emergency Mode Activation
+Emergency mode activates when no blocks are produced for CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC (3600 seconds) since the last irreversible block:
+
+```mermaid
+flowchart TD
+Start["New Block Applied"] --> CheckHF{"Hardfork 12 Active?"}
+CheckHF --> |No| End["Normal Operation"]
+CheckHF --> |Yes| CheckActive{"Emergency Mode Active?"}
+CheckActive --> |Yes| End
+CheckActive --> |No| CalcLIB["Calculate LIB Time"]
+CalcLIB --> CheckAvailable{"LIB Available?"}
+CheckAvailable --> |No| End
+CheckAvailable --> |Yes| CalcDiff["Calculate Seconds Since LIB"]
+CalcDiff --> CheckTimeout{"Seconds >= 3600?"}
+CheckTimeout --> |No| End
+CheckTimeout --> |Yes| Activate["Activate Emergency Mode"]
+Activate --> SetupWitness["Setup Emergency Witness"]
+Activate --> ResetPenalties["Reset Penalties"]
+Activate --> OverrideSchedule["Override Schedule"]
+Activate --> NotifyForkDB["Notify Fork Database"]
+```
+
+**Diagram sources**
+- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
+- [fork_database.cpp:260-262](file://libraries/chain/fork_database.cpp#L260-L262)
+
+#### Deterministic Tie-Breaking
+During emergency mode, the system uses deterministic hash-based tie-breaking to ensure network convergence:
+
+- **Hash comparison**: When multiple blocks compete at the same height, prefer the lower block_id hash
+- **Consistent behavior**: All nodes converge regardless of P2P arrival order
+- **Emergency witness dominance**: Emergency witness produces all blocks during emergency periods
+
+#### Automatic Emergency Mode Exit
+Emergency mode automatically exits after CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS (21) consecutive blocks produced by normal witnesses:
+
+- **Normal block threshold**: 21 blocks equal to one full round of 21 witnesses
+- **Witness rejoining detection**: Monitors when real witnesses resume production
+- **Graceful transition**: Smooth return to normal consensus operation
+
+**Section sources**
+- [node.cpp:3428-3449](file://libraries/network/node.cpp#L3428-L3449)
+- [node.cpp:3574-3595](file://libraries/network/node.cpp#L3574-L3595)
+- [node.cpp:3436-3449](file://libraries/network/node.cpp#L3436-L3449)
+- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
+- [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
+- [config.hpp:110-123](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L123)
 
 ## Dependency Analysis
 The node depends on:
-- peer_connection for per-peer state and messaging.
+- peer_connection for per-peer state and messaging with emergency consensus support.
 - peer_database for persistent peer records.
 - message/core_messages for typed envelopes and core message dispatch.
 - stcp_socket and message_oriented_connection for transport and framing.
 - fc::rate_limiting_group for bandwidth control.
+- fork_database for emergency consensus mode management.
 
 ```mermaid
 graph LR
@@ -404,20 +529,26 @@ Impl --> Msg["message.hpp"]
 Impl --> CoreMsg["core_messages.hpp"]
 PeerConn --> STCP["stcp_socket.hpp"]
 PeerConn --> MOC["message_oriented_connection.hpp"]
+PeerConn --> ForkDB["fork_database.hpp"]
 Impl --> Rate["fc::rate_limiting_group"]
+ForkDB --> DBC["database.cpp"]
+DBC --> CFG["config.hpp"]
 ```
 
 **Diagram sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
-- [node.cpp](file://libraries/network/node.cpp#L869-L905)
-- [peer_connection.hpp](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
+- [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
+- [node.cpp:869-905](file://libraries/network/node.cpp#L869-L905)
+- [peer_connection.hpp:79-354](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
+- [peer_database.hpp:104-134](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
+- [message.hpp:42-114](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
 - [core_messages.hpp](file://libraries/network/include/graphene/network/core_messages.hpp)
+- [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
+- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
+- [config.hpp:110-123](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L123)
 
 **Section sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
-- [node.cpp](file://libraries/network/node.cpp#L869-L905)
+- [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
+- [node.cpp:869-905](file://libraries/network/node.cpp#L869-L905)
 
 ## Performance Considerations
 - Connection limits: desired/max connections cap concurrent peers; enforced in is_wanting_new_connections and is_accepting_new_connections.
@@ -425,8 +556,8 @@ Impl --> Rate["fc::rate_limiting_group"]
 - Prefetching: Limits for sync and normal operations prevent resource exhaustion.
 - Inactivity pruning: Keeps the mesh healthy by dropping idle peers and rescheduling requests.
 - Inventory deduplication: Prevents redundant fetches and unbounded growth of fetch queues.
-
-[No sources needed since this section provides general guidance]
+- Emergency consensus overhead: Minimal performance impact through efficient soft-ban expiration checks.
+- Automatic flag management: Reduces manual intervention requirements during extended emergency operations.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -436,12 +567,16 @@ Common issues and resolutions:
 - Peer database corruption: Clear peer database via clear_peer_database to reset discovery state.
 - Bandwidth saturation: Adjust set_total_bandwidth_limit and review advertised inventory sizes.
 - Hard fork incompatibility: Upgrade client if rejected due to inability to process future blocks.
+- Emergency mode activation: Monitor logs for "EMERGENCY CONSENSUS MODE activated" messages; system automatically handles recovery.
+- Soft-ban effects: If experiencing reduced peer connectivity, check soft-ban expiration timestamps; system should automatically reset flags.
+- Flag reset issues: Verify inhibit_fetching_sync_blocks flag resets after soft-ban expiration; manual intervention rarely needed.
 
 **Section sources**
-- [node.cpp](file://libraries/network/node.cpp#L2251-L2280)
-- [node.cpp](file://libraries/network/node.cpp#L2137-L2168)
-- [node.cpp](file://libraries/network/node.cpp#L1686-L1713)
-- [node.cpp](file://libraries/network/node.cpp#L1326-L1398)
+- [node.cpp:2251-2280](file://libraries/network/node.cpp#L2251-L2280)
+- [node.cpp:2137-2168](file://libraries/network/node.cpp#L2137-L2168)
+- [node.cpp:1686-1713](file://libraries/network/node.cpp#L1686-L1713)
+- [node.cpp:1326-1398](file://libraries/network/node.cpp#L1326-L1398)
+- [database.cpp:4455-4460](file://libraries/chain/database.cpp#L4455-L4460)
 
 ## Conclusion
-The Node Management component provides a robust, configurable, and efficient P2P orchestration layer. It integrates tightly with the blockchain via node_delegate, maintains a resilient peer topology, and ensures reliable synchronization and broadcasting. Proper configuration of limits, bandwidth, and peer discovery, combined with monitoring and troubleshooting practices, yields a stable and performant network node.
+The Node Management component provides a robust, configurable, and efficient P2P orchestration layer with comprehensive emergency consensus support. The recent emergency consensus network-level improvements significantly enhance network resilience through soft-ban mechanisms, automatic flag reset logic, and deterministic tie-breaking algorithms. These enhancements ensure the network can recover from extended periods without block production while maintaining operational efficiency and preventing cascading failures. The integration of emergency mode support with peer connection management, synchronization logic, and broadcast capabilities creates a comprehensive solution for maintaining network stability under adverse conditions. Proper configuration of limits, bandwidth, peer discovery, and emergency consensus parameters, combined with monitoring and troubleshooting practices, yields a stable, performant, and resilient network node capable of handling both normal operations and emergency scenarios.

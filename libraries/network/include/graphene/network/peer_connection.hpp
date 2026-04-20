@@ -273,6 +273,9 @@ namespace graphene {
 
             uint32_t last_known_fork_block_number;
 
+            // HF12: soft-ban peers on losing forks during emergency consensus
+            fc::time_point fork_rejected_until;
+
             fc::future<void> accept_or_connect_task_done;
 
             firewall_check_state_data *firewall_check_state;

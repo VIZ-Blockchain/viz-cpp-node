@@ -161,6 +161,18 @@ inline uint32_t import_dynamic_global_properties(
         obj.inflation_calc_block_num = v["inflation_calc_block_num"].as_uint64();
         obj.inflation_witness_percent = static_cast<int16_t>(v["inflation_witness_percent"].as_int64());
         obj.inflation_ratio = static_cast<int16_t>(v["inflation_ratio"].as_int64());
+
+        // HF12: forward-compatible handling of emergency consensus fields
+        if (v.get_object().contains("emergency_consensus_active")) {
+            obj.emergency_consensus_active = v["emergency_consensus_active"].as_bool();
+        } else {
+            obj.emergency_consensus_active = false;
+        }
+        if (v.get_object().contains("emergency_consensus_start_block")) {
+            obj.emergency_consensus_start_block = v["emergency_consensus_start_block"].as_uint64();
+        } else {
+            obj.emergency_consensus_start_block = 0;
+        }
     });
     return 1;
 }
@@ -683,6 +695,7 @@ public:
     graphene::chain::database& db;
 
     std::string snapshot_path;        // --snapshot: load from this path
+    bool snapshot_auto_latest = false; // --snapshot-auto-latest: auto-find latest snapshot in snapshot-dir
     std::string create_snapshot_path; // --create-snapshot: create at this path
     uint32_t snapshot_at_block = 0;   // --snapshot-at-block: create when block N is reached
     uint32_t snapshot_every_n_blocks = 0; // --snapshot-every-n-blocks: periodic snapshot
@@ -2798,6 +2811,8 @@ void snapshot_plugin::set_program_options(
     cli.add_options()
         ("snapshot", bpo::value<std::string>(),
             "Load state from snapshot file instead of replaying blockchain")
+        ("snapshot-auto-latest", bpo::bool_switch()->default_value(false),
+            "Auto-discover the latest snapshot in snapshot-dir (use with --replay-from-snapshot)")
         ("create-snapshot", bpo::value<std::string>(),
             "Create a snapshot file at the specified path and exit")
     ;
@@ -2813,6 +2828,31 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
         ilog("Snapshot load path: ${p}", ("p", my->snapshot_path));
     }
 
+    // snapshot-dir must be parsed BEFORE --snapshot-auto-latest,
+    // because find_latest_snapshot() reads snapshot_dir to locate files.
+    if (options.count("snapshot-dir")) {
+        my->snapshot_dir = options.at("snapshot-dir").as<std::string>();
+        if (!my->snapshot_dir.empty()) {
+            ilog("Snapshot directory: ${d}", ("d", my->snapshot_dir));
+        }
+    }
+
+    my->snapshot_auto_latest = options.at("snapshot-auto-latest").as<bool>();
+    if (my->snapshot_auto_latest) {
+        if (my->snapshot_path.empty()) {
+            // Auto-discover latest snapshot in snapshot-dir
+            fc::path latest = my->find_latest_snapshot();
+            if (!latest.string().empty()) {
+                my->snapshot_path = latest.string();
+                ilog("Auto-discovered latest snapshot: ${p}", ("p", my->snapshot_path));
+            } else {
+                elog("--snapshot-auto-latest but no snapshots found in snapshot-dir");
+            }
+        } else {
+            ilog("--snapshot-auto-latest ignored: --snapshot already specified with ${p}", ("p", my->snapshot_path));
+        }
+    }
+
     if (options.count("create-snapshot")) {
         my->create_snapshot_path = options.at("create-snapshot").as<std::string>();
         ilog("Snapshot creation path: ${p}", ("p", my->create_snapshot_path));
@@ -2826,13 +2866,6 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
         my->snapshot_every_n_blocks = options.at("snapshot-every-n-blocks").as<uint32_t>();
         if (my->snapshot_every_n_blocks > 0) {
             ilog("Periodic snapshots enabled: every ${n} blocks", ("n", my->snapshot_every_n_blocks));
-        }
-    }
-
-    if (options.count("snapshot-dir")) {
-        my->snapshot_dir = options.at("snapshot-dir").as<std::string>();
-        if (!my->snapshot_dir.empty()) {
-            ilog("Snapshot directory: ${d}", ("d", my->snapshot_dir));
         }
     }
 
@@ -2997,6 +3030,16 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
 
 void snapshot_plugin::plugin_startup() {
     ilog("snapshot plugin: starting");
+
+    // Notify chain plugin that we're ready. If the chain plugin deferred snapshot
+    // loading (because snapshot_load_callback wasn't registered yet during its startup),
+    // this triggers the deferred load now.
+    try {
+        auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
+        chain_plug.trigger_snapshot_load();
+    } catch (const std::runtime_error&) {
+        // Chain plugin not registered — nothing to trigger
+    }
 
     // Note: --snapshot loading is handled via snapshot_load_callback registered
     // in plugin_initialize(). It runs during chain plugin's startup, before on_sync(),

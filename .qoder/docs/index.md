@@ -22,6 +22,7 @@ Full specification and implementation checklist for building VIZ blockchain clie
 | [block-processing.md](block-processing.md) | Block application flow, pending transactions, postponed tx mechanism |
 | [fork-collision-hardfork-proposal.md](fork-collision-hardfork-proposal.md) | Fork collision analysis, HF12 proposal for consensus improvements |
 | [consensus-emergency-params.md](consensus-emergency-params.md) | Emergency restart parameters (enable-stale-production, required-participation, fork_db) & micro-fork risks |
+| [emergency-consensus-review.md](emergency-consensus-review.md) | HF12 implementation review: failure/rollback procedures, threat model, test matrix |
 | [op-account.md](op-account.md) | Account create, update, metadata operations |
 | [op-transfer-vesting.md](op-transfer-vesting.md) | Transfer, transfer_to_vesting, withdraw_vesting, set route, delegate |
 | [op-witness.md](op-witness.md) | Witness update, vote, proxy, chain properties |

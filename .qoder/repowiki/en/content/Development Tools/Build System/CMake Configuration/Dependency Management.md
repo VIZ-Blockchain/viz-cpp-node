@@ -20,11 +20,12 @@
 
 ## Update Summary
 **Changes Made**
-- Updated Boost library configuration section to reflect current Boost version requirement (1.71+) and component list
+- Updated Boost library configuration section to reflect current Boost version requirement (1.71+) and enhanced platform detection logic
 - Added comprehensive coverage of the migration from boost::bind to std::bind across the codebase
 - Updated third-party dependency integration to highlight fc::optional as a replacement for boost::optional
 - Enhanced troubleshooting section with guidance for resolving boost::bind deprecation warnings
 - Updated version compatibility matrix to reflect current Boost version and standard library compliance
+- Improved platform-specific compiler and linker flag handling across Windows, macOS, and Linux
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -72,7 +73,7 @@ Root --> Progs
 - [libraries/CMakeLists.txt:1-8](file://libraries/CMakeLists.txt#L1-L8)
 
 ## Core Components
-- **Boost**: Required components include thread, date_time, system, filesystem, program_options, serialization, chrono, unit_test_framework, context, and locale. A conditional coroutine component is appended for newer Boost versions. Static linking is enabled by default via an option. Current minimum version requirement is 1.71.
+- **Boost**: Required components include thread, date_time, system, filesystem, program_options, serialization, chrono, unit_test_framework, context, locale, and coroutine. Static linking is enabled by default via an option. Current minimum version requirement is 1.71.
 - **Standard Library Alternatives**: The codebase has undergone comprehensive migration from Boost libraries to standard library equivalents:
   - boost::optional → fc::optional (stack-based nullable value)
   - boost::bind → std::bind (standard function binding)
@@ -149,16 +150,16 @@ StdLib --> Libs
 ## Detailed Component Analysis
 
 ### Boost Library Configuration
-- **Required components**: thread, date_time, system, filesystem, program_options, serialization, chrono, unit_test_framework, context, locale.
+- **Required components**: thread, date_time, system, filesystem, program_options, serialization, chrono, unit_test_framework, context, locale, coroutine.
 - **Static linking default**: enabled via an option.
 - **Version requirement**: minimum 1.71 (updated from previous 1.57 requirement).
-- **Conditional coroutine component**: added for Boost >= 1.54 to prevent link errors; the component list is extended accordingly.
+- **Enhanced platform detection**: Explicit version checking with separate coroutine component discovery.
 - **Windows-specific behavior**: multithreading is forced and dynamic linking is enforced.
 - **Migration status**: The codebase has successfully migrated from boost::bind to std::bind across all plugins and libraries.
 
 ```mermaid
 flowchart TD
-Start(["Configure Boost"]) --> SetComponents["Set required components list<br/>(thread, date_time, system,<br/>filesystem, program_options,<br/>serialization, chrono,<br/>unit_test_framework, context,<br/>locale)"]
+Start(["Configure Boost"]) --> SetComponents["Set required components list<br/>(thread, date_time, system,<br/>filesystem, program_options,<br/>serialization, chrono,<br/>unit_test_framework, context,<br/>locale, coroutine)"]
 SetComponents --> StaticDefault["Enable static libs option"]
 StaticDefault --> VersionCheck["Require Boost >= 1.71"]
 VersionCheck --> CoroutineCheck{"Boost version >= 1.54?"}

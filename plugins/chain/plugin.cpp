@@ -51,12 +51,15 @@ namespace chain {
         bool skip_virtual_ops = false;
 
         std::string snapshot_path; // --snapshot: load state from snapshot file
+        bool replay_from_snapshot = false; // --replay-from-snapshot: snapshot + dlt_block_log replay
 
         graphene::chain::database db;
 
         bool single_write_thread = false;
 
         bool sync_start_logged = false; // guard to log sync start only once
+
+        bool pending_snapshot_load = false; // set when snapshot args present but callback not yet registered
 
         plugin_impl() {
             // get default settings
@@ -256,6 +259,9 @@ namespace chain {
                 "force-replay-blockchain", boost::program_options::bool_switch()->default_value(false),
                 "force clear chain database and replay all blocks"
             ) (
+                "replay-from-snapshot", boost::program_options::bool_switch()->default_value(false),
+                "recover from corruption: import latest snapshot and replay dlt_block_log"
+            ) (
                 "resync-blockchain", boost::program_options::bool_switch()->default_value(false),
                 "clear chain database and block log"
             ) (
@@ -311,6 +317,7 @@ namespace chain {
         my->replay_if_corrupted = options.at("replay-if-corrupted").as<bool>();
         my->force_replay = options.at("force-replay-blockchain").as<bool>();
         my->resync = options.at("resync-blockchain").as<bool>();
+        my->replay_from_snapshot = options.at("replay-from-snapshot").as<bool>();
         my->check_locks = options.at("check-locks").as<bool>();
         my->validate_invariants = options.at("validate-database-invariants").as<bool>();
         if (options.count("flush-state-interval")) {
@@ -332,6 +339,46 @@ namespace chain {
         if (options.count("snapshot")) {
             my->snapshot_path = options.at("snapshot").as<std::string>();
             ilog("Chain plugin: will load state from snapshot: ${p}", ("p", my->snapshot_path));
+        }
+
+        // Auto-discover latest snapshot if --snapshot-auto-latest is set and --snapshot is not
+        if (my->snapshot_path.empty() && options.count("snapshot-auto-latest") && options.at("snapshot-auto-latest").as<bool>()) {
+            std::string snap_dir = options.count("snapshot-dir") ? options.at("snapshot-dir").as<std::string>() : "";
+            if (!snap_dir.empty()) {
+                fc::path dir_path(snap_dir);
+                if (fc::exists(dir_path) && fc::is_directory(dir_path)) {
+                    fc::path best_path;
+                    uint32_t best_block = 0;
+                    boost::filesystem::directory_iterator end_itr;
+                    for (boost::filesystem::directory_iterator itr(dir_path); itr != end_itr; ++itr) {
+                        if (boost::filesystem::is_regular_file(itr->status())) {
+                            std::string filename = itr->path().filename().string();
+                            std::string ext = itr->path().extension().string();
+                            if (ext == ".vizjson" || ext == ".json") {
+                                auto pos = filename.find("snapshot-block-");
+                                if (pos != std::string::npos) {
+                                    try {
+                                        std::string num_str = filename.substr(pos + 15);
+                                        auto dot_pos = num_str.find('.');
+                                        if (dot_pos != std::string::npos) num_str = num_str.substr(0, dot_pos);
+                                        uint32_t block_num = static_cast<uint32_t>(std::stoul(num_str));
+                                        if (block_num > best_block) {
+                                            best_block = block_num;
+                                            best_path = fc::path(itr->path().string());
+                                        }
+                                    } catch (...) {}
+                                }
+                            }
+                        }
+                    }
+                    if (!best_path.string().empty()) {
+                        my->snapshot_path = best_path.string();
+                        ilog("Chain plugin: auto-discovered latest snapshot: ${p}", ("p", my->snapshot_path));
+                    } else {
+                        wlog("Chain plugin: --snapshot-auto-latest but no snapshots found in ${d}", ("d", snap_dir));
+                    }
+                }
+            }
         }
 
         // DLT rolling block_log config
@@ -373,7 +420,7 @@ namespace chain {
         my->db.enable_plugins_on_push_transaction(my->enable_plugins_on_push_transaction);
 
         // ========== Snapshot loading path ==========
-        if (!my->snapshot_path.empty()) {
+        if (!my->snapshot_path.empty() && !my->replay_from_snapshot) {
             // Check if shared_memory already has state from a previous run.
             // If so, skip snapshot import and use normal open path.
             // This prevents re-importing an old snapshot on container restart
@@ -388,56 +435,41 @@ namespace chain {
                 // Fall through to normal startup instead of wiping state and failing.
                 wlog("Snapshot file not found: ${p}. Skipping snapshot import, using normal startup.",
                      ("p", my->snapshot_path));
+            } else if (snapshot_load_callback) {
+                // Callback is already registered (snapshot plugin initialized before us) — proceed now.
+                do_snapshot_load(data_dir, false);
+                return;
             } else {
-                ilog("Opening database in snapshot mode...");
-                try {
-                    my->db.open_from_snapshot(
-                        data_dir,
-                        my->shared_memory_dir,
-                        CHAIN_INIT_SUPPLY,
-                        my->shared_memory_size,
-                        chainbase::database::read_write);
+                // Snapshot plugin hasn't registered its callback yet — defer until
+                // snapshot plugin calls trigger_snapshot_load().
+                ilog("Snapshot path configured (${p}) but snapshot plugin callback not yet registered. "
+                     "Deferring snapshot load until snapshot plugin is ready.", ("p", my->snapshot_path));
+                my->pending_snapshot_load = true;
+                return;
+            }
+        }
 
-                    ilog("Database opened for snapshot import. Loading snapshot state...");
-                } catch (const fc::exception& e) {
-                    elog("Failed to open database for snapshot: ${e}", ("e", e.to_detail_string()));
-                    throw;
-                }
+        // ========== Replay from snapshot + dlt_block_log path ==========
+        if (my->replay_from_snapshot) {
+            if (my->snapshot_path.empty()) {
+                elog("--replay-from-snapshot requires a snapshot path (--snapshot or --snapshot-auto-latest)");
+                throw std::runtime_error("--replay-from-snapshot requires --snapshot or --snapshot-auto-latest");
+            }
 
-                // Load snapshot state via callback (set by snapshot plugin during initialize)
-                // This MUST happen before on_sync() so that P2P starts syncing from the
-                // snapshot head block, not from genesis.
-                if (snapshot_load_callback) {
-                    try {
-                        snapshot_load_callback();
-                    } catch (const fc::exception& e) {
-                        elog("FATAL: Failed to load snapshot: ${e}", ("e", e.to_detail_string()));
-                        elog("The snapshot file may be corrupted or incompatible. "
-                             "Check the file path and try again.");
-                        appbase::app().quit();
-                        return;
-                    } catch (const std::exception& e) {
-                        elog("FATAL: Failed to load snapshot: ${e}", ("e", e.what()));
-                        appbase::app().quit();
-                        return;
-                    }
-                } else {
-                    elog("--snapshot specified but no snapshot_load_callback registered. "
-                         "Is the snapshot plugin enabled?");
-                    throw std::runtime_error("Snapshot plugin not configured");
-                }
+            if (!boost::filesystem::exists(my->snapshot_path)) {
+                elog("Snapshot file not found: ${p}", ("p", my->snapshot_path));
+                throw std::runtime_error("Snapshot file not found for --replay-from-snapshot");
+            }
 
-                // Rename snapshot file to .used so subsequent restarts skip it
-                try {
-                    std::string used_path = my->snapshot_path + ".used";
-                    boost::filesystem::rename(my->snapshot_path, used_path);
-                    ilog("Snapshot file renamed to ${p}", ("p", used_path));
-                } catch (const std::exception& e) {
-                    wlog("Could not rename snapshot file to .used: ${e}", ("e", e.what()));
-                }
-
-                ilog("Started on blockchain with ${n} blocks (from snapshot)", ("n", my->db.head_block_num()));
-                on_sync();
+            if (snapshot_load_callback) {
+                // Callback is already registered — proceed now.
+                do_snapshot_load(data_dir, true);
+                return;
+            } else {
+                // Snapshot plugin hasn't registered its callback yet — defer.
+                ilog("Replay-from-snapshot configured but snapshot plugin callback not yet registered. "
+                     "Deferring until snapshot plugin is ready.");
+                my->pending_snapshot_load = true;
                 return;
             }
         }
@@ -529,6 +561,108 @@ namespace chain {
         ilog("closing chain database");
         my->db.close();
         ilog("database closed successfully");
+    }
+
+    void plugin::do_snapshot_load(const bfs::path& data_dir, bool is_recovery) {
+        if (is_recovery) {
+            ilog("RECOVERY MODE: replaying from snapshot + dlt_block_log...");
+        } else {
+            ilog("Opening database in snapshot mode...");
+        }
+
+        // Always wipe and re-import for recovery; for first-time load, open fresh.
+        try {
+            my->db.open_from_snapshot(
+                data_dir,
+                my->shared_memory_dir,
+                CHAIN_INIT_SUPPLY,
+                my->shared_memory_size,
+                chainbase::database::read_write);
+
+            ilog("Database opened for snapshot import. Loading snapshot state...");
+        } catch (const fc::exception& e) {
+            elog("Failed to open database for snapshot: ${e}", ("e", e.to_detail_string()));
+            throw;
+        }
+
+        // Load snapshot state via callback (set by snapshot plugin during initialize)
+        // This MUST happen before on_sync() so that P2P starts syncing from the
+        // snapshot head block, not from genesis.
+        if (snapshot_load_callback) {
+            try {
+                snapshot_load_callback();
+            } catch (const fc::exception& e) {
+                elog("FATAL: Failed to load snapshot: ${e}", ("e", e.to_detail_string()));
+                if (!is_recovery) {
+                    elog("The snapshot file may be corrupted or incompatible. "
+                         "Check the file path and try again.");
+                }
+                appbase::app().quit();
+                return;
+            } catch (const std::exception& e) {
+                elog("FATAL: Failed to load snapshot: ${e}", ("e", e.what()));
+                appbase::app().quit();
+                return;
+            }
+        } else {
+            elog("Snapshot load callback not registered. "
+                 "Add 'plugin = snapshot' to config.ini or pass --plugin snapshot on the command line.");
+            throw std::runtime_error("Snapshot plugin not configured");
+        }
+
+        // Recovery mode: replay dlt_block_log on top of snapshot
+        if (is_recovery) {
+            uint32_t snapshot_head = my->db.head_block_num();
+            ilog("Snapshot loaded at block ${n}. Initializing hardforks...", ("n", snapshot_head));
+            my->db.initialize_hardforks();
+
+            // Replay blocks from dlt_block_log if available
+            const auto& dlt_head = my->db.get_dlt_block_log().head();
+            if (dlt_head && dlt_head->block_num() > snapshot_head) {
+                ilog("Replaying dlt_block_log from block ${from} to ${to}...",
+                     ("from", snapshot_head + 1)("to", dlt_head->block_num()));
+                try {
+                    my->db.reindex_from_dlt(snapshot_head + 1);
+                } catch (const fc::exception& e) {
+                    elog("Failed to replay dlt_block_log: ${e}", ("e", e.to_detail_string()));
+                    elog("Node will continue with snapshot state only. P2P sync will fill the gap.");
+                }
+            } else {
+                wlog("No dlt_block_log blocks beyond snapshot head. P2P sync will fill the gap.");
+            }
+
+            ilog("Recovery complete. Started on blockchain with ${n} blocks", ("n", my->db.head_block_num()));
+        } else {
+            // Normal snapshot load: rename file to .used
+            try {
+                std::string used_path = my->snapshot_path + ".used";
+                boost::filesystem::rename(my->snapshot_path, used_path);
+                ilog("Snapshot file renamed to ${p}", ("p", used_path));
+            } catch (const std::exception& e) {
+                wlog("Could not rename snapshot file to .used: ${e}", ("e", e.what()));
+            }
+
+            ilog("Started on blockchain with ${n} blocks (from snapshot)", ("n", my->db.head_block_num()));
+        }
+
+        on_sync();
+    }
+
+    void plugin::trigger_snapshot_load() {
+        if (!my->pending_snapshot_load) {
+            return; // Nothing deferred — either already loaded or not needed
+        }
+
+        ilog("Snapshot plugin is ready. Resuming deferred snapshot load...");
+        my->pending_snapshot_load = false;
+
+        auto data_dir = appbase::app().data_dir() / "blockchain";
+
+        if (my->replay_from_snapshot) {
+            do_snapshot_load(data_dir, true);
+        } else {
+            do_snapshot_load(data_dir, false);
+        }
     }
 
     bool plugin::accept_block(const protocol::signed_block &block, bool currently_syncing, uint32_t skip) {

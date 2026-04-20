@@ -1,0 +1,6 @@
+// 12 Hardfork — Emergency Consensus Recovery
+#ifndef CHAIN_HARDFORK_12
+#define CHAIN_HARDFORK_12 12
+#define CHAIN_HARDFORK_12_TIME 1776620500
+#define CHAIN_HARDFORK_12_VERSION hardfork_version( version(3, 1, 0) )
+#endif
