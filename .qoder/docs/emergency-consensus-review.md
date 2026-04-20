@@ -1,6 +1,6 @@
 # Emergency Consensus Recovery — Implementation Review
 
-## Status: Implemented (Hardfork 12, version 3.1.0) — Bugs Found and Fixed
+## Status: Implemented (Hardfork 12, version 3.1.0) — Bugs Found and Fixed (B1–B8)
 
 Research source: [consensus-emergency-recovery.md](../research/consensus-emergency-recovery.md)
 
@@ -37,14 +37,19 @@ The committee witness is a **neutral voter**: it copies the current median chain
                     │   update_global_dynamic_data  │
                     │   (every block)               │
                     │                               │
-                    │  seconds_since_lib ≥ 3600?    │
-                    │       ├── YES ───────────────►│── Activate Emergency
-                    │       │                       │   • emergency_consensus_active = true
-                    │       │                       │   • Create/update committee witness
-                    │       │                       │   • Reset all penalties
-                    │       │                       │   • Override schedule → committee
-                    │       │                       │   • fork_db.set_emergency_mode(true)
-                    │       └── NO                  │
+                    │  lib_block available?          │
+                    │       ├── NO ─────────────────│── Skip check (snapshot restore)
+                    │       └── YES                  │
+                    │           seconds_since_lib    │
+                    │           ≥ 3600?              │
+                    │           ├── YES ─────────────│── Activate Emergency
+                    │           │                   │   • emergency_consensus_active = true
+                    │           │                   │   • Create/update committee witness
+                    │           │                   │   • Reset all penalties
+                    │           │                   │   • Override schedule → committee
+                    │           │                   │   • next_shuffle_block_num = now+N
+                    │           │                   │   • fork_db.set_emergency_mode(true)
+                    │           └── NO              │
                     └──────────────────────────────┘
                                     │
                                     ▼
@@ -93,7 +98,9 @@ The committee witness is a **neutral voter**: it copies the current median chain
 
 **Why this is extremely unlikely**: The check uses `head_block_time() - LIB_block_timestamp`. For a false trigger, LIB must genuinely stall for 1 hour (1200 blocks). During healthy operation LIB advances every few seconds (3s block interval × ~5 blocks to reach 75% threshold). A time desync large enough would break all consensus, not just emergency detection.
 
-**If it happens**:
+**Special case — snapshot restore**: After `open_from_snapshot()`, the block_log is empty, so `fetch_block_by_number(LIB)` returns invalid. If we fell back to `genesis_time`, emergency would activate immediately. This is now prevented: when the LIB block is unavailable, the emergency check is skipped entirely (B7 fix).
+
+**If it happens** (legitimate false activation):
 1. Emergency activates, committee fills offline witnesses' slots (hybrid schedule).
 2. Real witnesses are still online → they produce at their normal slots.
 3. LIB continues advancing via real witnesses (75% threshold on real witnesses only).
@@ -214,6 +221,26 @@ The following bugs were discovered during code review of the emergency consensus
 
 **Fix**: When the block producer is the emergency committee, hardfork vote auto-injection is skipped entirely. The committee's on-chain vote stays at `current_hardfork_version` and is re-synced every schedule update.
 
+### B7 (Critical): False Emergency Activation After Snapshot Restore
+
+**Problem**: In `update_global_dynamic_data()`, when `fetch_block_by_number(LIB)` returns invalid (block_log empty after `open_from_snapshot()`), `lib_time` fell back to `_dgp.genesis_time`. This made `seconds_since_lib = block_timestamp - genesis_time` — millions of seconds — causing emergency activation on the very first block after snapshot restore.
+
+The false activation triggers catastrophic side effects:
+1. Schedule overridden to all-committee, but `next_shuffle_block_num` not updated → hybrid override can't run until the next shuffle boundary.
+2. Blocks from real witnesses (via p2p) are rejected because the schedule expects `committee` → `head_block_num()` doesn't advance.
+3. `next_shuffle_block_num` is never reached → **deadlock: the node permanently stops syncing**. Probability: ~20/21 (~95%) depending on how close the next shuffle was.
+4. Side effects: all witness penalties reset, committee witness object created, consensus state corrupted.
+
+**Fix** (two-part):
+1. When `lib_block` is not found (block_log empty after snapshot restore), `lib_time_available` stays `false` and the emergency check is skipped entirely. Emergency cannot activate without a valid LIB timestamp.
+2. On emergency activation, `next_shuffle_block_num` is now set to `head_block_num() + num_scheduled_witnesses`, ensuring the hybrid override runs on the next schedule update even after a legitimate activation.
+
+### B8 (Medium): `inhibit_fetching_sync_blocks` Never Reset After Soft-Ban Expires
+
+**Problem**: In `node.cpp`, when a soft-ban is applied (`fork_rejected_until = now + 1h`), `inhibit_fetching_sync_blocks` is also set to `true`. After 1 hour, `fork_rejected_until` expires and blocks are accepted again, but `inhibit_fetching_sync_blocks` remains `true` forever — the node never requests sync inventory from that peer again. During extended emergency operation, the number of peers available for sync gradually decreases as each soft-banned peer's inhibit flag becomes permanent.
+
+**Fix**: In `process_block_during_normal_operation()`, after the `fork_rejected_until` check passes (ban expired), if `inhibit_fetching_sync_blocks` is `true` and `fork_rejected_until` is set and has expired, reset `inhibit_fetching_sync_blocks = false`. The check is targeted: it only resets the flag when `fork_rejected_until` is non-default (i.e., was set by a soft-ban), so `inhibit_fetching_sync_blocks` set for other reasons (missing sync items, old fork) is not affected.
+
 ### Committee Neutral Voter Design
 
 After all fixes, the committee witness has these properties:
@@ -267,7 +294,7 @@ In practice: **every public witness node** should have it configured. During eme
 | Attacker produces emergency blocks during normal operation | **None.** Emergency mode only activates when `seconds_since_lib >= 3600`. During normal operation, the schedule does not contain `committee`, so the attacker's blocks are invalid (wrong scheduled witness). | Consensus-level gating |
 | Attacker produces blocks during real emergency | Blocks are valid but **compete equally** with other emergency producers. Hash tie-breaking resolves conflicts deterministically. The attacker cannot produce *more* blocks than any other node with the key. | Hash tie-breaking + fork collision check |
 | Attacker produces blocks with invalid transactions | **Rejected.** Full consensus validation still applies to emergency blocks. Invalid operations, double-spends, etc. are caught by `apply_block()`. | Standard block validation |
-| Attacker floods P2P with emergency blocks | **Mitigated.** P2P anti-spam (`fork_rejected_until`) soft-bans peers sending blocks on rejected forks for 1 hour. Fork collision check limits production to 1 block per slot. | P2P soft-ban + fork collision |
+| Attacker floods P2P with emergency blocks | **Mitigated.** P2P anti-spam (`fork_rejected_until`) soft-bans peers sending blocks on rejected forks for 1 hour. Fork collision check limits production to 1 block per slot. After soft-ban expires, `inhibit_fetching_sync_blocks` is automatically reset (B8 fix) so the peer remains available for sync. | P2P soft-ban + fork collision + auto-reset |
 
 ### Key Rotation
 
@@ -377,8 +404,8 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 |---|---|
 | **Precondition** | Snapshot taken during emergency mode (`emergency_consensus_active = true`). |
 | **Action** | Restore snapshot on a fresh node. Start node with witness plugin and emergency key. |
-| **Expected** | Snapshot import reads `emergency_consensus_active` and `emergency_consensus_start_block` from DGP (forward-compatible). Node resumes in emergency mode. Produces emergency blocks. Standard exit condition applies. |
-| **Components** | Snapshot import (forward-compatible fields), emergency state persistence |
+| **Expected** | Snapshot import reads `emergency_consensus_active` and `emergency_consensus_start_block` from DGP (forward-compatible). Node resumes in emergency mode. Produces emergency blocks. Standard exit condition applies. **No false activation**: block_log is empty after snapshot restore, so `fetch_block_by_number(LIB)` returns invalid, but the emergency check is skipped (not triggered by fallback to genesis_time). |
+| **Components** | Snapshot import (forward-compatible fields), emergency state persistence, B7 fix (no false activation on empty block_log) |
 
 ### T10: Snapshot From Pre-HF12 Node
 
@@ -424,3 +451,21 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 | **Action** | Committee produces blocks. Verify committee's on-chain `hardfork_version_vote` stays at the current applied version. |
 | **Expected** | Committee's block headers do NOT contain `hardfork_version_vote` extensions. `process_header_extensions()` does not update the committee's on-chain vote. Committee vote stays at `current_hardfork_version` (e.g., HF12). Only real witnesses' votes count toward HF13 adoption (need 17 of them). Committee props/hardfork vote re-synced every schedule update. |
 | **Components** | Hardfork vote auto-injection skip, process_header_extensions, committee props sync |
+
+### T15: Snapshot Restore Does Not False-Activate Emergency
+
+| | |
+|---|---|
+| **Precondition** | Network healthy. Snapshot taken from a healthy state (`emergency_consensus_active = false`). |
+| **Action** | Restore snapshot on a fresh node (block_log empty). Start syncing from p2p. |
+| **Expected** | First block from p2p: `fetch_block_by_number(LIB)` returns invalid (block_log empty). `lib_time_available = false`. Emergency check is **skipped**. Node processes the block normally. No false activation, no committee witness created, no penalties reset. Node syncs normally. |
+| **Components** | B7 fix (lib_time_available guard), snapshot restore, block_log interaction |
+
+### T16: Soft-Ban `inhibit_fetching_sync_blocks` Reset After Expiry
+
+| | |
+|---|---|
+| **Precondition** | Emergency active. Node soft-banned a peer 1 hour ago (`fork_rejected_until` set, `inhibit_fetching_sync_blocks = true`). |
+| **Action** | The soft-ban expires. Peer sends a valid block. |
+| **Expected** | `fork_rejected_until` is in the past → block is processed (not discarded). `inhibit_fetching_sync_blocks` is reset to `false` (B8 fix). Node resumes requesting sync inventory from this peer. Gradual peer loss during extended emergency is prevented. |
+| **Components** | B8 fix (inhibit flag reset on soft-ban expiry), P2P soft-ban lifecycle, sync operations |

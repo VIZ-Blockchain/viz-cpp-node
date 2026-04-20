@@ -3433,6 +3433,21 @@ namespace graphene {
                     return;
                 }
 
+                // HF12: Reset inhibit_fetching_sync_blocks when soft-ban has expired.
+                // When we set a soft-ban, we also set inhibit_fetching_sync_blocks = true
+                // to stop requesting sync items from the banned peer. Once the ban
+                // expires, we must also reset the inhibit flag so the peer can
+                // participate in sync operations again. Without this, the flag
+                // stays true forever, gradually reducing the number of peers
+                // available for sync during extended emergency operation.
+                if (originating_peer->inhibit_fetching_sync_blocks &&
+                    originating_peer->fork_rejected_until != fc::time_point() &&
+                    originating_peer->fork_rejected_until <= message_receive_time) {
+                    originating_peer->inhibit_fetching_sync_blocks = false;
+                    ilog("Resetting inhibit_fetching_sync_blocks for peer ${endpoint} (soft-ban expired)",
+                         ("endpoint", originating_peer->get_remote_endpoint()));
+                }
+
                 dlog("received a block from peer ${endpoint}, passing it to client", ("endpoint", originating_peer->get_remote_endpoint()));
                 std::set<peer_connection_ptr> peers_to_disconnect;
                 std::string disconnect_reason;

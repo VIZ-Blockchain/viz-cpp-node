@@ -4336,18 +4336,36 @@ namespace graphene { namespace chain {
                     // Check if we should enter emergency mode:
                     // More than CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC seconds have elapsed
                     // since the last irreversible block timestamp.
+                    //
+                    // IMPORTANT: If the LIB block is not available in block_log
+                    // (e.g., after snapshot restore when block_log is empty),
+                    // we CANNOT determine the real LIB timestamp. Falling back
+                    // to genesis_time would cause a false activation with
+                    // millions of seconds since LIB, immediately triggering
+                    // emergency mode and deadlocking the node (committee
+                    // schedule doesn't match real witness slots, blocks from
+                    // p2p are rejected, head_block_num never advances,
+                    // next_shuffle_block_num never reached).
                     fc::time_point_sec lib_time;
+                    bool lib_time_available = false;
+
                     if (_dgp.last_irreversible_block_num > 0) {
                         auto lib_block = fetch_block_by_number(_dgp.last_irreversible_block_num);
                         if (lib_block.valid()) {
                             lib_time = lib_block->timestamp;
-                        } else {
-                            lib_time = _dgp.genesis_time;
+                            lib_time_available = true;
                         }
-                    } else {
-                        lib_time = _dgp.genesis_time;
+                        // If lib_block is NOT valid (block_log empty after
+                        // snapshot restore), lib_time_available stays false.
+                        // We skip the emergency check entirely because we
+                        // cannot determine the real LIB time.
                     }
 
+                    if (!lib_time_available) {
+                        // Cannot determine LIB time (block_log empty after
+                        // snapshot restore). Skip emergency check to avoid
+                        // false activation that would deadlock the node.
+                    } else {
                     uint32_t seconds_since_lib = (b.timestamp - lib_time).to_seconds();
 
                     if (seconds_since_lib >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC) {
@@ -4418,11 +4436,17 @@ namespace graphene { namespace chain {
                         }
 
                         // Override witness schedule: all slots -> emergency witness
+                        // Also update next_shuffle_block_num so the hybrid override
+                        // runs on the next schedule update. Without this, if
+                        // next_shuffle_block_num is still N blocks away, the node
+                        // would run an all-committee schedule until then, rejecting
+                        // blocks from real witnesses during that window.
                         const witness_schedule_object &wso = get_witness_schedule_object();
                         modify(wso, [&](witness_schedule_object &_wso) {
                             for (int i = 0; i < _wso.num_scheduled_witnesses; i++) {
                                 _wso.current_shuffled_witnesses[i] = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
                             }
+                            _wso.next_shuffle_block_num = head_block_num() + _wso.num_scheduled_witnesses;
                         });
 
                         // Notify fork_db about emergency mode
@@ -4434,8 +4458,9 @@ namespace graphene { namespace chain {
                              ("b", b.block_num())("sec", seconds_since_lib)
                              ("lib", _dgp.last_irreversible_block_num)
                              ("w", CHAIN_EMERGENCY_WITNESS_ACCOUNT));
-                    }
-                }
+                    } // end if (seconds_since_lib >= TIMEOUT)
+                    } // end else (lib_time_available)
+                } // end if (has_hardfork(HF12) && !emergency_active)
             } FC_CAPTURE_AND_RETHROW()
         }
 
