@@ -1408,13 +1408,13 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     // fiber scheduler).
     auto schedule_async_snapshot = [&](const fc::path& output, const char* label) {
         if (snapshot_in_progress.exchange(true)) {
-            wlog("Snapshot already in progress, skipping %s snapshot at ${p}", label)("p", output.string());
+            wlog("Snapshot already in progress, skipping ${label} snapshot at ${p}")("label", label)("p", output.string());
             return;
         }
         if (!snapshot_thread) {
             snapshot_thread = std::make_unique<fc::thread>("async_snapshot");
         }
-        ilog(CLOG_GREEN "Scheduling async %s snapshot: ${p}" CLOG_RESET, label)("p", output.string());
+        ilog(CLOG_GREEN "Scheduling async ${label} snapshot: ${p}" CLOG_RESET)("label", label)("p", output.string());
         snapshot_future = snapshot_thread->async([this, output, label]() {
             // RAII guard to ensure snapshot_in_progress is always reset
             struct flag_guard {
@@ -1427,11 +1427,11 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
                 create_snapshot(output);
                 cleanup_old_snapshots();
             } catch (const fc::exception& e) {
-                elog("Failed to create %s snapshot: ${e}", label)("e", e.to_detail_string());
+                elog("Failed to create ${label} snapshot: ${e}")("label", label)("e", e.to_detail_string());
             } catch (const std::exception& e) {
-                elog("Failed to create %s snapshot: ${e}", label)("e", e.what());
+                elog("Failed to create ${label} snapshot: ${e}")("label", label)("e", e.what());
             } catch (...) {
-                elog("Failed to create %s snapshot: unknown exception", label);
+                elog("Failed to create ${label} snapshot: unknown exception")("label", label);
             }
         }, "async_snapshot");
     };
