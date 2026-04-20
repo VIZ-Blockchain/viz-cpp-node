@@ -107,6 +107,21 @@
 
 #define CHAIN_MAX_UNDO_HISTORY                10000
 
+/// Emergency consensus mode: activates when no block has been produced for
+/// this many seconds since the last irreversible block.
+#define CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC    3600  // 1 hour
+
+/// The witness account name that produces blocks during emergency mode
+#define CHAIN_EMERGENCY_WITNESS_ACCOUNT          CHAIN_COMMITTEE_ACCOUNT  // "committee"
+
+/// The public key used to sign blocks during emergency mode
+#define CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY_STR   "VIZ75CRHVHPwYiUESy1bgN3KhVFbZCQQRA9jT6TnpzKAmpxMPD6Xv"
+#define CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY       (graphene::protocol::public_key_type(CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY_STR))
+
+/// Number of consecutive blocks produced by the emergency witness that
+/// triggers automatic exit from emergency mode (witnesses have rejoined).
+#define CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS       21  // 1 full round of 21 witnesses
+
 #define CHAIN_IRREVERSIBLE_THRESHOLD          (75 * CHAIN_1_PERCENT)
 /** Irreversibility only counts blocks produced if wit.current_run >= CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN */
 #define CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN    2
