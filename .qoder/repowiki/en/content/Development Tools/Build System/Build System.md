@@ -25,9 +25,10 @@
 ## Update Summary
 **Changes Made**
 - Added comprehensive platform-specific build scripts (build-linux.sh, build-mac.sh, build-mingw.bat, build-msvc.bat) with detailed build instructions for Ubuntu 24.04+, macOS with Homebrew, and Windows with MSVC/MinGW support
-- Updated Boost library version requirement to 1.71+ across all platforms
+- Updated Boost library version requirement to 1.71+ across all platforms with mandatory coroutine component
 - Enhanced documentation with practical build scenarios for each platform
 - Added detailed dependency management for each platform-specific build
+- Updated Docker configurations to use Boost 1.71 packages (libboost-coroutine-dev, libboost-context-dev)
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -43,7 +44,7 @@
 11. [Appendices](#appendices)
 
 ## Introduction
-This document explains the build system for VIZ CPP Node, focusing on the CMake-based configuration, cross-platform compilation support, dependency management, and build targets. It covers the new platform-specific build scripts (build-linux.sh, build-mac.sh, build-mingw.bat, build-msvc.bat) along with the traditional CMake configuration and helper tools. The documentation includes comprehensive build instructions for Ubuntu 24.04+, macOS with Homebrew, and Windows with both MSVC and MinGW toolchains, all requiring Boost 1.71+.
+This document explains the build system for VIZ CPP Node, focusing on the CMake-based configuration, cross-platform compilation support, dependency management, and build targets. It covers the new platform-specific build scripts (build-linux.sh, build-mac.sh, build-mingw.bat, build-msvc.bat) along with the traditional CMake configuration and helper tools. The documentation includes comprehensive build instructions for Ubuntu 24.04+, macOS with Homebrew, and Windows with both MSVC and MinGW toolchains, all requiring Boost 1.71+ with mandatory coroutine component.
 
 ## Project Structure
 The build system is organized around a top-level CMake project that orchestrates subprojects and provides platform-specific build automation:
@@ -392,10 +393,10 @@ Runtime --> User --> Vars --> Cfg
 ```
 
 **Diagram sources**
-- [share/vizd/docker/Dockerfile-production:1-98](file://share/vizd/docker/Dockerfile-production#L1-L98)
-- [share/vizd/docker/Dockerfile-lowmem:1-80](file://share/vizd/docker/Dockerfile-lowmem#L1-L80)
-- [share/vizd/docker/Dockerfile-mongo:1-109](file://share/vizd/docker/Dockerfile-mongo#L1-L109)
-- [share/vizd/docker/Dockerfile-testnet:1-98](file://share/vizd/docker/Dockerfile-testnet#L1-L98)
+- [share/vizd/docker/Dockerfile-production:1-103](file://share/vizd/docker/Dockerfile-production#L1-L103)
+- [share/vizd/docker/Dockerfile-lowmem:1-85](file://share/vizd/docker/Dockerfile-lowmem#L1-L85)
+- [share/vizd/docker/Dockerfile-mongo:1-114](file://share/vizd/docker/Dockerfile-mongo#L1-L114)
+- [share/vizd/docker/Dockerfile-testnet:1-103](file://share/vizd/docker/Dockerfile-testnet#L1-L103)
 
 **Section sources**
 - [share/vizd/docker/Dockerfile-production:56-62](file://share/vizd/docker/Dockerfile-production#L56-L62)
@@ -707,7 +708,7 @@ Common issues and resolutions:
 - [CMakeLists.txt:96-100](file://CMakeLists.txt#L96-L100)
 
 ## Conclusion
-The VIZ CPP Node build system has evolved to provide comprehensive platform-specific automation while maintaining robust CMake configuration. The new build scripts (build-linux.sh, build-mac.sh, build-mingw.bat, build-msvc.bat) offer streamlined workflows for Ubuntu 24.04+, macOS with Homebrew, and Windows with both MSVC and MinGW toolchains, all requiring Boost 1.71+. Recent updates include upgrading to CMake 3.16, Boost 1.71, and adding coroutine component requirements. The platform-specific scripts handle dependency management, configuration, and building automatically, while the traditional CMake approach remains available for advanced users. Dockerfiles continue to streamline both development and production workflows with updated dependency specifications. By leveraging the appropriate build script for your platform, developers can quickly set up consistent builds with optimal performance characteristics.
+The VIZ CPP Node build system has evolved to provide comprehensive platform-specific automation while maintaining robust CMake configuration. The new build scripts (build-linux.sh, build-mac.sh, build-mingw.bat, build-msvc.bat) offer streamlined workflows for Ubuntu 24.04+, macOS with Homebrew, and Windows with both MSVC and MinGW toolchains, all requiring Boost 1.71+ with mandatory coroutine component. Recent updates include upgrading to CMake 3.16, Boost 1.71, and adding coroutine component requirements. The platform-specific scripts handle dependency management, configuration, and building automatically, while the traditional CMake approach remains available for advanced users. Dockerfiles continue to streamline both development and production workflows with updated dependency specifications. By leveraging the appropriate build script for your platform, developers can quickly set up consistent builds with optimal performance characteristics.
 
 ## Appendices
 

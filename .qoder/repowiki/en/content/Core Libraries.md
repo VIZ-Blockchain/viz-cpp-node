@@ -7,6 +7,9 @@
 - [libraries/chain/include/graphene/chain/evaluator.hpp](file://libraries/chain/include/graphene/chain/evaluator.hpp)
 - [libraries/chain/include/graphene/chain/chain_objects.hpp](file://libraries/chain/include/graphene/chain/chain_objects.hpp)
 - [libraries/chain/include/graphene/chain/db_with.hpp](file://libraries/chain/include/graphene/chain/db_with.hpp)
+- [libraries/chain/include/graphene/chain/global_property_object.hpp](file://libraries/chain/include/graphene/chain/global_property_object.hpp)
+- [libraries/chain/include/graphene/chain/fork_database.hpp](file://libraries/chain/include/graphene/chain/fork_database.hpp)
+- [libraries/chain/fork_database.cpp](file://libraries/chain/fork_database.cpp)
 - [libraries/protocol/include/graphene/protocol/operations.hpp](file://libraries/protocol/include/graphene/protocol/operations.hpp)
 - [libraries/protocol/include/graphene/protocol/transaction.hpp](file://libraries/protocol/include/graphene/protocol/transaction.hpp)
 - [libraries/protocol/transaction.cpp](file://libraries/protocol/transaction.cpp)
@@ -14,22 +17,28 @@
 - [libraries/protocol/operations.cpp](file://libraries/protocol/operations.cpp)
 - [libraries/protocol/include/graphene/protocol/chain_operations.hpp](file://libraries/protocol/include/graphene/protocol/chain_operations.hpp)
 - [libraries/protocol/include/graphene/protocol/chain_virtual_operations.hpp](file://libraries/protocol/include/graphene/protocol/chain_virtual_operations.hpp)
+- [libraries/protocol/include/graphene/protocol/config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
 - [libraries/network/include/graphene/network/node.hpp](file://libraries/network/include/graphene/network/node.hpp)
 - [libraries/network/node.cpp](file://libraries/network/node.cpp)
+- [libraries/network/include/graphene/network/peer_connection.hpp](file://libraries/network/include/graphene/network/peer_connection.hpp)
+- [libraries/network/peer_connection.cpp](file://libraries/network/peer_connection.cpp)
 - [libraries/wallet/include/graphene/wallet/wallet.hpp](file://libraries/wallet/include/graphene/wallet/wallet.hpp)
 - [libraries/wallet/wallet.cpp](file://libraries/wallet/wallet.cpp)
 - [libraries/wallet/include/graphene/wallet/api_documentation.hpp](file://libraries/wallet/include/graphene/wallet/api_documentation.hpp)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp)
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp)
+- [plugins/witness/witness.cpp](file://plugins/witness/witness.cpp)
 - [programs/vizd/main.cpp](file://programs/vizd/main.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Updated postponed transactions logging accuracy documentation to reflect corrected logical error in postponed transactions counter
-- Enhanced logging behavior documentation to prevent false 'Postponed' messages for skipped known transactions
-- Added detailed explanation of postponed transaction counting logic and block size limit handling
-- Updated database pending transaction processing documentation with improved accuracy metrics
+- Enhanced witness scheduling system documentation with emergency mode integration
+- Added comprehensive peer connection management for emergency consensus
+- Updated witness scheduling with hybrid schedule implementation during emergency mode
+- Expanded emergency consensus activation and deactivation logic
+- Added peer soft-banning mechanism for emergency fork management
+- Updated fork database tie-breaking with deterministic hash-based selection
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -39,12 +48,14 @@
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Blockchain Operations and Data Types](#blockchain-operations-and-data-types)
 7. [Protocol Specifications](#protocol-specifications)
-8. [DNS Nameserver Helper Functionality](#dns-nameserver-helper-functionality)
-9. [Postponed Transactions Processing](#postponed-transactions-processing)
-10. [Dependency Analysis](#dependency-analysis)
-11. [Performance Considerations](#performance-considerations)
-12. [Troubleshooting Guide](#troubleshooting-guide)
-13. [Conclusion](#conclusion)
+8. [Emergency Consensus Mode](#emergency-consensus-mode)
+9. [Peer Connection Management](#peer-connection-management)
+10. [DNS Nameserver Helper Functionality](#dns-nameserver-helper-functionality)
+11. [Postponed Transactions Processing](#postponed-transactions-processing)
+12. [Dependency Analysis](#dependency-analysis)
+13. [Performance Considerations](#performance-considerations)
+14. [Troubleshooting Guide](#troubleshooting-guide)
+15. [Conclusion](#conclusion)
 
 ## Introduction
 This document explains the VIZ CPP Node core libraries that form the foundation of the blockchain node. The four main library categories are:
@@ -53,54 +64,67 @@ This document explains the VIZ CPP Node core libraries that form the foundation 
 - Network library: peer-to-peer communication and synchronization
 - Wallet library: transaction signing and key management
 
-These libraries interact closely: the Chain library validates and applies operations, the Protocol library defines operations and transactions, the Network library propagates blocks and transactions across peers, and the Wallet library signs transactions before they are broadcast.
+These libraries interact closely: the Chain library validates and applies operations, the Protocol library defines operations and transactions, the Network library propagates blocks and transactions across peers, and the Wallet library signs transactions before they are broadcast. The system now includes enhanced emergency consensus mode with integrated witness scheduling and improved peer connection management for maintaining network stability during critical situations.
 
-**Updated** Enhanced documentation now includes comprehensive coverage of blockchain operations, data types, protocol specifications, DNS nameserver helper functionality, and accurate postponed transactions processing with corrected logging behavior.
+**Updated** Enhanced documentation now includes comprehensive coverage of emergency consensus mode, hybrid witness scheduling, peer connection management, blockchain operations, data types, protocol specifications, DNS nameserver helper functionality, and accurate postponed transactions processing with corrected logging behavior.
 
 ## Project Structure
 The core libraries are organized under the libraries/ directory, with each library providing focused capabilities:
-- libraries/chain: state machine, evaluators, database, fork management, block processing
-- libraries/protocol: operations, transactions, signing, types, chain constants
-- libraries/network: P2P node, peer connections, message handling, synchronization
+- libraries/chain: state machine, evaluators, database, fork management, block processing, emergency consensus
+- libraries/protocol: operations, transactions, signing, types, chain constants, emergency mode configuration
+- libraries/network: P2P node, peer connections, message handling, synchronization, emergency peer management
 - libraries/wallet: transaction builder, signing, key management, APIs, DNS nameserver helpers
 
-Plugins integrate these libraries into a full node via the appbase framework. The main entry point initializes plugins and starts the node.
+Plugins integrate these libraries into a full node via the appbase framework. The main entry point initializes plugins and starts the node. Emergency consensus mode adds new components for witness scheduling and peer management.
 
 ```mermaid
 graph TB
 subgraph "Core Libraries"
-CHAIN["Chain Library<br/>database.hpp, evaluator.hpp, chain_objects.hpp<br/>db_with.hpp"]
-PROTO["Protocol Library<br/>operations.hpp, transaction.hpp, types.hpp"]
-NET["Network Library<br/>node.hpp"]
+CHAIN["Chain Library<br/>database.hpp, evaluator.hpp, chain_objects.hpp<br/>db_with.hpp<br/>global_property_object.hpp<br/>fork_database.hpp"]
+PROTO["Protocol Library<br/>operations.hpp, transaction.hpp, types.hpp<br/>config.hpp"]
+NET["Network Library<br/>node.hpp<br/>peer_connection.hpp"]
 WALLET["Wallet Library<br/>wallet.hpp, api_documentation.hpp<br/>DNS Nameserver Helpers"]
 end
 subgraph "Plugins"
 PL_CHAIN["plugins/chain/plugin.hpp"]
 PL_P2P["plugins/p2p/p2p_plugin.hpp"]
+PL_WITNESS["plugins/witness/witness.hpp"]
 end
+subgraph "Emergency Consensus Components"
+EMERGENCY_MODE["Emergency Consensus<br/>Mode Activation<br/>Deactivation Logic"]
+HYBRID_SCHED["Hybrid Witness Schedule<br/>Real + Committee Slots"]
+PEER_MANAGEMENT["Peer Connection<br/>Management & Soft-Banning"]
+END
 MAIN["programs/vizd/main.cpp"]
 MAIN --> PL_CHAIN
 MAIN --> PL_P2P
+MAIN --> PL_WITNESS
 PL_CHAIN --> CHAIN
 PL_P2P --> NET
+PL_WITNESS --> CHAIN
 CHAIN --> PROTO
-WALLET --> PROTO
+CHAIN --> EMERGENCY_MODE
+NET --> PEER_MANAGEMENT
 NET --> PROTO
+WALLET --> PROTO
 ```
 
 **Diagram sources**
 - [programs/vizd/main.cpp:106-140](file://programs/vizd/main.cpp#L106-L140)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:21-46](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L21-L46)
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp:18-46](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L46)
+- [plugins/witness/witness.cpp:170-198](file://plugins/witness/witness.cpp#L170-L198)
 - [libraries/chain/include/graphene/chain/database.hpp:36-561](file://libraries/chain/include/graphene/chain/database.hpp#L36-L561)
-- [libraries/protocol/include/graphene/protocol/operations.hpp:13-102](file://libraries/protocol/include/graphene/protocol/operations.hpp#L13-L102)
+- [libraries/protocol/include/graphene/protocol/config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [libraries/network/include/graphene/network/node.hpp:190-304](file://libraries/network/include/graphene/network/node.hpp#L190-L304)
+- [libraries/network/include/graphene/network/peer_connection.hpp:276-277](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L277)
 - [libraries/wallet/include/graphene/wallet/wallet.hpp:96-1067](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L96-L1067)
 
 **Section sources**
 - [programs/vizd/main.cpp:62-91](file://programs/vizd/main.cpp#L62-L91)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:21-46](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L21-L46)
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp:18-46](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L46)
+- [plugins/witness/witness.cpp:170-198](file://plugins/witness/witness.cpp#L170-L198)
 
 ## Core Components
 This section introduces the primary responsibilities and key classes of each library.
@@ -110,17 +134,21 @@ This section introduces the primary responsibilities and key classes of each lib
   - evaluator: pluggable operation handlers that mutate state according to protocol rules
   - chain_objects: persistent object model (accounts, content, escrow, vesting routes, etc.)
   - db_with: pending transaction processing, postponed transactions handling, and restoration logic
-  - Responsibilities: block validation, transaction validation, state transitions, hardfork handling, witness scheduling
+  - global_property_object: dynamic chain properties including emergency consensus state
+  - fork_database: fork management with emergency mode tie-breaking and state tracking
+  - Responsibilities: block validation, transaction validation, state transitions, hardfork handling, witness scheduling, emergency consensus management
 
 - Protocol Library
   - operations: static_variant of all supported operations (transfers, governance, content, etc.)
   - transaction: structure with operations, expiration, reference block, and cryptographic signing
   - types: comprehensive data type definitions including cryptographic keys, asset types, and authority structures
-  - Responsibilities: define canonical operation semantics, transaction signing and verification, authority checks
+  - config: emergency consensus constants and witness scheduling parameters
+  - Responsibilities: define canonical operation semantics, transaction signing and verification, authority checks, emergency mode configuration
 
 - Network Library
   - node: P2P node with peer connections, message propagation, sync protocol, and broadcasting
-  - Responsibilities: block and transaction propagation, peer discovery, sync from peers, bandwidth limits
+  - peer_connection: individual peer connections with emergency mode soft-banning and fork management
+  - Responsibilities: block and transaction propagation, peer discovery, sync from peers, bandwidth limits, emergency peer management
 
 - Wallet Library
   - wallet_api: transaction builder, signing, key management, proposal creation, account operations, DNS nameserver helpers
@@ -128,47 +156,64 @@ This section introduces the primary responsibilities and key classes of each lib
   - DNS Nameserver Helpers: validation, extraction, and management of DNS records in account metadata
   - Responsibilities: construct transactions, sign with private keys, manage encrypted key storage, expose APIs, handle DNS metadata
 
-**Updated** Enhanced with comprehensive DNS nameserver helper functionality and accurate postponed transactions processing documentation.
+**Updated** Enhanced with comprehensive emergency consensus mode integration, hybrid witness scheduling, peer connection management, and DNS nameserver helper functionality.
 
 **Section sources**
 - [libraries/chain/include/graphene/chain/database.hpp:36-561](file://libraries/chain/include/graphene/chain/database.hpp#L36-L561)
 - [libraries/chain/include/graphene/chain/evaluator.hpp:11-45](file://libraries/chain/include/graphene/chain/evaluator.hpp#L11-L45)
 - [libraries/chain/include/graphene/chain/chain_objects.hpp:20-200](file://libraries/chain/include/graphene/chain/chain_objects.hpp#L20-L200)
 - [libraries/chain/include/graphene/chain/db_with.hpp:37-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L37-L100)
+- [libraries/chain/include/graphene/chain/global_property_object.hpp:134-146](file://libraries/chain/include/graphene/chain/global_property_object.hpp#L134-L146)
+- [libraries/chain/include/graphene/chain/fork_database.hpp:110-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L110-L138)
 - [libraries/protocol/include/graphene/protocol/operations.hpp:13-102](file://libraries/protocol/include/graphene/protocol/operations.hpp#L13-L102)
 - [libraries/protocol/include/graphene/protocol/transaction.hpp:12-101](file://libraries/protocol/include/graphene/protocol/transaction.hpp#L12-L101)
 - [libraries/protocol/include/graphene/protocol/types.hpp:75-207](file://libraries/protocol/include/graphene/protocol/types.hpp#L75-L207)
+- [libraries/protocol/include/graphene/protocol/config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [libraries/network/include/graphene/network/node.hpp:190-304](file://libraries/network/include/graphene/network/node.hpp#L190-L304)
+- [libraries/network/include/graphene/network/peer_connection.hpp:276-277](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L277)
 - [libraries/wallet/include/graphene/wallet/wallet.hpp:96-1067](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L96-L1067)
 - [libraries/wallet/include/graphene/wallet/api_documentation.hpp:37-75](file://libraries/wallet/include/graphene/wallet/api_documentation.hpp#L37-L75)
 
 ## Architecture Overview
-The libraries integrate through explicit interfaces and signals. The Chain library exposes a database interface and signals for operation application. The Protocol library defines the canonical operation types and transaction structures. The Network library consumes blocks and transactions from the Chain library and broadcasts them to peers. The Wallet library constructs and signs transactions using the Protocol library and sends them to the Chain library via the P2P plugin. The DNS nameserver helper functionality extends the wallet library to manage DNS metadata within account JSON metadata. The db_with module handles postponed transactions processing with accurate counting and logging.
+The libraries integrate through explicit interfaces and signals. The Chain library exposes a database interface and signals for operation application. The Protocol library defines the canonical operation types and transaction structures. The Network library consumes blocks and transactions from the Chain library and broadcasts them to peers. The Wallet library constructs and signs transactions using the Protocol library and sends them to the Chain library via the P2P plugin. The DNS nameserver helper functionality extends the wallet library to manage DNS metadata within account JSON metadata. The db_with module handles postponed transactions processing with accurate counting and logging. Emergency consensus mode adds new components for witness scheduling and peer management.
 
 ```mermaid
 graph TB
 WALLET["Wallet API<br/>wallet.hpp<br/>DNS Nameserver Helpers"]
 API_DOC["API Documentation<br/>api_documentation.hpp"]
-PROTO["Protocol<br/>transaction.hpp, operations.hpp, types.hpp"]
+PROTO["Protocol<br/>transaction.hpp, operations.hpp, types.hpp, config.hpp"]
 CHAIN["Chain Database<br/>database.hpp"]
 EVAL["Evaluators<br/>evaluator.hpp"]
 CHAIN_OBJ["Chain Objects<br/>chain_objects.hpp"]
+DB_WITH["Postponed Transactions<br/>db_with.hpp"]
+EMERGENCY_MODE["Emergency Consensus<br/>Mode Management"]
+HYBRID_SCHED["Hybrid Witness Schedule<br/>Real + Committee Slots"]
+PEER_CONN["Peer Connections<br/>Soft-Banning & Fork Management"]
 NET["Network Node<br/>node.hpp"]
 PL_CHAIN["Chain Plugin<br/>plugin.hpp"]
 PL_P2P["P2P Plugin<br/>p2p_plugin.hpp"]
+PL_WITNESS["Witness Plugin<br/>witness.hpp"]
 DNS_HELPERS["DNS Nameserver Helpers<br/>ns_validate_*<br/>ns_create_metadata<br/>ns_set_records"]
-DB_WITH["Postponed Transactions<br/>db_with.hpp<br/>pending_transactions_restorer"]
+WITNESS_PLUGIN["Witness Plugin<br/>Emergency Key Loading<br/>Block Production"]
+FORK_DB["Fork Database<br/>Emergency Mode Tie-Breaking"]
 WALLET --> API_DOC
 WALLET --> PROTO
 WALLET --> DNS_HELPERS
 WALLET --> PL_P2P
 PL_P2P --> NET
 PL_CHAIN --> CHAIN
+PL_WITNESS --> WITNESS_PLUGIN
 CHAIN --> EVAL
 CHAIN --> CHAIN_OBJ
 CHAIN --> DB_WITH
+CHAIN --> EMERGENCY_MODE
+EMERGENCY_MODE --> HYBRID_SCHED
+EMERGENCY_MODE --> PEER_CONN
+EMERGENCY_MODE --> FORK_DB
 NET --> PROTO
+NET --> PEER_CONN
 PROTO --> CHAIN
+WITNESS_PLUGIN --> CHAIN
 ```
 
 **Diagram sources**
@@ -177,13 +222,18 @@ PROTO --> CHAIN
 - [libraries/protocol/include/graphene/protocol/transaction.hpp:12-101](file://libraries/protocol/include/graphene/protocol/transaction.hpp#L12-L101)
 - [libraries/protocol/include/graphene/protocol/operations.hpp:13-102](file://libraries/protocol/include/graphene/protocol/operations.hpp#L13-L102)
 - [libraries/protocol/include/graphene/protocol/types.hpp:75-207](file://libraries/protocol/include/graphene/protocol/types.hpp#L75-L207)
+- [libraries/protocol/include/graphene/protocol/config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [libraries/chain/include/graphene/chain/database.hpp:36-561](file://libraries/chain/include/graphene/chain/database.hpp#L36-L561)
 - [libraries/chain/include/graphene/chain/evaluator.hpp:11-45](file://libraries/chain/include/graphene/chain/evaluator.hpp#L11-L45)
 - [libraries/chain/include/graphene/chain/chain_objects.hpp:20-200](file://libraries/chain/include/graphene/chain/chain_objects.hpp#L20-L200)
 - [libraries/chain/include/graphene/chain/db_with.hpp:37-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L37-L100)
+- [libraries/chain/include/graphene/chain/global_property_object.hpp:134-146](file://libraries/chain/include/graphene/chain/global_property_object.hpp#L134-L146)
+- [libraries/chain/include/graphene/chain/fork_database.hpp:110-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L110-L138)
 - [libraries/network/include/graphene/network/node.hpp:190-304](file://libraries/network/include/graphene/network/node.hpp#L190-L304)
+- [libraries/network/include/graphene/network/peer_connection.hpp:276-277](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L277)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:21-46](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L21-L46)
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp:18-46](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L46)
+- [plugins/witness/witness.cpp:170-198](file://plugins/witness/witness.cpp#L170-L198)
 
 ## Detailed Component Analysis
 
@@ -191,16 +241,20 @@ PROTO --> CHAIN
 The Chain library is the core state machine. It manages:
 - Blockchain state: persistent objects, indexes, and undo history
 - Validation pipeline: block and transaction validation with configurable skip flags
-- Fork management: fork database and branch selection
+- Fork management: fork database and branch selection with emergency mode tie-breaking
 - Operation application: dispatch to evaluators and emit notifications
 - Hardfork handling: versioning and activation logic
 - Postponed transactions: accurate counting and processing with proper logging
+- Emergency consensus: automatic activation/deactivation based on network health
+- Witness scheduling: hybrid schedule during emergency mode with real and committee witnesses
 
 Key classes and responsibilities:
-- database: open/reindex, push/pop blocks, push transactions, notify signals, hardfork control
+- database: open/reindex, push/pop blocks, push transactions, notify signals, hardfork control, emergency mode management
 - evaluator: base class for operation-specific logic
 - chain_objects: multi-index containers for persistent state
 - db_with: pending transaction restoration, postponed transaction processing, execution limits
+- global_property_object: dynamic chain properties including emergency consensus state
+- fork_database: fork management with emergency mode tie-breaking and state tracking
 
 ```mermaid
 classDiagram
@@ -217,6 +271,11 @@ class database {
 +on_pending_transaction
 +on_applied_transaction
 +is_known_transaction(id)
++has_hardfork(hf)
++get_dynamic_global_properties()
++get_witness_schedule_object()
++update_median_witness_props()
++check_block_post_validation_chain()
 }
 class evaluator {
 <<interface>>
@@ -237,10 +296,21 @@ class pending_transactions_restorer {
 +process_popped_tx()
 +process_pending_tx()
 }
+class global_property_object {
++emergency_consensus_active : bool
++emergency_consensus_start_block : uint32_t
+}
+class fork_database {
++set_emergency_mode(active)
++is_emergency_mode() bool
++_emergency_consensus_active : bool
+}
 database --> evaluator : "dispatches operations"
 evaluator <|-- evaluator_impl : "implements"
 database --> chain_objects : "manages"
 database --> pending_transactions_restorer : "uses"
+database --> global_property_object : "manages"
+database --> fork_database : "uses"
 ```
 
 **Diagram sources**
@@ -248,6 +318,8 @@ database --> pending_transactions_restorer : "uses"
 - [libraries/chain/include/graphene/chain/evaluator.hpp:11-45](file://libraries/chain/include/graphene/chain/evaluator.hpp#L11-L45)
 - [libraries/chain/include/graphene/chain/chain_objects.hpp:20-200](file://libraries/chain/include/graphene/chain/chain_objects.hpp#L20-L200)
 - [libraries/chain/include/graphene/chain/db_with.hpp:37-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L37-L100)
+- [libraries/chain/include/graphene/chain/global_property_object.hpp:134-146](file://libraries/chain/include/graphene/chain/global_property_object.hpp#L134-L146)
+- [libraries/chain/include/graphene/chain/fork_database.hpp:110-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L110-L138)
 
 **Section sources**
 - [libraries/chain/include/graphene/chain/database.hpp:36-561](file://libraries/chain/include/graphene/chain/database.hpp#L36-L561)
@@ -255,6 +327,8 @@ database --> pending_transactions_restorer : "uses"
 - [libraries/chain/include/graphene/chain/evaluator.hpp:11-45](file://libraries/chain/include/graphene/chain/evaluator.hpp#L11-L45)
 - [libraries/chain/include/graphene/chain/chain_objects.hpp:20-200](file://libraries/chain/include/graphene/chain/chain_objects.hpp#L20-L200)
 - [libraries/chain/include/graphene/chain/db_with.hpp:37-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L37-L100)
+- [libraries/chain/include/graphene/chain/global_property_object.hpp:134-146](file://libraries/chain/include/graphene/chain/global_property_object.hpp#L134-L146)
+- [libraries/chain/include/graphene/chain/fork_database.hpp:110-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L110-L138)
 
 ### Protocol Library
 The Protocol library defines the canonical operation types and transaction structures:
@@ -262,6 +336,7 @@ The Protocol library defines the canonical operation types and transaction struc
 - transaction: operations, expiration, reference block, and signing/verification helpers
 - types: comprehensive data type definitions including cryptographic keys, asset types, and authority structures
 - Authority and sign_state: required authorities and signature verification
+- config: emergency consensus constants and witness scheduling parameters
 
 ```mermaid
 classDiagram
@@ -296,50 +371,66 @@ class types {
 +authority
 +...
 }
+class config {
+<<emergency consensus>>
++CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC
++CHAIN_EMERGENCY_WITNESS_ACCOUNT
++CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY
++CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS
+}
 operations --> transaction : "composed in"
 signed_transaction --> transaction : "extends"
 types --> operations : "used by"
+config --> database : "used by"
 ```
 
 **Diagram sources**
 - [libraries/protocol/include/graphene/protocol/operations.hpp:13-102](file://libraries/protocol/include/graphene/protocol/operations.hpp#L13-L102)
 - [libraries/protocol/include/graphene/protocol/transaction.hpp:12-101](file://libraries/protocol/include/graphene/protocol/transaction.hpp#L12-L101)
 - [libraries/protocol/include/graphene/protocol/types.hpp:75-207](file://libraries/protocol/include/graphene/protocol/types.hpp#L75-L207)
+- [libraries/protocol/include/graphene/protocol/config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 
 **Section sources**
 - [libraries/protocol/include/graphene/protocol/operations.hpp:13-102](file://libraries/protocol/include/graphene/protocol/operations.hpp#L13-L102)
 - [libraries/protocol/include/graphene/protocol/transaction.hpp:12-101](file://libraries/protocol/include/graphene/protocol/transaction.hpp#L12-L101)
 - [libraries/protocol/include/graphene/protocol/types.hpp:75-207](file://libraries/protocol/include/graphene/protocol/types.hpp#L75-L207)
+- [libraries/protocol/include/graphene/protocol/config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [libraries/protocol/transaction.cpp:30-200](file://libraries/protocol/transaction.cpp#L30-L200)
 
 ### Network Library
-The Network library provides peer-to-peer connectivity:
+The Network library provides peer-to-peer connectivity with enhanced emergency mode support:
 - node: P2P node with delegate interface, peer connections, message propagation, sync protocol
+- peer_connection: individual peer connections with emergency mode soft-banning and fork management
 - Broadcasting: blocks and transactions to peers
 - Sync: blockchain synopsis, block requests, and peer synchronization
 
 ```mermaid
 sequenceDiagram
 participant NET as "Network Node"
-participant PEER as "Peer"
+participant PEER as "Peer Connection"
 participant CHAIN as "Chain Plugin"
 participant DB as "Database"
 NET->>PEER : "connect_to_endpoint()"
 NET->>PEER : "sync_from(current_head_block, hard_fork_block_numbers)"
+PEER->>PEER : "fork_rejected_until soft-ban check"
 PEER-->>NET : "block_message"
 NET->>CHAIN : "accept_block(block)"
 CHAIN->>DB : "push_block(block)"
+DB->>DB : "emergency mode tie-breaking"
 DB-->>CHAIN : "applied_block signal"
 CHAIN-->>NET : "sync_status(item_type, count)"
 ```
 
 **Diagram sources**
 - [libraries/network/include/graphene/network/node.hpp:190-304](file://libraries/network/include/graphene/network/node.hpp#L190-L304)
+- [libraries/network/include/graphene/network/peer_connection.hpp:276-277](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L277)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:44-46](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L44-L46)
 
 **Section sources**
 - [libraries/network/include/graphene/network/node.hpp:190-304](file://libraries/network/include/graphene/network/node.hpp#L190-L304)
 - [libraries/network/node.cpp:1-200](file://libraries/network/node.cpp#L1-L200)
+- [libraries/network/include/graphene/network/peer_connection.hpp:276-277](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L277)
+- [libraries/network/peer_connection.cpp:150-349](file://libraries/network/peer_connection.cpp#L150-L349)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:44-46](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L44-L46)
 
 ### Wallet Library
@@ -630,6 +721,162 @@ Transactions follow a strict validation pipeline:
 - [libraries/protocol/include/graphene/protocol/transaction.hpp:12-101](file://libraries/protocol/include/graphene/protocol/transaction.hpp#L12-L101)
 - [libraries/protocol/transaction.cpp:30-200](file://libraries/protocol/transaction.cpp#L30-L200)
 
+## Emergency Consensus Mode
+
+The VIZ blockchain now includes a comprehensive emergency consensus mode designed to maintain network stability during prolonged network stalls or witness failures. This system automatically activates when no blocks are produced for a specified timeout period and ensures continuous block production through committee witnesses.
+
+### Emergency Consensus Activation Logic
+
+Emergency mode is triggered when the time since the last irreversible block exceeds the configured timeout threshold:
+
+```mermaid
+flowchart TD
+Start(["Block Applied"]) --> CheckLIB["Check Last Irreversible Block Time"]
+CheckLIB --> CalcTime["Calculate Time Since LIB"]
+CalcTime --> Timeout{"Timeout Exceeded?<br/>> CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC"}
+Timeout --> |No| Normal["Normal Operation"]
+Timeout --> |Yes| Activate["Activate Emergency Mode"]
+Activate --> CreateWitness["Create/Update Emergency Witness"]
+CreateWitness --> ResetPenalties["Reset Witness Penalties"]
+ResetPenalties --> OverrideSchedule["Override Witness Schedule"]
+OverrideSchedule --> NotifyForkDB["Notify Fork Database"]
+NotifyForkDB --> LogActivation["Log Emergency Mode Activation"]
+```
+
+**Diagram sources**
+- [libraries/chain/database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
+- [libraries/protocol/include/graphene/protocol/config.hpp:110-112](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L112)
+
+### Hybrid Witness Scheduling System
+
+During emergency mode, the witness scheduling system operates as a hybrid between real witnesses and committee witnesses:
+
+- **Real Witness Slots**: Maintained for witnesses with valid signing keys
+- **Committee Slots**: Filled by the emergency witness account for offline or unavailable witnesses
+- **Full Schedule Expansion**: The schedule expands to include all committee slots during emergency
+
+The hybrid schedule ensures that:
+- Real witnesses keep their scheduled slots
+- Offline witnesses are replaced by committee witnesses
+- The full CHAIN_MAX_WITNESSES schedule is maintained for consistent block production
+- Committee witnesses maintain neutral voting positions aligned with current hardfork state
+
+```mermaid
+sequenceDiagram
+participant SCHED as "Witness Scheduler"
+participant REAL as "Real Witnesses"
+participant COMMITTEE as "Committee Witnesses"
+participant DATABASE as "Database"
+SCHED->>DATABASE : "Get Current Schedule"
+DATABASE-->>SCHED : "wso.current_shuffled_witnesses"
+SCHED->>SCHED : "Iterate Full Schedule (MAX_WITNESSES)"
+loop For Each Slot
+SCHED->>REAL : "Check Witness Availability"
+alt Witness Available
+SCHED->>SCHED : "Keep Real Witness Slot"
+else Witness Unavailable
+SCHED->>COMMITTEE : "Assign Emergency Witness"
+SCHED->>SCHED : "Replace with Committee Slot"
+end
+end
+SCHED->>DATABASE : "Expand Schedule to MAX_WITNESSES"
+DATABASE-->>SCHED : "Updated Schedule"
+```
+
+**Diagram sources**
+- [libraries/chain/database.cpp:2047-2143](file://libraries/chain/database.cpp#L2047-L2143)
+- [libraries/protocol/include/graphene/protocol/config.hpp:115-116](file://libraries/protocol/include/graphene/protocol/config.hpp#L115-L116)
+
+### Emergency Mode Exit Conditions
+
+Emergency mode automatically deactivates when:
+- The last irreversible block advances beyond the emergency start block
+- 21 consecutive blocks are produced by the emergency witness (full round completion)
+- Network conditions return to normal with sufficient witness participation
+
+The exit process restores normal operations:
+- Disables emergency consensus flag
+- Resets fork database emergency mode state
+- Removes emergency witness from schedule
+- Restores normal witness participation requirements
+
+### Emergency Consensus Configuration
+
+Key configuration parameters:
+- `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC`: 3600 seconds (1 hour) timeout for emergency activation
+- `CHAIN_EMERGENCY_WITNESS_ACCOUNT`: "committee" account for emergency block production
+- `CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY`: Public key for emergency witness signature verification
+- `CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS`: 21 blocks for automatic emergency mode exit
+
+**Section sources**
+- [libraries/chain/database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
+- [libraries/chain/database.cpp:2047-2143](file://libraries/chain/database.cpp#L2047-L2143)
+- [libraries/chain/include/graphene/chain/global_property_object.hpp:134-146](file://libraries/chain/include/graphene/chain/global_property_object.hpp#L134-L146)
+- [libraries/protocol/include/graphene/protocol/config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
+
+## Peer Connection Management
+
+The network library includes enhanced peer connection management specifically designed for emergency consensus mode. These improvements ensure network stability and prevent fork propagation during critical situations.
+
+### Emergency Mode Peer Soft-Banning
+
+During emergency consensus mode, the network implements a soft-banning mechanism to prevent peers from propagating losing forks:
+
+- **fork_rejected_until**: Timestamp-based soft-ban for peers that lose forks during emergency mode
+- **Prevents Fork Propagation**: Peers with losing forks are temporarily ignored
+- **Maintains Network Stability**: Reduces confusion and prevents split-brain scenarios
+- **Automatic Recovery**: Soft-bans expire naturally as emergency mode progresses
+
+### Peer Connection State Management
+
+Enhanced peer connection states for emergency mode:
+- **Soft-Ban Enforcement**: Peers with fork_rejected_until timestamps are ignored for block propagation
+- **Emergency Fork Detection**: Improved detection of emergency-mode fork conflicts
+- **Connection Rejection Handling**: Better handling of connection rejections during emergency periods
+- **Firewall Check Integration**: Enhanced firewall detection with emergency mode awareness
+
+```mermaid
+classDiagram
+class peer_connection {
++fork_rejected_until : time_point
++soft_ban_check()
++emergency_fork_handling()
++connection_rejection_handling()
+}
+class node {
++emergency_mode_active : bool
++peer_soft_ban_management()
++fork_conflict_resolution()
+}
+class fork_database {
++emergency_mode_tie_breaking()
++deterministic_hash_selection()
+}
+peer_connection --> node : "interacts with"
+node --> fork_database : "uses for tie-breaking"
+```
+
+**Diagram sources**
+- [libraries/network/include/graphene/network/peer_connection.hpp:276-277](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L277)
+- [libraries/chain/fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
+
+### Emergency Mode Fork Database Tie-Breaking
+
+The fork database implements deterministic hash-based tie-breaking during emergency mode:
+
+- **Hash Comparison**: When multiple blocks compete at the same height, compare block_id hashes
+- **Consistent Selection**: Lower block_id hash always wins, ensuring network convergence
+- **Deterministic Behavior**: All nodes make identical decisions regardless of P2P arrival order
+- **Emergency Mode Activation**: Tie-breaking only active during emergency consensus mode
+
+This mechanism ensures that even if multiple emergency producers create competing blocks simultaneously, the network will converge to a single chain based on deterministic hash comparison.
+
+**Section sources**
+- [libraries/network/include/graphene/network/peer_connection.hpp:276-277](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L277)
+- [libraries/network/peer_connection.cpp:150-349](file://libraries/network/peer_connection.cpp#L150-L349)
+- [libraries/chain/fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
+- [libraries/chain/include/graphene/chain/fork_database.hpp:110-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L110-L138)
+
 ## DNS Nameserver Helper Functionality
 
 The wallet library now includes comprehensive DNS nameserver helper functionality that extends blockchain metadata management capabilities with DNS record support for VIZ accounts.
@@ -771,24 +1018,31 @@ RESTORER-->>DB : "Log postponed transactions"
 - [libraries/chain/database.cpp:549-555](file://libraries/chain/database.cpp#L549-L555)
 
 ## Dependency Analysis
-The libraries exhibit layered dependencies:
-- Chain depends on Protocol for operation types and transaction structures
-- Network depends on Protocol for message serialization and types
+The libraries exhibit layered dependencies with enhanced emergency consensus integration:
+- Chain depends on Protocol for operation types, transaction structures, and emergency mode configuration
+- Network depends on Protocol for message serialization, types, and emergency peer management
 - Wallet depends on Protocol for transaction construction and signing, plus includes DNS helpers
-- Plugins depend on Chain for database access and on Network for P2P operations
+- Plugins depend on Chain for database access, on Network for P2P operations, and on Emergency Mode for witness scheduling
 - db_with module depends on Chain database for transaction processing and logging
+- Emergency consensus components depend on all core libraries for coordinated operation
 
 ```mermaid
 graph LR
 WALLET["Wallet"] --> PROTO["Protocol"]
 WALLET --> DNS_HELPERS["DNS Nameserver Helpers"]
 NET["Network"] --> PROTO
+NET --> PEER_CONN["Peer Connection<br/>Emergency Management"]
 CHAIN["Chain"] --> PROTO
 CHAIN --> DB_WITH["Postponed Transactions"]
+CHAIN --> EMERGENCY_MODE["Emergency Mode<br/>Components"]
+EMERGENCY_MODE --> HYBRID_SCHED["Hybrid Schedule"]
+EMERGENCY_MODE --> FORK_DB["Fork Database<br/>Tie-Breaking"]
 PL_P2P["P2P Plugin"] --> NET
 PL_CHAIN["Chain Plugin"] --> CHAIN
+PL_WITNESS["Witness Plugin"] --> CHAIN
 MAIN["Main Entry"] --> PL_CHAIN
 MAIN --> PL_P2P
+MAIN --> PL_WITNESS
 ```
 
 **Diagram sources**
@@ -797,18 +1051,26 @@ MAIN --> PL_P2P
 - [libraries/network/include/graphene/network/node.hpp:26-30](file://libraries/network/include/graphene/network/node.hpp#L26-L30)
 - [libraries/chain/include/graphene/chain/database.hpp:8-8](file://libraries/chain/include/graphene/chain/database.hpp#L8-L8)
 - [libraries/chain/include/graphene/chain/db_with.hpp:37-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L37-L100)
+- [libraries/chain/include/graphene/chain/global_property_object.hpp:134-146](file://libraries/chain/include/graphene/chain/global_property_object.hpp#L134-L146)
+- [libraries/chain/include/graphene/chain/fork_database.hpp:110-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L110-L138)
+- [libraries/network/include/graphene/network/peer_connection.hpp:276-277](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L277)
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp:3-3](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L3-L3)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:7-7](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L7-L7)
+- [plugins/witness/witness.cpp:170-198](file://plugins/witness/witness.cpp#L170-L198)
 - [programs/vizd/main.cpp:106-140](file://programs/vizd/main.cpp#L106-L140)
 
 **Section sources**
 - [programs/vizd/main.cpp:106-140](file://programs/vizd/main.cpp#L106-L140)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:7-7](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L7-L7)
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp:3-3](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L3-L3)
+- [plugins/witness/witness.cpp:170-198](file://plugins/witness/witness.cpp#L170-L198)
 - [libraries/chain/include/graphene/chain/database.hpp:8-8](file://libraries/chain/include/graphene/chain/database.hpp#L8-L8)
 - [libraries/network/include/graphene/network/node.hpp:26-30](file://libraries/network/include/graphene/network/node.hpp#L26-L30)
 - [libraries/wallet/include/graphene/wallet/wallet.hpp:18-21](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L18-L21)
 - [libraries/chain/include/graphene/chain/db_with.hpp:37-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L37-L100)
+- [libraries/chain/include/graphene/chain/global_property_object.hpp:134-146](file://libraries/chain/include/graphene/chain/global_property_object.hpp#L134-L146)
+- [libraries/chain/include/graphene/chain/fork_database.hpp:110-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L110-L138)
+- [libraries/network/include/graphene/network/peer_connection.hpp:276-277](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L277)
 
 ## Performance Considerations
 - Database tuning: shared memory sizing, flush intervals, and checkpoints reduce I/O overhead
@@ -819,6 +1081,9 @@ MAIN --> PL_P2P
 - DNS validation: lightweight validation functions minimize overhead for DNS metadata operations
 - Postponed transactions: accurate counting prevents unnecessary processing and improves block production efficiency
 - Execution limits: configurable time limits prevent excessive processing time during block production
+- Emergency consensus: automatic activation reduces manual intervention overhead during network failures
+- Peer soft-banning: prevents wasted bandwidth on fork propagation during emergency periods
+- Hybrid scheduling: maintains consistent block production rates during emergency mode
 
 ## Troubleshooting Guide
 Common issues and diagnostics:
@@ -832,6 +1097,10 @@ Common issues and diagnostics:
 - TTL validation errors: verify positive integer values for DNS record TTL settings
 - Postponed transactions issues: check block size limits, execution time limits, and known transaction filtering
 - Logging accuracy: verify postponed transaction counters and avoid false 'Postponed' messages for skipped known transactions
+- Emergency mode activation: verify timeout thresholds and emergency witness configuration
+- Hybrid schedule issues: check witness availability and schedule expansion during emergency mode
+- Peer soft-banning: monitor fork_rejected_until timestamps and emergency peer connection management
+- Fork database tie-breaking: ensure deterministic hash comparison during emergency mode conflicts
 
 **Section sources**
 - [libraries/chain/include/graphene/chain/database.hpp:56-73](file://libraries/chain/include/graphene/chain/database.hpp#L56-L73)
@@ -842,8 +1111,12 @@ Common issues and diagnostics:
 - [libraries/wallet/wallet.cpp:2640-2673](file://libraries/wallet/wallet.cpp#L2640-L2673)
 - [libraries/chain/database.cpp:1165-1202](file://libraries/chain/database.cpp#L1165-L1202)
 - [libraries/chain/database.cpp:549-555](file://libraries/chain/database.cpp#L549-L555)
+- [libraries/chain/database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
+- [libraries/chain/database.cpp:2047-2143](file://libraries/chain/database.cpp#L2047-L2143)
+- [libraries/network/include/graphene/network/peer_connection.hpp:276-277](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L277)
+- [libraries/chain/fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
 
 ## Conclusion
-The VIZ CPP Node core libraries form a cohesive architecture: Protocol defines canonical operations and transactions, Chain manages state and validation with accurate postponed transactions processing, Network enables peer synchronization and propagation, and Wallet provides signing and key management. The enhanced documentation now provides comprehensive coverage of blockchain operations, data types, protocol specifications, DNS nameserver helper functionality, and accurate postponed transactions processing with corrected logging behavior, supporting robust transaction processing, block validation, peer coordination, and DNS metadata management essential to a production blockchain node.
+The VIZ CPP Node core libraries form a cohesive architecture with enhanced emergency consensus capabilities: Protocol defines canonical operations and transactions, Chain manages state and validation with emergency mode integration, Network enables peer synchronization with emergency peer management, and Wallet provides signing and key management. The enhanced documentation now provides comprehensive coverage of emergency consensus mode, hybrid witness scheduling, peer connection management, blockchain operations, data types, protocol specifications, DNS nameserver helper functionality, and accurate postponed transactions processing with corrected logging behavior, supporting robust transaction processing, block validation, peer coordination, and emergency network stability essential to a production blockchain node.
 
-**Updated** Enhanced documentation provides expanded coverage of blockchain operations, data types, protocol specifications, DNS nameserver helper functionality, and accurate postponed transactions processing with corrected logging behavior, making it easier for developers to understand and work with the VIZ blockchain protocol and manage DNS records within account metadata.
+**Updated** Enhanced documentation provides expanded coverage of emergency consensus mode, hybrid witness scheduling, peer connection management, blockchain operations, data types, protocol specifications, DNS nameserver helper functionality, and accurate postponed transactions processing with corrected logging behavior, making it easier for developers to understand and work with the VIZ blockchain protocol, manage emergency network conditions, and implement DNS records within account metadata.
