@@ -16,11 +16,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced snapshot directory parsing order with improved filename validation and error handling
-- Strengthened initialization sequence with coordinated plugin startup notifications
-- Added trigger notification functionality for enhanced plugin coordination
-- Improved automatic snapshot discovery with robust path validation
-- Enhanced watchdog mechanisms for server reliability and recovery
+- Enhanced plugin lifecycle management documentation with comprehensive coverage of deferred execution model
+- Updated plugin startup procedures documentation with detailed callback registration mechanisms
+- Expanded P2P snapshot synchronization documentation with shutdown coordination details
+- Added comprehensive plugin coordination mechanisms documentation
+- Enhanced architectural details documentation with shutdown coordination between chain and snapshot plugins
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -32,7 +32,7 @@
 7. [Integrated Recovery Workflow](#integrated-recovery-workflow)
 8. [DLT Replay Integration](#dlt-replay-integration)
 9. [Enhanced Error Handling](#enhanced-error-handling)
-10. [Peer-to-Peer Snapshot Synchronization](#peer-to-pair-snapshot-synchronization)
+10. [Peer-to-Peer Snapshot Synchronization](#peer-to-peer-snapshot-synchronization)
 11. [Watchdog and Stalled Sync Detection](#watchdog-and-stalled-sync-detection)
 12. [Emergency Consensus Handling](#emergency-consensus-handling)
 13. [Enhanced Anti-Spam Protection](#enhanced-anti-spam-protection)
@@ -47,7 +47,7 @@
 
 The Snapshot Plugin System is a comprehensive solution for VIZ blockchain nodes that enables efficient state synchronization through distributed ledger technology (DLT). This system provides mechanisms for creating, loading, serving, and downloading blockchain state snapshots, significantly reducing bootstrap times and enabling rapid node initialization.
 
-**Updated** The system has been enhanced with automatic snapshot discovery functionality (--snapshot-auto-latest option), integrated recovery workflow (--replay-from-snapshot flag), and comprehensive DLT replay integration. These enhancements provide robust error handling for recovery scenarios, automatic peer-to-peer snapshot synchronization for empty state nodes, and advanced watchdog mechanisms with stalled sync detection for DLT mode operation.
+**Updated** The system has been enhanced with automatic snapshot discovery functionality (--snapshot-auto-latest option), integrated recovery workflow (--replay-from-snapshot flag), and comprehensive DLT replay integration. These enhancements provide robust error handling for recovery scenarios, automatic peer-to-peer snapshot synchronization for empty state nodes, and advanced watchdog mechanisms for DLT mode operation.
 
 The plugin addresses the fundamental challenge of blockchain bootstrapping by allowing nodes to jump directly to a recent state rather than replaying thousands of blocks. This is particularly crucial for VIZ's social media and content platform characteristics, where rapid deployment and scaling are essential.
 
