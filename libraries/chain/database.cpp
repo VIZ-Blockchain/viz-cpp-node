@@ -1158,8 +1158,23 @@ namespace graphene { namespace chain {
                         ilog("Ignoring block ${n} that is already on our chain", ("n", new_block.block_num()));
                         return false;
                     }
-                    // Block is at or before head but on a different fork — fall through
-                    // to the normal push logic which may trigger a fork switch.
+                    // Block is at or before head but on a different fork.
+                    // If the block's parent is not in the fork_db, we can never
+                    // link it (the fork diverged before the fork_db's window).
+                    // Silently reject to prevent unlinkable_block_exception from
+                    // propagating to the P2P layer, which would trigger a sync
+                    // restart loop (the sync peer keeps sending blocks from the
+                    // other fork, each one fails to link, each failure restarts
+                    // sync, ad infinitum).
+                    if (new_block.previous != block_id_type() &&
+                        !_fork_db.is_known_block(new_block.previous)) {
+                        wlog("Rejecting block ${n} from a different fork: parent not in fork_db (head=${h})",
+                             ("n", new_block.block_num())("h", head_block_num()));
+                        return false;
+                    }
+                    // Parent IS in fork_db — fall through to normal push logic
+                    // which may trigger a fork switch (if the other fork has
+                    // more weight).
                 }
 
                 // Early rejection for blocks far ahead of our head whose parent we

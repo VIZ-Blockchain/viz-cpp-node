@@ -172,13 +172,15 @@ When a node is far behind the network, it receives two types of blocks simultane
 - **Sync blocks** (sequential, starting from head+1) — must be accepted
 - **Broadcast blocks** (real-time, potentially thousands ahead) — must be rejected silently
 
-Three early-rejection checks in `_push_block` prevent sync disruption:
+Early-rejection checks in `_push_block` prevent sync disruption:
 
 1. **Duplicate blocks**: If a block is at or before head and its ID matches our chain, it's already applied — skip silently (prevents unnecessary `fork_db` push attempts that would throw `unlinkable_block_exception`).
 
-2. **Far-ahead blocks with unknown parent**: If a block's `previous` is neither our `head_block_id()` nor in `fork_db`, the block can never link. Return `false` silently instead of throwing, which prevents P2P sync restart.
+2. **Blocks at/before head on a different fork with unknown parent**: If a block is at or before our head but on a different fork (different ID), AND its parent isn't in the fork_db (the fork diverged before the fork_db's window), silently reject it. Without this check, `fork_db.push_block` throws `unlinkable_block_exception`, which the P2P layer catches and uses to restart sync — creating an infinite error loop where the sync peer keeps sending blocks from the other fork, each one fails to link, and each failure restarts sync.
 
-3. **Immediate successor always allowed**: Blocks whose `previous == head_block_id()` always pass — this is the critical sync case where the next sequential block must be accepted, even when `fork_db` is empty after a restart.
+3. **Far-ahead blocks with unknown parent**: If a block's `previous` is neither our `head_block_id()` nor in `fork_db`, the block can never link. Return `false` silently instead of throwing, which prevents P2P sync restart.
+
+4. **Immediate successor always allowed**: Blocks whose `previous == head_block_id()` always pass — this is the critical sync case where the next sequential block must be accepted, even when `fork_db` is empty after a restart.
 
 ### `is_known_block()` in DLT Mode
 
