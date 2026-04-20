@@ -449,6 +449,17 @@ namespace chain {
                     throw;
                 }
 
+                // Ensure snapshot plugin is initialized so it can register its callback.
+                // This handles the case where --snapshot is on the command line but
+                // plugin=snapshot is missing from config.ini.
+                if (!snapshot_load_callback) {
+                    auto* sp = appbase::app().find_plugin("snapshot");
+                    if (sp && sp->get_state() == appbase::abstract_plugin::registered) {
+                        ilog("Initializing snapshot plugin (not yet initialized)...");
+                        sp->initialize(appbase::app().get_args());
+                    }
+                }
+
                 // Load snapshot state via callback (set by snapshot plugin during initialize)
                 // This MUST happen before on_sync() so that P2P starts syncing from the
                 // snapshot head block, not from genesis.
@@ -468,7 +479,8 @@ namespace chain {
                     }
                 } else {
                     elog("--snapshot specified but no snapshot_load_callback registered. "
-                         "Is the snapshot plugin enabled?");
+                         "Is the snapshot plugin enabled? Add 'plugin = snapshot' to config.ini "
+                         "or pass --plugin snapshot on the command line.");
                     throw std::runtime_error("Snapshot plugin not configured");
                 }
 
@@ -516,6 +528,17 @@ namespace chain {
                 throw;
             }
 
+            // Ensure snapshot plugin is initialized so it can register its callback.
+            // This handles the case where --replay-from-snapshot is on the command line but
+            // plugin=snapshot is missing from config.ini.
+            if (!snapshot_load_callback) {
+                auto* sp = appbase::app().find_plugin("snapshot");
+                if (sp && sp->get_state() == appbase::abstract_plugin::registered) {
+                    ilog("Initializing snapshot plugin (not yet initialized)...");
+                    sp->initialize(appbase::app().get_args());
+                }
+            }
+
             // Load snapshot state via callback
             if (snapshot_load_callback) {
                 try {
@@ -531,7 +554,8 @@ namespace chain {
                 }
             } else {
                 elog("--replay-from-snapshot but no snapshot_load_callback registered. "
-                     "Is the snapshot plugin enabled?");
+                     "Is the snapshot plugin enabled? Add 'plugin = snapshot' to config.ini "
+                     "or pass --plugin snapshot on the command line.");
                 throw std::runtime_error("Snapshot plugin not configured");
             }
 
