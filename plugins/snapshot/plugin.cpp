@@ -807,7 +807,7 @@ public:
 
 private:
     // Core snapshot serialization (caller must hold appropriate lock)
-    void write_snapshot_to_file(const fc::path& output_path, const snapshot_header& header, const fc::mutable_variant_object& state);
+    void write_snapshot_to_file(const fc::path& output_path, snapshot_header header, fc::mutable_variant_object state);
 
     // Export: convert all objects to variants and write to file
     fc::variant export_index_to_variant(const std::string& type_name);
@@ -968,29 +968,28 @@ void snapshot_plugin::plugin_impl::create_snapshot(const fc::path& output_path) 
     ilog(CLOG_GREEN "Snapshot DB read completed in ${t} sec, lock released" CLOG_RESET, ("t", read_elapsed));
 
     // Phase 2: compression + file I/O — no database lock needed.
-    write_snapshot_to_file(output_path, header, state);
+    write_snapshot_to_file(output_path, std::move(header), std::move(state));
     update_snapshot_cache(output_path);
 }
 
 void snapshot_plugin::plugin_impl::write_snapshot_to_file(
         const fc::path& output_path,
-        const snapshot_header& header,
-        const fc::mutable_variant_object& state) {
+        snapshot_header header,
+        fc::mutable_variant_object state) {
     auto start = fc::time_point::now();
 
     // Compute checksum of serialized state
     std::string state_json = fc::json::to_string(state);
 
-    // Make a mutable copy of the header so we can fill in the checksum
-    snapshot_header hdr = header;
-    hdr.payload_checksum = fc::sha256::hash(state_json.data(), state_json.size());
+    // Fill in the checksum
+    header.payload_checksum = fc::sha256::hash(state_json.data(), state_json.size());
 
     // Build final snapshot object
     fc::mutable_variant_object snapshot;
     fc::variant header_var;
-    fc::to_variant(hdr, header_var);
+    fc::to_variant(header, header_var);
     snapshot["header"] = std::move(header_var);
-    snapshot["state"] = state;
+    snapshot["state"] = std::move(state);
 
     // Write to file with zlib compression
     std::string snapshot_json = fc::json::to_string(fc::variant(snapshot));
@@ -1417,13 +1416,23 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         }
         ilog(CLOG_GREEN "Scheduling async %s snapshot: ${p}" CLOG_RESET, label)("p", output.string());
         snapshot_future = snapshot_thread->async([this, output, label]() {
+            // RAII guard to ensure snapshot_in_progress is always reset
+            struct flag_guard {
+                std::atomic<bool>& flag;
+                ~flag_guard() { flag = false; }
+            };
+            flag_guard guard{snapshot_in_progress};
+
             try {
                 create_snapshot(output);
                 cleanup_old_snapshots();
             } catch (const fc::exception& e) {
                 elog("Failed to create %s snapshot: ${e}", label)("e", e.to_detail_string());
+            } catch (const std::exception& e) {
+                elog("Failed to create %s snapshot: ${e}", label)("e", e.what());
+            } catch (...) {
+                elog("Failed to create %s snapshot: unknown exception", label);
             }
-            snapshot_in_progress = false;
         }, "async_snapshot");
     };
 
