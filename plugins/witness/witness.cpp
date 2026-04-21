@@ -133,6 +133,22 @@ namespace graphene {
                          "Only used when the network enters emergency consensus mode "
                          "(no blocks for >1 hour since last irreversible block). "
                          "Multiple nodes can safely have this key.")
+                        ("ntp-server", bpo::value<vector<string>>()->composing()->multitoken(),
+                         "NTP server to use for time synchronization (host or host:port). "
+                         "Can be specified multiple times. Leave unset to use the built-in defaults "
+                         "(pool.ntp.org, time.google.com, time.cloudflare.com).")
+                        ("ntp-request-interval", bpo::value<uint32_t>()->default_value(900),
+                         "How often to request a time update from NTP servers, in seconds (default: 900 = 15 min).")
+                        ("ntp-retry-interval", bpo::value<uint32_t>()->default_value(300),
+                         "Retry interval in seconds when NTP has not replied (default: 300 = 5 min).")
+                        ("ntp-round-trip-threshold", bpo::value<uint32_t>()->default_value(150),
+                         "Round-trip delay threshold in milliseconds; NTP replies slower than this are discarded (default: 150).")
+                        ("ntp-history-size", bpo::value<uint32_t>()->default_value(5),
+                         "Moving-average history window size for NTP delta smoothing (default: 5).")
+                        ("ntp-rejection-threshold-pct", bpo::value<uint32_t>()->default_value(50),
+                         "Rejection threshold as a percentage of the absolute moving average; deltas deviating more are rejected (default: 50).")
+                        ("ntp-rejection-min-threshold", bpo::value<uint32_t>()->default_value(5),
+                         "Minimum rejection threshold in milliseconds, applied regardless of the percentage rule (default: 5).")
                         ;
 
                 config_file_options.add(command_line_options);
@@ -180,6 +196,20 @@ namespace graphene {
                         // when the schedule assigns committee slots during emergency mode
                         pimpl->_witnesses.insert(CHAIN_EMERGENCY_WITNESS_ACCOUNT);
                         ilog("Emergency private key loaded. Will produce blocks during emergency consensus mode.");
+                    }
+
+                    // Build and store NTP configuration so it is applied when the NTP service starts.
+                    {
+                        graphene::time::ntp_config ntp_cfg;
+                        if (options.count("ntp-server"))
+                            ntp_cfg.servers = options["ntp-server"].as<std::vector<std::string>>();
+                        ntp_cfg.request_interval_sec   = options["ntp-request-interval"].as<uint32_t>();
+                        ntp_cfg.retry_interval_sec     = options["ntp-retry-interval"].as<uint32_t>();
+                        ntp_cfg.round_trip_threshold_ms = options["ntp-round-trip-threshold"].as<uint32_t>();
+                        ntp_cfg.history_size            = options["ntp-history-size"].as<uint32_t>();
+                        ntp_cfg.rejection_threshold_pct = options["ntp-rejection-threshold-pct"].as<uint32_t>();
+                        ntp_cfg.rejection_min_threshold_ms = options["ntp-rejection-min-threshold"].as<uint32_t>();
+                        graphene::time::configure_ntp(ntp_cfg);
                     }
 
                     ilog("witness plugin:  plugin_initialize() end");
