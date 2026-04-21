@@ -501,7 +501,7 @@ namespace graphene {
                                 std::string ip;
                                 uint16_t port = 0;
                                 try {
-                                    ip = peer_info.host.get_address();
+                                    ip = static_cast<std::string>(peer_info.host.get_address());
                                     port = peer_info.host.port();
                                 } catch (...) {
                                     ip = "(unknown)";
