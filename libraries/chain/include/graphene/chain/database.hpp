@@ -148,7 +148,20 @@ namespace graphene { namespace chain {
             void set_min_free_shared_memory_size(size_t);
             void set_inc_shared_memory_size(size_t);
             void set_block_num_check_free_size(uint32_t);
-            void check_free_memory(bool skip_print, uint32_t current_block_num);
+            void check_free_memory(bool skip_print, uint32_t current_block_num, bool immediate_resize = false);
+
+            /**
+             * @brief Apply a deferred shared memory resize if one is pending.
+             *
+             * During normal block processing, check_free_memory() does NOT resize
+             * immediately — it sets a flag instead. The actual resize is performed
+             * here, at a safe point where no read locks are held and no lockless
+             * reads are in progress.
+             *
+             * Call sites: top of push_block() and _generate_block(), before any
+             * database reads or lock acquisitions.
+             */
+            void apply_pending_resize();
 
             void set_skip_virtual_ops();
 
@@ -578,7 +591,7 @@ namespace graphene { namespace chain {
 
             void apply_hardfork(uint32_t hardfork);
 
-            bool _resize(uint32_t block_num);
+            bool _resize(uint32_t block_num, bool immediate = false);
 
             ///@}
 
@@ -614,6 +627,9 @@ namespace graphene { namespace chain {
             size_t _min_free_shared_memory_size = 0;
 
             uint32_t _block_num_check_free_memory = 1000;
+
+            bool _pending_resize = false;
+            size_t _pending_resize_target = 0;
 
             bool _skip_virtual_ops = false;
             bool _enable_plugins_on_push_transaction = false;
