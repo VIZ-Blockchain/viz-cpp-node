@@ -15,6 +15,13 @@
 - [message.hpp](file://libraries/network/include/graphene/network/message.hpp)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Updated port configuration from legacy 4243 to standardized 2001 for mainnet
+- Removed references to external seed node file management system
+- Updated configuration examples to reflect integrated config.ini approach
+- Revised practical deployment examples for current port standards
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
@@ -29,6 +36,8 @@
 
 ## Introduction
 This document provides comprehensive network configuration guidance for the VIZ CPP Node peer-to-peer (P2P) networking stack. It covers peer connection settings, seed node configuration, network discovery mechanisms, listen address and port configuration, firewall considerations, security settings, connection limits, performance tuning, bandwidth management, and monitoring. Practical examples are included for private networks, testnets, and mainnet-like deployments.
+
+**Updated** The configuration system has been standardized with port 2001 for mainnet deployments and integrated seed node management through config.ini rather than external files.
 
 ## Project Structure
 The P2P networking is implemented in the network library and integrated via the P2P plugin. Configuration is primarily driven by command-line options and configuration files.
@@ -63,24 +72,24 @@ P2PPlugin --> WitCfg
 ```
 
 **Diagram sources**
-- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp#L467-L566)
-- [node.cpp](file://libraries/network/node.cpp#L424-L800)
-- [peer_connection.cpp](file://libraries/network/peer_connection.cpp#L68-L162)
-- [stcp_socket.cpp](file://libraries/network/stcp_socket.cpp#L37-L92)
-- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L47-L71)
-- [config.ini](file://share/vizd/config/config.ini#L1-L130)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107)
+- [p2p_plugin.cpp:467-566](file://plugins/p2p/p2p_plugin.cpp#L467-L566)
+- [node.cpp:424-800](file://libraries/network/node.cpp#L424-L800)
+- [peer_connection.cpp:68-162](file://libraries/network/peer_connection.cpp#L68-L162)
+- [stcp_socket.cpp:37-92](file://libraries/network/stcp_socket.cpp#L37-L92)
+- [config.hpp:26-106](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
+- [message.hpp:42-114](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
+- [peer_database.hpp:47-71](file://libraries/network/include/graphene/network/peer_database.hpp#L47-L71)
+- [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
+- [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_witness.ini:1-107](file://share/vizd/config/config_witness.ini#L1-L107)
 
 **Section sources**
-- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp#L467-L566)
-- [node.cpp](file://libraries/network/node.cpp#L424-L800)
-- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
-- [config.ini](file://share/vizd/config/config.ini#L1-L130)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107)
+- [p2p_plugin.cpp:467-566](file://plugins/p2p/p2p_plugin.cpp#L467-L566)
+- [node.cpp:424-800](file://libraries/network/node.cpp#L424-L800)
+- [config.hpp:26-106](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
+- [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
+- [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_witness.ini:1-107](file://share/vizd/config/config_witness.ini#L1-L107)
 
 ## Core Components
 - P2P Plugin: Parses CLI and config options, initializes the Node, sets advanced parameters, and starts listening/connecting.
@@ -95,14 +104,16 @@ Key configuration entry points:
 - CLI options: p2p-endpoint, p2p-max-connections, p2p-seed-node, p2p-force-validate.
 - Config file keys: p2p-endpoint, p2p-max-connections, p2p-seed-node, loggers.
 
+**Updated** Configuration now uses standardized port 2001 and integrated seed node management through config.ini.
+
 **Section sources**
-- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp#L467-L566)
-- [node.cpp](file://libraries/network/node.cpp#L424-L800)
-- [peer_connection.cpp](file://libraries/network/peer_connection.cpp#L68-L162)
-- [stcp_socket.cpp](file://libraries/network/stcp_socket.cpp#L37-L92)
-- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L47-L71)
+- [p2p_plugin.cpp:467-566](file://plugins/p2p/p2p_plugin.cpp#L467-L566)
+- [node.cpp:424-800](file://libraries/network/node.cpp#L424-L800)
+- [peer_connection.cpp:68-162](file://libraries/network/peer_connection.cpp#L68-L162)
+- [stcp_socket.cpp:37-92](file://libraries/network/stcp_socket.cpp#L37-L92)
+- [config.hpp:26-106](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
+- [message.hpp:42-114](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
+- [peer_database.hpp:47-71](file://libraries/network/include/graphene/network/peer_database.hpp#L47-L71)
 
 ## Architecture Overview
 High-level P2P flow from plugin initialization to network operation.
@@ -131,8 +142,8 @@ Node-->>P2P : Status callbacks (connection_count_changed, sync_status)
 ```
 
 **Diagram sources**
-- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp#L531-L566)
-- [node.cpp](file://libraries/network/node.cpp#L776-L790)
+- [p2p_plugin.cpp:531-566](file://plugins/p2p/p2p_plugin.cpp#L531-L566)
+- [node.cpp:776-790](file://libraries/network/node.cpp#L776-L790)
 
 ## Detailed Component Analysis
 
@@ -180,19 +191,20 @@ Node --> PeerConnection : "manages"
 ```
 
 **Diagram sources**
-- [peer_connection.cpp](file://libraries/network/peer_connection.cpp#L68-L162)
-- [stcp_socket.cpp](file://libraries/network/stcp_socket.cpp#L37-L92)
-- [node.cpp](file://libraries/network/node.cpp#L776-L790)
+- [peer_connection.cpp:68-162](file://libraries/network/peer_connection.cpp#L68-L162)
+- [stcp_socket.cpp:37-92](file://libraries/network/stcp_socket.cpp#L37-L92)
+- [node.cpp:776-790](file://libraries/network/node.cpp#L776-L790)
 
 **Section sources**
-- [peer_connection.cpp](file://libraries/network/peer_connection.cpp#L68-L162)
-- [stcp_socket.cpp](file://libraries/network/stcp_socket.cpp#L37-L92)
-- [node.cpp](file://libraries/network/node.cpp#L424-L800)
+- [peer_connection.cpp:68-162](file://libraries/network/peer_connection.cpp#L68-L162)
+- [stcp_socket.cpp:37-92](file://libraries/network/stcp_socket.cpp#L37-L92)
+- [node.cpp:424-800](file://libraries/network/node.cpp#L424-L800)
 
 ### Seed Node Configuration and Discovery
 - Seed Nodes:
   - Configured via CLI option p2p-seed-node and/or config file key p2p-seed-node.
   - Multiple seeds supported; each is added and connected to during startup.
+  - Integrated directly into config.ini without external file management.
 - Peer Database:
   - Tracks potential peers, last seen time, disposition, and connection attempt counts.
   - Used to manage retry/backoff and selection of peers for outbound connections.
@@ -210,13 +222,13 @@ Sync --> End(["Ready"])
 ```
 
 **Diagram sources**
-- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp#L497-L521)
-- [node.cpp](file://libraries/network/node.cpp#L780-L785)
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L47-L71)
+- [p2p_plugin.cpp:497-521](file://plugins/p2p/p2p_plugin.cpp#L497-L521)
+- [node.cpp:780-785](file://libraries/network/node.cpp#L780-L785)
+- [peer_database.hpp:47-71](file://libraries/network/include/graphene/network/peer_database.hpp#L47-L71)
 
 **Section sources**
-- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp#L497-L521)
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L47-L71)
+- [p2p_plugin.cpp:497-521](file://plugins/p2p/p2p_plugin.cpp#L497-L521)
+- [peer_database.hpp:47-71](file://libraries/network/include/graphene/network/peer_database.hpp#L47-L71)
 
 ### Listen Address, Port, and Endpoint Management
 - Listen Endpoint:
@@ -224,8 +236,11 @@ Sync --> End(["Ready"])
   - Node binds to the specified IP:port; supports waiting if port is busy.
   - Actual listening endpoint is recorded and exposed for diagnostics.
 - Ports:
-  - Default P2P port constant is defined; testnet constants differ from mainnet defaults.
+  - Standardized default P2P port is 2001 for mainnet configurations.
+  - Testnet uses 4243 as specified in config_testnet.ini.
   - Users can override port in config or CLI.
+
+**Updated** Mainnet now uses standardized port 2001 instead of legacy 4243.
 
 ```mermaid
 sequenceDiagram
@@ -237,13 +252,13 @@ P2P-->>P2P : Log actual endpoint
 ```
 
 **Diagram sources**
-- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp#L537-L540)
-- [node.cpp](file://libraries/network/node.cpp#L786-L792)
+- [p2p_plugin.cpp:537-540](file://plugins/p2p/p2p_plugin.cpp#L537-L540)
+- [node.cpp:786-792](file://libraries/network/node.cpp#L786-L792)
 
 **Section sources**
-- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp#L487-L495)
-- [node.cpp](file://libraries/network/node.cpp#L786-L792)
-- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L52-L56)
+- [p2p_plugin.cpp:487-495](file://plugins/p2p/p2p_plugin.cpp#L487-L495)
+- [node.cpp:786-792](file://libraries/network/node.cpp#L786-L792)
+- [config.hpp:52-56](file://libraries/network/include/graphene/network/config.hpp#L52-L56)
 
 ### Firewall and NAT Considerations
 - Firewall Detection:
@@ -254,8 +269,8 @@ P2P-->>P2P : Log actual endpoint
   - Outbound connections are initiated to seed nodes and peers discovered via inventory.
 
 **Section sources**
-- [node.cpp](file://libraries/network/node.cpp#L441-L445)
-- [peer_connection.cpp](file://libraries/network/peer_connection.cpp#L169-L206)
+- [node.cpp:441-445](file://libraries/network/node.cpp#L441-L445)
+- [peer_connection.cpp:169-206](file://libraries/network/peer_connection.cpp#L169-L206)
 
 ### Security Settings and Authentication
 - Transport Security:
@@ -266,8 +281,8 @@ P2P-->>P2P : Log actual endpoint
   - No explicit node authentication or TLS certificate verification is implemented in the referenced code; encryption is provided by STCP.
 
 **Section sources**
-- [stcp_socket.cpp](file://libraries/network/stcp_socket.cpp#L49-L66)
-- [node.cpp](file://libraries/network/node.cpp#L223-L239)
+- [stcp_socket.cpp:49-66](file://libraries/network/stcp_socket.cpp#L49-L66)
+- [node.cpp:223-239](file://libraries/network/node.cpp#L223-L239)
 
 ### Connection Limits and Timeouts
 - Connection Limits:
@@ -289,12 +304,12 @@ D --> |No| C
 ```
 
 **Diagram sources**
-- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L48-L50)
-- [node.cpp](file://libraries/network/node.cpp#L638-L640)
+- [config.hpp:48-50](file://libraries/network/include/graphene/network/config.hpp#L48-L50)
+- [node.cpp:638-640](file://libraries/network/node.cpp#L638-L640)
 
 **Section sources**
-- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L48-L50)
-- [node.cpp](file://libraries/network/node.cpp#L518-L526)
+- [config.hpp:48-50](file://libraries/network/include/graphene/network/config.hpp#L48-L50)
+- [node.cpp:518-526](file://libraries/network/node.cpp#L518-L526)
 
 ### Bandwidth Management and Rate Limiting
 - Rate Limiting:
@@ -305,8 +320,8 @@ D --> |No| C
   - Maximum queued message size enforced per-peer; oversized queues trigger closure.
 
 **Section sources**
-- [node.cpp](file://libraries/network/node.cpp#L548-L567)
-- [peer_connection.cpp](file://libraries/network/peer_connection.cpp#L314-L325)
+- [node.cpp:548-567](file://libraries/network/node.cpp#L548-L567)
+- [peer_connection.cpp:314-325](file://libraries/network/peer_connection.cpp#L314-L325)
 
 ### Network Performance Tuning Parameters
 - Defaults and Limits:
@@ -316,7 +331,7 @@ D --> |No| C
   - Prefetch thresholds and batch sizes influence sync throughput.
 
 **Section sources**
-- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L55-L106)
+- [config.hpp:55-106](file://libraries/network/include/graphene/network/config.hpp#L55-L106)
 
 ### Practical Deployment Examples
 
@@ -326,12 +341,14 @@ D --> |No| C
 - Disable external exposure by binding to localhost or internal subnet.
 
 Example keys:
-- p2p-endpoint = 10.0.0.5:4243
+- p2p-endpoint = 10.0.0.5:2001
 - p2p-max-connections = 10
-- p2p-seed-node = 10.0.0.10:4243
+- p2p-seed-node = 10.0.0.10:2001
+
+**Updated** Using standardized port 2001 instead of legacy 4243.
 
 **Section sources**
-- [config.ini](file://share/vizd/config/config.ini#L1-L130)
+- [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
 
 #### Testnet
 - Use testnet-specific defaults and endpoints.
@@ -343,21 +360,23 @@ Example keys:
 - enable-stale-production = true
 
 **Section sources**
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
 
 #### Mainnet-like Deployment
-- Bind to public IP and port; ensure firewall/NAT traversal is configured.
+- Bind to public IP and port 2001; ensure firewall/NAT traversal is configured.
 - Increase p2p-max-connections for high-throughput nodes.
 - Monitor bandwidth and tune rate limiting.
 
 Example keys:
-- p2p-endpoint = 0.0.0.0:4243
+- p2p-endpoint = 0.0.0.0:2001
 - p2p-max-connections = 200
 - p2p-seed-node = (mainnet seed IPs)
 
+**Updated** Mainnet now standardized to port 2001 for consistent deployment.
+
 **Section sources**
-- [config.ini](file://share/vizd/config/config.ini#L1-L130)
-- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L52-L56)
+- [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
+- [config.hpp:52-56](file://libraries/network/include/graphene/network/config.hpp#L52-L56)
 
 ## Dependency Analysis
 ```mermaid
@@ -374,36 +393,34 @@ P2P --> C3["share/vizd/config/config_witness.ini"]
 ```
 
 **Diagram sources**
-- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp#L467-L566)
-- [node.cpp](file://libraries/network/node.cpp#L424-L800)
-- [peer_connection.cpp](file://libraries/network/peer_connection.cpp#L68-L162)
-- [stcp_socket.cpp](file://libraries/network/stcp_socket.cpp#L37-L92)
-- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L47-L71)
-- [config.ini](file://share/vizd/config/config.ini#L1-L130)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107)
+- [p2p_plugin.cpp:467-566](file://plugins/p2p/p2p_plugin.cpp#L467-L566)
+- [node.cpp:424-800](file://libraries/network/node.cpp#L424-L800)
+- [peer_connection.cpp:68-162](file://libraries/network/peer_connection.cpp#L68-L162)
+- [stcp_socket.cpp:37-92](file://libraries/network/stcp_socket.cpp#L37-L92)
+- [config.hpp:26-106](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
+- [message.hpp:42-114](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
+- [peer_database.hpp:47-71](file://libraries/network/include/graphene/network/peer_database.hpp#L47-L71)
+- [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
+- [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_witness.ini:1-107](file://share/vizd/config/config_witness.ini#L1-L107)
 
 **Section sources**
-- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp#L467-L566)
-- [node.cpp](file://libraries/network/node.cpp#L424-L800)
-- [peer_connection.cpp](file://libraries/network/peer_connection.cpp#L68-L162)
-- [stcp_socket.cpp](file://libraries/network/stcp_socket.cpp#L37-L92)
-- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L47-L71)
-- [config.ini](file://share/vizd/config/config.ini#L1-L130)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107)
+- [p2p_plugin.cpp:467-566](file://plugins/p2p/p2p_plugin.cpp#L467-L566)
+- [node.cpp:424-800](file://libraries/network/node.cpp#L424-L800)
+- [peer_connection.cpp:68-162](file://libraries/network/peer_connection.cpp#L68-L162)
+- [stcp_socket.cpp:37-92](file://libraries/network/stcp_socket.cpp#L37-L92)
+- [config.hpp:26-106](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
+- [message.hpp:42-114](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
+- [peer_database.hpp:47-71](file://libraries/network/include/graphene/network/peer_database.hpp#L47-L71)
+- [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
+- [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_witness.ini:1-107](file://share/vizd/config/config_witness.ini#L1-L107)
 
 ## Performance Considerations
 - Tune p2p-max-connections to balance throughput and resource usage.
 - Monitor bandwidth metrics and adjust rate limiting if necessary.
 - Prefer outbound connections to stable, high-bandwidth peers.
 - Keep inventory sizes reasonable to avoid memory pressure during floods.
-
-[No sources needed since this section provides general guidance]
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -423,24 +440,24 @@ Operational hooks:
 - Logs for P2P subsystem are configurable via logging appenders.
 
 **Section sources**
-- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp#L403-L405)
-- [config.ini](file://share/vizd/config/config.ini#L112-L130)
+- [p2p_plugin.cpp:403-405](file://plugins/p2p/p2p_plugin.cpp#L403-L405)
+- [config.ini:112-136](file://share/vizd/config/config.ini#L112-L136)
 
 ## Conclusion
-The VIZ CPP Node P2P stack provides a robust, encrypted transport with configurable connection limits, bandwidth monitoring, and seed-driven discovery. Correctly setting listen endpoints, ports, and connection caps, combined with appropriate firewall and NAT configuration, enables reliable operation across private, testnet, and mainnet environments. Monitoring and tuning of rate limits and inventory sizes further improves resilience under load.
-
-[No sources needed since this section summarizes without analyzing specific files]
+The VIZ CPP Node P2P stack provides a robust, encrypted transport with configurable connection limits, bandwidth monitoring, and seed-driven discovery. The recent changes to standardize port 2001 for mainnet deployments and integrate seed node management through config.ini simplify configuration and improve consistency. Correctly setting listen endpoints, ports, and connection caps, combined with appropriate firewall and NAT configuration, enables reliable operation across private, testnet, and mainnet environments. Monitoring and tuning of rate limits and inventory sizes further improves resilience under load.
 
 ## Appendices
 
 ### Configuration Options Summary
-- p2p-endpoint: Local IP:port to listen for P2P connections.
+- p2p-endpoint: Local IP:port to listen for P2P connections (standardized to 2001 for mainnet).
 - p2p-max-connections: Maximum number of simultaneous connections.
-- p2p-seed-node: Remote peer IP:port to bootstrap discovery.
+- p2p-seed-node: Remote peer IP:port to bootstrap discovery (configured in config.ini).
 - p2p-force-validate: Force validation of all transactions.
 
+**Updated** Mainnet now uses standardized port 2001 and integrated seed node configuration.
+
 **Section sources**
-- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp#L467-L482)
-- [config.ini](file://share/vizd/config/config.ini#L1-L130)
-- [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107)
+- [p2p_plugin.cpp:467-482](file://plugins/p2p/p2p_plugin.cpp#L467-L482)
+- [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
+- [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
+- [config_witness.ini:1-107](file://share/vizd/config/config_witness.ini#L1-L107)

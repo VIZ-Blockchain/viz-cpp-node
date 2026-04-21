@@ -11,19 +11,22 @@
 - [snapshot-testnet.json](file://share/vizd/snapshot-testnet.json)
 - [snapshot-plugin.md](file://documentation/snapshot-plugin.md)
 - [plugin.cpp](file://plugins/chain/plugin.cpp)
+- [plugin.hpp](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp)
 - [database.cpp](file://libraries/chain/database.cpp)
 - [witness.cpp](file://plugins/witness/witness.cpp)
 - [dlt_block_log.cpp](file://libraries/chain/dlt_block_log.cpp)
 - [file_mutex.cpp](file://thirdparty/fc/src/interprocess/file_mutex.cpp)
+- [config.ini](file://share/vizd/config/config.ini)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced snapshot creation with asynchronous non-blocking implementation to prevent read-lock timeouts
-- Implemented witness-aware deferral mechanism to avoid interrupting witness block production
-- Added comprehensive error handling improvements for unlinkable_block_exception scenarios
-- Updated watchdog mechanism with dedicated server thread for improved reliability
-- Enhanced P2P synchronization with improved peer connection handling
+- Enhanced snapshot creation with comprehensive configuration options including multiple trusted snapshot peers, snapshot scheduling parameters, and serving options
+- Added watchdog monitoring system with dedicated server thread for improved reliability and automatic recovery
+- Implemented automatic snapshot discovery functionality with --snapshot-auto-latest option
+- Enhanced recovery workflow with integrated DLT replay and stalled sync detection
+- Added comprehensive anti-spam protection with new configuration options and improved trust enforcement
+- Enhanced P2P synchronization with improved peer connection handling and diagnostic tools
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -52,7 +55,7 @@
 
 The Snapshot Plugin System is a comprehensive solution for VIZ blockchain nodes that enables efficient state synchronization through distributed ledger technology (DLT). This system provides mechanisms for creating, loading, serving, and downloading blockchain state snapshots, significantly reducing bootstrap times and enabling rapid node initialization.
 
-**Updated** The system has been enhanced with asynchronous non-blocking snapshot creation that prevents read-lock timeouts for API and P2P threads, witness-aware deferral mechanism that avoids interrupting witness block production, comprehensive error handling for unlinkable_block_exception scenarios, and watchdog mechanisms for improved server reliability. These enhancements provide robust error handling for recovery scenarios, automatic peer-to-peer snapshot synchronization for empty state nodes, and advanced watchdog mechanisms for DLT mode operation.
+**Updated** The system has been enhanced with comprehensive snapshot plugin configuration supporting multiple trusted snapshot peers, snapshot scheduling parameters, serving options, watchdog monitoring, automatic snapshot discovery, integrated recovery workflow, and enhanced anti-spam protection. These enhancements provide robust error handling for recovery scenarios, automatic peer-to-peer snapshot synchronization for empty state nodes, and advanced watchdog mechanisms for DLT mode operation.
 
 The plugin addresses the fundamental challenge of blockchain bootstrapping by allowing nodes to jump directly to a recent state rather than replaying thousands of blocks. This is particularly crucial for VIZ's social media and content platform characteristics, where rapid deployment and scaling are essential.
 
@@ -73,15 +76,16 @@ end
 subgraph "Configuration"
 H[share/vizd/] --> I[snapshot.json]
 H --> J[snapshot-testnet.json]
-K[documentation/] --> L[snapshot-plugin.md]
+H --> K[config.ini]
+L[documentation/] --> M[snapshot-plugin.md]
 end
 subgraph "Build System"
-M[CMakeLists.txt] --> N[Target: graphene_snapshot]
-N --> O[Dependencies]
-O --> P[graphene_chain]
-O --> Q[appbase]
-O --> R[chainbase]
-O --> S[fc]
+N[CMakeLists.txt] --> O[Target: graphene_snapshot]
+O --> P[Dependencies]
+P --> Q[graphene_chain]
+P --> R[appbase]
+P --> S[chainbase]
+P --> T[fc]
 end
 D --> G
 E --> G
@@ -909,7 +913,7 @@ flowchart TD
 Start([Incoming Connection]) --> CheckTrust{"Allow Only Trusted?"}
 CheckTrust --> |Yes| ValidateTrust{"IP in Trusted List?"}
 CheckTrust --> |No| CheckConcurrent{"Concurrent Connections < 5?"}
-ValidateTrust --> |No| DenyUntrusted["Send DENY_UNTRUSTED"]
+ValidateTrust --> |No| DenyUntrusted["Send DENY_UNtrusted"]
 ValidateTrust --> |Yes| CheckConcurrent
 CheckConcurrent --> |No| DenyMaxConnections["Send DENY_MAX_CONNECTIONS"]
 CheckConcurrent --> |Yes| CheckSession{"Active Sessions < 2/IP?"}
@@ -1172,7 +1176,7 @@ The plugin includes comprehensive enhanced diagnostic capabilities:
 
 The Snapshot Plugin System represents a sophisticated solution for blockchain state synchronization that significantly improves the VIZ node bootstrapping experience. Through careful architectural design, comprehensive feature coverage, and robust error handling, it enables efficient deployment and scaling of VIZ-based applications.
 
-**Updated** The recent enhancements with asynchronous non-blocking snapshot creation, witness-aware deferral mechanism, comprehensive error handling for unlinkable_block_exception scenarios, watchdog mechanisms for server reliability, automatic snapshot discovery functionality, integrated recovery workflow, DLT replay integration, and enhanced anti-spam protection have significantly strengthened the security, reliability, and resource management capabilities of the snapshot distribution services.
+**Updated** The recent enhancements with comprehensive snapshot plugin configuration supporting multiple trusted snapshot peers, snapshot scheduling parameters, serving options, watchdog monitoring, automatic snapshot discovery, integrated recovery workflow, and enhanced anti-spam protection have significantly strengthened the security, reliability, and resource management capabilities of the snapshot distribution services.
 
 Key strengths of the system include its modular architecture, extensive configuration options, built-in performance optimizations, comprehensive security features, automatic snapshot discovery, integrated recovery workflow, DLT replay integration, watchdog monitoring, asynchronous execution system, and comprehensive diagnostic capabilities. The plugin seamlessly integrates with existing VIZ infrastructure while providing powerful new capabilities for state management, peer-to-peer synchronization, automatic recovery from corrupted states, and intelligent witness-aware scheduling.
 
