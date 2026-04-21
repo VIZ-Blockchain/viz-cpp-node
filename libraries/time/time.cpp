@@ -1,6 +1,7 @@
 #include <graphene/time/time.hpp>
 
 #include <fc/exception/exception.hpp>
+#include <fc/log/logger.hpp>
 #include <fc/network/ntp.hpp>
 #include <fc/thread/mutex.hpp>
 #include <fc/thread/scoped_lock.hpp>
@@ -33,7 +34,13 @@ namespace graphene {
                         auto colon = s.rfind(':');
                         if (colon != std::string::npos) {
                             std::string host = s.substr(0, colon);
-                            uint16_t port = static_cast<uint16_t>(std::stoul(s.substr(colon + 1)));
+                            uint16_t port = uint16_t(123);
+                            try {
+                                port = static_cast<uint16_t>(std::stoul(s.substr(colon + 1)));
+                            } catch (const std::exception& ex) {
+                                wlog("NTP: invalid port in server entry '${s}', using 123: ${e}",
+                                     ("s", s)("e", ex.what()));
+                            }
                             parsed.emplace_back(host, port);
                         } else {
                             parsed.emplace_back(s, uint16_t(123));

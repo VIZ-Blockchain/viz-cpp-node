@@ -1124,15 +1124,17 @@ namespace graphene { namespace chain {
                         if (msg.find("boost::interprocess::bad_alloc") == msg.npos) {
                             throw e;
                         }
-                        // Out of shared memory. Schedule a deferred resize and let the
-                        // exception propagate. The block will be retried (P2P re-sends it,
-                        // or the witness retry loop in maybe_produce_block calls us again).
-                        // On the next push_block() call, apply_pending_resize() at the top
-                        // will perform the resize safely before any database access.
+                        // Out of shared memory. Schedule a deferred resize.
+                        // Return false (block not applied) instead of throwing so that:
+                        //   - the P2P layer does not penalise / disconnect the peer;
+                        //   - witness slot-miss is logged but the node stays connected.
+                        // apply_pending_resize() at the top of the next push_block() call
+                        // will perform the resize safely before any database access, and
+                        // the missed block will be re-received during normal sync.
                         wlog("Received bad_alloc exception. Scheduling deferred resize.");
                         set_reserved_memory(free_memory());
                         _resize(new_block.block_num()); // deferred (immediate=false by default)
-                        throw e;
+                        result = false;
                     }
                 });
             });
