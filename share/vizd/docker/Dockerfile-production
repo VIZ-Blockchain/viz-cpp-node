@@ -89,7 +89,6 @@ RUN set -xe ;\
 COPY share/vizd/vizd.sh /etc/service/vizd/run
 COPY share/vizd/snapshot.json /var/lib/vizd
 COPY share/vizd/config/config.ini /etc/vizd/config.ini
-COPY share/vizd/seednodes /etc/vizd/seednodes
 
 # rpc services:
 # http
