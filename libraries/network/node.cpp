@@ -3256,7 +3256,15 @@ namespace graphene {
                                 peer->inhibit_fetching_sync_blocks = true;
                                 peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
                             } else {
-                                peers_to_disconnect[peer] = std::make_pair(std::string("You offered us a block that we reject as invalid"), fc::oexception(handle_message_exception));
+                                // Soft-ban instead of disconnect. During sync, a rejected
+                                // block usually means the peer is on a stale fork.
+                                // Disconnecting would cause a reconnect loop; soft-ban
+                                // gives the fork time to resolve organically.
+                                wlog("Soft-banning peer ${endpoint} for 1 hour: rejected sync block #${num}",
+                                        ("endpoint", peer->get_remote_endpoint())
+                                        ("num", block_message_to_send.block.block_num()));
+                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
+                                peer->inhibit_fetching_sync_blocks = true;
                             }
                         }
                     }
