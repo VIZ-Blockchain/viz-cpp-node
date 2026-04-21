@@ -30,12 +30,9 @@ docker logs -f vizd
 
 ## Seed Nodes
 
-A list of some seed nodes to get you started can be found in
-[share/vizd/seednodes](share/vizd/seednodes).
-
-This same file is baked into the docker images and can be overridden by
-setting `VIZD_SEED_NODES` in the container environment at `docker run`
-time to a whitespace delimited list of seed nodes (with port).
+Seed nodes are configured via the `p2p-seed-node` option in `config.ini`.
+Pre-populated seed node entries can be found in the config templates under
+[share/vizd/config/](share/vizd/config/).
 
 ## Building docker images manually
 
