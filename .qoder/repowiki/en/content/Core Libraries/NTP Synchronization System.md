@@ -8,7 +8,15 @@
 - [time.cpp](file://libraries/time/time.cpp)
 - [main.cpp](file://programs/vizd/main.cpp)
 - [ntp_test.cpp](file://thirdparty/fc/tests/network/ntp_test.cpp)
+- [witness.cpp](file://plugins/witness/witness.cpp)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Enhanced NTP server configuration validation with improved port parsing error handling
+- Added comprehensive error validation for NTP server configuration strings
+- Updated configuration parsing section to reflect new error handling mechanisms
+- Revised troubleshooting guide to address new validation scenarios
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -28,6 +36,8 @@ The NTP (Network Time Protocol) Synchronization System in the VIZ blockchain nod
 
 The NTP system operates independently of the main blockchain processing but integrates seamlessly with the time management layer to provide synchronized time services to all components of the VIZ node. It implements robust error handling, statistical filtering, and automatic failover mechanisms to maintain reliable time synchronization even in challenging network conditions.
 
+**Updated** Enhanced with comprehensive server configuration validation and improved port parsing error handling for more reliable NTP server setup.
+
 ## System Architecture
 
 The NTP synchronization system follows a layered architecture with clear separation of concerns:
@@ -41,6 +51,7 @@ end
 subgraph "Time Management Layer"
 GrapheneTime[Graphene Time Manager]
 Config[Configuration Manager]
+Validation[Server Validation]
 end
 subgraph "NTP Service Layer"
 FCNTP[FC NTP Service]
@@ -53,13 +64,14 @@ Network[Internet]
 end
 VIZD --> GrapheneTime
 Plugins --> GrapheneTime
+GrapheneTime --> Validation
 GrapheneTime --> FCNTP
 FCNTP --> Thread
 Thread --> Socket
 Socket --> NTPServers
 Network --> NTPServers
 Config -.-> GrapheneTime
-Config -.-> FCNTP
+Validation -.-> GrapheneTime
 ```
 
 **Diagram sources**
@@ -70,7 +82,7 @@ Config -.-> FCNTP
 The architecture consists of three main layers:
 
 1. **Application Layer**: The main VIZ node application and blockchain plugins that consume time services
-2. **Time Management Layer**: Graphene's time management system that provides a unified interface for time operations
+2. **Time Management Layer**: Graphene's time management system that provides a unified interface for time operations and includes enhanced server validation
 3. **NTP Service Layer**: The underlying FC (Fast Crypto) NTP implementation with dedicated worker threads
 
 ## Core Components
@@ -225,6 +237,39 @@ The system implements a sophisticated statistical filtering mechanism to reject 
 
 ## Time Management Layer
 
+### Enhanced Server Configuration Validation
+
+**Updated** The Graphene time manager now includes comprehensive validation for NTP server configuration strings with improved error handling:
+
+```mermaid
+flowchart TD
+Start([Server Configuration Input]) --> ParseString["Parse Server String"]
+ParseString --> CheckColon{"Contains ':'?"}
+CheckColon --> |Yes| ExtractHostPort["Extract Host and Port"]
+CheckColon --> |No| UseDefaultPort["Use Default Port 123"]
+ExtractHostPort --> ValidatePort["Validate Port Number"]
+ValidatePort --> ParseSuccess{"Parse Success?"}
+ParseSuccess --> |Yes| AddToParsed["Add to Parsed Servers"]
+ParseSuccess --> |No| LogWarning["Log Warning: Invalid Port"]
+LogWarning --> UseDefaultPort["Use Default Port 123"]
+UseDefaultPort --> AddToParsed
+AddToParsed --> NextServer{"More Servers?"}
+NextServer --> |Yes| ParseString
+NextServer --> |No| ApplyToService["Apply to NTP Service"]
+ApplyToService --> ServiceReady([Service Ready])
+```
+
+**Diagram sources**
+- [time.cpp:29-57](file://libraries/time/time.cpp#L29-L57)
+
+The validation process includes:
+
+1. **String Parsing**: Each server string is parsed for host:port format
+2. **Port Extraction**: Port numbers are extracted using `rfind(':')` method
+3. **Error Handling**: Invalid port numbers are caught with try-catch blocks
+4. **Fallback Logic**: Invalid ports fall back to default port 123
+5. **Logging**: Warning messages are logged for invalid configurations
+
 ### Time Service Lifecycle
 
 The Graphene time manager implements a lazy initialization pattern to ensure efficient resource usage:
@@ -239,8 +284,10 @@ DefaultConfig --> InitService
 InitService --> CheckService{"Service Exists?"}
 CheckService --> |No| CreateService["Create New NTP Service"]
 CheckService --> |Yes| UseExisting["Use Existing Service"]
-CreateService --> ApplyConfig["Apply Configuration"]
-ApplyConfig --> Ready([Service Ready])
+CreateService --> ApplyConfig["Apply Configuration with Validation"]
+ApplyConfig --> ValidateServers["Validate Server Configurations"]
+ValidateServers --> ApplyToService["Apply Validated Configuration"]
+ApplyToService --> Ready([Service Ready])
 UseExisting --> Ready
 Ready --> RequestTime["Handle Time Requests"]
 RequestTime --> UpdateCheck{"Update Needed?"}
@@ -330,7 +377,7 @@ The NTP system provides extensive runtime configuration capabilities:
 
 | Configuration Option | Type | Default | Description |
 |---------------------|------|---------|-------------|
-| `servers` | `vector<string>` | `["pool.ntp.org:123", "time.google.com:123", "time.cloudflare.com:123"]` | NTP server pool |
+| `servers` | `vector<string>` | `["pool.ntp.org:123", "time.google.com:123", "time.cloudflare.com:123"]` | NTP server pool with host:port format |
 | `request_interval_sec` | `uint32_t` | 900 | Interval between regular updates (seconds) |
 | `retry_interval_sec` | `uint32_t` | 300 | Retry interval for failed requests (seconds) |
 | `round_trip_threshold_ms` | `uint32_t` | 150 | Maximum acceptable round-trip delay (milliseconds) |
@@ -338,11 +385,13 @@ The NTP system provides extensive runtime configuration capabilities:
 | `rejection_threshold_pct` | `uint32_t` | 50 | Percentage deviation threshold |
 | `rejection_min_threshold_ms` | `uint32_t` | 5 | Minimum absolute deviation threshold (milliseconds) |
 
-### Configuration Application Process
+### Enhanced Configuration Application Process
+
+**Updated** The configuration application process now includes comprehensive server validation:
 
 ```mermaid
 flowchart TD
-Config[New Configuration] --> ParseServers["Parse Server Strings"]
+Config[New Configuration] --> ParseServers["Parse Server Strings with Validation"]
 ParseServers --> ValidateIntervals["Validate Intervals"]
 ValidateIntervals --> ValidateThresholds["Validate Thresholds"]
 ValidateThresholds --> ApplyToService["Apply to Active Service"]
@@ -355,11 +404,23 @@ InitializeTasks --> ServiceReady
 ```
 
 **Diagram sources**
-- [time.cpp:27-50](file://libraries/time/time.cpp#L27-L50)
+- [time.cpp:29-57](file://libraries/time/time.cpp#L29-L57)
+
+### Server Configuration Validation
+
+**New** The system now validates NTP server configurations with comprehensive error handling:
+
+The server configuration validation process includes:
+
+1. **Format Validation**: Each server string is checked for proper host:port format
+2. **Port Parsing**: Port numbers are extracted and validated using `std::stoul()`
+3. **Error Recovery**: Invalid port numbers trigger fallback to default port 123
+4. **Logging**: Warning messages are generated for invalid configurations
+5. **Graceful Degradation**: Invalid entries don't prevent service initialization
 
 **Section sources**
 - [time.hpp:17-40](file://libraries/time/include/graphene/time/time.hpp#L17-L40)
-- [time.cpp:27-50](file://libraries/time/time.cpp#L27-L50)
+- [time.cpp:29-57](file://libraries/time/time.cpp#L29-L57)
 
 ## Performance Considerations
 
@@ -442,6 +503,40 @@ Key factors affecting NTP system scalability:
 3. Expand history window
 4. Optimize network routing
 
+### Server Configuration Issues
+
+**Updated** New troubleshooting scenarios for enhanced server validation:
+
+#### Invalid Server Configuration Entries
+
+**Symptoms**: Warning messages about invalid port numbers in logs
+
+**Causes**:
+- Malformed server strings (missing or invalid port numbers)
+- Non-numeric port values
+- Missing colons in server format
+
+**Solutions**:
+1. Verify server strings use format `host:port`
+2. Ensure port numbers are valid integers between 1-65535
+3. Check for typos in server hostnames
+4. Remove entries with invalid configurations
+
+#### Port Parsing Errors
+
+**Symptoms**: Automatic fallback to default port 123 in logs
+
+**Causes**:
+- Invalid port numbers in configuration
+- Out-of-range port values
+- Non-integer port specifications
+
+**Solutions**:
+1. Use valid port numbers (1-65535)
+2. Ensure ports are accessible and not blocked by firewalls
+3. Test port connectivity using network tools
+4. Consider using default port 123 for standard NTP servers
+
 ### Diagnostic Commands
 
 The system provides several diagnostic capabilities:
@@ -455,6 +550,9 @@ watch -n 1 'echo "Current time offset: $(./cli_wallet get_ntp_offset)"'
 
 # Verify NTP server connectivity
 nslookup pool.ntp.org
+
+# Check for server configuration warnings
+tail -f logs/vizd.log | grep "NTP: invalid port"
 ```
 
 **Section sources**
@@ -469,6 +567,7 @@ The NTP Synchronization System in the VIZ blockchain node represents a robust, p
 - **Statistical Filtering**: Advanced outlier detection prevents time corruption
 - **Thread Safety**: Concurrent access patterns with proper synchronization
 - **Configurability**: Extensive runtime tuning options for various environments
+- **Enhanced Validation**: Comprehensive server configuration validation with error recovery
 - **Integration**: Seamless integration with blockchain operations and APIs
 
 **Operational Benefits**:
@@ -476,5 +575,8 @@ The NTP Synchronization System in the VIZ blockchain node represents a robust, p
 - **Network Coordination**: Enables proper block production and transaction validation
 - **Reliability**: Maintains service availability even under adverse conditions
 - **Performance**: Optimized for minimal resource usage while maximizing accuracy
+- **Resilience**: Graceful handling of configuration errors and network issues
+
+**Updated** The recent enhancements to server configuration validation significantly improve the system's robustness by automatically handling malformed server entries and providing clear error feedback. This makes the NTP system more resilient to configuration mistakes while maintaining backward compatibility.
 
 The system's modular design allows for easy maintenance and extension, making it well-suited for the evolving needs of blockchain infrastructure. Its integration with the broader VIZ ecosystem demonstrates thoughtful engineering that prioritizes both technical excellence and operational practicality.

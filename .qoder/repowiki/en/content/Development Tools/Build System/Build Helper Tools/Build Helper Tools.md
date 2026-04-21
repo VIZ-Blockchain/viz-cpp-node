@@ -9,6 +9,9 @@
 - [pretty_schema.py](file://programs/util/pretty_schema.py)
 - [schema_test.cpp](file://programs/util/schema_test.cpp)
 - [configure_build.py](file://programs/build_helpers/configure_build.py)
+- [install-deps-linux.sh](file://install-deps-linux.sh)
+- [build-linux.sh](file://build-linux.sh)
+- [build-mac.sh](file://build-mac.sh)
 - [CMakeLists.txt (build_helpers)](file://programs/build_helpers/CMakeLists.txt)
 - [CMakeLists.txt (util)](file://programs/util/CMakeLists.txt)
 - [building.md](file://documentation/building.md)
@@ -17,9 +20,11 @@
 
 ## Update Summary
 **Changes Made**
-- Updated cat-parts documentation to reflect the code quality improvement with the missing `<algorithm>` header inclusion
-- Enhanced compilation correctness section to highlight the importance of proper header inclusion
-- Added best practices section for header management in C++ build tools
+- Added comprehensive documentation for the new install-deps-linux.sh dependency installer script
+- Updated build system architecture documentation to reflect the separation of dependency management from the main build process
+- Revised build-linux.sh documentation to reflect the use of --clean instead of --skip-deps option
+- Enhanced security practices documentation highlighting the improved build system architecture
+- Updated practical examples to demonstrate the new two-script build workflow
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -30,20 +35,26 @@
 6. [Dependency Analysis](#dependency-analysis)
 7. [Performance Considerations](#performance-considerations)
 8. [Compilation Correctness and Best Practices](#compilation-correctness-and-best-practices)
-9. [Troubleshooting Guide](#troubleshooting-guide)
-10. [Conclusion](#conclusion)
-11. [Appendices](#appendices)
+9. [Security and Build System Architecture](#security-and-build-system-architecture)
+10. [Troubleshooting Guide](#troubleshooting-guide)
+11. [Conclusion](#conclusion)
+12. [Appendices](#appendices)
 
 ## Introduction
-This document describes the VIZ C++ Node build helper tools that streamline development tasks such as assembling source fragments, validating reflection metadata, scaffolding custom plugins, generating formatted schema representations, and validating database schemas. It explains command-line usage, input/output formats, and integration with the main build process. Practical examples and best practices are included to maintain code organization and reduce manual errors during development.
+This document describes the VIZ C++ Node build helper tools that streamline development tasks such as assembling source fragments, validating reflection metadata, scaffolding custom plugins, generating formatted schema representations, and validating database schemas. It explains command-line usage, input/output formats, and integration with the main build process. The build system has been enhanced with a new dependency installer script that separates system dependency management from the main build process, improving security and maintainability.
 
-**Updated** Enhanced with improved code quality practices and compilation correctness standards.
+**Updated** Enhanced with new dependency management capabilities and improved build system architecture.
 
 ## Project Structure
-The build helper tools live under programs/build_helpers and programs/util. They integrate with CMake via dedicated CMakeLists.txt files and complement the broader build system described in documentation/building.md.
+The build helper tools live under programs/build_helpers and programs/util. They integrate with CMake via dedicated CMakeLists.txt files and complement the broader build system described in documentation/building.md. The system now includes a new dependency installer script that manages system-level dependencies separately from the main build process.
 
 ```mermaid
 graph TB
+subgraph "Build System Scripts"
+IDL["install-deps-linux.sh<br/>✓ New Dependency Installer"]
+BL["build-linux.sh<br/>✓ Updated with --clean Option"]
+BM["build-mac.sh<br/>✓ Maintains --skip-deps Option"]
+end
 subgraph "Build Helpers"
 CP["cat-parts.cpp<br/>✓ Algorithm Header Included"]
 CPY["cat_parts.py"]
@@ -59,6 +70,9 @@ subgraph "CMake Integration"
 CL1["programs/build_helpers/CMakeLists.txt"]
 CL2["programs/util/CMakeLists.txt"]
 end
+IDL --> BL
+BL --> CL1
+BM --> CL1
 CP --> CL1
 CPY --> CL1
 CR --> CL1
@@ -69,24 +83,33 @@ ST -. "commented in CMake" .-> CL2
 ```
 
 **Diagram sources**
+- [install-deps-linux.sh:1-113](file://install-deps-linux.sh#L1-L113)
+- [build-linux.sh:1-191](file://build-linux.sh#L1-L191)
+- [build-mac.sh:1-242](file://build-mac.sh#L1-L242)
 - [CMakeLists.txt (build_helpers):1-8](file://programs/build_helpers/CMakeLists.txt#L1-L8)
 - [CMakeLists.txt (util):1-69](file://programs/util/CMakeLists.txt#L1-L69)
 
 **Section sources**
 - [CMakeLists.txt (build_helpers):1-8](file://programs/build_helpers/CMakeLists.txt#L1-L8)
 - [CMakeLists.txt (util):1-69](file://programs/util/CMakeLists.txt#L1-L69)
-- [building.md:1-212](file://documentation/building.md#L1-L212)
+- [building.md:183-220](file://documentation/building.md#L183-L220)
 
 ## Core Components
-- cat-parts: Concatenates hardfork fragment files (.hf) from a directory into a single output file, with up-to-date checks and minimal rebuild behavior. **Enhanced with proper algorithm header inclusion for compilation correctness**.
-- cat_parts.py: Python counterpart to cat-parts with similar behavior and robustness for directory creation and file existence checks.
-- check_reflect.py: Validates FC_REFLECT and FC_REFLECT_DERIVED declarations against Doxygen XML class member lists to ensure reflection parity.
-- newplugin.py: Generates a complete plugin skeleton with standardized file structure and boilerplate code for a given provider and plugin name.
-- pretty_schema.py: Queries a local debug node JSON-RPC endpoint to fetch and pretty-print the schema representation.
-- schema_test.cpp: Demonstrates retrieving and printing schema information for specific chain objects using the schema API.
-- configure_build.py: A helper to invoke cmake with sensible defaults and optional cross-compilation and external library flags.
+- **install-deps-linux.sh**: New dependency installer script that installs all required system dependencies for VIZ C++ Node builds. Requires root privileges and supports both Ubuntu/Debian (apt-get) and Fedora/RHEL (dnf) package managers.
+- **build-linux.sh**: Enhanced Linux build script that uses --clean option instead of --skip-deps, improving build system architecture and security practices by separating dependency management from the main build process.
+- **build-mac.sh**: macOS build script that maintains the --skip-deps option for Homebrew dependency management.
+- **cat-parts**: Concatenates hardfork fragment files (.hf) from a directory into a single output file, with up-to-date checks and minimal rebuild behavior. **Enhanced with proper algorithm header inclusion for compilation correctness**.
+- **cat_parts.py**: Python counterpart to cat-parts with similar behavior and robustness for directory creation and file existence checks.
+- **check_reflect.py**: Validates FC_REFLECT and FC_REFLECT_DERIVED declarations against Doxygen XML class member lists to ensure reflection parity.
+- **newplugin.py**: Generates a complete plugin skeleton with standardized file structure and boilerplate code for a given provider and plugin name.
+- **pretty_schema.py**: Queries a local debug node JSON-RPC endpoint to fetch and pretty-print the schema representation.
+- **schema_test.cpp**: Demonstrates retrieving and printing schema information for specific chain objects using the schema API.
+- **configure_build.py**: A helper to invoke cmake with sensible defaults and optional cross-compilation and external library flags.
 
 **Section sources**
+- [install-deps-linux.sh:1-113](file://install-deps-linux.sh#L1-L113)
+- [build-linux.sh:17-29](file://build-linux.sh#L17-L29)
+- [build-mac.sh:15-26](file://build-mac.sh#L15-L26)
 - [cat-parts.cpp:1-68](file://programs/build_helpers/cat-parts.cpp#L1-L68)
 - [cat_parts.py:1-74](file://programs/build_helpers/cat_parts.py#L1-L74)
 - [check_reflect.py:1-160](file://programs/build_helpers/check_reflect.py#L1-L160)
@@ -102,14 +125,18 @@ The tools are designed to be invoked from the command line and integrated into h
 - XML parsing for Doxygen-generated class member lists
 - JSON-RPC calls for schema retrieval
 - CMake targets for compilation and installation
+- **New**: Separated dependency management system for improved security and maintainability
 
 ```mermaid
 sequenceDiagram
 participant Dev as "Developer"
+participant Dep as "System Dependencies"
 participant CMake as "CMake Targets"
 participant Tool as "Build Helper Tool"
 participant FS as "Filesystem"
-Dev->>CMake : "Configure and build"
+Dev->>Dep : "Install system dependencies (root)"
+Dep-->>Dev : "Dependencies ready"
+Dev->>CMake : "Configure and build (regular user)"
 CMake->>Tool : "Execute helper (e.g., cat_parts.py)"
 Tool->>FS : "Read input directory and write output"
 FS-->>Tool : "Success/Failure"
@@ -117,9 +144,91 @@ Tool-->>CMake : "Exit code"
 CMake-->>Dev : "Build artifacts ready"
 ```
 
+**Updated** Enhanced with new dependency management workflow that separates system-level operations from build operations.
+
 [No sources needed since this diagram shows conceptual workflow, not actual code structure]
 
 ## Detailed Component Analysis
+
+### install-deps-linux.sh (New)
+A comprehensive dependency installer script that manages all system-level dependencies required for VIZ C++ Node builds. This script separates dependency management from the main build process, improving security and maintainability.
+
+Key behaviors:
+- Requires root privileges (sudo) for system-level package installation
+- Supports Ubuntu/Debian systems using apt-get package manager
+- Supports Fedora/RHEL systems using dnf package manager
+- Installs essential build tools: cmake, git, ccache, build-essential
+- Installs Boost libraries with comprehensive development headers
+- Installs compression libraries: bzip2, lzma, zstd, zlib
+- Installs SSL/TLS support and development tools
+- Provides color-coded status messages and error handling
+- Automatically detects package manager and installs appropriate dependencies
+
+```mermaid
+flowchart TD
+Start(["Start"]) --> RootCheck["Check for root privileges"]
+RootCheck --> |No| Error["Print error and exit"]
+RootCheck --> |Yes| Detect["Detect package manager"]
+Detect --> |apt-get| Ubuntu["Install Ubuntu/Debian deps"]
+Detect --> |dnf| Fedora["Install Fedora/RHEL deps"]
+Detect --> |Other| Warn["Warn unsupported package manager"]
+Ubuntu --> Success["Print success message"]
+Fedora --> Success
+Warn --> Exit["Exit with error"]
+Error --> Exit
+Success --> Next["Next step: ./build-linux.sh"]
+```
+
+**Diagram sources**
+- [install-deps-linux.sh:28-106](file://install-deps-linux.sh#L28-L106)
+
+**Section sources**
+- [install-deps-linux.sh:1-113](file://install-deps-linux.sh#L1-L113)
+
+### build-linux.sh (Enhanced)
+Enhanced Linux build script that now uses --clean option instead of --skip-deps, reflecting the improved separation between dependency management and build processes. This change improves security by ensuring clean builds and better maintainability.
+
+Key behaviors:
+- **Updated**: Uses --clean option for clean build directory management
+- **Enhanced**: Improved argument parsing with comprehensive build options
+- **Maintained**: Preserves all existing build configurations
+- **Improved**: Better error handling and user feedback
+- **Security**: Refuses to run as root (build must run as regular user)
+
+```mermaid
+flowchart TD
+Start(["Start"]) --> Parse["Parse CLI arguments"]
+Parse --> Clean{"--clean option?"}
+Clean --> |Yes| Remove["Remove existing build directory"]
+Clean --> |No| Continue["Continue with existing build dir"]
+Remove --> Continue
+Continue --> Config["Configure with CMake"]
+Config --> Build["Build with make"]
+Build --> Install{"--install option?"}
+Install --> |Yes| DoInstall["Run make install"]
+Install --> |No| Skip["Skip installation"]
+DoInstall --> Done(["Complete"])
+Skip --> Done
+```
+
+**Diagram sources**
+- [build-linux.sh:63-98](file://build-linux.sh#L63-L98)
+- [build-linux.sh:120-128](file://build-linux.sh#L120-L128)
+
+**Section sources**
+- [build-linux.sh:1-191](file://build-linux.sh#L1-L191)
+
+### build-mac.sh (Maintained)
+macOS build script that maintains the --skip-deps option for Homebrew dependency management. This preserves the existing workflow for macOS development environments.
+
+Key behaviors:
+- **Maintained**: Uses --skip-deps option for Homebrew dependency management
+- **Enhanced**: Improved Xcode Command Line Tools detection
+- **Improved**: Better OpenSSL path detection and configuration
+- **Preserved**: All existing build configurations and options
+
+**Section sources**
+- [build-mac.sh:1-242](file://build-mac.sh#L1-L242)
 
 ### cat-parts (C++)
 Concatenates .hf files from a directory into a single output file, skipping non-.hf entries and sorting filenames numerically. It compares the generated content with existing output to avoid unnecessary writes.
@@ -326,6 +435,9 @@ Exec --> Done(["Done"])
 
 ## Dependency Analysis
 The build helper tools depend on standard libraries and external systems:
+- **install-deps-linux.sh**: Depends on system package managers (apt-get/dnf) and root privileges
+- **build-linux.sh**: Depends on CMake, make, and system-level build tools
+- **build-mac.sh**: Depends on Homebrew, Xcode Command Line Tools, and macOS-specific tools
 - cat-parts and cat_parts.py depend on filesystem semantics and sorting
 - check_reflect.py depends on Doxygen XML and regular expressions
 - newplugin.py depends on Python's string templating and filesystem operations
@@ -335,6 +447,9 @@ The build helper tools depend on standard libraries and external systems:
 
 ```mermaid
 graph LR
+IDL["install-deps-linux.sh<br/>✓ New"] --> SYS["System Package Managers"]
+BL["build-linux.sh<br/>✓ Enhanced"] --> CMAKE["CMake"]
+BM["build-mac.sh<br/>✓ Maintained"] --> HB["Homebrew"]
 CP["cat-parts.cpp<br/>✓ Algorithm Header"] --> FS["Boost Filesystem"]
 CPY["cat_parts.py"] --> PY["Python Pathlib"]
 CR["check_reflect.py"] --> RX["Regex"]
@@ -347,6 +462,9 @@ CFG --> ENV["Environment Variables"]
 ```
 
 **Diagram sources**
+- [install-deps-linux.sh:34-106](file://install-deps-linux.sh#L34-L106)
+- [build-linux.sh:155-165](file://build-linux.sh#L155-L165)
+- [build-mac.sh:126-171](file://build-mac.sh#L126-L171)
 - [cat-parts.cpp:1-6](file://programs/build_helpers/cat-parts.cpp#L1-L6)
 - [cat_parts.py:3-4](file://programs/build_helpers/cat_parts.py#L3-L4)
 - [check_reflect.py:3-6](file://programs/build_helpers/check_reflect.py#L3-L6)
@@ -356,6 +474,9 @@ CFG --> ENV["Environment Variables"]
 - [configure_build.py:3-6](file://programs/build_helpers/configure_build.py#L3-L6)
 
 **Section sources**
+- [install-deps-linux.sh:1-113](file://install-deps-linux.sh#L1-L113)
+- [build-linux.sh:1-191](file://build-linux.sh#L1-L191)
+- [build-mac.sh:1-242](file://build-mac.sh#L1-L242)
 - [cat-parts.cpp:1-6](file://programs/build_helpers/cat-parts.cpp#L1-L6)
 - [cat_parts.py:3-4](file://programs/build_helpers/cat_parts.py#L3-L4)
 - [check_reflect.py:3-6](file://programs/build_helpers/check_reflect.py#L3-L6)
@@ -365,11 +486,14 @@ CFG --> ENV["Environment Variables"]
 - [configure_build.py:3-6](file://programs/build_helpers/configure_build.py#L3-L6)
 
 ## Performance Considerations
-- cat-parts and cat_parts.py: Sorting and reading many small .hf files is efficient; the up-to-date check avoids unnecessary writes.
-- check_reflect.py: Walking source trees and parsing XML can be slow on large projects; restrict scanning to necessary directories if needed.
-- pretty_schema.py: Network latency to the debug node can dominate; cache results locally if regenerating frequently.
-- schema_test.cpp: Schema traversal is lightweight for a small set of types; adding many types increases runtime linearly.
-- configure_build.py: cmake invocation overhead is minimal compared to the build itself; passing additional flags can increase configuration time slightly.
+- **install-deps-linux.sh**: Package installation performance varies by distribution and network connectivity; consider caching and offline installation for CI environments
+- **build-linux.sh**: Enhanced with --clean option for guaranteed clean builds, which may take longer but ensures reproducibility
+- **build-mac.sh**: Maintains --skip-deps option for efficient Homebrew dependency management
+- cat-parts and cat_parts.py: Sorting and reading many small .hf files is efficient; the up-to-date check avoids unnecessary writes
+- check_reflect.py: Walking source trees and parsing XML can be slow on large projects; restrict scanning to necessary directories if needed
+- pretty_schema.py: Network latency to the debug node can dominate; cache results locally if regenerating frequently
+- schema_test.cpp: Schema traversal is lightweight for a small set of types; adding many types increases runtime linearly
+- configure_build.py: cmake invocation overhead is minimal compared to the build itself; passing additional flags can increase configuration time slightly
 
 [No sources needed since this section provides general guidance]
 
@@ -397,36 +521,86 @@ The cat-parts utility demonstrates proper C++ header management practices that e
 **Section sources**
 - [cat-parts.cpp:4-33](file://programs/build_helpers/cat-parts.cpp#L4-L33)
 
+## Security and Build System Architecture
+
+### Enhanced Build System Security
+The new dependency installer script and improved build architecture significantly enhance security practices:
+
+**Separation of Privileges**
+- System-level dependency installation requires root privileges (sudo)
+- Main build process runs as regular user for security isolation
+- Prevents privilege escalation during build operations
+
+**Clean Build Architecture**
+- The --clean option ensures fresh build directories are created
+- Eliminates potential contamination from previous builds
+- Improves reproducibility and debugging capabilities
+
+**Improved Error Handling**
+- Comprehensive error checking and user feedback
+- Clear separation between dependency management and build processes
+- Better logging and diagnostic information
+
+**Section sources**
+- [install-deps-linux.sh:28-31](file://install-deps-linux.sh#L28-L31)
+- [build-linux.sh:57-61](file://build-linux.sh#L57-L61)
+- [build-linux.sh:83-84](file://build-linux.sh#L83-L84)
+
 ## Troubleshooting Guide
 Common issues and resolutions:
-- cat-parts/cat_parts.py
+- **install-deps-linux.sh**
+  - Symptom: Permission denied error
+  - Resolution: Run with sudo privileges as required by the script
+  - Symptom: Unsupported package manager detected
+  - Resolution: Install dependencies manually or use supported distributions
+- **build-linux.sh**
+  - Symptom: Cannot run as root
+  - Resolution: Install dependencies first with sudo ./install-deps-linux.sh, then run build as regular user
+  - Symptom: Clean build takes too long
+  - Resolution: Use --clean option for guaranteed clean builds; consider incremental builds for development
+  - Symptom: Build fails due to missing dependencies
+  - Resolution: Re-run dependency installer or install missing packages manually
+- **build-mac.sh**
+  - Symptom: Xcode Command Line Tools not found
+  - Resolution: Install Xcode Command Line Tools using xcode-select --install
+  - Symptom: Homebrew not detected
+  - Resolution: Install Homebrew from https://brew.sh/ and ensure it's in PATH
+  - Symptom: --skip-deps option not working
+  - Resolution: This option is maintained for macOS compatibility; use --skip-deps to skip Homebrew installation
+- **cat-parts/cat_parts.py**
   - Symptom: Incorrect number of arguments or invalid directory.
   - Resolution: Ensure two arguments are provided: input directory and output file. Verify the directory exists and is readable.
   - Symptom: Output not written despite changes.
   - Resolution: Confirm that the concatenated content differs from the existing output; otherwise, the tool considers it up-to-date.
-- check_reflect.py
+- **check_reflect.py**
   - Symptom: No Doxygen XML found.
   - Resolution: Run doxygen to generate XML before invoking the tool.
   - Symptom: Reflection mismatch reported.
   - Resolution: Align FC_REFLECT declarations with actual class members; remove duplicates and ensure completeness.
-- newplugin.py
+- **newplugin.py**
   - Symptom: Permission denied when writing files.
   - Resolution: Ensure the destination directory is writable; run with appropriate privileges.
   - Symptom: Generated files not linked into the build.
   - Resolution: Add the plugin's CMakeLists.txt to the parent CMakeLists.txt and ensure target_link_libraries includes required libraries.
-- pretty_schema.py
+- **pretty_schema.py**
   - Symptom: Connection refused or timeout.
   - Resolution: Start the debug node and ensure the JSON-RPC endpoint is reachable on the configured address.
-- schema_test.cpp
+- **schema_test.cpp**
   - Symptom: Link errors for schema headers.
   - Resolution: Ensure the schema headers are available and the target links against graphene_chain and fc.
-- configure_build.py
+- **configure_build.py**
   - Symptom: cmake cannot find Boost or OpenSSL.
   - Resolution: Set BOOST_ROOT and OPENSSL_ROOT_DIR environment variables or pass --boost-dir and --openssl-dir.
   - Symptom: Cross-compilation fails.
   - Resolution: Ensure MinGW toolchain is installed and CMAKE_FIND_ROOT_PATH_MODE settings are correct.
 
 **Section sources**
+- [install-deps-linux.sh:28-31](file://install-deps-linux.sh#L28-L31)
+- [build-linux.sh:57-61](file://build-linux.sh#L57-L61)
+- [build-linux.sh:83-84](file://build-linux.sh#L83-L84)
+- [build-mac.sh:108-114](file://build-mac.sh#L108-L114)
+- [build-mac.sh:118-122](file://build-mac.sh#L118-L122)
+- [build-mac.sh:71-72](file://build-mac.sh#L71-L72)
 - [cat-parts.cpp:8-11](file://programs/build_helpers/cat-parts.cpp#L8-L11)
 - [cat_parts.py:29-36](file://programs/build_helpers/cat_parts.py#L29-L36)
 - [check_reflect.py:44-49](file://programs/build_helpers/check_reflect.py#L44-L49)
@@ -436,13 +610,26 @@ Common issues and resolutions:
 - [configure_build.py:114-118](file://programs/build_helpers/configure_build.py#L114-L118)
 
 ## Conclusion
-These build helper tools automate repetitive tasks, enforce consistency, and integrate cleanly with the CMake-based build system. The recent code quality improvements, particularly the proper inclusion of the `<algorithm>` header in cat-parts, demonstrate best practices for C++ development that enhance compilation reliability across different environments. By following the documented usage patterns and best practices, developers can maintain organized codebases, validate reflection integrity, scaffold plugins efficiently, and inspect schemas reliably.
+These build helper tools automate repetitive tasks, enforce consistency, and integrate cleanly with the CMake-based build system. The recent enhancements, particularly the addition of the install-deps-linux.sh dependency installer script and the improved build architecture with --clean option, demonstrate best practices for C++ development that enhance security, maintainability, and reproducibility. The separation of dependency management from the main build process provides better security isolation and cleaner build environments. By following the documented usage patterns and best practices, developers can maintain organized codebases, validate reflection integrity, scaffold plugins efficiently, and inspect schemas reliably while benefiting from improved security and build system architecture.
 
 [No sources needed since this section summarizes without analyzing specific files]
 
 ## Appendices
 
 ### Practical Examples
+
+- **Install system dependencies (Linux)**
+  - Use install-deps-linux.sh to install all required system dependencies with root privileges
+  - Example command: sudo ./install-deps-linux.sh
+
+- **Build VIZ node (Linux)**
+  - Use build-linux.sh to configure and build the VIZ node after dependencies are installed
+  - Example command: ./build-linux.sh --clean --install
+  - Note: Must run as regular user (not root)
+
+- **Build VIZ node (macOS)**
+  - Use build-mac.sh to configure and build the VIZ node with Homebrew dependencies
+  - Example command: ./build-mac.sh --skip-deps --install
 
 - Assemble hardfork fragments
   - Use cat_parts.py to concatenate .hf files from a directory into a single output file. The tool ensures the output is only rewritten when content changes.
@@ -469,6 +656,11 @@ These build helper tools automate repetitive tasks, enforce consistency, and int
   - Example command: python3 programs/build_helpers/configure_build.py --boost-dir /opt/boost --openssl-dir /opt/openssl
 
 **Section sources**
+- [install-deps-linux.sh:8-9](file://install-deps-linux.sh#L8-L9)
+- [build-linux.sh:14-15](file://build-linux.sh#L14-L15)
+- [build-linux.sh:204](file://build-linux.sh#L204)
+- [build-mac.sh:12-13](file://build-mac.sh#L12-L13)
+- [build-mac.sh:349](file://build-mac.sh#L349)
 - [cat_parts.py:28-69](file://programs/build_helpers/cat_parts.py#L28-L69)
 - [check_reflect.py:153-160](file://programs/build_helpers/check_reflect.py#L153-L160)
 - [newplugin.py:225-247](file://programs/util/newplugin.py#L225-L247)
@@ -477,14 +669,18 @@ These build helper tools automate repetitive tasks, enforce consistency, and int
 - [configure_build.py:143-196](file://programs/build_helpers/configure_build.py#L143-L196)
 
 ### Integration with Main Build Process
-- CMake targets
+- **CMake targets**
   - cat-parts is built as an executable and linked against fc and platform libs. Use it in custom targets or prebuild steps.
   - Utilities like pretty_schema.py and schema_test.cpp are standalone scripts/executables; integrate them into CI or developer workflows as needed.
-- Build options
+- **Build options**
   - Refer to documentation/building.md for CMAKE_BUILD_TYPE and LOW_MEMORY_NODE options. configure_build.py sets these defaults and forwards additional cmake options.
+- **New dependency management**
+  - The install-deps-linux.sh script is designed to be run separately from the main build process
+  - Dependencies are installed once (per system) and cached for subsequent builds
+  - Build scripts automatically detect and use installed dependencies
 
 **Section sources**
 - [CMakeLists.txt (build_helpers):1-8](file://programs/build_helpers/CMakeLists.txt#L1-L8)
 - [CMakeLists.txt (util):46-56](file://programs/util/CMakeLists.txt#L46-L56)
-- [building.md:3-15](file://documentation/building.md#L3-L15)
+- [building.md:189-220](file://documentation/building.md#L189-L220)
 - [README.md:7-10](file://README.md#L7-L10)
