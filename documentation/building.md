@@ -186,25 +186,35 @@ VIZ requires **Boost 1.71 or later** and a C++14-capable compiler (GCC 8+).
 Ubuntu 24.04 (Noble) provides Boost 1.74 from the package manager, which meets
 this requirement.
 
-### Quick Build (using build script)
+### Quick Build (using build scripts)
 
-The `build-linux.sh` script handles dependency installation, submodule
-initialization, CMake configuration, and building automatically:
+The build is split into two scripts so that dependency installation (which
+requires root) is kept separate from the build (which must run as a regular
+user):
+
+**Step 1 — install system dependencies (once, as root):**
 
     git clone --recursive https://github.com/VIZ-Blockchain/viz-cpp-node
     cd viz-cpp-node
-    chmod +x build-linux.sh
+    chmod +x install-deps-linux.sh build-linux.sh
+    sudo ./install-deps-linux.sh
+
+**Step 2 — configure and build (as regular user):**
+
     ./build-linux.sh
+
+> **Note:** `build-linux.sh` refuses to run as root. Always run it as your
+> regular user account after installing dependencies.
 
 Common options:
 
     ./build-linux.sh -l                  # Low memory node (witness/seed)
     ./build-linux.sh -n                  # Testnet build
     ./build-linux.sh -t Debug            # Debug build
-    ./build-linux.sh -j 4               # Limit to 4 parallel jobs
-    ./build-linux.sh --install            # Build and install to /usr/local
+    ./build-linux.sh -j 4                # Limit to 4 parallel jobs
+    ./build-linux.sh --clean             # Remove build dir before configuring
+    ./build-linux.sh --install           # Build and install to /usr/local
     ./build-linux.sh --boost-root /opt/boost_1_74_0  # Custom Boost path
-    ./build-linux.sh --skip-deps          # Skip apt-get install
 
 Run `./build-linux.sh -h` for full usage information.
 
@@ -255,11 +265,11 @@ Run `./build-linux.sh -h` for full usage information.
     cd viz-cpp-node
     mkdir build
     cd build
-    cmake -DCMAKE_BUILD_TYPE=Release ..
+    cmake -DCMAKE_BUILD_TYPE=Release -DBoost_NO_BOOST_CMAKE=ON ..
     make -j$(nproc) vizd
     make -j$(nproc) cli_wallet
     # optional
-    make install  # defaults to /usr/local
+    sudo make install  # defaults to /usr/local
 
 ### Building on Older Ubuntu Versions
 
@@ -276,7 +286,7 @@ need to build on an older Ubuntu, you must compile Boost 1.71+ from source:
 
 Then build VIZ pointing to the custom Boost installation:
 
-    cmake -DCMAKE_BUILD_TYPE=Release -DBOOST_ROOT=$BOOST_ROOT ..
+    cmake -DCMAKE_BUILD_TYPE=Release -DBoost_NO_BOOST_CMAKE=ON -DBOOST_ROOT=$BOOST_ROOT ..
     make -j$(nproc) vizd
     make -j$(nproc) cli_wallet
 
