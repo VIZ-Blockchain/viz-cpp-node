@@ -15,17 +15,19 @@
 - [witness.cpp](file://plugins/witness/witness.cpp)
 - [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
 - [chainbase.cpp](file://thirdparty/chainbase/src/chainbase.cpp)
+- [chainbase.hpp](file://thirdparty/chainbase/include/chainbase/chainbase.hpp)
+- [node.cpp](file://libraries/network/node.cpp)
+- [exceptions.hpp](file://libraries/network/include/graphene/network/exceptions.hpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced emergency consensus implementation with comprehensive automatic network recovery during extended periods without block production
-- Added detailed logging for critical errors and improved error handling throughout the consensus process
-- Implemented automatic emergency mode activation when LIB timestamp exceeds timeout threshold
-- Integrated hybrid witness scheduling system with emergency witness replacement
-- Added LIB monitoring capabilities with safety checks to prevent false activations
-- Enhanced memory management logging with detailed free memory and maximum memory state reporting
-- Improved error detection capabilities in shared memory allocation system with comprehensive logging
+- Enhanced error handling in blockchain database layer to address shared memory exhaustion scenarios
+- Implemented deferred shared memory resize mechanism with improved thread safety
+- Added comprehensive memory management logging for peer connectivity during memory pressure situations
+- Updated push_block() and _generate_block() methods to handle boost::interprocess::bad_alloc exceptions gracefully
+- Enhanced apply_pending_resize() method with proper write lock acquisition and race condition prevention
+- Improved peer connectivity handling during memory pressure by returning false instead of throwing for shared memory exhaustion
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -42,7 +44,7 @@
 ## Introduction
 This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for suppressing repeated warnings, and practical examples of database operations and performance optimization.
 
-**Updated** - Enhanced with comprehensive emergency consensus implementation including automatic recovery procedures, hybrid witness scheduling system, emergency mode detection, and LIB monitoring capabilities. The memory management system now includes enhanced logging capabilities that provide administrators with detailed visibility into memory usage patterns during blockchain operation. Critical error logging has been improved throughout the consensus process to ensure comprehensive diagnostics and troubleshooting.
+**Updated** - Enhanced with comprehensive error handling improvements for shared memory exhaustion scenarios, including deferred shared memory resize mechanism, improved thread safety during memory resize operations, and enhanced peer connectivity management during memory pressure situations. The database now provides graceful handling of boost::interprocess::bad_alloc exceptions by returning false instead of throwing, preventing P2P layer disconnections and maintaining witness slot-miss logging while preserving node connectivity.
 
 ## Project Structure
 The database subsystem is implemented primarily in the chain library with enhanced support for DLT mode and emergency consensus:
@@ -56,6 +58,7 @@ The database subsystem is implemented primarily in the chain library with enhanc
 - Witness plugin integration: plugins/witness/witness.cpp for block production coordination
 - Protocol configuration: libraries/protocol/include/graphene/protocol/config.hpp for emergency consensus constants
 - Chainbase integration: thirdparty/chainbase/src/chainbase.cpp for shared memory management
+- Network layer integration: libraries/network/node.cpp for peer connectivity management
 
 ```mermaid
 graph TB
@@ -71,10 +74,15 @@ FDCPP["fork_database.cpp"]
 DBWH["db_with.hpp"]
 ENDH["emergency_consensus_constants"]
 CB["chainbase.cpp"]
+CBH["chainbase.hpp"]
 end
 subgraph "Plugins"
 SNAPH["snapshot/plugin.cpp"]
 WITNESS["witness/witness.cpp"]
+end
+subgraph "Network Layer"
+NODE["node.cpp"]
+EXC["exceptions.hpp"]
 end
 DBH --> DBCPP
 DBCPP --> BLH
@@ -86,13 +94,16 @@ DBCPP --> FDCPP
 DBCPP --> DBWH
 DBCPP --> ENDH
 DBCPP --> CB
+DBCPP --> CBH
 SNAPH --> DBH
 WITNESS --> DBH
+NODE --> DBH
+EXC --> NODE
 ```
 
 **Diagram sources**
-- [database.hpp:1-615](file://libraries/chain/include/graphene/chain/database.hpp#L1-L615)
-- [database.cpp:1-5593](file://libraries/chain/database.cpp#L1-L5593)
+- [database.hpp:1-642](file://libraries/chain/include/graphene/chain/database.hpp#L1-L642)
+- [database.cpp:1-6396](file://libraries/chain/database.cpp#L1-L6396)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
@@ -104,10 +115,13 @@ WITNESS --> DBH
 - [witness.cpp:449-467](file://plugins/witness/witness.cpp#L449-L467)
 - [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
 - [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
+- [chainbase.hpp:1200-1260](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1200-L1260)
+- [node.cpp:1428-4828](file://libraries/network/node.cpp#L1428-L4828)
+- [exceptions.hpp:27-48](file://libraries/network/include/graphene/network/exceptions.hpp#L27-L48)
 
 **Section sources**
-- [database.hpp:1-615](file://libraries/chain/include/graphene/chain/database.hpp#L1-L615)
-- [database.cpp:1-5593](file://libraries/chain/database.cpp#L1-L5593)
+- [database.hpp:1-642](file://libraries/chain/include/graphene/chain/database.hpp#L1-L642)
+- [database.cpp:1-6396](file://libraries/chain/database.cpp#L1-L6396)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
@@ -119,6 +133,9 @@ WITNESS --> DBH
 - [witness.cpp:449-467](file://plugins/witness/witness.cpp#L449-L467)
 - [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
 - [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
+- [chainbase.hpp:1200-1260](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1200-L1260)
+- [node.cpp:1428-4828](file://libraries/network/node.cpp#L1428-L4828)
+- [exceptions.hpp:27-48](file://libraries/network/include/graphene/network/exceptions.hpp#L27-L48)
 
 ## Core Components
 - database class: Public interface for blockchain state management, block and transaction processing, checkpoints, and event notifications with enhanced DLT mode support, emergency consensus implementation, and improved error handling.
@@ -134,11 +151,13 @@ WITNESS --> DBH
 - **Hybrid witness scheduling**: Dynamic witness schedule that combines real witnesses with committee members during emergency periods.
 - **LIB monitoring system**: Continuous monitoring of last irreversible block timestamp to detect network stalls and trigger emergency procedures.
 - **Enhanced Memory Management**: Comprehensive logging system for shared memory allocation with detailed free memory and maximum memory state reporting.
+- **Deferred Shared Memory Resize**: New mechanism that defers memory resize operations until a safe point when no read locks are held, improving thread safety and performance during high-load scenarios.
+- **Enhanced Error Handling**: Graceful handling of boost::interprocess::bad_alloc exceptions with deferred resize scheduling and peer connectivity preservation.
 
 Key responsibilities:
 - Lifecycle: open(), open_from_snapshot(), reindex(), close(), wipe() with improved error handling
 - Validation: validate_block(), validate_transaction(), with configurable skip flags
-- Operations: push_block(), push_transaction(), generate_block()
+- Operations: push_block(), push_transaction(), generate_block() with enhanced memory pressure handling
 - DLT Mode: Conditional block log operations, rolling window management, snapshot-aware initialization
 - Observers: signals for pre/post operation, applied block, pending/applied transactions
 - Persistence: integrates with block_log and dlt_block_log for different operational modes
@@ -150,6 +169,8 @@ Key responsibilities:
 - **Hybrid Witness Scheduling**: Dynamic replacement of unavailable witnesses with committee members during emergencies
 - **LIB Monitoring**: Continuous timestamp analysis to detect network stalls and prevent false emergency activations
 - **Enhanced Memory Management**: Detailed logging of memory states before and after resizing operations for administrator visibility
+- **Thread-Safe Memory Resizing**: Deferred resize mechanism that acquires exclusive write locks to prevent race conditions and stale pointer issues
+- **Memory Pressure Handling**: Graceful degradation of shared memory exhaustion with peer connectivity preservation
 
 **Section sources**
 - [database.hpp:61-115](file://libraries/chain/include/graphene/chain/database.hpp#L61-L115)
@@ -176,6 +197,8 @@ The database composes four primary subsystems with enhanced DLT mode support, em
 - **Hybrid Witness Scheduler**: Dynamic witness schedule that combines real witnesses with committee members during emergencies
 - **LIB Monitoring System**: Continuous timestamp analysis to detect network stalls and prevent false emergency activations
 - **Enhanced Memory Management**: Comprehensive logging system for shared memory allocation with detailed state reporting
+- **Deferred Memory Resize**: Thread-safe memory resize mechanism that defers operations until safe points to prevent race conditions
+- **Enhanced Error Handling**: Graceful exception handling for shared memory exhaustion with peer connectivity preservation
 
 ```mermaid
 classDiagram
@@ -201,10 +224,15 @@ class database {
 +emergency_consensus_activation : automatic recovery system
 +hybrid_witness_scheduling : dynamic witness replacement
 +lib_monitoring : timestamp analysis
-+check_free_memory(skip_print, current_block_num)
++check_free_memory(skip_print, current_block_num, immediate_resize)
 +set_min_free_shared_memory_size(value)
 +set_inc_shared_memory_size(value)
 +set_block_num_check_free_size(value)
++apply_pending_resize() : deferred memory resize
++_pending_resize : bool
++_pending_resize_target : size_t
++push_block(block, skip) : enhanced error handling
++apply_pending_resize() : thread-safe memory management
 }
 class block_log {
 +open(path)
@@ -249,6 +277,7 @@ class chainbase {
 +max_memory() : size_t
 +reserved_memory() : size_t
 +set_reserved_memory(value)
++resize(new_size)
 }
 database --> block_log : "uses (normal mode)"
 database --> dlt_block_log : "uses (DLT mode)"
@@ -374,10 +403,10 @@ Valid --> |No| ReturnFalse["Return false"]
 ```
 
 **Diagram sources**
-- [database.cpp:521-542](file://libraries/chain/database.cpp#L521-L542)
+- [database.cpp:704-752](file://libraries/chain/database.cpp#L704-L752)
 
 **Section sources**
-- [database.cpp:521-542](file://libraries/chain/database.cpp#L521-L542)
+- [database.cpp:704-752](file://libraries/chain/database.cpp#L704-L752)
 
 ### Enhanced Error Handling During Restart Sequences
 **Updated** - The database implements improved error handling for restart sequences:
@@ -503,10 +532,10 @@ LogParents --> Return
 ```
 
 **Diagram sources**
-- [database.cpp:929-984](file://libraries/chain/database.cpp#L929-L984)
+- [database.cpp:1147-1202](file://libraries/chain/database.cpp#L1147-L1202)
 
 **Section sources**
-- [database.cpp:929-984](file://libraries/chain/database.cpp#L929-L984)
+- [database.cpp:1147-1202](file://libraries/chain/database.cpp#L1147-L1202)
 
 ### Enhanced Postponed Transaction Processing
 **New** - The database now implements intelligent transaction queuing with time-based execution limits:
@@ -564,7 +593,7 @@ Typical usage:
 - DLT mode uses skip_block_log to avoid normal block log operations
 
 **Section sources**
-- [database.hpp:75-92](file://libraries/chain/include/graphene/chain/database.hpp#L75-L92)
+- [database.hpp:79-96](file://libraries/chain/include/graphene/chain/database.hpp#L79-L96)
 - [database.cpp:340-350](file://libraries/chain/database.cpp#L340-L350)
 - [database.cpp:4346-4366](file://libraries/chain/database.cpp#L4346-L4366)
 
@@ -602,13 +631,16 @@ Discard --> End
 - [database.cpp:3652-3711](file://libraries/chain/database.cpp#L3652-L3711)
 
 ### Enhanced Memory Allocation Strategies and Shared Memory Configuration
-**Updated** - The memory management system now includes comprehensive logging capabilities for shared memory allocation:
+**Updated** - The memory management system now includes comprehensive logging capabilities for shared memory allocation and a new deferred resize mechanism:
 
 - **Auto-resize with Detailed Logging**: When free memory drops below a configured threshold, the system increases shared memory size and logs detailed state information including free memory, maximum memory, and reserved memory before and after resizing operations.
 - **Enhanced Free Memory Monitoring**: Periodic checks at configured block intervals log free memory and trigger resizing if needed, with comprehensive state reporting for administrator visibility.
 - **Reserved Memory Management**: Prevents fragmentation by reserving a portion of available memory and provides detailed logging of reserved memory states.
 - **Configuration Knobs**: Minimum free memory threshold, increment size, and block interval for checks with enhanced monitoring capabilities.
 - **Comprehensive Memory State Reporting**: The `_resize` function now logs detailed information about memory states before and after resizing operations, providing administrators with crucial information about memory usage patterns during blockchain operation.
+- **Deferred Memory Resize**: The new `_pending_resize` and `_pending_resize_target` fields store resize requests until a safe point when no read locks are held, preventing race conditions and stale pointer issues.
+- **Thread-Safe Memory Management**: The `apply_pending_resize()` method acquires its own write lock, waiting for all readers to finish before performing memory operations, ensuring thread safety during high-load scenarios.
+- **Enhanced Error Handling**: Graceful handling of boost::interprocess::bad_alloc exceptions by returning false instead of throwing, preserving peer connectivity and logging witness slot-misses.
 
 ```mermaid
 flowchart TD
@@ -617,16 +649,17 @@ ModCheck --> |No| Exit(["Return"])
 ModCheck --> |Yes| Compute["Compute reserved and free memory"]
 Compute --> Compare{"free_mem < min_free_shared_memory_size?"}
 Compare --> |No| Exit
-Compare --> |Yes| Resize["_resize(block_num)"]
+Compare --> |Yes| Resize["_resize(block_num, immediate_resize)"]
 Resize --> Exit
 ```
 
 **Diagram sources**
-- [database.cpp:456-469](file://libraries/chain/database.cpp#L456-L469)
-- [database.cpp:428-454](file://libraries/chain/database.cpp#L428-L454)
+- [database.cpp:639-673](file://libraries/chain/database.cpp#L639-L673)
+- [database.cpp:562-605](file://libraries/chain/database.cpp#L562-L605)
 
 **Section sources**
-- [database.cpp:428-469](file://libraries/chain/database.cpp#L428-L469)
+- [database.cpp:562-605](file://libraries/chain/database.cpp#L562-L605)
+- [database.cpp:639-673](file://libraries/chain/database.cpp#L639-L673)
 - [database.cpp:412-422](file://libraries/chain/database.cpp#L412-L422)
 - [database.cpp:454-482](file://libraries/chain/database.cpp#L454-L482)
 - [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
@@ -638,26 +671,31 @@ Resize --> Exit
 - **Post-Resize State Reporting**: After memory resizing, the system logs the current free memory and reserved memory states to provide administrators with immediate feedback on memory allocation changes.
 - **Memory State Consistency**: The system ensures that memory state reporting accounts for reserved memory and provides accurate free memory calculations.
 - **Administrator Visibility**: Enhanced logging provides administrators with detailed insights into memory usage patterns and helps identify potential memory pressure situations before they impact system performance.
+- **Deferred Resize Logging**: The `apply_pending_resize()` method logs detailed information about deferred resize operations, including target memory size and completion status.
 
 ```mermaid
 flowchart TD
-Start(["_resize(current_block_num)"]) --> CheckConfig{"_inc_shared_memory_size != 0?"}
+Start(["_resize(current_block_num, immediate)"]) --> CheckConfig{"_inc_shared_memory_size != 0?"}
 CheckConfig --> |No| LogError["elog('Auto-scaling not configured!')"]
 CheckConfig --> |Yes| GetStates["Get max_mem and free_mem_before"]
 GetStates --> CalculateNew["Calculate new_max = max_mem + _inc_shared_memory_size"]
-CalculateNew --> LogResize["wlog detailed resize information"]
+CalculateNew --> CheckImmediate{"immediate?"}
+CheckImmediate --> |No| LogDeferred["wlog deferred resize info"]
+LogDeferred --> SetFlags["_pending_resize = true, _pending_resize_target = new_max"]
+SetFlags --> ReturnTrue["return true"]
+CheckImmediate --> |Yes| LogResize["wlog immediate resize info"]
 LogResize --> ResizeFile["resize(new_max)"]
 ResizeFile --> GetPostState["Get free_mem and reserved_mem"]
 GetPostState --> LogState["wlog free and reserved memory states"]
 LogState --> UpdatePrinted["Update _last_free_gb_printed"]
-UpdatePrinted --> Return["Return true"]
+UpdatePrinted --> ReturnTrue
 ```
 
 **Diagram sources**
-- [database.cpp:454-482](file://libraries/chain/database.cpp#L454-L482)
+- [database.cpp:562-605](file://libraries/chain/database.cpp#L562-L605)
 
 **Section sources**
-- [database.cpp:454-482](file://libraries/chain/database.cpp#L454-L482)
+- [database.cpp:562-605](file://libraries/chain/database.cpp#L562-L605)
 
 ### Enhanced Memory Management Configuration Options
 **New** - The database now provides enhanced configuration options for memory management:
@@ -666,10 +704,60 @@ UpdatePrinted --> Return["Return true"]
 - **set_inc_shared_memory_size(value)**: Sets the increment size for shared memory file expansion when the minimum free memory threshold is exceeded.
 - **set_block_num_check_free_size(value)**: Configures the block interval for checking free memory and triggering resize operations.
 - **Enhanced Memory Monitoring**: The system provides comprehensive monitoring of memory states with detailed logging and reporting capabilities.
+- **apply_pending_resize()**: New method that applies deferred memory resize operations at safe points when no read locks are held.
 
 **Section sources**
-- [database.hpp:140-142](file://libraries/chain/include/graphene/chain/database.hpp#L140-L142)
-- [database.cpp:438-448](file://libraries/chain/database.cpp#L438-L448)
+- [database.hpp:148-164](file://libraries/chain/include/graphene/chain/database.hpp#L148-L164)
+- [database.cpp:546-556](file://libraries/chain/database.cpp#L546-L556)
+
+### Enhanced Memory Management Fields
+**New** - The database now includes two new fields for deferred memory management:
+
+- **_pending_resize**: A boolean flag indicating whether a memory resize operation is pending and should be applied at the next safe point.
+- **_pending_resize_target**: Stores the target memory size for deferred resize operations, allowing the system to apply the resize when thread safety permits.
+
+These fields enable the deferred resize mechanism to work seamlessly with the existing memory management system while ensuring thread safety during high-load scenarios.
+
+**Section sources**
+- [database.hpp:631-632](file://libraries/chain/include/graphene/chain/database.hpp#L631-L632)
+
+### Enhanced Memory Management Usage in Block Processing
+**New** - The deferred memory resize mechanism is integrated into the block processing pipeline:
+
+- **push_block()**: Calls `apply_pending_resize()` at the beginning of block processing, before acquiring the main write lock, ensuring memory operations don't interfere with concurrent read operations.
+- **generate_block()**: Calls `apply_pending_resize()` before lockless reads, preventing stale pointer issues when memory is resized during block generation.
+- **Exception Handling**: When memory exhaustion occurs, the system schedules a deferred resize and lets the exception propagate, allowing the next block processing call to apply the resize safely.
+
+**Updated** - Enhanced error handling for shared memory exhaustion:
+
+- **Graceful Exception Handling**: The push_block() method now catches boost::interprocess::bad_alloc exceptions and handles them gracefully.
+- **Peer Connectivity Preservation**: Instead of throwing exceptions that would disconnect peers, the system returns false and schedules a deferred resize.
+- **Memory State Preservation**: The system preserves memory state by setting reserved memory to current free memory before scheduling resize.
+- **Automatic Recovery**: The next push_block() call will apply the deferred resize safely, allowing the missed block to be re-received during normal sync.
+
+```mermaid
+flowchart TD
+Start(["push_block(new_block)"]) --> ApplyResize["apply_pending_resize()"]
+ApplyResize --> AcquireLock["with_strong_write_lock()"]
+AcquireLock --> TryBlock["_push_block(new_block, skip)"]
+TryBlock --> CheckMemory["check_free_memory(false, new_block.block_num())"]
+CheckMemory --> Success["Return result"]
+TryBlock --> Exception{"Memory exception?"}
+Exception --> |Yes| CheckBadAlloc{"boost::interprocess::bad_alloc?"}
+CheckBadAlloc --> |No| Rethrow["throw e"]
+CheckBadAlloc --> |Yes| ScheduleResize["set_reserved_memory(free_memory())"]
+ScheduleResize --> SetPending["_resize(new_block.block_num())"]
+SetPending --> ReturnFalse["result = false"]
+Exception --> |No| Success
+```
+
+**Diagram sources**
+- [database.cpp:1106-1145](file://libraries/chain/database.cpp#L1106-L1145)
+- [database.cpp:1460-1470](file://libraries/chain/database.cpp#L1460-L1470)
+
+**Section sources**
+- [database.cpp:1106-1145](file://libraries/chain/database.cpp#L1106-L1145)
+- [database.cpp:1460-1470](file://libraries/chain/database.cpp#L1460-L1470)
 
 ### Checkpoint System for Fast Synchronization
 - Checkpoints: A map of block number to expected block ID is maintained; when a checkpoint matches, the system skips expensive validations and authority checks for subsequent blocks until the last checkpoint.
@@ -754,7 +842,7 @@ These signals are used by plugins to react to blockchain events without tight co
 - Open database and initialize: open(data_dir, shared_mem_dir, initial_supply, shared_file_size, chainbase_flags)
 - **Open from snapshot**: open_from_snapshot(data_dir, shared_mem_dir, initial_supply, shared_file_size, chainbase_flags) - **Enhanced**
 - Rebuild state from history: reindex(data_dir, shared_mem_dir, from_block_num, shared_file_size) - **Enhanced with signal handling**
-- Push a block: push_block(signed_block, skip_flags)
+- Push a block: push_block(signed_block, skip_flags) - **Enhanced with shared memory error handling**
 - Push a transaction: push_transaction(signed_transaction, skip_flags)
 - Validate a block: validate_block(signed_block, skip_flags)
 - Validate a transaction: validate_transaction(signed_signed_transaction, skip_flags)
@@ -763,6 +851,8 @@ These signals are used by plugins to react to blockchain events without tight co
 - **Enhanced Collision Detection**: Sophisticated logging for block number collisions with scenario differentiation and rate-limiting
 - **Postponed Transaction Processing**: Automatic transaction queuing with time-based execution limits and smart recovery
 - **Enhanced Memory Management**: Comprehensive logging of memory states before and after resizing operations for administrator visibility
+- **Deferred Memory Resize**: Thread-safe memory resize mechanism that applies operations at safe points to prevent race conditions
+- **Enhanced Error Handling**: Graceful handling of shared memory exhaustion with peer connectivity preservation
 - Query helpers:
   - get_block_id_for_num(uint32_t)
   - fetch_block_by_id(block_id_type)
@@ -988,6 +1078,8 @@ The database depends on:
 - **Emergency witness management**: Dedicated emergency witness object creation and maintenance
 - **Protocol configuration**: Emergency consensus constants and witness definitions
 - **Enhanced memory management**: Comprehensive logging system for shared memory allocation with detailed state reporting
+- **Deferred memory resize mechanism**: Thread-safe memory management with proper lock handling and race condition prevention
+- **Enhanced error handling**: Graceful exception handling for shared memory exhaustion with peer connectivity preservation
 
 ```mermaid
 graph LR
@@ -1007,6 +1099,9 @@ DB --> HYBRID["hybrid witness scheduler"]
 DB --> WITNESS["emergency witness management"]
 DB --> PROTO["protocol configuration"]
 DB --> MEMLOG["enhanced memory management logging"]
+DB --> DEFER["deferred memory resize mechanism"]
+DB --> ERROR["enhanced error handling"]
+DB --> NETWORK["network layer integration"]
 ```
 
 **Diagram sources**
@@ -1044,6 +1139,9 @@ DB --> MEMLOG["enhanced memory management logging"]
 - **Enhanced Memory Management**: Comprehensive logging provides administrators with detailed visibility into memory usage patterns, enabling proactive capacity planning and performance optimization.
 - **Critical Error Logging**: Enhanced emergency consensus logging provides comprehensive diagnostics for troubleshooting without impacting performance.
 - **Safety Check Optimization**: Emergency consensus safety checks are optimized to minimize performance impact while ensuring network stability.
+- **Deferred Memory Resize Efficiency**: The new deferred resize mechanism prevents race conditions and stale pointer issues during high-load scenarios, improving overall system reliability and performance.
+- **Thread-Safe Memory Operations**: Proper lock management during memory resize operations ensures data consistency and prevents performance degradation from thread contention.
+- **Enhanced Error Handling**: Graceful handling of shared memory exhaustion prevents peer disconnections and maintains network connectivity during memory pressure situations.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -1073,26 +1171,35 @@ Common issues and remedies:
 - **Emergency Consensus Logging Issues**: Verify that critical error logs are being generated and that emergency mode activation/deactivation events are properly recorded.
 - **Safety Check Failures**: Monitor emergency consensus safety checks to ensure they're functioning correctly and preventing false activations.
 - **Witness Management Problems**: Verify that emergency witness objects are being created and updated correctly during emergency mode activation.
+- **Deferred Memory Resize Issues**: Monitor the new deferred resize mechanism to ensure it's properly deferring operations until safe points and applying them correctly.
+- **Thread Safety Problems**: Verify that memory resize operations are not causing race conditions or stale pointer issues during concurrent access.
+- **Performance Degradation**: Check if the deferred memory resize mechanism is causing unexpected delays or if memory operations are blocking other threads.
+- **Shared Memory Exhaustion**: Monitor boost::interprocess::bad_alloc exceptions and verify that deferred resize scheduling is working correctly to prevent peer disconnections.
+- **Peer Connectivity Issues**: Verify that memory pressure handling is preserving peer connections and not causing network instability.
 
 **Section sources**
 - [database.cpp:800-830](file://libraries/chain/database.cpp#L800-L830)
 - [database.cpp:270-279](file://libraries/chain/database.cpp#L270-L279)
 - [database.cpp:492-501](file://libraries/chain/database.cpp#L492-L501)
-- [database.cpp:4016-4020](file://libraries/chain/database.cpp#L4016-L4020)
-- [database.cpp:3998-4000](file://libraries/chain/database.cpp#L3998-L4000)
-- [database.cpp:929-984](file://libraries/chain/database.cpp#L929-L984)
+- [database.cpp:1147-1202](file://libraries/chain/database.cpp#L1147-L1202)
 - [db_with.hpp:33-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L33-L100)
 - [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
 - [database.cpp:2047-2144](file://libraries/chain/database.cpp#L2047-L2144)
 - [database.cpp:454-482](file://libraries/chain/database.cpp#L454-L482)
+- [database.cpp:1106-1145](file://libraries/chain/database.cpp#L1106-L1145)
+- [database.cpp:1460-1470](file://libraries/chain/database.cpp#L1460-L1470)
 
 ## Conclusion
 The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support, emergency consensus implementation, and improved error handling. It integrates chainbase for persistent storage, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, and the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals.
 
-**Updated** - The system now includes comprehensive emergency consensus implementation featuring automatic recovery procedures, hybrid witness scheduling system, emergency mode detection, LIB monitoring, and safety safeguards. The emergency consensus system activates automatically when network downtime exceeds CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC threshold, replacing unavailable witnesses with committee members to ensure continuous block production. The hybrid witness scheduling system maintains network stability during recovery periods, while comprehensive LIB monitoring prevents false activations and ensures graceful deactivation when network health is restored. Critical error logging has been enhanced throughout the consensus process to provide comprehensive diagnostics and troubleshooting capabilities.
+**Updated** - The system now includes comprehensive error handling improvements for shared memory exhaustion scenarios, featuring a deferred shared memory resize mechanism with enhanced thread safety and race condition prevention. The push_block() and _generate_block() methods now gracefully handle boost::interprocess::bad_alloc exceptions by returning false instead of throwing, preserving peer connectivity and preventing P2P layer disconnections. The enhanced apply_pending_resize() method ensures memory operations are performed atomically with proper synchronization, while the new _pending_resize and _pending_resize_target fields provide clean separation between request and execution phases. These improvements make the database management system more resilient to memory pressure situations while maintaining system stability and network connectivity.
 
 The enhanced DLT mode detection and block availability checking logic ensures accurate P2P synchronization and prevents false positives in block availability reporting. The new gap suppression mechanism provides intelligent warning management that prevents log spam during normal DLT operations while maintaining comprehensive diagnostic capability for troubleshooting. The automatic state management of the `_dlt_gap_logged` flag ensures optimal logging behavior without manual intervention, making the system more maintainable and operable in production environments. The sophisticated block collision detection system with rate-limiting and scenario differentiation provides enhanced diagnostic capabilities for network health monitoring. The intelligent postponed transaction processing system ensures stable operation under high load conditions with automatic queue management and time-based execution limits.
 
 The emergency consensus implementation represents a significant advancement in blockchain resilience, providing automatic network recovery mechanisms that maintain system integrity during extended downtime while preventing potential deadlocks and false activations. The hybrid witness scheduling system ensures continuous operation by dynamically adapting to witness availability, while comprehensive safety checks protect against network instability and malicious behavior. The enhanced error logging system provides comprehensive visibility into emergency consensus operations, enabling effective troubleshooting and maintenance. This implementation makes the VIZ blockchain more robust, fault-tolerant, and suitable for enterprise-grade deployments requiring high availability and automatic recovery capabilities.
 
-**Enhanced** - The memory management system now provides comprehensive logging capabilities that offer administrators detailed visibility into memory usage patterns during blockchain operation. The enhanced `_resize` function logs detailed information about free memory, maximum memory, and reserved memory states before and after resizing operations, enabling proactive capacity planning and performance optimization. The improved error detection capabilities in shared memory allocation provide administrators with crucial information about memory usage patterns, helping prevent memory-related issues before they impact system performance. The comprehensive emergency consensus logging system ensures that operators have complete visibility into critical error conditions and recovery procedures. These enhancements make the database management system more transparent, manageable, and suitable for production environments where memory resource optimization and comprehensive error diagnostics are critical.
+**Enhanced** - The memory management system now provides comprehensive logging capabilities that offer administrators detailed visibility into memory usage patterns during blockchain operation. The new deferred shared memory resize mechanism significantly improves efficiency during high-load scenarios by preventing race conditions and stale pointer issues through proper thread synchronization and lock management. The enhanced `_resize` function logs detailed information about free memory, maximum memory, and reserved memory states before and after resizing operations, enabling proactive capacity planning and performance optimization. The improved error detection capabilities in shared memory allocation provide administrators with crucial information about memory usage patterns, helping prevent memory-related issues before they impact system performance. The comprehensive emergency consensus logging system ensures that operators have complete visibility into critical error conditions and recovery procedures. These enhancements make the database management system more transparent, manageable, and suitable for production environments where memory resource optimization and comprehensive error diagnostics are critical.
+
+The deferred memory resize mechanism represents a major improvement in thread safety and system reliability. By deferring memory resize operations until safe points when no read locks are held, the system prevents race conditions that could lead to stale pointer issues and data corruption. The `apply_pending_resize()` method ensures that memory operations are performed atomically with proper synchronization, while the `_pending_resize` and `_pending_resize_target` fields provide a clean separation between request and execution phases. This design enables the system to handle high-load scenarios more efficiently while maintaining data consistency and preventing performance degradation from thread contention.
+
+**Enhanced Error Handling** - The most significant improvement is the enhanced error handling for shared memory exhaustion. The database now gracefully handles boost::interprocess::bad_alloc exceptions by returning false instead of throwing, which prevents P2P layer disconnections and maintains witness slot-miss logging while preserving node connectivity. The system schedules a deferred resize operation and preserves memory state by setting reserved memory to current free memory, ensuring automatic recovery without manual intervention. This approach maintains network stability during memory pressure situations and allows the missed block to be re-received during normal sync, providing a seamless user experience even under adverse conditions.

@@ -408,7 +408,7 @@ namespace graphene { namespace chain {
                             set_revision(head_block_num());
                         }
 
-                        check_free_memory(true, cur_block_num);
+                        check_free_memory(true, cur_block_num, true);
                         cur_block_num++;
                     }
 
@@ -517,7 +517,7 @@ namespace graphene { namespace chain {
                             set_revision(head_block_num());
                         }
 
-                        check_free_memory(true, cur_block_num);
+                        check_free_memory(true, cur_block_num, true);
                         cur_block_num++;
                     }
 
@@ -559,7 +559,7 @@ namespace graphene { namespace chain {
             _skip_virtual_ops = true;
         }
 
-        bool database::_resize(uint32_t current_block_num) {
+        bool database::_resize(uint32_t current_block_num, bool immediate) {
             if (_inc_shared_memory_size == 0) {
                 elog("Auto-scaling of shared file size is not configured!. Do it immediately!");
                 return false;
@@ -567,8 +567,24 @@ namespace graphene { namespace chain {
 
             uint64_t max_mem = max_memory();
             uint64_t free_mem_before = free_memory();
-
             size_t new_max = max_mem + _inc_shared_memory_size;
+
+            if (!immediate) {
+                // Deferred mode: just set the flag. The actual resize will be
+                // performed by apply_pending_resize() at a safe point where
+                // no other threads hold read locks or lockless references.
+                wlog(
+                    "Shared memory resize deferred on block ${block}: will grow to ${mem}M "
+                    "(currently ${free_before}M free, ${max_before}M total)",
+                    ("block", current_block_num)("mem", new_max / (1024 * 1024))
+                    ("free_before", free_mem_before / (1024 * 1024))("max_before", max_mem / (1024 * 1024)));
+                _pending_resize = true;
+                _pending_resize_target = new_max;
+                return true;
+            }
+
+            // Immediate mode: used during reindex when we already hold an
+            // exclusive write lock and no API threads are running.
             wlog(
                 "Memory is almost full on block ${block}, increasing to ${mem}M (was ${free_before}M free, ${max_before}M total)",
                 ("block", current_block_num)("mem", new_max / (1024 * 1024))
@@ -583,13 +599,44 @@ namespace graphene { namespace chain {
             }
 
             uint32_t free_mb = uint32_t(free_mem / (1024 * 1024));
-            uint32_t reserved_mb = uint32_t(reserved_mem / (1024 * 1024));
-            wlog("Free memory is now ${free}M (${reserved}M)", ("free", free_mb)("reserved", reserved_mb));
+            wlog("Free memory is now ${free}M", ("free", free_mb));
             _last_free_gb_printed = free_mb / 1024;
             return true;
         }
 
-        void database::check_free_memory(bool skip_print, uint32_t current_block_num) {
+        void database::apply_pending_resize() {
+            if (!_pending_resize) {
+                return;
+            }
+
+            // Acquire our own write lock. This waits for ALL read locks to be
+            // released, so by the time we enter the lambda no other thread has
+            // any reference into the shared memory segment.
+            with_strong_write_lock([&]() {
+                if (!_pending_resize) {
+                    return; // another thread beat us
+                }
+
+                size_t target = _pending_resize_target;
+                _pending_resize = false;
+                _pending_resize_target = 0;
+
+                wlog("Applying deferred shared memory resize to ${mem}M",
+                     ("mem", target / (1024 * 1024)));
+                resize(target);
+
+                uint64_t free_mem = free_memory();
+                uint64_t reserved_mem = reserved_memory();
+                if (free_mem > reserved_mem) {
+                    free_mem -= reserved_mem;
+                }
+                uint32_t free_mb = uint32_t(free_mem / (1024 * 1024));
+                wlog("Deferred resize complete. Free memory is now ${free}M", ("free", free_mb));
+                _last_free_gb_printed = free_mb / 1024;
+            });
+        }
+
+        void database::check_free_memory(bool skip_print, uint32_t current_block_num, bool immediate_resize) {
             if (0 != current_block_num % _block_num_check_free_memory) {
                 return;
             }
@@ -606,7 +653,7 @@ namespace graphene { namespace chain {
             if (_inc_shared_memory_size != 0 && _min_free_shared_memory_size != 0 &&
                 free_mem < _min_free_shared_memory_size
             ) {
-                _resize(current_block_num);
+                _resize(current_block_num, immediate_resize);
             } else if (!skip_print && _inc_shared_memory_size == 0 && _min_free_shared_memory_size == 0) {
                 uint32_t free_gb = uint32_t(free_mem / (1024 * 1024 * 1024));
                 if ((free_gb < _last_free_gb_printed) || (free_gb > _last_free_gb_printed + 1)) {
@@ -1059,6 +1106,12 @@ namespace graphene { namespace chain {
         bool database::push_block(const signed_block &new_block, uint32_t skip) {
             //fc::time_point begin_time = fc::time_point::now();
 
+            // Apply any deferred resize BEFORE acquiring the main write lock.
+            // This is the safe point: no read locks are held, no lockless reads
+            // are in progress. apply_pending_resize() acquires its own write lock
+            // internally, which waits for all readers to finish first.
+            apply_pending_resize();
+
             bool result;
             with_strong_write_lock([&]() {
                 detail::without_pending_transactions(*this, skip, std::move(_pending_tx), [&]() {
@@ -1071,12 +1124,17 @@ namespace graphene { namespace chain {
                         if (msg.find("boost::interprocess::bad_alloc") == msg.npos) {
                             throw e;
                         }
-                        wlog("Receive bad_alloc exception. Forcing to resize shared memory file.");
+                        // Out of shared memory. Schedule a deferred resize.
+                        // Return false (block not applied) instead of throwing so that:
+                        //   - the P2P layer does not penalise / disconnect the peer;
+                        //   - witness slot-miss is logged but the node stays connected.
+                        // apply_pending_resize() at the top of the next push_block() call
+                        // will perform the resize safely before any database access, and
+                        // the missed block will be re-received during normal sync.
+                        wlog("Received bad_alloc exception. Scheduling deferred resize.");
                         set_reserved_memory(free_memory());
-                        if (!_resize(new_block.block_num())) {
-                            throw e;
-                        }
-                        result = _push_block(new_block, skip);
+                        _resize(new_block.block_num()); // deferred (immediate=false by default)
+                        result = false;
                     }
                 });
             });
@@ -1158,8 +1216,23 @@ namespace graphene { namespace chain {
                         ilog("Ignoring block ${n} that is already on our chain", ("n", new_block.block_num()));
                         return false;
                     }
-                    // Block is at or before head but on a different fork — fall through
-                    // to the normal push logic which may trigger a fork switch.
+                    // Block is at or before head but on a different fork.
+                    // If the block's parent is not in the fork_db, we can never
+                    // link it (the fork diverged before the fork_db's window).
+                    // Silently reject to prevent unlinkable_block_exception from
+                    // propagating to the P2P layer, which would trigger a sync
+                    // restart loop (the sync peer keeps sending blocks from the
+                    // other fork, each one fails to link, each failure restarts
+                    // sync, ad infinitum).
+                    if (new_block.previous != block_id_type() &&
+                        !_fork_db.is_known_block(new_block.previous)) {
+                        wlog("Rejecting block ${n} from a different fork: parent not in fork_db (head=${h})",
+                             ("n", new_block.block_num())("h", head_block_num()));
+                        return false;
+                    }
+                    // Parent IS in fork_db — fall through to normal push logic
+                    // which may trigger a fork switch (if the other fork has
+                    // more weight).
                 }
 
                 // Early rejection for blocks far ahead of our head whose parent we
@@ -1392,6 +1465,12 @@ namespace graphene { namespace chain {
                 const fc::ecc::private_key &block_signing_private_key,
                 uint32_t skip
         ) {
+            // Apply any deferred resize BEFORE the lockless reads below.
+            // This is critical: get_slot_at_time(), get_witness(), find_account()
+            // all read from chainbase indices without holding a read lock.
+            // If resize happened on another thread, those pointers could be stale.
+            apply_pending_resize();
+
             uint32_t slot_num = get_slot_at_time(when);
             FC_ASSERT(slot_num > 0);
             string scheduled_witness = get_scheduled_witness(slot_num);

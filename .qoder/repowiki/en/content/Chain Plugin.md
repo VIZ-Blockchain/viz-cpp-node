@@ -7,14 +7,15 @@
 - [database.cpp](file://libraries/chain/database.cpp)
 - [plugin.cpp](file://plugins/snapshot/plugin.cpp)
 - [README.md](file://README.md)
+- [snapshot-plugin.md](file://documentation/snapshot-plugin.md)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced snapshot loading with deferred execution support for improved plugin coordination
-- Added comprehensive recovery system integration with DLT block log replay capabilities
-- Implemented advanced plugin coordination mechanisms between chain and snapshot plugins
-- Strengthened error handling and recovery procedures for snapshot operations
+- Updated default shared-file-dir from 'blockchain' to 'state' for improved configuration clarity
+- Added comprehensive snapshot plugin configuration options including snapshot-dir, snapshot-every-n-blocks, snapshot-max-age-days, allow-snapshot-serving, and trusted-snapshot-peer settings
+- Enhanced snapshot loading capabilities with automatic discovery and rotation features
+- Expanded snapshot serving infrastructure with trust model and anti-spam protection
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -28,7 +29,7 @@
 9. [Conclusion](#conclusion)
 
 ## Introduction
-The Chain Plugin is the core component responsible for managing the blockchain state, accepting blocks and transactions, maintaining database consistency, and coordinating with other plugins in the VIZ node. It integrates tightly with the underlying database layer and provides APIs for block acceptance, transaction processing, and state queries. Recent enhancements focus on improved plugin coordination, deferred execution support for snapshot loading, and comprehensive recovery system integration with DLT block log capabilities.
+The Chain Plugin is the core component responsible for managing the blockchain state, accepting blocks and transactions, maintaining database consistency, and coordinating with other plugins in the VIZ node. It integrates tightly with the underlying database layer and provides APIs for block acceptance, transaction processing, and state queries. Recent enhancements focus on improved plugin coordination, deferred execution support for snapshot loading, comprehensive recovery system integration with DLT block log capabilities, and expanded snapshot management infrastructure.
 
 ## Project Structure
 The Chain Plugin resides under the `plugins/chain` directory and interfaces with the `libraries/chain` database implementation. The plugin exposes a clean interface for other plugins and the application to interact with the blockchain state, with enhanced deferred execution support and comprehensive recovery capabilities.
@@ -73,14 +74,15 @@ The Chain Plugin consists of two primary parts:
 - The database wrapper that handles block acceptance, transaction processing, and state management
 
 Key responsibilities include:
-- Managing shared memory configuration and growth policies
+- Managing shared memory configuration and growth policies with updated default directory structure
 - Handling snapshot loading and recovery modes with enhanced deferred execution support
 - Coordinating block and transaction acceptance with plugin synchronization
 - Providing state queries and database accessors
 - Supporting DLT (Dynamic Ledger Technology) block logging with comprehensive replay capabilities
 - Implementing advanced recovery procedures with automatic snapshot detection and restoration
+- Integrating with comprehensive snapshot management infrastructure including automatic discovery, rotation, and serving capabilities
 
-**Updated** Enhanced plugin coordination with deferred execution support allows seamless integration between chain and snapshot plugins, enabling flexible startup sequences and improved error recovery mechanisms.
+**Updated** Enhanced plugin coordination with deferred execution support allows seamless integration between chain and snapshot plugins, enabling flexible startup sequences and improved error recovery mechanisms. The default shared memory directory has been changed from 'blockchain' to 'state' for better organizational clarity.
 
 **Section sources**
 - [plugin.hpp:21-124](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L21-L124)
@@ -217,7 +219,7 @@ The plugin supports extensive configuration through command-line and configurati
 
 | Option | Type | Description | Default |
 |--------|------|-------------|---------|
-| shared-file-dir | path | Location of shared memory files (absolute path or relative to application data dir) | blockchain |
+| shared-file-dir | path | Location of shared memory files (absolute path or relative to application data dir) | **state** |
 | shared-file-size | size | Initial shared memory size | 2G |
 | inc-shared-file-size | size | Memory growth increment | 2G |
 | min-free-shared-file-size | size | Minimum free space threshold | 500M |
@@ -238,7 +240,7 @@ The plugin supports extensive configuration through command-line and configurati
 | **replay-from-snapshot** | bool | Snapshot + dlt_block_log replay | false |
 | **snapshot-dir** | string | Directory for auto-generated snapshots | empty |
 
-**Updated** Enhanced plugin coordination with deferred execution support for snapshot operations, allowing flexible startup sequences between chain and snapshot plugins.
+**Updated** Enhanced plugin coordination with deferred execution support for snapshot operations, allowing flexible startup sequences between chain and snapshot plugins. The default shared-file-dir has been changed from 'blockchain' to 'state' for improved organizational clarity and better separation of concerns.
 
 **Section sources**
 - [plugin.cpp:197-272](file://plugins/chain/plugin.cpp#L197-L272)
@@ -400,6 +402,52 @@ Fallback --> RecoveryComplete
 - [plugin.cpp:566-649](file://plugins/chain/plugin.cpp#L566-L649)
 - [database.cpp:438-544](file://libraries/chain/database.cpp#L438-L544)
 
+### Enhanced Snapshot Management Infrastructure
+**Updated** The snapshot plugin now provides comprehensive snapshot management capabilities:
+
+- **Automatic Discovery**: `--snapshot-auto-latest` with `--snapshot-dir` for finding the latest snapshot
+- **Periodic Snapshots**: `--snapshot-every-n-blocks` for automated snapshot creation
+- **Snapshot Rotation**: `--snapshot-max-age-days` for automatic cleanup of old snapshots
+- **Snapshot Serving**: `--allow-snapshot-serving` with trust model and anti-spam protection
+- **Trusted Peers**: `--trusted-snapshot-peer` for P2P snapshot synchronization
+- **Stalled Sync Detection**: Automatic detection and recovery from stalled synchronization
+
+```mermaid
+flowchart TD
+SnapshotConfig["Snapshot Configuration"] --> AutoDiscover["Auto-Discovery"]
+AutoDiscover --> LatestSnap["Latest Snapshot Detection"]
+LatestSnap --> ValidatePath["Validate Path"]
+ValidatePath --> LoadState["Load Snapshot State"]
+SnapshotConfig --> Periodic["Periodic Snapshots"]
+Periodic --> EveryNBlocks["Every N Blocks"]
+EveryNBlocks --> CreateSnap["Create Snapshot"]
+CreateSnap --> RotateAges["Age-Based Rotation"]
+RotateAges --> CleanupOld["Cleanup Old Snapshots"]
+SnapshotConfig --> Serving["Snapshot Serving"]
+Serving --> TrustModel["Trust Model"]
+TrustModel --> PublicServing["Public Serving"]
+TrustModel --> TrustedOnly["Trusted Only Serving"]
+PublicServing --> AntiSpam["Anti-Spam Protection"]
+TrustedOnly --> AntiSpam
+AntiSpam --> RateLimiting["Rate Limiting"]
+AntiSpam --> SessionLimits["Session Limits"]
+AntiSpam --> ConnectionTimeout["Connection Timeout"]
+SnapshotConfig --> P2PSync["P2P Sync"]
+P2PSync --> TrustedPeers["Trusted Peers"]
+TrustedPeers --> DownloadSnap["Download Snapshot"]
+DownloadSnap --> LoadState
+```
+
+**Diagram sources**
+- [plugin.cpp:344-382](file://plugins/chain/plugin.cpp#L344-L382)
+- [plugin.cpp:2817-2861](file://plugins/snapshot/plugin.cpp#L2817-L2861)
+- [plugin.cpp:2908-2920](file://plugins/snapshot/plugin.cpp#L2908-L2920)
+
+**Section sources**
+- [plugin.cpp:344-382](file://plugins/chain/plugin.cpp#L344-L382)
+- [plugin.cpp:2817-2861](file://plugins/snapshot/plugin.cpp#L2817-L2861)
+- [plugin.cpp:2908-2920](file://plugins/snapshot/plugin.cpp#L2908-L2920)
+
 ## Dependency Analysis
 The Chain Plugin has well-defined dependencies and integration points with enhanced plugin coordination:
 
@@ -441,7 +489,7 @@ The plugin integrates with several other components with enhanced coordination:
 - Witness plugin for block production
 - Database plugin for state persistence
 
-**Updated** Enhanced integration with snapshot plugin includes sophisticated deferred execution mechanisms, automatic callback registration, and comprehensive recovery system coordination.
+**Updated** Enhanced integration with snapshot plugin includes sophisticated deferred execution mechanisms, automatic callback registration, and comprehensive recovery system coordination. The default shared memory directory has been changed from 'blockchain' to 'state' for better organizational structure.
 
 **Section sources**
 - [plugin.hpp:23-24](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L23-L24)
@@ -471,6 +519,7 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 - Efficient callback registration and triggering mechanisms
 - Reduced redundant operations through intelligent state checking
 - Optimized snapshot loading with automatic path validation
+- Improved snapshot serving performance with trust model and anti-spam protection
 
 **Section sources**
 - [plugin.cpp:24-51](file://plugins/chain/plugin.cpp#L24-L51)
@@ -495,6 +544,7 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 - Use `--validate-database-invariants` for state consistency checks
 - Monitor shared memory usage and growth patterns
 - **Updated** Enable verbose logging for snapshot plugin coordination failures
+- Monitor snapshot serving metrics and trust model compliance
 
 ### Enhanced Plugin Coordination Troubleshooting
 **Updated** Specific troubleshooting for plugin coordination issues:
@@ -503,6 +553,7 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 - Ensure proper callback registration between chain and snapshot plugins
 - Monitor plugin startup order and initialization sequences
 - Validate snapshot file compatibility and path accessibility
+- Check snapshot directory permissions and disk space availability
 
 ### Recovery System Troubleshooting
 **Updated** Specific troubleshooting for recovery system issues:
@@ -510,6 +561,16 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 - Check snapshot file integrity and compatibility
 - Monitor hardfork initialization during recovery processes
 - Validate emergency consensus mode settings for network recovery scenarios
+- Test snapshot serving configuration with trust model and anti-spam settings
+
+### Snapshot Management Troubleshooting
+**Updated** Specific troubleshooting for snapshot management issues:
+- Verify snapshot directory exists and is writable
+- Check snapshot rotation configuration with `--snapshot-max-age-days`
+- Validate periodic snapshot creation with `--snapshot-every-n-blocks`
+- Test snapshot serving configuration with `--allow-snapshot-serving`
+- Configure trusted peers properly with `--trusted-snapshot-peer`
+- Monitor snapshot P2P sync performance and reliability
 
 **Section sources**
 - [plugin.cpp:562-601](file://plugins/chain/plugin.cpp#L562-L601)
@@ -517,3 +578,5 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 
 ## Conclusion
 The Chain Plugin provides a robust foundation for blockchain state management in the VIZ node. Its modular design, comprehensive configuration options, and efficient database operations make it suitable for production deployments while maintaining flexibility for development and testing scenarios. Recent enhancements focus on improved plugin coordination with deferred execution support, comprehensive recovery system integration with DLT block log capabilities, and sophisticated snapshot loading mechanisms. The plugin's integration with snapshot technology, emergency consensus mode, and advanced recovery procedures provides strong operational resilience and enhanced error handling capabilities with improved plugin coordination and seamless user experience.
+
+**Updated** The default shared-memory directory has been changed from 'blockchain' to 'state' for better organizational clarity, and the comprehensive snapshot management infrastructure provides powerful automation capabilities including automatic discovery, periodic creation, rotation, serving, and P2P synchronization with trust models and anti-spam protection.

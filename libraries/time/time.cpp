@@ -1,11 +1,13 @@
 #include <graphene/time/time.hpp>
 
 #include <fc/exception/exception.hpp>
+#include <fc/log/logger.hpp>
 #include <fc/network/ntp.hpp>
 #include <fc/thread/mutex.hpp>
 #include <fc/thread/scoped_lock.hpp>
 
 #include <atomic>
+#include <sstream>
 
 namespace graphene {
     namespace time {
@@ -18,6 +20,46 @@ namespace graphene {
         namespace detail {
             std::atomic<fc::ntp *> ntp_service(nullptr);
             fc::mutex ntp_service_initialization_mutex;
+
+            // NTP configuration stored by configure_ntp(), applied when the service is first created.
+            ntp_config pending_ntp_config;
+            fc::mutex ntp_config_mutex;
+
+            /** Apply all non-default fields from cfg to an already-created fc::ntp instance. */
+            static void apply_ntp_config(fc::ntp* svc, const ntp_config& cfg) {
+                // Servers: only replace defaults when the user provided at least one entry.
+                if (!cfg.servers.empty()) {
+                    std::vector<std::pair<std::string, uint16_t>> parsed;
+                    for (const auto& s : cfg.servers) {
+                        auto colon = s.rfind(':');
+                        if (colon != std::string::npos) {
+                            std::string host = s.substr(0, colon);
+                            uint16_t port = uint16_t(123);
+                            try {
+                                port = static_cast<uint16_t>(std::stoul(s.substr(colon + 1)));
+                            } catch (const std::exception& ex) {
+                                wlog("NTP: invalid port in server entry '${s}', using 123: ${e}",
+                                     ("s", s)("e", ex.what()));
+                            }
+                            parsed.emplace_back(host, port);
+                        } else {
+                            parsed.emplace_back(s, uint16_t(123));
+                        }
+                    }
+                    svc->set_servers(parsed);
+                }
+                svc->set_request_interval(cfg.request_interval_sec);
+                svc->set_retry_interval(cfg.retry_interval_sec);
+                svc->set_round_trip_threshold_ms(cfg.round_trip_threshold_ms);
+                svc->set_delta_history_size(cfg.history_size);
+                svc->set_rejection_threshold_pct(cfg.rejection_threshold_pct);
+                svc->set_rejection_min_threshold_ms(cfg.rejection_min_threshold_ms);
+            }
+        }
+
+        void configure_ntp(const ntp_config& config) {
+            fc::scoped_lock<fc::mutex> lock(detail::ntp_config_mutex);
+            detail::pending_ntp_config = config;
         }
 
         fc::optional<fc::time_point> ntp_time() {
@@ -27,6 +69,11 @@ namespace graphene {
                 actual_ntp_service = detail::ntp_service.load();
                 if (!actual_ntp_service) {
                     actual_ntp_service = new fc::ntp;
+                    // Apply any previously stored configuration.
+                    {
+                        fc::scoped_lock<fc::mutex> cfg_lock(detail::ntp_config_mutex);
+                        detail::apply_ntp_config(actual_ntp_service, detail::pending_ntp_config);
+                    }
                     detail::ntp_service.store(actual_ntp_service);
                 }
             }

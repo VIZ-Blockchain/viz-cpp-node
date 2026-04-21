@@ -6,27 +6,7 @@ VIZD="/usr/local/bin/vizd"
 
 chown -R vizd:vizd $HOME
 
-# seed nodes come from documentation/seednodes which is
-# installed by docker into /etc/vizd/seednodes
-SEED_NODES="$(cat /etc/vizd/seednodes | awk -F' ' '{print $1}')"
-
 ARGS=""
-
-# if user did not pass in any desired
-# seed nodes, use the ones above:
-if [[ -z "$VIZD_SEED_NODES" ]]; then
-    for NODE in $SEED_NODES ; do
-        ARGS+=" --p2p-seed-node=$NODE"
-    done
-fi
-
-# if user did pass in desired seed nodes, use
-# the ones the user specified:
-if [[ ! -z "$VIZD_SEED_NODES" ]]; then
-    for NODE in $VIZD_SEED_NODES ; do
-        ARGS+=" --p2p-seed-node=$NODE"
-    done
-fi
 
 if [[ ! -z "$VIZD_WITNESS_NAME" ]]; then
     ARGS+=" --witness=\"$VIZD_WITNESS_NAME\""

@@ -3251,11 +3251,20 @@ namespace graphene {
                         if (peer->ids_of_items_being_processed.find(block_message_to_send.block_id) !=
                             peer->ids_of_items_being_processed.end()) {
                             if (discontinue_fetching_blocks_from_peer) {
-                                wlog("inhibiting fetching sync blocks from peer ${endpoint} because it is on a fork that's too old",
+                                wlog("Soft-banning peer ${endpoint} for 1 hour: on a fork that's too old",
                                         ("endpoint", peer->get_remote_endpoint()));
                                 peer->inhibit_fetching_sync_blocks = true;
+                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
                             } else {
-                                peers_to_disconnect[peer] = std::make_pair(std::string("You offered us a block that we reject as invalid"), fc::oexception(handle_message_exception));
+                                // Soft-ban instead of disconnect. During sync, a rejected
+                                // block usually means the peer is on a stale fork.
+                                // Disconnecting would cause a reconnect loop; soft-ban
+                                // gives the fork time to resolve organically.
+                                wlog("Soft-banning peer ${endpoint} for 1 hour: rejected sync block #${num}",
+                                        ("endpoint", peer->get_remote_endpoint())
+                                        ("num", block_message_to_send.block.block_num()));
+                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
+                                peer->inhibit_fetching_sync_blocks = true;
                             }
                         }
                     }
@@ -3563,7 +3572,33 @@ namespace graphene {
                     throw;
                 }
                 catch (const unlinkable_block_exception &e) {
-                    restart_sync_exception = e;
+                    uint32_t peer_block_num = block_message_to_process.block.block_num();
+                    uint32_t our_head = _delegate->get_block_number(_delegate->get_head_block_id());
+
+                    if (peer_block_num <= our_head) {
+                        // Block is at or below our head — peer is on a stale fork. Soft-ban.
+                        wlog("Soft-banning peer ${endpoint} for 1 hour: "
+                             "unlinkable block #${num} at or below our head #${head}",
+                             ("endpoint", originating_peer->get_remote_endpoint())
+                             ("num", peer_block_num)("head", our_head));
+                        originating_peer->fork_rejected_until =
+                            fc::time_point::now() + fc::seconds(3600);
+                        originating_peer->inhibit_fetching_sync_blocks = true;
+                    } else {
+                        // Block is ahead of us — we may be behind. Resync is justified.
+                        restart_sync_exception = e;
+                    }
+                }
+                catch (const block_older_than_undo_history &e) {
+                    // Peer sent us a block that is too old for our fork database.
+                    // This typically happens when a peer is stuck on a dead fork and
+                    // keeps broadcasting stale blocks.  Soft-ban them for 1 hour
+                    // instead of restarting sync or disconnecting.
+                    wlog("Soft-banning peer ${endpoint} for 1 hour: sent block #${num} that is too old for our fork database",
+                         ("endpoint", originating_peer->get_remote_endpoint())
+                         ("num", block_message_to_process.block.block_num()));
+                    originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
+                    originating_peer->inhibit_fetching_sync_blocks = true;
                 }
                 catch (const fc::exception &e) {
                     // client rejected the block.  Disconnect the client and any other clients that offered us this block
@@ -3573,8 +3608,7 @@ namespace graphene {
 
                     // HF12: soft-ban peers instead of disconnecting during fork rejection
                     // This prevents cascading disconnections during emergency consensus
-                    if (e.code() == unlinkable_block_exception::code_enum::code_value ||
-                        block_message_to_process.block.block_num() <= _delegate->get_block_number(_delegate->get_head_block_id())) {
+                    if (block_message_to_process.block.block_num() <= _delegate->get_block_number(_delegate->get_head_block_id())) {
                         wlog("Soft-banning peer ${endpoint} for 1 hour due to fork rejection",
                              ("endpoint", originating_peer->get_remote_endpoint()));
                         originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
@@ -4887,6 +4921,11 @@ namespace graphene {
                     peer_details["startingheight"] = "";
                     peer_details["banscore"] = "";
                     peer_details["syncnode"] = "";
+                    peer_details["latency_ms"] = peer->round_trip_delay.count() / 1000;
+                    peer_details["is_blocked"] = peer->inhibit_fetching_sync_blocks;
+                    peer_details["blocked_reason"] = peer->inhibit_fetching_sync_blocks
+                        ? std::string("fork_rejected")
+                        : std::string("");
 
                     if (peer->fc_git_revision_sha) {
                         std::string revision_string = *peer->fc_git_revision_sha;

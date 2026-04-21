@@ -3,10 +3,12 @@
 #  VIZ Linux Build Script
 #
 #  Prerequisites:
+#    - Install build dependencies first (once, as root):
+#        sudo ./install-deps-linux.sh
 #    - Ubuntu 20.04+ (24.04 Noble recommended for system Boost 1.74)
 #    - CMake 3.16+
 #    - GCC 8+ or Clang 3.3+
-#    - Boost 1.71+ (system packages or built from source)
+#    - Boost 1.71+
 #    - Git
 #
 #  Usage:
@@ -19,7 +21,7 @@
 #    -m, --mongo             Enable MongoDB plugin (ENABLE_MONGO_PLUGIN=ON)
 #    -s, --static            Build shared libraries OFF (static linking)
 #    --no-lock-check         Disable chainbase lock checking
-#    --skip-deps             Skip dependency installation
+#    --clean                 Remove and recreate the build directory before build
 #    --install               Run make install after build
 #    -j, --jobs N            Number of parallel jobs (default: nproc)
 #    --boost-root PATH       Custom Boost installation path
@@ -36,7 +38,7 @@ BUILD_TESTNET="OFF"
 ENABLE_MONGO="OFF"
 SHARED_LIBS="ON"
 CHAINBASE_LOCK="ON"
-SKIP_DEPS="false"
+CLEAN_BUILD="false"
 DO_INSTALL="false"
 JOBS=""
 BOOST_ROOT_ARG=""
@@ -51,6 +53,12 @@ NC='\033[0m' # No Color
 info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+
+# --- Refuse to run as root ---
+# Build must run as a regular user; use sudo ./install-deps-linux.sh for deps.
+if [[ $EUID -eq 0 ]]; then
+    error "Do not run this script as root. Install dependencies first with: sudo ./install-deps-linux.sh"
+fi
 
 # --- Parse arguments ---
 show_help() {
@@ -72,8 +80,8 @@ while [[ $# -gt 0 ]]; do
             SHARED_LIBS="OFF"; shift ;;
         --no-lock-check)
             CHAINBASE_LOCK="OFF"; shift ;;
-        --skip-deps)
-            SKIP_DEPS="true"; shift ;;
+        --clean)
+            CLEAN_BUILD="true"; shift ;;
         --install)
             DO_INSTALL="true"; shift ;;
         -j|--jobs)
@@ -103,88 +111,20 @@ if [[ ! -f "$SOURCE_DIR/CMakeLists.txt" ]]; then
     error "CMakeLists.txt not found in $SOURCE_DIR. Run this script from the viz-cpp-node root."
 fi
 
-# --- Install dependencies ---
-install_deps_ubuntu() {
-    info "Installing build dependencies..."
-    sudo apt-get update -qq
-
-    sudo apt-get install -y --no-install-recommends \
-        autoconf \
-        automake \
-        autotools-dev \
-        binutils \
-        bsdmainutils \
-        build-essential \
-        cmake \
-        git \
-        ccache \
-        libboost-chrono-dev \
-        libboost-context-dev \
-        libboost-coroutine-dev \
-        libboost-date-time-dev \
-        libboost-filesystem-dev \
-        libboost-iostreams-dev \
-        libboost-locale-dev \
-        libboost-program-options-dev \
-        libboost-serialization-dev \
-        libboost-system-dev \
-        libboost-test-dev \
-        libboost-thread-dev \
-        libbz2-dev \
-        liblzma-dev \
-        libzstd-dev \
-        libreadline-dev \
-        libssl-dev \
-        libtool \
-        ncurses-dev \
-        pkg-config \
-        zlib1g-dev
-
-    info "Dependencies installed."
-}
-
-install_deps_fedora() {
-    info "Installing build dependencies (Fedora)..."
-    sudo dnf install -y \
-        autoconf \
-        automake \
-        cmake \
-        gcc-c++ \
-        git \
-        ccache \
-        boost-devel \
-        bzip2-devel \
-        lzma-devel \
-        libzstd-devel \
-        readline-devel \
-        openssl-devel \
-        libtool \
-        ncurses-devel \
-        pkg-config \
-        zlib-devel
-
-    info "Dependencies installed."
-}
-
-if [[ "$SKIP_DEPS" == "false" ]]; then
-    if command -v apt-get &>/dev/null; then
-        install_deps_ubuntu
-    elif command -v dnf &>/dev/null; then
-        install_deps_fedora
-    else
-        warn "Unsupported package manager. Please install dependencies manually."
-        warn "See documentation/building.md for required packages."
-    fi
-fi
-
 # --- Initialize submodules ---
 if [[ -d "$SOURCE_DIR/.git" ]]; then
     info "Initializing git submodules..."
     git -C "$SOURCE_DIR" submodule update --init --recursive -f
 fi
 
-# --- Create build directory ---
+# --- Create (or clean) build directory ---
 BUILD_DIR="$SOURCE_DIR/build"
+
+if [[ "$CLEAN_BUILD" == "true" && -d "$BUILD_DIR" ]]; then
+    warn "Cleaning build directory: $BUILD_DIR"
+    rm -rf "$BUILD_DIR"
+fi
+
 mkdir -p "$BUILD_DIR"
 
 # --- Display configuration ---
@@ -198,6 +138,7 @@ echo " Build Testnet:    $BUILD_TESTNET"
 echo " Enable MongoDB:   $ENABLE_MONGO"
 echo " Shared Libs:      $SHARED_LIBS"
 echo " Chainbase Locks:  $CHAINBASE_LOCK"
+echo " Clean Build:      $CLEAN_BUILD"
 echo " Parallel Jobs:    $JOBS"
 echo " Source Dir:       $SOURCE_DIR"
 echo " Build Dir:        $BUILD_DIR"
@@ -219,21 +160,24 @@ cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" \
     -DBUILD_TESTNET="$BUILD_TESTNET" \
     -DENABLE_MONGO_PLUGIN="$ENABLE_MONGO" \
     -DCHAINBASE_CHECK_LOCKING="$CHAINBASE_LOCK" \
+    -DBoost_NO_BOOST_CMAKE=ON \
     $BOOST_ROOT_ARG \
     $OPENSSL_ROOT_ARG
 
 info "CMake configuration complete."
 
 # --- Build ---
-info "[2/3] Building with $JOBS parallel jobs..."
-cmake --build "$BUILD_DIR" -j"$JOBS"
+# Use make directly instead of cmake --build to avoid jobserver conflicts
+# with legacy ExternalProject targets (secp256k1 inside fc).
+info "[2/3] Building vizd with $JOBS parallel jobs..."
+make -C "$BUILD_DIR" -j"$JOBS" vizd
 
 info "Build complete."
 
 # --- Install ---
 if [[ "$DO_INSTALL" == "true" ]]; then
     info "[3/3] Installing..."
-    sudo cmake --install "$BUILD_DIR"
+    sudo make -C "$BUILD_DIR" install
     info "Installation complete."
 else
     info "[3/3] Skipping install (use --install to install)."
@@ -242,5 +186,5 @@ fi
 echo ""
 echo "============================================"
 echo -e " ${GREEN}Build completed successfully!${NC}"
-echo " Output directory: $BUILD_DIR"
+echo " Binary: $BUILD_DIR/programs/vizd/vizd"
 echo "============================================"

@@ -12,6 +12,7 @@
 - [programs/util/newplugin.py](file://programs/util/newplugin.py)
 - [documentation/building.md](file://documentation/building.md)
 - [build-linux.sh](file://build-linux.sh)
+- [install-deps-linux.sh](file://install-deps-linux.sh)
 - [build-mac.sh](file://build-mac.sh)
 - [build-mingw.bat](file://build-mingw.bat)
 - [build-msvc.bat](file://build-msvc.bat)
@@ -24,11 +25,11 @@
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive platform-specific build scripts (build-linux.sh, build-mac.sh, build-mingw.bat, build-msvc.bat) with detailed build instructions for Ubuntu 24.04+, macOS with Homebrew, and Windows with MSVC/MinGW support
-- Updated Boost library version requirement to 1.71+ across all platforms with mandatory coroutine component
-- Enhanced documentation with practical build scenarios for each platform
-- Added detailed dependency management for each platform-specific build
-- Updated Docker configurations to use Boost 1.71 packages (libboost-coroutine-dev, libboost-context-dev)
+- Enhanced build system architecture with dedicated dependency management using install-deps-linux.sh + build-linux.sh two-script process
+- Improved error handling and security practices with root privilege separation and user permission enforcement
+- Updated platform-specific build scripts with enhanced validation and security measures
+- Revised Docker configurations to use Boost 1.71 packages (libboost-coroutine-dev, libboost-context-dev)
+- Added comprehensive troubleshooting guidance for the new two-script build process
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -36,20 +37,23 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Platform-Specific Build Scripts](#platform-specific-build-scripts)
-7. [Dependency Analysis](#dependency-analysis)
-8. [Performance Considerations](#performance-considerations)
-9. [Troubleshooting Guide](#troubleshooting-guide)
-10. [Conclusion](#conclusion)
-11. [Appendices](#appendices)
+6. [Enhanced Two-Script Build Process](#enhanced-two-script-build-process)
+7. [Platform-Specific Build Scripts](#platform-specific-build-scripts)
+8. [Dependency Analysis](#dependency-analysis)
+9. [Performance Considerations](#performance-considerations)
+10. [Security Best Practices](#security-best-practices)
+11. [Troubleshooting Guide](#troubleshooting-guide)
+12. [Conclusion](#conclusion)
+13. [Appendices](#appendices)
 
 ## Introduction
-This document explains the build system for VIZ CPP Node, focusing on the CMake-based configuration, cross-platform compilation support, dependency management, and build targets. It covers the new platform-specific build scripts (build-linux.sh, build-mac.sh, build-mingw.bat, build-msvc.bat) along with the traditional CMake configuration and helper tools. The documentation includes comprehensive build instructions for Ubuntu 24.04+, macOS with Homebrew, and Windows with both MSVC and MinGW toolchains, all requiring Boost 1.71+ with mandatory coroutine component.
+This document explains the build system for VIZ CPP Node, focusing on the enhanced CMake-based configuration with dedicated dependency management, cross-platform compilation support, and improved security practices. The build system now features a two-script architecture (install-deps-linux.sh + build-linux.sh) that separates dependency installation (requiring root) from the build process (running as a regular user), providing better security and reliability. The system supports Ubuntu 24.04+, macOS with Homebrew, and Windows with both MSVC and MinGW toolchains, all requiring Boost 1.71+ with mandatory coroutine component.
 
 ## Project Structure
-The build system is organized around a top-level CMake project that orchestrates subprojects and provides platform-specific build automation:
+The build system is organized around a top-level CMake project with enhanced dependency management and platform-specific build automation:
 - Top-level CMake project defines compiler checks, options, platform-specific flags, and includes subdirectories for thirdparty, libraries, plugins, and programs
-- Platform-specific build scripts provide automated dependency installation, configuration, and building for different operating systems
+- Dedicated dependency management scripts provide secure, validated dependency installation
+- Platform-specific build scripts offer automated configuration and building with enhanced error handling
 - Subprojects:
   - libraries: API, chain, protocol, network, time, utilities, wallet
   - plugins: dynamically discovered via a scanning mechanism
@@ -63,7 +67,8 @@ TP["thirdparty/CMakeLists.txt"]
 LIB["libraries/CMakeLists.txt"]
 PLG["plugins/CMakeLists.txt"]
 PRG["programs/CMakeLists.txt"]
-Linux["build-linux.sh"]
+LinuxDeps["install-deps-linux.sh"]
+LinuxBuild["build-linux.sh"]
 Mac["build-mac.sh"]
 MinGW["build-mingw.bat"]
 MSVC["build-msvc.bat"]
@@ -71,7 +76,8 @@ Root --> TP
 Root --> LIB
 Root --> PLG
 Root --> PRG
-Linux --> Root
+LinuxDeps --> LinuxBuild
+LinuxBuild --> Root
 Mac --> Root
 MinGW --> Root
 MSVC --> Root
@@ -83,7 +89,8 @@ MSVC --> Root
 - [libraries/CMakeLists.txt:1-8](file://libraries/CMakeLists.txt#L1-L8)
 - [plugins/CMakeLists.txt:1-12](file://plugins/CMakeLists.txt#L1-L12)
 - [programs/CMakeLists.txt:1-8](file://programs/CMakeLists.txt#L1-L8)
-- [build-linux.sh:1-247](file://build-linux.sh#L1-L247)
+- [install-deps-linux.sh:1-113](file://install-deps-linux.sh#L1-L113)
+- [build-linux.sh:1-191](file://build-linux.sh#L1-L191)
 - [build-mac.sh:1-242](file://build-mac.sh#L1-L242)
 - [build-mingw.bat:1-125](file://build-mingw.bat#L1-L125)
 - [build-msvc.bat:1-116](file://build-msvc.bat#L1-L116)
@@ -103,9 +110,11 @@ MSVC --> Root
   - Sets platform-specific flags for Windows (MSVC/Mingw), macOS, and Linux
   - Enables ccache globally when available
   - Supports optional CPack installer generation
+- Enhanced dependency management:
+  - **install-deps-linux.sh**: Secure dependency installation script requiring root privileges with comprehensive package management for Ubuntu/Debian (apt-get) and Fedora/RHEL (dnf)
+  - **build-linux.sh**: User-friendly build script with enhanced error handling, argument validation, and security enforcement
 - Platform-specific build scripts:
-  - **build-linux.sh**: Automated Ubuntu/Fedora dependency installation, CMake configuration, and building for Linux
-  - **build-mac.sh**: Automated Xcode/Homebrew dependency installation, OpenSSL detection, and building for macOS
+  - **build-mac.sh**: Automated Xcode/Homebrew dependency installation, OpenSSL detection, and building for macOS with comprehensive validation
   - **build-mingw.bat**: Windows MinGW build with environment variable configuration and static linking
   - **build-msvc.bat**: Windows MSVC build with Visual Studio generator configuration
 - Helper scripts:
@@ -115,7 +124,8 @@ MSVC --> Root
 
 **Section sources**
 - [CMakeLists.txt:1-271](file://CMakeLists.txt#L1-L271)
-- [build-linux.sh:1-247](file://build-linux.sh#L1-L247)
+- [install-deps-linux.sh:1-113](file://install-deps-linux.sh#L1-L113)
+- [build-linux.sh:1-191](file://build-linux.sh#L1-L191)
 - [build-mac.sh:1-242](file://build-mac.sh#L1-L242)
 - [build-mingw.bat:1-125](file://build-mingw.bat#L1-L125)
 - [build-msvc.bat:1-116](file://build-msvc.bat#L1-L116)
@@ -124,12 +134,13 @@ MSVC --> Root
 - [programs/util/newplugin.py:1-251](file://programs/util/newplugin.py#L1-L251)
 
 ## Architecture Overview
-The build pipeline integrates CMake configuration, platform detection, dependency discovery, and helper tools to produce binaries and optionally packaging artifacts. The new platform-specific build scripts provide automated workflows for different operating systems while maintaining consistency with the core CMake configuration.
+The enhanced build pipeline integrates CMake configuration, secure dependency management, platform detection, and helper tools to produce binaries with improved security and reliability. The new two-script architecture separates dependency installation (requiring root) from the build process (running as a regular user), providing better security boundaries while maintaining consistency with the core CMake configuration.
 
 ```mermaid
 graph TB
-subgraph "Host Machine"
-LinuxScript["build-linux.sh"]
+subgraph "Secure Host Environment"
+DepsScript["install-deps-linux.sh (root)"]
+BuildScript["build-linux.sh (user)"]
 MacScript["build-mac.sh"]
 MinGWScript["build-mingw.bat"]
 MSVCScript["build-msvc.bat"]
@@ -149,7 +160,8 @@ subgraph "Artifacts"
 Bin["Binaries (vizd, cli_wallet, ...)"]
 Inst["Installed Layout (/usr/local or CPack)"]
 end
-LinuxScript --> CMake
+DepsScript --> BuildScript
+BuildScript --> CMake
 MacScript --> CMake
 MinGWScript --> CMake
 MSVCScript --> CMake
@@ -167,6 +179,8 @@ CMake --> Inst
 
 **Diagram sources**
 - [CMakeLists.txt:206-209](file://CMakeLists.txt#L206-L209)
+- [install-deps-linux.sh:28-31](file://install-deps-linux.sh#L28-L31)
+- [build-linux.sh:57-61](file://build-linux.sh#L57-L61)
 - [build-linux.sh:214-229](file://build-linux.sh#L214-L229)
 - [build-mac.sh:210-224](file://build-mac.sh#L210-L224)
 - [build-mingw.bat:90-111](file://build-mingw.bat#L90-L111)
@@ -393,10 +407,10 @@ Runtime --> User --> Vars --> Cfg
 ```
 
 **Diagram sources**
-- [share/vizd/docker/Dockerfile-production:1-103](file://share/vizd/docker/Dockerfile-production#L1-L103)
+- [share/vizd/docker/Dockerfile-production:1-102](file://share/vizd/docker/Dockerfile-production#L1-L102)
 - [share/vizd/docker/Dockerfile-lowmem:1-85](file://share/vizd/docker/Dockerfile-lowmem#L1-L85)
 - [share/vizd/docker/Dockerfile-mongo:1-114](file://share/vizd/docker/Dockerfile-mongo#L1-L114)
-- [share/vizd/docker/Dockerfile-testnet:1-103](file://share/vizd/docker/Dockerfile-testnet#L1-L103)
+- [share/vizd/docker/Dockerfile-testnet:1-102](file://share/vizd/docker/Dockerfile-testnet#L1-L102)
 
 **Section sources**
 - [share/vizd/docker/Dockerfile-production:56-62](file://share/vizd/docker/Dockerfile-production#L56-L62)
@@ -404,10 +418,99 @@ Runtime --> User --> Vars --> Cfg
 - [share/vizd/docker/Dockerfile-mongo:72-78](file://share/vizd/docker/Dockerfile-mongo#L72-L78)
 - [share/vizd/docker/Dockerfile-testnet:56-62](file://share/vizd/docker/Dockerfile-testnet#L56-L62)
 
+## Enhanced Two-Script Build Process
+
+### install-deps-linux.sh - Secure Dependency Management
+The `install-deps-linux.sh` script provides secure, automated dependency installation for Linux systems with comprehensive error handling and validation:
+
+**Security Features:**
+- Requires root privileges with explicit EUID validation
+- Comprehensive package manager detection (apt-get for Ubuntu/Debian, dnf for Fedora/RHEL)
+- Color-coded logging with error/warn/info categorization
+- Graceful fallback for unsupported package managers
+
+**Ubuntu/Debian Dependencies Installed:**
+- Core build tools: cmake, gcc/g++, git, make, pkg-config, ccache
+- Boost components: chrono, context, coroutine, date_time, filesystem, iostreams, locale, program-options, serialization, system, test, thread
+- Compression libraries: bzip2, lzma, zstd, zlib
+- Security: OpenSSL development headers
+- Optional: readline, ncurses
+
+**Fedora/RHEL Dependencies Installed:**
+- Core build tools: cmake, gcc-c++, git, ccache
+- Boost development: boost-devel
+- Compression libraries: bzip2-devel, lzma-devel, zstd-devel, zlib-devel
+- Security: openssl-devel
+- Optional: readline-devel, ncurses-devel, libtool
+
+**Error Handling:**
+- Immediate termination on dependency installation failures
+- Clear error messages with remediation suggestions
+- Support for retry logic in Docker environments
+
+**Section sources**
+- [install-deps-linux.sh:1-113](file://install-deps-linux.sh#L1-L113)
+
+### build-linux.sh - Enhanced Build Script
+The `build-linux.sh` script provides a comprehensive automated build solution with enhanced security and validation:
+
+**Security Enhancements:**
+- Refuses to run as root (enforced with EUID check)
+- Validates source directory structure before proceeding
+- Comprehensive argument parsing with validation
+- Secure temporary directory handling
+
+**Enhanced Features:**
+- Automatic dependency detection and installation for Ubuntu and Fedora
+- Support for both Debian-style (apt) and RPM-style (dnf) package managers
+- Comprehensive Boost 1.71+ dependency management with all required components
+- Flexible configuration options for different build types and requirements
+- Parallel job control and optional installation step
+- Enhanced error handling and user feedback
+
+**Key Dependencies Installed:**
+- Core build tools: cmake, gcc/g++, git, make, pkg-config
+- Boost components: chrono, context, coroutine, date_time, filesystem, iostreams, locale, program-options, serialization, system, test, thread
+- Compression libraries: bzip2, lzma, zstd, zlib
+- Security: OpenSSL development headers
+- Optional: readline, ccache, ncurses
+
+**Usage Examples:**
+```bash
+# Basic build with enhanced security
+./build-linux.sh
+
+# Low memory node for witnesses
+./build-linux.sh -l
+
+# Testnet build
+./build-linux.sh -n
+
+# Debug build with 4 parallel jobs
+./build-linux.sh -t Debug -j 4
+
+# Skip dependency installation (already installed)
+./build-linux.sh --skip-deps
+
+# Install to system after build
+./build-linux.sh --install
+
+# Custom Boost and OpenSSL paths
+./build-linux.sh --boost-root /opt/boost_1_74_0 --openssl-root /opt/openssl
+```
+
+**Section sources**
+- [build-linux.sh:1-191](file://build-linux.sh#L1-L191)
+
 ## Platform-Specific Build Scripts
 
 ### Linux Build Script (build-linux.sh)
-The `build-linux.sh` script provides a comprehensive automated build solution for Ubuntu 24.04+ and Fedora systems:
+The `build-linux.sh` script provides a comprehensive automated build solution for Ubuntu 24.04+ and Fedora systems with enhanced security:
+
+**Security Features:**
+- Refuses to run as root (EUID check at line 59-61)
+- Validates CMakeLists.txt presence in source directory
+- Comprehensive argument validation and error handling
 
 **Features:**
 - Automatic dependency detection and installation for Ubuntu and Fedora
@@ -448,7 +551,7 @@ The `build-linux.sh` script provides a comprehensive automated build solution fo
 ```
 
 **Section sources**
-- [build-linux.sh:1-247](file://build-linux.sh#L1-L247)
+- [build-linux.sh:1-191](file://build-linux.sh#L1-L191)
 
 ### macOS Build Script (build-mac.sh)
 The `build-mac.sh` script streamlines macOS development with Homebrew integration:
@@ -596,7 +699,8 @@ Progs["programs/CMakeLists.txt"]
 CFGPy["configure_build.py"]
 CATPy["cat_parts.py"]
 NEWPy["newplugin.py"]
-LinuxScript["build-linux.sh"]
+LinuxDeps["install-deps-linux.sh"]
+LinuxBuild["build-linux.sh"]
 MacScript["build-mac.sh"]
 MinGWScript["build-mingw.bat"]
 MSVCScript["build-msvc.bat"]
@@ -607,7 +711,8 @@ CMakeTop --> Progs
 CFGPy --> CMakeTop
 CATPy --> CMakeTop
 NEWPy --> Libs
-LinuxScript --> CMakeTop
+LinuxDeps --> LinuxBuild
+LinuxBuild --> CMakeTop
 MacScript --> CMakeTop
 MinGWScript --> CMakeTop
 MSVCScript --> CMakeTop
@@ -622,6 +727,7 @@ MSVCScript --> CMakeTop
 - [programs/build_helpers/configure_build.py:143-195](file://programs/build_helpers/configure_build.py#L143-L195)
 - [programs/build_helpers/cat_parts.py:11-69](file://programs/build_helpers/cat_parts.py#L11-L69)
 - [programs/util/newplugin.py:225-246](file://programs/util/newplugin.py#L225-L246)
+- [install-deps-linux.sh:98-106](file://install-deps-linux.sh#L98-L106)
 - [build-linux.sh:107-178](file://build-linux.sh#L107-L178)
 - [build-mac.sh:125-171](file://build-mac.sh#L125-L171)
 - [build-mingw.bat:32-56](file://build-mingw.bat#L32-L56)
@@ -632,6 +738,7 @@ MSVCScript --> CMakeTop
 - [programs/build_helpers/configure_build.py:143-195](file://programs/build_helpers/configure_build.py#L143-L195)
 - [programs/build_helpers/cat_parts.py:11-69](file://programs/build_helpers/cat_parts.py#L11-L69)
 - [programs/util/newplugin.py:225-246](file://programs/util/newplugin.py#L225-L246)
+- [install-deps-linux.sh:98-106](file://install-deps-linux.sh#L98-L106)
 - [build-linux.sh:107-178](file://build-linux.sh#L107-L178)
 - [build-mac.sh:125-171](file://build-mac.sh#L125-L171)
 - [build-mingw.bat:32-56](file://build-mingw.bat#L32-L56)
@@ -670,8 +777,43 @@ Practical implications:
 - [CMakeLists.txt:75-80](file://CMakeLists.txt#L75-L80)
 - [CMakeLists.txt:102-106](file://CMakeLists.txt#L102-L106)
 
+## Security Best Practices
+
+### Root Privilege Separation
+The enhanced build system implements strict security boundaries:
+- **install-deps-linux.sh**: Must run as root with explicit EUID validation
+- **build-linux.sh**: Must run as regular user (refuses to run as root)
+- **Automatic validation**: Both scripts verify they're in the correct directory structure
+
+### Enhanced Error Handling
+- **Comprehensive validation**: All scripts validate inputs, dependencies, and environment variables
+- **Color-coded logging**: Clear distinction between info, warning, and error messages
+- **Graceful degradation**: Scripts handle missing optional dependencies gracefully
+- **Clear error messages**: Specific guidance for resolving dependency issues
+
+### Secure Environment Setup
+- **macOS**: Verifies Xcode Command Line Tools and Homebrew installation
+- **Windows**: Validates environment variables and required tool availability
+- **Linux**: Detects and installs appropriate package manager dependencies
+
+### Dependency Management Security
+- **Package manager detection**: Automatically detects and uses appropriate package managers
+- **Repository validation**: Ensures dependencies are installed from trusted repositories
+- **Version validation**: Confirms minimum required versions for all dependencies
+
+**Section sources**
+- [install-deps-linux.sh:28-31](file://install-deps-linux.sh#L28-L31)
+- [build-linux.sh:57-61](file://build-linux.sh#L57-L61)
+- [build-linux.sh:109-112](file://build-linux.sh#L109-L112)
+- [build-mac.sh:102-115](file://build-mac.sh#L102-L115)
+
 ## Troubleshooting Guide
 Common issues and resolutions:
+
+### Enhanced Two-Script Build Process Issues
+- **Root privilege errors**: `Do not run this script as root` - Use `sudo ./install-deps-linux.sh` for dependencies, then run `./build-linux.sh` as regular user
+- **Dependency installation failures**: Check package manager logs and retry with `--no-cache` option in Docker environments
+- **Permission errors**: Ensure proper file permissions and run scripts from repository root directory
 
 ### Boost Version Issues
 - **Problem**: Boost version below 1.71
@@ -694,36 +836,44 @@ Common issues and resolutions:
 - **Windows**: MinGW requires C++11 support and SSE4.2 capability
 
 ### Build Script Issues
-- **Permission errors**: Make scripts executable with `chmod +x build-*.sh` or `build-*.bat`
+- **Permission errors**: Make scripts executable with `chmod +x install-deps-linux.sh build-linux.sh` or `build-*.bat`
 - **Path issues**: Run scripts from repository root directory
 - **Parallel job issues**: Adjust `-j` parameter based on available CPU cores
 
-**Updated** Enhanced Boost dependency requirements and platform-specific build script troubleshooting
+**Updated** Enhanced Boost dependency requirements and platform-specific build script troubleshooting with new two-script architecture
 
 **Section sources**
-- [build-linux.sh:107-178](file://build-linux.sh#L107-L178)
-- [build-mac.sh:108-171](file://build-mac.sh#L108-L171)
+- [install-deps-linux.sh:28-31](file://install-deps-linux.sh#L28-L31)
+- [build-linux.sh:57-61](file://build-linux.sh#L57-L61)
+- [build-linux.sh:109-112](file://build-linux.sh#L109-L112)
+- [build-linux.sh:189-191](file://build-linux.sh#L189-L191)
+- [build-mac.sh:102-115](file://build-mac.sh#L102-L115)
+- [build-mac.sh:166-171](file://build-mac.sh#L166-L171)
 - [build-mingw.bat:32-56](file://build-mingw.bat#L32-L56)
 - [build-msvc.bat:32-56](file://build-msvc.bat#L32-L56)
 - [CMakeLists.txt:96-100](file://CMakeLists.txt#L96-L100)
 
 ## Conclusion
-The VIZ CPP Node build system has evolved to provide comprehensive platform-specific automation while maintaining robust CMake configuration. The new build scripts (build-linux.sh, build-mac.sh, build-mingw.bat, build-msvc.bat) offer streamlined workflows for Ubuntu 24.04+, macOS with Homebrew, and Windows with both MSVC and MinGW toolchains, all requiring Boost 1.71+ with mandatory coroutine component. Recent updates include upgrading to CMake 3.16, Boost 1.71, and adding coroutine component requirements. The platform-specific scripts handle dependency management, configuration, and building automatically, while the traditional CMake approach remains available for advanced users. Dockerfiles continue to streamline both development and production workflows with updated dependency specifications. By leveraging the appropriate build script for your platform, developers can quickly set up consistent builds with optimal performance characteristics.
+The VIZ CPP Node build system has evolved significantly with the introduction of a secure, two-script architecture that enhances both security and reliability. The new `install-deps-linux.sh` script handles dependency installation with proper root privilege separation, while `build-linux.sh` provides a user-friendly build experience with comprehensive error handling and validation. The system continues to support Ubuntu 24.04+, macOS with Homebrew, and Windows with both MSVC and MinGW toolchains, all requiring Boost 1.71+ with mandatory coroutine component. Recent updates include upgrading to CMake 3.16, Boost 1.71, and adding coroutine component requirements. The platform-specific scripts handle dependency management, configuration, and building automatically, while the traditional CMake approach remains available for advanced users. Dockerfiles continue to streamline both development and production workflows with updated dependency specifications. By leveraging the appropriate build script for your platform and following the enhanced security practices, developers can quickly set up consistent builds with optimal performance characteristics and improved security boundaries.
 
 ## Appendices
 
 ### Practical Build Scenarios
 
-#### Linux Development Build
+#### Enhanced Linux Development Build
 ```bash
 # Clone repository
 git clone --recursive https://github.com/VIZ-Blockchain/viz-cpp-node
 cd viz-cpp-node
 
-# Make script executable
+# Install dependencies (requires root)
+chmod +x install-deps-linux.sh
+sudo ./install-deps-linux.sh
+
+# Make build script executable
 chmod +x build-linux.sh
 
-# Basic development build
+# Basic development build (runs as user)
 ./build-linux.sh
 
 # Low memory node for witness operations
@@ -799,10 +949,11 @@ python3 programs/build_helpers/configure_build.py --win --release
 python3 programs/build_helpers/configure_build.py --boost-dir /opt/boost_1_74_0 --openssl-dir /opt/openssl --release
 ```
 
-**Updated** Enhanced platform-specific build script usage examples and advanced configuration options
+**Updated** Enhanced platform-specific build script usage examples and advanced configuration options with new two-script architecture
 
 **Section sources**
-- [build-linux.sh:189-209](file://build-linux.sh#L189-L209)
+- [install-deps-linux.sh:108-113](file://install-deps-linux.sh#L108-L113)
+- [build-linux.sh:189-191](file://build-linux.sh#L189-L191)
 - [build-mac.sh:330-351](file://build-mac.sh#L330-L351)
 - [build-mingw.bat:12-22](file://build-mingw.bat#L12-L22)
 - [build-msvc.bat:12-22](file://build-msvc.bat#L12-L22)

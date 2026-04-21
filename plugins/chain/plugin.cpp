@@ -200,8 +200,8 @@ namespace chain {
                                      boost::program_options::options_description &cfg) {
         cfg.add_options()
             (
-                "shared-file-dir", boost::program_options::value<boost::filesystem::path>()->default_value("blockchain"),
-                "the location of the chain shared memory files (absolute path or relative to application data dir)"
+                "shared-file-dir", boost::program_options::value<boost::filesystem::path>()->default_value("state"),
+                "the location of the shared memory files (absolute path or relative to application data dir)"
             ) (
                 "shared-file-size", boost::program_options::value<std::string>()->default_value("2G"),
                 "Start size of the shared memory file. Default: 2G"
@@ -390,7 +390,7 @@ namespace chain {
     void plugin::plugin_startup() {
         ilog("Starting chain with shared_file_size: ${n} bytes", ("n", my->shared_memory_size));
 
-        auto data_dir = appbase::app().data_dir() / "blockchain";
+        auto data_dir = appbase::app().data_dir() / "state";
 
         if (my->resync) {
             wlog("resync requested: deleting block log and shared memory");
@@ -656,7 +656,7 @@ namespace chain {
         ilog("Snapshot plugin is ready. Resuming deferred snapshot load...");
         my->pending_snapshot_load = false;
 
-        auto data_dir = appbase::app().data_dir() / "blockchain";
+        auto data_dir = appbase::app().data_dir() / "state";
 
         if (my->replay_from_snapshot) {
             do_snapshot_load(data_dir, true);

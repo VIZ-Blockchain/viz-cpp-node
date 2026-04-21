@@ -17,12 +17,13 @@
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive Emergency Consensus Recovery (HF12) implementation with emergency mode activation and deactivation
-- Implemented hybrid witness scheduling during emergency periods
-- Added emergency witness account management with deterministic tie-breaking mechanisms
-- Integrated emergency mode tie-breaking into fork database for consensus stability
-- Enhanced witness scheduling integration with emergency mode awareness
-- Added emergency consensus timeout configuration and emergency exit conditions
+- Enhanced early rejection logic in database.cpp with sophisticated block validation that distinguishes between different types of invalid blocks
+- Improved fork database functionality with comprehensive duplicate detection and prevention mechanisms
+- Added sophisticated block validation that prevents infinite synchronization loops through intelligent early rejection
+- Enhanced error handling and exception management for unlinkable blocks and block too old scenarios
+- Strengthened P2P fallback mechanisms to handle network partitions more effectively
+- Implemented intelligent duplicate block prevention in fork_database with pre-insertion ID checks
+- Enhanced tie-breaking mechanisms for emergency consensus stability with hash-based deterministic resolution
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -38,12 +39,12 @@
 11. [Appendices](#appendices)
 
 ## Introduction
-This document explains the Fork Resolution and Consensus system that maintains blockchain integrity and handles network partitions. The system has been significantly enhanced with Emergency Consensus Recovery (HF12) implementation, comprehensive emergency mode activation, hybrid witness scheduling, emergency witness account management, and emergency mode tie-breaking mechanisms. The fork_database implementation now supports deterministic consensus recovery through emergency mode activation, ensuring blockchain continuity even during extended network partitions or witness failures.
+This document explains the Fork Resolution and Consensus system that maintains blockchain integrity and handles network partitions. The system has been significantly enhanced with sophisticated early rejection logic, comprehensive duplicate detection, improved block validation mechanisms, and enhanced error handling that prevents infinite synchronization loops. The fork_database implementation now supports intelligent block rejection, comprehensive duplicate prevention, and sophisticated tie-breaking mechanisms for emergency consensus scenarios.
 
 ## Project Structure
-The fork resolution and consensus logic spans several core files with enhanced emergency mode support:
-- fork_database.hpp/cpp: In-memory fork chain storage, branch selection, common ancestor detection, and emergency mode tie-breaking with deterministic hash-based resolution
-- database.hpp/cpp: Blockchain database integration, block pushing, chain reorganization, DLT mode management, and emergency consensus mode activation/deactivation
+The fork resolution and consensus logic spans several core files with enhanced early rejection and validation:
+- fork_database.hpp/cpp: In-memory fork chain storage, branch selection, common ancestor detection, duplicate detection, and emergency mode tie-breaking
+- database.hpp/cpp: Blockchain database integration, block pushing with early rejection logic, chain reorganization, DLT mode management, and sophisticated block validation
 - block_log.hpp: Append-only persistence of blocks for recovery and irreversible state
 - dlt_block_log.hpp/cpp: Separate rolling block log for DLT nodes to serve recent irreversible blocks to P2P peers
 - witness.cpp: Witness scheduling integration with emergency mode awareness and fork collision handling
@@ -57,9 +58,10 @@ DBH["database.hpp"]
 DBC["database.cpp"]
 BLH["block_log.hpp"]
 DLTH["dlt_block_log.hpp/.cpp"]
-END["Emergency Mode"]
-END2["Hybrid Scheduling"]
-END3["Tie-Breaking"]
+END["Early Rejection Logic"]
+END2["Duplicate Detection"]
+END3["Block Validation"]
+END4["Exception Handling"]
 end
 FD --> DBC
 DBH --> DBC
@@ -68,13 +70,15 @@ DLTH --> DBC
 DBC --> FD
 DBC --> END
 DBC --> END2
-FD --> END3
+DBC --> END3
+DBC --> END4
+FD --> END4
 ```
 
 **Diagram sources**
 - [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
 - [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
-- [database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
+- [database.cpp:1204-1270](file://libraries/chain/database.cpp#L1204-L1270)
 - [witness.cpp:521-544](file://plugins/witness/witness.cpp#L521-L544)
 
 **Section sources**
@@ -89,15 +93,16 @@ FD --> END3
 - [12.hf:1-7](file://libraries/chain/hardfork.d/12.hf#L1-L7)
 
 ## Core Components
-- fork_database: Maintains a multi-indexed collection of fork items with enhanced out-of-order block caching, supports push, branch traversal, common ancestor detection, and emergency mode tie-breaking with deterministic hash-based resolution
-- database: Integrates fork resolution into block application with sophisticated early rejection logic, performs chain reorganization when a better fork emerges, manages DLT mode for snapshot-based nodes, and implements emergency consensus mode activation/deactivation
+- fork_database: Maintains a multi-indexed collection of fork items with enhanced out-of-order block caching, comprehensive duplicate detection, sophisticated tie-breaking mechanisms, and emergency mode integration
+- database: Integrates fork resolution into block application with sophisticated early rejection logic, comprehensive block validation, performs chain reorganization when a better fork emerges, manages DLT mode for snapshot-based nodes, and implements emergency consensus mode activation/deactivation
 - block_log: Provides persistent storage for blocks, enabling recovery and serving as the source of irreversible blocks
 - dlt_block_log: Separate rolling block log for DLT nodes that maintains a sliding window of recent irreversible blocks for P2P synchronization
 - witness: Integrates witness scheduling with emergency mode awareness, handles fork collisions, and manages emergency witness production
 - emergency consensus: Implements timeout-based emergency mode activation, hybrid witness scheduling, and deterministic tie-breaking mechanisms
 
 Key responsibilities:
-- Track reversible blocks in memory (fork DB) with enhanced caching for out-of-order blocks and emergency mode tie-breaking
+- Track reversible blocks in memory (fork DB) with enhanced caching for out-of-order blocks, comprehensive duplicate detection, and emergency mode tie-breaking
+- Implement sophisticated early rejection logic to prevent unnecessary fork database operations and infinite synchronization loops
 - Detect and select the best chain by comparing heads with improved validation and emergency mode awareness
 - Reorganize the chain when a higher fork becomes active with better error recovery and emergency mode integration
 - Manage DLT mode for snapshot-based nodes with automatic fork database seeding capabilities
@@ -106,16 +111,17 @@ Key responsibilities:
 - Persist irreversible blocks to both block_log and dlt_block_log with enhanced reliability and emergency mode awareness
 - Serve recent blocks to P2P peers through dlt_block_log for faster synchronization
 - Handle emergency witness account creation and key management for consensus recovery
+- Distinguish between different types of invalid blocks and handle them appropriately to prevent system degradation
 
 **Section sources**
 - [fork_database.hpp:53-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L138)
 - [fork_database.cpp:33-92](file://libraries/chain/fork_database.cpp#L33-L92)
-- [database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
+- [database.cpp:1204-1270](file://libraries/chain/database.cpp#L1204-L1270)
 - [dlt_block_log.hpp:13-33](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L13-L33)
 - [witness.cpp:521-544](file://plugins/witness/witness.cpp#L521-L544)
 
 ## Architecture Overview
-The fork resolution pipeline integrates with block application and persistence with enhanced early rejection, DLT mode support, automatic seeding mechanisms, and emergency consensus recovery:
+The fork resolution pipeline integrates with block application and persistence with enhanced early rejection, sophisticated block validation, DLT mode support, automatic seeding mechanisms, and emergency consensus recovery:
 
 ```mermaid
 sequenceDiagram
@@ -127,9 +133,10 @@ participant BL as "block_log.hpp"
 participant DLTL as "dlt_block_log.cpp"
 Net->>DB : "push_block(new_block)"
 DB->>DB : "Early rejection checks"
+DB->>DB : "Validate block types and conditions"
 DB->>FDB : "push_block(new_block)"
 alt "Block already known"
-FDB-->>DB : "Ignore duplicate"
+FDB-->>DB : "Ignore duplicate (duplicate detection)"
 else "Unlinkable block"
 FDB-->>DB : "Cache in unlinked_index"
 else "Valid block"
@@ -153,29 +160,97 @@ DB->>DLTL : "append to dlt_block_log (if enabled)"
 ```
 
 **Diagram sources**
-- [database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
+- [database.cpp:1204-1270](file://libraries/chain/database.cpp#L1204-L1270)
 - [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
 - [witness.cpp:521-544](file://plugins/witness/witness.cpp#L521-L544)
 - [dlt_block_log.cpp:336-340](file://libraries/chain/dlt_block_log.cpp#L336-L340)
 
 ## Detailed Component Analysis
 
-### fork_database: Enhanced Fork Chain Management with Emergency Mode Tie-Breaking
-The fork database stores blocks in a multi-index container supporting:
-- Hashed index by block ID
-- Hashed index by previous block ID
-- Ordered index by block number
+### Enhanced Early Rejection Logic and Block Validation
+**Updated** The database now implements sophisticated early rejection logic that intelligently validates different types of blocks to prevent unnecessary processing and infinite synchronization loops.
 
-**Updated** Enhanced with improved out-of-order block caching, duplicate detection, automatic seeding capabilities for DLT mode, and emergency mode tie-breaking mechanisms.
+The early rejection logic includes:
 
-It supports:
+1. **Already Applied Block Detection**: If a block is at or before the current head and matches the existing block ID, it's ignored to prevent duplicate processing
+2. **Different Fork Detection**: Blocks that are at or before the head but on different forks are silently rejected if their parent is not in the fork database
+3. **Far Ahead Block Rejection**: Blocks that are far ahead of the current head with unknown parents are silently rejected to prevent P2P sync restart loops
+4. **Parent Unknown Detection**: Blocks with unknown parents are rejected to prevent fork database overflow and sync disruption
+
+```mermaid
+flowchart TD
+Start(["Block Processing Request"]) --> CheckHead["Check if block_num <= head_block_num()"]
+CheckHead --> IsBeforeHead{"Block at or before head?"}
+IsBeforeHead --> |Yes| CheckExisting["Check existing block ID"]
+CheckExisting --> MatchExisting{"ID matches existing?"}
+MatchExisting --> |Yes| IgnoreBlock["Ignore block (already applied)"]
+MatchExisting --> |No| CheckParent["Check parent in fork_db"]
+CheckParent --> ParentUnknown{"Parent unknown?"}
+ParentUnknown --> |Yes| RejectFork["Reject different fork block"]
+ParentUnknown --> |No| AllowProcess["Allow processing"]
+IsBeforeHead --> |No| CheckFarAhead["Check far ahead blocks"]
+CheckFarAhead --> FarAhead{"Block far ahead?"}
+FarAhead --> |Yes| CheckParentUnknown["Check parent unknown"]
+CheckParentUnknown --> ParentUnknown2{"Parent unknown?"}
+ParentUnknown2 --> |Yes| RejectFarAhead["Reject far ahead block"]
+ParentUnknown2 --> |No| AllowProcess
+FarAhead --> |No| AllowProcess
+AllowProcess --> ProcessBlock["Process block normally"]
+IgnoreBlock --> End(["Complete"])
+RejectFork --> End
+RejectFarAhead --> End
+ProcessBlock --> End
+```
+
+**Diagram sources**
+- [database.cpp:1204-1270](file://libraries/chain/database.cpp#L1204-L1270)
+
+**Section sources**
+- [database.cpp:1204-1270](file://libraries/chain/database.cpp#L1204-L1270)
+
+### Enhanced Duplicate Block Detection and Prevention
+**New Section** The fork database now includes comprehensive duplicate block detection to prevent redundant processing and improve P2P synchronization reliability.
+
+Duplicate detection mechanisms:
+- Pre-insertion ID check against existing blocks in the index
+- Prevention of duplicate processing during snapshot imports and P2P re-transmissions
+- Efficient early rejection of already-applied blocks through database-level validation
+- Comprehensive duplicate handling in emergency mode scenarios
+
+```mermaid
+flowchart TD
+Start(["Block Insertion Request"]) --> CheckDup["Check existing ID in index"]
+CheckDup --> IsDup{"ID exists?"}
+IsDup --> |Yes| Return["Return existing head (no-op)"]
+IsDup --> |No| ValidatePrev["Validate previous block linkage"]
+ValidatePrev --> LinkOK{"Link valid?"}
+LinkOK --> |No| CacheUnlink["Cache in unlinked_index"]
+LinkOK --> |Yes| InsertBlock["Insert into _index"]
+InsertBlock --> PushNext["_push_next(new_item)"]
+PushNext --> UpdateHead["Update _head if higher"]
+Return --> End(["Complete"])
+CacheUnlink --> End
+UpdateHead --> End
+```
+
+**Diagram sources**
+- [fork_database.cpp:48-84](file://libraries/chain/fork_database.cpp#L48-L84)
+
+**Section sources**
+- [fork_database.cpp:48-55](file://libraries/chain/fork_database.cpp#L48-L55)
+
+### Enhanced Fork Database with Improved Error Handling
+**Updated** The fork database now includes comprehensive error handling and sophisticated tie-breaking mechanisms for emergency consensus scenarios.
+
+The fork database supports:
 - Pushing a block and linking it to the previous block with duplicate prevention
-- Tracking the current head with enhanced validation
+- Tracking the current head with enhanced validation and emergency mode tie-breaking
 - Fetching branches from two heads to a common ancestor
 - Walking the main branch to a given block number
 - Removing blocks and limiting fork depth
 - **New**: Iterative processing of cached unlinked blocks via `_push_next`
 - **New**: Duplicate detection to prevent redundant processing during snapshot imports
+- **New**: Enhanced error handling for unlinkable blocks with comprehensive logging
 - **New**: Emergency mode tie-breaking with deterministic hash-based resolution for consensus stability
 
 ```mermaid
@@ -228,40 +303,11 @@ Implementation highlights:
 - **Better error handling**: Comprehensive exception handling for unlinkable blocks with logging
 - **Automatic seeding support**: Works seamlessly with DLT mode to enable immediate P2P synchronization
 - **Emergency mode tie-breaking**: During emergency mode, deterministic hash-based tie-breaking ensures consensus stability when multiple emergency producers compete at the same height
+- **Enhanced exception management**: Sophisticated handling of different types of block validation failures
 
 **Section sources**
 - [fork_database.hpp:111-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L138)
 - [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
-
-### Enhanced Duplicate Block Detection and Prevention
-**New Section** The fork database now includes comprehensive duplicate block detection to prevent redundant processing and improve P2P synchronization reliability.
-
-Duplicate detection mechanisms:
-- Pre-insertion ID check against existing blocks in the index
-- Prevention of duplicate processing during snapshot imports and P2P re-transmissions
-- Efficient early rejection of already-applied blocks
-
-```mermaid
-flowchart TD
-Start(["Block Insertion Request"]) --> CheckDup["Check existing ID in index"]
-CheckDup --> IsDup{"ID exists?"}
-IsDup --> |Yes| Return["Return existing head (no-op)"]
-IsDup --> |No| ValidatePrev["Validate previous block linkage"]
-ValidatePrev --> LinkOK{"Link valid?"}
-LinkOK --> |No| CacheUnlink["Cache in unlinked_index"]
-LinkOK --> |Yes| InsertBlock["Insert into _index"]
-InsertBlock --> PushNext["_push_next(new_item)"]
-PushNext --> UpdateHead["Update _head if higher"]
-Return --> End(["Complete"])
-CacheUnlink --> End
-UpdateHead --> End
-```
-
-**Diagram sources**
-- [fork_database.cpp:48-84](file://libraries/chain/fork_database.cpp#L48-L84)
-
-**Section sources**
-- [fork_database.cpp:48-55](file://libraries/chain/fork_database.cpp#L48-L55)
 
 ### Branch Selection and Common Ancestor Detection
 Branch selection relies on walking both branches backward until a common ancestor is found. The method returns two vectors representing the branches from each head to the common ancestor.
@@ -293,6 +339,7 @@ When a new head is higher and does not build off the current head, the database:
 - Handles exceptions by invalidating the problematic fork and restoring the good fork with enhanced logging
 - **New**: Works seamlessly with DLT mode to maintain fork database consistency
 - **New**: Skips LIB advancement during emergency mode to prevent premature irreversibility
+- **New**: Implements vote-weighted chain comparison for HF12 and above for more robust consensus
 
 ```mermaid
 sequenceDiagram
@@ -342,7 +389,6 @@ SeedSuccess --> |No| MinimalSeed["Create minimal fork_item"]
 MinimalSeed --> WaitFirstBlock["Wait for first block to apply"]
 ImmediateSync --> End(["Ready for P2P sync"])
 WaitFirstBlock --> End
-NormalMode --> End
 ```
 
 **Diagram sources**
@@ -361,6 +407,7 @@ The database updates last irreversible block (LIB) and writes blocks to logs whe
 - **Gap logging**: Suppresses repeated warnings about missing blocks in fork database during initial synchronization
 - **Rolling window management**: Automatically truncates DLT block log when it exceeds configured limits
 - **Emergency mode integration**: Skips LIB advancement during emergency consensus mode to prevent premature irreversibility
+- **Enhanced validation**: Sophisticated block validation prevents invalid blocks from becoming irreversible
 
 ```mermaid
 flowchart TD
@@ -397,6 +444,7 @@ P2P fallback features:
 - **Improved peer management**: More robust handling of disconnected peers and connection failures
 - **Faster synchronization**: Automatic seeding enables immediate P2P sync for DLT nodes
 - **Better network partition handling**: Enhanced mechanisms to recover from network splits
+- **Intelligent block rejection**: Prevents infinite sync restart loops through early rejection logic
 
 ```mermaid
 sequenceDiagram
@@ -423,13 +471,13 @@ end
 - [p2p_plugin.cpp:118-164](file://plugins/p2p/p2p_plugin.cpp#L118-L164)
 
 ### Enhanced API Methods for Fork Detection, Chain Validation, and Recovery
-**Updated** Enhanced with improved duplicate detection, DLT mode support, automatic seeding capabilities, and emergency mode integration.
+**Updated** Enhanced with improved duplicate detection, DLT mode support, automatic seeding capabilities, emergency mode integration, and sophisticated block validation.
 
 - Fork detection and branch retrieval:
   - get_block_ids_on_fork(head_of_fork): Returns ordered list of block IDs from the fork head back to the common ancestor
   - fetch_branch_from(first, second): Returns two branches leading to a common ancestor
 - Chain validation:
-  - validate_block(new_block, skip): Validates block Merkle root and size
+  - validate_block(new_block, skip): Validates block Merkle root and size with enhanced error handling
 - State recovery:
   - open(): Initializes database and starts fork DB at head block with DLT mode awareness
   - reindex(): Replays blocks and restarts fork DB at the new head
@@ -440,6 +488,10 @@ end
 - **New**: Emergency mode management:
   - set_emergency_mode(active): Activates or deactivates emergency consensus mode
   - is_emergency_mode(): Checks current emergency consensus mode status
+- **New**: Enhanced block validation:
+  - Sophisticated early rejection logic prevents infinite synchronization loops
+  - Intelligent duplicate detection prevents redundant processing
+  - Comprehensive exception handling for different block validation failures
 
 **Section sources**
 - [database.hpp:115-128](file://libraries/chain/include/graphene/chain/database.hpp#L115-L128)
@@ -450,7 +502,7 @@ end
 - [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
 
 ### Examples of Enhanced Fork Scenarios and Resolution Processes
-**Updated** Enhanced with improved out-of-order block handling, duplicate detection, DLT mode integration, automatic seeding capabilities, and emergency consensus recovery.
+**Updated** Enhanced with improved out-of-order block handling, duplicate detection, DLT mode integration, automatic seeding capabilities, emergency consensus recovery, and sophisticated early rejection logic.
 
 - Scenario A: Out-of-order arrival of blocks with improved caching
   - Behavior: New blocks are inserted into the unlinked cache and later inserted when their parent appears via `_push_next`
@@ -473,13 +525,19 @@ end
 - **New Scenario G**: Emergency consensus mode deactivation
   - Behavior: When LIB advances past emergency_consensus_start_block, emergency mode is deactivated and normal witness scheduling resumes
   - Mechanism: Emergency mode flag is cleared and fork database is notified of emergency mode termination
+- **New Scenario H**: Sophisticated early rejection in action
+  - Behavior: Database rejects blocks that are already applied, on different forks, or far ahead with unknown parents to prevent infinite sync loops
+  - Mechanism: Intelligent block validation prevents unnecessary processing and system degradation
+- **New Scenario I**: Duplicate block prevention
+  - Behavior: Database and fork database work together to detect and prevent duplicate block processing
+  - Mechanism: Comprehensive duplicate detection prevents redundant CPU usage and improves synchronization reliability
 
 **Section sources**
 - [fork_database.cpp:92-103](file://libraries/chain/fork_database.cpp#L92-L103)
 - [database.cpp:1075-1087](file://libraries/chain/database.cpp#L1075-L1087)
 - [database.cpp:259-294](file://libraries/chain/database.cpp#L259-L294)
 - [database.cpp:4581-4594](file://libraries/chain/database.cpp#L4581-L4594)
-- [database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
+- [database.cpp:1204-1270](file://libraries/chain/database.cpp#L1204-L1270)
 - [database.cpp:2125-2142](file://libraries/chain/database.cpp#L2125-L2142)
 
 ## Emergency Consensus Recovery System
@@ -592,15 +650,16 @@ Emergency exit process:
 - [database.cpp:4428-4430](file://libraries/chain/database.cpp#L4428-L4430)
 
 ## Dependency Analysis
-**Updated** The fork resolution system now includes DLT mode dependencies, automatic seeding capabilities, and comprehensive emergency consensus integration.
+**Updated** The fork resolution system now includes DLT mode dependencies, automatic seeding capabilities, comprehensive emergency consensus integration, and sophisticated early rejection logic.
 
 The fork resolution system depends on:
-- fork_database for in-memory fork chain management with enhanced caching, duplicate detection, and emergency mode tie-breaking
-- database for integrating fork resolution into block application, DLT mode management, automatic seeding, and emergency consensus mode activation/deactivation with improved early rejection logic
+- fork_database for in-memory fork chain management with enhanced caching, duplicate detection, emergency mode tie-breaking, and comprehensive error handling
+- database for integrating fork resolution into block application, DLT mode management, automatic seeding, emergency consensus mode activation/deactivation with sophisticated early rejection logic and block validation
 - block_log for persistence of irreversible blocks in normal mode
 - **New**: dlt_block_log for DLT mode persistence and P2P synchronization support
 - **New**: witness plugin for emergency mode awareness, fork collision handling, and hybrid witness scheduling
 - **New**: emergency consensus configuration for timeout thresholds and emergency witness parameters
+- **New**: Enhanced exception handling for different types of block validation failures
 
 ```mermaid
 graph LR
@@ -632,24 +691,26 @@ HF12["12.hf"] --> DBCPP
 - [12.hf:1-7](file://libraries/chain/hardfork.d/12.hf#L1-L7)
 
 ## Performance Considerations
-**Updated** Enhanced with improved caching, duplicate detection, DLT mode integration, automatic seeding mechanisms, and emergency consensus recovery optimizations.
+**Updated** Enhanced with improved caching, duplicate detection, DLT mode integration, automatic seeding mechanisms, emergency consensus recovery optimizations, and sophisticated early rejection logic.
 
 - Maximum fork depth: The fork database limits the maximum number of blocks that may be skipped in an out-of-order push, preventing excessive memory usage with enhanced cleanup
 - Multi-index containers: Efficient lookups by block ID and previous ID minimize traversal costs with improved indexing
 - **Enhanced caching**: Improved unlinked block caching with iterative processing via `_push_next` reduces memory pressure and improves P2P synchronization
 - **Duplicate prevention**: Comprehensive duplicate detection prevents redundant processing and reduces CPU overhead
-- Pruning: set_max_size prunes old blocks from both linked and unlinked indices to keep memory bounded with enhanced cleanup
-- Reorganization cost: Reorganizing across deep forks requires popping and re-applying blocks; keeping forks shallow improves responsiveness with enhanced error recovery
-- Persistence overhead: Writing to the block log is required for irreversible blocks; batching and flushing strategies can mitigate latency
-- **Early rejection**: Sophisticated early rejection logic prevents unnecessary fork database operations and improves overall performance
+- **Early rejection optimization**: Sophisticated early rejection logic prevents unnecessary fork database operations and improves overall system performance
+- **Enhanced error handling**: Comprehensive exception handling with specific error types prevents system degradation and improves reliability
+- **Pruning**: set_max_size prunes old blocks from both linked and unlinked indices to keep memory bounded with enhanced cleanup
+- **Reorganization cost**: Reorganizing across deep forks requires popping and re-applying blocks; keeping forks shallow improves responsiveness with enhanced error recovery
+- **Persistence overhead**: Writing to the block log is required for irreversible blocks; batching and flushing strategies can mitigate latency
 - **DLT mode optimization**: Automatic seeding eliminates synchronization delays for snapshot-based nodes, improving overall network health
 - **Gap handling**: DLT block log gap logging suppression prevents performance impact from excessive warning messages
 - **Emergency mode efficiency**: Emergency mode uses optimized tie-breaking with minimal computational overhead while ensuring consensus stability
 - **Hybrid scheduling**: Emergency witness scheduling minimizes complexity compared to full witness rotation during emergency periods
 - **Penalty management**: Emergency penalty reset avoids complex penalty calculations during emergency mode, reducing computational load
+- **Sophisticated validation**: Early rejection logic prevents unnecessary processing and reduces system load during network partitions
 
 ## Troubleshooting Guide
-**Updated** Enhanced with improved error handling, duplicate detection, DLT mode support, automatic seeding capabilities, and comprehensive emergency consensus troubleshooting.
+**Updated** Enhanced with improved error handling, duplicate detection, DLT mode support, automatic seeding capabilities, comprehensive emergency consensus troubleshooting, and sophisticated early rejection logic.
 
 Common issues and remedies:
 - **Unlinkable block errors**: Occur when a block does not link to a known chain; the fork DB logs and caches the block for later insertion when its parent arrives with enhanced logging and processing
@@ -666,22 +727,24 @@ Common issues and remedies:
 - **Emergency witness problems**: Verify emergency witness account creation and key management during emergency mode activation
 - **Hybrid scheduling conflicts**: Check witness schedule overrides and ensure emergency witness has proper signing key configuration
 - **Tie-breaking anomalies**: Monitor emergency mode tie-breaking behavior and verify hash-based resolution consistency across network nodes
+- **Infinite sync loops**: Check early rejection logic and ensure proper block validation to prevent continuous sync restarts
+- **Block validation failures**: Monitor different types of block validation errors and ensure appropriate exception handling
 
 **Section sources**
 - [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
 - [database.cpp:1075-1087](file://libraries/chain/database.cpp#L1075-L1087)
 - [database.cpp:259-294](file://libraries/chain/database.cpp#L259-L294)
 - [database.cpp:4581-4594](file://libraries/chain/database.cpp#L4581-L4594)
-- [database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
+- [database.cpp:1204-1270](file://libraries/chain/database.cpp#L1204-L1270)
 - [database.cpp:2125-2142](file://libraries/chain/database.cpp#L2125-L2142)
 
 ## Conclusion
-**Updated** The fork resolution and consensus system combines an efficient in-memory fork database with robust chain reorganization, irreversible block persistence, comprehensive DLT mode support, and advanced emergency consensus recovery mechanisms. The system has been significantly enhanced with improved out-of-order block caching, duplicate detection, DLT mode integration, automatic seeding capabilities, and comprehensive emergency consensus implementation. The enhanced fork database now supports snapshot-based nodes with immediate P2P synchronization, while the DLT block log provides efficient serving of recent irreversible blocks to peers. The emergency consensus recovery system ensures blockchain continuity through timeout-based activation, hybrid witness scheduling, and deterministic tie-breaking mechanisms. The system integrates tightly with witness scheduling to ensure timely and valid block production, with emergency mode awareness enabling seamless transition between normal and emergency operations. The enhanced APIs enable reliable fork detection, chain validation, and recovery with DLT mode and emergency consensus awareness. Performance controls keep resource usage manageable while improving synchronization reliability, network health, and consensus stability during emergency conditions.
+**Updated** The fork resolution and consensus system combines an efficient in-memory fork database with robust chain reorganization, irreversible block persistence, comprehensive DLT mode support, and advanced emergency consensus recovery mechanisms. The system has been significantly enhanced with sophisticated early rejection logic, comprehensive duplicate detection, DLT mode integration, automatic seeding capabilities, and comprehensive emergency consensus implementation. The enhanced fork database now supports snapshot-based nodes with immediate P2P synchronization, while the DLT block log provides efficient serving of recent irreversible blocks to peers. The emergency consensus recovery system ensures blockchain continuity through timeout-based activation, hybrid witness scheduling, and deterministic tie-breaking mechanisms. The system integrates tightly with witness scheduling to ensure timely and valid block production, with emergency mode awareness enabling seamless transition between normal and emergency operations. The enhanced APIs enable reliable fork detection, chain validation, and recovery with DLT mode and emergency consensus awareness. Performance controls keep resource usage manageable while improving synchronization reliability, network health, and consensus stability during emergency conditions. The sophisticated early rejection logic and block validation mechanisms prevent infinite synchronization loops and system degradation, ensuring robust operation under various network conditions.
 
 ## Appendices
 
 ### Appendix A: Enhanced Key Data Structures and Complexity
-**Updated** Enhanced with improved duplicate detection, caching mechanisms, DLT mode support, automatic seeding capabilities, and emergency consensus integration.
+**Updated** Enhanced with improved duplicate detection, caching mechanisms, DLT mode support, automatic seeding capabilities, emergency consensus integration, and sophisticated early rejection logic.
 
 - fork_item: Stores block data, previous link, and invalid flag
 - fork_database:
@@ -692,6 +755,12 @@ Common issues and remedies:
   - **New**: Duplicate detection: O(1) lookup for existing block IDs before insertion
   - **New**: Enhanced caching: Iterative processing of up to MAX_BLOCK_REORDERING unlinked blocks
   - **New**: Emergency mode tie-breaking: O(1) hash comparison for tie resolution during emergency periods
+  - **New**: Enhanced error handling: Comprehensive exception management for different block validation failures
+- **New**: database early rejection logic:
+  - Already applied block detection: O(1) lookup for existing block IDs
+  - Different fork detection: O(1) parent validation in fork database
+  - Far ahead block rejection: O(1) parent unknown detection
+  - Sophisticated validation prevents unnecessary processing and system degradation
 - **New**: dlt_block_log:
   - append: O(1) for sequential writes with rolling window management
   - read_block_by_num: O(1) for random access within window
@@ -708,10 +777,15 @@ Common issues and remedies:
   - Activation detection: O(1) timestamp comparison for timeout checks
   - Hybrid scheduling: O(N) override of all witness slots to emergency witness
   - Penalty reset: O(N) iteration through all witnesses for penalty clearing
+- **New**: Exception handling:
+  - unlinkable_block_exception: Specific handling for blocks that cannot link
+  - block_too_old_exception: Specific handling for blocks outside fork window
+  - Enhanced error categorization prevents system degradation
 
 **Section sources**
 - [fork_database.hpp:20-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L20-L138)
 - [fork_database.cpp:48-103](file://libraries/chain/fork_database.cpp#L48-L103)
+- [database.cpp:1204-1270](file://libraries/chain/database.cpp#L1204-L1270)
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
 - [dlt_block_log.cpp:336-340](file://libraries/chain/dlt_block_log.cpp#L336-L340)
 - [config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
@@ -738,3 +812,26 @@ Configuration impact:
 **Section sources**
 - [config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [12.hf:1-7](file://libraries/chain/hardfork.d/12.hf#L1-L7)
+
+### Appendix C: Enhanced Exception Handling and Error Categories
+**New Section** Comprehensive breakdown of exception handling categories and their specific behaviors.
+
+Exception categories and handling:
+- **unlinkable_block_exception**: Thrown when blocks cannot link to known chain; caught and cached in fork database
+- **block_too_old_exception**: Thrown when blocks are outside fork database window; handled gracefully to prevent system overload
+- **block_validation_exception**: Thrown when blocks fail validation checks; handled through early rejection logic
+- **duplicate_block_exception**: Prevented through comprehensive duplicate detection mechanisms
+- **infinite_sync_loop_exception**: Prevented through sophisticated early rejection logic that detects and rejects problematic blocks
+
+Exception handling strategies:
+- **Early rejection**: Prevents unnecessary processing of invalid blocks
+- **Graceful degradation**: Allows system to continue operating despite individual block failures
+- **Comprehensive logging**: Detailed error reporting for debugging and monitoring
+- **Specific exception types**: Differentiates between different types of failures for appropriate handling
+- **System resilience**: Prevents cascading failures through proper exception management
+
+**Section sources**
+- [fork_database.cpp:38-46](file://libraries/chain/fork_database.cpp#L38-L46)
+- [fork_database.cpp:59-75](file://libraries/chain/fork_database.cpp#L59-L75)
+- [database.cpp:1204-1270](file://libraries/chain/database.cpp#L1204-L1270)
+- [database.cpp:1390-1397](file://libraries/chain/database.cpp#L1390-L1397)

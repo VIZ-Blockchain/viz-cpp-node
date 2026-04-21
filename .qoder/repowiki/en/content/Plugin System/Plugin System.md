@@ -22,17 +22,20 @@
 - [libraries/chain/dlt_block_log.cpp](file://libraries/chain/dlt_block_log.cpp)
 - [libraries/chain/include/graphene/chain/dlt_block_log.hpp](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp)
 - [libraries/network/node.cpp](file://libraries/network/node.cpp)
+- [libraries/network/peer_connection.hpp](file://libraries/network/peer_connection.hpp)
+- [libraries/network/core_messages.hpp](file://libraries/network/core_messages.hpp)
+- [thirdparty/fc/include/fc/network/ip.hpp](file://thirdparty/fc/include/fc/network/ip.hpp)
+- [thirdparty/fc/src/network/ip.cpp](file://thirdparty/fc/src/network/ip.cpp)
 - [programs/util/newplugin.py](file://programs/util/newplugin.py)
 - [share/vizd/config/config.ini](file://share/vizd/config/config.ini)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced P2P plugin with improved logging for sync block processing and better visibility into synchronization progress
-- Updated maintenance notes to reflect DLT mode integration improvements with sophisticated error handling and logging
-- Added comprehensive documentation for debug logging improvements in DLT mode scenarios
-- Updated P2P plugin integration documentation to reflect enhanced error handling patterns
-- Improved troubleshooting guidance for DLT mode block serving operations
+- Enhanced P2P plugin with improved type safety in IP address handling using static_cast<std::string>()
+- Updated peer statistics logging to use explicit type conversion for peer_info.host.get_address()
+- Added documentation about the static_cast<std::string>() fix for preventing implicit type conversion issues
+- Updated troubleshooting guidance to include type safety considerations for IP address handling
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -42,17 +45,18 @@
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [DLT Mode and Snapshot Integration](#dlt-mode-and-snapshot-integration)
 7. [Enhanced P2P Plugin Integration with DLT Mode Awareness](#enhanced-p2p-plugin-integration-with-dlt-mode-awareness)
-8. [Dependency Analysis](#dependency-analysis)
-9. [Plugin Deprecation Status and Maintenance Practices](#plugin-deprecation-status-and-maintenance-practices)
-10. [Performance Considerations](#performance-considerations)
-11. [Troubleshooting Guide](#troubleshooting-guide)
-12. [Conclusion](#conclusion)
-13. [Appendices](#appendices)
+8. [Type Safety Improvements in IP Address Handling](#type-safety-improvements-in-ip-address-handling)
+9. [Dependency Analysis](#dependency-analysis)
+10. [Plugin Deprecation Status and Maintenance Practices](#plugin-deprecation-status-and-maintenance-practices)
+11. [Performance Considerations](#performance-considerations)
+12. [Troubleshooting Guide](#troubleshooting-guide)
+13. [Conclusion](#conclusion)
+14. [Appendices](#appendices)
 
 ## Introduction
 This document explains the VIZ C++ Node plugin system architecture, focusing on how the appbase-based framework enables modular functionality, the plugin lifecycle from registration to shutdown, and inter-plugin communication patterns. It documents the built-in plugin ecosystem (40+ plugins) ranging from core blockchain functions to specialized APIs and integrations, including the enhanced snapshot plugin capabilities for DLT (Distributed Ledger Technology) mode operations and integration with rolling block log features.
 
-**Updated** Enhanced with comprehensive DLT mode documentation covering snapshot-based node bootstrap, rolling block log integration, and P2P layer compatibility for distributed ledger deployments. The P2P plugin now includes sophisticated DLT mode awareness with improved error handling and logging capabilities for DLT mode block serving operations, featuring enhanced sync block processing visibility and better synchronization progress monitoring.
+**Updated** Enhanced with comprehensive DLT mode documentation covering snapshot-based node bootstrap, rolling block log integration, and P2P layer compatibility for distributed ledger deployments. The P2P plugin now includes sophisticated DLT mode awareness with improved error handling and logging capabilities for DLT mode block serving operations, featuring enhanced sync block processing visibility and better synchronization progress monitoring. Recent improvements include enhanced type safety in IP address handling to prevent implicit type conversion issues in peer management code.
 
 ## Project Structure
 The plugin system is organized around the appbase application framework and a dedicated plugins directory. Each plugin is a self-contained module that registers APIs, subscribes to chain events, and optionally depends on other plugins. The top-level plugins build script enumerates subdirectories and exposes a runtime-accessible list of available plugins. Built-in plugins are located under libraries/plugins/<plugin_name>, while external plugins can be added similarly.
@@ -70,6 +74,7 @@ B --> I["Snapshot Plugin<br/>snapshot::plugin"]
 C --> J["Chain Database<br/>chainbase::database"]
 I --> K["DLT Block Log<br/>dlt_block_log"]
 G --> L["DLT Mode Integration<br/>P2P Layer"]
+G --> M["Type Safety Enhancements<br/>IP Address Handling"]
 ```
 
 **Diagram sources**
@@ -94,7 +99,7 @@ G --> L["DLT Mode Integration<br/>P2P Layer"]
 - Webserver Plugin: Starts an HTTP/WebSocket server and dispatches JSON-RPC queries to registered handlers on the app's io_service thread.
 - Database API Plugin: Exposes read-only database queries via JSON-RPC, including blocks, accounts, balances, and chain metadata.
 - Account History Plugin: Tracks per-account operation histories and exposes retrieval APIs.
-- P2P Plugin: Manages peer-to-peer networking, broadcasting blocks/transactions, and block production controls. **Enhanced** with DLT mode awareness, improved error handling, and sophisticated logging for sync block processing.
+- P2P Plugin: Manages peer-to-peer networking, broadcasting blocks/transactions, and block production controls. **Enhanced** with DLT mode awareness, improved error handling, sophisticated logging for sync block processing, and **improved type safety** in IP address handling.
 - Mongo DB Plugin: Integrates with MongoDB for indexing and archival of chain data.
 - **Snapshot Plugin**: Enables DLT (Distributed Ledger Technology) mode operations including snapshot creation, loading, P2P snapshot synchronization, and integration with rolling block logs.
 
@@ -263,6 +268,7 @@ class AccountHistoryPlugin {
 - **Maintenance Note**: Uses deprecated configuration options with warnings for migration.
 - **DLT Integration**: Automatically falls back to DLT block log when serving blocks not found in main block log.
 - **Enhanced Error Handling**: Improved logging and error handling specifically for DLT mode scenarios with sophisticated debug logging capabilities.
+- **Type Safety Improvements**: Enhanced IP address handling with explicit type conversion using static_cast<std::string>() to prevent implicit type conversion issues in peer management code.
 
 ```mermaid
 classDiagram
@@ -671,6 +677,92 @@ The database layer provides comprehensive fallback mechanisms for DLT mode:
 - [libraries/chain/database.cpp:599-620](file://libraries/chain/database.cpp#L599-L620)
 - [libraries/chain/database.cpp:623-640](file://libraries/chain/database.cpp#L623-L640)
 
+## Type Safety Improvements in IP Address Handling
+
+### Enhanced Type Safety in Peer Statistics
+Recent improvements to the P2P plugin include enhanced type safety in IP address handling to prevent implicit type conversion issues in peer management code.
+
+**The Issue**: The P2P plugin's peer statistics logging previously relied on implicit type conversions when extracting IP addresses from peer_info.host.get_address(). This could lead to unexpected behavior and type conversion errors in certain scenarios.
+
+**The Solution**: Implemented explicit type conversion using static_cast<std::string>() to ensure reliable IP address extraction and formatting.
+
+**Key Changes**:
+- Line 504: `ip = static_cast<std::string>(peer_info.host.get_address());`
+- This ensures explicit conversion from fc::ip::address to std::string
+- Prevents potential implicit conversion issues and compiler warnings
+- Provides consistent string formatting for IP addresses in logs
+
+**Impact**:
+- Eliminates type conversion ambiguity in peer statistics logging
+- Improves code reliability and prevents runtime errors
+- Maintains backward compatibility while enhancing type safety
+- Reduces potential security vulnerabilities from implicit conversions
+
+```mermaid
+flowchart TD
+A["Peer Connection Established"] --> B["Extract Peer Information"]
+B --> C["Get IP Address from peer_info.host.get_address()"]
+C --> D{"Type Conversion Required?"}
+D --> |Yes| E["Apply static_cast<std::string>()"]
+D --> |No| F["Direct String Conversion"]
+E --> G["Format IP Address for Logging"]
+F --> G
+G --> H["Output Peer Statistics"]
+```
+
+**Diagram sources**
+- [plugins/p2p/p2p_plugin.cpp:500-508](file://plugins/p2p/p2p_plugin.cpp#L500-L508)
+
+**Section sources**
+- [plugins/p2p/p2p_plugin.cpp:500-508](file://plugins/p2p/p2p_plugin.cpp#L500-L508)
+- [thirdparty/fc/include/fc/network/ip.hpp:69-71](file://thirdparty/fc/include/fc/network/ip.hpp#L69-L71)
+- [thirdparty/fc/src/network/ip.cpp:35-39](file://thirdparty/fc/src/network/ip.cpp#L35-L39)
+
+### IP Address Type System
+The underlying fc::ip::address and fc::ip::endpoint classes provide a robust type system for network address handling:
+
+**Address Class Features**:
+- Implicit conversion operators for different types
+- String conversion via operator std::string()
+- Numeric conversion via operator uint32_t()
+- Range checking for private/public/multicast addresses
+
+**Endpoint Class Features**:
+- Composite address and port management
+- String parsing from "IP:PORT" format
+- Comparison operators for sorting and matching
+- Port extraction and manipulation
+
+**Type Safety Benefits**:
+- Compile-time type checking prevents misuse
+- Clear separation between address and endpoint types
+- Safe conversion between string and numeric representations
+- Consistent behavior across different network operations
+
+**Section sources**
+- [thirdparty/fc/include/fc/network/ip.hpp:12-87](file://thirdparty/fc/include/fc/network/ip.hpp#L12-L87)
+- [thirdparty/fc/src/network/ip.cpp:14-87](file://thirdparty/fc/src/network/ip.cpp#L14-L87)
+
+### Network Integration Points
+The enhanced type safety extends throughout the network layer:
+
+**Peer Connection Integration**:
+- Peer connections store fc::ip::endpoint for remote addresses
+- Node implementation extracts endpoints for statistics reporting
+- Message handling maintains type-safe address information
+- Firewall and NAT detection uses proper endpoint types
+
+**Message Protocol Integration**:
+- Hello messages exchange endpoint information
+- Address broadcasting maintains type safety
+- Connection establishment preserves endpoint integrity
+- Peer discovery protocols use consistent address formats
+
+**Section sources**
+- [libraries/network/peer_connection.hpp:109-110](file://libraries/network/peer_connection.hpp#L109-L110)
+- [libraries/network/node.cpp:4900-4903](file://libraries/network/node.cpp#L4900-L4903)
+- [libraries/network/core_messages.hpp:333-345](file://libraries/network/core_messages.hpp#L333-L345)
+
 ## Dependency Analysis
 Plugins declare explicit dependencies using APPBASE_PLUGIN_REQUIRES. The JSON-RPC plugin is a central dependency for most plugins that expose APIs. The Chain plugin is often required by stateful plugins.
 
@@ -685,6 +777,7 @@ CHAIN --> MONGO["mongo_db::plugin"]
 CHAIN --> SNAP["snapshot::plugin"]
 P2P --> DLT["dlt_block_log"]
 SNAP --> DLT
+P2P --> TYPESAFE["Type Safety Enhancements"]
 ```
 
 **Diagram sources**
@@ -754,6 +847,7 @@ The debug node plugin maintains backward compatibility by logging warnings and m
 2. **Operation Updates**: Update client applications to use supported alternatives
 3. **Plugin Updates**: Monitor plugin deprecation notices and migrate to maintained alternatives
 4. **DLT Mode Adoption**: Consider migrating to DLT mode for improved performance and reduced storage requirements
+5. **Type Safety Updates**: Ensure all IP address handling uses explicit type conversion for reliability
 
 #### Monitoring Deprecation Warnings
 Plugins emit warnings when deprecated features are detected:
@@ -766,6 +860,7 @@ Plugins emit warnings when deprecated features are detected:
 - Monitor warning logs for deprecated feature usage
 - Validate migration paths before hardfork activation
 - Test DLT mode configurations for proper snapshot and block log operation
+- Verify type safety improvements in IP address handling
 
 ### Practical Examples
 
@@ -812,6 +907,7 @@ plugin = p2p
 - **Enhanced Error Handling**: Improved logging reduces error noise while providing better context information for debugging.
 - **Maintenance Impact**: Deprecated plugins may have reduced performance due to compatibility layers and should be migrated to supported alternatives.
 - **Sync Block Processing**: Enhanced logging provides better visibility into synchronization progress without impacting performance.
+- **Type Safety Improvements**: Explicit type conversion adds minimal overhead while preventing runtime errors and improving reliability.
 
 ## Troubleshooting Guide
 - Plugin Not Found:
@@ -836,6 +932,11 @@ plugin = p2p
   - Review deprecated operations and migrate to supported alternatives
   - Update configuration options to use non-deprecated values
   - Monitor hardfork compliance for operation usage
+- **Type Safety Issues**:
+  - Verify IP address handling uses explicit type conversion
+  - Check for compilation errors related to implicit type conversions
+  - Ensure peer statistics logging displays correct IP addresses
+  - Validate network connectivity and address resolution
 
 **Section sources**
 - [documentation/plugin.md:11-20](file://documentation/plugin.md#L11-L20)
@@ -847,7 +948,7 @@ plugin = p2p
 ## Conclusion
 The VIZ C++ Node plugin system leverages appbase to deliver a modular, extensible architecture. Plugins integrate seamlessly through JSON-RPC, share the chain database, and coordinate via signals. The template-based development tool accelerates custom plugin creation, while configuration options govern exposure and security. With 40+ built-in plugins spanning core blockchain functionality to specialized integrations, the system supports diverse use cases from public APIs to archival pipelines.
 
-**Updated** The system now includes comprehensive DLT mode support with snapshot-based state management, rolling block log integration, and P2P layer compatibility. The enhanced P2P plugin integration with DLT mode awareness provides improved error handling and logging capabilities for DLT mode block serving operations, featuring sophisticated debug logging for DLT mode scenarios, enhanced sync block processing visibility, and better synchronization progress monitoring. These improvements reduce error noise while providing better context information for debugging distributed ledger deployments.
+**Updated** The system now includes comprehensive DLT mode support with snapshot-based state management, rolling block log integration, and P2P layer compatibility. The enhanced P2P plugin integration with DLT mode awareness provides improved error handling and logging capabilities for DLT mode block serving operations, featuring sophisticated debug logging for DLT mode scenarios, enhanced sync block processing visibility, and better synchronization progress monitoring. Recent improvements include enhanced type safety in IP address handling using explicit type conversion to prevent implicit type conversion issues in peer management code, further improving the reliability and maintainability of the plugin system.
 
 ## Appendices
 
@@ -872,6 +973,7 @@ The VIZ C++ Node plugin system leverages appbase to deliver a modular, extensibl
   - `snapshot-every-n-blocks`: Create periodic snapshots (0 = disabled)
   - `snapshot-dir`: Directory for auto-generated snapshots
 - **Deprecated Options**: seed-node (use p2p-seed-node), force-validate (use p2p-force-validate), edit-script (use debug-node-edit-script).
+- **Type Safety Options**: Enhanced IP address handling with explicit type conversion for reliable peer management.
 
 **Section sources**
 - [documentation/plugin.md:11-20](file://documentation/plugin.md#L11-L20)
@@ -887,6 +989,7 @@ The VIZ C++ Node plugin system leverages appbase to deliver a modular, extensibl
 - **DLT Mode Introduction**: Snapshot-based DLT mode with rolling block log support
 - **Enhanced P2P Integration**: Improved DLT mode awareness with sophisticated error handling and logging
 - **Sync Block Processing**: Enhanced logging for better synchronization progress visibility
+- **Type Safety Improvements**: Enhanced IP address handling with explicit type conversion for reliability
 
 **Section sources**
 - [libraries/protocol/include/graphene/protocol/operations.hpp:14-27](file://libraries/protocol/include/graphene/protocol/operations.hpp#L14-L27)

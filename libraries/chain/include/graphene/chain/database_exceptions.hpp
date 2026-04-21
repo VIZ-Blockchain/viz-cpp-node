@@ -82,6 +82,8 @@ namespace graphene {
 
         FC_DECLARE_DERIVED_EXCEPTION(unlinkable_block_exception, graphene::chain::chain_exception, 4080000, "unlinkable block")
 
+        FC_DECLARE_DERIVED_EXCEPTION(block_too_old_exception, graphene::chain::chain_exception, 4080100, "block is too old for fork database")
+
         FC_DECLARE_DERIVED_EXCEPTION(unknown_hardfork_exception, graphene::chain::chain_exception, 4090000, "chain attempted to apply unknown hardfork")
 
         FC_DECLARE_DERIVED_EXCEPTION(plugin_exception, graphene::chain::chain_exception, 4100000, "plugin exception")

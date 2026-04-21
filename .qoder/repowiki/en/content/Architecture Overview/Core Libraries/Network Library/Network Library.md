@@ -15,7 +15,15 @@
 - [message.hpp](file://libraries/network/include/graphene/network/message.hpp)
 - [message_oriented_connection.hpp](file://libraries/network/include/graphene/network/message_oriented_connection.hpp)
 - [config.hpp](file://libraries/network/include/graphene/network/config.hpp)
+- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Updated peer information handling section to reflect improved IP address extraction reliability
+- Enhanced peer statistics logging documentation with conversion overhead reduction details
+- Added comprehensive coverage of critical bug fix in peer information processing
+- Updated troubleshooting guidance to include IP address extraction error handling
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -23,13 +31,17 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+6. [Peer Statistics and Metrics System](#peer-statistics-and-metrics-system)
+7. [Peer Information Handling and IP Extraction](#peer-information-handling-and-ip-extraction)
+8. [Dependency Analysis](#dependency-analysis)
+9. [Performance Considerations](#performance-considerations)
+10. [Troubleshooting Guide](#troubleshooting-guide)
+11. [Conclusion](#conclusion)
 
 ## Introduction
 This document describes the Network Library that implements peer-to-peer communication and network protocol for the VIZ node. It covers the node management layer, peer connection orchestration, standard network messages, secure transport, peer address management, and message serialization. The library provides a robust foundation for blockchain synchronization, transaction broadcasting, and block propagation across a distributed network.
+
+**Updated** Enhanced with comprehensive peer statistics logging system including latency tracking, blocking status reporting, periodic statistics collection, and improved peer information handling with reliable IP address extraction and reduced conversion overhead.
 
 ## Project Structure
 The network library is organized into cohesive modules:
@@ -40,6 +52,8 @@ The network library is organized into cohesive modules:
 - Peer address database and topology maintenance
 - Message serialization/deserialization framework
 - Configuration constants for protocol behavior
+- **Peer statistics and metrics collection system with improved IP address extraction**
+- **P2P plugin integration for peer monitoring and statistics**
 
 ```mermaid
 graph TB
@@ -52,6 +66,8 @@ STCP["stcp_socket.hpp<br/>stcp_socket.cpp"]
 PD["peer_database.hpp<br/>peer_database.cpp"]
 MOC["message_oriented_connection.hpp"]
 CFG["config.hpp"]
+STATS["Statistics System"]
+P2P["p2p_plugin.cpp"]
 end
 N --> PC
 N --> PD
@@ -65,27 +81,32 @@ PD --> N
 CFG --> N
 CFG --> PC
 CFG --> STCP
+STATS --> N
+STATS --> PC
+P2P --> STATS
 ```
 
 **Diagram sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L190-L304)
-- [peer_connection.hpp](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L351)
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L42-L106)
-- [core_messages.hpp](file://libraries/network/include/graphene/network/core_messages.hpp#L72-L573)
-- [stcp_socket.hpp](file://libraries/network/include/graphene/network/stcp_socket.hpp#L37-L93)
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
-- [message_oriented_connection.hpp](file://libraries/network/include/graphene/network/message_oriented_connection.hpp#L45-L79)
-- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
+- [node.hpp:190-304](file://libraries/network/include/graphene/network/node.hpp#L190-L304)
+- [peer_connection.hpp:79-351](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L351)
+- [message.hpp:42-106](file://libraries/network/include/graphene/network/message.hpp#L42-L106)
+- [core_messages.hpp:72-573](file://libraries/network/include/graphene/network/core_messages.hpp#L72-L573)
+- [stcp_socket.hpp:37-93](file://libraries/network/include/graphene/network/stcp_socket.hpp#L37-L93)
+- [peer_database.hpp:104-134](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
+- [message_oriented_connection.hpp:45-79](file://libraries/network/include/graphene/network/message_oriented_connection.hpp#L45-L79)
+- [config.hpp:26-106](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
+- [p2p_plugin.cpp:500-560](file://plugins/p2p/p2p_plugin.cpp#L500-L560)
 
 **Section sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L1-L355)
-- [peer_connection.hpp](file://libraries/network/include/graphene/network/peer_connection.hpp#L1-L380)
-- [core_messages.hpp](file://libraries/network/include/graphene/network/core_messages.hpp#L1-L573)
-- [stcp_socket.hpp](file://libraries/network/include/graphene/network/stcp_socket.hpp#L1-L99)
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L1-L141)
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L1-L114)
-- [message_oriented_connection.hpp](file://libraries/network/include/graphene/network/message_oriented_connection.hpp#L1-L85)
-- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L1-L106)
+- [node.hpp:1-355](file://libraries/network/include/graphene/network/node.hpp#L1-L355)
+- [peer_connection.hpp:1-383](file://libraries/network/include/graphene/network/peer_connection.hpp#L1-L383)
+- [core_messages.hpp:1-573](file://libraries/network/include/graphene/network/core_messages.hpp#L1-L573)
+- [stcp_socket.hpp:1-99](file://libraries/network/include/graphene/network/stcp_socket.hpp#L1-L99)
+- [peer_database.hpp:1-141](file://libraries/network/include/graphene/network/peer_database.hpp#L1-L141)
+- [message.hpp:1-114](file://libraries/network/include/graphene/network/message.hpp#L1-L114)
+- [message_oriented_connection.hpp:1-85](file://libraries/network/include/graphene/network/message_oriented_connection.hpp#L1-L85)
+- [config.hpp:1-106](file://libraries/network/include/graphene/network/config.hpp#L1-L106)
+- [p2p_plugin.cpp:1-742](file://plugins/p2p/p2p_plugin.cpp#L1-L742)
 
 ## Core Components
 - Node: Central orchestrator for peer discovery, connection management, synchronization, and message broadcasting.
@@ -95,15 +116,18 @@ CFG --> STCP
 - PeerDatabase: Maintains peer address records, connection history, and topology hints.
 - Message: Encapsulates message headers, payload serialization, and type-safe deserialization.
 - MessageOrientedConnection: Bridges secure sockets to message streams with event callbacks.
+- **Statistics System: Collects and reports peer performance metrics, latency data, and connection statistics with improved IP address extraction reliability.**
+- **P2P Plugin: Integrates peer monitoring, statistics collection, and network diagnostics with enhanced error handling.**
 
 **Section sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L182-L304)
-- [peer_connection.hpp](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L351)
-- [core_messages.hpp](file://libraries/network/include/graphene/network/core_messages.hpp#L72-L573)
-- [stcp_socket.hpp](file://libraries/network/include/graphene/network/stcp_socket.hpp#L37-L93)
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L42-L106)
-- [message_oriented_connection.hpp](file://libraries/network/include/graphene/network/message_oriented_connection.hpp#L45-L79)
+- [node.hpp:182-304](file://libraries/network/include/graphene/network/node.hpp#L182-L304)
+- [peer_connection.hpp:79-351](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L351)
+- [core_messages.hpp:72-573](file://libraries/network/include/graphene/network/core_messages.hpp#L72-L573)
+- [stcp_socket.hpp:37-93](file://libraries/network/include/graphene/network/stcp_socket.hpp#L37-L93)
+- [peer_database.hpp:104-134](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
+- [message.hpp:42-106](file://libraries/network/include/graphene/network/message.hpp#L42-L106)
+- [message_oriented_connection.hpp:45-79](file://libraries/network/include/graphene/network/message_oriented_connection.hpp#L45-L79)
+- [p2p_plugin.cpp:500-560](file://plugins/p2p/p2p_plugin.cpp#L500-L560)
 
 ## Architecture Overview
 The network stack layers securely transport protocol messages between nodes. The Node coordinates peer discovery and synchronization, PeerConnection handles per-peer state and queues, CoreMessages defines the protocol, STCP Socket provides secure transport, and PeerDatabase maintains connectivity hints.
@@ -115,6 +139,8 @@ participant Node as "node"
 participant Peer as "peer_connection"
 participant MOC as "message_oriented_connection"
 participant STCP as "stcp_socket"
+participant Stats as "Statistics System"
+participant P2P as "p2p_plugin"
 participant Net as "Remote Peer"
 App->>Node : "connect_to_endpoint(ep)"
 Node->>Peer : "create peer_connection"
@@ -124,16 +150,20 @@ STCP->>Net : "TCP connect"
 STCP->>Net : "ECDH key exchange"
 STCP-->>MOC : "shared secret"
 MOC-->>Peer : "secure socket ready"
+Peer->>Stats : "record latency metrics"
 Peer->>Peer : "send hello_message"
 Peer-->>Node : "on_message(hello)"
 Node-->>Peer : "broadcast inventory"
 Peer-->>App : "handle_block/handle_transaction"
+P2P->>Stats : "collect peer statistics"
+Stats->>P2P : "enhanced IP address extraction"
 ```
 
 **Diagram sources**
-- [node.cpp](file://libraries/network/node.cpp#L780-L790)
-- [peer_connection.cpp](file://libraries/network/peer_connection.cpp#L208-L242)
-- [stcp_socket.cpp](file://libraries/network/stcp_socket.cpp#L69-L72)
+- [node.cpp:780-790](file://libraries/network/node.cpp#L780-L790)
+- [peer_connection.cpp:208-242](file://libraries/network/peer_connection.cpp#L208-L242)
+- [stcp_socket.cpp:69-72](file://libraries/network/stcp_socket.cpp#L69-L72)
+- [p2p_plugin.cpp:500-560](file://plugins/p2p/p2p_plugin.cpp#L500-L560)
 
 ## Detailed Component Analysis
 
@@ -144,6 +174,7 @@ The Node class is the central coordinator for peer discovery, connection orchest
 - Broadcast messages and synchronize with peers
 - Track connection counts and network usage statistics
 - Manage advanced parameters and peer advertising controls
+- **Collect and report peer statistics and call performance metrics with improved IP address extraction**
 
 Key responsibilities:
 - Peer pool management and connection limits
@@ -151,6 +182,7 @@ Key responsibilities:
 - Inventory advertisement and request routing
 - Bandwidth monitoring and rate limiting
 - Firewall detection and NAT traversal helpers
+- **Statistics collection and reporting for network performance analysis with reliable peer information handling**
 
 ```mermaid
 classDiagram
@@ -171,6 +203,7 @@ class node {
 +network_get_usage_stats()
 +get_potential_peers()
 +disable_peer_advertising()
++get_call_statistics()
 }
 class node_impl {
 -_active_connections
@@ -203,17 +236,18 @@ class node_impl {
 +on_get_current_connections_request_message(...)
 +on_get_current_connections_reply_message(...)
 +on_connection_closed(...)
++get_call_statistics()
 }
 node --> node_impl : "owns"
 ```
 
 **Diagram sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L190-L304)
-- [node.cpp](file://libraries/network/node.cpp#L424-L799)
+- [node.hpp:190-304](file://libraries/network/include/graphene/network/node.hpp#L190-L304)
+- [node.cpp:424-799](file://libraries/network/node.cpp#L424-L799)
 
 **Section sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L182-L304)
-- [node.cpp](file://libraries/network/node.cpp#L424-L799)
+- [node.hpp:182-304](file://libraries/network/include/graphene/network/node.hpp#L182-L304)
+- [node.cpp:424-799](file://libraries/network/node.cpp#L424-L799)
 
 ### Peer Connection (peer_connection.hpp, peer_connection.cpp)
 PeerConnection encapsulates a single peer session, managing:
@@ -223,6 +257,9 @@ PeerConnection encapsulates a single peer session, managing:
 - Request/response coordination
 - Connection lifecycle (accept/connect/close/destroy)
 - Rate limiting and throttling
+- **Latency tracking and round-trip delay measurement**
+- **Blocking status reporting and synchronization control**
+- **Enhanced peer information handling with reliable IP address extraction**
 
 ```mermaid
 stateDiagram-v2
@@ -238,8 +275,8 @@ Closed --> [*]
 ```
 
 **Diagram sources**
-- [peer_connection.hpp](file://libraries/network/include/graphene/network/peer_connection.hpp#L82-L106)
-- [peer_connection.cpp](file://libraries/network/peer_connection.cpp#L169-L206)
+- [peer_connection.hpp:82-106](file://libraries/network/include/graphene/network/peer_connection.hpp#L82-L106)
+- [peer_connection.cpp:169-206](file://libraries/network/peer_connection.cpp#L169-L206)
 
 Queueing and throttling:
 - Real queued messages: full message payload copied
@@ -247,9 +284,9 @@ Queueing and throttling:
 - Size limits and backpressure to prevent memory pressure
 
 **Section sources**
-- [peer_connection.hpp](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L351)
-- [peer_connection.cpp](file://libraries/network/peer_connection.cpp#L41-L66)
-- [peer_connection.cpp](file://libraries/network/peer_connection.cpp#L310-L354)
+- [peer_connection.hpp:79-351](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L351)
+- [peer_connection.cpp:41-66](file://libraries/network/peer_connection.cpp#L41-L66)
+- [peer_connection.cpp:310-354](file://libraries/network/peer_connection.cpp#L310-L354)
 
 ### Core Messages (core_messages.hpp, core_messages.cpp)
 Standardized message types for the network protocol:
@@ -259,6 +296,7 @@ Standardized message types for the network protocol:
 - Handshake and connection control
 - Time synchronization and firewall checks
 - Current connections reporting
+- **Address information with latency metrics and enhanced peer details**
 
 Message type enumeration and structures define the protocol contract. Serialization is handled by the message wrapper.
 
@@ -298,14 +336,14 @@ message <.. core_messages : "serialized/deserialized"
 ```
 
 **Diagram sources**
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L42-L106)
-- [core_messages.hpp](file://libraries/network/include/graphene/network/core_messages.hpp#L72-L573)
-- [core_messages.cpp](file://libraries/network/core_messages.cpp#L30-L49)
+- [message.hpp:42-106](file://libraries/network/include/graphene/network/message.hpp#L42-L106)
+- [core_messages.hpp:72-573](file://libraries/network/include/graphene/network/core_messages.hpp#L72-L573)
+- [core_messages.cpp:30-49](file://libraries/network/core_messages.cpp#L30-L49)
 
 **Section sources**
-- [core_messages.hpp](file://libraries/network/include/graphene/network/core_messages.hpp#L72-L573)
-- [core_messages.cpp](file://libraries/network/core_messages.cpp#L30-L49)
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L42-L106)
+- [core_messages.hpp:72-573](file://libraries/network/include/graphene/network/core_messages.hpp#L72-L573)
+- [core_messages.cpp:30-49](file://libraries/network/core_messages.cpp#L30-L49)
+- [message.hpp:42-106](file://libraries/network/include/graphene/network/message.hpp#L42-L106)
 
 ### Secure TCP Socket (stcp_socket.hpp, stcp_socket.cpp)
 Provides secure transport using ECDH key exchange and AES encryption:
@@ -326,12 +364,12 @@ ReadWrite --> Close["Close socket"]
 ```
 
 **Diagram sources**
-- [stcp_socket.cpp](file://libraries/network/stcp_socket.cpp#L49-L72)
-- [stcp_socket.cpp](file://libraries/network/stcp_socket.cpp#L132-L177)
+- [stcp_socket.cpp:49-72](file://libraries/network/stcp_socket.cpp#L49-L72)
+- [stcp_socket.cpp:132-177](file://libraries/network/stcp_socket.cpp#L132-L177)
 
 **Section sources**
-- [stcp_socket.hpp](file://libraries/network/include/graphene/network/stcp_socket.hpp#L37-L93)
-- [stcp_socket.cpp](file://libraries/network/stcp_socket.cpp#L49-L177)
+- [stcp_socket.hpp:37-93](file://libraries/network/include/graphene/network/stcp_socket.hpp#L37-L93)
+- [stcp_socket.cpp:49-177](file://libraries/network/stcp_socket.cpp#L49-L177)
 
 ### Peer Database (peer_database.hpp, peer_database.cpp)
 Maintains persistent records of potential peers:
@@ -367,12 +405,12 @@ peer_database --> potential_peer_record : "stores"
 ```
 
 **Diagram sources**
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
-- [peer_database.cpp](file://libraries/network/peer_database.cpp#L41-L82)
+- [peer_database.hpp:104-134](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
+- [peer_database.cpp:41-82](file://libraries/network/peer_database.cpp#L41-L82)
 
 **Section sources**
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
-- [peer_database.cpp](file://libraries/network/peer_database.cpp#L100-L174)
+- [peer_database.hpp:104-134](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
+- [peer_database.cpp:100-174](file://libraries/network/peer_database.cpp#L100-L174)
 
 ### Message Serialization (message.hpp)
 Defines the message envelope and serialization:
@@ -393,10 +431,154 @@ Unpack --> Result["Return T"]
 ```
 
 **Diagram sources**
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L70-L105)
+- [message.hpp:70-105](file://libraries/network/include/graphene/network/message.hpp#L70-L105)
 
 **Section sources**
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L42-L106)
+- [message.hpp:42-106](file://libraries/network/include/graphene/network/message.hpp#L42-L106)
+
+## Peer Statistics and Metrics System
+
+**Updated** The network library now includes a comprehensive peer statistics logging system that provides detailed insights into peer performance and network health with improved IP address extraction reliability.
+
+### Latency Tracking System
+The system tracks round-trip delay and clock offset for each peer connection:
+
+- **Round Trip Delay**: Measures the time for a message to travel to a peer and back
+- **Clock Offset**: Calculates time difference between local and remote peer clocks
+- **Latency Reporting**: Exposes peer latency in milliseconds for monitoring and selection
+
+```mermaid
+flowchart TD
+Start(["Time Synchronization Request"]) --> SendReq["Send current_time_request_message"]
+SendReq --> WaitResp["Wait for reply"]
+WaitResp --> CalcDelay["Calculate round_trip_delay"]
+CalcDelay --> CalcOffset["Calculate clock_offset"]
+CalcOffset --> Report["Report to peer_status"]
+Report --> Monitor["Monitor peer performance"]
+```
+
+**Diagram sources**
+- [node.cpp:3710-3723](file://libraries/network/node.cpp#L3710-L3723)
+
+### Blocking Status Reporting
+The system monitors and reports peer blocking conditions that affect synchronization:
+
+- **Inhibit Fetching Sync Blocks**: Tracks peers that are temporarily blocked from receiving sync data
+- **Soft Ban Mechanism**: Implements temporary blocking for peers on losing forks during emergency consensus
+- **Blocking Reasons**: Reports specific reasons for peer blocking (fork rejection, etc.)
+
+### Enhanced Peer Information Reporting
+The peer information system now includes comprehensive metrics with improved reliability:
+
+- **Latency Metrics**: `latency_ms` field showing round-trip delay in milliseconds
+- **Blocking Status**: `is_blocked` boolean indicating if peer is currently blocked
+- **Blocking Reason**: `blocked_reason` field explaining why peer is blocked
+- **Connection Quality**: Firewall status, connection duration, and bandwidth metrics
+- **Peer Capabilities**: Platform information, version details, and feature support
+- **IP Address Extraction**: Reliable extraction with fallback handling for unknown addresses
+
+### Periodic Statistics Collection
+The system implements continuous statistics collection:
+
+- **Call Statistics**: Tracks method execution times, delays, and performance metrics
+- **Network Usage**: Monitors upload/download rates over various time periods
+- **Performance Monitoring**: Collects rolling averages for bandwidth utilization
+- **Delegate Thread Coordination**: Measures delays between P2P thread and delegate thread execution
+
+### Statistics Collection Classes
+
+```mermaid
+classDiagram
+class call_statistics_collector {
++time_point call_requested_time
++time_point begin_execution_time
++time_point execution_completed_time
++const char* method_name
++execute()
++starting_execution()
++execution_completed()
+}
+class statistics_gathering_node_delegate_wrapper {
++node_delegate* delegate
++call_stats_accumulator* execution_accumulator
++call_stats_accumulator* delay_before_accumulator
++call_stats_accumulator* delay_after_accumulator
++get_call_statistics()
+}
+call_statistics_collector --> statistics_gathering_node_delegate_wrapper : "collects"
+```
+
+**Diagram sources**
+- [node.cpp:312-381](file://libraries/network/node.cpp#L312-L381)
+- [node.cpp:383-420](file://libraries/network/node.cpp#L383-L420)
+
+**Section sources**
+- [node.hpp:173-179](file://libraries/network/include/graphene/network/node.hpp#L173-L179)
+- [node.cpp:4920-4970](file://libraries/network/node.cpp#L4920-L4970)
+- [node.cpp:312-381](file://libraries/network/node.cpp#L312-L381)
+- [node.cpp:5128-5131](file://libraries/network/node.cpp#L5128-L5131)
+- [core_messages.hpp:322-346](file://libraries/network/include/graphene/network/core_messages.hpp#L322-L346)
+- [core_messages.hpp:428-448](file://libraries/network/include/graphene/network/core_messages.hpp#L428-L448)
+
+## Peer Information Handling and IP Extraction
+
+**Updated** Critical bug fix implemented in peer information handling that improves IP address extraction reliability and reduces potential conversion overhead in the P2P networking layer.
+
+### Improved IP Address Extraction Reliability
+The system now features enhanced IP address extraction with comprehensive error handling:
+
+- **Safe IP Address Retrieval**: Uses `static_cast<std::string>(peer_info.host.get_address())` for reliable address extraction
+- **Fallback Error Handling**: Implements try-catch block to handle extraction failures gracefully
+- **Default Value Provision**: Sets IP to "(unknown)" when extraction fails, preventing crashes
+- **Port Extraction**: Direct port extraction using `peer_info.host.port()` with proper type casting
+- **Address Key Generation**: Creates reliable `addr_key = ip + ":" + std::to_string(port)` for peer identification
+
+### Reduced Conversion Overhead
+The new implementation minimizes conversion overhead through:
+
+- **Direct String Casting**: Uses `static_cast<std::string>()` for immediate conversion without intermediate steps
+- **Efficient Port Handling**: Direct port extraction avoids unnecessary string conversions
+- **Optimized Address Key Creation**: Single-line address key generation reduces computational overhead
+- **Minimal Memory Allocation**: Reduces temporary string allocations during peer information processing
+
+### Enhanced Peer Statistics Processing
+The P2P plugin now processes peer statistics with improved reliability:
+
+- **Latency Metrics Collection**: Extracts `latency_ms` with proper integer conversion
+- **Bytes Received Tracking**: Processes `bytesrecv` with unsigned integer handling
+- **Blocking Status Monitoring**: Handles `is_blocked` boolean values reliably
+- **Reason Analysis**: Captures `blocked_reason` strings for diagnostic purposes
+- **Delta Calculation**: Computes byte delta with overflow protection
+
+```mermaid
+flowchart TD
+Start(["Peer Information Processing"]) --> ExtractIP["Extract IP address safely"]
+ExtractIP --> TryCatch{"Try-Catch Block"}
+TryCatch --> |Success| ValidIP["Use extracted IP"]
+TryCatch --> |Failure| DefaultIP["Set IP to '(unknown)'"]
+ValidIP --> ExtractPort["Extract port"]
+DefaultIP --> ExtractPort
+ExtractPort --> CreateKey["Create addr_key"]
+CreateKey --> ProcessMetrics["Process latency, bytes, blocking"]
+ProcessMetrics --> CalculateDelta["Calculate byte delta"]
+CalculateDelta --> LogStats["Log peer statistics"]
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:500-560](file://plugins/p2p/p2p_plugin.cpp#L500-L560)
+- [node.cpp:4900-4970](file://libraries/network/node.cpp#L4900-L4970)
+
+### Peer Information Data Flow
+The enhanced system processes peer information through a structured pipeline:
+
+1. **Endpoint Extraction**: Safely extracts peer endpoint with error handling
+2. **Metric Collection**: Gathers latency, bytes received, blocking status, and reasons
+3. **Delta Computation**: Calculates byte transfer differences with overflow protection
+4. **Statistics Logging**: Outputs comprehensive peer statistics with improved reliability
+
+**Section sources**
+- [p2p_plugin.cpp:500-560](file://plugins/p2p/p2p_plugin.cpp#L500-L560)
+- [node.cpp:4900-4970](file://libraries/network/node.cpp#L4900-L4970)
 
 ## Dependency Analysis
 The network components depend on each other in a layered fashion:
@@ -405,6 +587,8 @@ The network components depend on each other in a layered fashion:
 - MessageOrientedConnection depends on STCP Socket and Message
 - CoreMessages depends on Protocol types and Message
 - Config constants drive behavior across components
+- **Statistics system integrates with Node and PeerConnection for metrics collection**
+- **P2P plugin integrates with statistics system for enhanced peer monitoring**
 
 ```mermaid
 graph LR
@@ -419,23 +603,28 @@ STCP --> MOC
 Node --> Cfg["config.hpp"]
 PeerConn --> Cfg
 STCP --> Cfg
+Stats["Statistics System"] --> Node
+Stats --> PeerConn
+P2P["p2p_plugin.cpp"] --> Stats
 ```
 
 **Diagram sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L26-L28)
-- [peer_connection.hpp](file://libraries/network/include/graphene/network/peer_connection.hpp#L26-L29)
-- [core_messages.hpp](file://libraries/network/include/graphene/network/core_messages.hpp#L26-L28)
-- [stcp_socket.hpp](file://libraries/network/include/graphene/network/stcp_socket.hpp#L26-L28)
-- [message_oriented_connection.hpp](file://libraries/network/include/graphene/network/message_oriented_connection.hpp#L26-L27)
-- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
+- [node.hpp:26-28](file://libraries/network/include/graphene/network/node.hpp#L26-L28)
+- [peer_connection.hpp:26-29](file://libraries/network/include/graphene/network/peer_connection.hpp#L26-L29)
+- [core_messages.hpp:26-28](file://libraries/network/include/graphene/network/core_messages.hpp#L26-L28)
+- [stcp_socket.hpp:26-28](file://libraries/network/include/graphene/network/stcp_socket.hpp#L26-L28)
+- [message_oriented_connection.hpp:26-27](file://libraries/network/include/graphene/network/message_oriented_connection.hpp#L26-L27)
+- [config.hpp:26-106](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
+- [p2p_plugin.cpp:500-560](file://plugins/p2p/p2p_plugin.cpp#L500-L560)
 
 **Section sources**
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L26-L28)
-- [peer_connection.hpp](file://libraries/network/include/graphene/network/peer_connection.hpp#L26-L29)
-- [core_messages.hpp](file://libraries/network/include/graphene/network/core_messages.hpp#L26-L28)
-- [stcp_socket.hpp](file://libraries/network/include/graphene/network/stcp_socket.hpp#L26-L28)
-- [message_oriented_connection.hpp](file://libraries/network/include/graphene/network/message_oriented_connection.hpp#L26-L27)
-- [config.hpp](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
+- [node.hpp:26-28](file://libraries/network/include/graphene/network/node.hpp#L26-L28)
+- [peer_connection.hpp:26-29](file://libraries/network/include/graphene/network/peer_connection.hpp#L26-L29)
+- [core_messages.hpp:26-28](file://libraries/network/include/graphene/network/core_messages.hpp#L26-L28)
+- [stcp_socket.hpp:26-28](file://libraries/network/include/graphene/network/stcp_socket.hpp#L26-L28)
+- [message_oriented_connection.hpp:26-27](file://libraries/network/include/graphene/network/message_oriented_connection.hpp#L26-L27)
+- [config.hpp:26-106](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
+- [p2p_plugin.cpp:500-560](file://plugins/p2p/p2p_plugin.cpp#L500-L560)
 
 ## Performance Considerations
 - Connection limits: Desired and maximum connections are configurable to balance throughput and resource usage.
@@ -444,8 +633,10 @@ STCP --> Cfg
 - Prefetching: Interleaved fetching of IDs and items reduces latency during synchronization.
 - Rate limiting: Bandwidth monitor tracks read/write rates and applies limits.
 - Throttling: Transaction fetching can be inhibited during heavy load to prioritize block sync.
-
-[No sources needed since this section provides general guidance]
+- **Statistics overhead**: Metrics collection adds minimal overhead while providing valuable performance insights.
+- **Latency monitoring**: Round-trip delay tracking helps identify slow or problematic peers for connection optimization.
+- **IP extraction efficiency**: Improved IP address extraction reduces CPU overhead and prevents crashes from malformed addresses.
+- **Error handling**: Comprehensive try-catch blocks prevent cascading failures in peer information processing.
 
 ## Troubleshooting Guide
 Common issues and diagnostics:
@@ -454,16 +645,28 @@ Common issues and diagnostics:
 - Message deserialization errors: Ensure message types match and payloads are intact.
 - Memory pressure: Monitor queue sizes and reduce advertised inventory.
 - Time synchronization: Use current time request/reply messages to detect clock skew.
+- **Latency issues**: Monitor `latency_ms` field to identify slow peers affecting synchronization.
+- **Blocking peers**: Check `is_blocked` and `blocked_reason` fields to diagnose synchronization problems.
+- **Performance bottlenecks**: Use call statistics to identify slow methods and optimize performance.
+- **IP extraction failures**: Monitor for "(unknown)" IP addresses indicating extraction errors.
+- **Statistics logging issues**: Verify P2P plugin configuration for statistics collection.
 
 Operational controls:
 - Disable peer advertising for debugging isolated networks.
 - Adjust bandwidth limits to stabilize performance under load.
 - Inspect call statistics and connection counts for bottlenecks.
+- **Monitor peer metrics**: Regularly review latency and blocking status for network health assessment.
+- **Enable statistics logging**: Use `p2p-stats-enabled` option to activate peer monitoring.
+- **Configure logging intervals**: Set appropriate `p2p-stats-interval` for desired monitoring frequency.
 
 **Section sources**
-- [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp#L39-L45)
-- [node.hpp](file://libraries/network/include/graphene/network/node.hpp#L288-L298)
-- [message.hpp](file://libraries/network/include/graphene/network/message.hpp#L85-L105)
+- [peer_database.hpp:39-45](file://libraries/network/include/graphene/network/peer_database.hpp#L39-L45)
+- [node.hpp:288-298](file://libraries/network/include/graphene/network/node.hpp#L288-L298)
+- [message.hpp:85-105](file://libraries/network/include/graphene/network/message.hpp#L85-L105)
+- [node.cpp:4920-4970](file://libraries/network/node.cpp#L4920-L4970)
+- [p2p_plugin.cpp:500-560](file://plugins/p2p/p2p_plugin.cpp#L500-L560)
 
 ## Conclusion
 The Network Library provides a comprehensive, secure, and scalable foundation for peer-to-peer communication. Its modular design separates concerns between node orchestration, peer lifecycle management, protocol messaging, secure transport, and peer topology maintenance. With built-in performance controls, diagnostic capabilities, and extensible message types, it supports efficient blockchain synchronization and robust network operation.
+
+**Updated** The enhanced peer statistics logging system significantly improves network observability by providing detailed latency tracking, blocking status reporting, and comprehensive peer metrics. The critical bug fix in peer information handling ensures reliable IP address extraction with reduced conversion overhead, preventing crashes and improving overall network stability. The integration with the P2P plugin provides comprehensive monitoring capabilities for operators and developers working with the VIZ blockchain network.
