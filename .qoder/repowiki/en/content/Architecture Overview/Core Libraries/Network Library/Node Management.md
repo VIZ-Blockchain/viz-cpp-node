@@ -20,10 +20,11 @@
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive documentation for emergency consensus network-level improvements
-- Updated peer connection management to include soft-ban functionality
-- Enhanced synchronization logic with automatic flag reset mechanisms
-- Documented network-level emergency mode support and tie-breaking algorithms
+- Enhanced peer handling logic with improved unlinkable_block_exception handling
+- Implemented intelligent peer soft-banning mechanisms with automatic expiration
+- Added differentiation between stale fork peers and legitimate sync candidates
+- Prevented infinite sync loops through intelligent peer state management
+- Updated emergency consensus network-level improvements documentation
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -31,20 +32,21 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Emergency Consensus Network-Level Improvements](#emergency-consensus-network-level-improvements)
-7. [Dependency Analysis](#dependency-analysis)
-8. [Performance Considerations](#performance-considerations)
-9. [Troubleshooting Guide](#troubleshooting-guide)
-10. [Conclusion](#conclusion)
+6. [Enhanced Peer Handling and Soft-Banning](#enhanced-peer-handling-and-soft-banning)
+7. [Emergency Consensus Network-Level Improvements](#emergency-consensus-network-level-improvements)
+8. [Dependency Analysis](#dependency-analysis)
+9. [Performance Considerations](#performance-considerations)
+10. [Troubleshooting Guide](#troubleshooting-guide)
+11. [Conclusion](#conclusion)
 
 ## Introduction
-This document describes the Node Management component responsible for orchestrating network peers, maintaining connectivity, and managing blockchain synchronization in the P2P layer. It covers the node.hpp class interface, the node_delegate integration for blockchain callbacks, configuration and lifecycle APIs, peer management, and network broadcasting with inventory tracking. The documentation now includes comprehensive coverage of emergency consensus network-level improvements including soft-ban expiration handling, inhibit_fetching_sync_blocks flag reset logic, and network-level emergency mode support.
+This document describes the Node Management component responsible for orchestrating network peers, maintaining connectivity, and managing blockchain synchronization in the P2P layer. It covers the node.hpp class interface, the node_delegate integration for blockchain callbacks, configuration and lifecycle APIs, peer management, and network broadcasting with inventory tracking. The documentation now includes comprehensive coverage of enhanced peer handling logic with intelligent soft-banning mechanisms, improved unlinkable_block_exception handling, and prevention of infinite sync loops.
 
 ## Project Structure
 The Node Management functionality spans several headers and the implementation source file:
 - Public interface: node.hpp defines the node class, node_delegate interface, and related types.
-- Implementation: node.cpp implements the node lifecycle, peer orchestration, message routing, synchronization, and inventory management.
-- Peer model: peer_connection.hpp defines the peer connection abstraction and state machine with emergency consensus support.
+- Implementation: node.cpp implements the node lifecycle, peer orchestration, message routing, synchronization, and inventory management with enhanced peer handling logic.
+- Peer model: peer_connection.hpp defines the peer connection abstraction and state machine with emergency consensus support and soft-ban functionality.
 - Persistence: peer_database.hpp provides persistent peer discovery records.
 - Messaging: message.hpp defines the generic message envelope; core_messages.hpp enumerates core P2P message types.
 - Networking primitives: stcp_socket.hpp and message_oriented_connection.hpp underpin transport and framing.
@@ -54,8 +56,8 @@ The Node Management functionality spans several headers and the implementation s
 graph TB
 subgraph "Network Layer"
 N["node.hpp<br/>Public API"]
-NI["node.cpp<br/>Implementation"]
-PC["peer_connection.hpp<br/>Peer Abstraction"]
+NI["node.cpp<br/>Enhanced Implementation"]
+PC["peer_connection.hpp<br/>Peer Abstraction<br/>with Soft-Ban Support"]
 PD["peer_database.hpp<br/>Persistent Peers"]
 MSG["message.hpp<br/>Message Envelope"]
 CM["core_messages.hpp<br/>Core Message Types"]
@@ -99,7 +101,7 @@ DBC --> CFG
 ## Core Components
 - node class: Provides P2P orchestration, configuration, peer management, and broadcast APIs.
 - node_delegate interface: Bridges the P2P layer to the blockchain, handling block ingestion, transaction processing, and sync callbacks.
-- peer_connection: Encapsulates a single peer link with state machine, inventory tracking, rate-limited messaging, and emergency consensus support.
+- peer_connection: Encapsulates a single peer link with state machine, inventory tracking, rate-limited messaging, emergency consensus support, and intelligent soft-ban functionality.
 - peer_database: Persistent store of potential peers with connection history and disposition.
 - message: Generic envelope for all P2P messages with hashing and typed serialization.
 - fork_database: Manages blockchain forks with emergency consensus mode support and deterministic tie-breaking.
@@ -111,6 +113,7 @@ Key responsibilities:
 - Broadcasting: Advertising inventory and sending items to peers.
 - Inventory management: Tracking what peers have, what we need, and what we've recently processed.
 - Emergency consensus: Managing soft-bans, automatic flag resets, and emergency mode operations.
+- Intelligent peer handling: Differentiating between stale fork peers and legitimate sync candidates to prevent infinite loops.
 
 **Section sources**
 - [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
@@ -121,7 +124,7 @@ Key responsibilities:
 - [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
 
 ## Architecture Overview
-The node delegates blockchain integration to a node_delegate and coordinates peers via peer_connection instances. The node maintains separate queues for sync and normal operation, enforces bandwidth and connection limits, and periodically prunes stale peers. The emergency consensus system provides network-level resilience through soft-ban mechanisms and deterministic tie-breaking.
+The node delegates blockchain integration to a node_delegate and coordinates peers via peer_connection instances. The node maintains separate queues for sync and normal operation, enforces bandwidth and connection limits, and periodically prunes stale peers. The enhanced peer handling system provides network-level resilience through intelligent soft-ban mechanisms, automatic flag resets, and deterministic tie-breaking to prevent cascading failures and infinite sync loops.
 
 ```mermaid
 classDiagram
@@ -188,6 +191,8 @@ class peer_connection {
 +get_last_message_received_time()
 +fork_rejected_until fc : : time_point
 +inhibit_fetching_sync_blocks bool
++soft_ban_expiration_handling()
++intelligent_peer_classification()
 }
 class fork_database {
 +set_emergency_mode(active)
@@ -263,7 +268,7 @@ Impl->>Impl : "trigger_p2p_network_connect_loop()"
 - Inbound: accept_loop accepts sockets and starts accept_or_connect_task; after hello exchange, moves to active and starts synchronization.
 - Handshake validation: Verifies signatures, chain ID, fork compatibility, and prevents self-connections and duplicates.
 - Firewall detection: Uses check-firewall messages to infer NAT/firewall status.
-- Emergency consensus: Soft-ban peers on fork rejection with automatic expiration handling.
+- Emergency consensus: Soft-ban peers on fork rejection with automatic expiration handling and intelligent peer classification.
 
 ```mermaid
 sequenceDiagram
@@ -301,6 +306,7 @@ end
 - Inactivity pruning: Disconnects peers exceeding inactivity thresholds and reschedules outstanding requests to others.
 - Peer advertising: Optionally disables advertising to restrict exposure.
 - Emergency consensus: Implements soft-ban mechanisms to prevent cascading disconnections during network emergencies.
+- Intelligent peer classification: Differentiates between stale fork peers and legitimate sync candidates to prevent infinite loops.
 
 ```mermaid
 flowchart TD
@@ -404,6 +410,111 @@ Send --> Deliver["Deliver item via fetch_items_message"]
 - [node.cpp:1326-1398](file://libraries/network/node.cpp#L1326-L1398)
 - [node.cpp:2830-2892](file://libraries/network/node.cpp#L2830-L2892)
 - [node.cpp:111-217](file://libraries/network/node.cpp#L111-L217)
+
+## Enhanced Peer Handling and Soft-Banning
+
+### Intelligent Soft-Ban Mechanisms
+The node now implements sophisticated soft-ban mechanisms to prevent cascading disconnections during emergency consensus scenarios and improve peer classification accuracy.
+
+Key features:
+- **Soft-ban duration**: 1 hour (3600 seconds) for fork-rejected blocks
+- **Automatic expiration**: Soft-bans automatically expire after the designated period
+- **Intelligent peer classification**: Differentiates between stale fork peers and legitimate sync candidates
+- **Flag reset logic**: When soft-bans expire, the inhibit_fetching_sync_blocks flag is automatically reset
+- **Emergency mode protection**: Prevents cascading failures during network emergencies
+- **Infinite loop prevention**: Smart peer state management prevents endless sync attempts
+
+```mermaid
+sequenceDiagram
+participant Peer as "Peer Connection"
+participant Node as "Node Implementation"
+participant Delegate as "Blockchain Delegate"
+Node->>Peer : "Block with fork rejection"
+alt unlinkable_block_exception
+Node->>Node : "Check peer position vs local head"
+alt peer below or equal to head
+Node->>Peer : "Soft-ban (1 hour) - Stale fork"
+Node->>Peer : "Set inhibit_fetching_sync_blocks = true"
+else peer above head
+Node->>Node : "Restart sync - Legitimate candidate"
+end
+else block_older_than_undo_history
+Node->>Peer : "Soft-ban (1 hour) - Too old"
+Node->>Peer : "Set inhibit_fetching_sync_blocks = true"
+else normal invalid block
+Node->>Peer : "Disconnect peer"
+end
+Note over Node : "After 1 hour"
+Node->>Node : "Check soft-ban expiration"
+Node->>Peer : "Reset inhibit_fetching_sync_blocks = false"
+```
+
+**Diagram sources**
+- [node.cpp:3574-3629](file://libraries/network/node.cpp#L3574-L3629)
+- [node.cpp:3436-3458](file://libraries/network/node.cpp#L3436-L3458)
+
+### Enhanced Unlinkable Block Exception Handling
+The system now provides intelligent handling for unlinkable_block_exception based on peer position relative to local blockchain head:
+
+**Stale Fork Detection**:
+- When peer block number ≤ local head block number
+- Peer is on a stale fork that cannot be resolved
+- Immediate soft-ban for 1 hour with inhibit_fetching_sync_blocks = true
+- Prevents wasted bandwidth and prevents infinite sync loops
+
+**Legitimate Sync Candidate**:
+- When peer block number > local head block number  
+- Peer may be ahead of us, indicating legitimate sync opportunity
+- Restarts sync process instead of disconnecting
+- Allows peer to potentially help us catch up
+
+**Section sources**
+- [node.cpp:3574-3629](file://libraries/network/node.cpp#L3574-L3629)
+- [node.cpp:3436-3458](file://libraries/network/node.cpp#L3436-L3458)
+- [exceptions.hpp:45](file://libraries/network/include/graphene/network/exceptions.hpp#L45)
+
+### Automatic Flag Reset Logic
+The system includes intelligent flag management to ensure peers can resume normal operations after soft-ban expiration.
+
+Reset conditions:
+- **Soft-ban expiration**: When fork_rejected_until <= current_time
+- **Flag state**: Only reset if inhibit_fetching_sync_blocks is currently true
+- **Peer eligibility**: Only affects peers with non-zero fork_rejected_until timestamps
+- **Network recovery**: Ensures long-term network health during extended emergency operations
+
+```mermaid
+flowchart TD
+Start["Block Received"] --> CheckBan{"fork_rejected_until > now?"}
+CheckBan --> |Yes| Discard["Silently discard block"]
+CheckBan --> |No| CheckFlag{"inhibit_fetching_sync_blocks && fork_rejected_until != 0 && fork_rejected_until <= now?"}
+CheckFlag --> |Yes| ResetFlag["Reset inhibit_fetching_sync_blocks = false"]
+CheckFlag --> |No| ProcessBlock["Process block normally"]
+ResetFlag --> Log["Log flag reset"]
+Log --> ProcessBlock
+```
+
+**Diagram sources**
+- [node.cpp:3444-3458](file://libraries/network/node.cpp#L3444-L3458)
+
+**Section sources**
+- [node.cpp:3444-3458](file://libraries/network/node.cpp#L3444-L3458)
+
+### Infinite Sync Loop Prevention
+The enhanced peer handling logic prevents infinite sync loops through intelligent peer state management:
+
+**Smart Peer Classification**:
+- Stale fork peers (peer_num ≤ local_head) → Soft-ban and ignore
+- Legitimate sync candidates (peer_num > local_head) → Continue sync attempts
+- Automatic flag reset ensures fair peer rotation during extended operations
+
+**Preventive Measures**:
+- Soft-ban mechanism prevents repeated attempts with unresponsive peers
+- Intelligent flag management ensures peers can recover after expiration
+- Network-level emergency mode support provides graceful degradation
+
+**Section sources**
+- [node.cpp:3574-3629](file://libraries/network/node.cpp#L3574-L3629)
+- [node.cpp:3444-3458](file://libraries/network/node.cpp#L3444-L3458)
 
 ## Emergency Consensus Network-Level Improvements
 
@@ -513,7 +624,7 @@ Emergency mode automatically exits after CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS (21)
 
 ## Dependency Analysis
 The node depends on:
-- peer_connection for per-peer state and messaging with emergency consensus support.
+- peer_connection for per-peer state and messaging with emergency consensus support and soft-ban functionality.
 - peer_database for persistent peer records.
 - message/core_messages for typed envelopes and core message dispatch.
 - stcp_socket and message_oriented_connection for transport and framing.
@@ -558,6 +669,8 @@ DBC --> CFG["config.hpp"]
 - Inventory deduplication: Prevents redundant fetches and unbounded growth of fetch queues.
 - Emergency consensus overhead: Minimal performance impact through efficient soft-ban expiration checks.
 - Automatic flag management: Reduces manual intervention requirements during extended emergency operations.
+- Intelligent peer classification: Optimizes peer selection and reduces wasted bandwidth on stale forks.
+- Soft-ban caching: Prevents repeated attempts with problematic peers during emergency periods.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -570,6 +683,8 @@ Common issues and resolutions:
 - Emergency mode activation: Monitor logs for "EMERGENCY CONSENSUS MODE activated" messages; system automatically handles recovery.
 - Soft-ban effects: If experiencing reduced peer connectivity, check soft-ban expiration timestamps; system should automatically reset flags.
 - Flag reset issues: Verify inhibit_fetching_sync_blocks flag resets after soft-ban expiration; manual intervention rarely needed.
+- Infinite sync loops: Monitor peer behavior; system now prevents endless sync attempts through intelligent soft-ban mechanisms.
+- Stale fork detection: System automatically soft-bans peers on stale forks to prevent wasted resources.
 
 **Section sources**
 - [node.cpp:2251-2280](file://libraries/network/node.cpp#L2251-L2280)
@@ -579,4 +694,8 @@ Common issues and resolutions:
 - [database.cpp:4455-4460](file://libraries/chain/database.cpp#L4455-L4460)
 
 ## Conclusion
-The Node Management component provides a robust, configurable, and efficient P2P orchestration layer with comprehensive emergency consensus support. The recent emergency consensus network-level improvements significantly enhance network resilience through soft-ban mechanisms, automatic flag reset logic, and deterministic tie-breaking algorithms. These enhancements ensure the network can recover from extended periods without block production while maintaining operational efficiency and preventing cascading failures. The integration of emergency mode support with peer connection management, synchronization logic, and broadcast capabilities creates a comprehensive solution for maintaining network stability under adverse conditions. Proper configuration of limits, bandwidth, peer discovery, and emergency consensus parameters, combined with monitoring and troubleshooting practices, yields a stable, performant, and resilient network node capable of handling both normal operations and emergency scenarios.
+The Node Management component provides a robust, configurable, and efficient P2P orchestration layer with comprehensive emergency consensus support and enhanced peer handling capabilities. The recent improvements significantly enhance network resilience through intelligent soft-ban mechanisms, automatic flag reset logic, and deterministic tie-breaking algorithms. 
+
+The enhanced peer handling logic with improved unlinkable_block_exception handling and intelligent peer soft-banning mechanisms prevents cascading failures during emergency consensus scenarios while differentiating between stale fork peers and legitimate sync candidates to prevent infinite sync loops. The system now provides sophisticated peer classification based on block position relative to local blockchain head, ensuring optimal resource utilization and network stability.
+
+These enhancements ensure the network can recover from extended periods without block production while maintaining operational efficiency and preventing cascading failures. The integration of emergency mode support with peer connection management, synchronization logic, and broadcast capabilities creates a comprehensive solution for maintaining network stability under adverse conditions. Proper configuration of limits, bandwidth, peer discovery, emergency consensus parameters, and the enhanced soft-ban mechanisms, combined with monitoring and troubleshooting practices, yields a stable, performant, and resilient network node capable of handling both normal operations and emergency scenarios with intelligent peer management.

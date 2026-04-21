@@ -7,7 +7,9 @@
 - [global_property_object.hpp](file://libraries/chain/include/graphene/chain/global_property_object.hpp)
 - [witness_objects.hpp](file://libraries/chain/include/graphene/chain/witness_objects.hpp)
 - [fork_database.cpp](file://libraries/chain/fork_database.cpp)
+- [fork_database.hpp](file://libraries/chain/include/graphene/chain/fork_database.hpp)
 - [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
+- [config_testnet.hpp](file://libraries/protocol/include/graphene/protocol/config_testnet.hpp)
 - [witness.cpp](file://plugins/witness/witness.cpp)
 - [witness.hpp](file://plugins/witness/include/graphene/plugins/witness/witness.hpp)
 - [12.hf](file://libraries/chain/hardfork.d/12.hf)
@@ -16,11 +18,13 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced emergency consensus detection algorithms with improved LIB timestamp monitoring
-- Added comprehensive error handling throughout the consensus process
-- Implemented enhanced memory management with detailed logging of free, reserved, and maximum memory states
-- Improved network stall detection with better snapshot compatibility handling
-- Added detailed memory resizing logging and monitoring capabilities
+- Added comprehensive emergency consensus constants and configuration options
+- Enhanced emergency consensus activation logic with configurable timeout parameters
+- Implemented CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC constant for timeout threshold
+- Added CHAIN_EMERGENCY_WITNESS_ACCOUNT constant for emergency producer configuration
+- Introduced CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS constant for automatic exit conditions
+- Updated emergency witness key configuration with CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY
+- Enhanced emergency mode exit criteria with LIB advancement monitoring
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -43,7 +47,7 @@ The Emergency Consensus System is a critical safety mechanism implemented in the
 
 The system operates as a three-state safety enforcement mechanism, providing automatic recovery capabilities that prevent network paralysis during emergencies. It maintains consensus integrity while allowing the network to recover from various failure scenarios including witness failures, network partitions, or other catastrophic events.
 
-**Updated** Enhanced with improved emergency consensus detection algorithms featuring better LIB timestamp monitoring and comprehensive error handling throughout the consensus process.
+**Updated** Enhanced with comprehensive emergency consensus constants and configuration options including CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC, CHAIN_EMERGENCY_WITNESS_ACCOUNT, and CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS that establish the foundation for emergency consensus mode activation and operation.
 
 ## System Architecture
 
@@ -512,7 +516,7 @@ To troubleshoot emergency consensus issues with improved monitoring:
 
 The Emergency Consensus System represents a sophisticated safety mechanism designed to maintain blockchain functionality during critical network failures. By implementing automatic activation, deterministic network behavior, and clear exit conditions, the system provides robust protection against network stalls while maintaining consensus integrity.
 
-**Updated** The enhanced system now features improved emergency consensus detection algorithms with better LIB timestamp monitoring, comprehensive error handling throughout the consensus process, and enhanced memory management with detailed logging of free, reserved, and maximum memory states before and after resizing operations.
+**Updated** The enhanced system now features comprehensive emergency consensus constants and configuration options including CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC for timeout threshold control, CHAIN_EMERGENCY_WITNESS_ACCOUNT for emergency producer configuration, and CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS for automatic exit conditions. These constants establish the foundation for emergency consensus mode that activates when no blocks have been produced for the specified timeout period.
 
 The system's three-state safety enforcement approach ensures that the network can recover from various failure scenarios without requiring manual intervention. Through careful integration with existing consensus mechanisms and network protocols, the emergency system operates seamlessly with minimal disruption to normal network operations.
 
@@ -523,5 +527,7 @@ Key benefits include:
 - **Operational Continuity**: Ensures service availability during outages with comprehensive monitoring
 - **Enhanced Reliability**: Improved detection algorithms and memory management for better system stability
 - **Better Troubleshooting**: Detailed logging and monitoring capabilities for easier diagnostics
+- **Configurable Parameters**: Flexible timeout thresholds and exit conditions for different network conditions
+- **Robust Emergency Witness**: Dedicated emergency witness with proper key configuration and schedule override
 
 The implementation demonstrates best practices in distributed systems design, providing a reliable foundation for blockchain resilience and operational continuity with significantly improved reliability and monitoring capabilities.
