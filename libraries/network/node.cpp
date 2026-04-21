@@ -4921,6 +4921,11 @@ namespace graphene {
                     peer_details["startingheight"] = "";
                     peer_details["banscore"] = "";
                     peer_details["syncnode"] = "";
+                    peer_details["latency_ms"] = peer->round_trip_delay.count() / 1000;
+                    peer_details["is_blocked"] = peer->inhibit_fetching_sync_blocks;
+                    peer_details["blocked_reason"] = peer->inhibit_fetching_sync_blocks
+                        ? std::string("fork_rejected")
+                        : std::string("");
 
                     if (peer->fc_git_revision_sha) {
                         std::string revision_string = *peer->fc_git_revision_sha;

@@ -10,6 +10,12 @@
 #include <boost/range/algorithm/reverse.hpp>
 #include <boost/range/adaptor/reversed.hpp>
 
+#include <map>
+
+// ANSI color codes for P2P stats console log messages
+#define CLOG_CYAN  "\033[96m"
+#define CLOG_RESET "\033[0m"
+
 using std::string;
 using std::vector;
 
@@ -94,6 +100,13 @@ namespace graphene {
                     uint32_t max_connections = 0;
                     bool force_validate = false;
                     bool block_producer = false;
+
+                    bool stats_enabled = true;
+                    uint32_t stats_interval_seconds = 300;
+                    fc::future<void> _stats_task_done;
+                    std::map<std::string, uint64_t> _stats_bytes_received_last;
+
+                    void p2p_stats_task();
 
                     std::unique_ptr<graphene::network::node> node;
 
@@ -473,6 +486,79 @@ namespace graphene {
 
                 ////////////////////////////// End node_delegate Implementation //////////////////////////////
 
+                void p2p_plugin_impl::p2p_stats_task() {
+                    if (!stats_enabled || !node) {
+                        return;
+                    }
+                    try {
+                        auto peers = node->get_connected_peers();
+                        std::map<std::string, uint64_t> new_bytes_map;
+                        if (peers.empty()) {
+                            ilog(CLOG_CYAN "P2P stats: no connected peers" CLOG_RESET);
+                        } else {
+                            ilog(CLOG_CYAN "P2P stats: ${n} connected peer(s)" CLOG_RESET, ("n", peers.size()));
+                            for (const auto &peer_info : peers) {
+                                std::string ip;
+                                uint16_t port = 0;
+                                try {
+                                    ip = fc::string(peer_info.host.get_address());
+                                    port = peer_info.host.port();
+                                } catch (...) {
+                                    ip = "(unknown)";
+                                }
+
+                                int64_t latency_ms = -1;
+                                uint64_t bytes_recv = 0;
+                                bool is_blocked = false;
+                                std::string blocked_reason;
+
+                                auto it_lat = peer_info.info.find("latency_ms");
+                                if (it_lat != peer_info.info.end()) {
+                                    latency_ms = it_lat->value().as_int64();
+                                }
+                                auto it_byt = peer_info.info.find("bytesrecv");
+                                if (it_byt != peer_info.info.end()) {
+                                    bytes_recv = it_byt->value().as_uint64();
+                                }
+                                auto it_blk = peer_info.info.find("is_blocked");
+                                if (it_blk != peer_info.info.end()) {
+                                    is_blocked = it_blk->value().as_bool();
+                                }
+                                auto it_rsn = peer_info.info.find("blocked_reason");
+                                if (it_rsn != peer_info.info.end()) {
+                                    blocked_reason = it_rsn->value().as_string();
+                                }
+
+                                std::string addr_key = ip + ":" + std::to_string(port);
+                                uint64_t bytes_delta = bytes_recv;
+                                auto prev_it = _stats_bytes_received_last.find(addr_key);
+                                if (prev_it != _stats_bytes_received_last.end()) {
+                                    bytes_delta = (bytes_recv >= prev_it->second)
+                                        ? bytes_recv - prev_it->second
+                                        : bytes_recv;
+                                }
+                                new_bytes_map[addr_key] = bytes_recv;
+
+                                ilog(CLOG_CYAN "P2P peer | ip: ${ip} | port: ${port} | latency: ${lat}ms | bytes_in: ${bin} | blocked: ${bl} | reason: ${r}" CLOG_RESET,
+                                    ("ip", ip)("port", (int)port)("lat", latency_ms)("bin", bytes_delta)("bl", is_blocked)("r", blocked_reason));
+                            }
+                        }
+                        _stats_bytes_received_last = std::move(new_bytes_map);
+                    } catch (const fc::exception &e) {
+                        wlog("Exception in P2P stats task: ${e}", ("e", e.to_detail_string()));
+                    } catch (...) {
+                        wlog("Unknown exception in P2P stats task");
+                    }
+
+                    if (stats_enabled) {
+                        _stats_task_done = fc::schedule(
+                            [this]() { p2p_stats_task(); },
+                            fc::time_point::now() + fc::seconds(stats_interval_seconds),
+                            "p2p_stats_task"
+                        );
+                    }
+                }
+
             } // detail
 
             p2p_plugin::p2p_plugin() {
@@ -490,7 +576,11 @@ namespace graphene {
                     ("seed-node", boost::program_options::value<vector<string>>()->composing(),
                         "The IP address and port of a remote peer to sync with. Deprecated in favor of p2p-seed-node.")
                     ("p2p-seed-node", boost::program_options::value<vector<string>>()->composing(),
-                        "The IP address and port of a remote peer to sync with.");
+                        "The IP address and port of a remote peer to sync with.")
+                    ("p2p-stats-enabled", boost::program_options::value<bool>()->default_value(true),
+                        "Enable periodic logging of P2P peer statistics (ip, port, latency, bytes in, blocked status).")
+                    ("p2p-stats-interval", boost::program_options::value<uint32_t>()->default_value(300),
+                        "Interval in seconds between P2P peer statistics dumps (default: 300 = 5 minutes).");
                 cli.add_options()
                     ("force-validate", boost::program_options::bool_switch()->default_value(false),
                         "Force validation of all transactions. Deprecated in favor of p2p-force-validate")
@@ -543,6 +633,19 @@ namespace graphene {
                     wlog("Option force-validate is deprecated in favor of p2p-force-validate");
                     my->force_validate = true;
                 }
+
+                if (options.count("p2p-stats-enabled")) {
+                    my->stats_enabled = options.at("p2p-stats-enabled").as<bool>();
+                }
+
+                if (options.count("p2p-stats-interval")) {
+                    uint32_t interval = options.at("p2p-stats-interval").as<uint32_t>();
+                    if (interval > 0) {
+                        my->stats_interval_seconds = interval;
+                    } else {
+                        wlog("p2p-stats-interval must be > 0, using default of 300 seconds");
+                    }
+                }
             }
 
             void p2p_plugin::plugin_startup() {
@@ -578,12 +681,30 @@ namespace graphene {
                     my->node->sync_from(item_id(graphene::network::block_message_type, block_id),
                                         std::vector<uint32_t>());
                     ilog("P2P node listening at ${ep}", ("ep", my->node->get_actual_listening_endpoint()));
+
+                    if (my->stats_enabled) {
+                        ilog("P2P stats logging enabled, interval: ${s} seconds", ("s", my->stats_interval_seconds));
+                        my->_stats_task_done = fc::schedule(
+                            [this]() { my->p2p_stats_task(); },
+                            fc::time_point::now() + fc::seconds(my->stats_interval_seconds),
+                            "p2p_stats_task"
+                        );
+                    }
                 }).wait();
                 ilog("P2P Plugin started");
             }
 
             void p2p_plugin::plugin_shutdown() {
                 ilog("Shutting down P2P Plugin");
+                if (my->stats_enabled && my->_stats_task_done.valid()) {
+                    try {
+                        my->_stats_task_done.cancel_and_wait("p2p_plugin::plugin_shutdown()");
+                    } catch (const fc::exception &e) {
+                        wlog("Exception canceling P2P stats task: ${e}", ("e", e.to_detail_string()));
+                    } catch (...) {
+                        wlog("Unknown exception canceling P2P stats task");
+                    }
+                }
                 my->node->close();
                 my->p2p_thread.quit();
                 my->node.reset();
