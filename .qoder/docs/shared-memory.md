@@ -110,7 +110,7 @@ All parameters are defined in `plugins/chain/plugin.cpp` and read from `config.i
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `shared-file-dir` | `blockchain` | Directory for `shared_memory.bin` (relative to data dir or absolute) |
+| `shared-file-dir` | `state` | Directory for `shared_memory.bin` (relative to data dir or absolute) |
 | `shared-file-size` | `2G` | Initial size of the shared memory file. If file exists and this value is larger, the file grows. If smaller, no change. Does **not** require replay. |
 | `inc-shared-file-size` | `2G` | Step size for auto-growth. When free space drops below `min-free-shared-file-size`, the file grows by this amount. |
 | `min-free-shared-file-size` | `500M` | Free space threshold that triggers auto-growth. |

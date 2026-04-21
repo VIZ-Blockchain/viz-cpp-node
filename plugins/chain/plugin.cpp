@@ -200,8 +200,8 @@ namespace chain {
                                      boost::program_options::options_description &cfg) {
         cfg.add_options()
             (
-                "shared-file-dir", boost::program_options::value<boost::filesystem::path>()->default_value("blockchain"),
-                "the location of the chain shared memory files (absolute path or relative to application data dir)"
+                "shared-file-dir", boost::program_options::value<boost::filesystem::path>()->default_value("state"),
+                "the location of the shared memory files (absolute path or relative to application data dir)"
             ) (
                 "shared-file-size", boost::program_options::value<std::string>()->default_value("2G"),
                 "Start size of the shared memory file. Default: 2G"
