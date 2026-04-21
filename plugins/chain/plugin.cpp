@@ -390,7 +390,7 @@ namespace chain {
     void plugin::plugin_startup() {
         ilog("Starting chain with shared_file_size: ${n} bytes", ("n", my->shared_memory_size));
 
-        auto data_dir = appbase::app().data_dir() / "blockchain";
+        auto data_dir = appbase::app().data_dir() / "state";
 
         if (my->resync) {
             wlog("resync requested: deleting block log and shared memory");
@@ -656,7 +656,7 @@ namespace chain {
         ilog("Snapshot plugin is ready. Resuming deferred snapshot load...");
         my->pending_snapshot_load = false;
 
-        auto data_dir = appbase::app().data_dir() / "blockchain";
+        auto data_dir = appbase::app().data_dir() / "state";
 
         if (my->replay_from_snapshot) {
             do_snapshot_load(data_dir, true);
