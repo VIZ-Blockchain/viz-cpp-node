@@ -1383,9 +1383,27 @@ namespace graphene { namespace chain {
                                         apply_block((*ritr)->data, skip);
                                         session.push();
                                     }
+
+                                    // Restore fork_db head to the original chain tip.
+                                    // pop_block() above moved _head backwards via
+                                    // _fork_db.pop_block(), but apply_block() does not
+                                    // advance it.  Without this, _head stays at the fork
+                                    // point instead of the original chain tip.
+                                    _fork_db.set_head(branches.second.front());
+
                                     throw *except;
                                 }
                             }
+
+                            // After successfully switching to the new fork, update the
+                            // fork_db head to point to the new chain tip.  pop_block()
+                            // moves _head backwards via _fork_db.pop_block(), but
+                            // apply_block() does NOT advance it forward.  Without this,
+                            // _head stays at the fork point, causing fetch_branch_from()
+                            // to fail when get_blockchain_synopsis() later tries to
+                            // locate the current head_block_id().
+                            _fork_db.set_head(new_head);
+
                             return true;
                         } else {
                             return false;

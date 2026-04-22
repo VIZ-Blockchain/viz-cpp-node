@@ -3127,7 +3127,17 @@ namespace graphene {
                             "p2p pushing sync block #${block_num} ${block_hash}",
                             ("block_num", block_message_to_send.block.block_num())
                                     ("block_hash", block_message_to_send.block_id));
-                    _delegate->handle_block(block_message_to_send, true, contained_transaction_message_ids);
+                    bool accepted = _delegate->handle_block(block_message_to_send, true, contained_transaction_message_ids);
+                    if (!accepted) {
+                        // The chain silently rejected the block (e.g. block from a different
+                        // fork whose parent is not in fork_db).  This is NOT a successful
+                        // push — treat it as a rejection so the P2P layer can soft-ban the
+                        // peer and stop requesting blocks from this dead fork.
+                        wlog("Sync block #${num} was silently rejected by the chain (block from a different fork or parent unknown)",
+                             ("num", block_message_to_send.block.block_num()));
+                        FC_THROW_EXCEPTION(graphene::network::unlinkable_block_exception,
+                                           "Sync block silently rejected: block from a different fork or parent unknown");
+                    }
                     ilog("Successfully pushed sync block ${num} (id:${id})",
                             ("num", block_message_to_send.block.block_num())
                                     ("id", block_message_to_send.block_id));
@@ -3480,8 +3490,19 @@ namespace graphene {
                                 ("block_num", block_message_to_process.block.block_num())
                                         ("block_hash", block_message_to_process.block_id)
                                         ("peer", originating_peer->get_remote_endpoint())("id", message_hash));
-                        _delegate->handle_block(block_message_to_process, false, contained_transaction_message_ids);
+                        bool accepted = _delegate->handle_block(block_message_to_process, false, contained_transaction_message_ids);
                         _message_ids_currently_being_processed.erase(message_hash);
+                        if (!accepted) {
+                            // The chain silently rejected the block (e.g. block from a different
+                            // fork whose parent is not in fork_db).  Treat as unlinkable so
+                            // the P2P layer can soft-ban the peer and stop requesting blocks
+                            // from this dead fork.
+                            wlog("Block #${num} from ${peer} was silently rejected by the chain (block from a different fork or parent unknown)",
+                                 ("num", block_message_to_process.block.block_num())
+                                 ("peer", originating_peer->get_remote_endpoint()));
+                            FC_THROW_EXCEPTION(graphene::network::unlinkable_block_exception,
+                                               "Block silently rejected: block from a different fork or parent unknown");
+                        }
                         message_validated_time = fc::time_point::now();
                         ilog("Successfully pushed block ${num} (id:${id})",
                                 ("num", block_message_to_process.block.block_num())
