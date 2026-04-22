@@ -22,12 +22,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced error handling in blockchain database layer to address shared memory exhaustion scenarios
-- Implemented deferred shared memory resize mechanism with improved thread safety
-- Added comprehensive memory management logging for peer connectivity during memory pressure situations
-- Updated push_block() and _generate_block() methods to handle boost::interprocess::bad_alloc exceptions gracefully
+- Enhanced database memory management with improved boost::interprocess::bad_alloc exception handling
+- Implemented deferred shared memory resize mechanism with enhanced thread safety
+- Updated push_block() function to gracefully handle memory allocation failures by returning false instead of throwing
 - Enhanced apply_pending_resize() method with proper write lock acquisition and race condition prevention
-- Improved peer connectivity handling during memory pressure by returning false instead of throwing for shared memory exhaustion
+- Improved peer connectivity preservation during memory pressure scenarios
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -733,6 +732,14 @@ These fields enable the deferred resize mechanism to work seamlessly with the ex
 - **Graceful Exception Handling**: The push_block() method now catches boost::interprocess::bad_alloc exceptions and handles them gracefully.
 - **Peer Connectivity Preservation**: Instead of throwing exceptions that would disconnect peers, the system returns false and schedules a deferred resize.
 - **Memory State Preservation**: The system preserves memory state by setting reserved memory to current free memory before scheduling resize.
+- **Automatic Recovery**: The next push_block() call will apply the deferred resize safely, allowing the missed block to be re-received during normal sync.
+
+**Enhanced Error Handling for Memory Allocation Failures** - The push_block() function now includes sophisticated error handling for boost::interprocess::bad_alloc exceptions:
+
+- **Exception Detection**: The system detects boost::interprocess::bad_alloc exceptions by searching for the specific error message pattern "boost::interprocess::bad_alloc".
+- **Graceful Degradation**: Instead of throwing the exception and potentially disconnecting peers, the system schedules a deferred resize and returns false to indicate the block was not applied.
+- **State Preservation**: The system preserves memory state by setting reserved memory to the current free memory level before scheduling the resize.
+- **Peer Connectivity**: This approach prevents P2P layer disconnections and maintains witness slot-miss logging while preserving node connectivity.
 - **Automatic Recovery**: The next push_block() call will apply the deferred resize safely, allowing the missed block to be re-received during normal sync.
 
 ```mermaid
