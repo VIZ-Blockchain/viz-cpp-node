@@ -1228,55 +1228,23 @@ namespace graphene { namespace chain {
                     // Block is at or before head but on a different fork.
                     // If the block's parent is not in the fork_db, we can never
                     // link it (the fork diverged before the fork_db's window).
-                    // Silently reject to prevent unlinkable_block_exception from
-                    // propagating to the P2P layer, which would trigger a sync
-                    // restart loop (the sync peer keeps sending blocks from the
-                    // other fork, each one fails to link, each failure restarts
-                    // sync, ad infinitum).
+                    // Throw unlinkable_block_exception so the P2P layer can
+                    // soft-ban the peer sending blocks from this dead fork.
+                    // This is NOT a micro-fork: micro-fork blocks have parents
+                    // that ARE in fork_db and fall through to normal push logic.
                     if (new_block.previous != block_id_type() &&
                         !_fork_db.is_known_block(new_block.previous)) {
                         wlog("Rejecting block ${n} from a different fork: parent not in fork_db (head=${h})",
                              ("n", new_block.block_num())("h", head_block_num()));
-                        return false;
+                        FC_THROW_EXCEPTION(unlinkable_block_exception,
+                                           "Block from a different fork whose parent is not in fork_db (block ${n}, head=${h})",
+                                           ("n", new_block.block_num())("h", head_block_num()));
                     }
                     // Parent IS in fork_db — fall through to normal push logic
                     // which may trigger a fork switch (if the other fork has
                     // more weight).
                 }
 
-                // Early rejection for blocks far ahead of our head whose parent we
-                // don't know.  When a node is far behind (e.g. after snapshot import
-                // at block N while the network is at block N+1000), broadcast blocks
-                // arrive that are way ahead.  If we push them into fork_db, they
-                // throw unlinkable_block_exception which triggers P2P sync restart,
-                // clearing the sync queue and preventing any forward progress.
-                //
-                // Instead, silently reject these blocks so the sync mechanism can
-                // fetch blocks sequentially without being constantly interrupted.
-                // The sync mechanism works on a separate path and is not affected
-                // by returning false here.
-                //
-                // We always allow blocks whose previous == head_block_id() because:
-                //   - We know our head block ID from database state even if fork_db
-                //     is empty (DLT mode restart).
-                //   - fork_db skips the link check when _head is null, so these
-                //     blocks will be accepted and correctly become the new head.
-                //   - This covers the critical sync case: the very first block after
-                //     head must always be accepted for sync to make progress.
-                //
-                // For other blocks, we check _fork_db.is_known_block() (not
-                // database::is_known_block) because in DLT mode the full
-                // is_known_block() returns false for blocks whose data isn't on
-                // disk, even though they may exist in fork_db.
-                if (new_block.block_num() > head_block_num() &&
-                    new_block.previous != block_id_type() &&
-                    new_block.previous != head_block_id() &&
-                    !_fork_db.is_known_block(new_block.previous)) {
-                    // Parent block is completely unknown — block can never link.
-                    dlog("Rejecting unlinkable block ${n} (parent unknown, head=${h})",
-                         ("n", new_block.block_num())("h", head_block_num()));
-                    return false;
-                }
 
                 if (!(skip & skip_fork_db)) {
                     shared_ptr<fork_item> new_head = _fork_db.push_block(new_block);
@@ -1367,8 +1335,6 @@ namespace graphene { namespace chain {
                                         _fork_db.remove((*ritr)->data.id());
                                         ++ritr;
                                     }
-                                    _fork_db.set_head(branches.second.front());
-
                                     // pop all blocks from the bad fork
                                     while (head_block_id() !=
                                            branches.second.back()->data.previous) {

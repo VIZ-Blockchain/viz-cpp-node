@@ -169,6 +169,17 @@ namespace graphene {
                                  ("n", blk_msg.block.block_num()));
                             FC_THROW_EXCEPTION(graphene::network::block_older_than_undo_history,
                                 "Block is too old for fork database: ${e}", ("e", e.to_detail_string()));
+                        } catch (const graphene::chain::unlinkable_block_exception &e) {
+                            // Chain rejected block from a dead fork whose parent is not
+                            // in fork_db.  Convert to network exception so the P2P layer
+                            // can soft-ban the peer (block at/below head) or resync
+                            // (block ahead of head).  Micro-fork blocks are NOT caught
+                            // here — they have parents in fork_db and return false normally.
+                            fc_elog(fc::logger::get("sync"),
+                                    "Block ${n} is from a dead fork (parent not in fork_db, head=${head}): ${e}",
+                                    ("n", blk_msg.block.block_num())("head", head_block_num)("e", e.to_detail_string()));
+                            FC_THROW_EXCEPTION(graphene::network::unlinkable_block_exception,
+                                "Block from a dead fork: ${e}", ("e", e.to_detail_string()));
                         } catch (const graphene::network::unlinkable_block_exception &e) {
                             // translate to a graphene::network exception
                             fc_elog(fc::logger::get("sync"), "Error when pushing block, current head block is ${head}:\n${e}", ("e", e.to_detail_string())("head", head_block_num));

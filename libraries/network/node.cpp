@@ -3128,19 +3128,20 @@ namespace graphene {
                             ("block_num", block_message_to_send.block.block_num())
                                     ("block_hash", block_message_to_send.block_id));
                     bool accepted = _delegate->handle_block(block_message_to_send, true, contained_transaction_message_ids);
-                    if (!accepted) {
-                        // The chain silently rejected the block (e.g. block from a different
-                        // fork whose parent is not in fork_db).  This is NOT a successful
-                        // push — treat it as a rejection so the P2P layer can soft-ban the
-                        // peer and stop requesting blocks from this dead fork.
-                        wlog("Sync block #${num} was silently rejected by the chain (block from a different fork or parent unknown)",
+                    if (accepted) {
+                        ilog("Successfully pushed sync block ${num} (id:${id})",
+                                ("num", block_message_to_send.block.block_num())
+                                        ("id", block_message_to_send.block_id));
+                    } else {
+                        // Block returned false — not applied as new head, but not an error
+                        // either.  This covers: block already on chain, micro-fork block
+                        // added to fork_db without switching, or block ahead with unknown
+                        // parent during sync.  Dead-fork blocks (parent not in fork_db,
+                        // at/below head) throw unlinkable_block_exception from _push_block
+                        // and are handled by the catchers below with proper soft-ban.
+                        ilog("Sync block #${num} not applied (already on chain, micro-fork, or parent unknown ahead)",
                              ("num", block_message_to_send.block.block_num()));
-                        FC_THROW_EXCEPTION(graphene::network::unlinkable_block_exception,
-                                           "Sync block silently rejected: block from a different fork or parent unknown");
                     }
-                    ilog("Successfully pushed sync block ${num} (id:${id})",
-                            ("num", block_message_to_send.block.block_num())
-                                    ("id", block_message_to_send.block_id));
                     _most_recent_blocks_accepted.push_back(block_message_to_send.block_id);
 
                     client_accepted_block = true;
@@ -3493,15 +3494,17 @@ namespace graphene {
                         bool accepted = _delegate->handle_block(block_message_to_process, false, contained_transaction_message_ids);
                         _message_ids_currently_being_processed.erase(message_hash);
                         if (!accepted) {
-                            // The chain silently rejected the block (e.g. block from a different
-                            // fork whose parent is not in fork_db).  Treat as unlinkable so
-                            // the P2P layer can soft-ban the peer and stop requesting blocks
-                            // from this dead fork.
-                            wlog("Block #${num} from ${peer} was silently rejected by the chain (block from a different fork or parent unknown)",
-                                 ("num", block_message_to_process.block.block_num())
-                                 ("peer", originating_peer->get_remote_endpoint()));
-                            FC_THROW_EXCEPTION(graphene::network::unlinkable_block_exception,
-                                               "Block silently rejected: block from a different fork or parent unknown");
+                            // The chain returned false — block was not applied.  This can
+                            // happen for normal reasons (block already on chain, or micro-fork
+                            // block added to fork_db without triggering a fork switch).
+                            // Dead-fork blocks (parent not in fork_db, at/below head) throw
+                            // unlinkable_block_exception from _push_block, so they are
+                            // handled by the unlinkable_block_exception catcher below.
+                            // For normal false returns, we still track the block as accepted
+                            // for P2P inventory purposes since the block IS valid — it just
+                            // didn't become the new head.
+                            ilog("Block #${num} returned false (already on chain or micro-fork)",
+                                 ("num", block_message_to_process.block.block_num()));
                         }
                         message_validated_time = fc::time_point::now();
                         ilog("Successfully pushed block ${num} (id:${id})",
