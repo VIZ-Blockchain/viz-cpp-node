@@ -80,6 +80,31 @@ Value is reconstructed by concatenating 7-bit chunks in order.
 - `flag = 0`: no value (empty optional)
 - `flag = 1`: value follows
 
+### flat_set<T>
+
+```
+[varint: element_count][element_1][element_2]...[element_n]
+```
+
+Same wire format as `vector<T>`. Elements are sorted and unique in the data structure, but serialized in sorted order.
+
+### flat_map<K,V>
+
+```
+[varint: pair_count][key_1][value_1][key_2][value_2]...[key_n][value_n]
+```
+
+Same wire format as `vector<pair<K,V>>`. Each pair is serialized as key then value.
+
+### Optional<T>
+
+```
+[uint8: flag][value if flag=1]
+```
+
+- `flag = 0`: no value (empty optional)
+- `flag = 1`: value follows
+
 ### Static Variant
 
 ```
@@ -88,9 +113,19 @@ Value is reconstructed by concatenating 7-bit chunks in order.
 
 The type index identifies which type in the variant is stored.
 
+### extensions_type
+
+```
+[varint: count][varint: type_index_0]...[varint: type_index_n]
+```
+
+Defined as `flat_set<future_extensions>` where `future_extensions = static_variant<void_t>`.
+Each extension item is just a varint type index (always 0 for `void_t`).
+Usually empty (serialized as single byte `0x00`).
+
 ### Reflected Structures
 
-Structures with `FC_REFLECT` macro are serialized field-by-field in the order defined.
+Structures with `FC_REFLECT` macro are serialized field-by-field in the order defined by the macro. **Field order matters** — the binary layout must match the `FC_REFLECT` declaration exactly.
 
 ---
 
@@ -543,14 +578,63 @@ Known symbols (from `config.hpp`):
 #### authority
 ```
 [uint32: weight_threshold]
-[flat_set<pair<account_name_type, weight_type>>: account_auths]
-[flat_set<pair<public_key_type, weight_type>>: key_auths]
+[flat_map<account_name_type, weight_type>: account_auths]
+[flat_map<public_key_type, weight_type>: key_auths]
 ```
 
+> **Note:** `account_auths` and `key_auths` are `flat_map` (not `flat_set<pair<...>>`).
+> Wire format is identical to `vector<pair<K,V>>`: varint count + (key, value) pairs.
+
 #### public_key_type
+
+**Wire format:** 33 raw bytes of compressed secp256k1 public key:
 ```
-[33 bytes: compressed secp256k1 public key]
+[1 byte: 0x02 or 0x03 prefix][32 bytes: x-coordinate]
 ```
+
+**String representation** (in JSON output, not on wire):
+1. Compute `ripemd160(33_key_bytes)`
+2. First 4 bytes of hash = checksum
+3. Concatenate: `[33 key bytes][4 checksum bytes]` = 37 bytes
+4. Base58-encode the 37-byte buffer
+5. Prepend `"VIZ"` (CHAIN_ADDRESS_PREFIX)
+
+Example: `VIZ7wMEutJdCfdSKNgVAp17v9uoTqwwkUqn2kwVsJ6zG5XYJcvj81`
+
+Matches C++ `public_key_type::operator std::string()` in `libraries/protocol/types.cpp`.
+
+#### chain_properties_init
+
+Used by `chain_properties_update_operation` (ID 25). **12 fields only** — NOT the same as `chain_properties_hf9`.
+```
+[asset: account_creation_fee]
+[uint32: maximum_block_size]
+[uint32: create_account_delegation_ratio]
+[uint32: create_account_delegation_time]
+[asset: min_delegation]
+[uint16: min_curation_percent]
+[uint16: max_curation_percent]
+[uint16: bandwidth_reserve_percent]
+[asset: bandwidth_reserve_below]
+[uint16: flag_energy_additional_cost]
+[uint32: vote_accounting_min_rshares]
+[uint16: committee_request_approve_min_percent]
+```
+
+#### versioned_chain_properties
+
+Used by `versioned_chain_properties_update_operation` (ID 46). A `static_variant` of chain property variants:
+
+```
+[varint: type_index][chain_properties_init base fields][variant-specific additional fields]
+```
+
+| Type Index | Name | Base | Additional Fields |
+|------------|------|------|-------------------|
+| 0 | `chain_properties_init` | — | (12 base fields only) |
+| 1 | `chain_properties_hf4` | init | +3: `inflation_witness_percent`(uint16), `inflation_ratio_committee_vs_reward_fund`(uint16), `inflation_recalc_period`(uint32) |
+| 2 | `chain_properties_hf6` | hf4 | +3: `data_operations_cost_additional_bandwidth`(uint32), `witness_miss_penalty_percent`(uint16), `witness_miss_penalty_duration`(uint32) |
+| 3 | `chain_properties_hf9` | hf6 | +7: `create_invite_min_balance`(asset), `committee_create_request_fee`(asset), `create_paid_subscription_fee`(asset), `account_on_sale_fee`(asset), `subaccount_on_sale_fee`(asset), `witness_declaration_fee`(asset), `withdraw_intervals`(uint16) |
 
 ### Operation Structures
 
@@ -600,6 +684,145 @@ Known symbols (from `config.hpp`):
 [uint16: weight]
 ```
 
+#### invite_registration_operation (ID: 45)
+```
+[account_name_type: account]
+[public_key_type: new_account_key]
+[string: invite_secret]  ← WIF-encoded private key (e.g. '5Kd...'), NOT raw bytes
+[extensions_type: extensions]
+```
+
+> **Important:** `invite_secret` is a `string` (WIF-encoded private key), NOT raw 32 bytes.
+> The same applies to `claim_invite_balance_operation` (ID 44) and `use_invite_balance_operation` (ID 58).
+
+#### claim_invite_balance_operation (ID: 44)
+```
+[account_name_type: initiator]
+[account_name_type: receiver]
+[string: invite_secret]  ← WIF-encoded private key string
+[extensions_type: extensions]
+```
+
+#### use_invite_balance_operation (ID: 58)
+```
+[account_name_type: initiator]
+[account_name_type: receiver]
+[string: invite_secret]  ← WIF-encoded private key string
+[extensions_type: extensions]
+```
+
+#### chain_properties_update_operation (ID: 25)
+```
+[account_name_type: owner]
+[chain_properties_init: props]  ← 12-field struct, NOT chain_properties_hf9
+[extensions_type: extensions]
+```
+
+#### versioned_chain_properties_update_operation (ID: 46)
+```
+[account_name_type: owner]
+[versioned_chain_properties: props]  ← static_variant<init/hf4/hf6/hf9>
+[extensions_type: extensions]
+```
+
+#### benefactor_award_operation (ID: 49, virtual)
+```
+[account_name_type: initiator]     ← FC_REFLECT order: initiator BEFORE benefactor
+[account_name_type: benefactor]
+[account_name_type: receiver]
+[uint64: custom_sequence]
+[string: memo]
+[asset: shares]
+```
+
+#### set_paid_subscription_operation (ID: 50)
+```
+[account_name_type: account]
+[string: url]
+[uint16: levels]        ← uint16, NOT uint8
+[asset: amount]
+[uint16: period]        ← uint16, NOT uint32
+[extensions_type: extensions]
+```
+
+#### paid_subscribe_operation (ID: 51)
+```
+[account_name_type: account]
+[account_name_type: subscriber]
+[uint16: level]         ← uint16, NOT uint8
+[asset: amount]
+[uint16: period]        ← uint16, NOT uint32
+[extensions_type: extensions]
+```
+
+#### paid_subscription_action_operation (ID: 52, virtual)
+```
+[account_name_type: subscriber]
+[account_name_type: account]
+[uint16: level]
+[asset: amount]
+[uint16: period]
+[uint64: summary_duration_sec]
+[asset: summary_amount]
+```
+
+#### cancel_paid_subscription_operation (ID: 53, virtual)
+```
+[account_name_type: subscriber]
+[account_name_type: account]
+```
+
+> Only 2 fields — no `level` field.
+
+#### buy_account_operation (ID: 56)
+```
+[account_name_type: account]
+[account_name_type: buyer]
+[asset: tokens_to_shares]  ← asset type, NOT bool/uint8
+[extensions_type: extensions]
+```
+
+#### account_sale_operation (ID: 57, virtual)
+```
+[account_name_type: account]
+[asset: price]
+[account_name_type: buyer]
+[account_name_type: seller]
+```
+
+#### expire_escrow_ratification_operation (ID: 59, virtual)
+```
+[account_name_type: from]
+[account_name_type: to]
+[account_name_type: agent]
+[uint32: escrow_id]
+[asset: token_amount]
+[asset: fee]
+[time_point_sec: ratification_deadline]
+```
+
+#### bid_operation (ID: 62, virtual)
+```
+[account_name_type: account]     ← FC_REFLECT order: account BEFORE bidder
+[account_name_type: bidder]
+[asset: bid]
+```
+
+#### outbid_operation (ID: 63, virtual)
+```
+[account_name_type: account]     ← FC_REFLECT order: account BEFORE bidder
+[account_name_type: bidder]
+[asset: bid]
+```
+
+#### proposal_delete_operation (ID: 24)
+```
+[account_name_type: author]
+[string: title]
+[account_name_type: requester]   ← was previously missing
+[extensions_type: extensions]
+```
+
 ## Tools
 
 ### block-log-reader.js
@@ -608,7 +831,7 @@ JavaScript module for reading block_log and dlt_block_log files. Provides progra
 
 **Usage:**
 ```javascript
-const { createBlockLogReader, getBlockNum } = require('./block-log-reader');
+const { createBlockLogReader, getBlockNum, publicKeyToString } = require('./block-log-reader');
 
 const reader = createBlockLogReader('/path/to/block_log');
 // Or for DLT: createBlockLogReader('/path/to/dlt_block_log', undefined, true);
@@ -672,8 +895,16 @@ node block-log-viewer.js <path> [--dlt] [--reader=<module_path>]
 | `o` | Show all operations in current block (JSON) |
 | `o <name>` | Show operations matching type name (e.g. `o transfer`) |
 | `s <name>` | Search forward for block containing operation by type name |
-| `S <string>` | Search forward for string in any operation's full JSON (incl. virtual) |
-| `e <string>` | Export all matching operations to `search_export_<unixtime>.json` |
+| `S <string>` | Search forward for substring in any operation's data (incl. virtual) |
+| `S =<string>` | Search forward for **exact** string match (`=` prefix disables substring matching) |
+| `R <string>` | Fast raw ASCII byte search in block data (no UTF-8/emoji) |
+| `e <string>` | Export all ops containing string to `search_export_<unixtime>.json` |
+| `e =<string>` | Export all ops **exactly matching** string (`=` prefix for exact match) |
+| `c` | Continue last search (s/S/R/e) |
+
+> **Search modes:** Without `=` prefix, string search uses substring matching (e.g. `S VIZ` matches
+> any occurrence of "VIZ" in data). With `=` prefix, uses exact match (e.g. `e ="V"` finds only
+> the value `V`, not `VIZ`). Surrounding quotes are automatically stripped.
 
 #### Other
 
@@ -681,6 +912,7 @@ node block-log-viewer.js <path> [--dlt] [--reader=<module_path>]
 |---------|-------------|
 | `scan` | Scan all blocks, build & save bitmask for fast navigation |
 | `i` | Show block header info |
+| `hex` | Show raw block data in hex |
 | `h` | Help |
 | `q` | Quit |
 
@@ -708,11 +940,13 @@ The `scan` command builds a compact bitmask file that marks which blocks contain
 
 The bitmask is auto-loaded on startup if it exists and matches the current block range. If the range differs, a rescan is suggested.
 
-#### String Search (`S`) and Export (`e`)
+#### String Search (`S`), Raw Search (`R`), and Export (`e`)
 
-The `S` command searches the **full JSON** of every operation (including virtual) for a case-insensitive substring match. This allows finding blocks by account name, memo text, hex hash, or any other field value — not just operation type name.
+The `S` command searches the **full operation data** (including virtual) for a substring match. The `=` prefix enables exact match mode — `S ="V"` finds only the exact value `V`, not `VIZ` or other strings containing `V`.
 
-The `e` command performs the same search across **all** blocks and writes results to a JSON file in the block_log directory:
+The `R` command performs a fast raw ASCII byte search directly in the block's binary data, without deserialization. No UTF-8/emoji support. Useful for quickly locating blocks containing specific ASCII patterns.
+
+The `e` command performs the same search as `S` across **all** blocks and writes results to a JSON file in the block_log directory:
 
 ```
 search_export_1745312345.json
