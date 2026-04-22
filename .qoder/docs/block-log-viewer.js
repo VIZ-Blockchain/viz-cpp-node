@@ -52,7 +52,8 @@ const {
   OPERATION_TYPES,
   CONSTANTS,
   BinaryReader,
-  readSignedBlockHeader
+  readSignedBlockHeader,
+  readSignedBlock
 } = require(readerModule);
 
 // ============================================================================
@@ -77,6 +78,26 @@ let bitmaskEnd = 0;       // end_block_num stored in bitmask
 
 function isNonFreeOp(op) {
   return !op.isVirtual;
+}
+
+/**
+ * Check if a Buffer contains an ASCII string (case-insensitive).
+ * Searches raw bytes without any string conversion or object allocation.
+ */
+function bufIncludesAscii(buf, searchLower) {
+  const len = searchLower.length;
+  const bufLen = buf.length;
+  outer:
+  for (let i = 0; i <= bufLen - len; i++) {
+    for (let j = 0; j < len; j++) {
+      let c = buf[i + j];
+      // Convert to lowercase: A-Z (0x41-0x5A) -> a-z (0x61-0x7A)
+      if (c >= 0x41 && c <= 0x5A) c += 0x20;
+      if (c !== searchLower.charCodeAt(j)) continue outer;
+    }
+    return true;
+  }
+  return false;
 }
 
 function hasNonFreeOps(block) {
@@ -411,6 +432,7 @@ function showHelp() {
   console.log('  o <name>   - Show operations matching name');
   console.log('  s <name>   - Search forward for block containing operation name');
   console.log('  S <string> - Search forward for string in op JSON (incl. virtual)');
+  console.log('  R <string> - Fast raw ASCII byte search (no UTF-8/emoji)');
   console.log('  e <string> - Export all ops containing string to search_export_<ts>.json');
   console.log('  c          - Continue last search (s/S/e)');
   console.log('  scan       - Scan all blocks, build & save bitmask for fast nav');
@@ -574,14 +596,6 @@ function goPrevWithOps() {
 }
 
 /**
- * Lightweight check: does this block have any transactions?
- * Uses header + tx count only, no full deserialization.
- */
-function blockHasTx(num) {
-  return reader.readBlockTxCountByNum(num) > 0;
-}
-
-/**
  * Run a search function in batches to avoid OOM.
  * The checkFn receives (blockNum) and should return false to skip this block,
  * or true to proceed with full deserialization via matchFn.
@@ -631,19 +645,18 @@ function batchSearch(checkFn, matchFn, onProgress, onDone) {
 }
 
 function searchOpForward(name) {
-  name = name.toLowerCase();
   lastSearch = { type: 's', term: name };
   console.log(`  Searching for operation "${name}" forward from #${currentBlockNum + 1}...`);
 
   batchSearch(
     (num) => {
-      // Skip blocks with no transactions (bitmask or lightweight check)
+      // Skip blocks with no transactions (bitmask only — no per-block I/O)
       if (bitmaskValid()) return bitmaskGet(num) === 1;
-      return blockHasTx(num);
+      return true; // without bitmask, can't skip
     },
     (num, block) => {
       const ops = collectOps(block);
-      if (ops.some(o => o.typeName.toLowerCase().includes(name))) {
+      if (ops.some(o => o.typeName.includes(name))) {
         showBlock(block);
         showOps(block, name);
         return true;
@@ -664,32 +677,44 @@ function searchOpForward(name) {
 // ============================================================================
 
 /**
- * Serialize op data to a searchable JSON string (Buffers -> hex, BigInt -> string)
+ * Recursively walk an object looking for a string value containing searchStr.
+ * Zero-allocation: no JSON.stringify, just walks existing objects.
  */
-function opToJsonString(op) {
-  try {
-    return JSON.stringify({ typeName: op.typeName, isVirtual: op.isVirtual, data: op.data }, (key, val) => {
-      if (val && val.type === 'Buffer' && Array.isArray(val.data)) return Buffer.from(val.data).toString('hex');
-      if (Buffer.isBuffer(val)) return val.toString('hex');
-      if (typeof val === 'bigint') return val.toString();
-      return val;
-    });
-  } catch (e) {
-    return '';
+function deepIncludes(obj, searchStr) {
+  if (obj === null || obj === undefined) return false;
+  if (typeof obj === 'string') return obj.includes(searchStr);
+  if (typeof obj === 'number' || typeof obj === 'boolean') return false;
+  if (typeof obj === 'bigint') return obj.toString().includes(searchStr);
+  if (Buffer.isBuffer(obj)) return false; // skip binary
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      if (deepIncludes(obj[i], searchStr)) return true;
+    }
+    return false;
   }
+  if (typeof obj === 'object') {
+    for (const key of Object.keys(obj)) {
+      if (key.includes(searchStr)) return true;
+      if (deepIncludes(obj[key], searchStr)) return true;
+    }
+  }
+  return false;
 }
 
 /**
- * Check if any operation in a block contains the search string in its JSON
- * Returns matching operations array (empty if none)
+ * Check if any operation in a block contains the search string.
+ * Uses recursive walk instead of JSON.stringify to avoid large temp strings.
+ * Returns matching operations array (empty if none).
  */
 function findOpsByString(block, searchStr) {
-  const lower = searchStr.toLowerCase();
   const ops = collectOps(block);
   const matched = [];
   for (const op of ops) {
-    const json = opToJsonString(op);
-    if (json.toLowerCase().includes(lower)) {
+    if (op.typeName && op.typeName.includes(searchStr)) {
+      matched.push(op);
+      continue;
+    }
+    if (deepIncludes(op.data, searchStr)) {
       matched.push(op);
     }
   }
@@ -697,52 +722,182 @@ function findOpsByString(block, searchStr) {
 }
 
 /**
- * Search forward for next block containing string in any operation's JSON
+ * Deserialize a block from an existing raw buffer (no re-read, no 1MB over-allocate).
+ * Returns the block object or null on error.
+ */
+function deserializeFromRaw(rawBuf) {
+  try {
+    const br = new BinaryReader(rawBuf);
+    const block = readSignedBlock(br);
+    return block;
+  } catch (e) {
+    console.error(`  deserializeFromRaw ERROR: ${e.message} (bufLen=${rawBuf.length})`);
+    return null;
+  }
+}
+
+/**
+ * Fast raw ASCII byte search forward — no deserialization, just scans raw block bytes.
+ * Only finds ASCII strings (English, digits). Use S for UTF-8/emoji search.
+ */
+function searchRawForward(str) {
+  lastSearch = { type: 'R', term: str };
+  if (scanning) { console.log('  Already scanning.'); return; }
+  scanning = true;
+  const YIELD_EVERY = 200; // raw scan is lighter, can do more per yield
+  let currentNum = currentBlockNum + 1;
+
+  console.log(`  Raw searching for ASCII "${str}" forward from #${currentNum}...`);
+
+  function processChunk() {
+    const chunkEnd = Math.min(currentNum + YIELD_EVERY - 1, endBlock);
+
+    const positions = reader.readBlockPosBatch(currentNum, chunkEnd - currentNum + 2);
+    if (positions.length === 0) {
+      currentNum = chunkEnd + 1;
+      setImmediate(processChunk);
+      return;
+    }
+
+    for (let num = currentNum; num <= chunkEnd; num++) {
+      const i = num - currentNum;
+      const startPos = Number(positions[i]);
+      const endPos = (i + 1 < positions.length) ? Number(positions[i + 1]) : (Number(reader.dataSize) - 8);
+      const blockSize = endPos - startPos;
+      if (blockSize <= 0 || blockSize > CONSTANTS.CHAIN_BLOCK_SIZE + 16) continue;
+
+      let rawBuf = null;
+      try {
+        rawBuf = reader._readData(BigInt(startPos), blockSize);
+        if (bufIncludesAscii(rawBuf, str)) {
+          // Found — deserialize to show context
+          const block = deserializeFromRaw(rawBuf);
+          rawBuf = null;
+          if (block) {
+            currentBlockNum = num;
+            showBlock(block);
+            showOps(block);
+          } else {
+            currentBlockNum = num;
+            console.log(`  Block #${num} contains "${str}" in raw bytes (could not deserialize).`);
+          }
+          scanning = false;
+          showPrompt();
+          return;
+        }
+      } catch (e) { /* skip */ }
+      rawBuf = null; // free buffer
+    }
+
+    process.stdout.write(`\r  Scanning... #${chunkEnd}      `);
+    currentNum = chunkEnd + 1;
+    if (currentNum <= endBlock) {
+      setImmediate(processChunk);
+    } else {
+      console.log('\r  No blocks containing ASCII "' + str + '" found.      ');
+      scanning = false;
+      showPrompt();
+    }
+  }
+
+  processChunk();
+}
+
+/**
+ * Search forward for next block containing string in any operation's JSON.
+ * Only deserializes blocks that have operations (bitmask or tx-count filter).
+ * Yields to event loop every YIELD_EVERY blocks so GC can reclaim memory.
+ * Supports UTF-8, emoji, and any string in operation data.
  */
 function searchStringForward(str) {
   lastSearch = { type: 'S', term: str };
-  console.log(`  Searching for "${str}" in op JSON forward from #${currentBlockNum + 1}...`);
+  if (scanning) { console.log('  Already scanning.'); return; }
+  scanning = true;
+  const YIELD_EVERY = 100;
+  let currentNum = currentBlockNum + 1;
 
-  batchSearch(
-    // For string search, we must check ALL blocks (string might be in virtual ops)
-    // but we can still skip blocks with 0 tx using bitmask (most blocks are empty)
-    (num) => {
-      if (bitmaskValid()) return bitmaskGet(num) === 1;
-      return blockHasTx(num);
-    },
-    (num, block) => {
-      const matched = findOpsByString(block, str);
-      if (matched.length > 0) {
-        showBlock(block);
-        for (const op of matched) {
-          const tag = op.isVirtual ? '[V]' : '   ';
-          console.log(`  ${tag} ${op.typeName}`);
-          try {
-            const json = JSON.stringify(op.data, (key, val) => {
-              if (val && val.type === 'Buffer') return `<buffer ${val.data.length}B>`;
-              if (Buffer.isBuffer(val)) return `<buffer ${val.length}B>`;
-              if (typeof val === 'bigint') return val.toString();
-              return val;
-            }, 2);
-            for (const line of json.split('\n')) {
-              console.log('      ' + line);
-            }
-          } catch (e) {
-            console.log('      (serialization error)');
-          }
-          console.log('');
-        }
-        return true;
+  console.log(`  Searching for "${str}" in op JSON forward from #${currentNum}...`);
+
+  function processChunk() {
+    const chunkEnd = Math.min(currentNum + YIELD_EVERY - 1, endBlock);
+
+    // Read index positions in bulk for this chunk
+    const positions = reader.readBlockPosBatch(currentNum, chunkEnd - currentNum + 2);
+    if (positions.length === 0) {
+      currentNum = chunkEnd + 1;
+      setImmediate(processChunk);
+      return;
+    }
+
+    for (let num = currentNum; num <= chunkEnd; num++) {
+      const i = num - currentNum;
+
+      // Skip blocks with no operations (bitmask only — no per-block I/O)
+      if (bitmaskValid() && bitmaskGet(num) === 0) continue;
+
+      // Read exact-size bytes and deserialize
+      const startPos = Number(positions[i]);
+      const endPos = (i + 1 < positions.length) ? Number(positions[i + 1]) : (Number(reader.dataSize) - 8);
+      const blockSize = endPos - startPos;
+      if (blockSize <= 0 || blockSize > CONSTANTS.CHAIN_BLOCK_SIZE + 16) continue;
+
+      // Debug: log block number and size every 1000 blocks or if block is large
+      if (num % 1000 === 0 || blockSize > 100000) {
+        const memMB = process.memoryUsage().heapUsed / 1024 / 1024;
+        process.stdout.write(`\r  #${num} size=${blockSize} heap=${memMB.toFixed(0)}MB      \n`);
       }
-      return false;
-    },
-    (num) => process.stdout.write(`\r  Scanning... #${num}      `),
-    (err) => {
-      if (err === 'not found') console.log('\r  No matching operations found.      ');
-      else console.log('\r  No more matching operations.      ');
+
+      let rawBuf = null;
+      let block = null;
+      try {
+        rawBuf = reader._readData(BigInt(startPos), blockSize);
+        block = deserializeFromRaw(rawBuf);
+      } catch (e) { /* skip */ }
+      rawBuf = null;
+
+      if (block) {
+        const matched = findOpsByString(block, str);
+        if (matched.length > 0) {
+          currentBlockNum = num;
+          showBlock(block);
+          for (const op of matched) {
+            const tag = op.isVirtual ? '[V]' : '   ';
+            console.log(`  ${tag} ${op.typeName}`);
+            try {
+              const json = JSON.stringify(op.data, (key, val) => {
+                if (val && val.type === 'Buffer') return `<buffer ${val.data.length}B>`;
+                if (Buffer.isBuffer(val)) return `<buffer ${val.length}B>`;
+                if (typeof val === 'bigint') return val.toString();
+                return val;
+              }, 2);
+              for (const line of json.split('\n')) {
+                console.log('      ' + line);
+              }
+            } catch (e) {
+              console.log('      (serialization error)');
+            }
+            console.log('');
+          }
+          scanning = false;
+          showPrompt();
+          return;
+        }
+      }
+      block = null;
+    }
+
+    process.stdout.write(`\r  Scanning... #${chunkEnd}      `);
+    currentNum = chunkEnd + 1;
+    if (currentNum <= endBlock) {
+      setImmediate(processChunk);
+    } else {
+      console.log('\r  No matching operations found.      ');
+      scanning = false;
       showPrompt();
     }
-  );
+  }
+
+  processChunk();
 }
 
 /**
@@ -757,8 +912,9 @@ function jsonReplacer(key, val) {
 
 /**
  * Search all blocks and export matching operations to JSON file.
- * Streams results to disk: writes each batch's matches as JSON objects,
- * then clears them from memory. Final file = "[" + obj1 + "," + obj2 + ... + "]".
+ * Streams results to disk: writes each chunk's matches as JSON objects,
+ * then clears them from memory. Yields every YIELD_EVERY blocks for GC.
+ * Final file = "[" + obj1 + "," + obj2 + ... + "]".
  */
 function searchExport(str) {
   lastSearch = { type: 'e', term: str };
@@ -770,7 +926,7 @@ function searchExport(str) {
   let writtenBytes = 0;
   const total = endBlock - startBlock + 1;
   let lastPct = -1;
-  const BATCH_SIZE = 50000;
+  const YIELD_EVERY = 100;
   let currentNum = startBlock;
   let needComma = false; // whether to prepend "," before next object
 
@@ -784,37 +940,48 @@ function searchExport(str) {
   console.log(`  Exporting all operations containing "${str}" from #${startBlock} to #${endBlock}...`);
   console.log(`  Output: ${path.basename(outPath)}`);
 
-  function flushBatchOps(batchOps) {
-    // Write each op as a JSON object, comma-separated
-    for (const op of batchOps) {
-      const prefix = needComma ? ',\n' : '';
-      needComma = true;
-      const json = JSON.stringify(op, jsonReplacer, 2);
-      const chunk = prefix + json;
-      fs.writeSync(fd, chunk, 0, 'utf8');
-      writtenBytes += Buffer.byteLength(chunk, 'utf8');
-    }
-  }
+  function processChunk() {
+    const chunkEnd = Math.min(currentNum + YIELD_EVERY - 1, endBlock);
 
-  function processBatch() {
-    const batchEnd = Math.min(currentNum + BATCH_SIZE - 1, endBlock);
-    const batchOps = []; // collect matches for this batch, then flush
+    // Read index positions in bulk
+    const positions = reader.readBlockPosBatch(currentNum, chunkEnd - currentNum + 2);
 
-    for (let num = currentNum; num <= batchEnd; num++) {
-      // Lightweight skip: no tx = no ops
+    for (let num = currentNum; num <= chunkEnd; num++) {
+      const i = num - currentNum;
+
+      // Skip blocks with no operations (bitmask only — no per-block I/O)
       if (bitmaskValid() && bitmaskGet(num) === 0) continue;
 
-      // Lightweight skip when no bitmask
-      if (!bitmaskValid() && !blockHasTx(num)) continue;
+      const startPos = (i < positions.length) ? Number(positions[i]) : 0;
+      const endPos = (i + 1 < positions.length) ? Number(positions[i + 1]) : 0;
+      const blockSize = endPos - startPos;
+      if (blockSize <= 0 || blockSize > CONSTANTS.CHAIN_BLOCK_SIZE + 16) continue;
 
-      const block = safeReadBlock(num);
+      // Debug: log block number and size every 1000 blocks or if block is large
+      if (num % 1000 === 0 || blockSize > 100000) {
+        const memMB = process.memoryUsage().heapUsed / 1024 / 1024;
+        process.stdout.write(`\r  #${num} size=${blockSize} heap=${memMB.toFixed(0)}MB      \n`);
+      }
+
+      // Read exact-size bytes and deserialize
+      let rawBuf = null;
+      let block = null;
+      try {
+        rawBuf = reader._readData(BigInt(startPos), blockSize);
+        block = deserializeFromRaw(rawBuf);
+      } catch (e) { /* skip */ }
+      rawBuf = null;
+
       if (block) {
         const matched = findOpsByString(block, str);
         if (matched.length > 0) {
           blockCount++;
           for (const op of matched) {
             matchCount++;
-            batchOps.push({
+            // Flush each op immediately — don't accumulate references
+            const prefix = needComma ? ',\n' : '';
+            needComma = true;
+            const record = {
               block: num,
               timestamp: formatTimestamp(block.timestamp),
               witness: block.witness,
@@ -822,25 +989,29 @@ function searchExport(str) {
               typeName: op.typeName,
               isVirtual: op.isVirtual,
               data: op.data
-            });
+            };
+            const json = JSON.stringify(record, jsonReplacer, 2);
+            const chunk = prefix + json;
+            fs.writeSync(fd, chunk, 0, 'utf8');
+            writtenBytes += Buffer.byteLength(chunk, 'utf8');
           }
         }
       }
-      const pct = Math.floor(((num - startBlock) / total) * 100);
-      if (pct !== lastPct && pct % 5 === 0) {
-        lastPct = pct;
-        const sizeMB = (writtenBytes / 1024 / 1024).toFixed(1);
-        process.stdout.write(`\r  Scanning... ${pct}% (#${num}, ${matchCount} ops in ${blockCount} blocks, ${sizeMB} MB written)      `);
-      }
+      block = null;
     }
 
-    // Flush this batch's matches to disk, then free memory
-    flushBatchOps(batchOps);
-    batchOps.length = 0;
+    const pct = Math.floor(((chunkEnd - startBlock) / total) * 100);
+    if (pct !== lastPct && pct % 5 === 0) {
+      lastPct = pct;
+      const sizeMB = (writtenBytes / 1024 / 1024).toFixed(1);
+      process.stdout.write(`\r  Scanning... ${pct}% (#${chunkEnd}, ${matchCount} ops in ${blockCount} blocks, ${sizeMB} MB written)      `);
+    } else {
+      process.stdout.write(`\r  Scanning... #${chunkEnd} (${matchCount} ops)      `);
+    }
 
-    currentNum = batchEnd + 1;
+    currentNum = chunkEnd + 1;
     if (currentNum <= endBlock) {
-      setImmediate(processBatch);
+      setImmediate(processChunk);
     } else {
       // Close the JSON array
       fs.writeSync(fd, '\n]', 0, 'utf8');
@@ -860,7 +1031,7 @@ function searchExport(str) {
     }
   }
 
-  processBatch();
+  processChunk();
 }
 
 function showCurrentOps(filter) {
@@ -1065,6 +1236,12 @@ function main() {
         searchStringForward(str);
         break;
       }
+      case 'R': {
+        const str = parts.slice(1).join(' ');
+        if (!str) { console.log('Usage: R <string> (ASCII only)'); break; }
+        searchRawForward(str);
+        break;
+      }
       case 'e': {
         const str = parts.slice(1).join(' ');
         if (!str) { console.log('Usage: e <string>'); break; }
@@ -1072,9 +1249,10 @@ function main() {
         break;
       }
       case 'c': {
-        if (!lastSearch) { console.log('No previous search. Use s, S, or e first.'); break; }
+        if (!lastSearch) { console.log('No previous search. Use s, S, R, or e first.'); break; }
         if (lastSearch.type === 's') searchOpForward(lastSearch.term);
         else if (lastSearch.type === 'S') searchStringForward(lastSearch.term);
+        else if (lastSearch.type === 'R') searchRawForward(lastSearch.term);
         else if (lastSearch.type === 'e') searchExport(lastSearch.term);
         break;
       }
