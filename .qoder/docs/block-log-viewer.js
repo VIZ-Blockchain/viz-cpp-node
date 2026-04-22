@@ -64,6 +64,7 @@ let currentBlockNum = 0;
 let startBlock = 1;
 let endBlock = 0;
 let scanning = false;
+let lastSearch = null; // { type: 's'|'S'|'e', term: string }
 
 // Bitmask: 1 bit per block, 1 = has non-free ops, 0 = empty/virtual-only
 let bitmask = null;       // Buffer or null
@@ -411,6 +412,7 @@ function showHelp() {
   console.log('  s <name>   - Search forward for block containing operation name');
   console.log('  S <string> - Search forward for string in op JSON (incl. virtual)');
   console.log('  e <string> - Export all ops containing string to search_export_<ts>.json');
+  console.log('  c          - Continue last search (s/S/e)');
   console.log('  scan       - Scan all blocks, build & save bitmask for fast nav');
   console.log('  i          - Show block info (header only)');
   console.log('  hex        - Show raw block data in hex');
@@ -571,29 +573,90 @@ function goPrevWithOps() {
   console.log('\r  No more blocks with non-free operations backward.      ');
 }
 
-function searchOpForward(name) {
-  name = name.toLowerCase();
-  console.log(`  Searching for "${name}" forward from #${currentBlockNum + 1}...`);
+/**
+ * Lightweight check: does this block have any transactions?
+ * Uses header + tx count only, no full deserialization.
+ */
+function blockHasTx(num) {
+  return reader.readBlockTxCountByNum(num) > 0;
+}
 
-  for (let num = currentBlockNum + 1; num <= endBlock; num++) {
-    // Fast skip: if bitmask says this block is empty, no need to read it
-    if (bitmaskValid() && bitmaskGet(num) === 0) continue;
+/**
+ * Run a search function in batches to avoid OOM.
+ * The checkFn receives (blockNum) and should return false to skip this block,
+ * or true to proceed with full deserialization via matchFn.
+ * matchFn receives (blockNum, block) and should return truthy to stop (the match).
+ * Calls onProgress(currentNum) for status updates.
+ */
+function batchSearch(checkFn, matchFn, onProgress, onDone) {
+  if (scanning) { console.log('  Already scanning.'); return; }
+  scanning = true;
+  const BATCH_SIZE = 10000;
+  let currentNum = currentBlockNum + 1;
 
-    const block = safeReadBlock(num);
-    if (block) {
-      const ops = collectOps(block);
-      if (ops.some(o => o.typeName.toLowerCase().includes(name))) {
-        currentBlockNum = num;
-        showBlock(block);
-        showOps(block, name);
-        return;
+  function processBatch() {
+    const batchEnd = Math.min(currentNum + BATCH_SIZE - 1, endBlock);
+
+    for (let num = currentNum; num <= batchEnd; num++) {
+      // Lightweight pre-check: skip empty blocks
+      if (!checkFn(num)) continue;
+
+      // Full deserialize only blocks that pass the check
+      const block = safeReadBlock(num);
+      if (block) {
+        const result = matchFn(num, block);
+        if (result) {
+          currentBlockNum = num;
+          scanning = false;
+          onDone(null);
+          return;
+        }
+      }
+      if ((num - currentNum) % 2000 === 0 && num > currentNum) {
+        onProgress(num);
       }
     }
-    if ((num - currentBlockNum) % 1000 === 0) {
-      process.stdout.write(`\r  Scanning... #${num}      `);
+
+    onProgress(batchEnd);
+    currentNum = batchEnd + 1;
+    if (currentNum <= endBlock) {
+      setImmediate(processBatch);
+    } else {
+      scanning = false;
+      onDone('not found');
     }
   }
-  console.log('\r  No matching operations found.      ');
+
+  processBatch();
+}
+
+function searchOpForward(name) {
+  name = name.toLowerCase();
+  lastSearch = { type: 's', term: name };
+  console.log(`  Searching for operation "${name}" forward from #${currentBlockNum + 1}...`);
+
+  batchSearch(
+    (num) => {
+      // Skip blocks with no transactions (bitmask or lightweight check)
+      if (bitmaskValid()) return bitmaskGet(num) === 1;
+      return blockHasTx(num);
+    },
+    (num, block) => {
+      const ops = collectOps(block);
+      if (ops.some(o => o.typeName.toLowerCase().includes(name))) {
+        showBlock(block);
+        showOps(block, name);
+        return true;
+      }
+      return false;
+    },
+    (num) => process.stdout.write(`\r  Scanning... #${num}      `),
+    (err) => {
+      if (err === 'not found') console.log('\r  No matching operations found.      ');
+      else console.log('\r  No more matching operations.      ');
+      showPrompt();
+    }
+  );
 }
 
 // ============================================================================
@@ -637,17 +700,20 @@ function findOpsByString(block, searchStr) {
  * Search forward for next block containing string in any operation's JSON
  */
 function searchStringForward(str) {
+  lastSearch = { type: 'S', term: str };
   console.log(`  Searching for "${str}" in op JSON forward from #${currentBlockNum + 1}...`);
 
-  for (let num = currentBlockNum + 1; num <= endBlock; num++) {
-    // bitmask can't help here - string might be in virtual ops too
-    const block = safeReadBlock(num);
-    if (block) {
+  batchSearch(
+    // For string search, we must check ALL blocks (string might be in virtual ops)
+    // but we can still skip blocks with 0 tx using bitmask (most blocks are empty)
+    (num) => {
+      if (bitmaskValid()) return bitmaskGet(num) === 1;
+      return blockHasTx(num);
+    },
+    (num, block) => {
       const matched = findOpsByString(block, str);
       if (matched.length > 0) {
-        currentBlockNum = num;
         showBlock(block);
-        // Show only matching ops
         for (const op of matched) {
           const tag = op.isVirtual ? '[V]' : '   ';
           console.log(`  ${tag} ${op.typeName}`);
@@ -666,74 +732,135 @@ function searchStringForward(str) {
           }
           console.log('');
         }
-        return;
+        return true;
       }
+      return false;
+    },
+    (num) => process.stdout.write(`\r  Scanning... #${num}      `),
+    (err) => {
+      if (err === 'not found') console.log('\r  No matching operations found.      ');
+      else console.log('\r  No more matching operations.      ');
+      showPrompt();
     }
-    if ((num - currentBlockNum) % 1000 === 0) {
-      process.stdout.write(`\r  Scanning... #${num}      `);
-    }
-  }
-  console.log('\r  No matching operations found.      ');
+  );
 }
 
 /**
- * Search all blocks and export matching operations to JSON file
+ * JSON replacer for Buffer/bigint serialization
+ */
+function jsonReplacer(key, val) {
+  if (val && val.type === 'Buffer' && Array.isArray(val.data)) return Buffer.from(val.data).toString('hex');
+  if (Buffer.isBuffer(val)) return val.toString('hex');
+  if (typeof val === 'bigint') return val.toString();
+  return val;
+}
+
+/**
+ * Search all blocks and export matching operations to JSON file.
+ * Streams results to disk: writes each batch's matches as JSON objects,
+ * then clears them from memory. Final file = "[" + obj1 + "," + obj2 + ... + "]".
  */
 function searchExport(str) {
-  console.log(`  Exporting all operations containing "${str}" from #${startBlock} to #${endBlock}...`);
+  lastSearch = { type: 'e', term: str };
+  if (scanning) { console.log('  Already scanning.'); return; }
+  scanning = true;
 
-  const results = [];
   let matchCount = 0;
   let blockCount = 0;
+  let writtenBytes = 0;
   const total = endBlock - startBlock + 1;
   let lastPct = -1;
+  const BATCH_SIZE = 50000;
+  let currentNum = startBlock;
+  let needComma = false; // whether to prepend "," before next object
 
-  for (let num = startBlock; num <= endBlock; num++) {
-    const block = safeReadBlock(num);
-    if (block) {
-      const matched = findOpsByString(block, str);
-      if (matched.length > 0) {
-        blockCount++;
-        for (const op of matched) {
-          matchCount++;
-          results.push({
-            block: num,
-            timestamp: formatTimestamp(block.timestamp),
-            witness: block.witness,
-            typeId: op.typeId,
-            typeName: op.typeName,
-            isVirtual: op.isVirtual,
-            data: op.data
-          });
-        }
-      }
-    }
-    const pct = Math.floor(((num - startBlock) / total) * 100);
-    if (pct !== lastPct && pct % 5 === 0) {
-      lastPct = pct;
-      process.stdout.write(`\r  Scanning... ${pct}% (#${num}, ${matchCount} ops in ${blockCount} blocks)      `);
-    }
-  }
-
-  if (matchCount === 0) {
-    console.log('\r  No matching operations found.                                          ');
-    return;
-  }
-
-  // Serialize with Buffer/bigint handling
-  const json = JSON.stringify(results, (key, val) => {
-    if (val && val.type === 'Buffer' && Array.isArray(val.data)) return Buffer.from(val.data).toString('hex');
-    if (Buffer.isBuffer(val)) return val.toString('hex');
-    if (typeof val === 'bigint') return val.toString();
-    return val;
-  }, 2);
-
+  // Open export file, write opening "["
   const unixTime = Math.floor(Date.now() / 1000);
   const outPath = path.join(path.dirname(reader.dataPath), `search_export_${unixTime}.json`);
-  fs.writeFileSync(outPath, json, 'utf8');
+  const fd = fs.openSync(outPath, 'w');
+  fs.writeSync(fd, '[\n', 0, 'utf8', 0);
+  writtenBytes += 2;
 
-  const sizeKB = (Buffer.byteLength(json, 'utf8') / 1024).toFixed(1);
-  console.log(`\r  Done. ${matchCount} ops in ${blockCount} blocks. Saved ${sizeKB} KB to ${path.basename(outPath)}      `);
+  console.log(`  Exporting all operations containing "${str}" from #${startBlock} to #${endBlock}...`);
+  console.log(`  Output: ${path.basename(outPath)}`);
+
+  function flushBatchOps(batchOps) {
+    // Write each op as a JSON object, comma-separated
+    for (const op of batchOps) {
+      const prefix = needComma ? ',\n' : '';
+      needComma = true;
+      const json = JSON.stringify(op, jsonReplacer, 2);
+      const chunk = prefix + json;
+      fs.writeSync(fd, chunk, 0, 'utf8');
+      writtenBytes += Buffer.byteLength(chunk, 'utf8');
+    }
+  }
+
+  function processBatch() {
+    const batchEnd = Math.min(currentNum + BATCH_SIZE - 1, endBlock);
+    const batchOps = []; // collect matches for this batch, then flush
+
+    for (let num = currentNum; num <= batchEnd; num++) {
+      // Lightweight skip: no tx = no ops
+      if (bitmaskValid() && bitmaskGet(num) === 0) continue;
+
+      // Lightweight skip when no bitmask
+      if (!bitmaskValid() && !blockHasTx(num)) continue;
+
+      const block = safeReadBlock(num);
+      if (block) {
+        const matched = findOpsByString(block, str);
+        if (matched.length > 0) {
+          blockCount++;
+          for (const op of matched) {
+            matchCount++;
+            batchOps.push({
+              block: num,
+              timestamp: formatTimestamp(block.timestamp),
+              witness: block.witness,
+              typeId: op.typeId,
+              typeName: op.typeName,
+              isVirtual: op.isVirtual,
+              data: op.data
+            });
+          }
+        }
+      }
+      const pct = Math.floor(((num - startBlock) / total) * 100);
+      if (pct !== lastPct && pct % 5 === 0) {
+        lastPct = pct;
+        const sizeMB = (writtenBytes / 1024 / 1024).toFixed(1);
+        process.stdout.write(`\r  Scanning... ${pct}% (#${num}, ${matchCount} ops in ${blockCount} blocks, ${sizeMB} MB written)      `);
+      }
+    }
+
+    // Flush this batch's matches to disk, then free memory
+    flushBatchOps(batchOps);
+    batchOps.length = 0;
+
+    currentNum = batchEnd + 1;
+    if (currentNum <= endBlock) {
+      setImmediate(processBatch);
+    } else {
+      // Close the JSON array
+      fs.writeSync(fd, '\n]', 0, 'utf8');
+      writtenBytes += 2;
+      fs.closeSync(fd);
+
+      if (matchCount === 0) {
+        // Remove empty file
+        fs.unlinkSync(outPath);
+        console.log('\r  No matching operations found.                                          ');
+      } else {
+        const sizeMB = (writtenBytes / 1024 / 1024).toFixed(1);
+        console.log(`\r  Done. ${matchCount} ops in ${blockCount} blocks. Saved ${sizeMB} MB to ${path.basename(outPath)}      `);
+      }
+      scanning = false;
+      showPrompt();
+    }
+  }
+
+  processBatch();
 }
 
 function showCurrentOps(filter) {
@@ -942,6 +1069,13 @@ function main() {
         const str = parts.slice(1).join(' ');
         if (!str) { console.log('Usage: e <string>'); break; }
         searchExport(str);
+        break;
+      }
+      case 'c': {
+        if (!lastSearch) { console.log('No previous search. Use s, S, or e first.'); break; }
+        if (lastSearch.type === 's') searchOpForward(lastSearch.term);
+        else if (lastSearch.type === 'S') searchStringForward(lastSearch.term);
+        else if (lastSearch.type === 'e') searchExport(lastSearch.term);
         break;
       }
       case 'i': showCurrentInfo(); break;
