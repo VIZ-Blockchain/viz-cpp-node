@@ -287,8 +287,8 @@ namespace graphene {
                                         // In DLT mode, block data may not be available for blocks
                                         // before the dlt_block_log range. This is expected — peer
                                         // will get the block from another node.
-                                        dlog("Block ${id} not available in DLT mode (no block data for this range)",
-                                            ("id", id.item_hash));
+                                        dlog("Block ${id} (num ${num}) not available in DLT mode (no block data for this range)",
+                                            ("id", id.item_hash)("num", block_header::num_from_id(id.item_hash)));
                                         FC_THROW_EXCEPTION(fc::key_not_found_exception, "");
                                     }
                                     elog("Couldn't find block ${id} -- corresponding ID in our chain is ${id2}",
