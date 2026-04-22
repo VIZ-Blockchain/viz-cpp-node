@@ -247,6 +247,19 @@ signed_block extends signed_block_header
 | `transaction_merkle_root` | `checksum_type` (20 bytes) | Merkle root of transactions |
 | `extensions` | `vector<block_header_extension>` | Future extensions (usually empty) |
 
+### block_header_extension (static_variant)
+
+Defined as `static_variant<void_t, version, hardfork_version_vote>` in
+`libraries/protocol/include/graphene/protocol/base.hpp`.
+
+| Type Index | Name | Serialized Data | Description |
+|------------|------|----------------|-------------|
+| 0 | `void_t` | (none) | Empty placeholder |
+| 1 | `version` | `uint32_t v_num` (4 bytes) | Witness version reporting (8.8.16 bit packing) |
+| 2 | `hardfork_version_vote` | `uint32_t` hf_version + `uint32_t` hf_time (8 bytes) | Hardfork vote |
+
+Version `v_num` packing: `(major << 24) | (hardfork << 16) | release`. Example: `0x00000001` = version 0.0.1.
+
 ### signed_block_header Additional Fields
 
 | Field | Type | Description |
@@ -317,6 +330,14 @@ signed_transaction (after transaction):
 ### block_id_type / checksum_type / transaction_id_type
 
 All are `fc::ripemd160` hashes (20 bytes).
+
+> **Steem lineage note:** VIZ inherits this design from the Steem codebase. Rather than using
+> the full 32-byte `fc::sha256` for block IDs and merkle roots, VIZ uses the shorter 20-byte
+> `fc::ripemd160`. The `block_id_type` is defined as `typedef fc::ripemd160 block_id_type` and
+> `checksum_type` as `typedef fc::ripemd160 checksum_type` in
+> `libraries/protocol/include/graphene/protocol/types.hpp`. This is sometimes called a "feature"
+> by the original developers — the shorter hash saves space and the collision risk is considered
+> acceptable for block identification within a running chain.
 
 ### signature_type
 
@@ -492,13 +513,32 @@ Operations are serialized as `fc::static_variant` with a type index followed by 
 ### Common Types
 
 #### asset
+
 ```
 [int64: amount][uint64: symbol]
 ```
 
-Symbol encoding:
-- `VIZ`: 0x0000000000000003
-- `SHARES`: 0x0000000000000004
+**Asset symbol format** (inherited from Steem codebase, defined in `asset.cpp`):
+
+The `uint64 symbol` is a packed structure with the following byte layout (little-endian):
+
+| Byte | Field | Description |
+|------|-------|-------------|
+| 0 | decimals | Number of decimal places (0-14) |
+| 1-6 | name | ASCII symbol name (up to 6 chars) |
+| 7 | null | Always 0x00 (null terminator) |
+
+Known symbols (from `config.hpp`):
+
+| Name | Decimals | uint64 (LE bytes) | uint64 (hex) |
+|------|----------|--------------------|--------------|
+| `VIZ` | 3 | `03 56 49 5A 00 00 00 00` | `0x000000005A495603` |
+| `SHARES` | 6 | `06 53 48 41 52 45 53 00` | `0x0053455241485306` |
+
+> **Steem lineage note:** This symbol encoding format is inherited from the Steem codebase.
+> Rather than using an enum or string, the symbol is packed as a uint64 with precision in byte 0
+> and the ASCII name in bytes 1-6. This design allows the symbol to carry its own decimal
+> precision information without requiring a separate lookup.
 
 #### authority
 ```
@@ -584,8 +624,33 @@ Interactive terminal UI for browsing block logs. No external dependencies.
 
 **Usage:**
 ```
-node block-log-viewer.js <block_log_path> [--dlt]
+node block-log-viewer.js <path> [--dlt] [--reader=<module_path>]
 ```
+
+`<path>` can be either:
+- Path to a `block_log` or `dlt_block_log` file directly
+- Path to a directory containing `block_log` / `dlt_block_log` (auto-detected)
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--dlt` | Use DLT (rolling) block log reader |
+| `--reader=<path>` | Path to `block-log-reader.js` module |
+
+**Directory auto-detection** (when `<path>` is a directory):
+
+| Files present | `--dlt` | Result |
+|--------------|---------|--------|
+| `block_log` only | no | Standard mode |
+| `dlt_block_log` only | no | Auto-switches to DLT mode |
+| Both | no | Standard mode (`block_log`) |
+| Both | yes | DLT mode (`dlt_block_log`) |
+| Neither | — | Error |
+
+**Module resolution** (if `block-log-reader.js` is not in the same directory):
+- `--reader=/path/to/block-log-reader.js` — explicit CLI option
+- `BLOCK_LOG_READER=/path/to/block-log-reader.js` — environment variable
 
 #### Navigation Commands
 

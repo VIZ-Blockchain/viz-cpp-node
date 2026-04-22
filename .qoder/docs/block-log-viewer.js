@@ -3,19 +3,57 @@
  * VIZ Block Log Viewer - Interactive terminal UI
  * No external dependencies. Uses block-log-reader.js for parsing.
  *
- * Usage: node block-log-viewer.js <block_log_path> [--dlt]
+ * Usage: node block-log-viewer.js <block_log_path> [--dlt] [--reader=<path>]
+ *
+ * The viewer will look for block-log-reader.js in this order:
+ *   1. --reader=<path> CLI option
+ *   2. Same directory as this script
+ *   3. BLOCK_LOG_READER environment variable
  */
 
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 
+// Resolve block-log-reader module from multiple locations
+function resolveReaderModule() {
+  const cliReader = process.argv.find(a => a.startsWith('--reader='));
+  if (cliReader) {
+    const p = cliReader.split('=')[1];
+    if (fs.existsSync(p)) return p;
+    console.error(`--reader path not found: ${p}`);
+    process.exit(1);
+  }
+
+  const candidates = [
+    path.join(__dirname, 'block-log-reader'),           // same dir as this script
+    process.env.BLOCK_LOG_READER,                       // env var
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    try {
+      require.resolve(candidate);
+      return candidate;
+    } catch (e) { /* not found, try next */ }
+  }
+
+  console.error('Cannot find block-log-reader.js');
+  console.error('Place it in the same directory as this script, or use:');
+  console.error('  node block-log-viewer.js <block_log> --reader=/path/to/block-log-reader.js');
+  console.error('  set BLOCK_LOG_READER=/path/to/block-log-reader.js');
+  process.exit(1);
+}
+
+const readerModule = resolveReaderModule();
 const {
   createBlockLogReader,
   getBlockNum,
   blockIdToHex,
-  OPERATION_TYPES
-} = require('./block-log-reader');
+  OPERATION_TYPES,
+  CONSTANTS,
+  BinaryReader,
+  readSignedBlockHeader
+} = require(readerModule);
 
 // ============================================================================
 // State
@@ -25,6 +63,7 @@ let reader = null;
 let currentBlockNum = 0;
 let startBlock = 1;
 let endBlock = 0;
+let scanning = false;
 
 // Bitmask: 1 bit per block, 1 = has non-free ops, 0 = empty/virtual-only
 let bitmask = null;       // Buffer or null
@@ -158,47 +197,111 @@ function bitmaskLoad() {
 
 /**
  * Scan all blocks, build bitmask, save to file.
+ * Uses lightweight tx-count check (no full block deserialization) with
+ * batch I/O for the index file and progressive bitmask writes.
+ * Virtual operations are NOT stored in block_log, so tx_count > 0 = has ops.
  */
 function bitmaskScan() {
+  if (scanning) { console.log('  Already scanning.'); return; }
+  scanning = true;
   const total = endBlock - startBlock + 1;
   const byteLen = Math.ceil(total / 8);
-  const buf = Buffer.alloc(byteLen); // all zeros
+  const BATCH_SIZE = 50000;
 
-  console.log(`  Scanning ${total} blocks for non-free operations...`);
-  let nonFreeCount = 0;
-  let lastPct = -1;
-
-  for (let num = startBlock; num <= endBlock; num++) {
-    const block = reader.readBlockByNum(num);
-    if (block && hasNonFreeOps(block)) {
-      bitmaskSet(buf, startBlock, num);
-      nonFreeCount++;
-    }
-    const pct = Math.floor(((num - startBlock) / total) * 100);
-    if (pct !== lastPct && pct % 5 === 0) {
-      lastPct = pct;
-      process.stdout.write(`\r  Scanning... ${pct}% (#${num}, ${nonFreeCount} with ops)      `);
-    }
-  }
-
-  // Write file
+  // Prepare file
   const p = bitmaskPath();
   const hdr = Buffer.allocUnsafe(16);
   hdr.writeBigUInt64LE(BigInt(startBlock), 0);
   hdr.writeBigUInt64LE(BigInt(endBlock), 8);
 
+  // Write header + empty bitmask placeholder
   const fd = fs.openSync(p, 'w');
   fs.writeSync(fd, hdr, 0, 16, 0);
-  fs.writeSync(fd, buf, 0, byteLen, 16);
-  fs.closeSync(fd);
+  const zeroChunk = Buffer.alloc(Math.min(byteLen, 65536));
+  for (let off = 0; off < byteLen; off += zeroChunk.length) {
+    const writeLen = Math.min(zeroChunk.length, byteLen - off);
+    fs.writeSync(fd, zeroChunk, 0, writeLen, 16 + off);
+  }
 
-  bitmask = buf;
-  bitmaskStart = startBlock;
-  bitmaskEnd = endBlock;
+  console.log(`  Scanning ${total} blocks for non-free operations...`);
+  console.log(`  Bitmask file: ${path.basename(p)} (${((16 + byteLen) / 1024).toFixed(1)} KB)`);
+  console.log(`  Batch size: ${BATCH_SIZE} blocks (lightweight: header + tx count only)`);
 
-  const empty = total - nonFreeCount;
-  const sizeKB = ((16 + byteLen) / 1024).toFixed(1);
-  console.log(`\r  Done. ${nonFreeCount} with ops, ${empty} empty. Saved ${sizeKB} KB to ${path.basename(p)}      `);
+  // Process in batches
+  let currentNum = startBlock;
+  let nonFreeCount = 0;
+  let lastPct = -1;
+
+  function processBatch() {
+    const batchEnd = Math.min(currentNum + BATCH_SIZE - 1, endBlock);
+    const batchCount = batchEnd - currentNum + 1;
+    const batchBits = Buffer.alloc(Math.ceil(batchCount / 8));
+
+    // Read index positions in bulk (one I/O for the whole batch + 1 extra for size boundary)
+    const positions = reader.readBlockPosBatch(currentNum, batchCount + 1);
+    if (positions.length === 0) {
+      currentNum = batchEnd + 1;
+      setImmediate(processBatch);
+      return;
+    }
+
+    for (let i = 0; i < batchCount; i++) {
+      const num = currentNum + i;
+      const startPos = Number(positions[i]);
+      const endPos = (i + 1 < positions.length) ? Number(positions[i + 1]) : (Number(reader.dataSize) - 8);
+      const blockSize = endPos - startPos;
+
+      if (blockSize <= 0 || blockSize > CONSTANTS.CHAIN_BLOCK_SIZE + 16) continue;
+
+      try {
+        // Read exact block bytes and parse only header + tx count
+        const buffer = reader._readData(BigInt(startPos), blockSize);
+        const br = new BinaryReader(buffer);
+        readSignedBlockHeader(br); // skip header
+        const txCount = Number(br.readVarint());
+
+        if (txCount > 0) {
+          const byteIdx = Math.floor(i / 8);
+          const bitOffset = i % 8;
+          batchBits[byteIdx] |= (1 << bitOffset);
+          nonFreeCount++;
+        }
+      } catch (e) {
+        // Skip blocks that fail to parse
+      }
+    }
+
+    // Write this batch's bits to the file
+    const batchFileOffset = Math.floor((currentNum - startBlock) / 8);
+    fs.writeSync(fd, batchBits, 0, batchBits.length, 16 + batchFileOffset);
+
+    // Progress
+    const processed = batchEnd - startBlock + 1;
+    const pct = Math.floor((processed / total) * 100);
+    if (pct !== lastPct) {
+      lastPct = pct;
+      const memMB = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+      process.stdout.write(`\r  Scanning... ${pct}% (#${batchEnd}, ${nonFreeCount} with ops, ${memMB} MB heap)      `);
+    }
+
+    currentNum = batchEnd + 1;
+    if (currentNum <= endBlock) {
+      setImmediate(processBatch);
+    } else {
+      // Done — load the completed bitmask
+      fs.closeSync(fd);
+
+      bitmaskLoad();
+
+      const empty = total - nonFreeCount;
+      const sizeKB = ((16 + byteLen) / 1024).toFixed(1);
+      console.log(`\r  Done. ${nonFreeCount} with ops, ${empty} empty. Saved ${sizeKB} KB to ${path.basename(p)}      `);
+      scanning = false;
+      showPrompt();
+    }
+  }
+
+  processBatch();
 }
 
 /**
@@ -244,6 +347,17 @@ function showBlock(block) {
   console.log(`  Tx Merkle : ${shortenHex(hashHex(block.transaction_merkle_root))}`);
   console.log(`  Signature : ${shortenHex(hashHex(block.witness_signature))}`);
   console.log(`  Tx count  : ${block.transactions.length}`);
+  if (block.extensions && block.extensions.length > 0) {
+    for (const ext of block.extensions) {
+      if (ext.name === 'version') {
+        console.log(`  Extension : version = ${ext.data.version}`);
+      } else if (ext.name === 'hardfork_version_vote') {
+        console.log(`  Extension : hardfork_version_vote = ${ext.data.hf_version} at ${ext.data.hf_time}`);
+      } else {
+        console.log(`  Extension : ${ext.name} ${JSON.stringify(ext.data)}`);
+      }
+    }
+  }
   console.log(`  Ops total : ${ops.length} (non-free: ${nonFree.length}, virtual: ${virtual.length})`);
   console.log('-'.repeat(72));
 }
@@ -299,6 +413,7 @@ function showHelp() {
   console.log('  e <string> - Export all ops containing string to search_export_<ts>.json');
   console.log('  scan       - Scan all blocks, build & save bitmask for fast nav');
   console.log('  i          - Show block info (header only)');
+  console.log('  hex        - Show raw block data in hex');
   console.log('  h          - This help');
   console.log('  q          - Quit');
   const bm = bitmaskValid() ? `LOADED (${endBlock - startBlock + 1} blocks)` : 'not loaded';
@@ -315,11 +430,54 @@ function showPrompt() {
 // Navigation
 // ============================================================================
 
+/**
+ * Safely read a block by number. Returns the block or null.
+ * Logs errors but does NOT throw — for use in scan loops.
+ */
+function safeReadBlock(num) {
+  try {
+    return reader.readBlockByNum(num);
+  } catch (e) {
+    return null; // skip blocks that fail to deserialize
+  }
+}
+
+function showBlockHeaderOnly(header, blockNum, errorMsg) {
+  console.log('');
+  console.log('='.repeat(72));
+  console.log(`  Block #${blockNum} (HEADER ONLY - deserialization failed)`);
+  console.log('='.repeat(72));
+  if (header) {
+    console.log(`  Timestamp : ${formatTimestamp(header.timestamp)}`);
+    console.log(`  Witness   : ${header.witness}`);
+    console.log(`  Previous  : ${shortenHex(hashHex(header.previous))}`);
+    console.log(`  Tx Merkle : ${shortenHex(hashHex(header.transaction_merkle_root))}`);
+    console.log(`  Signature : ${shortenHex(hashHex(header.witness_signature))}`);
+    console.log(`  Block Num : ${header._blockNum} (from previous)`);
+    console.log(`  File Pos  : ${header._position}`);
+  } else {
+    console.log('  (header also could not be read)');
+  }
+  console.log('-'.repeat(72));
+  console.log(`  Error: ${errorMsg}`);
+  console.log('-'.repeat(72));
+}
+
 function goTo(num) {
   num = Math.max(startBlock, Math.min(endBlock, num));
-  const block = reader.readBlockByNum(num);
+  let block;
+  try {
+    block = reader.readBlockByNum(num);
+  } catch (e) {
+    // Full deserialization failed — try header-only
+    const header = reader.readBlockHeaderByNum(num);
+    showBlockHeaderOnly(header, num, e.message);
+    currentBlockNum = num;
+    return;
+  }
   if (!block) {
-    console.log(`Block #${num} not found.`);
+    // Block number out of index range
+    console.log(`Block #${num} is not in the index (out of range).`);
     return;
   }
   currentBlockNum = num;
@@ -354,14 +512,19 @@ function goNextWithOps() {
     }
     // Only read & deserialize the one block we found
     currentBlockNum = next;
-    const block = reader.readBlockByNum(next);
-    if (block) showBlock(block);
+    try {
+      const block = reader.readBlockByNum(next);
+      if (block) showBlock(block);
+      else showBlockHeaderOnly(reader.readBlockHeaderByNum(next), next, 'Block returned null');
+    } catch (e) {
+      showBlockHeaderOnly(reader.readBlockHeaderByNum(next), next, e.message);
+    }
     return;
   }
 
   // Slow fallback: scan by reading each block
   for (let num = currentBlockNum + 1; num <= endBlock; num++) {
-    const block = reader.readBlockByNum(num);
+    const block = safeReadBlock(num);
     if (block && hasNonFreeOps(block)) {
       currentBlockNum = num;
       showBlock(block);
@@ -383,14 +546,19 @@ function goPrevWithOps() {
       return;
     }
     currentBlockNum = prev;
-    const block = reader.readBlockByNum(prev);
-    if (block) showBlock(block);
+    try {
+      const block = reader.readBlockByNum(prev);
+      if (block) showBlock(block);
+      else showBlockHeaderOnly(reader.readBlockHeaderByNum(prev), prev, 'Block returned null');
+    } catch (e) {
+      showBlockHeaderOnly(reader.readBlockHeaderByNum(prev), prev, e.message);
+    }
     return;
   }
 
   // Slow fallback
   for (let num = currentBlockNum - 1; num >= startBlock; num--) {
-    const block = reader.readBlockByNum(num);
+    const block = safeReadBlock(num);
     if (block && hasNonFreeOps(block)) {
       currentBlockNum = num;
       showBlock(block);
@@ -411,7 +579,7 @@ function searchOpForward(name) {
     // Fast skip: if bitmask says this block is empty, no need to read it
     if (bitmaskValid() && bitmaskGet(num) === 0) continue;
 
-    const block = reader.readBlockByNum(num);
+    const block = safeReadBlock(num);
     if (block) {
       const ops = collectOps(block);
       if (ops.some(o => o.typeName.toLowerCase().includes(name))) {
@@ -473,7 +641,7 @@ function searchStringForward(str) {
 
   for (let num = currentBlockNum + 1; num <= endBlock; num++) {
     // bitmask can't help here - string might be in virtual ops too
-    const block = reader.readBlockByNum(num);
+    const block = safeReadBlock(num);
     if (block) {
       const matched = findOpsByString(block, str);
       if (matched.length > 0) {
@@ -521,7 +689,7 @@ function searchExport(str) {
   let lastPct = -1;
 
   for (let num = startBlock; num <= endBlock; num++) {
-    const block = reader.readBlockByNum(num);
+    const block = safeReadBlock(num);
     if (block) {
       const matched = findOpsByString(block, str);
       if (matched.length > 0) {
@@ -569,15 +737,73 @@ function searchExport(str) {
 }
 
 function showCurrentOps(filter) {
-  const block = reader.readBlockByNum(currentBlockNum);
-  if (!block) { console.log('No current block.'); return; }
-  showOps(block, filter || null);
+  try {
+    const block = reader.readBlockByNum(currentBlockNum);
+    if (!block) { console.log('No current block (deserialization failed).'); return; }
+    showOps(block, filter || null);
+  } catch (e) {
+    console.log(`Cannot show ops: ${e.message}`);
+  }
 }
 
 function showCurrentInfo() {
-  const block = reader.readBlockByNum(currentBlockNum);
-  if (!block) { console.log('No current block.'); return; }
-  showBlock(block);
+  try {
+    const block = reader.readBlockByNum(currentBlockNum);
+    if (!block) {
+      const header = reader.readBlockHeaderByNum(currentBlockNum);
+      showBlockHeaderOnly(header, currentBlockNum, 'Full deserialization failed');
+      return;
+    }
+    showBlock(block);
+  } catch (e) {
+    const header = reader.readBlockHeaderByNum(currentBlockNum);
+    showBlockHeaderOnly(header, currentBlockNum, e.message);
+  }
+}
+
+function showBlockHex() {
+  const raw = reader.readBlockRawData(currentBlockNum);
+  if (!raw) {
+    console.log(`Block #${currentBlockNum} raw data not available (out of range).`);
+    return;
+  }
+
+  const pos = reader.getBlockPos(currentBlockNum);
+  console.log('');
+  console.log(`Raw block #${currentBlockNum}: offset ${pos}, ${raw.length} bytes`);
+  console.log('='.repeat(73));
+
+  const BYTES_PER_LINE = 16;
+  for (let offset = 0; offset < raw.length; offset += BYTES_PER_LINE) {
+    const slice = raw.slice(offset, Math.min(offset + BYTES_PER_LINE, raw.length));
+    const hexParts = [];
+    const asciiParts = [];
+
+    for (let i = 0; i < BYTES_PER_LINE; i++) {
+      if (i < slice.length) {
+        hexParts.push(slice.readUInt8(i).toString(16).padStart(2, '0'));
+        const c = slice.readUInt8(i);
+        asciiParts.push(c >= 0x20 && c < 0x7f ? String.fromCharCode(c) : '.');
+      } else {
+        hexParts.push('  ');
+        asciiParts.push(' ');
+      }
+      if (i === 7) hexParts.push(''); // extra space in the middle
+    }
+
+    const addr = offset.toString(16).padStart(8, '0');
+    console.log(`  ${addr}  ${hexParts.join(' ')}  |${asciiParts.join('')}|`);
+  }
+
+  console.log('='.repeat(73));
+  console.log(`  ${raw.length} bytes total`);
+
+  // Also show as continuous hex on one line for easy copy
+  const hexLine = raw.toString('hex');
+  console.log(`  Hex (first 128 bytes): ${hexLine.slice(0, 256)}`);
+  if (hexLine.length > 256) {
+    console.log(`  ... (${hexLine.length / 2 - 128} more bytes)`);
+  }
 }
 
 // ============================================================================
@@ -587,15 +813,44 @@ function showCurrentInfo() {
 function main() {
   const args = process.argv.slice(2);
   if (args.length < 1) {
-    console.log('Usage: node block-log-viewer.js <block_log_path> [--dlt]');
+    console.log('Usage: node block-log-viewer.js <path> [--dlt] [--reader=<path>]');
+    console.log('');
+    console.log('  <path> can be:');
+    console.log('    - Path to block_log or dlt_block_log file directly');
+    console.log('    - Path to directory containing block_log / dlt_block_log');
     console.log('');
     console.log('Options:');
-    console.log('  --dlt    Use DLT (rolling) block log reader');
+    console.log('  --dlt              Use DLT (rolling) block log reader');
+    console.log('  --reader=<path>    Path to block-log-reader.js module');
     process.exit(1);
   }
 
-  const dataPath = args.find(a => !a.startsWith('--'));
-  const isDlt = args.includes('--dlt');
+  let dataPath = args.find(a => !a.startsWith('--'));
+  let isDlt = args.includes('--dlt');
+
+  // If path is a directory, auto-detect block_log or dlt_block_log inside it
+  if (fs.existsSync(dataPath) && fs.statSync(dataPath).isDirectory()) {
+    const dltPath = path.join(dataPath, 'dlt_block_log');
+    const stdPath = path.join(dataPath, 'block_log');
+
+    if (!isDlt && fs.existsSync(dltPath) && !fs.existsSync(stdPath)) {
+      // Only dlt_block_log exists — auto-switch to DLT mode
+      dataPath = dltPath;
+      isDlt = true;
+    } else if (isDlt) {
+      if (!fs.existsSync(dltPath)) {
+        console.log(`dlt_block_log not found in: ${dataPath}`);
+        process.exit(1);
+      }
+      dataPath = dltPath;
+    } else {
+      if (!fs.existsSync(stdPath)) {
+        console.log(`block_log not found in: ${dataPath}`);
+        process.exit(1);
+      }
+      dataPath = stdPath;
+    }
+  }
 
   if (!fs.existsSync(dataPath)) {
     console.log(`File not found: ${dataPath}`);
@@ -613,7 +868,7 @@ function main() {
   endBlock = reader.getHeadBlockNum();
 
   if (endBlock === 0) {
-    console.log('Block log appears empty (no head block found).');
+    console.log('Block log appears empty (index has no entries).');
     reader.close();
     process.exit(1);
   }
@@ -646,6 +901,7 @@ function main() {
   });
 
   const onLine = (line) => {
+    if (scanning) return; // ignore input during scan
     const trimmed = line.trim();
     if (!trimmed) { showPrompt(); return; }
 
@@ -689,6 +945,7 @@ function main() {
         break;
       }
       case 'i': showCurrentInfo(); break;
+      case 'hex': showBlockHex(); break;
       case 'h': showHelp(); break;
       case 'q':
         console.log('Bye.');

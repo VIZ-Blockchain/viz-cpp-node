@@ -23,9 +23,11 @@ const CONSTANTS = {
   HASH_SIZE_SHA256: 32,            // SHA-256 hash size
   NPOS: BigInt('0xFFFFFFFFFFFFFFFF'), // Invalid position marker
 
-  // Asset symbols
-  TOKEN_SYMBOL: BigInt('0x0000000000000003'),
-  SHARES_SYMBOL: BigInt('0x0000000000000004')
+  // Asset symbols (Steem-style: byte 0 = decimals, bytes 1-6 = ASCII name, byte 7 = 0x00)
+  // From config.hpp: SHARES_SYMBOL = 6|('S'<<8)|('H'<<16)|('A'<<24)|('R'<<32)|('E'<<40)|('S'<<48)
+  //                 TOKEN_SYMBOL  = 3|('V'<<8)|('I'<<16)|('Z'<<24)
+  TOKEN_SYMBOL:  BigInt('0x000000005A495603'),
+  SHARES_SYMBOL: BigInt('0x0053455241485306')
 };
 
 // Operation type IDs mapping
@@ -299,7 +301,42 @@ function readTimePointSec(reader) {
 }
 
 /**
+ * Read block_header_extension (static_variant<void_t, version, hardfork_version_vote>)
+ *
+ * Type 0: void_t — empty struct, no serialized data
+ * Type 1: version — uint32_t v_num (major.hardfork.release packed as 8.8.16 bits)
+ * Type 2: hardfork_version_vote — hardfork_version (uint32_t) + time_point_sec (uint32_t)
+ */
+function readBlockHeaderExtension(reader) {
+  const typeIndex = Number(reader.readVarint());
+  switch (typeIndex) {
+    case 0: return { typeIndex, name: 'void_t', data: {} };
+    case 1: {
+      const vNum = reader.readUint32LE();
+      const major = (vNum >> 24) & 0xFF;
+      const hardfork = (vNum >> 16) & 0xFF;
+      const release = vNum & 0xFFFF;
+      return { typeIndex, name: 'version', data: { v_num: vNum, version: `${major}.${hardfork}.${release}` } };
+    }
+    case 2: {
+      const vNum = reader.readUint32LE();
+      const major = (vNum >> 24) & 0xFF;
+      const hardfork = (vNum >> 16) & 0xFF;
+      const hfTime = readTimePointSec(reader);
+      return { typeIndex, name: 'hardfork_version_vote', data: { hf_version: `${major}.${hardfork}.0`, hf_time: hfTime } };
+    }
+    default:
+      // Unknown extension type — can't skip without schema, deserialization will likely fail
+      return { typeIndex, name: 'unknown_extension', data: { _warning: 'unknown extension type, stream may be corrupted' } };
+  }
+}
+
+/**
  * Read block_header
+ *
+ * Note (Steem/VIZ lineage): block_id_type and checksum_type are fc::ripemd160 (20 bytes),
+ * NOT fc::sha256 (32 bytes). This is an inherited design from the Steem codebase where
+ * block IDs and merkle roots use the shorter ripemd160 hash.
  */
 function readBlockHeader(reader) {
   return {
@@ -307,15 +344,7 @@ function readBlockHeader(reader) {
     timestamp: readTimePointSec(reader),
     witness: reader.readString(),
     transaction_merkle_root: readRipemd160(reader),
-    extensions: reader.readVector(() => {
-      // Block header extensions are static variants
-      // For simplicity, return raw bytes
-      const typeIndex = Number(reader.readVarint());
-      // Read extension content based on type
-      // Most common extensions have known sizes
-      // For now, we'll need to know extension types
-      return { typeIndex };
-    })
+    extensions: reader.readVector(readBlockHeaderExtension)
   };
 }
 
@@ -335,15 +364,38 @@ function readSignedBlockHeader(reader) {
 // ============================================================================
 
 /**
+ * Decode Steem-style asset symbol from uint64.
+ * Format (from asset.cpp comments):
+ *   byte 0 : decimals (precision)
+ *   bytes 1-6 : ASCII symbol name
+ *   byte 7 : 0x00 (null terminator)
+ */
+function decodeAssetSymbol(symbol) {
+  // Read as 8-byte buffer (little-endian uint64)
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64LE(BigInt(symbol), 0);
+
+  const decimals = buf.readUInt8(0);
+  let name = '';
+  for (let i = 1; i < 7; i++) {
+    const c = buf.readUInt8(i);
+    if (c === 0) break;
+    name += String.fromCharCode(c);
+  }
+  return { decimals, name };
+}
+
+/**
  * Read asset (int64 amount + uint64 symbol)
+ *
+ * Asset symbol format inherited from Steem codebase:
+ *   byte 0 = decimal precision, bytes 1-6 = ASCII name, byte 7 = null
  */
 function readAsset(reader) {
   const amount = reader.readInt64LE();
   const symbol = reader.readUint64LE();
-  let symbolName = 'UNKNOWN';
-  if (symbol === CONSTANTS.TOKEN_SYMBOL) symbolName = 'VIZ';
-  else if (symbol === CONSTANTS.SHARES_SYMBOL) symbolName = 'SHARES';
-  return { amount: Number(amount), symbol: symbolName, rawSymbol: symbol };
+  const decoded = decodeAssetSymbol(symbol);
+  return { amount: Number(amount), symbol: decoded.name, decimals: decoded.decimals, rawSymbol: symbol };
 }
 
 /**
@@ -615,11 +667,12 @@ function readSignedBlock(reader) {
 
 /**
  * Extract block number from block_id_type (ripemd160 hash)
- * The block number is stored in the first 4 bytes as little-endian uint32
+ * The block number is stored in the first 4 bytes.
+ * C++ uses fc::endian_reverse_u32 which reads as big-endian uint32.
  */
 function numFromId(blockId) {
   if (!blockId || blockId.length < 4) return 0;
-  return blockId.readUInt32LE(0);
+  return blockId.readUInt32BE(0);
 }
 
 /**
@@ -674,10 +727,21 @@ class BlockLogReader {
     const indexStats = fs.fstatSync(this.indexFd);
     this.indexSize = BigInt(indexStats.size);
 
-    // Read head block to cache block number
+    // Determine head block number from the index file size.
+    // Index has 8 bytes per block, starting from block 1 at offset 0.
+    // head_block_num = index_size / 8
+    // This is reliable — we don't need to deserialize the head block for this.
+    if (this.indexSize >= 8n) {
+      this._headBlockNum = Number(this.indexSize / 8n);
+    }
+
+    // Optionally cache the head block (may fail for blocks with unknown ops)
     if (this.dataSize > BigInt(CONSTANTS.MIN_VALID_FILE_SIZE)) {
-      this._headBlock = this.readHead();
-      this._headBlockNum = getBlockNum(this._headBlock);
+      try {
+        this._headBlock = this.readHead();
+      } catch (e) {
+        this._headBlock = null;
+      }
     }
   }
 
@@ -787,8 +851,9 @@ class BlockLogReader {
 
   /**
    * Get block position from index by block number
-   * @param {number} blockNum - Block number (1-indexed)
-   * @returns {bigint} Position in data file
+   * Matches C++ block_log: offset = 8 * (block_num - 1)
+   * @param {number} blockNum - Block number (1-indexed, matching C++)
+   * @returns {bigint} Position in data file, or NPOS if out of range
    */
   getBlockPos(blockNum) {
     if (blockNum < 1 || blockNum > this._headBlockNum) {
@@ -796,13 +861,18 @@ class BlockLogReader {
     }
 
     const indexOffset = BigInt(blockNum - 1) * 8n;
+    // Bounds check: index may be incomplete (fewer entries than head block)
+    if (indexOffset + 8n > this.indexSize) {
+      return CONSTANTS.NPOS;
+    }
     return this._readIndexUint64(indexOffset);
   }
 
   /**
    * Read block by number
    * @param {number} blockNum - Block number
-   * @returns {object|null} Signed block or null if not found
+   * @returns {object|null} Signed block, or null if block_num out of range
+   * @throws Error if block found but deserialization failed
    */
   readBlockByNum(blockNum) {
     const pos = this.getBlockPos(blockNum);
@@ -813,6 +883,132 @@ class BlockLogReader {
   }
 
   /**
+   * Read only the block header by number (no transactions/operations).
+   * Useful when full block deserialization fails due to unknown operation types.
+   * @param {number} blockNum - Block number
+   * @returns {object|null} Block header object, or null if out of range
+   */
+  readBlockHeaderByNum(blockNum) {
+    const pos = this.getBlockPos(blockNum);
+    if (pos === CONSTANTS.NPOS) return null;
+
+    try {
+      const maxBlockSize = CONSTANTS.CHAIN_BLOCK_SIZE;
+      const availableSize = Number(this.dataSize - pos);
+      const readSize = Math.min(availableSize, maxBlockSize + 8);
+
+      const buffer = this._readData(pos, readSize);
+      const br = new BinaryReader(buffer);
+
+      // Only read the signed_block_header part
+      const header = readSignedBlockHeader(br);
+      return {
+        ...header,
+        _blockNum: getBlockNum(header),
+        _position: Number(pos),
+        _headerOnly: true
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * Read raw block bytes by number.
+   * Uses the index to find block start offset and the next block's offset to determine size.
+   * Returns the raw data including the trailing 8-byte position marker.
+   * @param {number} blockNum - Block number
+   * @returns {Buffer|null} Raw block bytes, or null if out of range
+   */
+  readBlockRawData(blockNum) {
+    const startPos = this.getBlockPos(blockNum);
+    if (startPos === CONSTANTS.NPOS) return null;
+
+    let endPos;
+    // If there's a next block in the index, its offset is our end
+    const nextPos = this.getBlockPos(blockNum + 1);
+    if (nextPos !== CONSTANTS.NPOS) {
+      endPos = Number(nextPos);
+    } else {
+      // Last block: read until end of data file minus the final 8-byte head position pointer
+      endPos = Number(this.dataSize) - 8;
+    }
+
+    const size = endPos - Number(startPos);
+    if (size <= 0 || size > CONSTANTS.CHAIN_BLOCK_SIZE + 16) return null;
+
+    return this._readData(startPos, size);
+  }
+
+  /**
+   * Read only the transaction count for a block by number.
+   * Uses exact block size from index (no 1MB over-read) and skips operation deserialization.
+   * Virtual operations are NOT in block_log transactions, so tx_count > 0 means the block
+   * has non-free operations.
+   * @param {number} blockNum - Block number
+   * @returns {number} Transaction count, or -1 if out of range / error
+   */
+  readBlockTxCountByNum(blockNum) {
+    const startPos = this.getBlockPos(blockNum);
+    if (startPos === CONSTANTS.NPOS) return -1;
+
+    // Calculate exact block size from index
+    let endPos;
+    const nextPos = this.getBlockPos(blockNum + 1);
+    if (nextPos !== CONSTANTS.NPOS) {
+      endPos = Number(nextPos);
+    } else {
+      endPos = Number(this.dataSize) - 8;
+    }
+    const size = endPos - Number(startPos);
+    if (size <= 0 || size > CONSTANTS.CHAIN_BLOCK_SIZE + 16) return -1;
+
+    try {
+      const buffer = this._readData(startPos, size);
+      const br = new BinaryReader(buffer);
+
+      // Skip past the signed_block_header (we don't need its data)
+      readSignedBlockHeader(br);
+
+      // The next varint is the transactions vector length
+      return Number(br.readVarint());
+    } catch (e) {
+      return -1;
+    }
+  }
+
+  /**
+   * Read a batch of block positions from the index file in one I/O operation.
+   * Much faster than calling getBlockPos() one at a time for sequential scanning.
+   * @param {number} startBlockNum - First block number
+   * @param {number} count - Number of positions to read
+   * @returns {bigint[]} Array of positions, may be shorter than count if near end
+   */
+  readBlockPosBatch(startBlockNum, count) {
+    if (startBlockNum < 1 || startBlockNum > this._headBlockNum) return [];
+
+    const actualCount = Math.min(count, this._headBlockNum - startBlockNum + 2); // +1 for next-block boundary
+    const indexOffset = BigInt(startBlockNum - 1) * 8n;
+    const readBytes = Number(BigInt(actualCount) * 8n);
+
+    if (indexOffset + BigInt(readBytes) > this.indexSize) {
+      // Trim to available index
+      const avail = Number((this.indexSize - indexOffset) / 8n);
+      if (avail <= 0) return [];
+      return this.readBlockPosBatch(startBlockNum, avail);
+    }
+
+    const buf = Buffer.alloc(readBytes);
+    fs.readSync(this.indexFd, buf, 0, readBytes, Number(indexOffset));
+
+    const positions = [];
+    for (let i = 0; i < actualCount; i++) {
+      positions.push(buf.readBigUInt64LE(i * 8));
+    }
+    return positions;
+  }
+
+  /**
    * Get head block number
    */
   getHeadBlockNum() {
@@ -820,17 +1016,17 @@ class BlockLogReader {
   }
 
   /**
-   * Get start block number (always 1 for standard block_log)
+   * Get start block number (always 1 for standard block_log, matching C++)
    */
   getStartBlockNum() {
     return 1;
   }
 
   /**
-   * Get total number of blocks
+   * Get total number of blocks (based on index entries)
    */
   getNumBlocks() {
-    return this._headBlockNum;
+    return Number(this.indexSize / 8n);
   }
 
   /**
