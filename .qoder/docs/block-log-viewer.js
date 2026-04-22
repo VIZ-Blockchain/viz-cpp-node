@@ -432,8 +432,10 @@ function showHelp() {
   console.log('  o <name>   - Show operations matching name');
   console.log('  s <name>   - Search forward for block containing operation name');
   console.log('  S <string> - Search forward for string in op JSON (incl. virtual)');
+  console.log('              Prefix with = for exact match: S =\"V\" finds V but not VIZ');
   console.log('  R <string> - Fast raw ASCII byte search (no UTF-8/emoji)');
   console.log('  e <string> - Export all ops containing string to search_export_<ts>.json');
+  console.log('              Prefix with = for exact match: e =\"V\" exports only exact V matches');
   console.log('  c          - Continue last search (s/S/e)');
   console.log('  scan       - Scan all blocks, build & save bitmask for fast nav');
   console.log('  i          - Show block info (header only)');
@@ -677,25 +679,49 @@ function searchOpForward(name) {
 // ============================================================================
 
 /**
- * Recursively walk an object looking for a string value containing searchStr.
- * Zero-allocation: no JSON.stringify, just walks existing objects.
+ * Parse search term: strip surrounding quotes, detect = prefix for exact match.
+ * Returns { term: string, exact: boolean }
+ * Examples:
+ *   '="V"' → { term: 'V', exact: true }
+ *   '=V'    → { term: 'V', exact: true }
+ *   '"V"'  → { term: 'V', exact: false }
+ *   'VIZ'   → { term: 'VIZ', exact: false }
  */
-function deepIncludes(obj, searchStr) {
+function parseSearch(str) {
+  if (!str) return { term: str, exact: false };
+  let exact = false;
+  if (str.startsWith('=')) {
+    exact = true;
+    str = str.slice(1);
+  }
+  if ((str.startsWith('"') && str.endsWith('"')) ||
+      (str.startsWith("'") && str.endsWith("'"))) {
+    str = str.slice(1, -1);
+  }
+  return { term: str, exact };
+}
+
+/**
+ * Recursively walk an object looking for a string value matching searchStr.
+ * Zero-allocation: no JSON.stringify, just walks existing objects.
+ * If exact=true, uses === instead of .includes() for string values.
+ */
+function deepIncludes(obj, searchStr, exact) {
   if (obj === null || obj === undefined) return false;
-  if (typeof obj === 'string') return obj.includes(searchStr);
+  if (typeof obj === 'string') return exact ? (obj === searchStr) : obj.includes(searchStr);
   if (typeof obj === 'number' || typeof obj === 'boolean') return false;
-  if (typeof obj === 'bigint') return obj.toString().includes(searchStr);
+  if (typeof obj === 'bigint') return exact ? (obj.toString() === searchStr) : obj.toString().includes(searchStr);
   if (Buffer.isBuffer(obj)) return false; // skip binary
   if (Array.isArray(obj)) {
     for (let i = 0; i < obj.length; i++) {
-      if (deepIncludes(obj[i], searchStr)) return true;
+      if (deepIncludes(obj[i], searchStr, exact)) return true;
     }
     return false;
   }
   if (typeof obj === 'object') {
     for (const key of Object.keys(obj)) {
-      if (key.includes(searchStr)) return true;
-      if (deepIncludes(obj[key], searchStr)) return true;
+      if (exact ? (key === searchStr) : key.includes(searchStr)) return true;
+      if (deepIncludes(obj[key], searchStr, exact)) return true;
     }
   }
   return false;
@@ -706,15 +732,15 @@ function deepIncludes(obj, searchStr) {
  * Uses recursive walk instead of JSON.stringify to avoid large temp strings.
  * Returns matching operations array (empty if none).
  */
-function findOpsByString(block, searchStr) {
+function findOpsByString(block, searchStr, exact) {
   const ops = collectOps(block);
   const matched = [];
   for (const op of ops) {
-    if (op.typeName && op.typeName.includes(searchStr)) {
+    if (op.typeName && (exact ? op.typeName === searchStr : op.typeName.includes(searchStr))) {
       matched.push(op);
       continue;
     }
-    if (deepIncludes(op.data, searchStr)) {
+    if (deepIncludes(op.data, searchStr, exact)) {
       matched.push(op);
     }
   }
@@ -809,14 +835,14 @@ function searchRawForward(str) {
  * Yields to event loop every YIELD_EVERY blocks so GC can reclaim memory.
  * Supports UTF-8, emoji, and any string in operation data.
  */
-function searchStringForward(str) {
-  lastSearch = { type: 'S', term: str };
+function searchStringForward(str, exact) {
+  lastSearch = { type: 'S', term: str, exact: !!exact };
   if (scanning) { console.log('  Already scanning.'); return; }
   scanning = true;
   const YIELD_EVERY = 100;
   let currentNum = currentBlockNum + 1;
 
-  console.log(`  Searching for "${str}" in op JSON forward from #${currentNum}...`);
+  console.log(`  Searching for ${exact ? 'exact' : 'substring'} "${str}" in op JSON forward from #${currentNum}...`);
 
   function processChunk() {
     const chunkEnd = Math.min(currentNum + YIELD_EVERY - 1, endBlock);
@@ -856,7 +882,7 @@ function searchStringForward(str) {
       rawBuf = null;
 
       if (block) {
-        const matched = findOpsByString(block, str);
+        const matched = findOpsByString(block, str, exact);
         if (matched.length > 0) {
           currentBlockNum = num;
           showBlock(block);
@@ -916,8 +942,8 @@ function jsonReplacer(key, val) {
  * then clears them from memory. Yields every YIELD_EVERY blocks for GC.
  * Final file = "[" + obj1 + "," + obj2 + ... + "]".
  */
-function searchExport(str) {
-  lastSearch = { type: 'e', term: str };
+function searchExport(str, exact) {
+  lastSearch = { type: 'e', term: str, exact: !!exact };
   if (scanning) { console.log('  Already scanning.'); return; }
   scanning = true;
 
@@ -934,10 +960,10 @@ function searchExport(str) {
   const unixTime = Math.floor(Date.now() / 1000);
   const outPath = path.join(path.dirname(reader.dataPath), `search_export_${unixTime}.json`);
   const fd = fs.openSync(outPath, 'w');
-  fs.writeSync(fd, '[\n', 0, 'utf8', 0);
+  fs.writeSync(fd, '[\n', null, 'utf8');
   writtenBytes += 2;
 
-  console.log(`  Exporting all operations containing "${str}" from #${startBlock} to #${endBlock}...`);
+  console.log(`  Exporting all operations ${exact ? 'exactly matching' : 'containing'} "${str}" from #${startBlock} to #${endBlock}...`);
   console.log(`  Output: ${path.basename(outPath)}`);
 
   function processChunk() {
@@ -973,7 +999,7 @@ function searchExport(str) {
       rawBuf = null;
 
       if (block) {
-        const matched = findOpsByString(block, str);
+        const matched = findOpsByString(block, str, exact);
         if (matched.length > 0) {
           blockCount++;
           for (const op of matched) {
@@ -992,7 +1018,7 @@ function searchExport(str) {
             };
             const json = JSON.stringify(record, jsonReplacer, 2);
             const chunk = prefix + json;
-            fs.writeSync(fd, chunk, 0, 'utf8');
+            fs.writeSync(fd, chunk, null, 'utf8');
             writtenBytes += Buffer.byteLength(chunk, 'utf8');
           }
         }
@@ -1014,7 +1040,7 @@ function searchExport(str) {
       setImmediate(processChunk);
     } else {
       // Close the JSON array
-      fs.writeSync(fd, '\n]', 0, 'utf8');
+      fs.writeSync(fd, '\n]', null, 'utf8');
       writtenBytes += 2;
       fs.closeSync(fd);
 
@@ -1231,29 +1257,29 @@ function main() {
         break;
       }
       case 'S': {
-        const str = parts.slice(1).join(' ');
-        if (!str) { console.log('Usage: S <string>'); break; }
-        searchStringForward(str);
+        const { term, exact } = parseSearch(parts.slice(1).join(' '));
+        if (!term) { console.log('Usage: S <string>  (prefix with = for exact match, e.g. S ="V")'); break; }
+        searchStringForward(term, exact);
         break;
       }
       case 'R': {
-        const str = parts.slice(1).join(' ');
-        if (!str) { console.log('Usage: R <string> (ASCII only)'); break; }
-        searchRawForward(str);
+        const { term } = parseSearch(parts.slice(1).join(' '));
+        if (!term) { console.log('Usage: R <string> (ASCII only)'); break; }
+        searchRawForward(term);
         break;
       }
       case 'e': {
-        const str = parts.slice(1).join(' ');
-        if (!str) { console.log('Usage: e <string>'); break; }
-        searchExport(str);
+        const { term, exact } = parseSearch(parts.slice(1).join(' '));
+        if (!term) { console.log('Usage: e <string>  (prefix with = for exact match, e.g. e ="V")'); break; }
+        searchExport(term, exact);
         break;
       }
       case 'c': {
         if (!lastSearch) { console.log('No previous search. Use s, S, R, or e first.'); break; }
         if (lastSearch.type === 's') searchOpForward(lastSearch.term);
-        else if (lastSearch.type === 'S') searchStringForward(lastSearch.term);
+        else if (lastSearch.type === 'S') searchStringForward(lastSearch.term, lastSearch.exact);
         else if (lastSearch.type === 'R') searchRawForward(lastSearch.term);
-        else if (lastSearch.type === 'e') searchExport(lastSearch.term);
+        else if (lastSearch.type === 'e') searchExport(lastSearch.term, lastSearch.exact);
         break;
       }
       case 'i': showCurrentInfo(); break;
