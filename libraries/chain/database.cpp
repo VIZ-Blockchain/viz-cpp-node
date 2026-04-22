@@ -567,17 +567,17 @@ namespace graphene { namespace chain {
 
             uint64_t max_mem = max_memory();
             uint64_t free_mem_before = free_memory();
+            uint64_t used_mem_before = max_mem - free_mem_before;
             size_t new_max = max_mem + _inc_shared_memory_size;
 
             if (!immediate) {
                 // Deferred mode: just set the flag. The actual resize will be
                 // performed by apply_pending_resize() at a safe point where
                 // no other threads hold read locks or lockless references.
-                wlog(
-                    "Shared memory resize deferred on block ${block}: will grow to ${mem}M "
-                    "(currently ${free_before}M free, ${max_before}M total)",
+                ilog(
+                    "\033[33mShared memory resize deferred on block ${block}: actual data ${used_before}M / current ${max_before}M -> will grow to ${mem}M\033[0m",
                     ("block", current_block_num)("mem", new_max / (1024 * 1024))
-                    ("free_before", free_mem_before / (1024 * 1024))("max_before", max_mem / (1024 * 1024)));
+                    ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem / (1024 * 1024)));
                 _pending_resize = true;
                 _pending_resize_target = new_max;
                 return true;
@@ -585,21 +585,23 @@ namespace graphene { namespace chain {
 
             // Immediate mode: used during reindex when we already hold an
             // exclusive write lock and no API threads are running.
-            wlog(
-                "Memory is almost full on block ${block}, increasing to ${mem}M (was ${free_before}M free, ${max_before}M total)",
+            ilog(
+                "\033[33mShared memory growing on block ${block}: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
                 ("block", current_block_num)("mem", new_max / (1024 * 1024))
-                ("free_before", free_mem_before / (1024 * 1024))("max_before", max_mem / (1024 * 1024)));
+                ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem / (1024 * 1024)));
             resize(new_max);
 
             uint64_t free_mem = free_memory();
             uint64_t reserved_mem = reserved_memory();
+            uint64_t used_mem_after = new_max - free_mem;
 
             if (free_mem > reserved_mem) {
                 free_mem -= reserved_mem;
             }
 
             uint32_t free_mb = uint32_t(free_mem / (1024 * 1024));
-            wlog("Free memory is now ${free}M", ("free", free_mb));
+            ilog("\033[33mShared memory grow complete: actual data ${used_after}M / new ${max_after}M (free ${free}M)\033[0m",
+                 ("used_after", used_mem_after / (1024 * 1024))("max_after", new_max / (1024 * 1024))("free", free_mb));
             _last_free_gb_printed = free_mb / 1024;
             return true;
         }
@@ -621,17 +623,24 @@ namespace graphene { namespace chain {
                 _pending_resize = false;
                 _pending_resize_target = 0;
 
-                wlog("Applying deferred shared memory resize to ${mem}M",
+                uint64_t max_mem_before = max_memory();
+                uint64_t free_mem_before = free_memory();
+                uint64_t used_mem_before = max_mem_before - free_mem_before;
+
+                ilog("\033[33mApplying deferred shared memory resize: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
+                     ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem_before / (1024 * 1024))
                      ("mem", target / (1024 * 1024)));
                 resize(target);
 
                 uint64_t free_mem = free_memory();
                 uint64_t reserved_mem = reserved_memory();
+                uint64_t used_mem_after = target - free_mem;
                 if (free_mem > reserved_mem) {
                     free_mem -= reserved_mem;
                 }
                 uint32_t free_mb = uint32_t(free_mem / (1024 * 1024));
-                wlog("Deferred resize complete. Free memory is now ${free}M", ("free", free_mb));
+                ilog("\033[33mDeferred shared memory grow complete: actual data ${used_after}M / new ${max_after}M (free ${free}M)\033[0m",
+                     ("used_after", used_mem_after / (1024 * 1024))("max_after", target / (1024 * 1024))("free", free_mb));
                 _last_free_gb_printed = free_mb / 1024;
             });
         }
