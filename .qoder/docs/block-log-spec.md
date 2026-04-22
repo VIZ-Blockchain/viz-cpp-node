@@ -560,6 +560,118 @@ Symbol encoding:
 [uint16: weight]
 ```
 
+## Tools
+
+### block-log-reader.js
+
+JavaScript module for reading block_log and dlt_block_log files. Provides programmatic access to block data.
+
+**Usage:**
+```javascript
+const { createBlockLogReader, getBlockNum } = require('./block-log-reader');
+
+const reader = createBlockLogReader('/path/to/block_log');
+// Or for DLT: createBlockLogReader('/path/to/dlt_block_log', undefined, true);
+
+const block = reader.readBlockByNum(1000);
+console.log(getBlockNum(block), block.witness);
+reader.close();
+```
+
+### block-log-viewer.js
+
+Interactive terminal UI for browsing block logs. No external dependencies.
+
+**Usage:**
+```
+node block-log-viewer.js <block_log_path> [--dlt]
+```
+
+#### Navigation Commands
+
+| Command | Description |
+|---------|-------------|
+| `f` | First block |
+| `l` | Last block |
+| `n` | Next block |
+| `p` | Previous block |
+| `N` | Next block with non-free operations (bitmask-accelerated) |
+| `P` | Prev block with non-free operations (bitmask-accelerated) |
+| `g <num>` | Go to block #num |
+| `<num>` | Jump to block number directly |
+
+#### Operation Commands
+
+| Command | Description |
+|---------|-------------|
+| `o` | Show all operations in current block (JSON) |
+| `o <name>` | Show operations matching type name (e.g. `o transfer`) |
+| `s <name>` | Search forward for block containing operation by type name |
+| `S <string>` | Search forward for string in any operation's full JSON (incl. virtual) |
+| `e <string>` | Export all matching operations to `search_export_<unixtime>.json` |
+
+#### Other
+
+| Command | Description |
+|---------|-------------|
+| `scan` | Scan all blocks, build & save bitmask for fast navigation |
+| `i` | Show block header info |
+| `h` | Help |
+| `q` | Quit |
+
+#### Bitmask File (block_log.bitmask)
+
+The `scan` command builds a compact bitmask file that marks which blocks contain non-free (non-virtual) operations. Once built, `N` and `P` commands jump instantly between non-empty blocks without deserializing skipped blocks.
+
+**File format:**
+
+```
++-------------------+-------------------+-------------------------------+
+| start_block_num   | end_block_num     | bit array                     |
+| (8 bytes, uint64) | (8 bytes, uint64) | 1 bit per block               |
++-------------------+-------------------+-------------------------------+
+```
+
+- **Bytes 0–7**: `uint64_t` LE — `start_block_num`
+- **Bytes 8–15**: `uint64_t` LE — `end_block_num`
+- **Bytes 16+**: bit array, 1 bit per block (bit 0 = `start_block_num`)
+  - `1` = block has non-free operations
+  - `0` = block is empty or has only virtual operations
+- Total size: `16 + ceil((end - start + 1) / 8)` bytes
+
+**Example:** 10,000,000 blocks → ~1.25 MB bitmask file.
+
+The bitmask is auto-loaded on startup if it exists and matches the current block range. If the range differs, a rescan is suggested.
+
+#### String Search (`S`) and Export (`e`)
+
+The `S` command searches the **full JSON** of every operation (including virtual) for a case-insensitive substring match. This allows finding blocks by account name, memo text, hex hash, or any other field value — not just operation type name.
+
+The `e` command performs the same search across **all** blocks and writes results to a JSON file in the block_log directory:
+
+```
+search_export_1745312345.json
+```
+
+Export format:
+```json
+[
+  {
+    "block": 12345,
+    "timestamp": "2024-01-15 10:30:00 UTC",
+    "witness": "on1x",
+    "typeId": 47,
+    "typeName": "award_operation",
+    "isVirtual": false,
+    "data": { "initiator": "alice", "receiver": "on1x", ... }
+  }
+]
+```
+
+Buffers are serialized as hex strings; BigInts as decimal strings.
+
+---
+
 ## See Also
 
 - [data-types.md](data-types.md) - VIZ data type definitions
