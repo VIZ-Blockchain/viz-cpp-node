@@ -3146,6 +3146,13 @@ namespace graphene {
 
                     client_accepted_block = true;
                 }
+                catch (const deferred_resize_exception &e) {
+                    // Shared memory resize is in progress. Do NOT mark the block as accepted.
+                    // It will be re-fetched after resize completes on the next push_block().
+                    wlog("Sync block #${num} deferred due to shared memory resize, will retry",
+                         ("num", block_message_to_send.block.block_num()));
+                    handle_message_exception = e;
+                }
                 catch (const block_older_than_undo_history &e) {
                     fc_wlog(fc::logger::get("sync"),
                             "p2p failed to push sync block #${block_num} ${block_hash}: block is on a fork older than our undo history would "
@@ -3594,6 +3601,12 @@ namespace graphene {
                 }
                 catch (const fc::canceled_exception &) {
                     throw;
+                }
+                catch (const deferred_resize_exception &e) {
+                    // Shared memory resize is in progress. Do NOT mark the block as accepted
+                    // and do NOT soft-ban the peer. The block will be re-received after resize.
+                    wlog("Block #${num} deferred due to shared memory resize, will retry on next block",
+                         ("num", block_message_to_process.block.block_num()));
                 }
                 catch (const unlinkable_block_exception &e) {
                     uint32_t peer_block_num = block_message_to_process.block.block_num();

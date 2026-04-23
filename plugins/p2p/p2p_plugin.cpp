@@ -169,6 +169,15 @@ namespace graphene {
                                  ("n", blk_msg.block.block_num()));
                             FC_THROW_EXCEPTION(graphene::network::block_older_than_undo_history,
                                 "Block is too old for fork database: ${e}", ("e", e.to_detail_string()));
+                        } catch (const graphene::chain::deferred_resize_exception &e) {
+                            // Shared memory resize is deferred. Re-throw as network exception
+                            // so the P2P layer knows this is transient and should not
+                            // penalise the peer or mark the block as accepted.
+                            fc_elog(fc::logger::get("sync"),
+                                    "Block ${n} deferred due to shared memory resize (head=${head}): ${e}",
+                                    ("n", blk_msg.block.block_num())("head", head_block_num)("e", e.to_detail_string()));
+                            FC_THROW_EXCEPTION(graphene::network::deferred_resize_exception,
+                                "Shared memory resize deferred: ${e}", ("e", e.to_detail_string()));
                         } catch (const graphene::chain::unlinkable_block_exception &e) {
                             // Chain rejected block from a dead fork whose parent is not
                             // in fork_db.  Convert to network exception so the P2P layer

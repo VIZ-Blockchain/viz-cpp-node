@@ -1121,7 +1121,7 @@ namespace graphene { namespace chain {
             // internally, which waits for all readers to finish first.
             apply_pending_resize();
 
-            bool result;
+            bool result = false;
             with_strong_write_lock([&]() {
                 detail::without_pending_transactions(*this, skip, std::move(_pending_tx), [&]() {
                     try {
@@ -1134,16 +1134,17 @@ namespace graphene { namespace chain {
                             throw e;
                         }
                         // Out of shared memory. Schedule a deferred resize.
-                        // Return false (block not applied) instead of throwing so that:
-                        //   - the P2P layer does not penalise / disconnect the peer;
-                        //   - witness slot-miss is logged but the node stays connected.
+                        // Throw a specific exception so the P2P layer can distinguish
+                        // this transient condition from a permanently invalid block.
                         // apply_pending_resize() at the top of the next push_block() call
                         // will perform the resize safely before any database access, and
                         // the missed block will be re-received during normal sync.
                         wlog("Received bad_alloc exception. Scheduling deferred resize.");
                         set_reserved_memory(free_memory());
                         _resize(new_block.block_num()); // deferred (immediate=false by default)
-                        result = false;
+                        FC_THROW_EXCEPTION(deferred_resize_exception,
+                            "Shared memory exhausted on block ${block}, resize deferred. Retry next block.",
+                            ("block", new_block.block_num()));
                     }
                 });
             });
