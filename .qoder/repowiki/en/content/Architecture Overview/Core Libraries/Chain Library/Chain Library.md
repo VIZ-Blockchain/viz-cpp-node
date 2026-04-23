@@ -34,6 +34,7 @@
 - Added block processing logs with current head block numbers and gap calculations
 - Increased logging frequency from every 10,000 blocks to every 500 blocks during synchronization
 - Enhanced logging system documentation with ANSI color codes for operational visibility
+- Improved network node synchronization logging with info-level messages for sync restart reasons
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -751,6 +752,22 @@ The ANSI color codes provide immediate visual feedback in terminal environments:
 - [node.cpp:3276-3280](file://libraries/network/node.cpp#L3276-L3280)
 - [database.cpp:5295-5303](file://libraries/chain/database.cpp#L5295-L5303)
 
+### Enhanced Logging Improvements Summary
+The logging system enhancements include:
+
+1. **Guard Variable Protection**: `sync_start_logged` prevents duplicate sync start messages
+2. **Info-Level Logging**: Sync restart reasons use ilog instead of dlog for better visibility
+3. **Enhanced Progress Frequency**: Logging occurs every 500 blocks instead of every 10,000 blocks
+4. **Color-Coded Notifications**: ANSI escape sequences provide visual distinction for different log types
+5. **Current Head Block Numbers**: Logs include current head block numbers and gap calculations
+6. **Improved Network Sync**: Better logging for peer synchronization restarts and block acceptance
+
+**Section sources**
+- [plugin.cpp:58-121](file://plugins/chain/plugin.cpp#L58-L121)
+- [node.cpp:2428-2444](file://libraries/network/node.cpp#L2428-L2444)
+- [node.cpp:3276-3280](file://libraries/network/node.cpp#L3276-L3280)
+- [database.cpp:5295-5303](file://libraries/chain/database.cpp#L5295-L5303)
+
 ## Dependency Analysis
 The database depends on:
 - fork_database for chain selection
@@ -819,6 +836,7 @@ LOGSYS --> WITNESS["witness.cpp"]
 - **New**: Enhanced logging performance: Color-coded logging with guard variables and increased frequency provides better operational visibility with minimal overhead while significantly improving troubleshooting efficiency.
 - **New**: Synchronization monitoring: The `sync_start_logged` guard prevents duplicate messages and reduces log volume during sync sessions.
 - **New**: Info-level logging for sync restarts: Using ilog instead of dlog for sync restart reasons provides clearer insights into synchronization behavior.
+- **New**: Network synchronization improvements: Enhanced logging with current head block numbers and gap calculations improves monitoring accuracy.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -833,6 +851,7 @@ Common issues and remedies:
 - **New**: Enhanced color-coded log interpretation: Use green messages for synchronization start (once per session), yellow messages for synchronization progress every 500 blocks, green for successful operations, orange for snapshot operations, and red for critical errors to quickly identify operational status.
 - **New**: Synchronization monitoring: The guard variable prevents duplicate sync start messages and ensures consistent progress reporting every 500 blocks.
 - **New**: Info-level logging improvements: Sync restart reasons now use info-level logging for better visibility and clearer insights into synchronization behavior.
+- **New**: Network synchronization logging: Enhanced logging with current head block numbers and gap calculations provides better monitoring accuracy.
 
 **Section sources**
 - [database.cpp:232-248](file://libraries/chain/database.cpp#L232-L248)
@@ -895,6 +914,7 @@ The Chain Library provides a robust, modular framework for blockchain state mana
 - **New**: Manage DLT storage: Regularly monitor DLT block log size and adjust retention policies.
 - **New**: Enhanced logging optimization: Color-coded logging with guard variables and increased frequency provides better operational benefits with minimal overhead.
 - **New**: Info-level logging optimization: Using ilog for sync restart reasons improves visibility with minimal performance impact.
+- **New**: Network synchronization optimization: Enhanced logging with current head block numbers and gap calculations provides better monitoring accuracy.
 
 **Section sources**
 - [database.cpp:368-430](file://libraries/chain/database.cpp#L368-L430)
@@ -938,7 +958,7 @@ Usage scenarios:
 - **Block Generation**: Green messages for successful block production
 - **Error Conditions**: Cyan messages for critical failures
 - **Debug Information**: Default color for low-level operational details
-- **Network Sync**: Info-level messages for sync restart reasons with current head block numbers
+- **Network Sync**: Info-level messages for sync restarts and peer interactions with current head block numbers
 
 #### Guard Variables and Frequency Control
 - **`sync_start_logged`**: Boolean guard variable to prevent duplicate sync start messages
@@ -967,7 +987,7 @@ Usage scenarios:
 - **Sync Start**: Green messages with block numbers and head information
 - **Sync Progress**: Yellow messages every 500 blocks with timestamp and producer
 - **Sync End**: Reset messages when normal blocks are received
-- **Network Events**: Info-level messages for sync restarts and peer interactions
+- **Network Events**: Info-level messages for sync restarts and peer interactions with enhanced detail
 
 **Section sources**
 - [node.cpp:2428-2444](file://libraries/network/node.cpp#L2428-L2444)

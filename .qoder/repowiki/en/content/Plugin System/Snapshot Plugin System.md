@@ -20,15 +20,18 @@
 - [node.cpp](file://libraries/network/node.cpp)
 - [node.hpp](file://libraries/network/include/graphene/network/node.hpp)
 - [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
+- [logger_config.cpp](file://thirdparty/fc/src/log/logger_config.cpp)
+- [console_appender.cpp](file://thirdparty/fc/src/log/console_appender.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced P2P integration with trusted peer support for automatic registration of trusted peer endpoints
-- Updated P2P soft-ban trigger reference table to reflect the new dual-tier soft-ban system where trusted peers now receive 5-minute bans instead of the default 1-hour duration
-- Added integration between snapshot plugin and P2P layer for automatic registration of trusted peer endpoints
-- Enhanced peer-to-peer snapshot synchronization with improved trusted peer handling
+- Enhanced P2P integration with automatic trusted peer registration for reduced soft-ban duration (5-minute vs 1-hour)
+- Implemented dual-tier soft-ban system with trusted peer support
+- Added automatic snapshot directory creation functionality
+- Enhanced logging system with ANSI color codes for improved visibility
 - Updated watchdog monitoring to work with trusted peer integration
+- Enhanced peer-to-peer snapshot synchronization with improved trusted peer handling
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -58,7 +61,7 @@
 
 The Snapshot Plugin System is a comprehensive solution for VIZ blockchain nodes that enables efficient state synchronization through distributed ledger technology (DLT). This system provides mechanisms for creating, loading, serving, and downloading blockchain state snapshots, significantly reducing bootstrap times and enabling rapid node initialization.
 
-**Updated** The system has been enhanced with comprehensive snapshot plugin configuration supporting multiple trusted snapshot peers, snapshot scheduling parameters, serving options, watchdog monitoring, automatic snapshot discovery, integrated recovery workflow, enhanced anti-spam protection, and **enhanced P2P integration with trusted peer support**. These enhancements provide robust error handling for recovery scenarios, automatic peer-to-peer snapshot synchronization for empty state nodes, **automatic registration of trusted peer endpoints with the P2P layer**, and **advanced watchdog mechanisms for DLT mode operation**.
+**Updated** The system has been enhanced with comprehensive snapshot plugin configuration supporting multiple trusted snapshot peers, snapshot scheduling parameters, serving options, watchdog monitoring, automatic snapshot discovery, integrated recovery workflow, enhanced anti-spam protection, and **enhanced P2P integration with automatic trusted peer registration**. These enhancements provide robust error handling for recovery scenarios, automatic peer-to-peer snapshot synchronization for empty state nodes, **automatic registration of trusted peer endpoints with the P2P layer**, and **advanced watchdog mechanisms for DLT mode operation**.
 
 The plugin addresses the fundamental challenge of blockchain bootstrapping by allowing nodes to jump directly to a recent state rather than replaying thousands of blocks. This is particularly crucial for VIZ's social media and content platform characteristics, where rapid deployment and scaling are essential.
 
@@ -136,6 +139,9 @@ Deep integration with the VIZ blockchain database ensures seamless state transit
 #### **Enhanced P2P Integration Layer**
 **New** Advanced integration with the P2P layer that automatically registers trusted peer endpoints for reduced soft-ban duration, enabling trusted peers to receive 5-minute bans instead of the default 1-hour duration.
 
+#### **Enhanced Logging Layer**
+**New** Comprehensive logging system with ANSI color codes for improved visibility and debugging capabilities across different log levels.
+
 **Updated** The modular architecture provides enhanced extensibility and maintainability through clear separation of concerns between interface, serialization, network, database, recovery, asynchronous execution, watchdog, and **enhanced P2P integration** components. The recent additions include asynchronous snapshot creation, witness-aware deferral, watchdog mechanisms, automatic snapshot discovery, integrated recovery workflow, comprehensive error handling, and **enhanced P2P integration with trusted peer support**.
 
 **Section sources**
@@ -162,51 +168,54 @@ B --> H[Recovery Workflow]
 B --> I[Async Execution Engine]
 B --> J[Watchdog Monitor]
 B --> K[P2P Integration Layer]
+B --> L[Enhanced Logging System]
 end
 subgraph "Security Layer"
-F --> L[Access Control]
-L --> M[Trust Enforcement]
-L --> N[Anti-Spam Protection]
+F --> M[Access Control]
+M --> N[Trust Enforcement]
+M --> O[Anti-Spam Protection]
 end
 subgraph "Serialization Layer"
-E --> O[Object Exporter]
-E --> P[Object Importer]
-O --> Q[JSON Serializer]
-P --> R[Object Constructor]
+E --> P[Object Exporter]
+E --> Q[Object Importer]
+P --> R[JSON Serializer]
+Q --> S[Object Constructor]
 end
 subgraph "Network Layer"
-F --> S[TCP Server]
-F --> T[TCP Client]
-S --> U[Connection Management]
-T --> V[Peer Discovery]
+F --> T[TCP Server]
+F --> U[TCP Client]
+T --> V[Connection Management]
+U --> W[Peer Discovery]
 end
 subgraph "Database Layer"
-G --> W[Chainbase Integration]
-G --> X[Fork Database]
-W --> Y[Object Indexes]
-X --> Z[Block Validation]
+G --> X[Chainbase Integration]
+G --> Y[Fork Database]
+X --> Z[Object Indexes]
+Y --> AA[Block Validation]
 end
 subgraph "Storage Layer"
-Q --> AA[File System]
-R --> AA
-AA --> AB[Snapshot Files]
+R --> AB[File System]
+S --> AB
+AB --> AC[Snapshot Files]
 end
 subgraph "Recovery Layer"
-H --> AC[DLT Replay Engine]
-H --> AD[Automatic Discovery]
-H --> AE[Error Handling]
-AC --> AF[Block Log Integration]
-AD --> AG[Peer Synchronization]
-AE --> AH[Diagnostic Tools]
+H --> AD[DLT Replay Engine]
+H --> AE[Automatic Discovery]
+H --> AF[Error Handling]
+AD --> AG[Block Log Integration]
+AE --> AH[Peer Synchronization]
+AF --> AI[Diagnostic Tools]
 end
 subgraph "Reliability Layer"
-S --> AI[Watchdog Mechanism]
-AI --> AJ[Dedicated Server Thread]
-AI --> AK[Stalled Sync Detection]
-I --> AL[Dedicated Snapshot Thread]
-I --> AM[Async Snapshot Guard]
-K --> AN[Trusted Peer Registration]
-K --> AO[Soft-Ban Duration Management]
+T --> AJ[Watchdog Mechanism]
+AJ --> AK[Dedicated Server Thread]
+AJ --> AL[Stalled Sync Detection]
+I --> AM[Dedicated Snapshot Thread]
+I --> AN[Async Snapshot Guard]
+K --> AO[Trusted Peer Registration]
+K --> AP[Soft-Ban Duration Management]
+L --> AQ[ANSI Color Codes]
+L --> AR[Level-Based Coloring]
 end
 ```
 
@@ -1149,6 +1158,11 @@ The snapshot plugin implements several performance optimization strategies throu
 - **Reduced Soft-Ban Impact**: Faster recovery for trusted peers reduces network downtime
 - **Optimized Communication**: Streamlined trusted peer endpoint management
 
+### **Enhanced Logging Performance**
+- **ANSI Color Codes**: Provides visual distinction between log levels without performance overhead
+- **Level-Based Coloring**: Green for success, orange for warnings, yellow for informational messages
+- **Minimal Processing**: Color code injection occurs only when terminal supports color output
+
 **Updated** The modular architecture enhances performance by enabling independent optimization of each layer while maintaining system coherence. The watchdog mechanism, enhanced anti-spam protections, automatic snapshot discovery, integrated recovery workflow, asynchronous execution system, comprehensive error handling, and **enhanced P2P integration with trusted peer support** are designed to minimize performance impact while providing comprehensive functionality. Recent improvements include dedicated server thread optimizations, DLT replay efficiency, enhanced error handling performance, witness-aware deferral optimization, and **efficient dual-tier soft-ban system implementation**.
 
 ### Enhanced Security Performance Considerations
@@ -1159,6 +1173,7 @@ The snapshot plugin implements several performance optimization strategies throu
 - Recovery workflow includes performance-optimized snapshot validation and checksum verification
 - Asynchronous execution system minimizes main thread blocking time
 - **Enhanced P2P integration provides efficient trust validation with O(1) lookup performance**
+- **Enhanced logging system provides efficient colored output with minimal performance impact**
 
 ## Troubleshooting Guide
 
@@ -1246,6 +1261,16 @@ The snapshot plugin implements several performance optimization strategies throu
 - **Cause**: Snapshot plugin not providing trusted peer list or P2P plugin startup order issues
 - **Solution**: Check snapshot plugin configuration and verify P2P plugin initialization sequence
 
+**Enhanced Snapshot Directory Creation Issues**
+- **Symptom**: Snapshot creation fails with directory not found errors
+- **Cause**: Automatic directory creation not working or permission issues
+- **Solution**: Verify snapshot directory permissions and manual creation if needed
+
+**Enhanced Logging Color Issues**
+- **Symptom**: Log messages appear without color codes
+- **Cause**: Terminal not supporting ANSI color codes or color output disabled
+- **Solution**: Check terminal capabilities or disable color output in configuration
+
 ### Enhanced Diagnostic Tools
 
 The plugin includes comprehensive enhanced diagnostic capabilities:
@@ -1259,6 +1284,8 @@ The plugin includes comprehensive enhanced diagnostic capabilities:
 - **DLT Replay Status**: Real-time monitoring of DLT replay progress and status
 - **Asynchronous Execution Monitoring**: Tracks snapshot creation progress and thread health
 - **Enhanced P2P Integration Diagnostics**: Monitors trusted peer endpoint registration and soft-ban duration application
+- **Snapshot Directory Management**: Monitors automatic directory creation and cleanup processes
+- **Enhanced Logging Diagnostics**: Monitors ANSI color code application and terminal compatibility
 
 **Updated** The modular architecture provides enhanced diagnostic capabilities through separate layers for serialization, networking, database operations, security controls, recovery workflows, asynchronous execution, watchdog monitoring, and **enhanced P2P integration**. Recent improvements include watchdog monitoring, enhanced P2P fallback diagnostics, emergency consensus status tracking, comprehensive recovery workflow diagnostics, DLT replay status monitoring, asynchronous execution health monitoring, and **dual-tier soft-ban system diagnostics**.
 
