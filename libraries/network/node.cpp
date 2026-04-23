@@ -5278,6 +5278,13 @@ namespace graphene {
                 _potential_peer_db.clear();
             }
 
+            void node_impl::resync() {
+                VERIFY_CORRECT_THREAD();
+                ilog("Resync: restarting synchronization with all ${n} connected peers",
+                     ("n", _active_connections.size()));
+                start_synchronizing();
+            }
+
             void node_impl::set_total_bandwidth_limit(uint32_t upload_bytes_per_second, uint32_t download_bytes_per_second) {
                 VERIFY_CORRECT_THREAD();
                 _rate_limiter.set_upload_limit(upload_bytes_per_second);
@@ -5461,6 +5468,10 @@ namespace graphene {
 
         void node::clear_peer_database() {
             INVOKE_IN_IMPL(clear_peer_database);
+        }
+
+        void node::resync() {
+            INVOKE_IN_IMPL(resync);
         }
 
         void node::set_total_bandwidth_limit(uint32_t upload_bytes_per_second,

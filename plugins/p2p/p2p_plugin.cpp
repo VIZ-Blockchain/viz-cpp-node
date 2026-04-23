@@ -110,6 +110,14 @@ namespace graphene {
 
                     void p2p_stats_task();
 
+                    // Stale sync detection
+                    bool _stale_sync_enabled = false;
+                    uint32_t _stale_sync_timeout_seconds = 120;
+                    fc::time_point _last_block_received_time;
+                    fc::future<void> _stale_sync_task_done;
+
+                    void stale_sync_check_task();
+
                     std::unique_ptr<graphene::network::node> node;
 
                     chain::plugin &chain;
@@ -132,6 +140,9 @@ namespace graphene {
 
                 bool p2p_plugin_impl::handle_block(const block_message &blk_msg, bool sync_mode, std::vector<fc::uint160_t> &) {
                     try {
+                        // Track last block received time for stale sync detection
+                        _last_block_received_time = fc::time_point::now();
+
                         uint32_t head_block_num;
                         chain.db().with_weak_read_lock([&]() {
                             head_block_num = chain.db().head_block_num();
@@ -571,6 +582,72 @@ namespace graphene {
                     }
                 }
 
+                void p2p_plugin_impl::stale_sync_check_task() {
+                    if (!_stale_sync_enabled || !node) {
+                        return;
+                    }
+                    try {
+                        auto now = fc::time_point::now();
+                        auto elapsed = now - _last_block_received_time;
+                        auto timeout = fc::seconds(_stale_sync_timeout_seconds);
+
+                        if (elapsed > timeout) {
+                            uint32_t head_block = 0;
+                            uint32_t lib_num = 0;
+                            chain.db().with_weak_read_lock([&]() {
+                                head_block = chain.db().head_block_num();
+                                lib_num = chain.db().get_dynamic_global_properties().last_irreversible_block_num;
+                            });
+
+                            wlog("Stale sync detected: no blocks received for ${s}s (head: ${h}, LIB: ${lib}). "
+                                 "Resetting sync from last irreversible block and reconnecting seed peers.",
+                                 ("s", _stale_sync_timeout_seconds)("h", head_block)("lib", lib_num));
+
+                            // Reset sync from last irreversible block
+                            if (lib_num > 0 && node) {
+                                block_id_type lib_block_id;
+                                chain.db().with_weak_read_lock([&]() {
+                                    lib_block_id = chain.db().get_block_id_for_num(lib_num);
+                                });
+                                node->sync_from(item_id(graphene::network::block_message_type, lib_block_id),
+                                                std::vector<uint32_t>());
+                                ilog("Reset P2P sync from LIB block #${n}", ("n", lib_num));
+
+                                // Force resync with all currently connected peers
+                                node->resync();
+                            }
+
+                            // Reconnect all seed nodes (add_node resets the retry timer,
+                            // connect_to_endpoint initiates connection if not already connected)
+                            for (const auto &seed : seeds) {
+                                try {
+                                    ilog("Reconnecting seed node ${s}", ("s", seed));
+                                    node->add_node(seed);
+                                    node->connect_to_endpoint(seed);
+                                } catch (const fc::exception &e) {
+                                    wlog("Failed to reconnect seed node ${s}: ${e}",
+                                         ("s", seed)("e", e.to_detail_string()));
+                                }
+                            }
+
+                            // Reset timer to avoid immediate retry
+                            _last_block_received_time = fc::time_point::now();
+                        }
+                    } catch (const fc::exception &e) {
+                        wlog("Exception in stale sync check task: ${e}", ("e", e.to_detail_string()));
+                    } catch (...) {
+                        wlog("Unknown exception in stale sync check task");
+                    }
+
+                    if (_stale_sync_enabled) {
+                        _stale_sync_task_done = fc::schedule(
+                            [this]() { stale_sync_check_task(); },
+                            fc::time_point::now() + fc::seconds(30),
+                            "stale_sync_check_task"
+                        );
+                    }
+                }
+
             } // detail
 
             p2p_plugin::p2p_plugin() {
@@ -592,7 +669,12 @@ namespace graphene {
                     ("p2p-stats-enabled", boost::program_options::value<bool>()->default_value(true),
                         "Enable periodic logging of P2P peer statistics (ip, port, latency, bytes in, blocked status).")
                     ("p2p-stats-interval", boost::program_options::value<uint32_t>()->default_value(300),
-                        "Interval in seconds between P2P peer statistics dumps (default: 300 = 5 minutes).");
+                        "Interval in seconds between P2P peer statistics dumps (default: 300 = 5 minutes).")
+                    ("p2p-stale-sync-detection", boost::program_options::value<bool>()->default_value(false),
+                        "Enable stale sync detection: when no blocks are received for the configured timeout, "
+                        "reset sync from last irreversible block and reconnect seed peers (default: false).")
+                    ("p2p-stale-sync-timeout-seconds", boost::program_options::value<uint32_t>()->default_value(120),
+                        "Timeout in seconds after which stale sync detection triggers recovery action (default: 120 = 2 minutes).");
                 cli.add_options()
                     ("force-validate", boost::program_options::bool_switch()->default_value(false),
                         "Force validation of all transactions. Deprecated in favor of p2p-force-validate")
@@ -658,6 +740,19 @@ namespace graphene {
                         wlog("p2p-stats-interval must be > 0, using default of 300 seconds");
                     }
                 }
+
+                if (options.count("p2p-stale-sync-detection")) {
+                    my->_stale_sync_enabled = options.at("p2p-stale-sync-detection").as<bool>();
+                }
+
+                if (options.count("p2p-stale-sync-timeout-seconds")) {
+                    uint32_t stale_timeout = options.at("p2p-stale-sync-timeout-seconds").as<uint32_t>();
+                    if (stale_timeout > 0) {
+                        my->_stale_sync_timeout_seconds = stale_timeout;
+                    } else {
+                        wlog("p2p-stale-sync-timeout-seconds must be > 0, using default of 120 seconds");
+                    }
+                }
             }
 
             void p2p_plugin::plugin_startup() {
@@ -713,6 +808,16 @@ namespace graphene {
                             "p2p_stats_task"
                         );
                     }
+
+                    if (my->_stale_sync_enabled) {
+                        my->_last_block_received_time = fc::time_point::now();
+                        ilog("P2P stale sync detection enabled, timeout: ${s}s", ("s", my->_stale_sync_timeout_seconds));
+                        my->_stale_sync_task_done = fc::schedule(
+                            [this]() { my->stale_sync_check_task(); },
+                            fc::time_point::now() + fc::seconds(30),
+                            "stale_sync_check_task"
+                        );
+                    }
                 }).wait();
                 ilog("P2P Plugin started");
             }
@@ -721,11 +826,20 @@ namespace graphene {
                 ilog("Shutting down P2P Plugin");
                 if (my->stats_enabled && my->_stats_task_done.valid()) {
                     try {
-                        my->_stats_task_done.cancel_and_wait("p2p_plugin::plugin_shutdown()");
+                        my->_stats_task_done.cancel_and_wait("p2p_plugin::plugin_shutdown() stats");
                     } catch (const fc::exception &e) {
                         wlog("Exception canceling P2P stats task: ${e}", ("e", e.to_detail_string()));
                     } catch (...) {
                         wlog("Unknown exception canceling P2P stats task");
+                    }
+                }
+                if (my->_stale_sync_enabled && my->_stale_sync_task_done.valid()) {
+                    try {
+                        my->_stale_sync_task_done.cancel_and_wait("p2p_plugin::plugin_shutdown() stale_sync");
+                    } catch (const fc::exception &e) {
+                        wlog("Exception canceling stale sync check task: ${e}", ("e", e.to_detail_string()));
+                    } catch (...) {
+                        wlog("Unknown exception canceling stale sync check task");
                     }
                 }
                 my->node->close();

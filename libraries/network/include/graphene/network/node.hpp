@@ -295,6 +295,14 @@ namespace graphene {
              */
             void clear_peer_database();
 
+            /**
+             *  Restart synchronization with all currently connected peers.
+             *  This is useful when the node detects it has fallen behind
+             *  (e.g., no blocks received for an extended period) and wants
+             *  to force a re-sync from its current sync point.
+             */
+            void resync();
+
             void set_total_bandwidth_limit(uint32_t upload_bytes_per_second, uint32_t download_bytes_per_second);
 
             fc::variant_object network_get_info() const;
@@ -333,6 +341,9 @@ namespace graphene {
             }
 
             void sync_from(const item_id &current_head_block, const std::vector<uint32_t> &hard_fork_block_numbers) override {
+            }
+
+            void resync() override {
             }
 
             void broadcast(const message &item_to_broadcast) override;
