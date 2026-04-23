@@ -77,8 +77,9 @@
 #define P2P_IN_DEDICATED_THREAD 1
 
 // ANSI color codes for console ban notifications
-#define CLOG_RED   "\033[91m"
-#define CLOG_RESET "\033[0m"
+#define CLOG_RED    "\033[91m"
+#define CLOG_ORANGE "\033[33m"
+#define CLOG_RESET  "\033[0m"
 
 #define INVOCATION_COUNTER(name) \
     static unsigned total_ ## name ## _counter = 0; \
@@ -4892,7 +4893,7 @@ namespace graphene {
                 _handshaking_connections.erase(peer);
                 _closing_connections.insert(peer);
                 _terminating_connections.erase(peer);
-                fc_ilog(fc::logger::get("sync"), "Peer connection closing (${peer}), now ${count} active peers",
+                fc_ilog(fc::logger::get("sync"), CLOG_ORANGE "Peer connection closing (${peer}), now ${count} active peers" CLOG_RESET,
                         ("peer", peer->get_remote_endpoint())
                                 ("count", _active_connections.size()));
             }
@@ -4903,7 +4904,7 @@ namespace graphene {
                 _handshaking_connections.erase(peer);
                 _closing_connections.erase(peer);
                 _terminating_connections.insert(peer);
-                fc_ilog(fc::logger::get("sync"), "Peer connection terminating (${peer}), now ${count} active peers",
+                fc_ilog(fc::logger::get("sync"), CLOG_RED "Peer connection terminating (${peer}), now ${count} active peers" CLOG_RESET,
                         ("peer", peer->get_remote_endpoint())
                                 ("count", _active_connections.size()));
             }

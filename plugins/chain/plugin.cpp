@@ -114,7 +114,7 @@ namespace chain {
             }
         } else {
             if (sync_start_logged) {
-                ilog("Sync mode ended: received normal block #${n} (head: ${head}), sync_start_logged reset",
+                ilog("\033[92mSync mode ended: received normal block #${n} (head: ${head}), sync_start_logged reset\033[0m",
                      ("n", block.block_num())("head", db.head_block_num()));
             }
             sync_start_logged = false; // reset guard when not syncing
