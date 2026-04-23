@@ -3122,6 +3122,7 @@ namespace graphene {
                 dlog("in send_sync_block_to_node_delegate()");
                 bool client_accepted_block = false;
                 bool discontinue_fetching_blocks_from_peer = false;
+                bool deferred_resize = false;
 
                 fc::oexception handle_message_exception;
 
@@ -3152,10 +3153,12 @@ namespace graphene {
                 }
                 catch (const deferred_resize_exception &e) {
                     // Shared memory resize is in progress. Do NOT mark the block as accepted.
-                    // It will be re-fetched after resize completes on the next push_block().
-                    wlog("Sync block #${num} deferred due to shared memory resize, will retry",
+                    // The block was not applied (bad_alloc prevented it). Do NOT soft-ban the
+                    // peer — this is a local condition, not a peer error.  We must restart
+                    // sync so the missed block is re-fetched after resize completes.
+                    wlog("Sync block #${num} deferred due to shared memory resize, will restart sync to re-fetch",
                          ("num", block_message_to_send.block.block_num()));
-                    handle_message_exception = e;
+                    deferred_resize = true;
                 }
                 catch (const block_older_than_undo_history &e) {
                     fc_wlog(fc::logger::get("sync"),
@@ -3171,6 +3174,26 @@ namespace graphene {
                                     ("e", (fc::exception)e));
                     handle_message_exception = e;
                     discontinue_fetching_blocks_from_peer = true;
+                }
+                catch (const unlinkable_block_exception &e) {
+                    // Block from a dead fork (parent not in fork_db) or an ahead-of-head
+                    // block that slipped past early rejection.  Distinguish ahead vs. at/below
+                    // head: at/below head → soft-ban (stale fork); ahead → restart sync
+                    // (we may be behind after a resize or fork switch).
+                    uint32_t peer_block_num = block_message_to_send.block.block_num();
+                    uint32_t our_head = _delegate->get_block_number(_delegate->get_head_block_id());
+                    if (peer_block_num <= our_head) {
+                        wlog("Sync block #${num} is from a dead fork (at or below our head #${head}), will soft-ban peer",
+                                ("num", peer_block_num)("head", our_head));
+                        handle_message_exception = e;
+                        discontinue_fetching_blocks_from_peer = true;
+                    } else {
+                        // Block is ahead — we may be behind.  Restart sync instead of
+                        // soft-banning so the missing blocks can be fetched sequentially.
+                        wlog("Sync block #${num} is unlinkable and ahead of our head #${head}, restarting sync",
+                             ("num", peer_block_num)("head", our_head));
+                        deferred_resize = true; // reuse flag to trigger sync restart below
+                    }
                 }
                 catch (const fc::canceled_exception &) {
                     throw;
@@ -3265,8 +3288,8 @@ namespace graphene {
                             }
                         }
                     }
-                } else {
-                    // invalid message received
+                } else if (!deferred_resize) {
+                    // invalid message received (not a deferred resize)
                     for (const peer_connection_ptr &peer : _active_connections) {
                         ASSERT_TASK_NOT_PREEMPTED(); // don't yield while iterating over _active_connections
 
@@ -3296,6 +3319,22 @@ namespace graphene {
                                 peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
                                 peer->inhibit_fetching_sync_blocks = true;
                             }
+                        }
+                    }
+                }
+
+                // Handle deferred resize or unlinkable-ahead: restart sync from all
+                // active sync peers so the missed block(s) are re-fetched after the
+                // resize completes.  Without this, the next sync block (N+2) would fail
+                // to link because N+1 was never applied, and subsequent blocks would all
+                // be silently rejected by the early-rejection check, stalling sync.
+                if (deferred_resize) {
+                    wlog("Restarting sync with all peers to re-fetch block #${num} after deferred resize",
+                         ("num", block_message_to_send.block.block_num()));
+                    for (const peer_connection_ptr &peer : _active_connections) {
+                        ASSERT_TASK_NOT_PREEMPTED();
+                        if (peer->we_need_sync_items_from_peer) {
+                            start_synchronizing_with_peer(peer);
                         }
                     }
                 }
