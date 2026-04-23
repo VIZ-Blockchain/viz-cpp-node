@@ -17,14 +17,19 @@
 - [dlt_block_log.cpp](file://libraries/chain/dlt_block_log.cpp)
 - [file_mutex.cpp](file://thirdparty/fc/src/interprocess/file_mutex.cpp)
 - [config.ini](file://share/vizd/config/config.ini)
+- [node.cpp](file://libraries/network/node.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced memory usage optimization with immediate JSON string clearing during snapshot import
-- Improved reliability with comprehensive cleanup routines for anti-spam state management
-- Enhanced snapshot import with fork database reset and comprehensive object clearing
+- Enhanced early-rejection mechanisms with comprehensive anti-spam protection and trust enforcement
+- Implemented deferred resize handling for improved peer management and synchronization
+- Added soft-ban trigger reference tables for enhanced peer reputation management
+- Improved exception handling for peer management and synchronization with comprehensive error recovery
+- Enhanced watchdog monitoring with automatic accept loop restart capabilities
+- Implemented comprehensive memory management with immediate JSON string clearing during snapshot import
 - Added new watchdog monitoring system for server reliability with automatic accept loop restart
+- Enhanced snapshot import with fork database reset and comprehensive object clearing
 - Implemented major optimizations for peak memory reduction during snapshot processing
 
 ## Table of Contents
@@ -39,7 +44,7 @@
 9. [Automatic Snapshot Discovery](#automatic-snapshot-discovery)
 10. [Integrated Recovery Workflow](#integrated-recovery-workflow)
 11. [DLT Replay Integration](#dlt-replay-integration)
-12. [Peer-to-Peer Snapshot Synchronization](#peer-to-pair-snapshot-synchronization)
+12. [Peer-to-Peer Snapshot Synchronization](#peer-to-peer-snapshot-synchronization)
 13. [Watchdog and Stalled Sync Detection](#watchdog-and-stalled-sync-detection)
 14. [Emergency Consensus Handling](#emergency-consensus-handling)
 15. [Enhanced Anti-Spam Protection](#enhanced-anti-spam-protection)
@@ -1066,7 +1071,7 @@ The snapshot plugin implements several performance optimization strategies throu
 - Efficient object copying mechanisms handle complex data structures
 - Automatic cleanup of temporary files and resources
 
-**Updated** The modular architecture enhances performance by enabling independent optimization of each layer while maintaining system cohesion. The watchdog mechanism, enhanced anti-spam protections, automatic snapshot discovery, integrated recovery workflow, asynchronous execution system, and comprehensive error handling are designed to minimize performance impact while providing comprehensive functionality. Recent improvements include dedicated server thread optimizations, DLT replay efficiency, enhanced error handling performance, and witness-aware deferral optimization.
+**Updated** The modular architecture enhances performance by enabling independent optimization of each layer while maintaining system coherence. The watchdog mechanism, enhanced anti-spam protections, automatic snapshot discovery, integrated recovery workflow, asynchronous execution system, and comprehensive error handling are designed to minimize performance impact while providing comprehensive functionality. Recent improvements include dedicated server thread optimizations, DLT replay efficiency, enhanced error handling performance, and witness-aware deferral optimization.
 
 ### Enhanced Security Performance Considerations
 - Access control checks are performed efficiently using hash maps for IP lookups

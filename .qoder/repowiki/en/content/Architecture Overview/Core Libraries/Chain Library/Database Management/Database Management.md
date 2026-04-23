@@ -19,15 +19,16 @@
 - [chainbase.hpp](file://thirdparty/chainbase/include/chainbase/chainbase.hpp)
 - [node.cpp](file://libraries/network/node.cpp)
 - [exceptions.hpp](file://libraries/network/include/graphene/network/exceptions.hpp)
+- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced fork database with proper unlinkable_block_exception throwing for dead fork detection
-- Improved dead fork detection capabilities with comprehensive exception handling
-- Enhanced fork switching logic with better emergency consensus tie-breaking using deterministic hash-based tie-breaking
-- Added emergency consensus mode support with deterministic block selection criteria
-- Improved fork database error handling and logging for better diagnostic capabilities
+- Added comprehensive early rejection logic for blocks far ahead with unknown parents
+- Enhanced fork database exception handling to prevent sync restart loops during snapshot imports
+- Improved block validation flow with intelligent rejection strategies
+- Enhanced P2P synchronization with better handling of unlinkable blocks
+- Added sophisticated early rejection checks to prevent unnecessary fork database operations
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -44,7 +45,7 @@
 ## Introduction
 This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for suppressing repeated warnings, and practical examples of database operations and performance optimization.
 
-**Updated** - Enhanced with comprehensive error handling improvements for shared memory exhaustion scenarios, including deferred shared memory resize mechanism, improved thread safety during memory resize operations, and enhanced peer connectivity management during memory pressure situations. The database now provides graceful handling of boost::interprocess::bad_alloc exceptions by returning false instead of throwing, preventing P2P layer disconnections and maintaining witness slot-miss logging while preserving node connectivity.
+**Updated** - Enhanced with comprehensive early rejection logic that prevents fork database exceptions and sync restart loops during snapshot imports. The system now includes sophisticated block validation with intelligent rejection strategies for blocks that are far ahead of the current head with unknown parents, significantly improving synchronization reliability and preventing unnecessary processing overhead.
 
 ## Project Structure
 The database subsystem is implemented primarily in the chain library with enhanced support for DLT mode and emergency consensus:
@@ -60,6 +61,7 @@ The database subsystem is implemented primarily in the chain library with enhanc
 - Protocol configuration: libraries/protocol/include/graphene/protocol/config.hpp for emergency consensus constants
 - Chainbase integration: thirdparty/chainbase/src/chainbase.cpp for shared memory management
 - Network layer integration: libraries/network/node.cpp for peer connectivity management
+- P2P plugin integration: plugins/p2p/p2p_plugin.cpp for enhanced exception handling
 
 ```mermaid
 graph TB
@@ -81,6 +83,7 @@ end
 subgraph "Plugins"
 SNAPH["snapshot/plugin.cpp"]
 WITNESS["witness/witness.cpp"]
+P2PH["p2p/p2p_plugin.cpp"]
 end
 subgraph "Network Layer"
 NODE["node.cpp"]
@@ -100,47 +103,50 @@ DBCPP --> CB
 DBCPP --> CBH
 SNAPH --> DBH
 WITNESS --> DBH
+P2PH --> DBH
 NODE --> DBH
 EXC --> NODE
 ```
 
 **Diagram sources**
 - [database.hpp:1-642](file://libraries/chain/include/graphene/chain/database.hpp#L1-L642)
-- [database.cpp:1-6389](file://libraries/chain/database.cpp#L1-L6389)
+- [database.cpp:1-6424](file://libraries/chain/database.cpp#L1-L6424)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
 - [dlt_block_log.cpp:1-414](file://libraries/chain/dlt_block_log.cpp#L1-L414)
 - [fork_database.hpp:1-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L138)
 - [fork_database.cpp:1-271](file://libraries/chain/fork_database.cpp#L1-L271)
-- [database_exceptions.hpp:1-134](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L1-L134)
+- [database_exceptions.hpp:1-136](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L1-L136)
 - [db_with.hpp:1-154](file://libraries/chain/include/graphene/chain/db_with.hpp#L1-L154)
-- [plugin.cpp:2130-2140](file://plugins/snapshot/plugin.cpp#L2130-L2140)
+- [plugin.cpp:1420-1430](file://plugins/snapshot/plugin.cpp#L1420-L1430)
 - [witness.cpp:449-467](file://plugins/witness/witness.cpp#L449-L467)
 - [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
 - [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
 - [chainbase.hpp:1200-1260](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1200-L1260)
-- [node.cpp:1428-4828](file://libraries/network/node.cpp#L1428-L4828)
+- [node.cpp:3185-3384](file://libraries/network/node.cpp#L3185-L3384)
 - [exceptions.hpp:27-48](file://libraries/network/include/graphene/network/exceptions.hpp#L27-L48)
+- [p2p_plugin.cpp:181-196](file://plugins/p2p/p2p_plugin.cpp#L181-L196)
 
 **Section sources**
 - [database.hpp:1-642](file://libraries/chain/include/graphene/chain/database.hpp#L1-L642)
-- [database.cpp:1-6389](file://libraries/chain/database.cpp#L1-L6389)
+- [database.cpp:1-6424](file://libraries/chain/database.cpp#L1-L6424)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
 - [dlt_block_log.cpp:1-414](file://libraries/chain/dlt_block_log.cpp#L1-L414)
 - [fork_database.hpp:1-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L138)
 - [fork_database.cpp:1-271](file://libraries/chain/fork_database.cpp#L1-L271)
-- [database_exceptions.hpp:1-134](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L1-L134)
+- [database_exceptions.hpp:1-136](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L1-L136)
 - [db_with.hpp:1-154](file://libraries/chain/include/graphene/chain/db_with.hpp#L1-L154)
-- [plugin.cpp:2130-2140](file://plugins/snapshot/plugin.cpp#L2130-L2140)
+- [plugin.cpp:1420-1430](file://plugins/snapshot/plugin.cpp#L1420-L1430)
 - [witness.cpp:449-467](file://plugins/witness/witness.cpp#L449-L467)
 - [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
 - [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
 - [chainbase.hpp:1200-1260](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1200-L1260)
-- [node.cpp:1428-4828](file://libraries/network/node.cpp#L1428-L4828)
+- [node.cpp:3185-3384](file://libraries/network/node.cpp#L3185-L3384)
 - [exceptions.hpp:27-48](file://libraries/network/include/graphene/network/exceptions.hpp#L27-L48)
+- [p2p_plugin.cpp:181-196](file://plugins/p2p/p2p_plugin.cpp#L181-L196)
 
 ## Core Components
 - database class: Public interface for blockchain state management, block and transaction processing, checkpoints, and event notifications with enhanced DLT mode support, emergency consensus implementation, and improved error handling.
@@ -159,6 +165,7 @@ EXC --> NODE
 - **Deferred Shared Memory Resize**: New mechanism that defers memory resize operations until a safe point when no read locks are held, improving thread safety and performance during high-load scenarios.
 - **Enhanced Error Handling**: Graceful handling of boost::interprocess::bad_alloc exceptions with deferred resize scheduling and peer connectivity preservation.
 - **Enhanced Fork Database Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking.
+- **Early Rejection Logic**: Sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents, preventing fork database exceptions and sync restart loops.
 
 Key responsibilities:
 - Lifecycle: open(), open_from_snapshot(), reindex(), close(), wipe() with improved error handling
@@ -178,6 +185,7 @@ Key responsibilities:
 - **Thread-Safe Memory Resizing**: Deferred resize mechanism that acquires exclusive write locks to prevent race conditions and stale pointer issues
 - **Memory Pressure Handling**: Graceful degradation of shared memory exhaustion with peer connectivity preservation
 - **Enhanced Fork Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking
+- **Early Rejection Strategy**: Intelligent block rejection for far-ahead blocks with unknown parents to prevent unnecessary fork database operations and sync restart loops
 
 **Section sources**
 - [database.hpp:61-115](file://libraries/chain/include/graphene/chain/database.hpp#L61-L115)
@@ -207,6 +215,7 @@ The database composes four primary subsystems with enhanced DLT mode support, em
 - **Deferred Memory Resize**: Thread-safe memory resize mechanism that defers operations until safe points to prevent race conditions
 - **Enhanced Error Handling**: Graceful exception handling for shared memory exhaustion with peer connectivity preservation
 - **Enhanced Fork Database**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching
+- **Early Rejection Logic**: Sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents
 
 ```mermaid
 classDiagram
@@ -241,6 +250,7 @@ class database {
 +_pending_resize_target : size_t
 +push_block(block, skip) : enhanced error handling
 +apply_pending_resize() : thread-safe memory management
++early_rejection_logic : intelligent block rejection
 }
 class block_log {
 +open(path)
@@ -294,6 +304,11 @@ class unlinkable_block_exception {
 +inherits from chain_exception
 +thrown for dead fork detection
 }
+class early_rejection_logic {
++reject_far_ahead_unknown_parents(block)
++prevent_fork_db_exceptions(block)
++avoid_sync_restart_loops(block)
+}
 database --> block_log : "uses (normal mode)"
 database --> dlt_block_log : "uses (DLT mode)"
 database --> fork_database : "uses with enhanced error handling"
@@ -301,6 +316,7 @@ database --> signal_guard : "enhanced restart handling"
 database --> pending_transactions_restorer : "manages postponed tx"
 database --> chainbase : "enhanced memory management"
 database --> unlinkable_block_exception : "enhanced fork handling"
+database --> early_rejection_logic : "prevents unnecessary operations"
 ```
 
 **Diagram sources**
@@ -391,11 +407,11 @@ DirectFlag --> Ready
 
 **Diagram sources**
 - [database.hpp:61-68](file://libraries/chain/include/graphene/chain/database.hpp#L61-L68)
-- [plugin.cpp:2135-2136](file://plugins/snapshot/plugin.cpp#L2135-L2136)
+- [plugin.cpp:1424-1426](file://plugins/snapshot/plugin.cpp#L1424-L1426)
 
 **Section sources**
 - [database.hpp:61-68](file://libraries/chain/include/graphene/chain/database.hpp#L61-L68)
-- [plugin.cpp:2135-2136](file://plugins/snapshot/plugin.cpp#L2135-L2136)
+- [plugin.cpp:1424-1426](file://plugins/snapshot/plugin.cpp#L1424-L1426)
 
 ### Enhanced Block Known Check Logic with DLT Mode Awareness
 **Updated** - The `is_known_block()` method now includes enhanced logic to prevent false positives in DLT mode:
@@ -856,6 +872,73 @@ UpdateHead --> End
 **Section sources**
 - [database.cpp:1295-1377](file://libraries/chain/database.cpp#L1295-L1377)
 
+### Enhanced Early Rejection Logic for Blocks Far Ahead with Unknown Parents
+**New** - The database now includes sophisticated early rejection logic that prevents fork database exceptions and sync restart loops during snapshot imports:
+
+- **Early Rejection Strategy**: The `_push_block()` method includes comprehensive early rejection checks that prevent unnecessary fork database operations for blocks that are far ahead with unknown parents.
+- **Prevent Fork Database Exceptions**: Blocks that are at or before the head but on different forks with unknown parents are rejected before attempting fork database operations, preventing unlinkable_block_exception.
+- **Avoid Sync Restart Loops**: Far-ahead blocks with unknown parents are silently rejected to prevent P2P sync restart loops that would stall synchronization.
+- **Intelligent Parent Validation**: The system checks if the block's parent is known in the fork database before attempting fork database operations.
+- **Safe First Block Acceptance**: The system always allows blocks whose previous equals the head block ID to ensure sync progress continues.
+
+```mermaid
+flowchart TD
+Start(["_push_block(new_block)"]) --> CheckAtOrBelow{"new_block.block_num() <= head_block_num()?"}
+CheckAtOrBelow --> |Yes| CheckExisting{"existing_id == new_block.id()?"}
+CheckExisting --> |Yes| IgnoreBlock["Ignore block (already on chain)"]
+CheckExisting --> |No| CheckParent{"new_block.previous != block_id_type() && !_fork_db.is_known_block(new_block.previous)?"}
+CheckParent --> |Yes| RejectDeadFork["Reject dead fork block"]
+CheckParent --> |No| FallThrough["Fall through to normal logic"]
+CheckAtOrBelow --> |No| CheckFarAhead{"new_block.block_num() > head_block_num() && new_block.previous != head_block_id() && !_fork_db.is_known_block(new_block.previous)?"}
+CheckFarAhead --> |Yes| RejectFarAhead["Reject far-ahead unknown parent"]
+CheckFarAhead --> |No| CheckForkDB["Proceed to fork_db.push_block()"]
+IgnoreBlock --> ReturnFalse["return false"]
+RejectDeadFork --> ThrowException["Throw unlinkable_block_exception"]
+FallThrough --> CheckForkDB
+RejectFarAhead --> ReturnFalse
+CheckForkDB --> ForkDBPush["fork_db.push_block(new_block)"]
+ForkDBPush --> ReturnResult["return result"]
+```
+
+**Diagram sources**
+- [database.cpp:1216-1286](file://libraries/chain/database.cpp#L1216-L1286)
+
+**Section sources**
+- [database.cpp:1216-1286](file://libraries/chain/database.cpp#L1216-L1286)
+
+### Enhanced P2P Synchronization with Early Rejection Integration
+**New** - The P2P synchronization system now integrates with the early rejection logic to prevent sync restart loops:
+
+- **Unlinkable Block Classification**: The P2P layer distinguishes between dead fork blocks (at or below head) and far-ahead blocks that slipped past early rejection.
+- **Dead Fork Handling**: At-or-below-head blocks from dead forks trigger soft-banning to prevent continued transmission of stale blocks.
+- **Far-Ahead Block Handling**: Far-ahead blocks trigger sync restart instead of soft-banning to allow sequential block fetching.
+- **Deferred Resize Integration**: The P2P layer handles deferred resize scenarios by restarting sync to re-fetch missed blocks after memory operations complete.
+
+```mermaid
+flowchart TD
+Start(["P2P Block Processing"]) --> TryPush["Try push_block()"]
+TryPush --> Success{"Client accepted?"}
+Success --> |Yes| UpdatePeers["Update peer lists"]
+Success --> |No| CheckException{"Exception type?"}
+CheckException --> |unlinkable_block_exception| Classify["Classify unlinkable block"]
+CheckException --> |other| HandleOther["Handle other exceptions"]
+Classify --> CheckNum{"peer_block_num <= our_head?"}
+CheckNum --> |Yes| SoftBan["Soft-ban peer (dead fork)"]
+CheckNum --> |No| RestartSync["Restart sync (far-ahead)"]
+SoftBan --> UpdatePeers
+RestartSync --> UpdatePeers
+HandleOther --> UpdatePeers
+UpdatePeers --> End(["Complete"])
+```
+
+**Diagram sources**
+- [node.cpp:3185-3384](file://libraries/network/node.cpp#L3185-L3384)
+- [p2p_plugin.cpp:181-196](file://plugins/p2p/p2p_plugin.cpp#L181-L196)
+
+**Section sources**
+- [node.cpp:3185-3384](file://libraries/network/node.cpp#L3185-L3384)
+- [p2p_plugin.cpp:181-196](file://plugins/p2p/p2p_plugin.cpp#L181-L196)
+
 ### Checkpoint System for Fast Synchronization
 - Checkpoints: A map of block number to expected block ID is maintained; when a checkpoint matches, the system skips expensive validations and authority checks for subsequent blocks until the last checkpoint.
 - before_last_checkpoint(): Determines whether the current head is before the last checkpoint to decide whether to enforce stricter checks.
@@ -939,7 +1022,7 @@ These signals are used by plugins to react to blockchain events without tight co
 - Open database and initialize: open(data_dir, shared_mem_dir, initial_supply, shared_file_size, chainbase_flags)
 - **Open from snapshot**: open_from_snapshot(data_dir, shared_mem_dir, initial_supply, shared_file_size, chainbase_flags) - **Enhanced**
 - Rebuild state from history: reindex(data_dir, shared_mem_dir, from_block_num, shared_file_size) - **Enhanced with signal handling**
-- Push a block: push_block(signed_block, skip_flags) - **Enhanced with shared memory error handling**
+- Push a block: push_block(signed_block, skip_flags) - **Enhanced with shared memory error handling and early rejection logic**
 - Push a transaction: push_transaction(signed_transaction, skip_flags)
 - Validate a block: validate_block(signed_block, skip_flags)
 - Validate a transaction: validate_transaction(signed_transaction, skip_flags)
@@ -951,6 +1034,7 @@ These signals are used by plugins to react to blockchain events without tight co
 - **Deferred Memory Resize**: Thread-safe memory resize mechanism that applies operations at safe points to prevent race conditions
 - **Enhanced Error Handling**: Graceful handling of shared memory exhaustion with peer connectivity preservation
 - **Enhanced Fork Database**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking
+- **Early Rejection Logic**: Intelligent block rejection for far-ahead blocks with unknown parents to prevent unnecessary fork database operations and sync restart loops
 - Query helpers:
   - get_block_id_for_num(uint32_t)
   - fetch_block_by_id(block_id_type)
@@ -1179,6 +1263,7 @@ The database depends on:
 - **Deferred memory resize mechanism**: Thread-safe memory management with proper lock handling and race condition prevention
 - **Enhanced error handling**: Graceful exception handling for shared memory exhaustion with peer connectivity preservation
 - **Enhanced fork database**: Proper unlinkable_block_exception handling for dead fork detection and improved fork switching logic with deterministic tie-breaking
+- **Early rejection logic**: Sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents
 
 ```mermaid
 graph LR
@@ -1202,6 +1287,7 @@ DB --> DEFER["deferred memory resize mechanism"]
 DB --> ERROR["enhanced error handling"]
 DB --> NETWORK["network layer integration"]
 DB --> UNLINK["unlinkable_block_exception"]
+DB --> EARLY["early rejection logic"]
 ```
 
 **Diagram sources**
@@ -1246,6 +1332,7 @@ DB --> UNLINK["unlinkable_block_exception"]
 - **Enhanced Error Handling**: Graceful handling of shared memory exhaustion prevents peer disconnections and maintains network connectivity during memory pressure situations.
 - **Enhanced Fork Database Performance**: Proper unlinkable_block_exception handling reduces processing overhead by eliminating dead fork blocks from consideration.
 - **Improved Fork Switching**: Enhanced fork switching logic with proper dead fork detection and deterministic tie-breaking prevents unnecessary processing and improves fork resolution performance.
+- **Early Rejection Efficiency**: The new early rejection logic eliminates unnecessary fork database operations for far-ahead blocks with unknown parents, significantly reducing processing overhead and preventing sync restart loops.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -1284,6 +1371,9 @@ Common issues and remedies:
 - **Fork Switching Problems**: Verify that fork switching logic properly handles unlinkable_block_exception and prevents processing of invalid forks.
 - **Dead Fork Detection**: Check that the enhanced fork database properly throws unlinkable_block_exception for blocks from dead forks to prevent wasted processing resources.
 - **Emergency Consensus Tie-Breaking**: Verify that deterministic hash-based tie-breaking is working correctly during emergency mode to ensure consistent block selection across all nodes.
+- **Early Rejection Logic Issues**: Monitor the new early rejection logic to ensure it's properly rejecting far-ahead blocks with unknown parents and preventing unnecessary fork database operations.
+- **P2P Sync Restart Loops**: Verify that the early rejection logic is working correctly to prevent sync restart loops during snapshot imports and normal operation.
+- **Unlinkable Block Exception Handling**: Check that the P2P layer properly classifies and handles different types of unlinkable blocks (dead fork vs. far-ahead) to prevent soft-banning or unnecessary sync restarts.
 
 **Section sources**
 - [database.cpp:800-830](file://libraries/chain/database.cpp#L800-L830)
@@ -1299,20 +1389,25 @@ Common issues and remedies:
 - [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
 - [fork_database.cpp:81-88](file://libraries/chain/fork_database.cpp#L81-L88)
 - [database.cpp:1295-1377](file://libraries/chain/database.cpp#L1295-L1377)
+- [database.cpp:1216-1286](file://libraries/chain/database.cpp#L1216-L1286)
+- [node.cpp:3185-3384](file://libraries/network/node.cpp#L3185-L3384)
+- [p2p_plugin.cpp:181-196](file://plugins/p2p/p2p_plugin.cpp#L181-L196)
 
 ## Conclusion
 The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support, emergency consensus implementation, and improved error handling. It integrates chainbase for persistent storage, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, and the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals.
 
-**Updated** - The system now includes comprehensive error handling improvements for shared memory exhaustion scenarios, featuring a deferred shared memory resize mechanism with enhanced thread safety and race condition prevention. The push_block() and _generate_block() methods now gracefully handle boost::interprocess::bad_alloc exceptions by returning false instead of throwing, preserving peer connectivity and preventing P2P layer disconnections. The enhanced apply_pending_resize() method ensures memory operations are performed atomically with proper synchronization, while the new _pending_resize and _pending_resize_target fields provide clean separation between request and execution phases. These improvements make the database management system more resilient to memory pressure situations while maintaining system stability and network connectivity.
+**Updated** - The system now includes comprehensive early rejection logic that significantly improves synchronization reliability and prevents unnecessary processing overhead. The sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents prevents fork database exceptions and eliminates sync restart loops during snapshot imports. This enhancement, combined with the existing deferred shared memory resize mechanism, enhanced error handling for shared memory exhaustion, and improved P2P synchronization integration, makes the database management system more resilient to memory pressure situations while maintaining system stability and network connectivity.
 
 The enhanced DLT mode detection and block availability checking logic ensures accurate P2P synchronization and prevents false positives in block availability reporting. The new gap suppression mechanism provides intelligent warning management that prevents log spam during normal DLT operations while maintaining comprehensive diagnostic capability for troubleshooting. The automatic state management of the `_dlt_gap_logged` flag ensures optimal logging behavior without manual intervention, making the system more maintainable and operable in production environments. The sophisticated block collision detection system with rate-limiting and scenario differentiation provides enhanced diagnostic capabilities for network health monitoring. The intelligent postponed transaction processing system ensures stable operation under high load conditions with automatic queue management and time-based execution limits.
 
 The emergency consensus implementation represents a significant advancement in blockchain resilience, providing automatic network recovery mechanisms that maintain system integrity during extended downtime while preventing potential deadlocks and false activations. The hybrid witness scheduling system ensures continuous operation by dynamically adapting to witness availability, while comprehensive safety checks protect against network instability and malicious behavior. The enhanced error logging system provides comprehensive visibility into emergency consensus operations, enabling effective troubleshooting and maintenance. This implementation makes the VIZ blockchain more robust, fault-tolerant, and suitable for enterprise-grade deployments requiring high availability and automatic recovery capabilities.
 
-**Enhanced** - The memory management system now provides comprehensive logging capabilities that offer administrators detailed visibility into memory usage patterns during blockchain operation. The new deferred shared memory resize mechanism significantly improves efficiency during high-load scenarios by preventing race conditions and stale pointer issues through proper thread synchronization and lock management. The enhanced `_resize` function logs detailed information about free memory, maximum memory, and reserved memory states before and after resizing operations, enabling proactive capacity planning and performance optimization. The improved error detection capabilities in shared memory allocation provide administrators with crucial information about memory usage patterns, helping prevent memory-related issues before they impact system performance. The comprehensive emergency consensus logging system ensures that operators have complete visibility into critical error conditions and recovery procedures. These enhancements make the database management system more transparent, manageable, and suitable for production environments where memory resource optimization and comprehensive error diagnostics are critical.
+**Enhanced** - The memory management system now provides comprehensive logging capabilities that offer administrators detailed visibility into memory usage patterns during blockchain operation. The new deferred shared memory resize mechanism significantly improves efficiency during high-load scenarios by preventing race conditions and stale pointer issues through proper thread synchronization and lock management. The enhanced `_resize` function logs detailed information about free memory, maximum memory, and reserved memory states before and after resizing operations, enabling proactive capacity planning and performance optimization. The improved error detection capabilities in shared memory allocation provides administrators with crucial information about memory usage patterns, helping prevent memory-related issues before they impact system performance. The comprehensive emergency consensus logging system ensures that operators have complete visibility into critical error conditions and recovery procedures. These enhancements make the database management system more transparent, manageable, and suitable for production environments where memory resource optimization and comprehensive error diagnostics are critical.
 
 The deferred memory resize mechanism represents a major improvement in thread safety and system reliability. By deferring memory resize operations until safe points when no read locks are held, the system prevents race conditions that could lead to stale pointer issues and data corruption. The `apply_pending_resize()` method ensures that memory operations are performed atomically with proper synchronization, while the `_pending_resize` and `_pending_resize_target` fields provide a clean separation between request and execution phases. This design enables the system to handle high-load scenarios more efficiently while maintaining data consistency and preventing performance degradation from thread contention.
 
 **Enhanced Error Handling** - The most significant improvement is the enhanced error handling for shared memory exhaustion. The database now gracefully handles boost::interprocess::bad_alloc exceptions by returning false instead of throwing, which prevents P2P layer disconnections and maintains witness slot-miss logging while preserving node connectivity. The system schedules a deferred resize operation and preserves memory state by setting reserved memory to current free memory, ensuring automatic recovery without manual intervention. This approach maintains network stability during memory pressure situations and allows the missed block to be re-received during normal sync, providing a seamless user experience even under adverse conditions.
 
 **Enhanced Fork Database Handling** - The fork database now includes proper unlinkable_block_exception throwing for dead fork detection, significantly improving the system's ability to identify and reject blocks from invalid forks. This enhancement prevents wasted processing resources on dead forks and improves overall network efficiency. The improved fork switching logic with proper dead fork detection ensures that only valid, linked forks are considered for switching, reducing the risk of processing invalid chain states and improving the reliability of fork resolution operations. The addition of deterministic hash-based tie-breaking during emergency consensus mode ensures consistent block selection across all nodes, preventing split-brain scenarios and maintaining network convergence even under extreme conditions.
+
+**Early Rejection Logic Enhancement** - The new early rejection logic represents a significant improvement in synchronization reliability and performance. By intelligently rejecting blocks far ahead with unknown parents before attempting fork database operations, the system prevents unnecessary processing overhead and eliminates the possibility of fork database exceptions that could trigger sync restart loops. This enhancement is particularly beneficial during snapshot imports where the fork database may only contain the head block, preventing the common scenario where P2P peers send blocks that are far ahead and would otherwise cause continuous sync restarts. The early rejection strategy ensures that only blocks with known parents are processed through the fork database, significantly improving the efficiency of the synchronization process and reducing the likelihood of encountering unlinkable blocks that would require peer soft-banning or sync restarts.

@@ -20,14 +20,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced peer handling logic with improved unlinkable_block_exception handling
-- Implemented intelligent peer soft-banning mechanisms with automatic expiration
-- Added differentiation between stale fork peers and legitimate sync candidates
-- Prevented infinite sync loops through intelligent peer state management
-- Added `unlinkable_block_exception` catch in sync path with ahead/behind head distinction
-- Fixed `deferred_resize_exception` in sync path to avoid soft-banning peers and losing blocks
-- Restored early rejection for far-ahead blocks with unknown parent to prevent sync restart storms
-- Updated emergency consensus network-level improvements documentation
+- Enhanced peer soft-ban handling with intelligent stale fork detection and automatic flag reset logic
+- Improved unlinkable block exception management with differentiated handling based on peer position relative to local blockchain head
+- Strengthened fork database capabilities with enhanced emergency consensus support and improved block rejection handling
+- Added trusted peer soft-ban duration reduction (5 minutes vs 1 hour) for faster recovery from transient errors
+- Implemented comprehensive soft-ban expiration handling with automatic flag reset during network synchronization
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -416,42 +413,17 @@ Send --> Deliver["Deliver item via fetch_items_message"]
 
 ## Enhanced Peer Handling and Soft-Banning
 
-### Soft-Ban Trigger Reference
-All soft-ban triggers set two peer flags: `fork_rejected_until = now + duration` and `inhibit_fetching_sync_blocks = true`. The default duration is 1 hour (3600s), but **trusted peers** (IPs from `trusted-snapshot-peer` config) get a reduced 5-minute (300s) ban, allowing faster recovery from transient errors. Soft-banned peers have their broadcast blocks silently discarded in `process_block_during_normal_operation` until the ban expires. The `inhibit_fetching_sync_blocks` flag is automatically reset when the ban expires (see [Automatic Flag Reset Logic](#automatic-flag-reset-logic)).
-
-| # | Code Path | Exception / Condition | Block Position | Action | Reason | Source |
-|---|-----------|----------------------|----------------|--------|--------|--------|
-| 1 | Sync path: `send_sync_block_to_node_delegate` | `block_older_than_undo_history` | any | Soft-ban 1h (5 min trusted) | Peer is on a fork too old for our undo history; cannot switch to it | [node.cpp](file://libraries/network/node.cpp) sync block handler |
-| 2 | Sync path: `send_sync_block_to_node_delegate` | `unlinkable_block_exception` + block ≤ head | ≤ head | Soft-ban 1h (5 min trusted) | Peer sends block from a dead fork whose parent is not in fork_db; block at/below head means stale fork | [node.cpp](file://libraries/network/node.cpp) sync unlinkable handler |
-| 3 | Sync path: `send_sync_block_to_node_delegate` | `unlinkable_block_exception` + block > head | > head | Restart sync | Block is ahead but unlinkable — we may be behind; restart sync to fetch missing parent blocks | [node.cpp](file://libraries/network/node.cpp) sync unlinkable handler |
-| 4 | Sync path: `send_sync_block_to_node_delegate` | `deferred_resize_exception` | any | Restart sync, **no soft-ban** | Shared memory resize is a local condition; peer did nothing wrong; block was not applied so sync must restart to re-fetch | [node.cpp](file://libraries/network/node.cpp) sync deferred handler |
-| 5 | Sync path: `send_sync_block_to_node_delegate` | Generic `fc::exception` (not any specific catch above) | any | Soft-ban 1h (5 min trusted) | Client rejected the sync block for an unspecified reason; soft-ban prevents reconnect loops | [node.cpp](file://libraries/network/node.cpp) sync generic handler |
-| 6 | Broadcast path: `process_block_during_normal_operation` | `unlinkable_block_exception` + block ≤ head | ≤ head | Soft-ban 1h (5 min trusted) | Peer is on a stale fork; block at/below head can never link | [node.cpp](file://libraries/network/node.cpp) broadcast unlinkable handler |
-| 7 | Broadcast path: `process_block_during_normal_operation` | `unlinkable_block_exception` + block > head | > head | Restart sync | Block ahead of head is unlinkable — we may be behind; resync to catch up | [node.cpp](file://libraries/network/node.cpp) broadcast unlinkable handler |
-| 8 | Broadcast path: `process_block_during_normal_operation` | `block_older_than_undo_history` | any | Soft-ban 1h (5 min trusted) | Peer keeps broadcasting stale blocks from a dead fork | [node.cpp](file://libraries/network/node.cpp) broadcast older handler |
-| 9 | Broadcast path: `process_block_during_normal_operation` | `deferred_resize_exception` | any | **No action** (no soft-ban, no disconnect) | Shared memory resize is a local transient condition; block will be re-received after resize | [node.cpp](file://libraries/network/node.cpp) broadcast deferred handler |
-| 10 | Broadcast path: `process_block_during_normal_operation` | Generic `fc::exception` + block ≤ head | ≤ head | Soft-ban 1h (5 min trusted) | Fork rejection at/below head; soft-ban instead of disconnect to prevent cascading during emergency consensus | [node.cpp](file://libraries/network/node.cpp) broadcast generic handler |
-| 11 | Broadcast path: `process_block_during_normal_operation` | Generic `fc::exception` + block > head | > head | Disconnect | Block above head is genuinely invalid; disconnect to protect the network | [node.cpp](file://libraries/network/node.cpp) broadcast generic handler |
-| 12 | Chain layer: `_push_block` | Block at/below head, different fork, parent not in fork_db | ≤ head | Throw `unlinkable_block_exception` → triggers #2 or #6 | The fork diverged before fork_db's window; block can never link | [database.cpp](file://libraries/chain/database.cpp) early rejection |
-| 13 | Chain layer: `_push_block` | Block > head, `previous != head_block_id`, parent not in fork_db | > head | Return `false` silently | Far-ahead broadcast blocks with unknown parent would throw `unlinkable_block_exception` in fork_db, causing sync restart storms; silently reject to let sequential sync work | [database.cpp](file://libraries/chain/database.cpp) early rejection |
-| 14 | Chain layer: `push_block` | `bad_alloc` → `deferred_resize_exception` | any | Throw `deferred_resize_exception` → triggers #4 or #9 | Shared memory exhausted; resize is deferred to a safe point; P2P layer must not penalize the peer | [database.cpp](file://libraries/chain/database.cpp) bad_alloc handler |
-
-**Key design principles:**
-- **Local conditions never cause soft-bans**: `deferred_resize_exception` is a local condition (shared memory resize). The peer did nothing wrong; penalizing it would cause the node to lose all its sync partners.
-- **Ahead-of-head blocks restart sync, not soft-ban**: When a block is ahead of our head but unlinkable, it means we're behind. Soft-banning would cut us off from the very peers that could help us catch up.
-- **At/below-head stale blocks → soft-ban**: A peer sending blocks at or below our head that we can't link is on a dead fork. Soft-banning stops the noise without disconnecting (which would cause reconnect loops).
-- **Far-ahead blocks with unknown parent → silent reject**: Returning `false` silently in `_push_block` prevents these broadcast blocks from reaching `fork_db` (which would throw `unlinkable_block_exception` and trigger P2P sync restart, stalling the sequential sync mechanism).
-
 ### Intelligent Soft-Ban Mechanisms
 The node now implements sophisticated soft-ban mechanisms to prevent cascading disconnections during emergency consensus scenarios and improve peer classification accuracy.
 
 Key features:
-- **Soft-ban duration**: 1 hour (3600 seconds) for fork-rejected blocks
+- **Soft-ban duration**: 1 hour (3600 seconds) for fork-rejected blocks, reduced to 5 minutes (300 seconds) for trusted peers
 - **Automatic expiration**: Soft-bans automatically expire after the designated period
 - **Intelligent peer classification**: Differentiates between stale fork peers and legitimate sync candidates
 - **Flag reset logic**: When soft-bans expire, the inhibit_fetching_sync_blocks flag is automatically reset
 - **Emergency mode protection**: Prevents cascading failures during network emergencies
 - **Infinite loop prevention**: Smart peer state management prevents endless sync attempts
+- **Trusted peer support**: Special handling for peers in trusted-snapshot-peer configuration
 
 ```mermaid
 sequenceDiagram
@@ -483,23 +455,21 @@ Node->>Peer : "Reset inhibit_fetching_sync_blocks = false"
 - [node.cpp:3436-3458](file://libraries/network/node.cpp#L3436-L3458)
 
 ### Enhanced Unlinkable Block Exception Handling
-The system provides intelligent handling for `unlinkable_block_exception` in both sync and broadcast paths, based on peer position relative to local blockchain head:
+The system now provides intelligent handling for unlinkable_block_exception based on peer position relative to local blockchain head:
 
-**Broadcast Path** (`process_block_during_normal_operation`):
-- Block number ≤ local head → soft-ban 1 hour (stale fork, see trigger #6)
-- Block number > local head → restart sync (legitimate candidate, see trigger #7)
+**Stale Fork Detection**:
+- When peer block number ≤ local head block number
+- Peer is on a stale fork that cannot be resolved
+- Immediate soft-ban for 1 hour with inhibit_fetching_sync_blocks = true
+- Prevents wasted bandwidth and prevents infinite sync loops
+- Trusted peers receive 5-minute soft-ban duration instead of 1 hour
 
-**Sync Path** (`send_sync_block_to_node_delegate`):
-- Block number ≤ local head → soft-ban 1 hour (dead fork, see trigger #2)
-- Block number > local head → restart sync (behind, see trigger #3)
-
-**Chain Layer** (`_push_block`):
-- Block at/below head on different fork, parent not in fork_db → throw `unlinkable_block_exception` (see trigger #12)
-- Block above head, parent unknown and not head → return `false` silently to avoid sync restart storms (see trigger #13)
-
-**Deferred Resize** (`deferred_resize_exception`):
-- Sync path → restart sync, no soft-ban (see trigger #4). The block was not applied due to shared memory exhaustion; sync must restart to re-fetch the missed block.
-- Broadcast path → no action, no soft-ban (see trigger #9). The block will be re-received after resize completes.
+**Legitimate Sync Candidate**:
+- When peer block number > local head block number  
+- Peer may be ahead of us, indicating legitimate sync opportunity
+- Restarts sync process instead of disconnecting
+- Allows peer to potentially help us catch up
+- Prevents unnecessary network churn during legitimate catch-up scenarios
 
 **Section sources**
 - [node.cpp:3574-3629](file://libraries/network/node.cpp#L3574-L3629)
@@ -555,7 +525,7 @@ The enhanced peer handling logic prevents infinite sync loops through intelligen
 The node now implements sophisticated soft-ban mechanisms to prevent cascading disconnections during emergency consensus scenarios. When peers offer blocks that cause fork rejections, the system applies soft-bans instead of immediate disconnections.
 
 Key features:
-- **Soft-ban duration**: 1 hour (3600 seconds) for fork-rejected blocks
+- **Soft-ban duration**: 1 hour (3600 seconds) for fork-rejected blocks, reduced to 5 minutes for trusted peers
 - **Automatic expiration**: Soft-bans automatically expire after the designated period
 - **Flag reset logic**: When soft-bans expire, the inhibit_fetching_sync_blocks flag is automatically reset
 - **Emergency mode protection**: Prevents cascading failures during network emergencies
@@ -704,22 +674,23 @@ DBC --> CFG["config.hpp"]
 - Automatic flag management: Reduces manual intervention requirements during extended emergency operations.
 - Intelligent peer classification: Optimizes peer selection and reduces wasted bandwidth on stale forks.
 - Soft-ban caching: Prevents repeated attempts with problematic peers during emergency periods.
+- Trusted peer optimization: Reduced soft-ban duration for trusted peers enables faster network recovery.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
-- Port binding conflicts: Use listen_on_port with wait_if_not_available=true to retry; otherwise, allow dynamic port selection.
+- Port binding conflicts: Use listen_on_port with wait_if_endpoint_is_busy=true to retry; otherwise, allow dynamic port selection.
 - Rejection reasons: Review connection_rejected_message reason codes (e.g., connected_to_self, already_connected, not_accepting_connections, different_chain, outdated client).
 - Firewall/NAT: Use check-firewall messages to detect; adjust inbound/outbound ports and consider advertised inbound addresses.
 - Peer database corruption: Clear peer database via clear_peer_database to reset discovery state.
 - Bandwidth saturation: Adjust set_total_bandwidth_limit and review advertised inventory sizes.
 - Hard fork incompatibility: Upgrade client if rejected due to inability to process future blocks.
 - Emergency mode activation: Monitor logs for "EMERGENCY CONSENSUS MODE activated" messages; system automatically handles recovery.
-- Soft-ban effects: If experiencing reduced peer connectivity, check soft-ban expiration timestamps; system should automatically reset flags. Use P2P stats log (`is_blocked`, `blocked_reason` fields) to monitor.
+- Soft-ban effects: If experiencing reduced peer connectivity, check soft-ban expiration timestamps; system should automatically reset flags.
 - Flag reset issues: Verify inhibit_fetching_sync_blocks flag resets after soft-ban expiration; manual intervention rarely needed.
 - Infinite sync loops: Monitor peer behavior; system now prevents endless sync attempts through intelligent soft-ban mechanisms.
 - Stale fork detection: System automatically soft-bans peers on stale forks to prevent wasted resources.
-- Sync stall after shared memory resize: `deferred_resize_exception` now restarts sync without soft-banning peers, so the missed block is re-fetched. If sync is still stuck, check that `apply_pending_resize()` is being called at the top of `push_block()`.
-- Broadcast blocks disrupting sync: Far-ahead blocks with unknown parents are now silently rejected in `_push_block`, preventing `unlinkable_block_exception` from reaching the P2P layer and causing sync restart storms.
+- Trusted peer issues: Verify trusted-snapshot-peer configuration for reduced 5-minute soft-ban duration.
+- Block rejection handling: Monitor unlinkable_block_exception patterns to identify stale fork vs legitimate sync scenarios.
 
 **Section sources**
 - [node.cpp:2251-2280](file://libraries/network/node.cpp#L2251-L2280)
