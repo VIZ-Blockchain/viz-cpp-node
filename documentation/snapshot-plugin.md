@@ -176,11 +176,41 @@ Early-rejection checks in `_push_block` prevent sync disruption:
 
 1. **Duplicate blocks**: If a block is at or before head and its ID matches our chain, it's already applied — skip silently (prevents unnecessary `fork_db` push attempts that would throw `unlinkable_block_exception`).
 
-2. **Blocks at/before head on a different fork with unknown parent**: If a block is at or before our head but on a different fork (different ID), AND its parent isn't in the fork_db (the fork diverged before the fork_db's window), silently reject it. Without this check, `fork_db.push_block` throws `unlinkable_block_exception`, which the P2P layer catches and uses to restart sync — creating an infinite error loop where the sync peer keeps sending blocks from the other fork, each one fails to link, and each failure restarts sync.
+2. **Blocks at/before head on a different fork with unknown parent**: If a block is at or before our head but on a different fork (different ID), AND its parent isn't in the fork_db (the fork diverged before the fork_db's window), throw `unlinkable_block_exception`. The P2P layer catches this and soft-bans the peer (stale fork) or restarts sync (block ahead of head). Without this check, `fork_db.push_block` throws the same exception anyway, but the P2P layer can't distinguish the cause.
 
-3. **Far-ahead blocks with unknown parent**: If a block's `previous` is neither our `head_block_id()` nor in `fork_db`, the block can never link. Return `false` silently instead of throwing, which prevents P2P sync restart.
+3. **Far-ahead blocks with unknown parent**: If a block is above our head, its `previous` is neither our `head_block_id()` nor in `fork_db`, and it's not the genesis block, return `false` silently instead of pushing to `fork_db`. Without this guard, `fork_db.push_block` throws `unlinkable_block_exception` which triggers P2P sync restart, clearing the sync queue and preventing forward progress. This is critical after snapshot import: the node is at block N, the network is at N+1000, and every broadcast block would otherwise disrupt the sequential sync.
 
 4. **Immediate successor always allowed**: Blocks whose `previous == head_block_id()` always pass — this is the critical sync case where the next sequential block must be accepted, even when `fork_db` is empty after a restart.
+
+### Deferred Resize and Sync Recovery
+
+When shared memory is exhausted during block processing, the node schedules a deferred resize and throws `deferred_resize_exception`. The P2P layer handles this as a transient local condition:
+
+- **Sync path**: Does NOT soft-ban the peer (the peer did nothing wrong). Instead, restarts sync with all active peers so the missed block is re-fetched after the resize completes.
+- **Broadcast path**: Does NOT soft-ban or disconnect. The block will be re-received naturally after the resize.
+
+Without this fix, `deferred_resize_exception` in the sync path would fall through to the generic error handler, causing a 1-hour soft-ban of the peer AND losing the missed block — the next sync block (N+2) would fail to link because N+1 was never applied, permanently stalling sync.
+
+### P2P Soft-Ban Trigger Reference
+
+All soft-ban triggers set `fork_rejected_until = now + 3600s` and `inhibit_fetching_sync_blocks = true`. Broadcast blocks from soft-banned peers are silently discarded. The `inhibit_fetching_sync_blocks` flag is automatically reset when the ban expires.
+
+| # | Code Path | Exception / Condition | Block Position | Action | Reason |
+|---|-----------|----------------------|----------------|--------|--------|
+| 1 | Sync: `send_sync_block_to_node_delegate` | `block_older_than_undo_history` | any | Soft-ban 1h | Peer on a fork too old for undo history |
+| 2 | Sync: `send_sync_block_to_node_delegate` | `unlinkable_block_exception` + block ≤ head | ≤ head | Soft-ban 1h | Dead fork, block at/below head |
+| 3 | Sync: `send_sync_block_to_node_delegate` | `unlinkable_block_exception` + block > head | > head | Restart sync | Behind; need to fetch missing parents |
+| 4 | Sync: `send_sync_block_to_node_delegate` | `deferred_resize_exception` | any | Restart sync, no soft-ban | Local condition; peer not at fault |
+| 5 | Sync: `send_sync_block_to_node_delegate` | Generic `fc::exception` | any | Soft-ban 1h | Unspecified rejection; prevent reconnect loops |
+| 6 | Broadcast: `process_block_during_normal_operation` | `unlinkable_block_exception` + block ≤ head | ≤ head | Soft-ban 1h | Stale fork |
+| 7 | Broadcast: `process_block_during_normal_operation` | `unlinkable_block_exception` + block > head | > head | Restart sync | Behind; resync to catch up |
+| 8 | Broadcast: `process_block_during_normal_operation` | `block_older_than_undo_history` | any | Soft-ban 1h | Dead fork, stale blocks |
+| 9 | Broadcast: `process_block_during_normal_operation` | `deferred_resize_exception` | any | No action | Local transient; block re-received after resize |
+| 10 | Broadcast: `process_block_during_normal_operation` | `fc::exception` + block ≤ head | ≤ head | Soft-ban 1h | Fork rejection; prevent cascading disconnects |
+| 11 | Broadcast: `process_block_during_normal_operation` | `fc::exception` + block > head | > head | Disconnect | Genuinely invalid block |
+| 12 | Chain: `_push_block` | Block ≤ head, different fork, parent not in fork_db | ≤ head | Throw `unlinkable_block_exception` | Fork diverged before fork_db window |
+| 13 | Chain: `_push_block` | Block > head, `previous != head_block_id`, parent not in fork_db | > head | Return `false` silently | Prevent sync restart storms from broadcast blocks |
+| 14 | Chain: `push_block` | `bad_alloc` → `deferred_resize_exception` | any | Throw `deferred_resize_exception` | Shared memory exhausted; P2P must not penalize peer |
 
 ### `is_known_block()` in DLT Mode
 
