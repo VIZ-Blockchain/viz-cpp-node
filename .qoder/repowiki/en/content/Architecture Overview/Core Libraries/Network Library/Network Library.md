@@ -20,10 +20,10 @@
 
 ## Update Summary
 **Changes Made**
-- Updated peer information handling section to reflect improved IP address extraction reliability
-- Enhanced peer statistics logging documentation with conversion overhead reduction details
-- Added comprehensive coverage of critical bug fix in peer information processing
-- Updated troubleshooting guidance to include IP address extraction error handling
+- Added documentation for the new `resync()` method that enables programmatic synchronization restart with all connected peers
+- Updated Node Management section to include the resync functionality
+- Enhanced troubleshooting guidance with resync usage scenarios
+- Updated peer statistics and metrics system documentation to reflect improved network recovery capabilities
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -33,15 +33,16 @@
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Peer Statistics and Metrics System](#peer-statistics-and-metrics-system)
 7. [Peer Information Handling and IP Extraction](#peer-information-handling-and-ip-extraction)
-8. [Dependency Analysis](#dependency-analysis)
-9. [Performance Considerations](#performance-considerations)
-10. [Troubleshooting Guide](#troubleshooting-guide)
-11. [Conclusion](#conclusion)
+8. [Programmatic Synchronization Control](#programmatic-synchronization-control)
+9. [Dependency Analysis](#dependency-analysis)
+10. [Performance Considerations](#performance-considerations)
+11. [Troubleshooting Guide](#troubleshooting-guide)
+12. [Conclusion](#conclusion)
 
 ## Introduction
 This document describes the Network Library that implements peer-to-peer communication and network protocol for the VIZ node. It covers the node management layer, peer connection orchestration, standard network messages, secure transport, peer address management, and message serialization. The library provides a robust foundation for blockchain synchronization, transaction broadcasting, and block propagation across a distributed network.
 
-**Updated** Enhanced with comprehensive peer statistics logging system including latency tracking, blocking status reporting, periodic statistics collection, and improved peer information handling with reliable IP address extraction and reduced conversion overhead.
+**Updated** Enhanced with comprehensive peer statistics logging system including latency tracking, blocking status reporting, periodic statistics collection, improved peer information handling with reliable IP address extraction and reduced conversion overhead. Added programmatic synchronization control through the new `resync()` method for improved network recovery from various network states.
 
 ## Project Structure
 The network library is organized into cohesive modules:
@@ -54,6 +55,7 @@ The network library is organized into cohesive modules:
 - Configuration constants for protocol behavior
 - **Peer statistics and metrics collection system with improved IP address extraction**
 - **P2P plugin integration for peer monitoring and statistics**
+- **Programmatic synchronization control for network recovery**
 
 ```mermaid
 graph TB
@@ -68,10 +70,12 @@ MOC["message_oriented_connection.hpp"]
 CFG["config.hpp"]
 STATS["Statistics System"]
 P2P["p2p_plugin.cpp"]
+RESYNC["resync() Method"]
 end
 N --> PC
 N --> PD
 N --> CM
+N --> RESYNC
 PC --> MOC
 PC --> STCP
 PC --> MSG
@@ -84,6 +88,7 @@ CFG --> STCP
 STATS --> N
 STATS --> PC
 P2P --> STATS
+P2P --> RESYNC
 ```
 
 **Diagram sources**
@@ -96,6 +101,7 @@ P2P --> STATS
 - [message_oriented_connection.hpp:45-79](file://libraries/network/include/graphene/network/message_oriented_connection.hpp#L45-L79)
 - [config.hpp:26-106](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
 - [p2p_plugin.cpp:500-560](file://plugins/p2p/p2p_plugin.cpp#L500-L560)
+- [node.cpp:5281-5286](file://libraries/network/node.cpp#L5281-L5286)
 
 **Section sources**
 - [node.hpp:1-355](file://libraries/network/include/graphene/network/node.hpp#L1-L355)
@@ -118,6 +124,7 @@ P2P --> STATS
 - MessageOrientedConnection: Bridges secure sockets to message streams with event callbacks.
 - **Statistics System: Collects and reports peer performance metrics, latency data, and connection statistics with improved IP address extraction reliability.**
 - **P2P Plugin: Integrates peer monitoring, statistics collection, and network diagnostics with enhanced error handling.**
+- **Programmatic Synchronization Control: Enables manual restart of synchronization with all connected peers for network recovery scenarios.**
 
 **Section sources**
 - [node.hpp:182-304](file://libraries/network/include/graphene/network/node.hpp#L182-L304)
@@ -157,6 +164,9 @@ Node-->>Peer : "broadcast inventory"
 Peer-->>App : "handle_block/handle_transaction"
 P2P->>Stats : "collect peer statistics"
 Stats->>P2P : "enhanced IP address extraction"
+Note over Node,P2P : "Programmatic resync control"
+P2P->>Node : "resync()"
+Node->>Node : "start_synchronizing()"
 ```
 
 **Diagram sources**
@@ -164,6 +174,7 @@ Stats->>P2P : "enhanced IP address extraction"
 - [peer_connection.cpp:208-242](file://libraries/network/peer_connection.cpp#L208-L242)
 - [stcp_socket.cpp:69-72](file://libraries/network/stcp_socket.cpp#L69-L72)
 - [p2p_plugin.cpp:500-560](file://plugins/p2p/p2p_plugin.cpp#L500-L560)
+- [node.cpp:5281-5286](file://libraries/network/node.cpp#L5281-L5286)
 
 ## Detailed Component Analysis
 
@@ -175,6 +186,7 @@ The Node class is the central coordinator for peer discovery, connection orchest
 - Track connection counts and network usage statistics
 - Manage advanced parameters and peer advertising controls
 - **Collect and report peer statistics and call performance metrics with improved IP address extraction**
+- **Programmatic synchronization control through the resync() method**
 
 Key responsibilities:
 - Peer pool management and connection limits
@@ -183,6 +195,7 @@ Key responsibilities:
 - Bandwidth monitoring and rate limiting
 - Firewall detection and NAT traversal helpers
 - **Statistics collection and reporting for network performance analysis with reliable peer information handling**
+- **Programmatic synchronization restart for network recovery scenarios**
 
 ```mermaid
 classDiagram
@@ -204,6 +217,7 @@ class node {
 +get_potential_peers()
 +disable_peer_advertising()
 +get_call_statistics()
++resync()
 }
 class node_impl {
 -_active_connections
@@ -237,6 +251,7 @@ class node_impl {
 +on_get_current_connections_reply_message(...)
 +on_connection_closed(...)
 +get_call_statistics()
++start_synchronizing()
 }
 node --> node_impl : "owns"
 ```
@@ -580,6 +595,62 @@ The enhanced system processes peer information through a structured pipeline:
 - [p2p_plugin.cpp:500-560](file://plugins/p2p/p2p_plugin.cpp#L500-L560)
 - [node.cpp:4900-4970](file://libraries/network/node.cpp#L4900-L4970)
 
+## Programmatic Synchronization Control
+
+**New Section** The network library now provides programmatic control over synchronization through the `resync()` method, enabling manual restart of synchronization with all connected peers.
+
+### Resync Method Implementation
+The `resync()` method provides a clean interface for forcing synchronization restart:
+
+- **Method Purpose**: Restarts synchronization with all currently connected peers
+- **Implementation**: Calls `start_synchronizing()` which iterates through all active connections
+- **Logging**: Emits detailed log messages showing the number of connected peers being restarted
+- **Thread Safety**: Verified to run on the correct thread using `VERIFY_CORRECT_THREAD()`
+
+### Synchronization Restart Process
+When `resync()` is called, the following sequence occurs:
+
+1. **Connection Enumeration**: Iterates through all currently active peer connections
+2. **Individual Restart**: Calls `start_synchronizing_with_peer()` for each connected peer
+3. **State Reset**: Forces peers to re-establish synchronization state
+4. **Inventory Refresh**: Peers re-advertise their inventory and synchronization status
+
+```mermaid
+flowchart TD
+Start(["resync() Called"]) --> CheckActive["Check Active Connections"]
+CheckActive --> LoopPeers{"More Peers?"}
+LoopPeers --> |Yes| StartPeer["start_synchronizing_with_peer(peer)"]
+StartPeer --> LoopPeers
+LoopPeers --> |No| LogMsg["Log restart message"]
+LogMsg --> Complete["Resync Complete"]
+```
+
+**Diagram sources**
+- [node.cpp:5281-5286](file://libraries/network/node.cpp#L5281-L5286)
+- [node.cpp:4164-4168](file://libraries/network/node.cpp#L4164-L4168)
+
+### Integration with P2P Plugin
+The P2P plugin utilizes the `resync()` method for automatic network recovery:
+
+- **Stale Sync Detection**: Monitors for periods without block reception
+- **Automatic Recovery**: When stale sync is detected, calls `resync()` to restart synchronization
+- **Seed Reconnection**: Reconnects to seed nodes after resync to ensure continued connectivity
+- **Configuration Options**: Controlled by `p2p-stale-sync-detection` and `p2p-stale-sync-timeout-seconds` options
+
+### Use Cases for Programmatic Resync
+The `resync()` method is particularly useful for:
+
+- **Network Recovery**: Recovering from partial synchronization failures
+- **Manual Intervention**: Operator-driven restart of synchronization
+- **Debugging**: Clearing stuck synchronization states during development
+- **Network State Changes**: Adapting to significant network topology changes
+
+**Section sources**
+- [node.hpp:298-304](file://libraries/network/include/graphene/network/node.hpp#L298-L304)
+- [node.cpp:5281-5286](file://libraries/network/node.cpp#L5281-L5286)
+- [node.cpp:4164-4168](file://libraries/network/node.cpp#L4164-L4168)
+- [p2p_plugin.cpp:616-618](file://plugins/p2p/p2p_plugin.cpp#L616-L618)
+
 ## Dependency Analysis
 The network components depend on each other in a layered fashion:
 - Node depends on PeerConnection, PeerDatabase, and CoreMessages
@@ -589,12 +660,14 @@ The network components depend on each other in a layered fashion:
 - Config constants drive behavior across components
 - **Statistics system integrates with Node and PeerConnection for metrics collection**
 - **P2P plugin integrates with statistics system for enhanced peer monitoring**
+- **Resync functionality integrates with Node synchronization system**
 
 ```mermaid
 graph LR
 Node["node.hpp/.cpp"] --> PeerConn["peer_connection.hpp/.cpp"]
 Node --> PeerDB["peer_database.hpp/.cpp"]
 Node --> CoreMsg["core_messages.hpp/.cpp"]
+Node --> Resync["resync() Method"]
 PeerConn --> Msg["message.hpp"]
 PeerConn --> MOC["message_oriented_connection.hpp"]
 PeerConn --> STCP["stcp_socket.hpp/.cpp"]
@@ -606,6 +679,7 @@ STCP --> Cfg
 Stats["Statistics System"] --> Node
 Stats --> PeerConn
 P2P["p2p_plugin.cpp"] --> Stats
+P2P --> Resync
 ```
 
 **Diagram sources**
@@ -637,6 +711,7 @@ P2P["p2p_plugin.cpp"] --> Stats
 - **Latency monitoring**: Round-trip delay tracking helps identify slow or problematic peers for connection optimization.
 - **IP extraction efficiency**: Improved IP address extraction reduces CPU overhead and prevents crashes from malformed addresses.
 - **Error handling**: Comprehensive try-catch blocks prevent cascading failures in peer information processing.
+- **Resync efficiency**: Programmatic resync restarts only active connections, minimizing disruption to healthy peers.
 
 ## Troubleshooting Guide
 Common issues and diagnostics:
@@ -650,6 +725,7 @@ Common issues and diagnostics:
 - **Performance bottlenecks**: Use call statistics to identify slow methods and optimize performance.
 - **IP extraction failures**: Monitor for "(unknown)" IP addresses indicating extraction errors.
 - **Statistics logging issues**: Verify P2P plugin configuration for statistics collection.
+- **Synchronization stalls**: Use `resync()` method to manually restart synchronization with all peers.
 
 Operational controls:
 - Disable peer advertising for debugging isolated networks.
@@ -658,6 +734,8 @@ Operational controls:
 - **Monitor peer metrics**: Regularly review latency and blocking status for network health assessment.
 - **Enable statistics logging**: Use `p2p-stats-enabled` option to activate peer monitoring.
 - **Configure logging intervals**: Set appropriate `p2p-stats-interval` for desired monitoring frequency.
+- **Configure stale sync detection**: Enable `p2p-stale-sync-detection` to automatically recover from stalled synchronization.
+- **Manual resync control**: Use `resync()` method for operator-driven synchronization restarts.
 
 **Section sources**
 - [peer_database.hpp:39-45](file://libraries/network/include/graphene/network/peer_database.hpp#L39-L45)
@@ -669,4 +747,4 @@ Operational controls:
 ## Conclusion
 The Network Library provides a comprehensive, secure, and scalable foundation for peer-to-peer communication. Its modular design separates concerns between node orchestration, peer lifecycle management, protocol messaging, secure transport, and peer topology maintenance. With built-in performance controls, diagnostic capabilities, and extensible message types, it supports efficient blockchain synchronization and robust network operation.
 
-**Updated** The enhanced peer statistics logging system significantly improves network observability by providing detailed latency tracking, blocking status reporting, and comprehensive peer metrics. The critical bug fix in peer information handling ensures reliable IP address extraction with reduced conversion overhead, preventing crashes and improving overall network stability. The integration with the P2P plugin provides comprehensive monitoring capabilities for operators and developers working with the VIZ blockchain network.
+**Updated** The enhanced peer statistics logging system significantly improves network observability by providing detailed latency tracking, blocking status reporting, and comprehensive peer metrics. The critical bug fix in peer information handling ensures reliable IP address extraction with reduced conversion overhead, preventing crashes and improving overall network stability. The integration with the P2P plugin provides comprehensive monitoring capabilities for operators and developers working with the VIZ blockchain network. The new `resync()` method adds powerful programmatic control for network recovery, enabling manual restart of synchronization with all connected peers and improved resilience against various network states and synchronization failures.

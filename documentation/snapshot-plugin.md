@@ -336,6 +336,43 @@ stalled-sync-timeout-minutes = 5
 - **Network partition**: If the node cannot reach the chain head via P2P, it will attempt to bootstrap from a snapshot.
 - **DLT mode recovery**: Essential for nodes running in DLT mode without full block history.
 
+## P2P Stale Sync Detection
+
+The P2P plugin can automatically detect and recover from network stalls — when no blocks are received from any peer for an extended period. This is a lightweight recovery mechanism that does **not** require downloading a snapshot.
+
+### How It Works
+
+When enabled, the P2P plugin tracks the last time a block was received via the network. A background task checks every 30 seconds whether the elapsed time exceeds the configured timeout. If a stall is detected, the node performs three recovery actions in sequence:
+
+1. **Reset sync from LIB** — The P2P layer's sync start point is reset to the last irreversible block (LIB). This ensures the node resumes from a safe, fork-proof position instead of potentially chasing a dead fork.
+2. **Resync with connected peers** — The node explicitly restarts synchronization with all currently connected peers by sending fresh `fetch_blockchain_item_ids_message` requests.
+3. **Reconnect seed peers** — All seed nodes from `p2p-seed-node` config are re-added to the connection queue and reconnection is attempted for any that were disconnected.
+
+This is complementary to the snapshot plugin's stalled sync detection (which downloads a new snapshot). The P2P stale recovery is faster and less disruptive — it only adjusts sync state and reconnects peers, without requiring any state reload.
+
+### Config Options
+
+```ini
+# Enable P2P stale sync detection (default: false)
+p2p-stale-sync-detection = true
+
+# Timeout in seconds before recovery triggers (default: 120 = 2 minutes)
+p2p-stale-sync-timeout-seconds = 120
+```
+
+### Comparison with Snapshot Stalled Sync Detection
+
+| Feature | P2P Stale Sync | Snapshot Stalled Sync |
+|---------|---------------|----------------------|
+| Plugin | P2P | Snapshot |
+| Trigger | No blocks received for timeout | No blocks received for timeout |
+| Recovery action | Reset sync + reconnect peers | Download newer snapshot + reload state |
+| Timeout default | 120 seconds | 5 minutes |
+| Use case | Temporary network partition, peer disconnections | Node far behind, peers lack old blocks |
+| DLT mode | Works for all nodes | Designed for DLT mode |
+
+Both can be enabled independently. For DLT nodes, the snapshot detection provides deeper recovery (fresh state), while P2P detection handles transient connectivity issues without state reload.
+
 ## Config Reference
 
 ### Config file options (`config.ini`)

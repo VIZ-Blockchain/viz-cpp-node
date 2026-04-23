@@ -32,6 +32,9 @@
 - Enhanced logging system with ANSI color codes for improved visibility
 - Updated watchdog monitoring to work with trusted peer integration
 - Enhanced peer-to-peer snapshot synchronization with improved trusted peer handling
+- Added new configuration options: --snapshot-dir, --snapshot-max-age-days, --snapshot-auto-latest
+- Enhanced anti-spam protections with comprehensive access control mechanisms
+- Integrated watchdog monitoring capabilities for DLT mode operation
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -998,7 +1001,7 @@ flowchart TD
 Start([Incoming Connection]) --> CheckTrust{"Allow Only Trusted?"}
 CheckTrust --> |Yes| ValidateTrust{"IP in Trusted List?"}
 CheckTrust --> |No| CheckConcurrent{"Concurrent Connections < 5?"}
-ValidateTrust --> |No| DenyUntrusted["Send DENY_UNtrusted"]
+ValidateTrust --> |No| DenyUntrusted["Send DENY_UNTRUSTED"]
 ValidateTrust --> |Yes| CheckConcurrent
 CheckConcurrent --> |No| DenyMaxConnections["Send DENY_MAX_CONNECTIONS"]
 CheckConcurrent --> |Yes| CheckSession{"Active Sessions < 2/IP?"}
