@@ -10,6 +10,9 @@
 - [config.ini](file://share/vizd/config/config.ini)
 - [config_testnet.ini](file://share/vizd/config/config_testnet.ini)
 - [config_witness.ini](file://share/vizd/config/config_witness.ini)
+- [config_debug.ini](file://share/vizd/config/config_debug.ini)
+- [config_mongo.ini](file://share/vizd/config/config_mongo.ini)
+- [config_stock_exchange.ini](file://share/vizd/config/config_stock_exchange.ini)
 - [node.hpp](file://libraries/network/include/graphene/network/node.hpp)
 - [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp)
 - [message.hpp](file://libraries/network/include/graphene/network/message.hpp)
@@ -20,11 +23,12 @@
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive documentation for the new trusted peer support system
-- Documented the trusted-snapshot-peer configuration option and its integration with P2P soft-ban reduction
-- Updated soft-ban duration documentation (5 minutes for trusted peers vs 1 hour for regular peers)
-- Enhanced P2P integration section covering automatic trusted peer endpoint registration
-- Updated practical deployment examples to include trusted peer configuration
+- Added comprehensive documentation for the new P2P stale sync detection feature
+- Documented the p2p-stale-sync-detection configuration option (default: false)
+- Documented the p2p-stale-sync-timeout-seconds configuration option (default: 120)
+- Updated all configuration template examples to include the new stale sync detection options
+- Enhanced troubleshooting section with stale sync detection guidance
+- Updated practical deployment examples to include stale sync detection configuration
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -41,10 +45,10 @@
 ## Introduction
 This document provides comprehensive network configuration guidance for the VIZ CPP Node peer-to-peer (P2P) networking stack. It covers peer connection settings, seed node configuration, network discovery mechanisms, listen address and port configuration, firewall considerations, security settings, connection limits, performance tuning, bandwidth management, and monitoring. Practical examples are included for private networks, testnets, and mainnet-like deployments.
 
-**Updated** The configuration system now includes a sophisticated trusted peer support system with reduced soft-ban duration for trusted peers and automatic integration with the snapshot plugin for enhanced network bootstrapping capabilities.
+**Updated** The configuration system now includes a sophisticated stale sync detection mechanism that automatically recovers from network stalls by resetting sync from the last irreversible block and reconnecting seed peers when no blocks are received for the configured timeout period.
 
 ## Project Structure
-The P2P networking is implemented in the network library and integrated via the P2P plugin. Configuration is primarily driven by command-line options and configuration files, with enhanced integration through the snapshot plugin for trusted peer management.
+The P2P networking is implemented in the network library and integrated via the P2P plugin. Configuration is primarily driven by command-line options and configuration files, with enhanced integration through the snapshot plugin for trusted peer management and stale sync detection capabilities.
 
 ```mermaid
 graph TB
@@ -52,6 +56,8 @@ subgraph "Application Layer"
 P2PPlugin["P2P Plugin<br/>p2p_plugin.cpp"]
 SnapshotPlugin["Snapshot Plugin<br/>plugin.cpp"]
 ChainPlugin["Chain Plugin<br/>plugin.cpp"]
+StaleSync["Stale Sync Detection<br/>p2p-stale-sync-detection"]
+TimeoutConfig["Timeout Configuration<br/>p2p-stale-sync-timeout-seconds"]
 end
 subgraph "Network Library"
 Node["Node<br/>node.cpp"]
@@ -65,6 +71,9 @@ subgraph "Configuration"
 CfgIni["config.ini"]
 TestCfg["config_testnet.ini"]
 WitCfg["config_witness.ini"]
+DebugCfg["config_debug.ini"]
+MongoCfg["config_mongo.ini"]
+StockCfg["config_stock_exchange.ini"]
 TrustedPeers["Trusted Peer IPs<br/>_trusted_peer_ips"]
 SoftBan["Soft-Ban Duration<br/>TRUSTED_SOFT_BAN_DURATION_SEC"]
 end
@@ -77,6 +86,11 @@ Node --> PeerDB
 P2PPlugin --> CfgIni
 P2PPlugin --> TestCfg
 P2PPlugin --> WitCfg
+P2PPlugin --> DebugCfg
+P2PPlugin --> MongoCfg
+P2PPlugin --> StockCfg
+P2PPlugin --> StaleSync
+P2PPlugin --> TimeoutConfig
 SnapshotPlugin --> TrustedPeers
 SnapshotPlugin --> SoftBan
 Node --> TrustedPeers
@@ -97,20 +111,22 @@ Node --> TrustedPeers
 
 ## Core Components
 - P2P Plugin: Parses CLI and config options, initializes the Node, sets advanced parameters, and starts listening/connecting.
-- Node: Manages P2P lifecycle, connection orchestration, sync loops, rate limiting, bandwidth monitoring, and trusted peer soft-ban management.
+- Node: Manages P2P lifecycle, connection orchestration, sync loops, rate limiting, bandwidth monitoring, trusted peer soft-ban management, and stale sync detection.
 - PeerConnection: Encapsulates per-peer state, encryption handshake, send queues, and inventory tracking.
 - STCP Socket: Provides encrypted transport using ephemeral ECDH key exchange and AES-based stream cipher.
 - Configuration Constants: Defines protocol version, ports, defaults, timeouts, limits, and performance parameters.
 - Message Types: Defines the wire-level message header and serialization.
 - Peer Database: Tracks potential peers, connection attempts, and outcomes.
-- **Trusted Peer System**: New component that manages trusted peer endpoints and reduces soft-ban duration for improved network bootstrapping.
+- **Stale Sync Detection**: New component that monitors block reception timing and automatically recovers from network stalls.
+- **Trusted Peer System**: Enhanced component that manages trusted peer endpoints and reduces soft-ban duration for improved network bootstrapping.
 
 Key configuration entry points:
-- CLI options: p2p-endpoint, p2p-max-connections, p2p-seed-node, p2p-force-validate.
-- Config file keys: p2p-endpoint, p2p-max-connections, p2p-seed-node, loggers, **trusted-snapshot-peer**.
+- CLI options: p2p-endpoint, p2p-max-connections, p2p-seed-node, p2p-force-validate, **p2p-stale-sync-detection**, **p2p-stale-sync-timeout-seconds**.
+- Config file keys: p2p-endpoint, p2p-max-connections, p2p-seed-node, loggers, **p2p-stale-sync-detection**, **p2p-stale-sync-timeout-seconds**, **trusted-snapshot-peer**.
+- **Stale Sync Configuration**: Two new configuration options for detecting and recovering from network stalls.
 - **Trusted Peer Configuration**: Multiple trusted-snapshot-peer entries for reduced soft-ban duration.
 
-**Updated** Configuration now includes trusted peer support with reduced soft-ban duration and automatic integration with the snapshot plugin.
+**Updated** Configuration now includes stale sync detection with two new configuration options and enhanced trusted peer support with reduced soft-ban duration.
 
 **Section sources**
 - [p2p_plugin.cpp:689-698](file://plugins/p2p/p2p_plugin.cpp#L689-L698)
@@ -119,7 +135,7 @@ Key configuration entry points:
 - [config.ini:96-101](file://share/vizd/config/config.ini#L96-L101)
 
 ## Architecture Overview
-High-level P2P flow from plugin initialization to network operation, including trusted peer integration.
+High-level P2P flow from plugin initialization to network operation, including stale sync detection and trusted peer integration.
 
 ```mermaid
 sequenceDiagram
@@ -128,7 +144,8 @@ participant P2P as "P2P Plugin"
 participant Node as "Node"
 participant Snapshot as "Snapshot Plugin"
 participant Seed as "Seed Peers"
-CLI->>P2P : Parse options (p2p-endpoint, p2p-max-connections, p2p-seed-node)
+participant StaleSync as "Stale Sync Monitor"
+CLI->>P2P : Parse options (p2p-endpoint, p2p-max-connections, p2p-seed-node, p2p-stale-sync-detection, p2p-stale-sync-timeout-seconds)
 P2P->>Node : Construct node(user_agent)
 P2P->>Node : load_configuration(p2p_dir)
 P2P->>Node : set_node_delegate(...)
@@ -144,6 +161,8 @@ P2P->>Node : sync_from(head, synopsis)
 Note over Snapshot,Node : Trusted Peer Registration
 Snapshot->>P2P : get_trusted_snapshot_peers()
 P2P->>Node : set_trusted_peer_endpoints(trusted_eps)
+Note over StaleSync,Node : Stale Sync Detection Setup
+StaleSync->>P2P : Initialize stale sync monitor
 Node->>Seed : Connect and handshake
 Node-->>P2P : Status callbacks (connection_count_changed, sync_status)
 ```
@@ -200,6 +219,12 @@ class Node {
 +is_trusted_peer()
 +get_soft_ban_duration()
 }
+class StaleSyncDetection {
++_stale_sync_enabled
++_stale_sync_timeout_seconds
++_last_block_received_time
++stale_sync_check_task()
+}
 class TrustedPeerSystem {
 +_trusted_peer_ips
 +SOFT_BAN_DURATION_SEC = 3600
@@ -207,6 +232,7 @@ class TrustedPeerSystem {
 }
 PeerConnection --> STCP_Socket : "encrypted transport"
 Node --> PeerConnection : "manages"
+Node --> StaleSyncDetection : "uses"
 Node --> TrustedPeerSystem : "uses"
 ```
 
@@ -221,6 +247,49 @@ Node --> TrustedPeerSystem : "uses"
 - [stcp_socket.cpp:37-92](file://libraries/network/stcp_socket.cpp#L37-L92)
 - [node.cpp:5254-5274](file://libraries/network/node.cpp#L5254-L5274)
 - [node.cpp:592-600](file://libraries/network/node.cpp#L592-L600)
+
+### Stale Sync Detection System
+- **Stale Sync Detection Configuration**:
+  - Enabled via `p2p-stale-sync-detection = true` in configuration files.
+  - Timeout configured via `p2p-stale-sync-timeout-seconds = 120` (default: 120 seconds = 2 minutes).
+  - Monitors block reception timing across all connected peers.
+- **Automatic Recovery Mechanism**:
+  - Background task checks every 30 seconds for network stalls.
+  - When no blocks received for the configured timeout, automatically triggers recovery actions.
+  - Three sequential recovery actions: reset sync from LIB, resync with connected peers, reconnect seed peers.
+- **Recovery Actions**:
+  - **Reset sync from LIB**: Sync start point moved to last irreversible block (safe fork-proof position).
+  - **Resync with connected peers**: Fresh synchronization requests sent to all currently connected peers.
+  - **Reconnect seed peers**: All seed nodes from configuration are reconnected.
+- **Complementary to Snapshot Plugin**:
+  - P2P stale detection is lightweight and doesn't require snapshot downloads.
+  - Works alongside snapshot plugin's stalled sync detection for comprehensive recovery.
+  - Faster recovery compared to snapshot-based approach.
+
+```mermaid
+flowchart TD
+Start(["Stale Sync Detection Startup"]) --> CheckEnabled{"p2p-stale-sync-detection enabled?"}
+CheckEnabled --> |No| End(["Disabled"])
+CheckEnabled --> |Yes| InitTimer["Initialize last_block_received_time"]
+InitTimer --> ScheduleTask["Schedule 30-second check task"]
+ScheduleTask --> Monitor["Monitor block reception"]
+Monitor --> CheckStall{"Elapsed > timeout?"}
+CheckStall --> |No| Wait["Wait 30 seconds"]
+CheckStall --> |Yes| ResetSync["Reset sync from LIB"]
+ResetSync --> ResyncPeers["Resync with connected peers"]
+ResyncPeers --> ReconnectSeeds["Reconnect all seed peers"]
+ReconnectSeeds --> ResetTimer["Reset last_block_received_time"]
+ResetTimer --> Wait
+Wait --> Monitor
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:585-649](file://plugins/p2p/p2p_plugin.cpp#L585-L649)
+- [p2p_plugin.cpp:812-820](file://plugins/p2p/p2p_plugin.cpp#L812-L820)
+
+**Section sources**
+- [p2p_plugin.cpp:585-649](file://plugins/p2p/p2p_plugin.cpp#L585-L649)
+- [p2p_plugin.cpp:812-820](file://plugins/p2p/p2p_plugin.cpp#L812-L820)
 
 ### Trusted Peer Support System
 - **Trusted Peer Configuration**:
@@ -391,6 +460,10 @@ D --> |No| C
   - Transaction rate limit and inventory retention windows are tunable via constants.
 - Sync Behavior:
   - Prefetch thresholds and batch sizes influence sync throughput.
+- **Stale Sync Optimization**:
+  - Configurable timeout (default: 120 seconds) prevents unnecessary recovery actions.
+  - Automatic recovery from temporary network partitions and peer disconnections.
+  - Complementary to snapshot plugin for comprehensive network stall recovery.
 - **Soft-Ban Optimization**:
   - Trusted peers benefit from reduced soft-ban duration for faster recovery.
   - Improved network bootstrapping and sync performance.
@@ -405,13 +478,16 @@ D --> |No| C
 - Configure a private listen endpoint and a small set of seed nodes.
 - Adjust p2p-max-connections for expected peer count.
 - Disable external exposure by binding to localhost or internal subnet.
+- Enable stale sync detection for automatic recovery from network partitions.
 
 Example keys:
 - p2p-endpoint = 10.0.0.5:2001
 - p2p-max-connections = 10
 - p2p-seed-node = 10.0.0.10:2001
+- **p2p-stale-sync-detection = true**
+- **p2p-stale-sync-timeout-seconds = 120**
 
-**Updated** Using standardized port 2001 instead of legacy 4243.
+**Updated** Using standardized port 2001 instead of legacy 4243 and added stale sync detection configuration.
 
 **Section sources**
 - [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
@@ -419,11 +495,14 @@ Example keys:
 #### Testnet
 - Use testnet-specific defaults and endpoints.
 - Enable witness participation and adjust required participation as needed.
+- Configure stale sync detection with appropriate timeout for testnet conditions.
 
 Example keys:
 - p2p-endpoint = 0.0.0.0:4243
 - p2p-seed-node = (testnet seed IPs)
 - enable-stale-production = true
+- **p2p-stale-sync-detection = true**
+- **p2p-stale-sync-timeout-seconds = 120**
 
 **Section sources**
 - [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
@@ -432,18 +511,22 @@ Example keys:
 - Bind to public IP and port 2001; ensure firewall/NAT traversal is configured.
 - Increase p2p-max-connections for high-throughput nodes.
 - Monitor bandwidth and tune rate limiting.
+- Enable stale sync detection with conservative timeout settings.
 
 Example keys:
 - p2p-endpoint = 0.0.0.0:2001
 - p2p-max-connections = 200
 - p2p-seed-node = (mainnet seed IPs)
+- **p2p-stale-sync-detection = true**
+- **p2p-stale-sync-timeout-seconds = 180**
 
-**Updated** Mainnet now standardized to port 2001 for consistent deployment.
+**Updated** Mainnet now standardized to port 2001 for consistent deployment and added stale sync detection configuration.
 
 #### Trusted Peer Deployment
 - Configure trusted-snapshot-peer entries for reliable network bootstrapping.
 - Set sync-snapshot-from-trusted-peer to true for automatic snapshot-based bootstrapping.
 - Benefit from reduced soft-ban duration (5 minutes vs 1 hour) for trusted peers.
+- Enable stale sync detection for automatic recovery from network stalls.
 
 Example keys:
 - p2p-endpoint = 0.0.0.0:2001
@@ -452,8 +535,10 @@ Example keys:
 - sync-snapshot-from-trusted-peer = true
 - trusted-snapshot-peer = 185.45.192.155:8092
 - trusted-snapshot-peer = 62.109.17.82:8092
+- **p2p-stale-sync-detection = true**
+- **p2p-stale-sync-timeout-seconds = 120**
 
-**Updated** Added trusted peer configuration for enhanced network bootstrapping and reduced soft-ban duration.
+**Updated** Added trusted peer configuration for enhanced network bootstrapping and reduced soft-ban duration, plus stale sync detection configuration.
 
 **Section sources**
 - [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
@@ -472,8 +557,12 @@ N --> PDB["libraries/network/include/graphene/network/peer_database.hpp"]
 P2P --> C1["share/vizd/config/config.ini"]
 P2P --> C2["share/vizd/config/config_testnet.ini"]
 P2P --> C3["share/vizd/config/config_witness.ini"]
+P2P --> C4["share/vizd/config/config_debug.ini"]
+P2P --> C5["share/vizd/config/config_mongo.ini"]
+P2P --> C6["share/vizd/config/config_stock_exchange.ini"]
 Snapshot["plugins/snapshot/plugin.cpp"] --> TrustedPeers["_trusted_peer_ips"]
 N --> TrustedPeers
+N --> StaleSync["Stale Sync Detection"]
 ```
 
 **Diagram sources**
@@ -493,6 +582,11 @@ N --> TrustedPeers
 - Monitor bandwidth metrics and adjust rate limiting if necessary.
 - Prefer outbound connections to stable, high-bandwidth peers.
 - Keep inventory sizes reasonable to avoid memory pressure during floods.
+- **Stale Sync Benefits**:
+  - Automatic recovery from temporary network partitions and peer disconnections.
+  - Configurable timeout prevents unnecessary recovery actions during normal operation.
+  - Lightweight recovery mechanism that doesn't require snapshot downloads.
+  - Complementary to snapshot plugin for comprehensive network stall handling.
 - **Trusted Peer Benefits**:
   - Reduced soft-ban duration (5 minutes vs 1 hour) for faster recovery from transient errors.
   - Improved network bootstrapping performance with trusted snapshot peers.
@@ -510,6 +604,11 @@ Common issues and remedies:
 - Peer Discovery Failures:
   - Check peer_database entries for repeated failures.
   - Increase retry delays and verify network connectivity.
+- **Stale Sync Detection Issues**:
+  - Verify p2p-stale-sync-detection is set to true in configuration.
+  - Check that p2p-stale-sync-timeout-seconds is appropriately configured (default: 120 seconds).
+  - Monitor logs for stale sync detection messages and recovery actions.
+  - Ensure block reception is occurring normally before relying on stale sync recovery.
 - **Trusted Peer Issues**:
   - Verify trusted-snapshot-peer configuration entries are valid IP:port pairs.
   - Check that snapshot plugin is properly loaded and reporting trusted peers.
@@ -519,6 +618,7 @@ Common issues and remedies:
 Operational hooks:
 - Node delegates connection_count_changed and sync_status for monitoring.
 - Logs for P2P subsystem are configurable via logging appenders.
+- **Stale Sync Logging**: Automatic detection and recovery actions are logged with timing information.
 - **Trusted Peer Logging**: Automatic registration and soft-ban duration logging.
 
 **Section sources**
@@ -527,7 +627,7 @@ Operational hooks:
 - [node.cpp:5259-5262](file://libraries/network/node.cpp#L5259-L5262)
 
 ## Conclusion
-The VIZ CPP Node P2P stack provides a robust, encrypted transport with configurable connection limits, bandwidth monitoring, and seed-driven discovery. The recent additions of trusted peer support significantly enhance network bootstrapping capabilities with reduced soft-ban duration (5 minutes vs 1 hour) and automatic integration with the snapshot plugin. The standardization of port 2001 for mainnet deployments and integration of seed node management through config.ini simplify configuration and improve consistency. The trusted peer system enables faster recovery from transient errors, improved sync performance, and more reliable network bootstrapping. Correctly setting listen endpoints, ports, connection caps, and trusted peer configurations, combined with appropriate firewall and NAT configuration, enables reliable operation across private, testnet, and mainnet environments. Monitoring and tuning of rate limits, inventory sizes, and trusted peer benefits further improves resilience under load.
+The VIZ CPP Node P2P stack provides a robust, encrypted transport with configurable connection limits, bandwidth monitoring, and seed-driven discovery. The recent additions of stale sync detection significantly enhance network reliability by automatically recovering from network stalls through three sequential recovery actions: resetting sync from the last irreversible block, resynchronizing with connected peers, and reconnecting seed peers. The trusted peer support system further enhances network bootstrapping capabilities with reduced soft-ban duration (5 minutes vs 1 hour) and automatic integration with the snapshot plugin. The standardization of port 2001 for mainnet deployments and integration of seed node management through config.ini simplify configuration and improve consistency. The stale sync detection feature provides a lightweight, automatic recovery mechanism that complements the snapshot plugin's more comprehensive recovery approach. Correctly setting listen endpoints, ports, connection caps, trusted peer configurations, and stale sync detection parameters, combined with appropriate firewall and NAT configuration, enables reliable operation across private, testnet, and mainnet environments. Monitoring and tuning of rate limits, inventory sizes, trusted peer benefits, and stale sync detection further improves resilience under load.
 
 ## Appendices
 
@@ -536,10 +636,12 @@ The VIZ CPP Node P2P stack provides a robust, encrypted transport with configura
 - p2p-max-connections: Maximum number of simultaneous connections.
 - p2p-seed-node: Remote peer IP:port to bootstrap discovery (configured in config.ini).
 - p2p-force-validate: Force validation of all transactions.
+- **p2p-stale-sync-detection**: Enable automatic recovery from network stalls (default: false).
+- **p2p-stale-sync-timeout-seconds**: Timeout in seconds before stale sync detection triggers recovery (default: 120).
 - **trusted-snapshot-peer**: Trusted peer IP:port for reduced soft-ban duration and enhanced bootstrapping.
 - **sync-snapshot-from-trusted-peer**: Enable automatic snapshot-based bootstrapping from trusted peers.
 
-**Updated** Mainnet now uses standardized port 2001 and integrated seed node configuration, plus new trusted peer support system.
+**Updated** Mainnet now uses standardized port 2001 and integrated seed node configuration, plus new stale sync detection system with two configuration options and enhanced trusted peer support system.
 
 **Section sources**
 - [p2p_plugin.cpp:467-482](file://plugins/p2p/p2p_plugin.cpp#L467-L482)
