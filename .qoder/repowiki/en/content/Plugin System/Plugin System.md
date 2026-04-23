@@ -12,10 +12,13 @@
 - [plugins/json_rpc/include/graphene/plugins/json_rpc/plugin.hpp](file://plugins/json_rpc/include/graphene/plugins/json_rpc/plugin.hpp)
 - [plugins/account_history/include/graphene/plugins/account_history/plugin.hpp](file://plugins/account_history/include/graphene/plugins/account_history/plugin.hpp)
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp)
+- [plugins/p2p/CMakeLists.txt](file://plugins/p2p/CMakeLists.txt)
+- [plugins/p2p/p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
 - [plugins/mongo_db/include/graphene/plugins/mongo_db/mongo_db_plugin.hpp](file://plugins/mongo_db/include/graphene/plugins/mongo_db/mongo_db_plugin.hpp)
 - [plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp)
+- [plugins/snapshot/CMakeLists.txt](file://plugins/snapshot/CMakeLists.txt)
+- [plugins/snapshot/plugin.cpp](file://plugins/snapshot/plugin.cpp)
 - [plugins/debug_node/plugin.cpp](file://plugins/debug_node/plugin.cpp)
-- [plugins/p2p/p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
 - [libraries/protocol/include/graphene/protocol/operations.hpp](file://libraries/protocol/include/graphene/protocol/operations.hpp)
 - [libraries/chain/chain_evaluator.cpp](file://libraries/chain/chain_evaluator.cpp)
 - [libraries/chain/database.cpp](file://libraries/chain/database.cpp)
@@ -32,10 +35,10 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced P2P plugin with improved type safety in IP address handling using static_cast<std::string>()
-- Updated peer statistics logging to use explicit type conversion for peer_info.host.get_address()
-- Added documentation about the static_cast<std::string>() fix for preventing implicit type conversion issues
-- Updated troubleshooting guidance to include type safety considerations for IP address handling
+- Enhanced P2P plugin integration with snapshot plugin through CMake linking and cross-plugin functionality
+- Added automatic trusted peer endpoint registration from snapshot plugin to P2P layer
+- Updated P2P plugin to utilize snapshot plugin's trusted peer management for reduced soft-ban duration
+- Improved cross-plugin communication patterns between P2P and snapshot plugins
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -45,18 +48,19 @@
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [DLT Mode and Snapshot Integration](#dlt-mode-and-snapshot-integration)
 7. [Enhanced P2P Plugin Integration with DLT Mode Awareness](#enhanced-p2p-plugin-integration-with-dlt-mode-awareness)
-8. [Type Safety Improvements in IP Address Handling](#type-safety-improvements-in-ip-address-handling)
-9. [Dependency Analysis](#dependency-analysis)
-10. [Plugin Deprecation Status and Maintenance Practices](#plugin-deprecation-status-and-maintenance-practices)
-11. [Performance Considerations](#performance-considerations)
-12. [Troubleshooting Guide](#troubleshooting-guide)
-13. [Conclusion](#conclusion)
-14. [Appendices](#appendices)
+8. [Cross-Plugin Integration: P2P and Snapshot](#cross-plugin-integration-p2p-and-snapshot)
+9. [Type Safety Improvements in IP Address Handling](#type-safety-improvements-in-ip-address-handling)
+10. [Dependency Analysis](#dependency-analysis)
+11. [Plugin Deprecation Status and Maintenance Practices](#plugin-deprecation-status-and-maintenance-practices)
+12. [Performance Considerations](#performance-considerations)
+13. [Troubleshooting Guide](#troubleshooting-guide)
+14. [Conclusion](#conclusion)
+15. [Appendices](#appendices)
 
 ## Introduction
 This document explains the VIZ C++ Node plugin system architecture, focusing on how the appbase-based framework enables modular functionality, the plugin lifecycle from registration to shutdown, and inter-plugin communication patterns. It documents the built-in plugin ecosystem (40+ plugins) ranging from core blockchain functions to specialized APIs and integrations, including the enhanced snapshot plugin capabilities for DLT (Distributed Ledger Technology) mode operations and integration with rolling block log features.
 
-**Updated** Enhanced with comprehensive DLT mode documentation covering snapshot-based node bootstrap, rolling block log integration, and P2P layer compatibility for distributed ledger deployments. The P2P plugin now includes sophisticated DLT mode awareness with improved error handling and logging capabilities for DLT mode block serving operations, featuring enhanced sync block processing visibility and better synchronization progress monitoring. Recent improvements include enhanced type safety in IP address handling to prevent implicit type conversion issues in peer management code.
+**Updated** Enhanced with comprehensive DLT mode documentation covering snapshot-based node bootstrap, rolling block log integration, and P2P layer compatibility for distributed ledger deployments. The P2P plugin now includes sophisticated DLT mode awareness with improved error handling and logging capabilities for DLT mode block serving operations, featuring enhanced sync block processing visibility and better synchronization progress monitoring. Recent improvements include enhanced type safety in IP address handling to prevent implicit type conversion issues in peer management code. **Cross-plugin integration** now enables the P2P plugin to automatically register trusted peer endpoints from the snapshot plugin, improving peer trust management and reducing soft-ban durations for verified snapshot sources.
 
 ## Project Structure
 The plugin system is organized around the appbase application framework and a dedicated plugins directory. Each plugin is a self-contained module that registers APIs, subscribes to chain events, and optionally depends on other plugins. The top-level plugins build script enumerates subdirectories and exposes a runtime-accessible list of available plugins. Built-in plugins are located under libraries/plugins/<plugin_name>, while external plugins can be added similarly.
@@ -75,6 +79,8 @@ C --> J["Chain Database<br/>chainbase::database"]
 I --> K["DLT Block Log<br/>dlt_block_log"]
 G --> L["DLT Mode Integration<br/>P2P Layer"]
 G --> M["Type Safety Enhancements<br/>IP Address Handling"]
+G --> N["Cross-Plugin Integration<br/>Snapshot Trust Management"]
+I --> O["Trusted Peer Management<br/>Automatic Endpoint Registration"]
 ```
 
 **Diagram sources**
@@ -88,6 +94,8 @@ G --> M["Type Safety Enhancements<br/>IP Address Handling"]
 - [plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp:42-76](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L42-L76)
 - [libraries/chain/include/graphene/chain/dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
 - [plugins/p2p/p2p_plugin.cpp:203-257](file://plugins/p2p/p2p_plugin.cpp#L203-L257)
+- [plugins/p2p/p2p_plugin.cpp:688-697](file://plugins/p2p/p2p_plugin.cpp#L688-L697)
+- [plugins/snapshot/plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
 
 **Section sources**
 - [plugins/CMakeLists.txt:1-12](file://plugins/CMakeLists.txt#L1-L12)
@@ -99,9 +107,9 @@ G --> M["Type Safety Enhancements<br/>IP Address Handling"]
 - Webserver Plugin: Starts an HTTP/WebSocket server and dispatches JSON-RPC queries to registered handlers on the app's io_service thread.
 - Database API Plugin: Exposes read-only database queries via JSON-RPC, including blocks, accounts, balances, and chain metadata.
 - Account History Plugin: Tracks per-account operation histories and exposes retrieval APIs.
-- P2P Plugin: Manages peer-to-peer networking, broadcasting blocks/transactions, and block production controls. **Enhanced** with DLT mode awareness, improved error handling, sophisticated logging for sync block processing, and **improved type safety** in IP address handling.
+- P2P Plugin: Manages peer-to-peer networking, broadcasting blocks/transactions, and block production controls. **Enhanced** with DLT mode awareness, improved error handling, sophisticated logging for sync block processing, and **improved type safety** in IP address handling. **Enhanced** with cross-plugin integration for trusted peer management from the snapshot plugin.
 - Mongo DB Plugin: Integrates with MongoDB for indexing and archival of chain data.
-- **Snapshot Plugin**: Enables DLT (Distributed Ledger Technology) mode operations including snapshot creation, loading, P2P snapshot synchronization, and integration with rolling block logs.
+- **Snapshot Plugin**: Enables DLT (Distributed Ledger Technology) mode operations including snapshot creation, loading, P2P snapshot synchronization, and integration with rolling block logs. **Enhanced** with trusted peer endpoint management for cross-plugin integration.
 
 **Section sources**
 - [plugins/json_rpc/include/graphene/plugins/json_rpc/plugin.hpp:84-118](file://plugins/json_rpc/include/graphene/plugins/json_rpc/plugin.hpp#L84-L118)
@@ -121,6 +129,7 @@ The plugin architecture follows appbase conventions:
   - Shared application services (e.g., chain database).
   - Signals/slots (Boost.Signals2) for event-driven coordination.
   - Explicit API calls across plugin boundaries.
+  - **Enhanced cross-plugin integration** through direct plugin access and shared configuration.
 
 ```mermaid
 sequenceDiagram
@@ -130,6 +139,7 @@ participant RPC as "JSON-RPC Plugin"
 participant DBAPI as "Database API Plugin"
 participant CHAIN as "Chain Plugin"
 participant SNAP as "Snapshot Plugin"
+participant P2P as "P2P Plugin"
 Client->>WS : "HTTP/WS JSON-RPC request"
 WS->>RPC : "Dispatch body"
 RPC->>DBAPI : "Resolve API name and method"
@@ -138,7 +148,8 @@ CHAIN-->>DBAPI : "Database objects"
 DBAPI-->>RPC : "Response variant"
 RPC-->>WS : "Formatted JSON-RPC response"
 WS-->>Client : "HTTP/WS response"
-Note over SNAP,CHAIN : "DLT mode : Snapshot plugin manages state<br/>and integrates with rolling block logs"
+Note over SNAP,P2P : "Cross-plugin integration : <br/>P2P registers trusted peers<br/>from snapshot plugin"
+Note over P2P,CHAIN : "DLT mode : Snapshot plugin manages state<br/>and integrates with rolling block logs"
 ```
 
 **Diagram sources**
@@ -147,6 +158,8 @@ Note over SNAP,CHAIN : "DLT mode : Snapshot plugin manages state<br/>and integra
 - [plugins/database_api/include/graphene/plugins/database_api/plugin.hpp:179-403](file://plugins/database_api/include/graphene/plugins/database_api/plugin.hpp#L179-L403)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:88-91](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L88-L91)
 - [plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp:60-76](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L60-L76)
+- [plugins/p2p/p2p_plugin.cpp:688-697](file://plugins/p2p/p2p_plugin.cpp#L688-L697)
+- [plugins/snapshot/plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
 
 ## Detailed Component Analysis
 
@@ -269,6 +282,7 @@ class AccountHistoryPlugin {
 - **DLT Integration**: Automatically falls back to DLT block log when serving blocks not found in main block log.
 - **Enhanced Error Handling**: Improved logging and error handling specifically for DLT mode scenarios with sophisticated debug logging capabilities.
 - **Type Safety Improvements**: Enhanced IP address handling with explicit type conversion using static_cast<std::string>() to prevent implicit type conversion issues in peer management code.
+- **Cross-Plugin Integration**: **Enhanced** with automatic trusted peer endpoint registration from the snapshot plugin for improved peer trust management.
 
 ```mermaid
 classDiagram
@@ -281,17 +295,20 @@ class P2PPlugin {
 +set_block_production(flag)
 +get_item(item_id)
 +get_block_ids(synopsis, remaining, limit)
++register_trusted_snapshot_peers()
 }
 ```
 
 **Diagram sources**
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp:18-52](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L52)
 - [plugins/p2p/p2p_plugin.cpp:259-277](file://plugins/p2p/p2p_plugin.cpp#L259-L277)
+- [plugins/p2p/p2p_plugin.cpp:688-697](file://plugins/p2p/p2p_plugin.cpp#L688-L697)
 
 **Section sources**
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp:20-20](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L20-L20)
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp:40-49](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L40-L49)
 - [plugins/p2p/p2p_plugin.cpp:259-277](file://plugins/p2p/p2p_plugin.cpp#L259-L277)
+- [plugins/p2p/p2p_plugin.cpp:688-697](file://plugins/p2p/p2p_plugin.cpp#L688-L697)
 
 ### Mongo DB Plugin
 - Role: Integrates with MongoDB for indexing and archival of chain data.
@@ -321,6 +338,8 @@ class MongoDbPlugin {
   - Serves snapshots to other nodes via TCP protocol
   - Manages automatic snapshot cleanup and rotation
   - Integrates with DLT mode for distributed ledger deployments
+  - **Enhanced** with trusted peer endpoint management for cross-plugin integration
+  - **Enhanced** with trusted snapshot peer configuration for P2P integration
 
 ```mermaid
 classDiagram
@@ -333,14 +352,17 @@ class SnapshotPlugin {
 +create_snapshot_at(path)
 +start_server()
 +download_snapshot_from_peers()
++get_trusted_snapshot_peers() vector<string>
 }
 ```
 
 **Diagram sources**
 - [plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp:42-76](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L42-L76)
+- [plugins/snapshot/plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
 
 **Section sources**
 - [plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp:46-87](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L46-L87)
+- [plugins/snapshot/plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
 
 ### Plugin Registration and Lifecycle
 - Registration: Plugins are enumerated by the build system and registered with the application. Built-in plugins are discovered via the plugins directory traversal.
@@ -353,7 +375,8 @@ Start(["Application Start"]) --> Discover["Discover Plugins<br/>CMake discovers 
 Discover --> Init["Initialize Plugins<br/>plugin_initialize()"]
 Init --> Deps["Resolve Dependencies<br/>APPBASE_PLUGIN_REQUIRES"]
 Deps --> Startup["Startup Phase<br/>plugin_startup()"]
-Startup --> Run["Runtime<br/>Serve APIs, handle events"]
+Startup --> CrossPlugin["Cross-Plugin Integration<br/>P2P registers trusted peers"]
+CrossPlugin --> Run["Runtime<br/>Serve APIs, handle events"]
 Run --> DLTMode["DLT Mode Detection<br/>Snapshot-based state"]
 DLTMode --> Run
 Run --> Shutdown["Shutdown Phase<br/>plugin_shutdown()"]
@@ -365,6 +388,7 @@ Shutdown --> End(["Exit"])
 - [plugins/json_rpc/include/graphene/plugins/json_rpc/plugin.hpp:84-118](file://plugins/json_rpc/include/graphene/plugins/json_rpc/plugin.hpp#L84-L118)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:36-42](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L36-L42)
 - [plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp:60-76](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L60-L76)
+- [plugins/p2p/p2p_plugin.cpp:688-697](file://plugins/p2p/p2p_plugin.cpp#L688-L697)
 
 **Section sources**
 - [documentation/plugin.md:11-20](file://documentation/plugin.md#L11-L20)
@@ -375,6 +399,7 @@ Shutdown --> End(["Exit"])
 - Event Synchronization: Plugins can subscribe to Chain plugin signals (e.g., on_sync) to coordinate startup behavior.
 - Explicit API Calls: Plugins can call APIs exposed by other plugins via the JSON-RPC registry.
 - **DLT Mode Coordination**: Snapshot plugin coordinates with Chain plugin for state management and with P2P plugin for snapshot distribution.
+- **Enhanced Cross-Plugin Integration**: P2P plugin can directly access snapshot plugin to retrieve trusted peer endpoints for improved peer trust management.
 
 ```mermaid
 sequenceDiagram
@@ -382,11 +407,15 @@ participant CHAIN as "Chain Plugin"
 participant AHIST as "Account History Plugin"
 participant DBAPI as "Database API Plugin"
 participant SNAP as "Snapshot Plugin"
+participant P2P as "P2P Plugin"
 CHAIN-->>AHIST : "on_sync signal"
 AHIST->>CHAIN : "Subscribe to applied_block"
 CHAIN-->>DBAPI : "Expose database via APIs"
 CHAIN-->>SNAP : "State management for DLT mode"
 SNAP->>CHAIN : "Load snapshot state"
+P2P->>SNAP : "get_trusted_snapshot_peers()"
+SNAP-->>P2P : "Vector of trusted peer endpoints"
+P2P->>P2P : "set_trusted_peer_endpoints()"
 ```
 
 **Diagram sources**
@@ -394,6 +423,8 @@ SNAP->>CHAIN : "Load snapshot state"
 - [plugins/account_history/include/graphene/plugins/account_history/plugin.hpp:77-77](file://plugins/account_history/include/graphene/plugins/account_history/plugin.hpp#L77-L77)
 - [plugins/database_api/include/graphene/plugins/database_api/plugin.hpp:179-403](file://plugins/database_api/include/graphene/plugins/database_api/plugin.hpp#L179-L403)
 - [plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp:60-76](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L60-L76)
+- [plugins/p2p/p2p_plugin.cpp:688-697](file://plugins/p2p/p2p_plugin.cpp#L688-L697)
+- [plugins/snapshot/plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
 
 **Section sources**
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:88-91](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L88-L91)
@@ -677,7 +708,100 @@ The database layer provides comprehensive fallback mechanisms for DLT mode:
 - [libraries/chain/database.cpp:599-620](file://libraries/chain/database.cpp#L599-L620)
 - [libraries/chain/database.cpp:623-640](file://libraries/chain/database.cpp#L623-L640)
 
-## Type Safety Improvements in IP Address Handling
+## Cross-Plugin Integration: P2P and Snapshot
+
+### Enhanced P2P Plugin Integration with Snapshot Plugin
+The P2P plugin now features enhanced integration with the snapshot plugin through automatic trusted peer endpoint registration and cross-plugin communication.
+
+**Integration Architecture:**
+- **CMake Linking**: P2P plugin now links against the snapshot library (`graphene::snapshot`)
+- **Direct Plugin Access**: P2P plugin can directly access snapshot plugin instance
+- **Automatic Configuration**: P2P plugin automatically retrieves trusted peer endpoints from snapshot plugin
+- **Reduced Soft-Ban Duration**: Trusted snapshot peers receive reduced soft-ban duration (5 minutes vs 1 hour)
+
+**Implementation Details:**
+- P2P plugin searches for snapshot plugin instance during startup
+- Retrieves trusted snapshot peer endpoints using `get_trusted_snapshot_peers()` API
+- Registers endpoints with P2P node using `set_trusted_peer_endpoints()`
+- Applies reduced soft-ban duration for registered trusted peers
+
+```mermaid
+sequenceDiagram
+participant SNAP as "Snapshot Plugin"
+participant P2P as "P2P Plugin"
+participant NODE as "Network Node"
+SNAP->>SNAP : "parse trusted-snapshot-peer config"
+SNAP->>SNAP : "store trusted endpoints"
+P2P->>P2P : "plugin_startup()"
+P2P->>SNAP : "find_plugin<snapshot : : snapshot_plugin>()"
+SNAP-->>P2P : "snapshot plugin instance"
+P2P->>SNAP : "get_trusted_snapshot_peers()"
+SNAP-->>P2P : "vector<string> trusted endpoints"
+P2P->>NODE : "set_trusted_peer_endpoints(endpoints)"
+NODE-->>P2P : "trusted peer endpoints registered"
+P2P->>P2P : "apply reduced soft-ban (5 min)"
+```
+
+**Diagram sources**
+- [plugins/p2p/p2p_plugin.cpp:688-697](file://plugins/p2p/p2p_plugin.cpp#L688-L697)
+- [plugins/snapshot/plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
+- [libraries/network/node.cpp:5254-5274](file://libraries/network/node.cpp#L5254-L5274)
+
+**Section sources**
+- [plugins/p2p/p2p_plugin.cpp:688-697](file://plugins/p2p/p2p_plugin.cpp#L688-L697)
+- [plugins/snapshot/plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
+- [libraries/network/node.cpp:5254-5274](file://libraries/network/node.cpp#L5254-L5274)
+
+### CMake Integration and Build System Changes
+The P2P plugin's CMake configuration has been updated to enable cross-plugin functionality:
+
+**P2P Plugin CMake Changes:**
+- Added `graphene::snapshot` to target_link_libraries
+- Enables direct access to snapshot plugin APIs
+- Facilitates automatic trusted peer endpoint registration
+- Supports enhanced peer trust management
+
+**Snapshot Plugin CMake (unchanged):**
+- Maintains standalone library configuration
+- Provides trusted peer management functionality
+- Exposes `get_trusted_snapshot_peers()` API for cross-plugin access
+
+**Build System Benefits:**
+- Direct plugin-to-plugin communication without intermediate layers
+- Reduced runtime overhead for trusted peer management
+- Improved configuration consistency across plugins
+- Enhanced maintainability through explicit dependencies
+
+**Section sources**
+- [plugins/p2p/CMakeLists.txt:27-34](file://plugins/p2p/CMakeLists.txt#L27-L34)
+- [plugins/snapshot/CMakeLists.txt:27-38](file://plugins/snapshot/CMakeLists.txt#L27-L38)
+
+### Trusted Peer Management Enhancement
+The cross-plugin integration enables sophisticated trusted peer management:
+
+**Configuration Integration:**
+- P2P plugin reads `trusted-snapshot-peer` configuration from snapshot plugin
+- Automatic endpoint registration eliminates manual configuration duplication
+- Consistent trust model across both plugins
+- Dynamic trust management based on snapshot plugin configuration
+
+**Trust Enforcement Benefits:**
+- Reduced soft-ban duration for verified snapshot sources (5 minutes vs 1 hour)
+- Improved peer reputation management
+- Enhanced security through verified snapshot peer sources
+- Better resource allocation for trusted snapshot sources
+
+**Operational Improvements:**
+- Automatic discovery of trusted snapshot peers
+- Dynamic adjustment of trust levels based on peer behavior
+- Enhanced monitoring and logging for trusted peer activities
+- Improved network topology optimization
+
+**Section sources**
+- [plugins/p2p/p2p_plugin.cpp:688-697](file://plugins/p2p/p2p_plugin.cpp#L688-L697)
+- [libraries/network/node.cpp:5254-5274](file://libraries/network/node.cpp#L5254-L5274)
+
+### Type Safety Improvements in IP Address Handling
 
 ### Enhanced Type Safety in Peer Statistics
 Recent improvements to the P2P plugin include enhanced type safety in IP address handling to prevent implicit type conversion issues in peer management code.
@@ -764,7 +888,7 @@ The enhanced type safety extends throughout the network layer:
 - [libraries/network/core_messages.hpp:333-345](file://libraries/network/core_messages.hpp#L333-L345)
 
 ## Dependency Analysis
-Plugins declare explicit dependencies using APPBASE_PLUGIN_REQUIRES. The JSON-RPC plugin is a central dependency for most plugins that expose APIs. The Chain plugin is often required by stateful plugins.
+Plugins declare explicit dependencies using APPBASE_PLUGIN_REQUIRES. The JSON-RPC plugin is a central dependency for most plugins that expose APIs. The Chain plugin is often required by stateful plugins. **Enhanced** with cross-plugin integration patterns.
 
 ```mermaid
 graph LR
@@ -778,6 +902,8 @@ CHAIN --> SNAP["snapshot::plugin"]
 P2P --> DLT["dlt_block_log"]
 SNAP --> DLT
 P2P --> TYPESAFE["Type Safety Enhancements"]
+P2P --> CROSSPLUGIN["Cross-Plugin Integration<br/>Snapshot Trust Management"]
+SNAP --> TRUSTEDPEERS["Trusted Peer Management<br/>Automatic Endpoint Registration"]
 ```
 
 **Diagram sources**
@@ -790,6 +916,8 @@ P2P --> TYPESAFE["Type Safety Enhancements"]
 - [plugins/mongo_db/include/graphene/plugins/mongo_db/mongo_db_plugin.hpp:17-19](file://plugins/mongo_db/include/graphene/plugins/mongo_db/mongo_db_plugin.hpp#L17-L19)
 - [plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp:44-44](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L44-L44)
 - [libraries/chain/include/graphene/chain/dlt_block_log.hpp:35-35](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L35)
+- [plugins/p2p/CMakeLists.txt:27-34](file://plugins/p2p/CMakeLists.txt#L27-L34)
+- [plugins/p2p/p2p_plugin.cpp:688-697](file://plugins/p2p/p2p_plugin.cpp#L688-L697)
 
 **Section sources**
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:21-24](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L21-L24)
@@ -798,6 +926,7 @@ P2P --> TYPESAFE["Type Safety Enhancements"]
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp:20-20](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L20-L20)
 - [plugins/mongo_db/include/graphene/plugins/mongo_db/mongo_db_plugin.hpp:17-19](file://plugins/mongo_db/include/graphene/plugins/mongo_db/mongo_db_plugin.hpp#L17-L19)
 - [plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp:44-44](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L44-L44)
+- [plugins/p2p/CMakeLists.txt:27-34](file://plugins/p2p/CMakeLists.txt#L27-L34)
 
 ## Plugin Deprecation Status and Maintenance Practices
 
@@ -848,6 +977,7 @@ The debug node plugin maintains backward compatibility by logging warnings and m
 3. **Plugin Updates**: Monitor plugin deprecation notices and migrate to maintained alternatives
 4. **DLT Mode Adoption**: Consider migrating to DLT mode for improved performance and reduced storage requirements
 5. **Type Safety Updates**: Ensure all IP address handling uses explicit type conversion for reliability
+6. **Cross-Plugin Integration**: Leverage enhanced P2P-snapshot integration for improved peer trust management
 
 #### Monitoring Deprecation Warnings
 Plugins emit warnings when deprecated features are detected:
@@ -861,6 +991,8 @@ Plugins emit warnings when deprecated features are detected:
 - Validate migration paths before hardfork activation
 - Test DLT mode configurations for proper snapshot and block log operation
 - Verify type safety improvements in IP address handling
+- **Test cross-plugin integration**: Validate P2P-snapshot integration for trusted peer management
+- **Verify CMake linking**: Ensure P2P plugin can access snapshot plugin APIs
 
 ### Practical Examples
 
@@ -889,6 +1021,10 @@ dlt-block-log-max-blocks = 100000
 
 # Configure P2P for DLT mode
 plugin = p2p
+
+# Configure trusted snapshot peers for enhanced integration
+trusted-snapshot-peer = 192.168.1.100:8093
+trusted-snapshot-peer = 192.168.1.101:8093
 ```
 
 **Section sources**
@@ -908,6 +1044,8 @@ plugin = p2p
 - **Maintenance Impact**: Deprecated plugins may have reduced performance due to compatibility layers and should be migrated to supported alternatives.
 - **Sync Block Processing**: Enhanced logging provides better visibility into synchronization progress without impacting performance.
 - **Type Safety Improvements**: Explicit type conversion adds minimal overhead while preventing runtime errors and improving reliability.
+- **Cross-Plugin Integration**: **Enhanced** with minimal overhead for trusted peer management through direct plugin access.
+- **CMake Integration**: Linking against snapshot library enables efficient cross-plugin communication without runtime overhead.
 
 ## Troubleshooting Guide
 - Plugin Not Found:
@@ -937,6 +1075,12 @@ plugin = p2p
   - Check for compilation errors related to implicit type conversions
   - Ensure peer statistics logging displays correct IP addresses
   - Validate network connectivity and address resolution
+- **Cross-Plugin Integration Issues**:
+  - **P2P-Snapshot Integration**: Verify snapshot plugin is loaded before P2P plugin
+  - **Trusted Peer Registration**: Check that `trusted-snapshot-peer` configuration is properly parsed
+  - **CMake Linking**: Ensure P2P plugin links against snapshot library
+  - **Plugin Access**: Verify direct plugin access functionality works correctly
+  - **Soft-Ban Duration**: Confirm trusted peers receive reduced soft-ban duration
 
 **Section sources**
 - [documentation/plugin.md:11-20](file://documentation/plugin.md#L11-L20)
@@ -944,11 +1088,13 @@ plugin = p2p
 - [plugins/p2p/p2p_plugin.cpp:499-528](file://plugins/p2p/p2p_plugin.cpp#L499-L528)
 - [plugins/debug_node/plugin.cpp:124-128](file://plugins/debug_node/plugin.cpp#L124-L128)
 - [libraries/chain/database.cpp:292-292](file://libraries/chain/database.cpp#L292-L292)
+- [plugins/p2p/CMakeLists.txt:27-34](file://plugins/p2p/CMakeLists.txt#L27-L34)
+- [plugins/p2p/p2p_plugin.cpp:688-697](file://plugins/p2p/p2p_plugin.cpp#L688-L697)
 
 ## Conclusion
 The VIZ C++ Node plugin system leverages appbase to deliver a modular, extensible architecture. Plugins integrate seamlessly through JSON-RPC, share the chain database, and coordinate via signals. The template-based development tool accelerates custom plugin creation, while configuration options govern exposure and security. With 40+ built-in plugins spanning core blockchain functionality to specialized integrations, the system supports diverse use cases from public APIs to archival pipelines.
 
-**Updated** The system now includes comprehensive DLT mode support with snapshot-based state management, rolling block log integration, and P2P layer compatibility. The enhanced P2P plugin integration with DLT mode awareness provides improved error handling and logging capabilities for DLT mode block serving operations, featuring sophisticated debug logging for DLT mode scenarios, enhanced sync block processing visibility, and better synchronization progress monitoring. Recent improvements include enhanced type safety in IP address handling using explicit type conversion to prevent implicit type conversion issues in peer management code, further improving the reliability and maintainability of the plugin system.
+**Updated** The system now includes comprehensive DLT mode support with snapshot-based state management, rolling block log integration, and P2P layer compatibility. The enhanced P2P plugin integration with DLT mode awareness provides improved error handling and logging capabilities for DLT mode block serving operations, featuring sophisticated debug logging for DLT mode scenarios, enhanced sync block processing visibility, and better synchronization progress monitoring. Recent improvements include enhanced type safety in IP address handling using explicit type conversion to prevent implicit type conversion issues in peer management code, further improving the reliability and maintainability of the plugin system. **Cross-plugin integration** has been significantly enhanced with the P2P plugin's ability to automatically register trusted peer endpoints from the snapshot plugin, improving peer trust management and reducing soft-ban durations for verified snapshot sources through direct plugin access and CMake-based linking.
 
 ## Appendices
 
@@ -974,6 +1120,9 @@ The VIZ C++ Node plugin system leverages appbase to deliver a modular, extensibl
   - `snapshot-dir`: Directory for auto-generated snapshots
 - **Deprecated Options**: seed-node (use p2p-seed-node), force-validate (use p2p-force-validate), edit-script (use debug-node-edit-script).
 - **Type Safety Options**: Enhanced IP address handling with explicit type conversion for reliable peer management.
+- **Cross-Plugin Integration Options**: 
+  - `trusted-snapshot-peer`: IP:port pairs of trusted snapshot sources for P2P integration
+  - Enables automatic trusted peer endpoint registration and reduced soft-ban duration
 
 **Section sources**
 - [documentation/plugin.md:11-20](file://documentation/plugin.md#L11-L20)
@@ -981,6 +1130,7 @@ The VIZ C++ Node plugin system leverages appbase to deliver a modular, extensibl
 - [plugins/p2p/p2p_plugin.cpp:499-528](file://plugins/p2p/p2p_plugin.cpp#L499-L528)
 - [plugins/debug_node/plugin.cpp:124-128](file://plugins/debug_node/plugin.cpp#L124-L128)
 - [documentation/snapshot-plugin.md:142-164](file://documentation/snapshot-plugin.md#L142-L164)
+- [plugins/p2p/p2p_plugin.cpp:688-697](file://plugins/p2p/p2p_plugin.cpp#L688-L697)
 
 ### Appendix C: Deprecation Timeline
 - Hardfork 4: vote_operation, content_operation, delete_content_operation deprecated
@@ -990,6 +1140,7 @@ The VIZ C++ Node plugin system leverages appbase to deliver a modular, extensibl
 - **Enhanced P2P Integration**: Improved DLT mode awareness with sophisticated error handling and logging
 - **Sync Block Processing**: Enhanced logging for better synchronization progress visibility
 - **Type Safety Improvements**: Enhanced IP address handling with explicit type conversion for reliability
+- **Cross-Plugin Integration**: **Enhanced** with P2P plugin linking against snapshot library and automatic trusted peer registration
 
 **Section sources**
 - [libraries/protocol/include/graphene/protocol/operations.hpp:14-27](file://libraries/protocol/include/graphene/protocol/operations.hpp#L14-L27)
@@ -997,3 +1148,5 @@ The VIZ C++ Node plugin system leverages appbase to deliver a modular, extensibl
 - [libraries/chain/chain_evaluator.cpp:551-551](file://libraries/chain/chain_evaluator.cpp#L551-L551)
 - [libraries/chain/chain_evaluator.cpp:1296-1296](file://libraries/chain/chain_evaluator.cpp#L1296-L1296)
 - [libraries/chain/database.cpp:292-292](file://libraries/chain/database.cpp#L292-L292)
+- [plugins/p2p/CMakeLists.txt:27-34](file://plugins/p2p/CMakeLists.txt#L27-L34)
+- [plugins/p2p/p2p_plugin.cpp:688-697](file://plugins/p2p/p2p_plugin.cpp#L688-L697)

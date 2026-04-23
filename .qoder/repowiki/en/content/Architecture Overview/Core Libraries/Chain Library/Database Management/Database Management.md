@@ -24,11 +24,11 @@
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive early rejection logic for blocks far ahead with unknown parents
-- Enhanced fork database exception handling to prevent sync restart loops during snapshot imports
-- Improved block validation flow with intelligent rejection strategies
-- Enhanced P2P synchronization with better handling of unlinkable blocks
-- Added sophisticated early rejection checks to prevent unnecessary fork database operations
+- Enhanced fork database exception prevention mechanisms with comprehensive early rejection logic
+- Implemented intelligent early block rejection that prevents fork database exceptions and synchronization restart loops
+- Added proactive block rejection for blocks at or below head on dead forks, avoiding unnecessary fork database operations
+- Improved P2P synchronization integration with early rejection logic classification
+- Enhanced error handling for unlinkable blocks with proper peer classification
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -45,7 +45,7 @@
 ## Introduction
 This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for suppressing repeated warnings, and practical examples of database operations and performance optimization.
 
-**Updated** - Enhanced with comprehensive early rejection logic that prevents fork database exceptions and sync restart loops during snapshot imports. The system now includes sophisticated block validation with intelligent rejection strategies for blocks that are far ahead of the current head with unknown parents, significantly improving synchronization reliability and preventing unnecessary processing overhead.
+**Updated** - Enhanced with comprehensive early rejection logic that prevents fork database exceptions and sync restart loops during snapshot imports. The system now includes sophisticated block validation with intelligent rejection strategies for blocks far ahead of the current head with unknown parents, significantly improving synchronization reliability and preventing unnecessary processing overhead. The enhanced fork database exception prevention mechanisms ensure that dead fork blocks are properly identified and handled, while the intelligent early rejection logic optimizes network synchronization performance.
 
 ## Project Structure
 The database subsystem is implemented primarily in the chain library with enhanced support for DLT mode and emergency consensus:
@@ -166,6 +166,7 @@ EXC --> NODE
 - **Enhanced Error Handling**: Graceful handling of boost::interprocess::bad_alloc exceptions with deferred resize scheduling and peer connectivity preservation.
 - **Enhanced Fork Database Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking.
 - **Early Rejection Logic**: Sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents, preventing fork database exceptions and sync restart loops.
+- **Enhanced Fork Database Exception Prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection.
 
 Key responsibilities:
 - Lifecycle: open(), open_from_snapshot(), reindex(), close(), wipe() with improved error handling
@@ -184,8 +185,9 @@ Key responsibilities:
 - **Enhanced Memory Management**: Detailed logging of memory states before and after resizing operations for administrator visibility
 - **Thread-Safe Memory Resizing**: Deferred resize mechanism that acquires exclusive write locks to prevent race conditions and stale pointer issues
 - **Memory Pressure Handling**: Graceful degradation of shared memory exhaustion with peer connectivity preservation
-- **Enhanced Fork Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking
+- **Enhanced Fork Database Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking
 - **Early Rejection Strategy**: Intelligent block rejection for far-ahead blocks with unknown parents to prevent unnecessary fork database operations and sync restart loops
+- **Enhanced Fork Database Exception Prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
 
 **Section sources**
 - [database.hpp:61-115](file://libraries/chain/include/graphene/chain/database.hpp#L61-L115)
@@ -216,6 +218,7 @@ The database composes four primary subsystems with enhanced DLT mode support, em
 - **Enhanced Error Handling**: Graceful exception handling for shared memory exhaustion with peer connectivity preservation
 - **Enhanced Fork Database**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching
 - **Early Rejection Logic**: Sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents
+- **Enhanced Fork Database Exception Prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
 
 ```mermaid
 classDiagram
@@ -251,6 +254,7 @@ class database {
 +push_block(block, skip) : enhanced error handling
 +apply_pending_resize() : thread-safe memory management
 +early_rejection_logic : intelligent block rejection
++enhanced_fork_exception_prevention : comprehensive exception prevention
 }
 class block_log {
 +open(path)
@@ -309,6 +313,11 @@ class early_rejection_logic {
 +prevent_fork_db_exceptions(block)
 +avoid_sync_restart_loops(block)
 }
+class enhanced_fork_exception_prevention {
++detect_dead_forks_at_or_below_head(block)
++prevent_fork_db_exceptions(block)
++classify_and_handle_unlinkable_blocks(block)
+}
 database --> block_log : "uses (normal mode)"
 database --> dlt_block_log : "uses (DLT mode)"
 database --> fork_database : "uses with enhanced error handling"
@@ -317,6 +326,7 @@ database --> pending_transactions_restorer : "manages postponed tx"
 database --> chainbase : "enhanced memory management"
 database --> unlinkable_block_exception : "enhanced fork handling"
 database --> early_rejection_logic : "prevents unnecessary operations"
+database --> enhanced_fork_exception_prevention : "comprehensive exception prevention"
 ```
 
 **Diagram sources**
@@ -772,7 +782,7 @@ These fields enable the deferred resize mechanism to work seamlessly with the ex
 
 - **Exception Detection**: The system detects boost::interprocess::bad_alloc exceptions by searching for the specific error message pattern "boost::interprocess::bad_alloc".
 - **Graceful Degradation**: Instead of throwing the exception and potentially disconnecting peers, the system schedules a deferred resize and returns false to indicate the block was not applied.
-- **State Preservation**: The system preserves memory state by setting reserved memory to the current free memory level before scheduling the resize.
+- **State Preservation**: The system preserves memory state by setting reserved memory to current free memory level before scheduling the resize.
 - **Peer Connectivity**: This approach prevents P2P layer disconnections and maintains witness slot-miss logging while preserving node connectivity.
 - **Automatic Recovery**: The next push_block() call will apply the deferred resize safely, allowing the missed block to be re-received during normal sync.
 
@@ -906,6 +916,40 @@ ForkDBPush --> ReturnResult["return result"]
 **Section sources**
 - [database.cpp:1216-1286](file://libraries/chain/database.cpp#L1216-L1286)
 
+### Enhanced Fork Database Exception Prevention Mechanisms
+**New** - The database now includes comprehensive mechanisms to prevent fork database exceptions through intelligent early rejection and proper dead fork detection:
+
+- **Dead Fork Detection at or Below Head**: Blocks at or before the head but on different forks whose parents are not in the fork database are immediately rejected with unlinkable_block_exception, enabling P2P layer to soft-ban the offending peer.
+- **Far-Ahead Block Rejection**: Blocks far ahead of the head with completely unknown parents are silently rejected to prevent fork database operations and sync restart loops.
+- **Proper Exception Classification**: The system distinguishes between dead fork blocks (at/below head) and far-ahead blocks that slipped past early rejection for proper P2P handling.
+- **Enhanced Error Propagation**: Proper unlinkable_block_exception throwing ensures downstream components can classify and handle different types of unlinkable blocks appropriately.
+
+```mermaid
+flowchart TD
+Start(["Enhanced Fork Exception Prevention"]) --> CheckDeadFork{"Block at or below head on different fork?"}
+CheckDeadFork --> |Yes| CheckParentKnown{"Parent in fork_db?"}
+CheckParentKnown --> |No| ThrowDeadFork["Throw unlinkable_block_exception (dead fork)"]
+CheckParentKnown --> |Yes| NormalLogic["Fall through to normal logic"]
+CheckDeadFork --> |No| CheckFarAhead{"Block far ahead with unknown parent?"}
+CheckFarAhead --> |Yes| SilentReject["Silently reject (prevent fork DB ops)"]
+CheckFarAhead --> |No| CheckForkDB["Proceed to fork_db.push_block()"]
+ThrowDeadFork --> Classify["P2P soft-bans peer (dead fork)"]
+SilentReject --> PreventLoop["Prevent sync restart loops"]
+NormalLogic --> CheckForkDB
+CheckForkDB --> ForkDBOps["Fork DB operations"]
+ForkDBOps --> EnhancedHandling["Enhanced error handling"]
+```
+
+**Diagram sources**
+- [database.cpp:1216-1286](file://libraries/chain/database.cpp#L1216-L1286)
+- [p2p_plugin.cpp:175-192](file://plugins/p2p/p2p_plugin.cpp#L175-L192)
+- [node.cpp:3192-3211](file://libraries/network/node.cpp#L3192-L3211)
+
+**Section sources**
+- [database.cpp:1216-1286](file://libraries/chain/database.cpp#L1216-L1286)
+- [p2p_plugin.cpp:175-192](file://plugins/p2p/p2p_plugin.cpp#L175-L192)
+- [node.cpp:3192-3211](file://libraries/network/node.cpp#L3192-L3211)
+
 ### Enhanced P2P Synchronization with Early Rejection Integration
 **New** - The P2P synchronization system now integrates with the early rejection logic to prevent sync restart loops:
 
@@ -1035,6 +1079,7 @@ These signals are used by plugins to react to blockchain events without tight co
 - **Enhanced Error Handling**: Graceful handling of shared memory exhaustion with peer connectivity preservation
 - **Enhanced Fork Database**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking
 - **Early Rejection Logic**: Intelligent block rejection for far-ahead blocks with unknown parents to prevent unnecessary fork database operations and sync restart loops
+- **Enhanced Fork Database Exception Prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
 - Query helpers:
   - get_block_id_for_num(uint32_t)
   - fetch_block_by_id(block_id_type)
@@ -1264,6 +1309,7 @@ The database depends on:
 - **Enhanced error handling**: Graceful exception handling for shared memory exhaustion with peer connectivity preservation
 - **Enhanced fork database**: Proper unlinkable_block_exception handling for dead fork detection and improved fork switching logic with deterministic tie-breaking
 - **Early rejection logic**: Sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents
+- **Enhanced fork database exception prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
 
 ```mermaid
 graph LR
@@ -1288,6 +1334,7 @@ DB --> ERROR["enhanced error handling"]
 DB --> NETWORK["network layer integration"]
 DB --> UNLINK["unlinkable_block_exception"]
 DB --> EARLY["early rejection logic"]
+DB --> EXCEP["enhanced fork exception prevention"]
 ```
 
 **Diagram sources**
@@ -1333,6 +1380,7 @@ DB --> EARLY["early rejection logic"]
 - **Enhanced Fork Database Performance**: Proper unlinkable_block_exception handling reduces processing overhead by eliminating dead fork blocks from consideration.
 - **Improved Fork Switching**: Enhanced fork switching logic with proper dead fork detection and deterministic tie-breaking prevents unnecessary processing and improves fork resolution performance.
 - **Early Rejection Efficiency**: The new early rejection logic eliminates unnecessary fork database operations for far-ahead blocks with unknown parents, significantly reducing processing overhead and preventing sync restart loops.
+- **Enhanced Fork Database Exception Prevention**: Comprehensive early rejection mechanisms prevent fork database exceptions before they occur, eliminating the need for exception handling and improving overall system efficiency.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -1373,6 +1421,7 @@ Common issues and remedies:
 - **Emergency Consensus Tie-Breaking**: Verify that deterministic hash-based tie-breaking is working correctly during emergency mode to ensure consistent block selection across all nodes.
 - **Early Rejection Logic Issues**: Monitor the new early rejection logic to ensure it's properly rejecting far-ahead blocks with unknown parents and preventing unnecessary fork database operations.
 - **P2P Sync Restart Loops**: Verify that the early rejection logic is working correctly to prevent sync restart loops during snapshot imports and normal operation.
+- **Enhanced Fork Database Exception Prevention**: Monitor the comprehensive exception prevention mechanisms to ensure they're properly classifying and handling different types of unlinkable blocks.
 - **Unlinkable Block Exception Handling**: Check that the P2P layer properly classifies and handles different types of unlinkable blocks (dead fork vs. far-ahead) to prevent soft-banning or unnecessary sync restarts.
 
 **Section sources**
@@ -1410,4 +1459,6 @@ The deferred memory resize mechanism represents a major improvement in thread sa
 
 **Enhanced Fork Database Handling** - The fork database now includes proper unlinkable_block_exception throwing for dead fork detection, significantly improving the system's ability to identify and reject blocks from invalid forks. This enhancement prevents wasted processing resources on dead forks and improves overall network efficiency. The improved fork switching logic with proper dead fork detection ensures that only valid, linked forks are considered for switching, reducing the risk of processing invalid chain states and improving the reliability of fork resolution operations. The addition of deterministic hash-based tie-breaking during emergency consensus mode ensures consistent block selection across all nodes, preventing split-brain scenarios and maintaining network convergence even under extreme conditions.
 
-**Early Rejection Logic Enhancement** - The new early rejection logic represents a significant improvement in synchronization reliability and performance. By intelligently rejecting blocks far ahead with unknown parents before attempting fork database operations, the system prevents unnecessary processing overhead and eliminates the possibility of fork database exceptions that could trigger sync restart loops. This enhancement is particularly beneficial during snapshot imports where the fork database may only contain the head block, preventing the common scenario where P2P peers send blocks that are far ahead and would otherwise cause continuous sync restarts. The early rejection strategy ensures that only blocks with known parents are processed through the fork database, significantly improving the efficiency of the synchronization process and reducing the likelihood of encountering unlinkable blocks that would require peer soft-banning or sync restarts.
+**Enhanced Early Rejection Logic** - The new early rejection logic represents a significant improvement in synchronization reliability and performance. By intelligently rejecting blocks far ahead with unknown parents before attempting fork database operations, the system prevents unnecessary processing overhead and eliminates the possibility of fork database exceptions that could trigger sync restart loops. This enhancement is particularly beneficial during snapshot imports where the fork database may only contain the head block, preventing the common scenario where P2P peers send blocks that are far ahead and would otherwise cause continuous sync restarts. The early rejection strategy ensures that only blocks with known parents are processed through the fork database, significantly improving the efficiency of the synchronization process and reducing the likelihood of encountering unlinkable blocks that would require peer soft-banning or sync restarts.
+
+**Enhanced Fork Database Exception Prevention** - The comprehensive exception prevention mechanisms represent a major advancement in fork database reliability. The system now includes multiple layers of protection against fork database exceptions, starting with intelligent early rejection of blocks with unknown parents and extending to proper classification and handling of different types of unlinkable blocks. The dead fork detection at or below head ensures that stale fork blocks are properly identified and rejected, while the far-ahead block rejection prevents unnecessary fork database operations that could trigger sync restart loops. This multi-layered approach to exception prevention significantly improves the robustness of the fork database and reduces the likelihood of synchronization issues caused by malformed or malicious blocks. The enhanced error propagation and classification mechanisms ensure that downstream components can properly handle different types of unlinkable blocks, leading to more efficient and reliable network synchronization.

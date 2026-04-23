@@ -21,15 +21,20 @@
 - [database.cpp](file://libraries/chain/database.cpp)
 - [fork_database.cpp](file://libraries/chain/fork_database.cpp)
 - [database_exceptions.hpp](file://libraries/chain/include/graphene/chain/database_exceptions.hpp)
+- [plugin.hpp](file://plugins/snapshot/plugin.hpp)
+- [plugin.cpp](file://plugins/snapshot/plugin.cpp)
+- [snapshot-plugin.md](file://documentation/snapshot-plugin.md)
+- [config.ini](file://share/vizd/config/config.ini)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced soft-ban system with ANSI color-coded ban notifications for improved visibility
-- Improved peer state management with fork_rejected_until and inhibit_fetching_sync_blocks fields
-- Comprehensive exception handling for memory resize operations with deferred_resize_exception
-- Enhanced block processing with proper exception conversion and soft-ban enforcement
-- ANSI color code definitions added for red and reset terminal formatting
+- Enhanced soft-ban system with dual-tier mechanism supporting trusted peer differentiation
+- Added trusted peer support with configurable trusted-snapshot-peer endpoints
+- Implemented 5-minute soft-ban duration for trusted peers versus 1-hour for regular peers
+- Integrated trusted peer management between P2P and snapshot plugins
+- Enhanced peer trust detection and soft-ban duration calculation
+- Added comprehensive configuration options for trusted peer management
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -46,18 +51,19 @@
 ## Introduction
 This document provides comprehensive coverage of Peer Connection Management in the VIZ C++ node networking stack. It focuses on the peer_connection.hpp implementation for managing bidirectional peer communication channels, connection state tracking, and message routing. The document explains peer connection establishment protocols, authentication mechanisms, and handshake procedures. It covers connection lifecycle management including initiation, maintenance, graceful disconnection, and error recovery. It details peer state tracking, connection quality metrics, and peer reputation systems. Message queuing, priority handling, and connection multiplexing are documented along with practical examples and guidance on peer selection, balancing, and fault tolerance.
 
-**Updated** Enhanced with improved P2P network reliability featuring soft-ban functionality with ANSI color-coded notifications, proper block processing with exception conversion, and strengthened connection lifecycle management with fork rejection mechanisms. The system now includes comprehensive exception handling for memory resize operations and enhanced peer state management.
+**Updated** Enhanced with sophisticated trusted peer support featuring dual-tier soft-ban mechanisms. Trusted peers configured via trusted-snapshot-peer receive 5-minute soft-bans instead of the default 1-hour duration, enabling faster recovery from transient errors while maintaining network stability. The system now includes comprehensive peer trust management, automatic trust detection, and seamless integration between P2P and snapshot plugins for enhanced operational efficiency.
 
 ## Project Structure
-The peer connection management system is composed of several interconnected components:
+The peer connection management system is composed of several interconnected components with enhanced trusted peer support:
 - Peer-level abstraction: peer_connection encapsulates a single peer's state and messaging with enhanced error handling, soft-ban support, and improved peer state fields.
 - Transport abstraction: message_oriented_connection wraps a secure transport socket and handles message framing with improved logging.
 - Security: stcp_socket performs ECDH key exchange and AES encryption for secure communication.
 - Protocol messages: core_messages defines the handshake and operational messages exchanged between peers with reliable IP address handling.
-- Node orchestration: node coordinates peer connections, maintains peer databases, and manages lifecycle events with enhanced exception safety, soft-ban functionality, and ANSI color-coded notifications.
+- Node orchestration: node coordinates peer connections, maintains peer databases, and manages lifecycle events with enhanced exception safety, soft-ban functionality, ANSI color-coded notifications, and trusted peer management.
 - Configuration: config.hpp centralizes tunable constants for timeouts, limits, and behavior.
 - Chain integration: database and fork_database handle block validation with proper exception propagation for P2P layer consumption.
-- **New** Memory management: database includes deferred_resize_exception handling for shared memory resize operations with comprehensive logging.
+- **New** Trusted peer management: Enhanced peer trust detection and dual-tier soft-ban system with configurable trusted-snapshot-peer endpoints.
+- **New** Plugin integration: Seamless coordination between P2P and snapshot plugins for trusted peer configuration and management.
 
 ```mermaid
 graph TB
@@ -73,8 +79,13 @@ CM["core_messages<br/>Handshake & ops<br/>Reliable IP Extraction"]
 MSG["message<br/>Header + payload"]
 end
 subgraph "Node Orchestration"
-N["node<br/>Connection manager<br/>Exception Safety<br/>Soft-ban Logic<br/>ANSI Color Notifications"]
+N["node<br/>Connection manager<br/>Exception Safety<br/>Soft-ban Logic<br/>ANSI Color Notifications<br/>Trusted Peer Management"]
 PD["peer_database<br/>Peer reputation<br/>Improved Recovery"]
+TP["trusted_peer_manager<br/>5-min soft-bans<br/>Dual-tier system<br/>IP-based trust detection"]
+END
+subgraph "Plugin Integration"
+P2P["p2p_plugin<br/>Trusted peer registration<br/>Configuration management"]
+SNAP["snapshot_plugin<br/>trusted-snapshot-peer config<br/>Peer discovery"]
 END
 subgraph "Chain Integration"
 DB["database<br/>Block validation<br/>Exception propagation<br/>Memory resize handling"]
@@ -87,6 +98,10 @@ PC --> CM
 CM --> MSG
 N --> PC
 N --> PD
+N --> TP
+P2P --> N
+P2P --> SNAP
+SNAP --> TP
 N --> DB
 DB --> FD
 DB --> EX
@@ -101,6 +116,10 @@ N --> EX
 - [message.hpp:42-106](file://libraries/network/include/graphene/network/message.hpp#L42-L106)
 - [node.hpp:190-304](file://libraries/network/include/graphene/network/node.hpp#L190-L304)
 - [peer_database.hpp:104-134](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
+- [node.cpp:593-601](file://libraries/network/node.cpp#L593-L601)
+- [node.cpp:5240-5274](file://libraries/network/node.cpp#L5240-L5274)
+- [p2p_plugin.cpp:689-697](file://plugins/p2p/p2p_plugin.cpp#L689-L697)
+- [plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
 - [database.cpp:1215-1246](file://libraries/chain/database.cpp#L1215-L1246)
 - [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
 - [exceptions.hpp:33-45](file://libraries/network/include/graphene/network/exceptions.hpp#L33-L45)
@@ -116,14 +135,21 @@ N --> EX
 - [database.cpp:1-6389](file://libraries/chain/database.cpp#L1-L6389)
 - [fork_database.cpp:1-271](file://libraries/chain/fork_database.cpp#L1-L271)
 - [exceptions.hpp:1-49](file://libraries/network/include/graphene/network/exceptions.hpp#L1-L49)
+- [node.cpp:593-601](file://libraries/network/node.cpp#L593-L601)
+- [node.cpp:5240-5274](file://libraries/network/node.cpp#L5240-L5274)
+- [p2p_plugin.cpp:689-697](file://plugins/p2p/p2p_plugin.cpp#L689-L697)
+- [plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
 
 ## Core Components
 - peer_connection: Manages a single peer's connection state, queues outgoing messages, tracks inventory, and exposes metrics with enhanced error handling and IP address extraction reliability. It delegates message delivery to message_oriented_connection and integrates with node-level callbacks. **Enhanced** with fork_rejected_until and inhibit_fetching_sync_blocks fields for soft-ban functionality and improved peer state management.
 - message_oriented_connection: Provides a message-oriented API over a secure socket, handling read/write loops, padding, and error propagation with improved logging mechanisms.
 - stcp_socket: Implements ECDH key exchange and AES encryption for secure transport.
 - core_messages: Defines the protocol messages used during handshake and runtime operations with reliable IP address handling and enhanced error reporting.
-- node: Orchestrates peer connections, manages peer databases, and coordinates synchronization and broadcasting with better exception safety, soft-ban logic, fork rejection handling, and ANSI color-coded notification support.
+- node: Orchestrates peer connections, manages peer databases, and coordinates synchronization and broadcasting with better exception safety, soft-ban logic, fork rejection handling, ANSI color-coded notification support, and **new** trusted peer management capabilities.
 - peer_database: Tracks potential peers, connection attempts, and outcomes for peer selection and reputation with improved error handling.
+- **New** trusted_peer_manager: Manages trusted peer configuration and detection with 5-minute soft-ban duration for trusted peers versus 1-hour for regular peers.
+- **New** p2p_plugin: Integrates trusted peer management with snapshot plugin configuration, automatically registering trusted peers for reduced soft-ban duration.
+- **New** snapshot_plugin: Provides trusted-snapshot-peer configuration and peer discovery for snapshot synchronization.
 - **New** database: Handles block validation with proper exception propagation, converting chain exceptions to network exceptions for P2P layer consumption, and includes comprehensive memory resize exception handling.
 - **New** fork_database: Manages fork relationships and block linking with proper exception handling for unlinkable blocks.
 - **New** database_exceptions: Defines deferred_resize_exception for handling shared memory resize operations during block processing.
@@ -133,8 +159,9 @@ Key responsibilities:
 - Lifecycle management: Connect, accept, close, destroy, and cleanup with enhanced error recovery and exception safety, including soft-ban mechanisms with ANSI color-coded notifications.
 - Message routing: Queueing, priority, and multiplexing across peers with improved logging and monitoring.
 - Metrics and reputation: Connection times, bytes sent/received, inventory lists, and peer selection with robust error handling.
-- **Enhanced** Block processing: Proper handling of blocks returned as false by chain, conversion of unlinkable_block_exception to network exceptions, soft-ban functionality for peer management, and comprehensive memory resize exception handling.
-- **Enhanced** Peer state management: fork_rejected_until timestamp tracking, inhibit_fetching_sync_blocks flag management, and automatic soft-ban expiration handling.
+- **Enhanced** Trusted peer management: Automatic trust detection based on trusted-snapshot-peer configuration, dual-tier soft-ban system with 5-minute duration for trusted peers, and seamless integration between P2P and snapshot plugins.
+- **Enhanced** Block processing: Proper handling of blocks returned as false by chain, conversion of unlinkable_block_exception to network exceptions, soft-ban functionality for peer management, comprehensive memory resize exception handling, and trusted peer-aware soft-ban duration calculation.
+- **Enhanced** Peer state management: fork_rejected_until timestamp tracking, inhibit_fetching_sync_blocks flag management, automatic soft-ban expiration handling, and trusted peer IP address storage for efficient lookup.
 
 **Section sources**
 - [peer_connection.hpp:79-351](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L351)
@@ -144,18 +171,23 @@ Key responsibilities:
 - [core_messages.hpp:233-306](file://libraries/network/include/graphene/network/core_messages.hpp#L233-L306)
 - [node.cpp:424-799](file://libraries/network/node.cpp#L424-L799)
 - [peer_database.cpp:100-174](file://libraries/network/peer_database.cpp#L100-L174)
+- [node.cpp:593-601](file://libraries/network/node.cpp#L593-L601)
+- [node.cpp:5240-5274](file://libraries/network/node.cpp#L5240-L5274)
+- [p2p_plugin.cpp:689-697](file://plugins/p2p/p2p_plugin.cpp#L689-L697)
+- [plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
 - [database.cpp:1215-1246](file://libraries/chain/database.cpp#L1215-L1246)
 - [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
 - [database_exceptions.hpp:86-86](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L86-L86)
 
 ## Architecture Overview
-The peer connection architecture follows a layered design with enhanced error handling, soft-ban functionality, and ANSI color-coded notifications:
-- Application (node) controls peer lifecycle and delegates message processing to the node delegate with improved exception safety, soft-ban logic, and enhanced notification capabilities.
+The peer connection architecture follows a layered design with enhanced error handling, soft-ban functionality, ANSI color-coded notifications, and **new** trusted peer support:
+- Application (node) controls peer lifecycle and delegates message processing to the node delegate with improved exception safety, soft-ban logic, enhanced notification capabilities, and **new** trusted peer management.
 - Peer (peer_connection) holds per-peer state and queues messages with robust error handling mechanisms, including soft-ban state tracking and improved peer state fields.
 - Transport (message_oriented_connection) frames messages and manages the read/write loop with enhanced logging.
 - Security (stcp_socket) negotiates keys and encrypts traffic.
 - Protocol (core_messages) defines the message types and semantics with reliable IP address extraction.
 - **Enhanced** Chain integration (database/fork_database) validates blocks and propagates exceptions to the P2P layer for proper peer management, including comprehensive memory resize exception handling.
+- **New** Trusted peer integration (p2p_plugin/snapshot_plugin) manages trusted peer configuration and automatic registration for reduced soft-ban duration.
 
 ```mermaid
 sequenceDiagram
@@ -165,6 +197,8 @@ participant MOC as "message_oriented_connection"
 participant STCP as "stcp_socket"
 participant Remote as "Remote Peer"
 participant Chain as "database/fork_database"
+participant P2P as "p2p_plugin"
+participant Snap as "snapshot_plugin"
 Node->>Peer : "connect_to(endpoint)"
 Peer->>MOC : "connect_to(endpoint)"
 MOC->>STCP : "connect_to(endpoint)"
@@ -178,8 +212,9 @@ Peer->>Peer : "send hello with IP extraction"
 Peer->>Node : "on_message(hello)"
 Node->>Peer : "on_hello_message()"
 Peer->>Peer : "send connection_accepted"
-Peer->>Node : "on_connection_accepted"
-Note over Peer,Node : "Negotiation complete with enhanced error handling, soft-ban support, and ANSI notifications"
+Peer->>Node : "on_connection_accepted()"
+Note over Node,Peer : "Negotiation complete with enhanced error handling, soft-ban support, ANSI notifications, and trusted peer detection"
+Note over P2P,Snap : "Automatic trusted peer registration and management"
 ```
 
 **Diagram sources**
@@ -188,6 +223,8 @@ Note over Peer,Node : "Negotiation complete with enhanced error handling, soft-b
 - [stcp_socket.cpp:69-72](file://libraries/network/stcp_socket.cpp#L69-L72)
 - [core_messages.hpp:233-272](file://libraries/network/include/graphene/network/core_messages.hpp#L233-L272)
 - [node.cpp:662-718](file://libraries/network/node.cpp#L662-L718)
+- [p2p_plugin.cpp:689-697](file://plugins/p2p/p2p_plugin.cpp#L689-L697)
+- [plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
 
 ## Detailed Component Analysis
 
@@ -198,6 +235,7 @@ peer_connection encapsulates:
 - Inventory tracking: sets for advertised and requested items, sync state, and throttling with robust error recovery.
 - Metrics: bytes sent/received, last message timestamps, connection durations, and shared secret exposure with improved monitoring.
 - **Enhanced** Soft-ban state: fork_rejected_until timestamp and inhibit_fetching_sync_blocks flag for peer management during emergency scenarios.
+- **Enhanced** Peer trust integration: Automatic soft-ban duration calculation based on peer trust status for dual-tier soft-ban system.
 
 ```mermaid
 classDiagram
@@ -227,6 +265,7 @@ class peer_connection {
 +Enhanced error handling with try-catch fallbacks
 +Improved IP address extraction reliability
 +Soft-ban state management with ANSI notifications
++Trusted peer awareness for soft-ban duration calculation
 }
 class queued_message {
 <<abstract>>
@@ -257,7 +296,7 @@ Key behaviors:
 - Outgoing message pipeline: send_message enqueues a real_queued_message with enhanced error handling; send_item enqueues a virtual_queued_message; send_queueable_message validates queue size and triggers send_queued_messages_task with improved logging.
 - Inbound message pipeline: on_message delegates to node delegate with robust error recovery; on_connection_closed transitions negotiation_status and notifies node with proper exception handling.
 - Lifecycle: accept_connection and connect_to manage transport setup with enhanced error handling; close_connection and destroy_connection coordinate teardown with improved exception safety.
-- **Enhanced** Soft-ban management: fork_rejected_until tracks soft-ban expiration; inhibit_fetching_sync_blocks prevents sync operations during ban period; ANSI color-coded notifications for ban events.
+- **Enhanced** Soft-ban management: fork_rejected_until tracks soft-ban expiration; inhibit_fetching_sync_blocks prevents sync operations during ban period; ANSI color-coded notifications for ban events; **Enhanced** trusted peer-aware soft-ban duration calculation.
 
 **Section sources**
 - [peer_connection.hpp:79-351](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L351)
@@ -364,14 +403,14 @@ Note over Local,Remote : "Enhanced error handling and IP address reliability"
 - [peer_connection.cpp:208-242](file://libraries/network/peer_connection.cpp#L208-L242)
 
 ### Connection Lifecycle Management
-Lifecycle stages with enhanced error handling, soft-ban functionality, and ANSI color-coded notifications:
+Lifecycle stages with enhanced error handling, soft-ban functionality, ANSI color-coded notifications, and **new** trusted peer support:
 - Initiation: connect_to for outbound, accept_connection for inbound with improved exception safety.
 - Negotiation: hello/connection_accepted or connection_rejected with enhanced logging and monitoring.
-- Operation: message exchange, inventory advertisement, sync with robust error recovery mechanisms, soft-ban enforcement, and ANSI color-coded notifications.
-- Maintenance: keep-alive via time requests, bandwidth monitoring with improved reliability, soft-ban expiration checking with color-coded logging.
+- Operation: message exchange, inventory advertisement, sync with robust error recovery mechanisms, soft-ban enforcement, ANSI color-coded notifications, and **Enhanced** trusted peer-aware soft-ban duration calculation.
+- Maintenance: keep-alive via time requests, bandwidth monitoring with improved reliability, soft-ban expiration checking with color-coded logging, and **Enhanced** trusted peer IP address storage for efficient lookup.
 - Graceful disconnection: closing_connection message, close_connection, destroy_connection with enhanced error handling.
 - Error recovery: queue overflow closes connection with proper cleanup, peer database updates with improved logging, retry timers with better exception safety.
-- **Enhanced** Soft-ban management: fork_rejected_until timestamp enforcement, inhibit_fetching_sync_blocks flag management, automatic soft-ban expiration handling, and ANSI color-coded ban notifications.
+- **Enhanced** Soft-ban management: fork_rejected_until timestamp enforcement, inhibit_fetching_sync_blocks flag management, automatic soft-ban expiration handling, ANSI color-coded ban notifications, and **Enhanced** dual-tier soft-ban system with trusted peer support.
 
 ```mermaid
 stateDiagram-v2
@@ -381,7 +420,7 @@ Disconnected --> Accepting : "accept_connection() with enhanced safety"
 Connecting --> Connected : "hello + accepted"
 Accepting --> Connected : "hello + accepted"
 Connected --> NegotiationComplete : "inventory sync"
-NegotiationComplete --> SoftBan : "fork_rejected_until set with ANSI notification"
+NegotiationComplete --> SoftBan : "fork_rejected_until set with ANSI notification<br/>5-min for trusted peers, 1-hr for others"
 SoftBan --> Connected : "soft-ban expired with color reset"
 Connected --> Closing : "close_connection() with proper cleanup"
 Closing --> Closed : "on_connection_closed with enhanced logging"
@@ -392,11 +431,15 @@ Closed --> [*]
 - [peer_connection.hpp:82-106](file://libraries/network/include/graphene/network/peer_connection.hpp#L82-L106)
 - [peer_connection.cpp:356-369](file://libraries/network/peer_connection.cpp#L356-L369)
 - [node.cpp:718-740](file://libraries/network/node.cpp#L718-L740)
+- [node.cpp:593-601](file://libraries/network/node.cpp#L593-L601)
+- [node.cpp:5272-5274](file://libraries/network/node.cpp#L5272-L5274)
 
 **Section sources**
 - [peer_connection.cpp:169-242](file://libraries/network/peer_connection.cpp#L169-L242)
 - [peer_connection.cpp:356-369](file://libraries/network/peer_connection.cpp#L356-L369)
 - [node.cpp:718-740](file://libraries/network/node.cpp#L718-L740)
+- [node.cpp:593-601](file://libraries/network/node.cpp#L593-L601)
+- [node.cpp:5272-5274](file://libraries/network/node.cpp#L5272-L5274)
 
 ### Message Queuing, Priority, and Multiplexing
 - Queuing: real_queued_message stores full messages with enhanced error handling; virtual_queued_message defers generation via node delegate with improved logging.
@@ -429,17 +472,19 @@ EnhancedMonitoring --> Done["Done with proper cleanup"]
 - [config.hpp:58-58](file://libraries/network/include/graphene/network/config.hpp#L58-L58)
 
 ### Peer State Tracking, Metrics, and Reputation
-Peer state tracking with enhanced error handling, soft-ban support, and ANSI color-coded notifications:
+Peer state tracking with enhanced error handling, soft-ban support, ANSI color-coded notifications, and **new** trusted peer integration:
 - Connection states: negotiated status, direction, firewalled state, clock offset, round-trip delay with improved monitoring and logging.
 - Inventory: advertised to peer, advertised to us, requested, sync state, throttling windows with robust error recovery mechanisms.
 - Metrics: bytes sent/received, last message times, connection duration, termination time with enhanced logging and monitoring.
 - **Enhanced** Soft-ban state: fork_rejected_until timestamp tracks soft-ban expiration; inhibit_fetching_sync_blocks prevents sync operations during ban period.
+- **Enhanced** Trusted peer management: Automatic soft-ban duration calculation based on peer trust status; efficient IP address lookup for trusted peer detection.
 
 Reputation and selection with improved reliability:
 - peer_database tracks endpoints, last seen, disposition, and attempt counts with enhanced error handling.
 - node selects peers based on desired/max connections, retry timeouts, and peer database entries with better exception safety.
 - Enhanced logging and monitoring throughout the peer selection and balancing process with ANSI color-coded notifications.
 - **Enhanced** Soft-ban enforcement: Automatic soft-ban detection and enforcement during block processing with color-coded logging.
+- **Enhanced** Trusted peer awareness: Peer trust status influences soft-ban duration and network behavior.
 
 **Section sources**
 - [peer_connection.hpp:175-279](file://libraries/network/include/graphene/network/peer_connection.hpp#L175-L279)
@@ -447,14 +492,18 @@ Reputation and selection with improved reliability:
 - [peer_database.hpp:47-71](file://libraries/network/include/graphene/network/peer_database.hpp#L47-L71)
 - [peer_database.cpp:100-174](file://libraries/network/peer_database.cpp#L100-L174)
 - [node.cpp:518-526](file://libraries/network/node.cpp#L518-L526)
+- [node.cpp:593-601](file://libraries/network/node.cpp#L593-L601)
+- [node.cpp:5265-5274](file://libraries/network/node.cpp#L5265-L5274)
 
-### Enhanced Block Processing and Soft-Ban Functionality
-**New** Enhanced block processing with proper exception handling, soft-ban mechanisms, and ANSI color-coded notifications:
+### Enhanced Block Processing and Dual-Tier Soft-Ban System
+**New** Enhanced block processing with proper exception handling, soft-ban mechanisms, ANSI color-coded notifications, and **Enhanced** trusted peer-aware soft-ban duration calculation:
 - Database layer converts chain exceptions to network exceptions for P2P consumption, including deferred_resize_exception for memory resize operations.
 - Fork database handles unlinkable blocks with proper exception propagation.
 - Node layer implements soft-ban functionality for peer management during emergency scenarios with ANSI color-coded notifications.
+- **Enhanced** Trusted peer integration: Automatic soft-ban duration calculation based on peer trust status; 5-minute soft-ban for trusted peers, 1-hour for regular peers.
 - P2P plugin converts chain exceptions to network exceptions for consistent handling.
 - ANSI color codes (CLOG_RED, CLOG_RESET) provide visual emphasis for ban notifications in terminal output.
+- **Enhanced** Memory management: Deferred resize operations during block processing handled gracefully without penalizing peers.
 
 ```mermaid
 flowchart TD
@@ -468,25 +517,73 @@ ThrowException --> ConvertNet["Convert to network exception"]
 ThrowOld --> ConvertNet
 ThrowResize --> ConvertNet
 ConvertNet --> NodeHandle["Node handles exception"]
-NodeHandle --> SoftBan{"Peer on stale fork?"}
-SoftBan --> |Yes| SetBan["Set fork_rejected_until + inhibit_fetching_sync_blocks<br/>ANSI Red Notification"]
-SoftBan --> |No| Resync["Restart sync or disconnect"]
-AcceptBlock --> Broadcast["Broadcast to peers"]
-SetBan --> Broadcast
-Resync --> Broadcast
+NodeHandle --> PeerTrust{"Peer is trusted?"}
+PeerTrust --> |Yes| SetShortBan["Set fork_rejected_until + inhibit_fetching_sync_blocks<br/>5-minute soft-ban (trusted peers)<br/>ANSI Red Notification"]
+PeerTrust --> |No| SetLongBan["Set fork_rejected_until + inhibit_fetching_sync_blocks<br/>1-hour soft-ban (regular peers)<br/>ANSI Red Notification"]
+SetShortBan --> Broadcast["Broadcast to peers"]
+SetLongBan --> Broadcast
+ThrowResize --> NoBan["No soft-ban (deferred resize)<br/>Just retry block later"]
+NoBan --> Broadcast
+AcceptBlock --> Broadcast
 ```
 
 **Diagram sources**
 - [database.cpp:1215-1246](file://libraries/chain/database.cpp#L1215-L1246)
 - [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
 - [node.cpp:3598-3626](file://libraries/network/node.cpp#L3598-L3626)
+- [node.cpp:5272-5274](file://libraries/network/node.cpp#L5272-L5274)
 - [p2p_plugin.cpp:172-182](file://plugins/p2p/p2p_plugin.cpp#L172-L182)
+- [node.cpp:599-600](file://libraries/network/node.cpp#L599-L600)
 
 **Section sources**
 - [database.cpp:1215-1246](file://libraries/chain/database.cpp#L1215-L1246)
 - [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
 - [node.cpp:3598-3626](file://libraries/network/node.cpp#L3598-L3626)
+- [node.cpp:5272-5274](file://libraries/network/node.cpp#L5272-L5274)
 - [p2p_plugin.cpp:172-182](file://plugins/p2p/p2p_plugin.cpp#L172-L182)
+- [node.cpp:599-600](file://libraries/network/node.cpp#L599-L600)
+
+### Enhanced Trusted Peer Management and Integration
+**New** Comprehensive trusted peer support with automatic configuration and management:
+- **Trusted peer configuration**: Configured via trusted-snapshot-peer option in config.ini, supporting multiple trusted peers with IP:port format.
+- **Automatic registration**: P2P plugin automatically registers trusted peers from snapshot plugin configuration for reduced soft-ban duration.
+- **IP-based trust detection**: Efficient O(1) lookup using 32-bit IP address storage for trusted peer identification.
+- **Dual-tier soft-ban system**: 5-minute soft-ban duration for trusted peers, 1-hour for regular peers, with automatic duration calculation.
+- **Seamless integration**: Trusted peer management coordinated between P2P and snapshot plugins for consistent behavior.
+- **Configuration validation**: Robust parsing and validation of trusted peer endpoints with error logging for invalid configurations.
+
+```mermaid
+flowchart TD
+ConfigLoad["Load config.ini"] --> ParseTrusted["Parse trusted-snapshot-peer options"]
+ParseTrusted --> ValidateIP["Validate IP:port format"]
+ValidateIP --> |Valid| StoreIP["Store as 32-bit IP address"]
+ValidateIP --> |Invalid| LogError["Log parsing error"]
+StoreIP --> RegisterP2P["Register with P2P plugin"]
+RegisterP2P --> SnapshotPlugin["snapshot_plugin.get_trusted_snapshot_peers()"]
+SnapshotPlugin --> P2PRegistration["p2p_plugin.set_trusted_peer_endpoints()"]
+P2PRegistration --> NodeManager["node_impl._trusted_peer_ips"]
+NodeManager --> Lookup["O(1) IP address lookup"]
+Lookup --> SoftBanCalc["get_soft_ban_duration(peer)"]
+SoftBanCalc --> |Trusted| FiveMin["5-minute soft-ban"]
+SoftBanCalc --> |Regular| OneHour["1-hour soft-ban"]
+FiveMin --> ApplyBan["Apply soft-ban to peer"]
+OneHour --> ApplyBan
+```
+
+**Diagram sources**
+- [plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
+- [p2p_plugin.cpp:689-697](file://plugins/p2p/p2p_plugin.cpp#L689-L697)
+- [node.cpp:5240-5274](file://libraries/network/node.cpp#L5240-L5274)
+- [node.cpp:593-601](file://libraries/network/node.cpp#L593-L601)
+- [node.cpp:5272-5274](file://libraries/network/node.cpp#L5272-L5274)
+
+**Section sources**
+- [plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
+- [p2p_plugin.cpp:689-697](file://plugins/p2p/p2p_plugin.cpp#L689-L697)
+- [node.cpp:5240-5274](file://libraries/network/node.cpp#L5240-L5274)
+- [node.cpp:593-601](file://libraries/network/node.cpp#L593-L601)
+- [node.cpp:5272-5274](file://libraries/network/node.cpp#L5272-L5274)
+- [config.ini:96-101](file://share/vizd/config/config.ini#L96-L101)
 
 ### Enhanced Memory Management and Exception Handling
 **New** Comprehensive exception handling for memory resize operations:
@@ -494,6 +591,7 @@ Resync --> Broadcast
 - Database layer handles deferred resize operations with comprehensive logging and memory usage monitoring.
 - P2P plugin catches deferred_resize_exception and rethrows as network exception for consistent handling.
 - Node layer implements proper exception handling for deferred resize operations during block processing.
+- **Enhanced** Trusted peer consideration: Deferred resize exceptions do not trigger soft-bans for peers, as they represent local memory conditions rather than peer fault.
 
 ```mermaid
 flowchart TD
@@ -503,7 +601,8 @@ DeferResize --> ThrowException["Throw deferred_resize_exception"]
 ThrowException --> CatchException["Catch in P2P plugin"]
 CatchException --> RethrowNet["Rethrow as network exception"]
 RethrowNet --> NodeHandle["Node handles exception"]
-NodeHandle --> NoSoftBan["Do not soft-ban peer<br/>Just retry block later"]
+NodeHandle --> CheckTrusted{"Peer is trusted?"}
+CheckTrusted --> |Any| NoSoftBan["Do not soft-ban peer<br/>Just retry block later<br/>No peer penalization"]
 NoSoftBan --> ContinueProcessing["Continue block processing"]
 ResizeNeeded --> |No| NormalProcessing["Normal block processing"]
 ```
@@ -529,9 +628,11 @@ ResizeNeeded --> |No| NormalProcessing["Normal block processing"]
 - Peer selection and balancing with better exception safety:
   - node maintains desired/max connections, peer database, and retry timers; balances by selecting candidates from peer_database and initiating connect_to with enhanced error handling.
 - **Enhanced** Soft-ban management:
-  - Automatic soft-ban detection for peers sending unlinkable blocks; fork_rejected_until timestamp enforcement; inhibit_fetching_sync_blocks flag management; automatic soft-ban expiration handling; ANSI color-coded ban notifications.
+  - Automatic soft-ban detection for peers sending unlinkable blocks; fork_rejected_until timestamp enforcement; inhibit_fetching_sync_blocks flag management; automatic soft-ban expiration handling; ANSI color-coded ban notifications; **Enhanced** trusted peer-aware soft-ban duration calculation.
+- **Enhanced** Trusted peer integration:
+  - Automatic trusted peer registration from config.ini trusted-snapshot-peer options; efficient IP address lookup for trust detection; dual-tier soft-ban system with 5-minute duration for trusted peers; seamless P2P-snapshot plugin coordination.
 - **Enhanced** Memory resize exception handling:
-  - Deferred shared memory resize operations during block processing; proper exception propagation through P2P layer; no peer penalization for transient memory resize operations.
+  - Deferred shared memory resize operations during block processing; proper exception propagation through P2P layer; no peer penalization for transient memory resize operations; trusted peer consideration in exception handling.
 
 **Section sources**
 - [peer_connection.cpp:208-242](file://libraries/network/peer_connection.cpp#L208-L242)
@@ -539,17 +640,22 @@ ResizeNeeded --> |No| NormalProcessing["Normal block processing"]
 - [peer_connection.cpp:371-399](file://libraries/network/peer_connection.cpp#L371-L399)
 - [node.cpp:518-526](file://libraries/network/node.cpp#L518-L526)
 - [peer_database.cpp:100-174](file://libraries/network/peer_database.cpp#L100-L174)
+- [node.cpp:5240-5274](file://libraries/network/node.cpp#L5240-L5274)
+- [node.cpp:5272-5274](file://libraries/network/node.cpp#L5272-L5274)
+- [config.ini:96-101](file://share/vizd/config/config.ini#L96-L101)
 
 ## Dependency Analysis
-The peer connection subsystem exhibits clear layering and low coupling with enhanced error handling, soft-ban functionality, and ANSI color-coded notifications:
+The peer connection subsystem exhibits clear layering and low coupling with enhanced error handling, soft-ban functionality, ANSI color-coded notifications, and **new** trusted peer support:
 - peer_connection depends on message_oriented_connection and node delegate with improved exception safety.
 - message_oriented_connection depends on stcp_socket and delegates to peer_connection with enhanced logging.
 - stcp_socket depends on fc crypto primitives and tcp socket with robust error recovery.
-- node orchestrates peer_connection instances and peer_database with better exception handling, soft-ban logic, and ANSI notification support.
+- node orchestrates peer_connection instances and peer_database with better exception handling, soft-ban logic, ANSI notification support, and **Enhanced** trusted peer management.
 - core_messages defines protocol contracts used across layers with reliable IP address handling.
 - **Enhanced** database and fork_database depend on chain exceptions and propagate network exceptions to P2P layer.
-- **Enhanced** p2p_plugin converts chain exceptions to network exceptions for consistent handling.
+- **Enhanced** p2p_plugin converts chain exceptions to network exceptions for consistent handling and manages trusted peer registration.
+- **Enhanced** snapshot_plugin provides trusted-snapshot-peer configuration and peer discovery for trusted peer management.
 - **Enhanced** database_exceptions defines deferred_resize_exception for memory resize operations.
+- **Enhanced** Trusted peer integration creates dependencies between P2P and snapshot plugins for configuration management.
 
 ```mermaid
 graph LR
@@ -559,10 +665,15 @@ PC --> CM["core_messages"]
 N["node"] --> PC
 N --> PD["peer_database"]
 N --> DB["database"]
+N --> TP["trusted_peer_manager"]
+P2P["p2p_plugin"] --> N
+P2P --> SNAP["snapshot_plugin"]
+SNAP --> TP
 DB --> FD["fork_database"]
 DB --> EX["exceptions"]
 N --> EX
 EX --> DR["deferred_resize_exception"]
+TP --> N
 ```
 
 **Diagram sources**
@@ -576,6 +687,10 @@ EX --> DR["deferred_resize_exception"]
 - [database.cpp:1215-1246](file://libraries/chain/database.cpp#L1215-L1246)
 - [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
 - [exceptions.hpp:33-45](file://libraries/network/include/graphene/network/exceptions.hpp#L33-L45)
+- [node.cpp:593-601](file://libraries/network/node.cpp#L593-L601)
+- [node.cpp:5240-5274](file://libraries/network/node.cpp#L5240-L5274)
+- [p2p_plugin.cpp:689-697](file://plugins/p2p/p2p_plugin.cpp#L689-L697)
+- [plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
 
 **Section sources**
 - [peer_connection.hpp:26-45](file://libraries/network/include/graphene/network/peer_connection.hpp#L26-L45)
@@ -588,6 +703,10 @@ EX --> DR["deferred_resize_exception"]
 - [database.cpp:1215-1246](file://libraries/chain/database.cpp#L1215-L1246)
 - [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
 - [exceptions.hpp:33-45](file://libraries/network/include/graphene/network/exceptions.hpp#L33-L45)
+- [node.cpp:593-601](file://libraries/network/node.cpp#L593-L601)
+- [node.cpp:5240-5274](file://libraries/network/node.cpp#L5240-L5274)
+- [p2p_plugin.cpp:689-697](file://plugins/p2p/p2p_plugin.cpp#L689-L697)
+- [plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
 
 ## Performance Considerations
 - Message sizing: MAX_MESSAGE_SIZE caps payload; padding to 16 bytes ensures AES compatibility with enhanced error handling.
@@ -600,19 +719,23 @@ EX --> DR["deferred_resize_exception"]
 - **Enhanced** Block processing efficiency: Proper exception handling reduces unnecessary reprocessing and improves overall network performance.
 - **Enhanced** Memory management: Deferred resize operations prevent blocking during shared memory expansion, improving system responsiveness.
 - **Enhanced** Notification performance: ANSI color-coded logging provides visual emphasis without impacting performance significantly.
+- **Enhanced** Trusted peer performance: O(1) IP address lookup for trusted peer detection minimizes overhead; efficient configuration parsing reduces startup time.
+- **Enhanced** Dual-tier optimization: Separate soft-ban duration calculation eliminates redundant calculations while providing flexible peer management.
 
 ## Troubleshooting Guide
-Common issues and remedies with enhanced error handling, soft-ban functionality, and ANSI color-coded notifications:
+Common issues and remedies with enhanced error handling, soft-ban functionality, ANSI color-coded notifications, and **Enhanced** trusted peer support:
 - Connection refused or rejected: Review rejection reasons in connection_rejected_message with improved logging; check protocol version, chain ID, and node policies with better error reporting.
 - Handshake failures: Verify ECDH key exchange succeeded with enhanced error handling; inspect stcp_socket logs with improved monitoring; ensure endpoints are reachable with robust error recovery.
 - Queue overflow: Monitor queue size with enhanced logging; adjust rate or reduce message sizes; consider disconnecting misbehaving peers with proper cleanup.
 - Idle peers: Use inactivity timeouts with improved exception safety; terminate inactive connections; rebalance peers with better error handling.
 - Peer reputation: Inspect peer_database entries with enhanced logging; prune failed peers; respect retry delays with improved error recovery mechanisms.
 - IP address extraction issues: Enhanced safe static_cast operations with try-catch fallback mechanisms ensure reliable IP address extraction throughout peer information handling.
-- **Enhanced** Soft-ban issues: Check fork_rejected_until timestamps and inhibit_fetching_sync_blocks flags; verify automatic soft-ban expiration handling; monitor soft-ban effectiveness; review ANSI color-coded ban notifications for quick identification.
-- **Enhanced** Block processing errors: Review unlinkable_block_exception handling and soft-ban enforcement; verify proper exception conversion from chain to network exceptions; check memory resize exception handling.
+- **Enhanced** Soft-ban issues: Check fork_rejected_until timestamps and inhibit_fetching_sync_blocks flags; verify automatic soft-ban expiration handling; monitor soft-ban effectiveness; review ANSI color-coded ban notifications for quick identification; **Enhanced** verify trusted peer soft-ban duration calculation.
+- **Enhanced** Trusted peer configuration: Verify trusted-snapshot-peer entries in config.ini are valid IP:port format; check automatic registration in P2P plugin logs; ensure IP address parsing succeeds; verify O(1) lookup functionality.
+- **Enhanced** Block processing errors: Review unlinkable_block_exception handling and soft-ban enforcement; verify proper exception conversion from chain to network exceptions; check memory resize exception handling; **Enhanced** confirm trusted peer-aware soft-ban duration calculation.
 - **Enhanced** Memory resize issues: Monitor deferred_resize_exception occurrences; verify proper exception propagation through P2P layer; ensure no peer penalization for transient memory resize operations.
 - **Enhanced** Notification visibility: Verify ANSI color codes are properly displayed in terminal; check CLOG_RED and CLOG_RESET definitions for proper formatting.
+- **Enhanced** Plugin integration: Verify snapshot plugin loads trusted-snapshot-peer configuration; check P2P plugin registration success; ensure seamless coordination between plugins.
 
 **Section sources**
 - [core_messages.hpp:285-306](file://libraries/network/include/graphene/network/core_messages.hpp#L285-L306)
@@ -620,11 +743,14 @@ Common issues and remedies with enhanced error handling, soft-ban functionality,
 - [peer_database.cpp:100-174](file://libraries/network/peer_database.cpp#L100-L174)
 - [peer_connection.cpp:314-325](file://libraries/network/peer_connection.cpp#L314-L325)
 - [node.cpp:3448-3470](file://libraries/network/node.cpp#L3448-L3470)
+- [node.cpp:5240-5274](file://libraries/network/node.cpp#L5240-L5274)
+- [node.cpp:5272-5274](file://libraries/network/node.cpp#L5272-L5274)
+- [config.ini:96-101](file://share/vizd/config/config.ini#L96-L101)
 
 ## Conclusion
-Peer Connection Management in this codebase provides a robust, layered architecture for secure, multiplexed peer communication with enhanced error handling, reliability, and soft-ban functionality. It supports comprehensive lifecycle management, strict authentication via ECDH/AES, and sophisticated message queuing with priority and throttling. The node orchestrates peers, maintains reputation, and optimizes selection and balancing with improved exception safety. Enhanced peer information handling with reliable IP address extraction using safe static_cast operations with try-catch fallback mechanisms, combined with improved error handling and performance optimizations throughout peer statistics logging, ensures more robust operation of the P2P network layer.
+Peer Connection Management in this codebase provides a robust, layered architecture for secure, multiplexed peer communication with enhanced error handling, reliability, and **Enhanced** trusted peer support. It supports comprehensive lifecycle management, strict authentication via ECDH/AES, and sophisticated message queuing with priority and throttling. The node orchestrates peers, maintains reputation, and optimizes selection and balancing with improved exception safety. Enhanced peer information handling with reliable IP address extraction using safe static_cast operations with try-catch fallback mechanisms, combined with improved error handling and performance optimizations throughout peer statistics logging, ensures more robust operation of the P2P network layer.
 
-**Enhanced** The system now includes sophisticated soft-ban functionality with ANSI color-coded notifications for improved visibility, proper exception conversion between chain and network layers, and improved fork rejection mechanisms. The addition of comprehensive memory resize exception handling ensures system stability during shared memory expansion operations. These enhancements provide superior error recovery, monitoring capabilities, network stability during emergency consensus scenarios, and improved operational visibility through color-coded terminal notifications. Together, these components deliver reliable peer-to-peer connectivity suitable for blockchain synchronization and transaction propagation with superior error recovery, soft-ban management, enhanced network reliability, and improved operational observability.
+**Enhanced** The system now includes sophisticated trusted peer support featuring dual-tier soft-ban mechanisms with automatic configuration management. Trusted peers configured via trusted-snapshot-peer receive 5-minute soft-bans instead of the default 1-hour duration, enabling faster recovery from transient errors while maintaining network stability. The seamless integration between P2P and snapshot plugins ensures consistent trusted peer management across the entire system. These enhancements provide superior error recovery, monitoring capabilities, network stability during emergency consensus scenarios, improved operational visibility through color-coded terminal notifications, and enhanced trust-based peer management for improved network resilience and performance.
 
 ## Appendices
 
@@ -635,9 +761,11 @@ Important tunables affecting peer connection behavior:
 - GRAPHENE_NET_MAXIMUM_QUEUED_MESSAGES_IN_BYTES: Queue size cap with enhanced error handling.
 - GRAPHENE_NET_DEFAULT_DESIRED_CONNECTIONS / GRAPHENE_NET_DEFAULT_MAX_CONNECTIONS: Target and hard limits.
 - GRAPHENE_NET_PEER_HANDSHAKE_INACTIVITY_TIMEOUT / GRAPHENE_NET_PEER_DISCONNECT_TIMEOUT: Timeout thresholds with improved exception safety.
+- **Enhanced** TRUSTED_SOFT_BAN_DURATION_SEC / SOFT_BAN_DURATION_SEC: 300 seconds (5 minutes) vs 3600 seconds (1 hour) for trusted vs regular peers.
 
 **Section sources**
 - [config.hpp:26-106](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
+- [node.cpp:599-600](file://libraries/network/node.cpp#L599-L600)
 
 ### Network Exception Types
 **New** Enhanced exception types for improved error handling:
@@ -646,6 +774,7 @@ Important tunables affecting peer connection behavior:
 - peer_is_on_an_unreachable_fork: Used when peers are on incompatible forks.
 - **New** deferred_resize_exception: Used for shared memory resize operations during block processing, indicating transient memory expansion requiring block retry.
 - Enhanced error propagation: Chain exceptions converted to network exceptions for consistent P2P layer handling.
+- **Enhanced** Trusted peer consideration: Deferred resize exceptions do not trigger soft-bans as they represent local memory conditions.
 
 **Section sources**
 - [exceptions.hpp:33-45](file://libraries/network/include/graphene/network/exceptions.hpp#L33-L45)
@@ -665,3 +794,16 @@ Important tunables affecting peer connection behavior:
 - [node.cpp:3633-3636](file://libraries/network/node.cpp#L3633-L3636)
 - [node.cpp:3653-3656](file://libraries/network/node.cpp#L3653-L3656)
 - [node.cpp:3671-3674](file://libraries/network/node.cpp#L3671-L3674)
+
+### Trusted Peer Configuration Options
+**New** Configuration options for trusted peer management:
+- trusted-snapshot-peer: Configurable trusted peer endpoints in IP:port format, repeatable for multiple trusted peers.
+- Automatic registration: P2P plugin automatically registers trusted peers from snapshot plugin configuration.
+- IP-based trust detection: Efficient O(1) lookup using 32-bit IP address storage.
+- Dual-tier soft-ban system: 5-minute duration for trusted peers, 1-hour for regular peers.
+
+**Section sources**
+- [config.ini:96-101](file://share/vizd/config/config.ini#L96-L101)
+- [plugin.cpp:3039-3045](file://plugins/snapshot/plugin.cpp#L3039-L3045)
+- [p2p_plugin.cpp:689-697](file://plugins/p2p/p2p_plugin.cpp#L689-L697)
+- [node.cpp:5240-5274](file://libraries/network/node.cpp#L5240-L5274)
