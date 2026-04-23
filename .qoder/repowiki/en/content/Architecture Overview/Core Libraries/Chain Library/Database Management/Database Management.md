@@ -23,12 +23,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced fork database handling with proper unlinkable_block_exception throwing for dead fork detection
-- Improved memory management with detailed resize logging and deferred resize mechanism
-- Enhanced error handling for shared memory exhaustion with graceful degradation
-- New deferred resize mechanism with thread safety improvements and race condition prevention
-- Enhanced block collision detection with rate-limiting and scenario differentiation
-- Improved peer connectivity preservation during memory pressure scenarios
+- Enhanced fork database with proper unlinkable_block_exception throwing for dead fork detection
+- Improved dead fork detection capabilities with comprehensive exception handling
+- Enhanced fork switching logic with better emergency consensus tie-breaking using deterministic hash-based tie-breaking
+- Added emergency consensus mode support with deterministic block selection criteria
+- Improved fork database error handling and logging for better diagnostic capabilities
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -38,7 +37,7 @@
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Emergency Consensus Implementation](#emergency-consensus-implementation)
 7. [Dependency Analysis](#dependency-analysis)
-8. [Performance Considerations](#performance-considerations)
+8 [Performance Considerations](#performance-considerations)
 9. [Troubleshooting Guide](#troubleshooting-guide)
 10. [Conclusion](#conclusion)
 
@@ -159,7 +158,7 @@ EXC --> NODE
 - **Enhanced Memory Management**: Comprehensive logging system for shared memory allocation with detailed free memory and maximum memory state reporting.
 - **Deferred Shared Memory Resize**: New mechanism that defers memory resize operations until a safe point when no read locks are held, improving thread safety and performance during high-load scenarios.
 - **Enhanced Error Handling**: Graceful handling of boost::interprocess::bad_alloc exceptions with deferred resize scheduling and peer connectivity preservation.
-- **Enhanced Fork Database Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic.
+- **Enhanced Fork Database Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking.
 
 Key responsibilities:
 - Lifecycle: open(), open_from_snapshot(), reindex(), close(), wipe() with improved error handling
@@ -178,7 +177,7 @@ Key responsibilities:
 - **Enhanced Memory Management**: Detailed logging of memory states before and after resizing operations for administrator visibility
 - **Thread-Safe Memory Resizing**: Deferred resize mechanism that acquires exclusive write locks to prevent race conditions and stale pointer issues
 - **Memory Pressure Handling**: Graceful degradation of shared memory exhaustion with peer connectivity preservation
-- **Enhanced Fork Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic
+- **Enhanced Fork Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking
 
 **Section sources**
 - [database.hpp:61-115](file://libraries/chain/include/graphene/chain/database.hpp#L61-L115)
@@ -207,7 +206,7 @@ The database composes four primary subsystems with enhanced DLT mode support, em
 - **Enhanced Memory Management**: Comprehensive logging system for shared memory allocation with detailed state reporting
 - **Deferred Memory Resize**: Thread-safe memory resize mechanism that defers operations until safe points to prevent race conditions
 - **Enhanced Error Handling**: Graceful exception handling for shared memory exhaustion with peer connectivity preservation
-- **Enhanced Fork Database**: Proper unlinkable block exception handling for dead fork detection and improved fork switching
+- **Enhanced Fork Database**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching
 
 ```mermaid
 classDiagram
@@ -269,6 +268,7 @@ class fork_database {
 +set_emergency_mode(active)
 +is_known_block(id)
 +fetch_block_by_number(num)
++is_emergency_mode() : emergency consensus mode flag
 }
 class signal_guard {
 +setup()
@@ -785,38 +785,50 @@ Exception --> |No| Success
 - [database.cpp:1460-1470](file://libraries/chain/database.cpp#L1460-L1470)
 
 ### Enhanced Fork Database Handling with Unlinkable Block Exception
-**New** - The fork database now includes enhanced error handling for proper dead fork detection:
+**Updated** - The fork database now includes enhanced error handling for proper dead fork detection:
 
 - **Proper Exception Throwing**: The fork_database::push_block() method now properly throws unlinkable_block_exception when blocks fail to link, enabling better dead fork detection.
 - **Enhanced Logging**: Improved logging of fork database linking failures with detailed block information and head block context.
 - **Unlinked Block Caching**: Previously unlinked blocks are cached in _unlinked_index for later processing when their parents become available.
 - **Improved Fork Switching**: The database's fork switching logic now properly handles unlinkable_block_exception to prevent processing blocks from dead forks.
+- **Deterministic Tie-Breaking**: During emergency consensus mode, blocks with identical heights are selected deterministically using block_id hash comparison.
 
 ```mermaid
 flowchart TD
 Start(["fork_database::push_block(block)"]) --> TryPush["_push_block(item)"]
 TryPush --> Success{"Link successful?"}
-Success --> |Yes| ReturnHead["Return _head"]
+Success --> |Yes| CheckEmergency{"Emergency mode?"}
+CheckEmergency --> |No| ReturnHead["Return _head"]
+CheckEmergency --> |Yes| CheckHeight{"Same height as head?"}
+CheckHeight --> |No| ReturnHead
+CheckHeight --> |Yes| CheckHash{"item.id < _head->id?"}
+CheckHash --> |Yes| SetHead["Set _head = item"]
+CheckHash --> |No| KeepHead["Keep current head"]
 Success --> |No| CacheUnlinked["Cache in _unlinked_index"]
 CacheUnlinked --> ThrowException["Throw unlinkable_block_exception"]
 ThrowException --> Propagate["Propagate to caller"]
 ReturnHead --> Propagate
+SetHead --> Propagate
+KeepHead --> Propagate
 ```
 
 **Diagram sources**
 - [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
+- [fork_database.cpp:81-88](file://libraries/chain/fork_database.cpp#L81-L88)
 
 **Section sources**
 - [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
+- [fork_database.cpp:81-88](file://libraries/chain/fork_database.cpp#L81-L88)
 - [database_exceptions.hpp:83](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L83)
 
-### Enhanced Fork Switching Logic with Dead Fork Detection
-**New** - The database's fork switching logic now includes improved dead fork detection:
+### Enhanced Fork Switching Logic with Dead Fork Detection and Deterministic Tie-Breaking
+**Updated** - The database's fork switching logic now includes improved dead fork detection and emergency consensus tie-breaking:
 
 - **Dead Fork Detection**: When attempting to switch forks, the system checks if the current head block exists in the fork database before proceeding.
 - **Proper Exception Handling**: If the head block is not in the fork database, the system removes the candidate block and throws unlinkable_block_exception.
-- **Enhanced Branch Comparison**: Improved fork comparison logic with proper handling of emergency consensus mode tie-breaking.
+- **Enhanced Branch Comparison**: Improved fork comparison logic with proper handling of emergency consensus mode tie-breaking using deterministic hash-based selection.
 - **Safe Fork Switching**: The system ensures fork switching only occurs when both chains are valid and linked to the current state.
+- **Emergency Consensus Tie-Breaking**: During emergency mode, identical-height blocks are selected deterministically by comparing block_id hashes.
 
 ```mermaid
 flowchart TD
@@ -826,8 +838,13 @@ RejectFork --> ThrowException["Throw unlinkable_block_exception"]
 CheckHead --> |Yes| CompareBranches["Compare fork branches"]
 CompareBranches --> ComputeWeight["Compute branch weights"]
 ComputeWeight --> DecideSwitch{"Should switch forks?"}
-DecideSwitch --> |Yes| SwitchForks["Perform fork switch"]
+DecideSwitch --> |Yes| CheckEmergency{"Emergency mode?"}
 DecideSwitch --> |No| KeepCurrent["Keep current fork"]
+CheckEmergency --> |No| SwitchForks["Perform fork switch"]
+CheckEmergency --> |Yes| CheckTie{"Tie at same height?"}
+CheckTie --> |No| SwitchForks
+CheckTie --> |Yes| TieBreak["Use deterministic hash tie-breaking"]
+TieBreak --> SwitchForks
 SwitchForks --> UpdateHead["Update fork_db head"]
 KeepCurrent --> End(["Complete"])
 UpdateHead --> End
@@ -925,7 +942,7 @@ These signals are used by plugins to react to blockchain events without tight co
 - Push a block: push_block(signed_block, skip_flags) - **Enhanced with shared memory error handling**
 - Push a transaction: push_transaction(signed_transaction, skip_flags)
 - Validate a block: validate_block(signed_block, skip_flags)
-- Validate a transaction: validate_transaction(signed_signed_transaction, skip_flags)
+- Validate a transaction: validate_transaction(signed_transaction, skip_flags)
 - **Set DLT mode**: set_dlt_mode(true/false) - **Enhanced with proper setter implementation**
 - **DLT Gap Suppression**: The database now automatically manages gap warnings to prevent log spam during normal operations with intelligent state management
 - **Enhanced Collision Detection**: Sophisticated logging for block number collisions with scenario differentiation and rate-limiting
@@ -933,7 +950,7 @@ These signals are used by plugins to react to blockchain events without tight co
 - **Enhanced Memory Management**: Comprehensive logging of memory states before and after resizing operations for administrator visibility
 - **Deferred Memory Resize**: Thread-safe memory resize mechanism that applies operations at safe points to prevent race conditions
 - **Enhanced Error Handling**: Graceful handling of shared memory exhaustion with peer connectivity preservation
-- **Enhanced Fork Database**: Proper unlinkable block exception handling for dead fork detection and improved fork switching logic
+- **Enhanced Fork Database**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking
 - Query helpers:
   - get_block_id_for_num(uint32_t)
   - fetch_block_by_id(block_id_type)
@@ -1161,7 +1178,7 @@ The database depends on:
 - **Enhanced memory management**: Comprehensive logging system for shared memory allocation with detailed state reporting
 - **Deferred memory resize mechanism**: Thread-safe memory management with proper lock handling and race condition prevention
 - **Enhanced error handling**: Graceful exception handling for shared memory exhaustion with peer connectivity preservation
-- **Enhanced fork database**: Proper unlinkable block exception handling for dead fork detection and improved fork switching logic
+- **Enhanced fork database**: Proper unlinkable_block_exception handling for dead fork detection and improved fork switching logic with deterministic tie-breaking
 
 ```mermaid
 graph LR
@@ -1227,8 +1244,8 @@ DB --> UNLINK["unlinkable_block_exception"]
 - **Deferred Memory Resize Efficiency**: The new deferred resize mechanism prevents race conditions and stale pointer issues during high-load scenarios, improving overall system reliability and performance.
 - **Thread-Safe Memory Operations**: Proper lock management during memory resize operations ensures data consistency and prevents performance degradation from thread contention.
 - **Enhanced Error Handling**: Graceful handling of shared memory exhaustion prevents peer disconnections and maintains network connectivity during memory pressure situations.
-- **Enhanced Fork Database Performance**: Proper unlinkable block exception handling reduces processing overhead by eliminating dead fork blocks from consideration.
-- **Improved Fork Switching**: Enhanced fork switching logic with proper dead fork detection prevents unnecessary processing and improves fork resolution performance.
+- **Enhanced Fork Database Performance**: Proper unlinkable_block_exception handling reduces processing overhead by eliminating dead fork blocks from consideration.
+- **Improved Fork Switching**: Enhanced fork switching logic with proper dead fork detection and deterministic tie-breaking prevents unnecessary processing and improves fork resolution performance.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -1266,6 +1283,7 @@ Common issues and remedies:
 - **Enhanced Fork Database Issues**: Monitor unlinkable_block_exception handling to ensure dead fork blocks are properly detected and excluded from processing.
 - **Fork Switching Problems**: Verify that fork switching logic properly handles unlinkable_block_exception and prevents processing of invalid forks.
 - **Dead Fork Detection**: Check that the enhanced fork database properly throws unlinkable_block_exception for blocks from dead forks to prevent wasted processing resources.
+- **Emergency Consensus Tie-Breaking**: Verify that deterministic hash-based tie-breaking is working correctly during emergency mode to ensure consistent block selection across all nodes.
 
 **Section sources**
 - [database.cpp:800-830](file://libraries/chain/database.cpp#L800-L830)
@@ -1279,6 +1297,7 @@ Common issues and remedies:
 - [database.cpp:1106-1145](file://libraries/chain/database.cpp#L1106-L1145)
 - [database.cpp:1460-1470](file://libraries/chain/database.cpp#L1460-L1470)
 - [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
+- [fork_database.cpp:81-88](file://libraries/chain/fork_database.cpp#L81-L88)
 - [database.cpp:1295-1377](file://libraries/chain/database.cpp#L1295-L1377)
 
 ## Conclusion
@@ -1296,4 +1315,4 @@ The deferred memory resize mechanism represents a major improvement in thread sa
 
 **Enhanced Error Handling** - The most significant improvement is the enhanced error handling for shared memory exhaustion. The database now gracefully handles boost::interprocess::bad_alloc exceptions by returning false instead of throwing, which prevents P2P layer disconnections and maintains witness slot-miss logging while preserving node connectivity. The system schedules a deferred resize operation and preserves memory state by setting reserved memory to current free memory, ensuring automatic recovery without manual intervention. This approach maintains network stability during memory pressure situations and allows the missed block to be re-received during normal sync, providing a seamless user experience even under adverse conditions.
 
-**Enhanced Fork Database Handling** - The fork database now includes proper unlinkable_block_exception throwing for dead fork detection, significantly improving the system's ability to identify and reject blocks from invalid forks. This enhancement prevents wasted processing resources on dead forks and improves overall network efficiency. The improved fork switching logic with proper dead fork detection ensures that only valid, linked forks are considered for switching, reducing the risk of processing invalid chain states and improving the reliability of fork resolution operations.
+**Enhanced Fork Database Handling** - The fork database now includes proper unlinkable_block_exception throwing for dead fork detection, significantly improving the system's ability to identify and reject blocks from invalid forks. This enhancement prevents wasted processing resources on dead forks and improves overall network efficiency. The improved fork switching logic with proper dead fork detection ensures that only valid, linked forks are considered for switching, reducing the risk of processing invalid chain states and improving the reliability of fork resolution operations. The addition of deterministic hash-based tie-breaking during emergency consensus mode ensures consistent block selection across all nodes, preventing split-brain scenarios and maintaining network convergence even under extreme conditions.
