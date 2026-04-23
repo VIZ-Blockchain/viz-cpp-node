@@ -259,7 +259,7 @@ namespace graphene {
 
                     auto& db = pimpl->database();
                     fc::time_point now_fine = graphene::time::now();
-                    fc::time_point_sec now = now_fine + fc::microseconds(500000);
+                    fc::time_point_sec now = now_fine + fc::microseconds(250000);
 
                     uint32_t slot = db.get_slot_at_time(now);
                     if (slot == 0) {
@@ -297,12 +297,14 @@ namespace graphene {
             }
 
             void witness_plugin::impl::schedule_production_loop() {
-                //Schedule for the next second's tick regardless of chain state
-                // If we would wait less than 50ms, wait for the whole second.
+                //Schedule for the next 250ms tick regardless of chain state
+                // With +250ms look-ahead in maybe_produce_block(), the tick at
+                // T_slot - 250ms aligns now exactly to the slot boundary for zero-lag production.
+                // If we would wait less than 50ms, wait for the whole 250ms period.
                 int64_t ntp_microseconds = graphene::time::now().time_since_epoch().count();
-                int64_t next_microseconds = 1000000 - ( ntp_microseconds % 1000000 );
+                int64_t next_microseconds = 250000 - ( ntp_microseconds % 250000 );
                 if (next_microseconds < 50000) { // we must sleep for at least 50ms
-                    next_microseconds += 1000000 ;
+                    next_microseconds += 250000 ;
                 }
 
                 production_timer_.expires_from_now( posix_time::microseconds(next_microseconds) );
@@ -376,7 +378,7 @@ namespace graphene {
             block_production_condition::block_production_condition_enum witness_plugin::impl::maybe_produce_block(fc::mutable_variant_object &capture) {
                 auto &db = database();
                 fc::time_point now_fine = graphene::time::now();
-                fc::time_point_sec now = now_fine + fc::microseconds( 500000 );
+                fc::time_point_sec now = now_fine + fc::microseconds( 250000 );
 
                 // === HARDFORK 12: THREE-STATE SAFETY ENFORCEMENT ===
                 const auto &dgp = db.get_dynamic_global_properties();

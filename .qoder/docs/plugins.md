@@ -700,6 +700,33 @@ The `required-participation` value is now always in **basis points** (0–10000 
 - Config: `required-participation = 5000` = 50%
 - CLI: `--required-participation 5000` = 50%
 
+**Optimization: Block Production Timing**
+
+The witness plugin's production loop uses a timer + look-ahead mechanism to determine when to produce a block. The timer ticks at regular intervals and the look-ahead shifts `now` forward so the slot boundary is detected earlier.
+
+Source: [witness.cpp](../../plugins/witness/witness.cpp) — `schedule_production_loop()`, `maybe_produce_block()`
+
+| Parameter | Value | Meaning |
+|---|---|---|
+| Timer tick interval | 250ms | How often the production loop wakes up |
+| Look-ahead | +250ms | `now = ntp_time + 250ms` — shifts current time forward |
+| Lag threshold | 500ms | If `|scheduled_time - now| > 500ms`, block is NOT produced (LAG condition) |
+
+The look-ahead compensates for OS timer jitter. With 250ms ticks + 250ms look-ahead, the tick at `T_slot - 250ms` aligns `now` exactly to the slot boundary, achieving near-zero-lag production:
+
+```
+Slot at T=6.000:
+  Tick at T=5.750 → now=6.000 → slot matched → lag=0ms → PRODUCE
+```
+
+If the tick fires late (OS jitter), the next tick 250ms later still has comfortable margin:
+```
+  Tick at T=6.000 → now=6.250 → lag=250ms → PRODUCE (within 500ms threshold)
+  Tick at T=6.250 → now=6.500 → lag=500ms → borderline LAG
+```
+
+**Previous behavior** (before optimization): 1000ms tick + 500ms look-ahead → best-case lag was 500ms (exactly at the threshold), and even 50ms of OS jitter caused a LAG condition.
+
 ---
 
 ## Debug/Test Plugins

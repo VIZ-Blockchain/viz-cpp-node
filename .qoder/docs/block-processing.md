@@ -221,6 +221,62 @@ _required_witness_participation = options["required-participation"].as<uint32_t>
 
 ---
 
+## Witness Block Production Timing
+
+Source: [witness.cpp](../../plugins/witness/witness.cpp)
+
+### Production Loop Mechanism
+
+The witness plugin uses a timer-based production loop with a look-ahead to detect when it's time to produce a block:
+
+1. **Timer** fires every **250ms** (aligned to 250ms boundaries, minimum sleep 50ms)
+2. On each tick, `maybe_produce_block()` computes `now = NTP_time + 250ms` (look-ahead)
+3. `get_slot_at_time(now)` finds which slot corresponds to `now`
+4. If the slot belongs to one of our witnesses and `|scheduled_time - now| <= 500ms`, the block is produced with `scheduled_time` as the timestamp
+
+The block timestamp is always the **deterministic slot time** (computed from `head_block_time` rounded to `CHAIN_BLOCK_INTERVAL` boundary + `slot_num × 3s`), never the current clock time.
+
+### Why 250ms tick + 250ms look-ahead?
+
+With these matching values, the tick at `T_slot - 250ms` aligns `now` exactly to the slot boundary:
+
+```
+Slot at T=6.000, tick at T=5.750:
+  now = 5.750 + 0.250 = 6.000 → slot matched → lag = 0ms → PRODUCE
+```
+
+This gives a **500ms safety margin** against the LAG threshold, compared to 0ms margin with the previous 1000ms tick + 500ms look-ahead.
+
+### Missed Block Behavior
+
+When a witness misses their slot, the production loop does NOT wait or retry. The next tick simply finds a later slot:
+
+```
+Slot T=3 missed (witness A absent):
+  Tick at T=3.000 → now=3.250 → slot=1 → witness A → not our witness → not_my_turn
+  (A's slot passes unclaimed)
+
+Slot T=6 (witness B - our witness):
+  Tick at T=5.750 → now=6.000 → slot=2 → witness B → PRODUCE with timestamp T=6.000
+```
+
+When block at T=6 is pushed, `update_global_dynamic_data()` counts `missed_blocks = get_slot_at_time(6.000) - 1 = 1` and increments `current_aslot` accordingly.
+
+### Production Conditions (in order)
+
+| Check | Condition | Result if failed |
+|---|---|---|
+| Sync status | Chain is not stale (or `enable-stale-production`) | `not_synced` |
+| Slot time | `get_slot_at_time(now) > 0` | `not_time_yet` |
+| Witness ownership | Scheduled witness is in our `_witnesses` set | `not_my_turn` |
+| Signing key | Witness has non-zero `signing_key` on chain | `not_my_turn` |
+| Private key | We have the private key for the signing key | `no_private_key` |
+| Participation | Network participation ≥ required (pre-HF12 only) | `low_participation` |
+| Lag | `|scheduled_time - now| <= 500ms` | `lag` |
+| Fork collision | No competing block at same height in fork_db | `fork_collision` |
+
+---
+
 ## Configuration Constants
 
 | Constant | Value | Purpose |
