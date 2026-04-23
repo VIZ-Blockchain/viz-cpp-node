@@ -1548,12 +1548,10 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     // Check --snapshot-at-block: one-time snapshot at exact block
     if (snapshot_at_block > 0 && block_num == snapshot_at_block && !is_syncing) {
         fc::path output;
-        if (!snapshot_dir.empty()) {
-            output = fc::path(snapshot_dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
-        } else if (!create_snapshot_path.empty()) {
+        if (!create_snapshot_path.empty()) {
             output = fc::path(create_snapshot_path);
         } else {
-            output = fc::path("snapshot-block-" + std::to_string(block_num) + ".vizjson");
+            output = fc::path(snapshot_dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         }
         if (is_witness_producing_soon()) {
             ilog(CLOG_GREEN "Deferring snapshot-at-block ${b}: witness scheduled to produce next block" CLOG_RESET, ("b", block_num));
@@ -1567,7 +1565,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
 
     // Check --snapshot-every-n-blocks: periodic snapshots (only when synced)
     if (snapshot_every_n_blocks > 0 && block_num % snapshot_every_n_blocks == 0 && !is_syncing) {
-        std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
+        std::string dir = snapshot_dir;
         fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         if (is_witness_producing_soon()) {
             ilog(CLOG_GREEN "Deferring periodic snapshot at block ${b}: witness scheduled to produce next block" CLOG_RESET, ("b", block_num));
@@ -1844,7 +1842,7 @@ std::tuple<bool, uint32_t, std::vector<char>> read_message_with_timeout(
 // ============================================================================
 
 fc::path snapshot_plugin::plugin_impl::find_latest_snapshot() {
-    std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
+    std::string dir = snapshot_dir;
     fc::path dir_path(dir);
 
     if (!fc::exists(dir_path) || !fc::is_directory(dir_path)) {
@@ -1888,7 +1886,7 @@ fc::path snapshot_plugin::plugin_impl::find_latest_snapshot() {
 }
 
 void snapshot_plugin::plugin_impl::cleanup_old_snapshots() {
-    if (snapshot_max_age_days == 0 || snapshot_dir.empty()) return;
+    if (snapshot_max_age_days == 0) return;
 
     std::string dir = snapshot_dir;
     if (!fc::exists(fc::path(dir)) || !fc::is_directory(fc::path(dir))) return;
@@ -2612,7 +2610,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
         ("s", best->compressed_size)("l", MAX_SNAPSHOT_SIZE));
 
     // Create temp file for download
-    std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
+    std::string dir = snapshot_dir;
     if (!boost::filesystem::exists(dir)) {
         boost::filesystem::create_directories(dir);
         ilog(CLOG_YELLOW "Created snapshot directory: ${d}" CLOG_RESET, ("d", dir));
@@ -2921,7 +2919,7 @@ void snapshot_plugin::set_program_options(
         ("snapshot-every-n-blocks", bpo::value<uint32_t>()->default_value(0),
             "Automatically create a snapshot every N blocks (0 = disabled)")
         ("snapshot-dir", bpo::value<std::string>()->default_value(""),
-            "Directory for auto-generated snapshot files")
+            "Directory for auto-generated snapshot files (default: <data-dir>/snapshots)")
         ("snapshot-max-age-days", bpo::value<uint32_t>()->default_value(90),
             "Delete snapshots older than N days after creating a new one (0 = disabled)")
         ("allow-snapshot-serving", bpo::value<bool>()->default_value(false),
@@ -2972,10 +2970,17 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     // because find_latest_snapshot() reads snapshot_dir to locate files.
     if (options.count("snapshot-dir")) {
         my->snapshot_dir = options.at("snapshot-dir").as<std::string>();
-        if (!my->snapshot_dir.empty()) {
-            ilog("Snapshot directory: ${d}", ("d", my->snapshot_dir));
-        }
     }
+    // If snapshot-dir is not set, default to <data_dir>/snapshots
+    if (my->snapshot_dir.empty()) {
+        my->snapshot_dir = (appbase::app().data_dir() / "snapshots").string();
+    }
+    // Ensure the snapshot directory exists
+    if (!boost::filesystem::exists(my->snapshot_dir)) {
+        boost::filesystem::create_directories(my->snapshot_dir);
+        ilog("Created default snapshot directory: ${d}", ("d", my->snapshot_dir));
+    }
+    ilog("Snapshot directory: ${d}", ("d", my->snapshot_dir));
 
     my->snapshot_auto_latest = options.at("snapshot-auto-latest").as<bool>();
     if (my->snapshot_auto_latest) {
