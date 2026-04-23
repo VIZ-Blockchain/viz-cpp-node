@@ -835,6 +835,8 @@ namespace graphene {
 
                 void clear_peer_database();
 
+                void resync();
+
                 void set_total_bandwidth_limit(uint32_t upload_bytes_per_second, uint32_t download_bytes_per_second);
 
                 void disable_peer_advertising();

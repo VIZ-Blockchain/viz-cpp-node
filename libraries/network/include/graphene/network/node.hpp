@@ -301,7 +301,7 @@ namespace graphene {
              *  (e.g., no blocks received for an extended period) and wants
              *  to force a re-sync from its current sync point.
              */
-            void resync();
+            virtual void resync();
 
             void set_total_bandwidth_limit(uint32_t upload_bytes_per_second, uint32_t download_bytes_per_second);
 
