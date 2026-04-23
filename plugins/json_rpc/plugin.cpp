@@ -259,7 +259,7 @@ namespace graphene {
                     dump_rpc_time(const fc::variant& data)
                         : data_(data) {
 
-                        dlog("\033[90mdata: ${data}\033[0m", ("data", fc::json::to_string(data_)));
+                        ilog("\033[90mdata: ${data}\033[0m", ("data", fc::json::to_string(data_)));
                     }
 
                     ~dump_rpc_time() {
