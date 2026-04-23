@@ -15,6 +15,7 @@
 
 // ANSI color codes for P2P stats console log messages
 #define CLOG_CYAN  "\033[96m"
+#define CLOG_WHITE "\033[97m"
 #define CLOG_RESET "\033[0m"
 
 using std::string;
@@ -154,7 +155,7 @@ namespace graphene {
 
                             if (!sync_mode) {
                                 fc::microseconds latency = fc::time_point::now() - blk_msg.block.timestamp;
-                                ilog("Got ${t} transactions on block ${b} by ${w} -- latency: ${l} ms",
+                                ilog(CLOG_WHITE "Got ${t} transactions on block ${b} by ${w} -- latency: ${l} ms" CLOG_RESET,
                                      ("t", blk_msg.block.transactions.size())("b", blk_msg.block.block_num())("w", blk_msg.block.witness)("l", latency.count() / 1000));
                             }
 

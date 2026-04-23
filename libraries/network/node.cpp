@@ -3564,7 +3564,7 @@ namespace graphene {
                         std::vector<fc::uint160_t> contained_transaction_message_ids;
                         _message_ids_currently_being_processed.insert(message_hash);
                         fc_ilog(fc::logger::get("sync"),
-                                "p2p pushing block #${block_num} ${block_hash} from ${peer} (message_id was ${id})",
+                                "\033[90mp2p pushing block #${block_num} ${block_hash} from ${peer} (message_id was ${id})\033[0m",
                                 ("block_num", block_message_to_process.block.block_num())
                                         ("block_hash", block_message_to_process.block_id)
                                         ("peer", originating_peer->get_remote_endpoint())("id", message_hash));
@@ -4879,7 +4879,7 @@ namespace graphene {
                 _handshaking_connections.erase(peer);
                 _closing_connections.erase(peer);
                 _terminating_connections.erase(peer);
-                fc_ilog(fc::logger::get("sync"), "New peer is connected (${peer}), now ${count} active peers",
+                fc_ilog(fc::logger::get("sync"), "\033[93mNew peer is connected (${peer}), now ${count} active peers\033[0m",
                         ("peer", peer->get_remote_endpoint())
                                 ("count", _active_connections.size()));
             }
