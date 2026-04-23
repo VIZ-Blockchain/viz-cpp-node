@@ -3264,4 +3264,9 @@ void snapshot_plugin::create_snapshot_at(const std::string& path) {
     // Note: create_snapshot() already calls update_snapshot_cache()
 }
 
+const std::vector<std::string>& snapshot_plugin::get_trusted_snapshot_peers() const {
+    static const std::vector<std::string> empty;
+    return my ? my->trusted_snapshot_peers : empty;
+}
+
 } } } // graphene::plugins::snapshot

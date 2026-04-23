@@ -282,6 +282,14 @@ namespace graphene {
             void set_allowed_peers(const std::vector<node_id_t> &allowed_peers);
 
             /**
+             *  Set trusted peer endpoints for reduced soft-ban duration.
+             *  Peers matching these IP addresses will be soft-banned for 5 minutes
+             *  instead of 1 hour, allowing faster recovery from transient errors.
+             *  Typically populated with trusted-snapshot-peer IPs.
+             */
+            void set_trusted_peer_endpoints(const std::vector<std::string> &endpoints);
+
+            /**
              * Instructs the node to forget everything in its peer database, mostly for debugging
              * problems where nodes are failing to connect to the network
              */

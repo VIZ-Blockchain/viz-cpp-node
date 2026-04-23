@@ -590,6 +590,15 @@ namespace graphene {
                 std::set<node_id_t> _allowed_peers;
 #endif // ENABLE_P2P_DEBUGGING_API
 
+                // Trusted peer IPs for reduced soft-ban duration (5 min vs 1 hour).
+                // Populated from trusted-snapshot-peer config.  Stored as
+                // 32-bit raw IP addresses for O(1) lookup.
+                std::set<uint32_t> _trusted_peer_ips;
+
+                // Soft-ban durations
+                static constexpr uint32_t SOFT_BAN_DURATION_SEC = 3600;        // 1 hour (default)
+                static constexpr uint32_t TRUSTED_SOFT_BAN_DURATION_SEC = 300; // 5 minutes (trusted peers)
+
                 bool _node_is_shutting_down; // set to true when we begin our destructor, used to prevent us from starting new tasks while we're shutting down
 
                 unsigned _maximum_number_of_blocks_to_handle_at_one_time;
@@ -820,6 +829,9 @@ namespace graphene {
                 node_id_t get_node_id() const;
 
                 void set_allowed_peers(const std::vector<node_id_t> &allowed_peers);
+                void set_trusted_peer_endpoints(const std::vector<std::string> &endpoints);
+                uint32_t get_soft_ban_duration(peer_connection *peer) const;
+                bool is_trusted_peer(peer_connection *peer) const;
 
                 void clear_peer_database();
 
@@ -3296,27 +3308,31 @@ namespace graphene {
                         if (peer->ids_of_items_being_processed.find(block_message_to_send.block_id) !=
                             peer->ids_of_items_being_processed.end()) {
                             if (discontinue_fetching_blocks_from_peer) {
-                                wlog("Soft-banning peer ${endpoint} for 1 hour: on a fork that's too old",
-                                        ("endpoint", peer->get_remote_endpoint()));
-                                ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for 1 hour. Reason: sync block on fork too old (block #${num})" CLOG_RESET,
+                                wlog("Soft-banning peer ${endpoint} for ${dur}s: on a fork that's too old",
+                                        ("endpoint", peer->get_remote_endpoint())
+                                        ("dur", get_soft_ban_duration(peer.get())));
+                                ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: sync block on fork too old (block #${num})" CLOG_RESET,
                                      ("endpoint", peer->get_remote_endpoint())
                                      ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
-                                     ("num", block_message_to_send.block.block_num()));
+                                     ("num", block_message_to_send.block.block_num())
+                                     ("dur", get_soft_ban_duration(peer.get())));
                                 peer->inhibit_fetching_sync_blocks = true;
-                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
+                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(peer.get()));
                             } else {
                                 // Soft-ban instead of disconnect. During sync, a rejected
                                 // block usually means the peer is on a stale fork.
                                 // Disconnecting would cause a reconnect loop; soft-ban
                                 // gives the fork time to resolve organically.
-                                wlog("Soft-banning peer ${endpoint} for 1 hour: rejected sync block #${num}",
+                                wlog("Soft-banning peer ${endpoint} for ${dur}s: rejected sync block #${num}",
                                         ("endpoint", peer->get_remote_endpoint())
-                                        ("num", block_message_to_send.block.block_num()));
-                                ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for 1 hour. Reason: rejected sync block #${num}" CLOG_RESET,
+                                        ("num", block_message_to_send.block.block_num())
+                                        ("dur", get_soft_ban_duration(peer.get())));
+                                ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: rejected sync block #${num}" CLOG_RESET,
                                      ("endpoint", peer->get_remote_endpoint())
                                      ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
-                                     ("num", block_message_to_send.block.block_num()));
-                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
+                                     ("num", block_message_to_send.block.block_num())
+                                     ("dur", get_soft_ban_duration(peer.get())));
+                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(peer.get()));
                                 peer->inhibit_fetching_sync_blocks = true;
                             }
                         }
@@ -3665,16 +3681,18 @@ namespace graphene {
 
                     if (peer_block_num <= our_head) {
                         // Block is at or below our head — peer is on a stale fork. Soft-ban.
-                        wlog("Soft-banning peer ${endpoint} for 1 hour: "
+                        wlog("Soft-banning peer ${endpoint} for ${dur}s: "
                              "unlinkable block #${num} at or below our head #${head}",
                              ("endpoint", originating_peer->get_remote_endpoint())
-                             ("num", peer_block_num)("head", our_head));
-                        ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for 1 hour. Reason: unlinkable block #${num} at or below head #${head}" CLOG_RESET,
+                             ("num", peer_block_num)("head", our_head)
+                             ("dur", get_soft_ban_duration(originating_peer)));
+                        ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: unlinkable block #${num} at or below head #${head}" CLOG_RESET,
                              ("endpoint", originating_peer->get_remote_endpoint())
                              ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
-                             ("num", peer_block_num)("head", our_head));
+                             ("num", peer_block_num)("head", our_head)
+                             ("dur", get_soft_ban_duration(originating_peer)));
                         originating_peer->fork_rejected_until =
-                            fc::time_point::now() + fc::seconds(3600);
+                            fc::time_point::now() + fc::seconds(get_soft_ban_duration(originating_peer));
                         originating_peer->inhibit_fetching_sync_blocks = true;
                     } else {
                         // Block is ahead of us — we may be behind. Resync is justified.
@@ -3686,14 +3704,16 @@ namespace graphene {
                     // This typically happens when a peer is stuck on a dead fork and
                     // keeps broadcasting stale blocks.  Soft-ban them for 1 hour
                     // instead of restarting sync or disconnecting.
-                    wlog("Soft-banning peer ${endpoint} for 1 hour: sent block #${num} that is too old for our fork database",
+                    wlog("Soft-banning peer ${endpoint} for ${dur}s: sent block #${num} that is too old for our fork database",
                          ("endpoint", originating_peer->get_remote_endpoint())
-                         ("num", block_message_to_process.block.block_num()));
-                    ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for 1 hour. Reason: block #${num} too old for fork database" CLOG_RESET,
+                         ("num", block_message_to_process.block.block_num())
+                         ("dur", get_soft_ban_duration(originating_peer)));
+                    ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: block #${num} too old for fork database" CLOG_RESET,
                          ("endpoint", originating_peer->get_remote_endpoint())
                          ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
-                         ("num", block_message_to_process.block.block_num()));
-                    originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
+                         ("num", block_message_to_process.block.block_num())
+                         ("dur", get_soft_ban_duration(originating_peer)));
+                    originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(originating_peer));
                     originating_peer->inhibit_fetching_sync_blocks = true;
                 }
                 catch (const fc::exception &e) {
@@ -3705,13 +3725,15 @@ namespace graphene {
                     // HF12: soft-ban peers instead of disconnecting during fork rejection
                     // This prevents cascading disconnections during emergency consensus
                     if (block_message_to_process.block.block_num() <= _delegate->get_block_number(_delegate->get_head_block_id())) {
-                        wlog("Soft-banning peer ${endpoint} for 1 hour due to fork rejection",
-                             ("endpoint", originating_peer->get_remote_endpoint()));
-                        ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for 1 hour. Reason: fork rejection on block #${num}" CLOG_RESET,
+                        wlog("Soft-banning peer ${endpoint} for ${dur}s due to fork rejection",
+                             ("endpoint", originating_peer->get_remote_endpoint())
+                             ("dur", get_soft_ban_duration(originating_peer)));
+                        ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: fork rejection on block #${num}" CLOG_RESET,
                              ("endpoint", originating_peer->get_remote_endpoint())
                              ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
-                             ("num", block_message_to_process.block.block_num()));
-                        originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
+                             ("num", block_message_to_process.block.block_num())
+                             ("dur", get_soft_ban_duration(originating_peer)));
+                        originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(originating_peer));
                         originating_peer->inhibit_fetching_sync_blocks = true;
                     } else {
                         disconnect_exception = e;
@@ -5209,6 +5231,41 @@ namespace graphene {
 #endif // ENABLE_P2P_DEBUGGING_API
             }
 
+            void node_impl::set_trusted_peer_endpoints(const std::vector<std::string> &endpoints) {
+                VERIFY_CORRECT_THREAD();
+                _trusted_peer_ips.clear();
+                for (const auto &ep_str : endpoints) {
+                    try {
+                        // Parse "host:port" — extract just the IP part
+                        std::string ip_str = ep_str;
+                        auto colon_pos = ip_str.rfind(':');
+                        if (colon_pos != std::string::npos) {
+                            ip_str = ip_str.substr(0, colon_pos);
+                        }
+                        // Resolve hostname to IP via fc::ip::endpoint
+                        auto ep = fc::ip::endpoint::from_string(ip_str + ":0");
+                        _trusted_peer_ips.insert(uint32_t(ep.get_address()));
+                    } catch (...) {
+                        wlog("Failed to parse trusted peer endpoint: ${ep}", ("ep", ep_str));
+                    }
+                }
+                if (!_trusted_peer_ips.empty()) {
+                    ilog("P2P: ${n} trusted peer IP(s) registered for reduced soft-ban (5 min vs 1 hour)",
+                         ("n", _trusted_peer_ips.size()));
+                }
+            }
+
+            bool node_impl::is_trusted_peer(peer_connection *peer) const {
+                if (_trusted_peer_ips.empty() || !peer) return false;
+                auto remote_ep = peer->get_remote_endpoint();
+                if (!remote_ep.valid()) return false;
+                return _trusted_peer_ips.count(uint32_t(remote_ep->get_address())) > 0;
+            }
+
+            uint32_t node_impl::get_soft_ban_duration(peer_connection *peer) const {
+                return is_trusted_peer(peer) ? TRUSTED_SOFT_BAN_DURATION_SEC : SOFT_BAN_DURATION_SEC;
+            }
+
             void node_impl::clear_peer_database() {
                 VERIFY_CORRECT_THREAD();
                 _potential_peer_db.clear();
@@ -5389,6 +5446,10 @@ namespace graphene {
 
         void node::set_allowed_peers(const std::vector<node_id_t> &allowed_peers) {
             INVOKE_IN_IMPL(set_allowed_peers, allowed_peers);
+        }
+
+        void node::set_trusted_peer_endpoints(const std::vector<std::string> &endpoints) {
+            INVOKE_IN_IMPL(set_trusted_peer_endpoints, endpoints);
         }
 
         void node::clear_peer_database() {

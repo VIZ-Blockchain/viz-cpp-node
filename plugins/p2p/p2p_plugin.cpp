@@ -1,4 +1,5 @@
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
+#include <graphene/plugins/snapshot/plugin.hpp>
 
 #include <graphene/network/node.hpp>
 #include <graphene/network/exceptions.hpp>
@@ -694,6 +695,17 @@ namespace graphene {
 
                     my->node->listen_to_p2p_network();
                     my->node->connect_to_p2p_network();
+
+                    // Register trusted snapshot peer IPs for reduced soft-ban (5 min vs 1 hour)
+                    auto* snap_plug = appbase::app().find_plugin<graphene::plugins::snapshot::snapshot_plugin>();
+                    if (snap_plug) {
+                        auto trusted_eps = snap_plug->get_trusted_snapshot_peers();
+                        if (!trusted_eps.empty()) {
+                            ilog("Registering ${n} trusted snapshot peer(s) for reduced P2P soft-ban", ("n", trusted_eps.size()));
+                            my->node->set_trusted_peer_endpoints(trusted_eps);
+                        }
+                    }
+
                     block_id_type block_id;
                     my->chain.db().with_weak_read_lock([&]() {
                         block_id = my->chain.db().head_block_id();

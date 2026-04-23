@@ -193,20 +193,20 @@ Without this fix, `deferred_resize_exception` in the sync path would fall throug
 
 ### P2P Soft-Ban Trigger Reference
 
-All soft-ban triggers set `fork_rejected_until = now + 3600s` and `inhibit_fetching_sync_blocks = true`. Broadcast blocks from soft-banned peers are silently discarded. The `inhibit_fetching_sync_blocks` flag is automatically reset when the ban expires.
+All soft-ban triggers set `fork_rejected_until = now + duration` and `inhibit_fetching_sync_blocks = true`. The default duration is 1 hour (3600s), but **trusted peers** (IPs matching `trusted-snapshot-peer` config) get a reduced 5-minute (300s) ban, allowing faster recovery from transient errors. Broadcast blocks from soft-banned peers are silently discarded. The `inhibit_fetching_sync_blocks` flag is automatically reset when the ban expires.
 
 | # | Code Path | Exception / Condition | Block Position | Action | Reason |
 |---|-----------|----------------------|----------------|--------|--------|
-| 1 | Sync: `send_sync_block_to_node_delegate` | `block_older_than_undo_history` | any | Soft-ban 1h | Peer on a fork too old for undo history |
-| 2 | Sync: `send_sync_block_to_node_delegate` | `unlinkable_block_exception` + block ≤ head | ≤ head | Soft-ban 1h | Dead fork, block at/below head |
+| 1 | Sync: `send_sync_block_to_node_delegate` | `block_older_than_undo_history` | any | Soft-ban 1h (5 min trusted) | Peer on a fork too old for undo history |
+| 2 | Sync: `send_sync_block_to_node_delegate` | `unlinkable_block_exception` + block ≤ head | ≤ head | Soft-ban 1h (5 min trusted) | Dead fork, block at/below head |
 | 3 | Sync: `send_sync_block_to_node_delegate` | `unlinkable_block_exception` + block > head | > head | Restart sync | Behind; need to fetch missing parents |
 | 4 | Sync: `send_sync_block_to_node_delegate` | `deferred_resize_exception` | any | Restart sync, no soft-ban | Local condition; peer not at fault |
-| 5 | Sync: `send_sync_block_to_node_delegate` | Generic `fc::exception` | any | Soft-ban 1h | Unspecified rejection; prevent reconnect loops |
-| 6 | Broadcast: `process_block_during_normal_operation` | `unlinkable_block_exception` + block ≤ head | ≤ head | Soft-ban 1h | Stale fork |
+| 5 | Sync: `send_sync_block_to_node_delegate` | Generic `fc::exception` | any | Soft-ban 1h (5 min trusted) | Unspecified rejection; prevent reconnect loops |
+| 6 | Broadcast: `process_block_during_normal_operation` | `unlinkable_block_exception` + block ≤ head | ≤ head | Soft-ban 1h (5 min trusted) | Stale fork |
 | 7 | Broadcast: `process_block_during_normal_operation` | `unlinkable_block_exception` + block > head | > head | Restart sync | Behind; resync to catch up |
-| 8 | Broadcast: `process_block_during_normal_operation` | `block_older_than_undo_history` | any | Soft-ban 1h | Dead fork, stale blocks |
+| 8 | Broadcast: `process_block_during_normal_operation` | `block_older_than_undo_history` | any | Soft-ban 1h (5 min trusted) | Dead fork, stale blocks |
 | 9 | Broadcast: `process_block_during_normal_operation` | `deferred_resize_exception` | any | No action | Local transient; block re-received after resize |
-| 10 | Broadcast: `process_block_during_normal_operation` | `fc::exception` + block ≤ head | ≤ head | Soft-ban 1h | Fork rejection; prevent cascading disconnects |
+| 10 | Broadcast: `process_block_during_normal_operation` | `fc::exception` + block ≤ head | ≤ head | Soft-ban 1h (5 min trusted) | Fork rejection; prevent cascading disconnects |
 | 11 | Broadcast: `process_block_during_normal_operation` | `fc::exception` + block > head | > head | Disconnect | Genuinely invalid block |
 | 12 | Chain: `_push_block` | Block ≤ head, different fork, parent not in fork_db | ≤ head | Throw `unlinkable_block_exception` | Fork diverged before fork_db window |
 | 13 | Chain: `_push_block` | Block > head, `previous != head_block_id`, parent not in fork_db | > head | Return `false` silently | Prevent sync restart storms from broadcast blocks |

@@ -83,6 +83,10 @@ namespace graphene { namespace plugins { namespace snapshot {
         /// Create snapshot at the given path
         void create_snapshot_at(const std::string& path);
 
+        /// Returns the list of trusted-snapshot-peer endpoints (IP:port strings)
+        /// Used by the P2P plugin to apply reduced soft-ban duration for trusted peers
+        const std::vector<std::string>& get_trusted_snapshot_peers() const;
+
     private:
         class plugin_impl;
         std::unique_ptr<plugin_impl> my;
