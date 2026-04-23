@@ -135,16 +135,13 @@ namespace graphene {
                         chain.db().with_weak_read_lock([&]() {
                             head_block_num = chain.db().head_block_num();
                         });
+                        int32_t gap = (int32_t)blk_msg.block.block_num() - (int32_t)head_block_num - 1;
                         if (sync_mode)
-                            fc_ilog(fc::logger::get("sync"),
-                                    "chain pushing sync block #${block_num} ${block_hash}, head is ${head}",
-                                    ("block_num", blk_msg.block.block_num())("block_hash", blk_msg.block_id)("head",
-                                                                                                             head_block_num));
+                            ilog("chain pushing sync block #${block_num} (head: ${head}, gap: ${gap})",
+                                 ("block_num", blk_msg.block.block_num())("head", head_block_num)("gap", gap));
                         else
-                            fc_ilog(fc::logger::get("sync"),
-                                    "chain pushing block #${block_num} ${block_hash}, head is ${head}",
-                                    ("block_num", blk_msg.block.block_num())("block_hash", blk_msg.block_id)("head",
-                                                                                                             head_block_num));
+                            ilog("chain pushing normal block #${block_num} (head: ${head}, gap: ${gap})",
+                                 ("block_num", blk_msg.block.block_num())("head", head_block_num)("gap", gap));
 
                         try {
                             // When a block is too old for our fork database (e.g. a peer
@@ -163,20 +160,16 @@ namespace graphene {
 
                             return result;
                         } catch (const graphene::chain::block_too_old_exception &e) {
-                            fc_elog(fc::logger::get("sync"),
-                                    "Block ${n} is too old for fork database (head=${head}): ${e}",
-                                    ("n", blk_msg.block.block_num())("head", head_block_num)("e", e.to_detail_string()));
-                            wlog("Block ${n} is too old for fork database, banning peer",
-                                 ("n", blk_msg.block.block_num()));
+                            wlog("Block ${n} is too old for fork database (head=${head}): ${e}",
+                                 ("n", blk_msg.block.block_num())("head", head_block_num)("e", e.to_detail_string()));
                             FC_THROW_EXCEPTION(graphene::network::block_older_than_undo_history,
                                 "Block is too old for fork database: ${e}", ("e", e.to_detail_string()));
                         } catch (const graphene::chain::deferred_resize_exception &e) {
                             // Shared memory resize is deferred. Re-throw as network exception
                             // so the P2P layer knows this is transient and should not
                             // penalise the peer or mark the block as accepted.
-                            fc_elog(fc::logger::get("sync"),
-                                    "Block ${n} deferred due to shared memory resize (head=${head}): ${e}",
-                                    ("n", blk_msg.block.block_num())("head", head_block_num)("e", e.to_detail_string()));
+                            wlog("Block ${n} deferred due to shared memory resize (head=${head}): ${e}",
+                                 ("n", blk_msg.block.block_num())("head", head_block_num)("e", e.to_detail_string()));
                             FC_THROW_EXCEPTION(graphene::network::deferred_resize_exception,
                                 "Shared memory resize deferred: ${e}", ("e", e.to_detail_string()));
                         } catch (const graphene::chain::unlinkable_block_exception &e) {
@@ -185,19 +178,16 @@ namespace graphene {
                             // can soft-ban the peer (block at/below head) or resync
                             // (block ahead of head).  Micro-fork blocks are NOT caught
                             // here — they have parents in fork_db and return false normally.
-                            fc_elog(fc::logger::get("sync"),
-                                    "Block ${n} is from a dead fork (parent not in fork_db, head=${head}): ${e}",
-                                    ("n", blk_msg.block.block_num())("head", head_block_num)("e", e.to_detail_string()));
+                            wlog("Block ${n} is from a dead fork (parent not in fork_db, head=${head}): ${e}",
+                                 ("n", blk_msg.block.block_num())("head", head_block_num)("e", e.to_detail_string()));
                             FC_THROW_EXCEPTION(graphene::network::unlinkable_block_exception,
                                 "Block from a dead fork: ${e}", ("e", e.to_detail_string()));
                         } catch (const graphene::network::unlinkable_block_exception &e) {
                             // translate to a graphene::network exception
-                            fc_elog(fc::logger::get("sync"), "Error when pushing block, current head block is ${head}:\n${e}", ("e", e.to_detail_string())("head", head_block_num));
-                            elog("Error when pushing block:\n${e}", ("e", e.to_detail_string()));
-                            FC_THROW_EXCEPTION(graphene::network::unlinkable_block_exception, "Error when pushing block:\n${e}", ("e", e.to_detail_string()));
+                            elog("Error when pushing block, current head block is ${head}: ${e}", ("e", e.to_detail_string())("head", head_block_num));
+                            FC_THROW_EXCEPTION(graphene::network::unlinkable_block_exception, "Error when pushing block: ${e}", ("e", e.to_detail_string()));
                         } catch (const fc::exception &e) {
-                            fc_elog(fc::logger::get("sync"), "Error when pushing block, current head block is ${head}:\n${e}", ("e", e.to_detail_string())("head", head_block_num));
-                            elog("Error when pushing block:\n${e}", ("e", e.to_detail_string()));
+                            elog("Error when pushing block, current head block is ${head}: ${e}", ("e", e.to_detail_string())("head", head_block_num));
                             throw;
                         }
 

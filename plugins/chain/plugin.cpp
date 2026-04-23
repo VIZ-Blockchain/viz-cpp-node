@@ -103,7 +103,8 @@ namespace chain {
     bool plugin::plugin_impl::accept_block(const protocol::signed_block &block, bool currently_syncing, uint32_t skip) {
         if (currently_syncing) {
             if (!sync_start_logged) {
-                ilog("\033[92m>>> Syncing Blockchain started from block #${n}\033[0m", ("n", block.block_num()));
+                ilog("\033[92m>>> Syncing Blockchain started from block #${n} (head: ${head})\033[0m",
+                     ("n", block.block_num())("head", db.head_block_num()));
                 sync_start_logged = true;
             }
 
@@ -112,6 +113,10 @@ namespace chain {
                      ("t", block.timestamp)("n", block.block_num())("p", block.witness));
             }
         } else {
+            if (sync_start_logged) {
+                ilog("Sync mode ended: received normal block #${n} (head: ${head}), sync_start_logged reset",
+                     ("n", block.block_num())("head", db.head_block_num()));
+            }
             sync_start_logged = false; // reset guard when not syncing
         }
 

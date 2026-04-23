@@ -2426,7 +2426,8 @@ namespace graphene {
                     if (!originating_peer->we_need_sync_items_from_peer &&
                         !fetch_blockchain_item_ids_message_received.blockchain_synopsis.empty() &&
                         !_delegate->has_item(peers_last_item_seen)) {
-                        dlog("sync: restarting sync with peer ${peer}", ("peer", originating_peer->get_remote_endpoint()));
+                        ilog("sync: restarting sync with peer ${peer} because we don't have their last item (peer is in sync with us)",
+                             ("peer", originating_peer->get_remote_endpoint()));
                         start_synchronizing_with_peer(originating_peer->shared_from_this());
                     }
                 } else {
@@ -2437,7 +2438,8 @@ namespace graphene {
                     if (!originating_peer->we_need_sync_items_from_peer &&
                         !fetch_blockchain_item_ids_message_received.blockchain_synopsis.empty() &&
                         !_delegate->has_item(peers_last_item_seen)) {
-                        dlog("sync: restarting sync with peer ${peer}", ("peer", originating_peer->get_remote_endpoint()));
+                        ilog("sync: restarting sync with peer ${peer} because we don't have their last item (peer is out of sync with us)",
+                             ("peer", originating_peer->get_remote_endpoint()));
                         start_synchronizing_with_peer(originating_peer->shared_from_this());
                     }
                 }
@@ -3272,7 +3274,8 @@ namespace graphene {
                             // find out about the new item.
                             if (!peer->peer_needs_sync_items_from_us &&
                                 !peer->we_need_sync_items_from_peer) {
-                                dlog("We will be restarting synchronization with peer ${peer}", ("peer", peer->get_remote_endpoint()));
+                                ilog("Sync block #${num} accepted: peer ${peer} has empty lists and is in sync, will restart sync to notify of new item",
+                                     ("num", block_message_to_send.block.block_num())("peer", peer->get_remote_endpoint()));
                                 peers_we_need_to_sync_to.insert(peer);
                             }
                         } else if (!disconnecting_this_peer) {
@@ -3696,6 +3699,8 @@ namespace graphene {
                         originating_peer->inhibit_fetching_sync_blocks = true;
                     } else {
                         // Block is ahead of us — we may be behind. Resync is justified.
+                        ilog("Normal block #${num} is unlinkable and ahead of our head #${head}, will restart sync with peer ${peer}",
+                             ("num", peer_block_num)("head", our_head)("peer", originating_peer->get_remote_endpoint()));
                         restart_sync_exception = e;
                     }
                 }
@@ -4145,6 +4150,8 @@ namespace graphene {
 
             void node_impl::start_synchronizing_with_peer(const peer_connection_ptr &peer) {
                 VERIFY_CORRECT_THREAD();
+                ilog("Starting sync with peer ${peer} (head_block: ${head})",
+                     ("peer", peer->get_remote_endpoint())("head", _delegate->get_block_number(_delegate->get_head_block_id())));
                 peer->ids_of_items_to_get.clear();
                 peer->number_of_unfetched_item_ids = 0;
                 peer->we_need_sync_items_from_peer = true;
