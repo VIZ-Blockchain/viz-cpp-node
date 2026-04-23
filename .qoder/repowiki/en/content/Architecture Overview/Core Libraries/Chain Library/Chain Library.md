@@ -29,12 +29,12 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced blockchain synchronization logging with new `sync_start_logged` guard variable to prevent duplicate sync start messages
-- Increased logging frequency from every 10,000 blocks to every 500 blocks during synchronization for better progress monitoring
-- Enhanced logging system documentation with ANSI yellow color codes for blockchain synchronization messages
-- Updated troubleshooting guide to include color-coded log interpretation
-- Added comprehensive logging color scheme documentation for operational visibility
-- Updated performance considerations to include logging overhead analysis
+- Enhanced blockchain synchronization logging with guard variable to prevent duplicate sync start messages
+- Updated sync restart reasons to use info-level logging instead of debug-level for clearer insights
+- Added block processing logs with current head block numbers and gap calculations
+- Increased logging frequency from every 10,000 blocks to every 500 blocks during synchronization
+- Enhanced logging system documentation with ANSI color codes for operational visibility
+- Improved network node synchronization logging with info-level messages for sync restart reasons
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -739,6 +739,35 @@ The ANSI color codes provide immediate visual feedback in terminal environments:
 - [snapshot_plugin.cpp:1770-1771](file://plugins/snapshot/plugin.cpp#L1770-L1771)
 - [witness.cpp:286](file://plugins/witness/witness.cpp#L286)
 
+### Network Node Synchronization Logging Enhancements
+**Updated** The network node synchronization system now uses info-level logging for sync restart reasons, providing clearer insights into synchronization behavior:
+
+- **Info-level logging**: Sync restart reasons now use ilog instead of dlog for better visibility
+- **Current head block numbers**: Logs include current head block numbers and gap calculations
+- **Enhanced sync restart detection**: Improved logging for peer synchronization restarts
+- **Block acceptance notifications**: Yellow progress messages with block numbers and producer information
+
+**Section sources**
+- [node.cpp:2428-2444](file://libraries/network/node.cpp#L2428-L2444)
+- [node.cpp:3276-3280](file://libraries/network/node.cpp#L3276-L3280)
+- [database.cpp:5295-5303](file://libraries/chain/database.cpp#L5295-L5303)
+
+### Enhanced Logging Improvements Summary
+The logging system enhancements include:
+
+1. **Guard Variable Protection**: `sync_start_logged` prevents duplicate sync start messages
+2. **Info-Level Logging**: Sync restart reasons use ilog instead of dlog for better visibility
+3. **Enhanced Progress Frequency**: Logging occurs every 500 blocks instead of every 10,000 blocks
+4. **Color-Coded Notifications**: ANSI escape sequences provide visual distinction for different log types
+5. **Current Head Block Numbers**: Logs include current head block numbers and gap calculations
+6. **Improved Network Sync**: Better logging for peer synchronization restarts and block acceptance
+
+**Section sources**
+- [plugin.cpp:58-121](file://plugins/chain/plugin.cpp#L58-L121)
+- [node.cpp:2428-2444](file://libraries/network/node.cpp#L2428-L2444)
+- [node.cpp:3276-3280](file://libraries/network/node.cpp#L3276-L3280)
+- [database.cpp:5295-5303](file://libraries/chain/database.cpp#L5295-L5303)
+
 ## Dependency Analysis
 The database depends on:
 - fork_database for chain selection
@@ -806,6 +835,8 @@ LOGSYS --> WITNESS["witness.cpp"]
 - Snapshot loading: Use snapshot mode for rapid node startup, especially for large blockchains.
 - **New**: Enhanced logging performance: Color-coded logging with guard variables and increased frequency provides better operational visibility with minimal overhead while significantly improving troubleshooting efficiency.
 - **New**: Synchronization monitoring: The `sync_start_logged` guard prevents duplicate messages and reduces log volume during sync sessions.
+- **New**: Info-level logging for sync restarts: Using ilog instead of dlog for sync restart reasons provides clearer insights into synchronization behavior.
+- **New**: Network synchronization improvements: Enhanced logging with current head block numbers and gap calculations improves monitoring accuracy.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -819,6 +850,8 @@ Common issues and remedies:
 - Chain ID mismatches: Snapshot loading validates chain ID compatibility; ensure using correct snapshot for target network.
 - **New**: Enhanced color-coded log interpretation: Use green messages for synchronization start (once per session), yellow messages for synchronization progress every 500 blocks, green for successful operations, orange for snapshot operations, and red for critical errors to quickly identify operational status.
 - **New**: Synchronization monitoring: The guard variable prevents duplicate sync start messages and ensures consistent progress reporting every 500 blocks.
+- **New**: Info-level logging improvements: Sync restart reasons now use info-level logging for better visibility and clearer insights into synchronization behavior.
+- **New**: Network synchronization logging: Enhanced logging with current head block numbers and gap calculations provides better monitoring accuracy.
 
 **Section sources**
 - [database.cpp:232-248](file://libraries/chain/database.cpp#L232-L248)
@@ -829,7 +862,7 @@ Common issues and remedies:
 - [snapshot_plugin.cpp:1018-1020](file://plugins/snapshot/plugin.cpp#L1018-L1020)
 
 ## Conclusion
-The Chain Library provides a robust, modular framework for blockchain state management with enhanced snapshot loading capabilities and DLT mode support. Its design separates concerns across database orchestration, fork handling, durable storage, typed object models, operation processing, and event-driven observation. The addition of snapshot loading enables rapid node startup and state restoration, while DLT mode provides selective block retention for compliance and archival purposes. The enhanced logging system with ANSI color codes significantly improves operational visibility during synchronization and troubleshooting, featuring guard variables to prevent duplicate messages and increased frequency monitoring for better progress tracking. By leveraging ChainBase for persistence, fork_database for consensus, block_log for storage, the new DLT block log for selective retention, and comprehensive color-coded logging for operational insights, it achieves high throughput, reliability, and regulatory compliance. Developers can extend functionality via evaluators and observe state changes through signals, enabling flexible plugin architectures with enhanced operational capabilities.
+The Chain Library provides a robust, modular framework for blockchain state management with enhanced snapshot loading capabilities and DLT mode support. Its design separates concerns across database orchestration, fork handling, durable storage, typed object models, operation processing, and event-driven observation. The addition of snapshot loading enables rapid node startup and state restoration, while DLT mode provides selective block retention for compliance and archival purposes. The enhanced logging system with ANSI color codes significantly improves operational visibility during synchronization and troubleshooting, featuring guard variables to prevent duplicate messages and increased frequency monitoring for better progress tracking. The updated info-level logging for sync restart reasons provides clearer insights into synchronization behavior with current head block numbers and gap calculations. By leveraging ChainBase for persistence, fork_database for consensus, block_log for storage, the new DLT block log for selective retention, and comprehensive color-coded logging for operational insights, it achieves high throughput, reliability, and regulatory compliance. Developers can extend functionality via evaluators and observe state changes through signals, enabling flexible plugin architectures with enhanced operational capabilities.
 
 ## Appendices
 
@@ -857,6 +890,10 @@ The Chain Library provides a robust, modular framework for blockchain state mana
   - Green messages for successful block generation
   - Orange messages for snapshot import operations
   - Red messages for error conditions
+- **New**: Network synchronization logging:
+  - Info-level logging for sync restart reasons with clearer insights
+  - Current head block numbers and gap calculations in DLT mode
+  - Enhanced sync progress notifications with producer information
 
 **Section sources**
 - [database.cpp:206-350](file://libraries/chain/database.cpp#L206-L350)
@@ -876,6 +913,8 @@ The Chain Library provides a robust, modular framework for blockchain state mana
 - **New**: Optimize snapshot loading: Use appropriate snapshot files and monitor import performance with color-coded progress indicators.
 - **New**: Manage DLT storage: Regularly monitor DLT block log size and adjust retention policies.
 - **New**: Enhanced logging optimization: Color-coded logging with guard variables and increased frequency provides better operational benefits with minimal overhead.
+- **New**: Info-level logging optimization: Using ilog for sync restart reasons improves visibility with minimal performance impact.
+- **New**: Network synchronization optimization: Enhanced logging with current head block numbers and gap calculations provides better monitoring accuracy.
 
 **Section sources**
 - [database.cpp:368-430](file://libraries/chain/database.cpp#L368-L430)
@@ -919,6 +958,7 @@ Usage scenarios:
 - **Block Generation**: Green messages for successful block production
 - **Error Conditions**: Cyan messages for critical failures
 - **Debug Information**: Default color for low-level operational details
+- **Network Sync**: Info-level messages for sync restarts and peer interactions with current head block numbers
 
 #### Guard Variables and Frequency Control
 - **`sync_start_logged`**: Boolean guard variable to prevent duplicate sync start messages
@@ -933,3 +973,23 @@ Usage scenarios:
 - [console_appender.cpp:132-154](file://thirdparty/fc/src/log/console_appender.cpp#L132-L154)
 - [node.cpp:3446-3456](file://libraries/network/node.cpp#L3446-L3456)
 - [witness.cpp:286](file://plugins/witness/witness.cpp#L286)
+
+### Network Synchronization Logging Reference
+**New Section** Enhanced logging improvements for network synchronization
+
+#### Info-Level Logging Improvements
+- **Sync Restart Reasons**: Now use ilog instead of dlog for better visibility
+- **Peer Synchronization**: Enhanced logging for peer synchronization restarts
+- **Block Acceptance**: Yellow progress messages with block numbers and producer information
+- **Gap Calculations**: Current head block numbers and gap calculations in DLT mode
+
+#### Logging Categories
+- **Sync Start**: Green messages with block numbers and head information
+- **Sync Progress**: Yellow messages every 500 blocks with timestamp and producer
+- **Sync End**: Reset messages when normal blocks are received
+- **Network Events**: Info-level messages for sync restarts and peer interactions with enhanced detail
+
+**Section sources**
+- [node.cpp:2428-2444](file://libraries/network/node.cpp#L2428-L2444)
+- [node.cpp:3276-3280](file://libraries/network/node.cpp#L3276-L3280)
+- [database.cpp:5295-5303](file://libraries/chain/database.cpp#L5295-L5303)

@@ -20,11 +20,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced peer handling logic with improved unlinkable_block_exception handling
-- Implemented intelligent peer soft-banning mechanisms with automatic expiration
-- Added differentiation between stale fork peers and legitimate sync candidates
-- Prevented infinite sync loops through intelligent peer state management
-- Updated emergency consensus network-level improvements documentation
+- Enhanced peer soft-ban handling with intelligent stale fork detection and automatic flag reset logic
+- Improved unlinkable block exception management with differentiated handling based on peer position relative to local blockchain head
+- Strengthened fork database capabilities with enhanced emergency consensus support and improved block rejection handling
+- Added trusted peer soft-ban duration reduction (5 minutes vs 1 hour) for faster recovery from transient errors
+- Implemented comprehensive soft-ban expiration handling with automatic flag reset during network synchronization
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -417,12 +417,13 @@ Send --> Deliver["Deliver item via fetch_items_message"]
 The node now implements sophisticated soft-ban mechanisms to prevent cascading disconnections during emergency consensus scenarios and improve peer classification accuracy.
 
 Key features:
-- **Soft-ban duration**: 1 hour (3600 seconds) for fork-rejected blocks
+- **Soft-ban duration**: 1 hour (3600 seconds) for fork-rejected blocks, reduced to 5 minutes (300 seconds) for trusted peers
 - **Automatic expiration**: Soft-bans automatically expire after the designated period
 - **Intelligent peer classification**: Differentiates between stale fork peers and legitimate sync candidates
 - **Flag reset logic**: When soft-bans expire, the inhibit_fetching_sync_blocks flag is automatically reset
 - **Emergency mode protection**: Prevents cascading failures during network emergencies
 - **Infinite loop prevention**: Smart peer state management prevents endless sync attempts
+- **Trusted peer support**: Special handling for peers in trusted-snapshot-peer configuration
 
 ```mermaid
 sequenceDiagram
@@ -461,12 +462,14 @@ The system now provides intelligent handling for unlinkable_block_exception base
 - Peer is on a stale fork that cannot be resolved
 - Immediate soft-ban for 1 hour with inhibit_fetching_sync_blocks = true
 - Prevents wasted bandwidth and prevents infinite sync loops
+- Trusted peers receive 5-minute soft-ban duration instead of 1 hour
 
 **Legitimate Sync Candidate**:
 - When peer block number > local head block number  
 - Peer may be ahead of us, indicating legitimate sync opportunity
 - Restarts sync process instead of disconnecting
 - Allows peer to potentially help us catch up
+- Prevents unnecessary network churn during legitimate catch-up scenarios
 
 **Section sources**
 - [node.cpp:3574-3629](file://libraries/network/node.cpp#L3574-L3629)
@@ -522,7 +525,7 @@ The enhanced peer handling logic prevents infinite sync loops through intelligen
 The node now implements sophisticated soft-ban mechanisms to prevent cascading disconnections during emergency consensus scenarios. When peers offer blocks that cause fork rejections, the system applies soft-bans instead of immediate disconnections.
 
 Key features:
-- **Soft-ban duration**: 1 hour (3600 seconds) for fork-rejected blocks
+- **Soft-ban duration**: 1 hour (3600 seconds) for fork-rejected blocks, reduced to 5 minutes for trusted peers
 - **Automatic expiration**: Soft-bans automatically expire after the designated period
 - **Flag reset logic**: When soft-bans expire, the inhibit_fetching_sync_blocks flag is automatically reset
 - **Emergency mode protection**: Prevents cascading failures during network emergencies
@@ -671,10 +674,11 @@ DBC --> CFG["config.hpp"]
 - Automatic flag management: Reduces manual intervention requirements during extended emergency operations.
 - Intelligent peer classification: Optimizes peer selection and reduces wasted bandwidth on stale forks.
 - Soft-ban caching: Prevents repeated attempts with problematic peers during emergency periods.
+- Trusted peer optimization: Reduced soft-ban duration for trusted peers enables faster network recovery.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
-- Port binding conflicts: Use listen_on_port with wait_if_not_available=true to retry; otherwise, allow dynamic port selection.
+- Port binding conflicts: Use listen_on_port with wait_if_endpoint_is_busy=true to retry; otherwise, allow dynamic port selection.
 - Rejection reasons: Review connection_rejected_message reason codes (e.g., connected_to_self, already_connected, not_accepting_connections, different_chain, outdated client).
 - Firewall/NAT: Use check-firewall messages to detect; adjust inbound/outbound ports and consider advertised inbound addresses.
 - Peer database corruption: Clear peer database via clear_peer_database to reset discovery state.
@@ -685,6 +689,8 @@ Common issues and resolutions:
 - Flag reset issues: Verify inhibit_fetching_sync_blocks flag resets after soft-ban expiration; manual intervention rarely needed.
 - Infinite sync loops: Monitor peer behavior; system now prevents endless sync attempts through intelligent soft-ban mechanisms.
 - Stale fork detection: System automatically soft-bans peers on stale forks to prevent wasted resources.
+- Trusted peer issues: Verify trusted-snapshot-peer configuration for reduced 5-minute soft-ban duration.
+- Block rejection handling: Monitor unlinkable_block_exception patterns to identify stale fork vs legitimate sync scenarios.
 
 **Section sources**
 - [node.cpp:2251-2280](file://libraries/network/node.cpp#L2251-L2280)
@@ -694,7 +700,7 @@ Common issues and resolutions:
 - [database.cpp:4455-4460](file://libraries/chain/database.cpp#L4455-L4460)
 
 ## Conclusion
-The Node Management component provides a robust, configurable, and efficient P2P orchestration layer with comprehensive emergency consensus support and enhanced peer handling capabilities. The recent improvements significantly enhance network resilience through intelligent soft-ban mechanisms, automatic flag reset logic, and deterministic tie-breaking algorithms. 
+The Node Management component provides a robust, configurable, and efficient P2P orchestration layer with comprehensive emergency consensus support and enhanced peer handling capabilities. The recent improvements significantly enhance network resilience through intelligent soft-ban mechanisms, automatic flag reset logic, and deterministic tie-breaking algorithms.
 
 The enhanced peer handling logic with improved unlinkable_block_exception handling and intelligent peer soft-banning mechanisms prevents cascading failures during emergency consensus scenarios while differentiating between stale fork peers and legitimate sync candidates to prevent infinite sync loops. The system now provides sophisticated peer classification based on block position relative to local blockchain head, ensuring optimal resource utilization and network stability.
 

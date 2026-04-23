@@ -20,15 +20,19 @@
 - [programs/CMakeLists.txt](file://programs/CMakeLists.txt)
 - [thirdparty/CMakeLists.txt](file://thirdparty/CMakeLists.txt)
 - [programs/vizd/CMakeLists.txt](file://programs/vizd/CMakeLists.txt)
+- [build-linux.sh](file://build-linux.sh)
+- [build-mac.sh](file://build-mac.sh)
+- [build-mingw.bat](file://build-mingw.bat)
+- [build-msvc.bat](file://build-msvc.bat)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced submodule management documentation with branch specifications for thirdparty submodules
-- Updated dependency management section to reflect Boost 1.71 requirement across thirdparty libraries
-- Added fc submodule vendor dependencies documentation
-- Updated Docker configuration references to reflect streamlined Docker setup
-- Revised third-party library integration section with specific Boost version requirements
+- Updated shared library configuration documentation to reflect consistent static library builds across all platforms
+- Added comprehensive coverage of the BUILD_SHARED_LIBRARIES=OFF setting and its implications
+- Enhanced platform-specific build behavior documentation for Linux, macOS, and Windows
+- Updated Docker configuration references to show consistent static linking approach
+- Revised build script documentation to highlight the unified static library approach
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -45,7 +49,7 @@
 ## Introduction
 This document describes the build configuration for VIZ CPP Node, focusing on the CMake build system, available build options, compiler flags, feature toggles, cross-platform compilation, dependency management, and third-party library integration. It also covers build variants (development, production, low-memory, testnet), environment variable requirements, toolchain configuration, and CI integration via Docker and GitHub Actions. Practical examples and troubleshooting guidance are included to help you build reliably across platforms.
 
-**Updated** Enhanced submodule management with branch specification for thirdparty submodules and improved dependency management through streamlined Docker configurations.
+**Updated** Enhanced with comprehensive documentation of the unified static library approach across all platforms, ensuring consistent build behavior and simplified deployment.
 
 ## Project Structure
 The repository is organized around a top-level CMake project that orchestrates three major subtrees:
@@ -88,7 +92,7 @@ TP --> Submods
 ## Core Components
 Key build options and toggles configured at the top-level CMake:
 - CMAKE_BUILD_TYPE: Selects Release or Debug profiles
-- BUILD_SHARED_LIBRARIES: Controls static vs shared library builds
+- BUILD_SHARED_LIBRARIES: Controls static vs shared library builds (UNIFIED STATIC APPROACH)
 - BUILD_TESTNET: Enables testnet configuration via preprocessor defines
 - LOW_MEMORY_NODE: Enables low-memory node configuration via preprocessor defines
 - CHAINBASE_CHECK_LOCKING: Enables chainbase locking checks via preprocessor defines
@@ -96,6 +100,8 @@ Key build options and toggles configured at the top-level CMake:
 - USE_PCH: Enables precompiled headers via cotire when set
 - FULL_STATIC_BUILD: Forces static linking flags on Windows and Linux
 - ENABLE_INSTALLER: Enables CPack packaging configuration (optional)
+
+**Updated** The BUILD_SHARED_LIBRARIES option is now consistently set to OFF across all build environments to ensure uniform static library behavior.
 
 Compiler and toolchain behavior:
 - Minimum compiler versions enforced for GCC and Clang
@@ -106,7 +112,9 @@ Compiler and toolchain behavior:
 
 Platform specifics:
 - Windows: Boost static linkage, MSVC/MinGW flags, TCL detection, static-linking options
-- macOS/Linux: C++ standard selection, libc++ vs libstdc++, threading/crypto libraries, Ninja color diagnostics
+- macOS: Shared libraries enabled by default, static linking available via --static flag
+- Linux: Static libraries enabled by default through build scripts, static linking available via --static flag
+- All platforms: Unified approach to ensure consistent deployment characteristics
 
 **Section sources**
 - [CMakeLists.txt:1-271](file://CMakeLists.txt#L1-L271)
@@ -150,11 +158,14 @@ Highlights:
 - Adds subdirectories for thirdparty, libraries, plugins, and programs
 - Supports CPack packaging when enabled
 
+**Updated** The BUILD_SHARED_LIBRARIES option is now set to OFF by default, ensuring consistent static library behavior across all platforms and build methods.
+
 Common build invocations:
 - Release build: cmake -DCMAKE_BUILD_TYPE=Release ..
 - Low-memory node: cmake -DLowMemoryNode=TRUE ..
 - Testnet build: cmake -DBUILD_TESTNET=TRUE ..
 - Enable MongoDB plugin: cmake -DENABLE_MONGO_PLUGIN=TRUE ..
+- Static build (all platforms): cmake -DBUILD_SHARED_LIBRARIES=OFF ..
 
 Environment variables:
 - BOOST_ROOT (Windows): points to Boost installation
@@ -176,8 +187,10 @@ Toolchains and generators:
 - Testnet: switches to testnet configuration and seeds
 - Chainbase locking checks: enables additional synchronization assertions
 - MongoDB plugin: compiles and links the mongo_db plugin with appropriate preprocessor defines
-- Static vs shared libraries: BUILD_SHARED_LIBRARIES controls library type
+- Static vs shared libraries: BUILD_SHARED_LIBRARIES controls library type (UNIFIED STATIC APPROACH)
 - Full static build: FULL_STATIC_BUILD forces static linking flags on supported platforms
+
+**Updated** All build variants now consistently use static libraries (BUILD_SHARED_LIBRARIES=OFF) to ensure uniform deployment characteristics across environments.
 
 Preprocessor defines injected at configure time:
 - BUILD_TESTNET, IS_LOW_MEM, CHAINBASE_CHECK_LOCKING, MONGODB_PLUGIN_BUILT
@@ -192,13 +205,18 @@ Preprocessor defines injected at configure time:
   - Threading and realtime libraries linked conditionally
   - Optional static linking flags
   - Ninja generator gains color diagnostics
+  - **Static libraries enabled by default through build scripts**
 - macOS:
-  - Uses libc++
+  - Uses libc++ and shared libraries by default
+  - Static linking available via --static flag in build-mac.sh
   - Optional TCMalloc discovery via gperftools
 - Windows:
   - MSVC flags: disables safe-seh, ensures debug info in Debug
   - MinGW flags: C++11, permissiveness, SSE4.2, big object support, optimized debug flags
   - TCL detection and adjusted library naming
+  - **Static libraries enabled by default through build scripts**
+
+**Updated** All platforms now use a unified approach with static libraries enabled by default, ensuring consistent behavior and simplified deployment.
 
 Dependencies:
 - Boost 1.71+ required across all thirdparty libraries (appbase, chainbase, fc)
@@ -206,8 +224,6 @@ Dependencies:
 - OpenSSL (via find_package or explicit root on macOS)
 - Readline on Unix-like systems
 - Optional: MongoDB C/C++ drivers when enabling the plugin
-
-**Updated** All thirdparty libraries now require Boost 1.71+, with fc specifically requiring this version for secp256k1-zkp integration.
 
 **Section sources**
 - [CMakeLists.txt:91-202](file://CMakeLists.txt#L91-L202)
@@ -236,11 +252,13 @@ The fc library manages its own vendor dependencies through nested submodules:
 These dependencies are automatically managed during the fc build process and integrated into the final library.
 
 #### Streamlined Docker Configuration
-The Docker build system has been streamlined to support multiple deployment variants:
+The Docker build system has been streamlined to support multiple deployment variants with consistent static library approach:
 - Production builds with Release configuration and static linking
-- Testnet builds with testnet-specific configuration
-- Low-memory builds optimized for resource-constrained environments
-- MongoDB-enabled builds with database integration support
+- Testnet builds with testnet-specific configuration and static linking
+- Low-memory builds optimized for resource-constrained environments with static linking
+- MongoDB-enabled builds with database integration support and static linking
+
+**Updated** All Docker configurations now consistently use BUILD_SHARED_LIBRARIES=FALSE to ensure uniform behavior across containerized deployments.
 
 **Section sources**
 - [.gitmodules:1-13](file://.gitmodules#L1-L13)
@@ -289,13 +307,13 @@ Installation:
   - Builds production and testnet Docker images on master branch pushes
   - Uses Docker's build-push action with credentials from secrets
 
+**Updated** Docker configurations have been streamlined to support the enhanced submodule management and improved dependency resolution with consistent static library approach.
+
 Dockerfiles:
 - Production: Release build with shared libs disabled, minimal flags
 - Testnet: Same as production plus BUILD_TESTNET
 - Low-memory: Same as production plus LOW_MEMORY_NODE
 - Mongo: Installs MongoDB C/C++ drivers and enables ENABLE_MONGO_PLUGIN
-
-**Updated** Docker configurations have been streamlined to support the enhanced submodule management and improved dependency resolution.
 
 **Section sources**
 - [.travis.yml:1-46](file://.travis.yml#L1-L46)
@@ -355,10 +373,13 @@ Third --> Crypto["secp256k1-zkp"]
   - ccache is detected and used globally for compile and link steps when available
 - Static linking:
   - FULL_STATIC_BUILD toggles static linking flags on Windows and Linux to reduce runtime dependencies
+  - **Unified static library approach reduces deployment complexity and improves portability**
 - Coverage:
   - ENABLE_COVERAGE_TESTING injects coverage flags for analysis workflows
 - PCH:
   - USE_PCH enables precompiled headers via cotire to speed up rebuilds
+
+**Updated** The unified static library approach simplifies performance optimization by eliminating shared library dependency issues across different environments.
 
 **Section sources**
 - [CMakeLists.txt:147-156](file://CMakeLists.txt#L147-L156)
@@ -386,8 +407,11 @@ Common issues and resolutions:
   - Enabling ENABLE_MONGO_PLUGIN requires MongoDB C/C++ drivers; Dockerfile-mongo demonstrates the process
 - Submodule branch conflicts:
   - Ensure thirdparty submodules are checked out from the correct branches (lib-boost-1.71 for chainbase/appbase, update for fc)
+- **Static library deployment issues**:
+  - **All builds now use static libraries by default, eliminating shared library dependency problems**
+  - **If encountering runtime linking issues, verify the unified static library approach is being used**
 
-**Updated** Added troubleshooting guidance for Boost 1.71+ requirement and submodule branch conflicts.
+**Updated** Added troubleshooting guidance for the unified static library approach and deployment-related issues.
 
 **Section sources**
 - [building.md:76-137](file://documentation/building.md#L76-L137)
@@ -400,9 +424,9 @@ Common issues and resolutions:
 - [.gitmodules:1-13](file://.gitmodules#L1-L13)
 
 ## Conclusion
-The VIZ CPP Node build system is designed for portability and flexibility across Linux, macOS, and Windows. It exposes a concise set of CMake options to tailor builds for development, production, testnet, and specialized configurations like low-memory nodes and MongoDB-enabled deployments. The enhanced submodule management ensures consistent dependency resolution with Boost 1.71+ across all thirdparty libraries, while streamlined Docker configurations support automated CI/CD workflows. CI pipelines automate reproducible builds using Docker, ensuring consistent outcomes across environments.
+The VIZ CPP Node build system is designed for portability and flexibility across Linux, macOS, and Windows. It exposes a concise set of CMake options to tailor builds for development, production, testnet, and specialized configurations like low-memory nodes and MongoDB-enabled deployments. The enhanced submodule management ensures consistent dependency resolution with Boost 1.71+ across all thirdparty libraries, while streamlined Docker configurations support automated CI/CD workflows. **The unified static library approach across all platforms eliminates shared library dependency issues and ensures consistent deployment characteristics.** CI pipelines automate reproducible builds using Docker, ensuring consistent outcomes across environments.
 
-**Updated** The build system now includes enhanced submodule management with branch specifications and improved dependency resolution through Boost 1.71+ enforcement across all thirdparty libraries.
+**Updated** The build system now includes enhanced submodule management with branch specifications, improved dependency resolution through Boost 1.71+ enforcement, and a unified static library approach that simplifies deployment across all supported platforms.
 
 ## Appendices
 
@@ -410,24 +434,31 @@ The VIZ CPP Node build system is designed for portability and flexibility across
 - Development build (Linux/macOS):
   - Configure with Release profile and desired feature toggles
   - Example: cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTNET=TRUE ..
+  - **Static libraries enabled by default for consistent behavior**
 - Production deployment (Linux):
   - Use Dockerfile-production for a Release build with static linking and minimal flags
-  - Alternatively, cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBRARIES=FALSE ..
+  - Alternatively, cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBRARIES=OFF ..
+  - **All production builds use static libraries for simplified deployment**
 - Low-memory node:
   - cmake -DCMAKE_BUILD_TYPE=Release -DLOW_MEMORY_NODE=TRUE ..
+  - **Static libraries enabled for optimal performance**
 - Testnet node:
   - cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTNET=TRUE ..
+  - **Consistent static library approach across all testnet deployments**
 - MongoDB-enabled node:
   - Build Dockerfile-mongo or cmake -DENABLE_MONGO_PLUGIN=TRUE .. with drivers installed
+  - **Static libraries ensure reliable MongoDB plugin deployment**
 - Windows (MSVC):
   - Ensure Boost and TCL roots are set; use Visual Studio generator
+  - **Static libraries enabled by default through build scripts**
 - Windows (MinGW):
   - cmake -DCMAKE_BUILD_TYPE=Release -G "MinGW Makefiles" ..
+  - **Static libraries enabled by default through build scripts**
 - Submodule management:
   - Ensure thirdparty submodules are properly initialized: git submodule update --init --recursive
   - Verify branch specifications match required versions
 
-**Updated** Added submodule management scenario for proper dependency initialization.
+**Updated** Added comprehensive coverage of the unified static library approach across all build scenarios and platforms.
 
 ### Environment Variables Reference
 - BOOST_ROOT: Path to Boost installation (Windows)
@@ -439,7 +470,7 @@ The VIZ CPP Node build system is designed for portability and flexibility across
 - Travis CI builds multiple Docker images for production, test, testnet, lowmem, and mongo variants
 - GitHub Actions builds production and testnet images on master branch pushes
 
-**Updated** Docker configurations have been streamlined to support the enhanced submodule management and improved dependency resolution.
+**Updated** Docker configurations have been streamlined to support the enhanced submodule management and improved dependency resolution with consistent static library approach.
 
 **Section sources**
 - [share/vizd/docker/Dockerfile-testnet:46-54](file://share/vizd/docker/Dockerfile-testnet#L46-L54)
@@ -448,3 +479,30 @@ The VIZ CPP Node build system is designed for portability and flexibility across
 - [.travis.yml:12-42](file://.travis.yml#L12-L42)
 - [.github/workflows/docker-main.yml:11-41](file://.github/workflows/docker-main.yml#L11-L41)
 - [.gitmodules:1-13](file://.gitmodules#L1-L13)
+
+### Platform-Specific Build Behavior
+
+#### Linux Build Scripts
+- **Default behavior**: Static libraries enabled (SHARED_LIBS="OFF")
+- **Command-line option**: --static flag enables static linking
+- **Build type**: Release by default with optional Debug
+- **Feature toggles**: Low memory, testnet, MongoDB plugin support
+
+#### macOS Build Scripts
+- **Default behavior**: Shared libraries enabled (SHARED_LIBS="ON")
+- **Command-line option**: --static flag switches to static linking
+- **Build type**: Release by default with optional Debug
+- **Feature toggles**: Low memory, testnet support
+
+#### Windows Build Scripts
+- **Default behavior**: Static libraries enabled (BUILD_SHARED_LIBRARIES=OFF)
+- **Build type**: Release by default with optional Debug
+- **Feature toggles**: Low memory, testnet, MongoDB plugin support
+
+**Updated** Platform-specific behaviors now reflect the unified static library approach, with macOS and Windows maintaining backward compatibility through command-line options.
+
+**Section sources**
+- [build-linux.sh:39](file://build-linux.sh#L39)
+- [build-mac.sh:35](file://build-mac.sh#L35)
+- [build-mingw.bat:99](file://build-mingw.bat#L99)
+- [build-msvc.bat:91](file://build-msvc.bat#L91)

@@ -282,10 +282,26 @@ namespace graphene {
             void set_allowed_peers(const std::vector<node_id_t> &allowed_peers);
 
             /**
+             *  Set trusted peer endpoints for reduced soft-ban duration.
+             *  Peers matching these IP addresses will be soft-banned for 5 minutes
+             *  instead of 1 hour, allowing faster recovery from transient errors.
+             *  Typically populated with trusted-snapshot-peer IPs.
+             */
+            void set_trusted_peer_endpoints(const std::vector<std::string> &endpoints);
+
+            /**
              * Instructs the node to forget everything in its peer database, mostly for debugging
              * problems where nodes are failing to connect to the network
              */
             void clear_peer_database();
+
+            /**
+             *  Restart synchronization with all currently connected peers.
+             *  This is useful when the node detects it has fallen behind
+             *  (e.g., no blocks received for an extended period) and wants
+             *  to force a re-sync from its current sync point.
+             */
+            virtual void resync();
 
             void set_total_bandwidth_limit(uint32_t upload_bytes_per_second, uint32_t download_bytes_per_second);
 
@@ -325,6 +341,9 @@ namespace graphene {
             }
 
             void sync_from(const item_id &current_head_block, const std::vector<uint32_t> &hard_fork_block_numbers) override {
+            }
+
+            void resync() override {
             }
 
             void broadcast(const message &item_to_broadcast) override;

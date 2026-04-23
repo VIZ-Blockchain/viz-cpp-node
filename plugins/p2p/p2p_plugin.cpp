@@ -1,4 +1,5 @@
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
+#include <graphene/plugins/snapshot/plugin.hpp>
 
 #include <graphene/network/node.hpp>
 #include <graphene/network/exceptions.hpp>
@@ -14,6 +15,7 @@
 
 // ANSI color codes for P2P stats console log messages
 #define CLOG_CYAN  "\033[96m"
+#define CLOG_WHITE "\033[97m"
 #define CLOG_RESET "\033[0m"
 
 using std::string;
@@ -108,6 +110,14 @@ namespace graphene {
 
                     void p2p_stats_task();
 
+                    // Stale sync detection
+                    bool _stale_sync_enabled = false;
+                    uint32_t _stale_sync_timeout_seconds = 120;
+                    fc::time_point _last_block_received_time;
+                    fc::future<void> _stale_sync_task_done;
+
+                    void stale_sync_check_task();
+
                     std::unique_ptr<graphene::network::node> node;
 
                     chain::plugin &chain;
@@ -130,20 +140,20 @@ namespace graphene {
 
                 bool p2p_plugin_impl::handle_block(const block_message &blk_msg, bool sync_mode, std::vector<fc::uint160_t> &) {
                     try {
+                        // Track last block received time for stale sync detection
+                        _last_block_received_time = fc::time_point::now();
+
                         uint32_t head_block_num;
                         chain.db().with_weak_read_lock([&]() {
                             head_block_num = chain.db().head_block_num();
                         });
+                        int32_t gap = (int32_t)blk_msg.block.block_num() - (int32_t)head_block_num - 1;
                         if (sync_mode)
-                            fc_ilog(fc::logger::get("sync"),
-                                    "chain pushing sync block #${block_num} ${block_hash}, head is ${head}",
-                                    ("block_num", blk_msg.block.block_num())("block_hash", blk_msg.block_id)("head",
-                                                                                                             head_block_num));
+                            dlog("chain pushing sync block #${block_num} (head: ${head}, gap: ${gap})",
+                                 ("block_num", blk_msg.block.block_num())("head", head_block_num)("gap", gap));
                         else
-                            fc_ilog(fc::logger::get("sync"),
-                                    "chain pushing block #${block_num} ${block_hash}, head is ${head}",
-                                    ("block_num", blk_msg.block.block_num())("block_hash", blk_msg.block_id)("head",
-                                                                                                             head_block_num));
+                            dlog("chain pushing normal block #${block_num} (head: ${head}, gap: ${gap})",
+                                 ("block_num", blk_msg.block.block_num())("head", head_block_num)("gap", gap));
 
                         try {
                             // When a block is too old for our fork database (e.g. a peer
@@ -156,27 +166,40 @@ namespace graphene {
 
                             if (!sync_mode) {
                                 fc::microseconds latency = fc::time_point::now() - blk_msg.block.timestamp;
-                                ilog("Got ${t} transactions on block ${b} by ${w} -- latency: ${l} ms",
+                                ilog(CLOG_WHITE "Got ${t} transactions on block ${b} by ${w} -- latency: ${l} ms" CLOG_RESET,
                                      ("t", blk_msg.block.transactions.size())("b", blk_msg.block.block_num())("w", blk_msg.block.witness)("l", latency.count() / 1000));
                             }
 
                             return result;
                         } catch (const graphene::chain::block_too_old_exception &e) {
-                            fc_elog(fc::logger::get("sync"),
-                                    "Block ${n} is too old for fork database (head=${head}): ${e}",
-                                    ("n", blk_msg.block.block_num())("head", head_block_num)("e", e.to_detail_string()));
-                            wlog("Block ${n} is too old for fork database, banning peer",
-                                 ("n", blk_msg.block.block_num()));
+                            wlog("Block ${n} is too old for fork database (head=${head}): ${e}",
+                                 ("n", blk_msg.block.block_num())("head", head_block_num)("e", e.to_detail_string()));
                             FC_THROW_EXCEPTION(graphene::network::block_older_than_undo_history,
                                 "Block is too old for fork database: ${e}", ("e", e.to_detail_string()));
+                        } catch (const graphene::chain::deferred_resize_exception &e) {
+                            // Shared memory resize is deferred. Re-throw as network exception
+                            // so the P2P layer knows this is transient and should not
+                            // penalise the peer or mark the block as accepted.
+                            wlog("Block ${n} deferred due to shared memory resize (head=${head}): ${e}",
+                                 ("n", blk_msg.block.block_num())("head", head_block_num)("e", e.to_detail_string()));
+                            FC_THROW_EXCEPTION(graphene::network::deferred_resize_exception,
+                                "Shared memory resize deferred: ${e}", ("e", e.to_detail_string()));
+                        } catch (const graphene::chain::unlinkable_block_exception &e) {
+                            // Chain rejected block from a dead fork whose parent is not
+                            // in fork_db.  Convert to network exception so the P2P layer
+                            // can soft-ban the peer (block at/below head) or resync
+                            // (block ahead of head).  Micro-fork blocks are NOT caught
+                            // here — they have parents in fork_db and return false normally.
+                            wlog("Block ${n} is from a dead fork (parent not in fork_db, head=${head}): ${e}",
+                                 ("n", blk_msg.block.block_num())("head", head_block_num)("e", e.to_detail_string()));
+                            FC_THROW_EXCEPTION(graphene::network::unlinkable_block_exception,
+                                "Block from a dead fork: ${e}", ("e", e.to_detail_string()));
                         } catch (const graphene::network::unlinkable_block_exception &e) {
                             // translate to a graphene::network exception
-                            fc_elog(fc::logger::get("sync"), "Error when pushing block, current head block is ${head}:\n${e}", ("e", e.to_detail_string())("head", head_block_num));
-                            elog("Error when pushing block:\n${e}", ("e", e.to_detail_string()));
-                            FC_THROW_EXCEPTION(graphene::network::unlinkable_block_exception, "Error when pushing block:\n${e}", ("e", e.to_detail_string()));
+                            elog("Error when pushing block, current head block is ${head}: ${e}", ("e", e.to_detail_string())("head", head_block_num));
+                            FC_THROW_EXCEPTION(graphene::network::unlinkable_block_exception, "Error when pushing block: ${e}", ("e", e.to_detail_string()));
                         } catch (const fc::exception &e) {
-                            fc_elog(fc::logger::get("sync"), "Error when pushing block, current head block is ${head}:\n${e}", ("e", e.to_detail_string())("head", head_block_num));
-                            elog("Error when pushing block:\n${e}", ("e", e.to_detail_string()));
+                            elog("Error when pushing block, current head block is ${head}: ${e}", ("e", e.to_detail_string())("head", head_block_num));
                             throw;
                         }
 
@@ -287,8 +310,8 @@ namespace graphene {
                                         // In DLT mode, block data may not be available for blocks
                                         // before the dlt_block_log range. This is expected — peer
                                         // will get the block from another node.
-                                        dlog("Block ${id} not available in DLT mode (no block data for this range)",
-                                            ("id", id.item_hash));
+                                        dlog("Block ${id} (num ${num}) not available in DLT mode (no block data for this range)",
+                                            ("id", id.item_hash)("num", block_header::num_from_id(id.item_hash)));
                                         FC_THROW_EXCEPTION(fc::key_not_found_exception, "");
                                     }
                                     elog("Couldn't find block ${id} -- corresponding ID in our chain is ${id2}",
@@ -559,6 +582,72 @@ namespace graphene {
                     }
                 }
 
+                void p2p_plugin_impl::stale_sync_check_task() {
+                    if (!_stale_sync_enabled || !node) {
+                        return;
+                    }
+                    try {
+                        auto now = fc::time_point::now();
+                        auto elapsed = now - _last_block_received_time;
+                        auto timeout = fc::seconds(_stale_sync_timeout_seconds);
+
+                        if (elapsed > timeout) {
+                            uint32_t head_block = 0;
+                            uint32_t lib_num = 0;
+                            chain.db().with_weak_read_lock([&]() {
+                                head_block = chain.db().head_block_num();
+                                lib_num = chain.db().get_dynamic_global_properties().last_irreversible_block_num;
+                            });
+
+                            wlog("Stale sync detected: no blocks received for ${s}s (head: ${h}, LIB: ${lib}). "
+                                 "Resetting sync from last irreversible block and reconnecting seed peers.",
+                                 ("s", _stale_sync_timeout_seconds)("h", head_block)("lib", lib_num));
+
+                            // Reset sync from last irreversible block
+                            if (lib_num > 0 && node) {
+                                block_id_type lib_block_id;
+                                chain.db().with_weak_read_lock([&]() {
+                                    lib_block_id = chain.db().get_block_id_for_num(lib_num);
+                                });
+                                node->sync_from(item_id(graphene::network::block_message_type, lib_block_id),
+                                                std::vector<uint32_t>());
+                                ilog("Reset P2P sync from LIB block #${n}", ("n", lib_num));
+
+                                // Force resync with all currently connected peers
+                                node->resync();
+                            }
+
+                            // Reconnect all seed nodes (add_node resets the retry timer,
+                            // connect_to_endpoint initiates connection if not already connected)
+                            for (const auto &seed : seeds) {
+                                try {
+                                    ilog("Reconnecting seed node ${s}", ("s", seed));
+                                    node->add_node(seed);
+                                    node->connect_to_endpoint(seed);
+                                } catch (const fc::exception &e) {
+                                    wlog("Failed to reconnect seed node ${s}: ${e}",
+                                         ("s", seed)("e", e.to_detail_string()));
+                                }
+                            }
+
+                            // Reset timer to avoid immediate retry
+                            _last_block_received_time = fc::time_point::now();
+                        }
+                    } catch (const fc::exception &e) {
+                        wlog("Exception in stale sync check task: ${e}", ("e", e.to_detail_string()));
+                    } catch (...) {
+                        wlog("Unknown exception in stale sync check task");
+                    }
+
+                    if (_stale_sync_enabled) {
+                        _stale_sync_task_done = fc::schedule(
+                            [this]() { stale_sync_check_task(); },
+                            fc::time_point::now() + fc::seconds(30),
+                            "stale_sync_check_task"
+                        );
+                    }
+                }
+
             } // detail
 
             p2p_plugin::p2p_plugin() {
@@ -580,7 +669,12 @@ namespace graphene {
                     ("p2p-stats-enabled", boost::program_options::value<bool>()->default_value(true),
                         "Enable periodic logging of P2P peer statistics (ip, port, latency, bytes in, blocked status).")
                     ("p2p-stats-interval", boost::program_options::value<uint32_t>()->default_value(300),
-                        "Interval in seconds between P2P peer statistics dumps (default: 300 = 5 minutes).");
+                        "Interval in seconds between P2P peer statistics dumps (default: 300 = 5 minutes).")
+                    ("p2p-stale-sync-detection", boost::program_options::value<bool>()->default_value(false),
+                        "Enable stale sync detection: when no blocks are received for the configured timeout, "
+                        "reset sync from last irreversible block and reconnect seed peers (default: false).")
+                    ("p2p-stale-sync-timeout-seconds", boost::program_options::value<uint32_t>()->default_value(120),
+                        "Timeout in seconds after which stale sync detection triggers recovery action (default: 120 = 2 minutes).");
                 cli.add_options()
                     ("force-validate", boost::program_options::bool_switch()->default_value(false),
                         "Force validation of all transactions. Deprecated in favor of p2p-force-validate")
@@ -646,6 +740,19 @@ namespace graphene {
                         wlog("p2p-stats-interval must be > 0, using default of 300 seconds");
                     }
                 }
+
+                if (options.count("p2p-stale-sync-detection")) {
+                    my->_stale_sync_enabled = options.at("p2p-stale-sync-detection").as<bool>();
+                }
+
+                if (options.count("p2p-stale-sync-timeout-seconds")) {
+                    uint32_t stale_timeout = options.at("p2p-stale-sync-timeout-seconds").as<uint32_t>();
+                    if (stale_timeout > 0) {
+                        my->_stale_sync_timeout_seconds = stale_timeout;
+                    } else {
+                        wlog("p2p-stale-sync-timeout-seconds must be > 0, using default of 120 seconds");
+                    }
+                }
             }
 
             void p2p_plugin::plugin_startup() {
@@ -674,6 +781,17 @@ namespace graphene {
 
                     my->node->listen_to_p2p_network();
                     my->node->connect_to_p2p_network();
+
+                    // Register trusted snapshot peer IPs for reduced soft-ban (5 min vs 1 hour)
+                    auto* snap_plug = appbase::app().find_plugin<graphene::plugins::snapshot::snapshot_plugin>();
+                    if (snap_plug) {
+                        auto trusted_eps = snap_plug->get_trusted_snapshot_peers();
+                        if (!trusted_eps.empty()) {
+                            ilog("Registering ${n} trusted snapshot peer(s) for reduced P2P soft-ban", ("n", trusted_eps.size()));
+                            my->node->set_trusted_peer_endpoints(trusted_eps);
+                        }
+                    }
+
                     block_id_type block_id;
                     my->chain.db().with_weak_read_lock([&]() {
                         block_id = my->chain.db().head_block_id();
@@ -690,6 +808,16 @@ namespace graphene {
                             "p2p_stats_task"
                         );
                     }
+
+                    if (my->_stale_sync_enabled) {
+                        my->_last_block_received_time = fc::time_point::now();
+                        ilog("P2P stale sync detection enabled, timeout: ${s}s", ("s", my->_stale_sync_timeout_seconds));
+                        my->_stale_sync_task_done = fc::schedule(
+                            [this]() { my->stale_sync_check_task(); },
+                            fc::time_point::now() + fc::seconds(30),
+                            "stale_sync_check_task"
+                        );
+                    }
                 }).wait();
                 ilog("P2P Plugin started");
             }
@@ -698,11 +826,20 @@ namespace graphene {
                 ilog("Shutting down P2P Plugin");
                 if (my->stats_enabled && my->_stats_task_done.valid()) {
                     try {
-                        my->_stats_task_done.cancel_and_wait("p2p_plugin::plugin_shutdown()");
+                        my->_stats_task_done.cancel_and_wait("p2p_plugin::plugin_shutdown() stats");
                     } catch (const fc::exception &e) {
                         wlog("Exception canceling P2P stats task: ${e}", ("e", e.to_detail_string()));
                     } catch (...) {
                         wlog("Unknown exception canceling P2P stats task");
+                    }
+                }
+                if (my->_stale_sync_enabled && my->_stale_sync_task_done.valid()) {
+                    try {
+                        my->_stale_sync_task_done.cancel_and_wait("p2p_plugin::plugin_shutdown() stale_sync");
+                    } catch (const fc::exception &e) {
+                        wlog("Exception canceling stale sync check task: ${e}", ("e", e.to_detail_string()));
+                    } catch (...) {
+                        wlog("Unknown exception canceling stale sync check task");
                     }
                 }
                 my->node->close();

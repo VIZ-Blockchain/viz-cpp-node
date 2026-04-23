@@ -3,7 +3,7 @@
   "$id": "block-log-spec.json",
   "title": "VIZ Block Log File Format Specification",
   "description": "Machine-readable specification for VIZ blockchain block log files",
-  "version": "1.0.0",
+  "version": "1.1.0",
 
   "definitions": {
     "varint": {
@@ -92,6 +92,85 @@
         "type": { "const": "compact_signature" },
         "size": { "const": 65 },
         "description": { "const": "secp256k1 compact signature: [1 byte recovery id][32 bytes r][32 bytes s]" }
+      }
+    },
+
+    "public_key_type": {
+      "type": "object",
+      "description": "secp256k1 compressed public key with base58 string representation",
+      "properties": {
+        "type": { "const": "public_key_type" },
+        "wire_size": { "const": 33 },
+        "wire_format": { "const": "Raw compressed secp256k1 point: [0x02/0x03 prefix][32 bytes x-coordinate]" },
+        "string_encoding": {
+          "type": "object",
+          "description": "How public_key_type is displayed as a string (not stored on wire)",
+          "steps": [
+            "Compute ripemd160 hash of the 33 raw key bytes",
+            "Take first 4 bytes of hash as checksum",
+            "Concatenate: [33 bytes key][4 bytes checksum] = 37 bytes",
+            "Base58-encode the 37-byte buffer",
+            "Prepend CHAIN_ADDRESS_PREFIX ('VIZ')"
+          ],
+          "example": "VIZ7wMEutJdCfdSKNgVAp17v9uoTqwwkUqn2kwVsJ6zG5XYJcvj81"
+        }
+      }
+    },
+
+    "flat_set": {
+      "type": "object",
+      "description": "fc::raw serialized flat_set<T> (same wire format as vector<T>)",
+      "properties": {
+        "type": { "const": "flat_set" },
+        "structure": {
+          "type": "array",
+          "items": [
+            { "$ref": "#/definitions/varint", "description": "Element count" },
+            { "type": "object", "description": "Repeated element type (sorted, unique)" }
+          ]
+        }
+      }
+    },
+
+    "flat_map": {
+      "type": "object",
+      "description": "fc::raw serialized flat_map<K,V> (same wire format as vector<pair<K,V>>)",
+      "properties": {
+        "type": { "const": "flat_map" },
+        "structure": {
+          "type": "array",
+          "items": [
+            { "$ref": "#/definitions/varint", "description": "Pair count" },
+            { "type": "object", "description": "Repeated pair<K,V> (K then V for each)" }
+          ]
+        }
+      }
+    },
+
+    "optional": {
+      "type": "object",
+      "description": "fc::raw serialized optional<T>",
+      "properties": {
+        "type": { "const": "optional" },
+        "structure": {
+          "type": "array",
+          "items": [
+            { "type": "object", "properties": { "type": { "const": "uint8" }, "description": { "const": "Flag: 0=absent, 1=present" } } },
+            { "type": "object", "description": "Value (only if flag=1)" }
+          ]
+        }
+      }
+    },
+
+    "extensions_type": {
+      "type": "object",
+      "description": "future_extensions type used in operation extensions fields",
+      "properties": {
+        "type": { "const": "extensions_type" },
+        "definition": { "const": "flat_set<future_extensions>" },
+        "future_extensions": { "const": "static_variant<void_t>" },
+        "wire_format": { "const": "varint count + [varint type_index=0] for each item" },
+        "usual_state": { "const": "Empty (count=0, serialized as single byte 0x00)" }
       }
     },
 
@@ -679,32 +758,64 @@
     "common_types": {
       "asset": {
         "description": "Token amount with symbol",
+        "wire_size": "16 bytes (fixed)",
         "fields": [
-          { "name": "amount", "type": "int64", "description": "Amount in satoshis" },
-          { "name": "symbol", "type": "uint64", "description": "Asset symbol identifier" }
+          { "name": "amount", "type": "int64", "size": 8, "description": "Amount in tolikah (signed)" },
+          { "name": "symbol", "type": "uint64", "size": 8, "description": "Asset symbol identifier (packed: byte0=decimals, bytes1-6=ASCII name, byte7=0x00)" }
         ],
+        "js_output": "{ amount: number, symbol: string, decimals: number }",
         "symbols": {
-          "VIZ": "0x0000000000000003",
-          "SHARES": "0x0000000000000004"
+          "VIZ": "0x000000005A495603",
+          "SHARES": "0x0053455241485306"
         }
       },
       "authority": {
         "description": "Multi-signature authority",
         "fields": [
           { "name": "weight_threshold", "type": "uint32" },
-          { "name": "account_auths", "type": "flat_set<pair<account_name_type, uint16>>" },
-          { "name": "key_auths", "type": "flat_set<pair<public_key_type, uint16>>" }
+          { "name": "account_auths", "type": "flat_map<account_name_type, uint16>" },
+          { "name": "key_auths", "type": "flat_map<public_key_type, uint16>" }
         ]
       },
       "public_key_type": {
         "description": "secp256k1 compressed public key",
-        "size": 33
+        "wire_size": 33,
+        "wire_format": "Raw bytes: [0x02/0x03 prefix][32 bytes x-coordinate]",
+        "string_format": "VIZ + base58([33 key bytes][4 ripemd160 checksum bytes])",
+        "example": "VIZ7wMEutJdCfdSKNgVAp17v9uoTqwwkUqn2kwVsJ6zG5XYJcvj81"
       },
       "beneficiary_route_type": {
         "description": "Beneficiary route for awards",
         "fields": [
           { "name": "account", "type": "account_name_type" },
           { "name": "weight", "type": "uint16" }
+        ]
+      },
+      "chain_properties_init": {
+        "description": "Chain properties (12 fields, used by chain_properties_update_operation)",
+        "fields": [
+          { "name": "account_creation_fee", "type": "asset" },
+          { "name": "maximum_block_size", "type": "uint32" },
+          { "name": "create_account_delegation_ratio", "type": "uint32" },
+          { "name": "create_account_delegation_time", "type": "uint32" },
+          { "name": "min_delegation", "type": "asset" },
+          { "name": "min_curation_percent", "type": "uint16" },
+          { "name": "max_curation_percent", "type": "uint16" },
+          { "name": "bandwidth_reserve_percent", "type": "uint16" },
+          { "name": "bandwidth_reserve_below", "type": "asset" },
+          { "name": "flag_energy_additional_cost", "type": "uint16" },
+          { "name": "vote_accounting_min_rshares", "type": "uint32" },
+          { "name": "committee_request_approve_min_percent", "type": "uint16" }
+        ]
+      },
+      "versioned_chain_properties": {
+        "description": "static_variant of chain_properties variants",
+        "format": "[varint: type_index][chain_properties_init base][additional fields based on type]",
+        "variants": [
+          { "type_index": 0, "name": "chain_properties_init", "fields": 12 },
+          { "type_index": 1, "name": "chain_properties_hf4", "base": "init", "additional_fields": ["inflation_witness_percent (uint16)", "inflation_ratio_committee_vs_reward_fund (uint16)", "inflation_recalc_period (uint32)"] },
+          { "type_index": 2, "name": "chain_properties_hf6", "base": "hf4", "additional_fields": ["data_operations_cost_additional_bandwidth (uint32)", "witness_miss_penalty_percent (uint16)", "witness_miss_penalty_duration (uint32)"] },
+          { "type_index": 3, "name": "chain_properties_hf9", "base": "hf6", "additional_fields": ["create_invite_min_balance (asset)", "committee_create_request_fee (asset)", "create_paid_subscription_fee (asset)", "account_on_sale_fee (asset)", "subaccount_on_sale_fee (asset)", "witness_declaration_fee (asset)", "withdraw_intervals (uint16)"] }
         ]
       }
     },
@@ -803,8 +914,243 @@
           { "name": "witness", "type": "account_name_type" },
           { "name": "shares", "type": "asset" }
         ]
+      },
+      "invite_registration_operation": {
+        "id": 45,
+        "fields": [
+          { "name": "account", "type": "account_name_type" },
+          { "name": "new_account_key", "type": "public_key_type" },
+          { "name": "invite_secret", "type": "string", "description": "WIF-encoded private key (e.g. '5Kd...'), NOT raw bytes" },
+          { "name": "extensions", "type": "extensions_type" }
+        ]
+      },
+      "claim_invite_balance_operation": {
+        "id": 44,
+        "fields": [
+          { "name": "initiator", "type": "account_name_type" },
+          { "name": "receiver", "type": "account_name_type" },
+          { "name": "invite_secret", "type": "string", "description": "WIF-encoded private key string" },
+          { "name": "extensions", "type": "extensions_type" }
+        ]
+      },
+      "use_invite_balance_operation": {
+        "id": 58,
+        "fields": [
+          { "name": "initiator", "type": "account_name_type" },
+          { "name": "receiver", "type": "account_name_type" },
+          { "name": "invite_secret", "type": "string", "description": "WIF-encoded private key string" },
+          { "name": "extensions", "type": "extensions_type" }
+        ]
+      },
+      "chain_properties_update_operation": {
+        "id": 25,
+        "fields": [
+          { "name": "owner", "type": "account_name_type" },
+          { "name": "props", "type": "chain_properties_init", "description": "12-field struct, NOT chain_properties_hf9" },
+          { "name": "extensions", "type": "extensions_type" }
+        ]
+      },
+      "versioned_chain_properties_update_operation": {
+        "id": 46,
+        "fields": [
+          { "name": "owner", "type": "account_name_type" },
+          { "name": "props", "type": "versioned_chain_properties", "description": "static_variant<init/hf4/hf6/hf9> with progressive fields" },
+          { "name": "extensions", "type": "extensions_type" }
+        ]
+      },
+      "benefactor_award_operation": {
+        "id": 49,
+        "isVirtual": true,
+        "fields": [
+          { "name": "initiator", "type": "account_name_type" },
+          { "name": "benefactor", "type": "account_name_type", "description": "NOTE: FC_REFLECT order is initiator, benefactor (not benefactor, initiator)" },
+          { "name": "receiver", "type": "account_name_type" },
+          { "name": "custom_sequence", "type": "uint64" },
+          { "name": "memo", "type": "string" },
+          { "name": "shares", "type": "asset" }
+        ]
+      },
+      "set_paid_subscription_operation": {
+        "id": 50,
+        "fields": [
+          { "name": "account", "type": "account_name_type" },
+          { "name": "url", "type": "string" },
+          { "name": "levels", "type": "uint16", "description": "NOT uint8" },
+          { "name": "amount", "type": "asset" },
+          { "name": "period", "type": "uint16", "description": "NOT uint32" },
+          { "name": "extensions", "type": "extensions_type" }
+        ]
+      },
+      "paid_subscribe_operation": {
+        "id": 51,
+        "fields": [
+          { "name": "account", "type": "account_name_type" },
+          { "name": "subscriber", "type": "account_name_type" },
+          { "name": "level", "type": "uint16", "description": "NOT uint8" },
+          { "name": "amount", "type": "asset" },
+          { "name": "period", "type": "uint16", "description": "NOT uint32" },
+          { "name": "extensions", "type": "extensions_type" }
+        ]
+      },
+      "paid_subscription_action_operation": {
+        "id": 52,
+        "isVirtual": true,
+        "fields": [
+          { "name": "subscriber", "type": "account_name_type" },
+          { "name": "account", "type": "account_name_type" },
+          { "name": "level", "type": "uint16" },
+          { "name": "amount", "type": "asset" },
+          { "name": "period", "type": "uint16" },
+          { "name": "summary_duration_sec", "type": "uint64" },
+          { "name": "summary_amount", "type": "asset" }
+        ]
+      },
+      "cancel_paid_subscription_operation": {
+        "id": 53,
+        "isVirtual": true,
+        "fields": [
+          { "name": "subscriber", "type": "account_name_type" },
+          { "name": "account", "type": "account_name_type" }
+        ]
+      },
+      "buy_account_operation": {
+        "id": 56,
+        "fields": [
+          { "name": "account", "type": "account_name_type" },
+          { "name": "buyer", "type": "account_name_type" },
+          { "name": "tokens_to_shares", "type": "asset", "description": "NOT bool/uint8" },
+          { "name": "extensions", "type": "extensions_type" }
+        ]
+      },
+      "account_sale_operation": {
+        "id": 57,
+        "isVirtual": true,
+        "fields": [
+          { "name": "account", "type": "account_name_type" },
+          { "name": "price", "type": "asset" },
+          { "name": "buyer", "type": "account_name_type" },
+          { "name": "seller", "type": "account_name_type" }
+        ]
+      },
+      "expire_escrow_ratification_operation": {
+        "id": 59,
+        "isVirtual": true,
+        "fields": [
+          { "name": "from", "type": "account_name_type" },
+          { "name": "to", "type": "account_name_type" },
+          { "name": "agent", "type": "account_name_type" },
+          { "name": "escrow_id", "type": "uint32" },
+          { "name": "token_amount", "type": "asset" },
+          { "name": "fee", "type": "asset" },
+          { "name": "ratification_deadline", "type": "time_point_sec" }
+        ]
+      },
+      "bid_operation": {
+        "id": 62,
+        "isVirtual": true,
+        "fields": [
+          { "name": "account", "type": "account_name_type" },
+          { "name": "bidder", "type": "account_name_type", "description": "NOTE: FC_REFLECT order is account, bidder (not bidder, account)" },
+          { "name": "bid", "type": "asset" }
+        ]
+      },
+      "outbid_operation": {
+        "id": 63,
+        "isVirtual": true,
+        "fields": [
+          { "name": "account", "type": "account_name_type" },
+          { "name": "bidder", "type": "account_name_type", "description": "NOTE: FC_REFLECT order is account, bidder (not bidder, account)" },
+          { "name": "bid", "type": "asset" }
+        ]
+      },
+      "proposal_delete_operation": {
+        "id": 24,
+        "fields": [
+          { "name": "author", "type": "account_name_type" },
+          { "name": "title", "type": "string" },
+          { "name": "requester", "type": "account_name_type" },
+          { "name": "extensions", "type": "extensions_type" }
+        ]
       }
     }
+  },
+
+  "file_formats_additional": {
+    "block_log_bitmask": {
+      "description": "Bitmask file marking which blocks have non-free operations",
+      "filename": "block_log.bitmask",
+      "structure": {
+        "type": "object",
+        "fields": [
+          {
+            "name": "header",
+            "offset": 0,
+            "size": 16,
+            "fields": [
+              { "name": "start_block_num", "offset": 0, "size": 8, "type": "uint64_le", "description": "First block number in range" },
+              { "name": "end_block_num", "offset": 8, "size": 8, "type": "uint64_le", "description": "Last block number in range" }
+            ]
+          },
+          {
+            "name": "bit_array",
+            "offset": 16,
+            "type": "bit_array",
+            "description": "1 bit per block, bit=1 means block has non-free operations",
+            "bit_order": "bit 0 = start_block_num, bit 1 = start_block_num+1, etc.",
+            "size": "ceil((end - start + 1) / 8) bytes"
+          }
+        ]
+      },
+      "example": "10,000,000 blocks = ~1.25 MB bitmask file",
+      "auto_load": "Loaded on startup if file exists and range matches current block_log"
+    },
+
+    "search_export": {
+      "description": "Export file from 'e' command in block-log-viewer",
+      "filename_pattern": "search_export_<unix_timestamp>.json",
+      "format": "JSON array of operation record objects",
+      "record_fields": [
+        { "name": "block", "type": "number", "description": "Block number" },
+        { "name": "timestamp", "type": "string", "description": "Formatted UTC timestamp" },
+        { "name": "witness", "type": "string", "description": "Witness account name" },
+        { "name": "typeId", "type": "number", "description": "Operation type ID (0-63)" },
+        { "name": "typeName", "type": "string", "description": "Operation type name" },
+        { "name": "isVirtual", "type": "boolean", "description": "Whether this is a virtual operation" },
+        { "name": "data", "type": "object", "description": "Operation-specific data (Buffers as hex, BigInts as decimal strings)" }
+      ]
+    }
+  },
+
+  "viewer_commands": {
+    "description": "block-log-viewer.js interactive commands",
+    "navigation": [
+      { "cmd": "f", "description": "First block" },
+      { "cmd": "l", "description": "Last block" },
+      { "cmd": "n", "description": "Next block" },
+      { "cmd": "p", "description": "Previous block" },
+      { "cmd": "N", "description": "Next block with non-free operations (bitmask-accelerated)" },
+      { "cmd": "P", "description": "Prev block with non-free operations (bitmask-accelerated)" },
+      { "cmd": "g <num>", "description": "Go to block #num" },
+      { "cmd": "<num>", "description": "Jump to block number directly" }
+    ],
+    "operations": [
+      { "cmd": "o", "description": "Show all operations in current block" },
+      { "cmd": "o <name>", "description": "Show operations matching type name (e.g. o transfer)" },
+      { "cmd": "s <name>", "description": "Search forward for operation by type name" },
+      { "cmd": "S <string>", "description": "Search forward for substring in any operation's data (incl. virtual)" },
+      { "cmd": "S =<string>", "description": "Search forward for exact string match (= prefix for exact, not substring)" },
+      { "cmd": "R <string>", "description": "Fast raw ASCII byte search in block data (no UTF-8/emoji)" },
+      { "cmd": "e <string>", "description": "Export all ops containing string to search_export_<ts>.json" },
+      { "cmd": "e =<string>", "description": "Export all ops exactly matching string (= prefix for exact match)" },
+      { "cmd": "c", "description": "Continue last search (s/S/R/e)" }
+    ],
+    "other": [
+      { "cmd": "scan", "description": "Scan all blocks, build & save bitmask for fast navigation" },
+      { "cmd": "i", "description": "Show block header info" },
+      { "cmd": "hex", "description": "Show raw block data in hex" },
+      { "cmd": "h", "description": "Help" },
+      { "cmd": "q", "description": "Quit" }
+    ]
   },
 
   "constants": {

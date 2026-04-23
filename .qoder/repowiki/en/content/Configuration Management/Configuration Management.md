@@ -20,14 +20,18 @@
 - [witness.cpp](file://plugins/witness/witness.cpp)
 - [config_testnet.hpp](file://libraries/protocol/include/graphene/protocol/config_testnet.hpp)
 - [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
+- [snapshot-plugin.md](file://documentation/snapshot-plugin.md)
+- [plugin.cpp](file://plugins/snapshot/plugin.cpp)
+- [plugin.cpp](file://plugins/chain/plugin.cpp)
+- [application.cpp](file://thirdparty/appbase/application.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Updated witness configuration defaults section to reflect new default values
-- Added information about CHAIN_1_PERCENT constant usage for required participation calculations
-- Updated witness configuration examples to show new default values
-- Enhanced troubleshooting guidance for witness production issues
+- Updated snapshot directory default behavior section to reflect new data-directory-based default location
+- Added documentation for enhanced snapshot configuration including trusted-snapshot-peer integration
+- Updated snapshot configuration examples to show new default behavior and trusted peer options
+- Enhanced troubleshooting guidance for snapshot-related configuration issues
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -80,9 +84,9 @@ entry --> node
 ```
 
 **Diagram sources**
-- [config.ini:1-130](file://share/vizd/config/config.ini#L1-L130)
+- [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
 - [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_witness.ini:1-107](file://share/vizd/config/config_witness.ini#L1-L107)
+- [config_witness.ini:1-138](file://share/vizd/config/config_witness.ini#L1-L138)
 - [config_mongo.ini:1-135](file://share/vizd/config/config_mongo.ini#L1-L135)
 - [config_debug.ini:1-126](file://share/vizd/config/config_debug.ini#L1-L126)
 - [config_debug_mongo.ini:1-135](file://share/vizd/config/config_debug_mongo.ini#L1-L135)
@@ -93,9 +97,9 @@ entry --> node
 - [main.cpp:106-158](file://programs/vizd/main.cpp#L106-L158)
 
 **Section sources**
-- [config.ini:1-130](file://share/vizd/config/config.ini#L1-L130)
+- [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
 - [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_witness.ini:1-107](file://share/vizd/config/config_witness.ini#L1-L107)
+- [config_witness.ini:1-138](file://share/vizd/config/config_witness.ini#L1-L138)
 - [config_mongo.ini:1-135](file://share/vizd/config/config_mongo.ini#L1-L135)
 - [config_debug.ini:1-126](file://share/vizd/config/config_debug.ini#L1-L126)
 - [config_debug_mongo.ini:1-135](file://share/vizd/config/config_debug_mongo.ini#L1-L135)
@@ -120,11 +124,12 @@ Key configuration categories:
 - Plugin list and activation
 - Witness production controls
 - Logging configuration
+- **Snapshot configuration** (updated with new default behavior)
 
 **Section sources**
 - [main.cpp:167-191](file://programs/vizd/main.cpp#L167-L191)
 - [main.cpp:194-289](file://programs/vizd/main.cpp#L194-L289)
-- [config.ini:1-130](file://share/vizd/config/config.ini#L1-L130)
+- [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
 
 ## Architecture Overview
 The configuration pipeline integrates configuration files, program options, and environment variables to initialize the node.
@@ -162,7 +167,7 @@ These sections are parsed by the node to configure logging at startup.
 **Section sources**
 - [main.cpp:167-191](file://programs/vizd/main.cpp#L167-L191)
 - [main.cpp:211-289](file://programs/vizd/main.cpp#L211-L289)
-- [config.ini:111-130](file://share/vizd/config/config.ini#L111-L130)
+- [config.ini:118-136](file://share/vizd/config/config.ini#L118-L136)
 
 ### Runtime Parameters and Program Options
 Program options include logging configuration and standard node options. The node parses configuration files and applies logging settings accordingly.
@@ -210,16 +215,16 @@ LowMem --> LowMemFlag["Build with LOW_MEMORY_NODE=TRUE"]
 ```
 
 **Diagram sources**
-- [config.ini:1-130](file://share/vizd/config/config.ini#L1-L130)
+- [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
 - [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_witness.ini:1-107](file://share/vizd/config/config_witness.ini#L1-L107)
+- [config_witness.ini:1-138](file://share/vizd/config/config_witness.ini#L1-L138)
 - [Dockerfile-lowmem:45-51](file://share/vizd/docker/Dockerfile-lowmem#L45-L51)
 - [building.md:11-15](file://documentation/building.md#L11-L15)
 
 **Section sources**
-- [config.ini:69-73](file://share/vizd/config/config.ini#L69-L73)
+- [config.ini:73-85](file://share/vizd/config/config.ini#L73-L85)
 - [config_testnet.ini:69-73](file://share/vizd/config/config_testnet.ini#L69-L73)
-- [config_witness.ini:68-86](file://share/vizd/config/config_witness.ini#L68-L86)
+- [config_witness.ini:72-84](file://share/vizd/config/config_witness.ini#L72-L84)
 - [building.md:11-15](file://documentation/building.md#L11-L15)
 - [Dockerfile-lowmem:45-51](file://share/vizd/docker/Dockerfile-lowmem#L45-L51)
 
@@ -243,16 +248,16 @@ PeerConn --> Sync["Sync Behavior<br/>network config constants"]
 ```
 
 **Diagram sources**
-- [config.ini:1-11](file://share/vizd/config/config.ini#L1-L11)
+- [config.ini:1-16](file://share/vizd/config/config.ini#L1-L16)
 - [config_testnet.ini:1-11](file://share/vizd/config/config_testnet.ini#L1-L11)
-- [config_witness.ini:1-8](file://share/vizd/config/config_witness.ini#L1-L8)
+- [config_witness.ini:1-15](file://share/vizd/config/config_witness.ini#L1-L15)
 - [config.hpp:54-56](file://libraries/network/include/graphene/network/config.hpp#L54-L56)
 - [config.hpp:105-106](file://libraries/network/include/graphene/network/config.hpp#L105-L106)
 
 **Section sources**
-- [config.ini:1-11](file://share/vizd/config/config.ini#L1-L11)
+- [config.ini:1-16](file://share/vizd/config/config.ini#L1-L16)
 - [config_testnet.ini:1-11](file://share/vizd/config/config_testnet.ini#L1-L11)
-- [config_witness.ini:1-8](file://share/vizd/config/config_witness.ini#L1-L8)
+- [config_witness.ini:1-15](file://share/vizd/config/config_witness.ini#L1-L15)
 - [config.hpp:54-56](file://libraries/network/include/graphene/network/config.hpp#L54-L56)
 - [config.hpp:105-106](file://libraries/network/include/graphene/network/config.hpp#L105-L106)
 
@@ -263,9 +268,9 @@ Plugins are activated via configuration entries. The node registers all built-in
 - The plugin documentation outlines enabling/disabling and replay requirements.
 
 **Section sources**
-- [config.ini:69-73](file://share/vizd/config/config.ini#L69-L73)
+- [config.ini:73-85](file://share/vizd/config/config.ini#L73-L85)
 - [config_testnet.ini:69-73](file://share/vizd/config/config_testnet.ini#L69-L73)
-- [config_witness.ini:68-68](file://share/vizd/config/config_witness.ini#L68-L68)
+- [config_witness.ini:72-84](file://share/vizd/config/config_witness.ini#L72-L84)
 - [plugin.md:14-18](file://documentation/plugin.md#L14-L18)
 
 ### Performance Tuning Parameters
@@ -279,7 +284,7 @@ Key tunables include:
 These parameters influence throughput and stability under load.
 
 **Section sources**
-- [config.ini:13-47](file://share/vizd/config/config.ini#L13-L47)
+- [config.ini:17-72](file://share/vizd/config/config.ini#L17-L72)
 - [config.ini:49-67](file://share/vizd/config/config.ini#L49-L67)
 
 ### Logging Configuration
@@ -289,9 +294,62 @@ Logging is configured via INI sections for appenders and loggers. The node expos
 - Logger levels and appender assignments
 
 **Section sources**
-- [config.ini:111-130](file://share/vizd/config/config.ini#L111-L130)
+- [config.ini:118-136](file://share/vizd/config/config.ini#L118-L136)
 - [main.cpp:167-191](file://programs/vizd/main.cpp#L167-L191)
 - [main.cpp:211-289](file://programs/vizd/main.cpp#L211-L289)
+
+### Snapshot Configuration and Default Directory Behavior
+
+**Updated** The snapshot plugin now uses a data-directory-based default location instead of the current working directory fallback:
+
+#### Default Directory Behavior
+- **New default**: When `snapshot-dir` is not explicitly configured, the system now defaults to `<data_dir>/snapshots` instead of the current working directory
+- **Data directory resolution**: The data directory is determined by the application's data_dir() method, typically located at `/var/lib/vizd` for production containers
+- **Automatic creation**: The default snapshot directory is automatically created if it doesn't exist
+
+#### Enhanced Trusted Peer Integration
+The snapshot plugin now includes comprehensive trusted peer configuration options:
+
+- **Trusted snapshot peers**: List of seed nodes that can serve snapshots to this node
+- **Snapshot serving restrictions**: Control who can download snapshots from this node
+- **Anti-spam protection**: Built-in rate limiting and connection management for snapshot serving
+- **DLT mode support**: Optimized for distributed ledger technology nodes without full block history
+
+#### Configuration Examples
+
+**Basic snapshot configuration**:
+```ini
+plugin = snapshot
+snapshot-dir = /var/lib/vizd/snapshots
+snapshot-every-n-blocks = 2400
+snapshot-max-age-days = 2
+```
+
+**Trusted peer configuration**:
+```ini
+plugin = snapshot
+sync-snapshot-from-trusted-peer = true
+trusted-snapshot-peer = 185.45.192.155:8092
+trusted-snapshot-peer = 62.109.17.82:8092
+snapshot-dir = /var/lib/vizd/snapshots
+```
+
+**Snapshot serving configuration**:
+```ini
+plugin = snapshot
+allow-snapshot-serving = true
+allow-snapshot-serving-only-trusted = false
+snapshot-serve-endpoint = 0.0.0.0:8092
+snapshot-dir = /var/lib/vizd/snapshots
+```
+
+**Section sources**
+- [plugin.cpp:2974-2983](file://plugins/snapshot/plugin.cpp#L2974-L2983)
+- [plugin.cpp:3044-3050](file://plugins/snapshot/plugin.cpp#L3044-L3050)
+- [plugin.cpp:3070-3090](file://plugins/snapshot/plugin.cpp#L3070-L3090)
+- [plugin.cpp:352-355](file://plugins/chain/plugin.cpp#L352-L355)
+- [application.cpp:298-300](file://thirdparty/appbase/application.cpp#L298-L300)
+- [snapshot-plugin.md:1-365](file://documentation/snapshot-plugin.md#L1-L365)
 
 ### Docker-Specific Configuration
 - Production image:
@@ -350,10 +408,12 @@ These are set via CMake flags in Dockerfiles and documented in the building guid
   - Use the main configuration template and production Docker image.
   - Persist data via mounted volumes.
   - Optionally override endpoints and seed nodes via environment variables.
+  - **Updated**: Snapshot directory will default to `/var/lib/vizd/snapshots` if not explicitly configured.
 
 - Testnet setup
   - Use the testnet Docker image and configuration.
   - The testnet image enables testnet build flags and uses a testnet snapshot.
+  - **Updated**: Trusted snapshot peers are pre-configured for testnet bootstrap.
 
 - Development environment
   - Use the debug configuration templates to enable additional plugins and adjust logging.
@@ -362,11 +422,12 @@ These are set via CMake flags in Dockerfiles and documented in the building guid
 - Witness node
   - Use the witness configuration template and bind RPC endpoints to localhost.
   - Provide witness name and private key via environment variables.
+  - **Updated**: Snapshot configuration supports witness-aware deferral to prevent missed production slots.
 
 **Section sources**
-- [config.ini:1-130](file://share/vizd/config/config.ini#L1-L130)
+- [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
 - [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_witness.ini:1-107](file://share/vizd/config/config_witness.ini#L1-L107)
+- [config_witness.ini:1-138](file://share/vizd/config/config_witness.ini#L1-L138)
 - [config_debug.ini:1-126](file://share/vizd/config/config_debug.ini#L1-L126)
 - [config_mongo.ini:1-135](file://share/vizd/config/config_mongo.ini#L1-L135)
 - [Dockerfile-production:74-87](file://share/vizd/docker/Dockerfile-production#L74-L87)
@@ -378,6 +439,7 @@ Configuration dependencies and interactions:
 - The node binary depends on the configuration loader to parse logging and runtime settings.
 - Docker entrypoint depends on environment variables to inject CLI flags.
 - Network behavior is influenced by both configuration and compiled-in network constants.
+- **Updated**: Snapshot configuration depends on the application's data_dir() method for default directory resolution.
 
 ```mermaid
 graph LR
@@ -386,17 +448,21 @@ Loader --> NodeMain["Node Main<br/>main.cpp"]
 Entrypoint["Entrypoint Script<br/>vizd.sh"] --> NodeMain
 NodeMain --> Logging["Logging System"]
 NodeMain --> Network["Network Constants<br/>config.hpp"]
+NodeMain --> DataDir["Data Directory<br/>appbase::app().data_dir()"]
+DataDir --> SnapshotDefault["Snapshot Default Dir<br/><data_dir>/snapshots"]
 ```
 
 **Diagram sources**
 - [main.cpp:194-289](file://programs/vizd/main.cpp#L194-L289)
 - [vizd.sh:13-81](file://share/vizd/vizd.sh#L13-L81)
 - [config.hpp:54-56](file://libraries/network/include/graphene/network/config.hpp#L54-L56)
+- [application.cpp:298-300](file://thirdparty/appbase/application.cpp#L298-L300)
 
 **Section sources**
 - [main.cpp:194-289](file://programs/vizd/main.cpp#L194-L289)
 - [vizd.sh:13-81](file://share/vizd/vizd.sh#L13-L81)
 - [config.hpp:54-56](file://libraries/network/include/graphene/network/config.hpp#L54-L56)
+- [application.cpp:298-300](file://thirdparty/appbase/application.cpp#L298-L300)
 
 ## Performance Considerations
 - Tune read/write lock wait parameters to balance latency and contention.
@@ -404,6 +470,7 @@ NodeMain --> Network["Network Constants<br/>config.hpp"]
 - Adjust shared memory size and growth thresholds to minimize resizing overhead.
 - Limit plugin notifications on push transactions to improve responsiveness.
 - Select appropriate node type (low-memory) for constrained environments.
+- **Updated**: Configure snapshot directory on fast storage for optimal snapshot creation and loading performance.
 
 ## Troubleshooting Guide
 
@@ -416,6 +483,30 @@ NodeMain --> Network["Network Constants<br/>config.hpp"]
 - **required-participation calculation**: The `required-participation` parameter now uses the formula `33 * CHAIN_1_PERCENT` instead of a hardcoded percentage. With `CHAIN_1_PERCENT` equal to 100 (representing 1% in the 10000-point scale), this calculates to 3300, which represents 33% participation threshold.
 
 - **Witness production failures**: If witness production is failing, check the participation threshold calculation. The system now requires at least 33% of witnesses to be participating for block production to continue.
+
+### Snapshot Configuration Issues
+
+**Updated** Common snapshot configuration issues and validation techniques:
+
+- **Snapshot directory default behavior**
+  - Verify that the data directory is properly mounted in Docker containers
+  - Check that `/var/lib/vizd/snapshots` exists and has proper permissions
+  - Use explicit `snapshot-dir` configuration when the default location is not suitable
+
+- **Trusted peer configuration**
+  - Verify that trusted snapshot peers are reachable and serving snapshots
+  - Check firewall rules for port 8092 (snapshot serving)
+  - Use `test-trusted-seeds` option to diagnose connectivity issues
+
+- **Snapshot auto-discovery**
+  - Ensure snapshot files follow the naming convention `snapshot-block-NNNNN.vizjson`
+  - Verify that snapshot files are readable and not corrupted
+  - Check that the snapshot directory contains valid snapshot files
+
+- **Snapshot serving issues**
+  - Verify that `allow-snapshot-serving` is properly configured
+  - Check anti-spam settings if clients are being rate-limited
+  - Monitor snapshot serving logs for connection errors
 
 Common configuration issues and validation techniques:
 - Logging misconfiguration
@@ -436,19 +527,26 @@ Common configuration issues and validation techniques:
   - Verify witness name and private key are correctly configured.
   - Check participation threshold calculations using the CHAIN_1_PERCENT constant.
   - Monitor for "low participation" errors indicating below-threshold witness participation.
+- **Updated**: Snapshot configuration issues
+  - Verify snapshot directory permissions and disk space
+  - Check snapshot file integrity and naming conventions
+  - Validate trusted peer connectivity and snapshot availability
 
 **Section sources**
 - [main.cpp:167-191](file://programs/vizd/main.cpp#L167-L191)
 - [main.cpp:211-289](file://programs/vizd/main.cpp#L211-L289)
-- [config.ini:111-130](file://share/vizd/config/config.ini#L111-L130)
+- [config.ini:118-136](file://share/vizd/config/config.ini#L118-L136)
 - [plugin.md:14-18](file://documentation/plugin.md#L14-L18)
 - [vizd.sh:44-53](file://share/vizd/vizd.sh#L44-L53)
 - [witness.cpp:125-130](file://plugins/witness/witness.cpp#L125-L130)
 - [config_testnet.hpp:57-59](file://libraries/protocol/include/graphene/protocol/config_testnet.hpp#L57-L59)
 - [config.hpp:57-59](file://libraries/protocol/include/graphene/protocol/config.hpp#L57-L59)
+- [plugin.cpp:2974-2983](file://plugins/snapshot/plugin.cpp#L2974-L2983)
+- [plugin.cpp:3044-3050](file://plugins/snapshot/plugin.cpp#L3044-L3050)
+- [plugin.cpp:3070-3090](file://plugins/snapshot/plugin.cpp#L3070-L3090)
 
 ## Conclusion
-VIZ CPP Node offers a flexible configuration system combining INI-based settings, program options, and environment variable overrides. Different node types and deployment modes are supported through configuration templates and Docker images. Proper tuning of performance and logging parameters ensures reliable operation across production, testnet, and development environments.
+VIZ CPP Node offers a flexible configuration system combining INI-based settings, program options, and environment variable overrides. Different node types and deployment modes are supported through configuration templates and Docker images. Proper tuning of performance and logging parameters ensures reliable operation across production, testnet, and development environments. **Updated**: The snapshot configuration system now provides enhanced default behavior with data-directory-based snapshot directories and comprehensive trusted peer integration for improved bootstrap and distribution capabilities.
 
 ## Appendices
 
@@ -485,19 +583,36 @@ VIZ CPP Node offers a flexible configuration system combining INI-based settings
   - log.console_appender.*
   - log.file_appender.*
   - logger.*
+- **Updated** Snapshot
+  - snapshot-at-block (default: 0)
+  - snapshot-every-n-blocks (default: 0)
+  - snapshot-dir (default: `<data_dir>/snapshots`)
+  - snapshot-max-age-days (default: 0)
+  - allow-snapshot-serving (default: false)
+  - allow-snapshot-serving-only-trusted (default: false)
+  - snapshot-serve-endpoint (default: 0.0.0.0:8092)
+  - trusted-snapshot-peer (repeatable)
+  - sync-snapshot-from-trusted-peer (default: false)
+  - enable-stalled-sync-detection (default: false)
+  - stalled-sync-timeout-minutes (default: 5)
+  - test-trusted-seeds (default: false)
+  - dlt-block-log-max-blocks (default: 100000)
 
 **Updated** Witness configuration defaults now use improved defaults for better network reliability and accurate participation calculations.
 
 **Section sources**
-- [config.ini:1-130](file://share/vizd/config/config.ini#L1-L130)
+- [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
 - [config_testnet.ini:1-132](file://share/vizd/config/config_testnet.ini#L1-L132)
-- [config_witness.ini:1-107](file://share/vizd/config/config_witness.ini#L1-L107)
+- [config_witness.ini:1-138](file://share/vizd/config/config_witness.ini#L1-L138)
 - [config_mongo.ini:1-135](file://share/vizd/config/config_mongo.ini#L1-L135)
 - [config_debug.ini:1-126](file://share/vizd/config/config_debug.ini#L1-L126)
 - [config_debug_mongo.ini:1-135](file://share/vizd/config/config_debug_mongo.ini#L1-L135)
 - [witness.cpp:125-130](file://plugins/witness/witness.cpp#L125-L130)
 - [config_testnet.hpp:57-59](file://libraries/protocol/include/graphene/protocol/config_testnet.hpp#L57-L59)
 - [config.hpp:57-59](file://libraries/protocol/include/graphene/protocol/config.hpp#L57-L59)
+- [plugin.cpp:2974-2983](file://plugins/snapshot/plugin.cpp#L2974-L2983)
+- [plugin.cpp:3044-3050](file://plugins/snapshot/plugin.cpp#L3044-L3050)
+- [plugin.cpp:3070-3090](file://plugins/snapshot/plugin.cpp#L3070-L3090)
 
 ### Appendix B: Docker Environment Variables
 - VIZD_SEED_NODES
@@ -527,3 +642,21 @@ This change ensures more accurate participation calculations and consistent beha
 - [witness.cpp:125-130](file://plugins/witness/witness.cpp#L125-L130)
 - [config_testnet.hpp:57-59](file://libraries/protocol/include/graphene/protocol/config_testnet.hpp#L57-L59)
 - [config.hpp:57-59](file://libraries/protocol/include/graphene/protocol/config.hpp#L57-L59)
+
+### Appendix D: Snapshot Configuration Best Practices
+
+**New** Best practices for snapshot configuration:
+
+- **Default directory behavior**: The system now defaults to `<data_dir>/snapshots` instead of current working directory
+- **Volume mounting**: Ensure `/var/lib/vizd` volume is properly mounted in Docker containers
+- **Trusted peer selection**: Choose reliable snapshot peers with good uptime and bandwidth
+- **Anti-spam configuration**: Use `allow-snapshot-serving-only-trusted` for private networks
+- **Monitoring**: Regularly check snapshot directory disk usage and cleanup old snapshots
+- **Security**: Restrict snapshot serving to trusted peers in production environments
+- **Performance**: Store snapshots on fast storage devices for optimal loading performance
+
+**Section sources**
+- [plugin.cpp:2974-2983](file://plugins/snapshot/plugin.cpp#L2974-L2983)
+- [plugin.cpp:3044-3050](file://plugins/snapshot/plugin.cpp#L3044-L3050)
+- [plugin.cpp:3070-3090](file://plugins/snapshot/plugin.cpp#L3070-L3090)
+- [snapshot-plugin.md:1-365](file://documentation/snapshot-plugin.md#L1-L365)

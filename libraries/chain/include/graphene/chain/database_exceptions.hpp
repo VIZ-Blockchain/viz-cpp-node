@@ -84,6 +84,8 @@ namespace graphene {
 
         FC_DECLARE_DERIVED_EXCEPTION(block_too_old_exception, graphene::chain::chain_exception, 4080100, "block is too old for fork database")
 
+        FC_DECLARE_DERIVED_EXCEPTION(deferred_resize_exception, graphene::chain::chain_exception, 4080200, "shared memory resize deferred, retry block")
+
         FC_DECLARE_DERIVED_EXCEPTION(unknown_hardfork_exception, graphene::chain::chain_exception, 4090000, "chain attempted to apply unknown hardfork")
 
         FC_DECLARE_DERIVED_EXCEPTION(plugin_exception, graphene::chain::chain_exception, 4100000, "plugin exception")

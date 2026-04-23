@@ -567,17 +567,17 @@ namespace graphene { namespace chain {
 
             uint64_t max_mem = max_memory();
             uint64_t free_mem_before = free_memory();
+            uint64_t used_mem_before = max_mem - free_mem_before;
             size_t new_max = max_mem + _inc_shared_memory_size;
 
             if (!immediate) {
                 // Deferred mode: just set the flag. The actual resize will be
                 // performed by apply_pending_resize() at a safe point where
                 // no other threads hold read locks or lockless references.
-                wlog(
-                    "Shared memory resize deferred on block ${block}: will grow to ${mem}M "
-                    "(currently ${free_before}M free, ${max_before}M total)",
+                ilog(
+                    "\033[33mShared memory resize deferred on block ${block}: actual data ${used_before}M / current ${max_before}M -> will grow to ${mem}M\033[0m",
                     ("block", current_block_num)("mem", new_max / (1024 * 1024))
-                    ("free_before", free_mem_before / (1024 * 1024))("max_before", max_mem / (1024 * 1024)));
+                    ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem / (1024 * 1024)));
                 _pending_resize = true;
                 _pending_resize_target = new_max;
                 return true;
@@ -585,21 +585,23 @@ namespace graphene { namespace chain {
 
             // Immediate mode: used during reindex when we already hold an
             // exclusive write lock and no API threads are running.
-            wlog(
-                "Memory is almost full on block ${block}, increasing to ${mem}M (was ${free_before}M free, ${max_before}M total)",
+            ilog(
+                "\033[33mShared memory growing on block ${block}: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
                 ("block", current_block_num)("mem", new_max / (1024 * 1024))
-                ("free_before", free_mem_before / (1024 * 1024))("max_before", max_mem / (1024 * 1024)));
+                ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem / (1024 * 1024)));
             resize(new_max);
 
             uint64_t free_mem = free_memory();
             uint64_t reserved_mem = reserved_memory();
+            uint64_t used_mem_after = new_max - free_mem;
 
             if (free_mem > reserved_mem) {
                 free_mem -= reserved_mem;
             }
 
             uint32_t free_mb = uint32_t(free_mem / (1024 * 1024));
-            wlog("Free memory is now ${free}M", ("free", free_mb));
+            ilog("\033[33mShared memory grow complete: actual data ${used_after}M / new ${max_after}M (free ${free}M)\033[0m",
+                 ("used_after", used_mem_after / (1024 * 1024))("max_after", new_max / (1024 * 1024))("free", free_mb));
             _last_free_gb_printed = free_mb / 1024;
             return true;
         }
@@ -621,17 +623,24 @@ namespace graphene { namespace chain {
                 _pending_resize = false;
                 _pending_resize_target = 0;
 
-                wlog("Applying deferred shared memory resize to ${mem}M",
+                uint64_t max_mem_before = max_memory();
+                uint64_t free_mem_before = free_memory();
+                uint64_t used_mem_before = max_mem_before - free_mem_before;
+
+                ilog("\033[33mApplying deferred shared memory resize: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
+                     ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem_before / (1024 * 1024))
                      ("mem", target / (1024 * 1024)));
                 resize(target);
 
                 uint64_t free_mem = free_memory();
                 uint64_t reserved_mem = reserved_memory();
+                uint64_t used_mem_after = target - free_mem;
                 if (free_mem > reserved_mem) {
                     free_mem -= reserved_mem;
                 }
                 uint32_t free_mb = uint32_t(free_mem / (1024 * 1024));
-                wlog("Deferred resize complete. Free memory is now ${free}M", ("free", free_mb));
+                ilog("\033[33mDeferred shared memory grow complete: actual data ${used_after}M / new ${max_after}M (free ${free}M)\033[0m",
+                     ("used_after", used_mem_after / (1024 * 1024))("max_after", target / (1024 * 1024))("free", free_mb));
                 _last_free_gb_printed = free_mb / 1024;
             });
         }
@@ -1112,7 +1121,7 @@ namespace graphene { namespace chain {
             // internally, which waits for all readers to finish first.
             apply_pending_resize();
 
-            bool result;
+            bool result = false;
             with_strong_write_lock([&]() {
                 detail::without_pending_transactions(*this, skip, std::move(_pending_tx), [&]() {
                     try {
@@ -1125,16 +1134,17 @@ namespace graphene { namespace chain {
                             throw e;
                         }
                         // Out of shared memory. Schedule a deferred resize.
-                        // Return false (block not applied) instead of throwing so that:
-                        //   - the P2P layer does not penalise / disconnect the peer;
-                        //   - witness slot-miss is logged but the node stays connected.
+                        // Throw a specific exception so the P2P layer can distinguish
+                        // this transient condition from a permanently invalid block.
                         // apply_pending_resize() at the top of the next push_block() call
                         // will perform the resize safely before any database access, and
                         // the missed block will be re-received during normal sync.
                         wlog("Received bad_alloc exception. Scheduling deferred resize.");
                         set_reserved_memory(free_memory());
                         _resize(new_block.block_num()); // deferred (immediate=false by default)
-                        result = false;
+                        FC_THROW_EXCEPTION(deferred_resize_exception,
+                            "Shared memory exhausted on block ${block}, resize deferred. Retry next block.",
+                            ("block", new_block.block_num()));
                     }
                 });
             });
@@ -1219,16 +1229,17 @@ namespace graphene { namespace chain {
                     // Block is at or before head but on a different fork.
                     // If the block's parent is not in the fork_db, we can never
                     // link it (the fork diverged before the fork_db's window).
-                    // Silently reject to prevent unlinkable_block_exception from
-                    // propagating to the P2P layer, which would trigger a sync
-                    // restart loop (the sync peer keeps sending blocks from the
-                    // other fork, each one fails to link, each failure restarts
-                    // sync, ad infinitum).
+                    // Throw unlinkable_block_exception so the P2P layer can
+                    // soft-ban the peer sending blocks from this dead fork.
+                    // This is NOT a micro-fork: micro-fork blocks have parents
+                    // that ARE in fork_db and fall through to normal push logic.
                     if (new_block.previous != block_id_type() &&
                         !_fork_db.is_known_block(new_block.previous)) {
                         wlog("Rejecting block ${n} from a different fork: parent not in fork_db (head=${h})",
                              ("n", new_block.block_num())("h", head_block_num()));
-                        return false;
+                        FC_THROW_EXCEPTION(unlinkable_block_exception,
+                                           "Block from a different fork whose parent is not in fork_db (block ${n}, head=${h})",
+                                           ("n", new_block.block_num())("h", head_block_num()));
                     }
                     // Parent IS in fork_db — fall through to normal push logic
                     // which may trigger a fork switch (if the other fork has
@@ -1268,6 +1279,7 @@ namespace graphene { namespace chain {
                          ("n", new_block.block_num())("h", head_block_num()));
                     return false;
                 }
+
 
                 if (!(skip & skip_fork_db)) {
                     shared_ptr<fork_item> new_head = _fork_db.push_block(new_block);
@@ -1358,8 +1370,6 @@ namespace graphene { namespace chain {
                                         _fork_db.remove((*ritr)->data.id());
                                         ++ritr;
                                     }
-                                    _fork_db.set_head(branches.second.front());
-
                                     // pop all blocks from the bad fork
                                     while (head_block_id() !=
                                            branches.second.back()->data.previous) {
@@ -1374,9 +1384,27 @@ namespace graphene { namespace chain {
                                         apply_block((*ritr)->data, skip);
                                         session.push();
                                     }
+
+                                    // Restore fork_db head to the original chain tip.
+                                    // pop_block() above moved _head backwards via
+                                    // _fork_db.pop_block(), but apply_block() does not
+                                    // advance it.  Without this, _head stays at the fork
+                                    // point instead of the original chain tip.
+                                    _fork_db.set_head(branches.second.front());
+
                                     throw *except;
                                 }
                             }
+
+                            // After successfully switching to the new fork, update the
+                            // fork_db head to point to the new chain tip.  pop_block()
+                            // moves _head backwards via _fork_db.pop_block(), but
+                            // apply_block() does NOT advance it forward.  Without this,
+                            // _head stays at the fork point, causing fetch_branch_from()
+                            // to fail when get_blockchain_synopsis() later tries to
+                            // locate the current head_block_id().
+                            _fork_db.set_head(new_head);
+
                             return true;
                         } else {
                             return false;

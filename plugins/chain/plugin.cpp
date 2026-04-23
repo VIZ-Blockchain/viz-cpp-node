@@ -103,7 +103,8 @@ namespace chain {
     bool plugin::plugin_impl::accept_block(const protocol::signed_block &block, bool currently_syncing, uint32_t skip) {
         if (currently_syncing) {
             if (!sync_start_logged) {
-                ilog("\033[92m>>> Syncing Blockchain started from block #${n}\033[0m", ("n", block.block_num()));
+                ilog("\033[92m>>> Syncing Blockchain started from block #${n} (head: ${head})\033[0m",
+                     ("n", block.block_num())("head", db.head_block_num()));
                 sync_start_logged = true;
             }
 
@@ -112,6 +113,10 @@ namespace chain {
                      ("t", block.timestamp)("n", block.block_num())("p", block.witness));
             }
         } else {
+            if (sync_start_logged) {
+                ilog("\033[92mSync mode ended: received normal block #${n} (head: ${head}), sync_start_logged reset\033[0m",
+                     ("n", block.block_num())("head", db.head_block_num()));
+            }
             sync_start_logged = false; // reset guard when not syncing
         }
 
@@ -344,39 +349,41 @@ namespace chain {
         // Auto-discover latest snapshot if --snapshot-auto-latest is set and --snapshot is not
         if (my->snapshot_path.empty() && options.count("snapshot-auto-latest") && options.at("snapshot-auto-latest").as<bool>()) {
             std::string snap_dir = options.count("snapshot-dir") ? options.at("snapshot-dir").as<std::string>() : "";
-            if (!snap_dir.empty()) {
-                fc::path dir_path(snap_dir);
-                if (fc::exists(dir_path) && fc::is_directory(dir_path)) {
-                    fc::path best_path;
-                    uint32_t best_block = 0;
-                    boost::filesystem::directory_iterator end_itr;
-                    for (boost::filesystem::directory_iterator itr(dir_path); itr != end_itr; ++itr) {
-                        if (boost::filesystem::is_regular_file(itr->status())) {
-                            std::string filename = itr->path().filename().string();
-                            std::string ext = itr->path().extension().string();
-                            if (ext == ".vizjson" || ext == ".json") {
-                                auto pos = filename.find("snapshot-block-");
-                                if (pos != std::string::npos) {
-                                    try {
-                                        std::string num_str = filename.substr(pos + 15);
-                                        auto dot_pos = num_str.find('.');
-                                        if (dot_pos != std::string::npos) num_str = num_str.substr(0, dot_pos);
-                                        uint32_t block_num = static_cast<uint32_t>(std::stoul(num_str));
-                                        if (block_num > best_block) {
-                                            best_block = block_num;
-                                            best_path = fc::path(itr->path().string());
-                                        }
-                                    } catch (...) {}
-                                }
+            // If snapshot-dir is not set, default to <data_dir>/snapshots
+            if (snap_dir.empty()) {
+                snap_dir = (appbase::app().data_dir() / "snapshots").string();
+            }
+            fc::path dir_path(snap_dir);
+            if (fc::exists(dir_path) && fc::is_directory(dir_path)) {
+                fc::path best_path;
+                uint32_t best_block = 0;
+                boost::filesystem::directory_iterator end_itr;
+                for (boost::filesystem::directory_iterator itr(dir_path); itr != end_itr; ++itr) {
+                    if (boost::filesystem::is_regular_file(itr->status())) {
+                        std::string filename = itr->path().filename().string();
+                        std::string ext = itr->path().extension().string();
+                        if (ext == ".vizjson" || ext == ".json") {
+                            auto pos = filename.find("snapshot-block-");
+                            if (pos != std::string::npos) {
+                                try {
+                                    std::string num_str = filename.substr(pos + 15);
+                                    auto dot_pos = num_str.find('.');
+                                    if (dot_pos != std::string::npos) num_str = num_str.substr(0, dot_pos);
+                                    uint32_t block_num = static_cast<uint32_t>(std::stoul(num_str));
+                                    if (block_num > best_block) {
+                                        best_block = block_num;
+                                        best_path = fc::path(itr->path().string());
+                                    }
+                                } catch (...) {}
                             }
                         }
                     }
-                    if (!best_path.string().empty()) {
-                        my->snapshot_path = best_path.string();
-                        ilog("Chain plugin: auto-discovered latest snapshot: ${p}", ("p", my->snapshot_path));
-                    } else {
-                        wlog("Chain plugin: --snapshot-auto-latest but no snapshots found in ${d}", ("d", snap_dir));
-                    }
+                }
+                if (!best_path.string().empty()) {
+                    my->snapshot_path = best_path.string();
+                    ilog("Chain plugin: auto-discovered latest snapshot: ${p}", ("p", my->snapshot_path));
+                } else {
+                    wlog("Chain plugin: --snapshot-auto-latest but no snapshots found in ${d}", ("d", snap_dir));
                 }
             }
         }

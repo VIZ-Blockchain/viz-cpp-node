@@ -44,5 +44,7 @@ namespace graphene {
 
         FC_DECLARE_DERIVED_EXCEPTION(unlinkable_block_exception, graphene::network::net_exception, 90006, "unlinkable block")
 
+        FC_DECLARE_DERIVED_EXCEPTION(deferred_resize_exception, graphene::network::net_exception, 90007, "shared memory resize deferred, retry block")
+
     }
 }

@@ -21,6 +21,7 @@ Full specification and implementation checklist for building VIZ blockchain clie
 | [plugins.md](plugins.md) | All node plugins, dependencies, status, JSON-RPC method tables |
 | [block-processing.md](block-processing.md) | Block application flow, pending transactions, postponed tx mechanism |
 | [shared-memory.md](shared-memory.md) | Shared memory architecture, locking model, resize workflow, config parameters, corruption risks |
+| [block-log-spec.md](block-log-spec.md) | Block log binary format, index files, operation serialization, **tools: reader/viewer, bitmask, search & export** |
 | [fork-collision-hardfork-proposal.md](fork-collision-hardfork-proposal.md) | Fork collision analysis, HF12 proposal for consensus improvements |
 | [consensus-emergency-params.md](consensus-emergency-params.md) | Emergency restart parameters (enable-stale-production, required-participation, fork_db) & micro-fork risks |
 | [emergency-consensus-review.md](emergency-consensus-review.md) | HF12 implementation review: failure/rollback procedures, threat model, test matrix |

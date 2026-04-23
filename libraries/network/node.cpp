@@ -76,6 +76,11 @@
 
 #define P2P_IN_DEDICATED_THREAD 1
 
+// ANSI color codes for console ban notifications
+#define CLOG_RED    "\033[91m"
+#define CLOG_ORANGE "\033[33m"
+#define CLOG_RESET  "\033[0m"
+
 #define INVOCATION_COUNTER(name) \
     static unsigned total_ ## name ## _counter = 0; \
     static unsigned active_ ## name ## _counter = 0; \
@@ -586,6 +591,15 @@ namespace graphene {
                 std::set<node_id_t> _allowed_peers;
 #endif // ENABLE_P2P_DEBUGGING_API
 
+                // Trusted peer IPs for reduced soft-ban duration (5 min vs 1 hour).
+                // Populated from trusted-snapshot-peer config.  Stored as
+                // 32-bit raw IP addresses for O(1) lookup.
+                std::set<uint32_t> _trusted_peer_ips;
+
+                // Soft-ban durations
+                static constexpr uint32_t SOFT_BAN_DURATION_SEC = 3600;        // 1 hour (default)
+                static constexpr uint32_t TRUSTED_SOFT_BAN_DURATION_SEC = 300; // 5 minutes (trusted peers)
+
                 bool _node_is_shutting_down; // set to true when we begin our destructor, used to prevent us from starting new tasks while we're shutting down
 
                 unsigned _maximum_number_of_blocks_to_handle_at_one_time;
@@ -816,8 +830,13 @@ namespace graphene {
                 node_id_t get_node_id() const;
 
                 void set_allowed_peers(const std::vector<node_id_t> &allowed_peers);
+                void set_trusted_peer_endpoints(const std::vector<std::string> &endpoints);
+                uint32_t get_soft_ban_duration(peer_connection *peer) const;
+                bool is_trusted_peer(peer_connection *peer) const;
 
                 void clear_peer_database();
+
+                void resync();
 
                 void set_total_bandwidth_limit(uint32_t upload_bytes_per_second, uint32_t download_bytes_per_second);
 
@@ -2410,7 +2429,8 @@ namespace graphene {
                     if (!originating_peer->we_need_sync_items_from_peer &&
                         !fetch_blockchain_item_ids_message_received.blockchain_synopsis.empty() &&
                         !_delegate->has_item(peers_last_item_seen)) {
-                        dlog("sync: restarting sync with peer ${peer}", ("peer", originating_peer->get_remote_endpoint()));
+                        ilog("sync: restarting sync with peer ${peer} because we don't have their last item (peer is in sync with us)",
+                             ("peer", originating_peer->get_remote_endpoint()));
                         start_synchronizing_with_peer(originating_peer->shared_from_this());
                     }
                 } else {
@@ -2421,7 +2441,8 @@ namespace graphene {
                     if (!originating_peer->we_need_sync_items_from_peer &&
                         !fetch_blockchain_item_ids_message_received.blockchain_synopsis.empty() &&
                         !_delegate->has_item(peers_last_item_seen)) {
-                        dlog("sync: restarting sync with peer ${peer}", ("peer", originating_peer->get_remote_endpoint()));
+                        ilog("sync: restarting sync with peer ${peer} because we don't have their last item (peer is out of sync with us)",
+                             ("peer", originating_peer->get_remote_endpoint()));
                         start_synchronizing_with_peer(originating_peer->shared_from_this());
                     }
                 }
@@ -3118,6 +3139,7 @@ namespace graphene {
                 dlog("in send_sync_block_to_node_delegate()");
                 bool client_accepted_block = false;
                 bool discontinue_fetching_blocks_from_peer = false;
+                bool deferred_resize = false;
 
                 fc::oexception handle_message_exception;
 
@@ -3127,13 +3149,33 @@ namespace graphene {
                             "p2p pushing sync block #${block_num} ${block_hash}",
                             ("block_num", block_message_to_send.block.block_num())
                                     ("block_hash", block_message_to_send.block_id));
-                    _delegate->handle_block(block_message_to_send, true, contained_transaction_message_ids);
-                    ilog("Successfully pushed sync block ${num} (id:${id})",
-                            ("num", block_message_to_send.block.block_num())
-                                    ("id", block_message_to_send.block_id));
+                    bool accepted = _delegate->handle_block(block_message_to_send, true, contained_transaction_message_ids);
+                    if (accepted) {
+                        ilog("Successfully pushed sync block ${num} (id:${id})",
+                                ("num", block_message_to_send.block.block_num())
+                                        ("id", block_message_to_send.block_id));
+                    } else {
+                        // Block returned false — not applied as new head, but not an error
+                        // either.  This covers: block already on chain, micro-fork block
+                        // added to fork_db without switching, or block ahead with unknown
+                        // parent during sync.  Dead-fork blocks (parent not in fork_db,
+                        // at/below head) throw unlinkable_block_exception from _push_block
+                        // and are handled by the catchers below with proper soft-ban.
+                        ilog("Sync block #${num} not applied (already on chain, micro-fork, or parent unknown ahead)",
+                             ("num", block_message_to_send.block.block_num()));
+                    }
                     _most_recent_blocks_accepted.push_back(block_message_to_send.block_id);
 
                     client_accepted_block = true;
+                }
+                catch (const deferred_resize_exception &e) {
+                    // Shared memory resize is in progress. Do NOT mark the block as accepted.
+                    // The block was not applied (bad_alloc prevented it). Do NOT soft-ban the
+                    // peer — this is a local condition, not a peer error.  We must restart
+                    // sync so the missed block is re-fetched after resize completes.
+                    wlog("Sync block #${num} deferred due to shared memory resize, will restart sync to re-fetch",
+                         ("num", block_message_to_send.block.block_num()));
+                    deferred_resize = true;
                 }
                 catch (const block_older_than_undo_history &e) {
                     fc_wlog(fc::logger::get("sync"),
@@ -3149,6 +3191,26 @@ namespace graphene {
                                     ("e", (fc::exception)e));
                     handle_message_exception = e;
                     discontinue_fetching_blocks_from_peer = true;
+                }
+                catch (const unlinkable_block_exception &e) {
+                    // Block from a dead fork (parent not in fork_db) or an ahead-of-head
+                    // block that slipped past early rejection.  Distinguish ahead vs. at/below
+                    // head: at/below head → soft-ban (stale fork); ahead → restart sync
+                    // (we may be behind after a resize or fork switch).
+                    uint32_t peer_block_num = block_message_to_send.block.block_num();
+                    uint32_t our_head = _delegate->get_block_number(_delegate->get_head_block_id());
+                    if (peer_block_num <= our_head) {
+                        wlog("Sync block #${num} is from a dead fork (at or below our head #${head}), will soft-ban peer",
+                                ("num", peer_block_num)("head", our_head));
+                        handle_message_exception = e;
+                        discontinue_fetching_blocks_from_peer = true;
+                    } else {
+                        // Block is ahead — we may be behind.  Restart sync instead of
+                        // soft-banning so the missing blocks can be fetched sequentially.
+                        wlog("Sync block #${num} is unlinkable and ahead of our head #${head}, restarting sync",
+                             ("num", peer_block_num)("head", our_head));
+                        deferred_resize = true; // reuse flag to trigger sync restart below
+                    }
                 }
                 catch (const fc::canceled_exception &) {
                     throw;
@@ -3215,7 +3277,8 @@ namespace graphene {
                             // find out about the new item.
                             if (!peer->peer_needs_sync_items_from_us &&
                                 !peer->we_need_sync_items_from_peer) {
-                                dlog("We will be restarting synchronization with peer ${peer}", ("peer", peer->get_remote_endpoint()));
+                                ilog("Sync block #${num} accepted: peer ${peer} has empty lists and is in sync, will restart sync to notify of new item",
+                                     ("num", block_message_to_send.block.block_num())("peer", peer->get_remote_endpoint()));
                                 peers_we_need_to_sync_to.insert(peer);
                             }
                         } else if (!disconnecting_this_peer) {
@@ -3243,29 +3306,57 @@ namespace graphene {
                             }
                         }
                     }
-                } else {
-                    // invalid message received
+                } else if (!deferred_resize) {
+                    // invalid message received (not a deferred resize)
                     for (const peer_connection_ptr &peer : _active_connections) {
                         ASSERT_TASK_NOT_PREEMPTED(); // don't yield while iterating over _active_connections
 
                         if (peer->ids_of_items_being_processed.find(block_message_to_send.block_id) !=
                             peer->ids_of_items_being_processed.end()) {
                             if (discontinue_fetching_blocks_from_peer) {
-                                wlog("Soft-banning peer ${endpoint} for 1 hour: on a fork that's too old",
-                                        ("endpoint", peer->get_remote_endpoint()));
+                                wlog("Soft-banning peer ${endpoint} for ${dur}s: on a fork that's too old",
+                                        ("endpoint", peer->get_remote_endpoint())
+                                        ("dur", get_soft_ban_duration(peer.get())));
+                                ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: sync block on fork too old (block #${num})" CLOG_RESET,
+                                     ("endpoint", peer->get_remote_endpoint())
+                                     ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
+                                     ("num", block_message_to_send.block.block_num())
+                                     ("dur", get_soft_ban_duration(peer.get())));
                                 peer->inhibit_fetching_sync_blocks = true;
-                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
+                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(peer.get()));
                             } else {
                                 // Soft-ban instead of disconnect. During sync, a rejected
                                 // block usually means the peer is on a stale fork.
                                 // Disconnecting would cause a reconnect loop; soft-ban
                                 // gives the fork time to resolve organically.
-                                wlog("Soft-banning peer ${endpoint} for 1 hour: rejected sync block #${num}",
+                                wlog("Soft-banning peer ${endpoint} for ${dur}s: rejected sync block #${num}",
                                         ("endpoint", peer->get_remote_endpoint())
-                                        ("num", block_message_to_send.block.block_num()));
-                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
+                                        ("num", block_message_to_send.block.block_num())
+                                        ("dur", get_soft_ban_duration(peer.get())));
+                                ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: rejected sync block #${num}" CLOG_RESET,
+                                     ("endpoint", peer->get_remote_endpoint())
+                                     ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
+                                     ("num", block_message_to_send.block.block_num())
+                                     ("dur", get_soft_ban_duration(peer.get())));
+                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(peer.get()));
                                 peer->inhibit_fetching_sync_blocks = true;
                             }
+                        }
+                    }
+                }
+
+                // Handle deferred resize or unlinkable-ahead: restart sync from all
+                // active sync peers so the missed block(s) are re-fetched after the
+                // resize completes.  Without this, the next sync block (N+2) would fail
+                // to link because N+1 was never applied, and subsequent blocks would all
+                // be silently rejected by the early-rejection check, stalling sync.
+                if (deferred_resize) {
+                    wlog("Restarting sync with all peers to re-fetch block #${num} after deferred resize",
+                         ("num", block_message_to_send.block.block_num()));
+                    for (const peer_connection_ptr &peer : _active_connections) {
+                        ASSERT_TASK_NOT_PREEMPTED();
+                        if (peer->we_need_sync_items_from_peer) {
+                            start_synchronizing_with_peer(peer);
                         }
                     }
                 }
@@ -3476,12 +3567,25 @@ namespace graphene {
                         std::vector<fc::uint160_t> contained_transaction_message_ids;
                         _message_ids_currently_being_processed.insert(message_hash);
                         fc_ilog(fc::logger::get("sync"),
-                                "p2p pushing block #${block_num} ${block_hash} from ${peer} (message_id was ${id})",
+                                "\033[90mp2p pushing block #${block_num} ${block_hash} from ${peer} (message_id was ${id})\033[0m",
                                 ("block_num", block_message_to_process.block.block_num())
                                         ("block_hash", block_message_to_process.block_id)
                                         ("peer", originating_peer->get_remote_endpoint())("id", message_hash));
-                        _delegate->handle_block(block_message_to_process, false, contained_transaction_message_ids);
+                        bool accepted = _delegate->handle_block(block_message_to_process, false, contained_transaction_message_ids);
                         _message_ids_currently_being_processed.erase(message_hash);
+                        if (!accepted) {
+                            // The chain returned false — block was not applied.  This can
+                            // happen for normal reasons (block already on chain, or micro-fork
+                            // block added to fork_db without triggering a fork switch).
+                            // Dead-fork blocks (parent not in fork_db, at/below head) throw
+                            // unlinkable_block_exception from _push_block, so they are
+                            // handled by the unlinkable_block_exception catcher below.
+                            // For normal false returns, we still track the block as accepted
+                            // for P2P inventory purposes since the block IS valid — it just
+                            // didn't become the new head.
+                            ilog("Block #${num} returned false (already on chain or micro-fork)",
+                                 ("num", block_message_to_process.block.block_num()));
+                        }
                         message_validated_time = fc::time_point::now();
                         ilog("Successfully pushed block ${num} (id:${id})",
                                 ("num", block_message_to_process.block.block_num())
@@ -3571,21 +3675,35 @@ namespace graphene {
                 catch (const fc::canceled_exception &) {
                     throw;
                 }
+                catch (const deferred_resize_exception &e) {
+                    // Shared memory resize is in progress. Do NOT mark the block as accepted
+                    // and do NOT soft-ban the peer. The block will be re-received after resize.
+                    wlog("Block #${num} deferred due to shared memory resize, will retry on next block",
+                         ("num", block_message_to_process.block.block_num()));
+                }
                 catch (const unlinkable_block_exception &e) {
                     uint32_t peer_block_num = block_message_to_process.block.block_num();
                     uint32_t our_head = _delegate->get_block_number(_delegate->get_head_block_id());
 
                     if (peer_block_num <= our_head) {
                         // Block is at or below our head — peer is on a stale fork. Soft-ban.
-                        wlog("Soft-banning peer ${endpoint} for 1 hour: "
+                        wlog("Soft-banning peer ${endpoint} for ${dur}s: "
                              "unlinkable block #${num} at or below our head #${head}",
                              ("endpoint", originating_peer->get_remote_endpoint())
-                             ("num", peer_block_num)("head", our_head));
+                             ("num", peer_block_num)("head", our_head)
+                             ("dur", get_soft_ban_duration(originating_peer)));
+                        ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: unlinkable block #${num} at or below head #${head}" CLOG_RESET,
+                             ("endpoint", originating_peer->get_remote_endpoint())
+                             ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
+                             ("num", peer_block_num)("head", our_head)
+                             ("dur", get_soft_ban_duration(originating_peer)));
                         originating_peer->fork_rejected_until =
-                            fc::time_point::now() + fc::seconds(3600);
+                            fc::time_point::now() + fc::seconds(get_soft_ban_duration(originating_peer));
                         originating_peer->inhibit_fetching_sync_blocks = true;
                     } else {
                         // Block is ahead of us — we may be behind. Resync is justified.
+                        ilog("Normal block #${num} is unlinkable and ahead of our head #${head}, will restart sync with peer ${peer}",
+                             ("num", peer_block_num)("head", our_head)("peer", originating_peer->get_remote_endpoint()));
                         restart_sync_exception = e;
                     }
                 }
@@ -3594,10 +3712,16 @@ namespace graphene {
                     // This typically happens when a peer is stuck on a dead fork and
                     // keeps broadcasting stale blocks.  Soft-ban them for 1 hour
                     // instead of restarting sync or disconnecting.
-                    wlog("Soft-banning peer ${endpoint} for 1 hour: sent block #${num} that is too old for our fork database",
+                    wlog("Soft-banning peer ${endpoint} for ${dur}s: sent block #${num} that is too old for our fork database",
                          ("endpoint", originating_peer->get_remote_endpoint())
-                         ("num", block_message_to_process.block.block_num()));
-                    originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
+                         ("num", block_message_to_process.block.block_num())
+                         ("dur", get_soft_ban_duration(originating_peer)));
+                    ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: block #${num} too old for fork database" CLOG_RESET,
+                         ("endpoint", originating_peer->get_remote_endpoint())
+                         ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
+                         ("num", block_message_to_process.block.block_num())
+                         ("dur", get_soft_ban_duration(originating_peer)));
+                    originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(originating_peer));
                     originating_peer->inhibit_fetching_sync_blocks = true;
                 }
                 catch (const fc::exception &e) {
@@ -3609,9 +3733,15 @@ namespace graphene {
                     // HF12: soft-ban peers instead of disconnecting during fork rejection
                     // This prevents cascading disconnections during emergency consensus
                     if (block_message_to_process.block.block_num() <= _delegate->get_block_number(_delegate->get_head_block_id())) {
-                        wlog("Soft-banning peer ${endpoint} for 1 hour due to fork rejection",
-                             ("endpoint", originating_peer->get_remote_endpoint()));
-                        originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(3600);
+                        wlog("Soft-banning peer ${endpoint} for ${dur}s due to fork rejection",
+                             ("endpoint", originating_peer->get_remote_endpoint())
+                             ("dur", get_soft_ban_duration(originating_peer)));
+                        ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: fork rejection on block #${num}" CLOG_RESET,
+                             ("endpoint", originating_peer->get_remote_endpoint())
+                             ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
+                             ("num", block_message_to_process.block.block_num())
+                             ("dur", get_soft_ban_duration(originating_peer)));
+                        originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(originating_peer));
                         originating_peer->inhibit_fetching_sync_blocks = true;
                     } else {
                         disconnect_exception = e;
@@ -4023,6 +4153,8 @@ namespace graphene {
 
             void node_impl::start_synchronizing_with_peer(const peer_connection_ptr &peer) {
                 VERIFY_CORRECT_THREAD();
+                ilog("Starting sync with peer ${peer} (head_block: ${head})",
+                     ("peer", peer->get_remote_endpoint())("head", _delegate->get_block_number(_delegate->get_head_block_id())));
                 peer->ids_of_items_to_get.clear();
                 peer->number_of_unfetched_item_ids = 0;
                 peer->we_need_sync_items_from_peer = true;
@@ -4750,7 +4882,7 @@ namespace graphene {
                 _handshaking_connections.erase(peer);
                 _closing_connections.erase(peer);
                 _terminating_connections.erase(peer);
-                fc_ilog(fc::logger::get("sync"), "New peer is connected (${peer}), now ${count} active peers",
+                fc_ilog(fc::logger::get("sync"), "\033[93mNew peer is connected (${peer}), now ${count} active peers\033[0m",
                         ("peer", peer->get_remote_endpoint())
                                 ("count", _active_connections.size()));
             }
@@ -4761,7 +4893,7 @@ namespace graphene {
                 _handshaking_connections.erase(peer);
                 _closing_connections.insert(peer);
                 _terminating_connections.erase(peer);
-                fc_ilog(fc::logger::get("sync"), "Peer connection closing (${peer}), now ${count} active peers",
+                fc_ilog(fc::logger::get("sync"), CLOG_ORANGE "Peer connection closing (${peer}), now ${count} active peers" CLOG_RESET,
                         ("peer", peer->get_remote_endpoint())
                                 ("count", _active_connections.size()));
             }
@@ -4772,7 +4904,7 @@ namespace graphene {
                 _handshaking_connections.erase(peer);
                 _closing_connections.erase(peer);
                 _terminating_connections.insert(peer);
-                fc_ilog(fc::logger::get("sync"), "Peer connection terminating (${peer}), now ${count} active peers",
+                fc_ilog(fc::logger::get("sync"), CLOG_RED "Peer connection terminating (${peer}), now ${count} active peers" CLOG_RESET,
                         ("peer", peer->get_remote_endpoint())
                                 ("count", _active_connections.size()));
             }
@@ -5109,9 +5241,51 @@ namespace graphene {
 #endif // ENABLE_P2P_DEBUGGING_API
             }
 
+            void node_impl::set_trusted_peer_endpoints(const std::vector<std::string> &endpoints) {
+                VERIFY_CORRECT_THREAD();
+                _trusted_peer_ips.clear();
+                for (const auto &ep_str : endpoints) {
+                    try {
+                        // Parse "host:port" — extract just the IP part
+                        std::string ip_str = ep_str;
+                        auto colon_pos = ip_str.rfind(':');
+                        if (colon_pos != std::string::npos) {
+                            ip_str = ip_str.substr(0, colon_pos);
+                        }
+                        // Resolve hostname to IP via fc::ip::endpoint
+                        auto ep = fc::ip::endpoint::from_string(ip_str + ":0");
+                        _trusted_peer_ips.insert(uint32_t(ep.get_address()));
+                    } catch (...) {
+                        wlog("Failed to parse trusted peer endpoint: ${ep}", ("ep", ep_str));
+                    }
+                }
+                if (!_trusted_peer_ips.empty()) {
+                    ilog("P2P: ${n} trusted peer IP(s) registered for reduced soft-ban (5 min vs 1 hour)",
+                         ("n", _trusted_peer_ips.size()));
+                }
+            }
+
+            bool node_impl::is_trusted_peer(peer_connection *peer) const {
+                if (_trusted_peer_ips.empty() || !peer) return false;
+                auto remote_ep = peer->get_remote_endpoint();
+                if (!remote_ep.valid()) return false;
+                return _trusted_peer_ips.count(uint32_t(remote_ep->get_address())) > 0;
+            }
+
+            uint32_t node_impl::get_soft_ban_duration(peer_connection *peer) const {
+                return is_trusted_peer(peer) ? TRUSTED_SOFT_BAN_DURATION_SEC : SOFT_BAN_DURATION_SEC;
+            }
+
             void node_impl::clear_peer_database() {
                 VERIFY_CORRECT_THREAD();
                 _potential_peer_db.clear();
+            }
+
+            void node_impl::resync() {
+                VERIFY_CORRECT_THREAD();
+                ilog("Resync: restarting synchronization with all ${n} connected peers",
+                     ("n", _active_connections.size()));
+                start_synchronizing();
             }
 
             void node_impl::set_total_bandwidth_limit(uint32_t upload_bytes_per_second, uint32_t download_bytes_per_second) {
@@ -5291,8 +5465,16 @@ namespace graphene {
             INVOKE_IN_IMPL(set_allowed_peers, allowed_peers);
         }
 
+        void node::set_trusted_peer_endpoints(const std::vector<std::string> &endpoints) {
+            INVOKE_IN_IMPL(set_trusted_peer_endpoints, endpoints);
+        }
+
         void node::clear_peer_database() {
             INVOKE_IN_IMPL(clear_peer_database);
+        }
+
+        void node::resync() {
+            INVOKE_IN_IMPL(resync);
         }
 
         void node::set_total_bandwidth_limit(uint32_t upload_bytes_per_second,

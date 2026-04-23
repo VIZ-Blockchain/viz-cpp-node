@@ -1135,6 +1135,12 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     fc::variant snapshot_var = fc::json::from_string(json_content);
     FC_ASSERT(snapshot_var.is_object(), "Snapshot file is not a valid JSON object");
 
+    // Free decompressed JSON immediately after parsing to reduce peak memory.
+    // For large snapshots, json_content can be hundreds of MB that would
+    // otherwise stay alive alongside the parsed variant tree.
+    json_content.clear();
+    json_content.shrink_to_fit();
+
     auto snapshot = snapshot_var.get_object();
 
     // Parse and validate header
@@ -1165,17 +1171,28 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     ilog(CLOG_ORANGE "Snapshot checksum verified" CLOG_RESET);
     std::cerr << "   Snapshot checksum verified OK\n";
 
+    // Free the re-serialized state JSON immediately after checksum verification
+    // to reduce peak memory. state_json is a full copy of the state that is
+    // no longer needed once the checksum is verified.
+    state_json.clear();
+    state_json.shrink_to_fit();
+
     const auto& state = snapshot["state"].get_object();
 
     // Import objects in dependency order
     std::cerr << "   Importing state into database...\n";
     db.with_strong_write_lock([&]() {
-        // Clear genesis-created multi-instance objects before importing.
+        // Clear ALL existing multi-instance objects before importing.
+        // This is critical for the hot-reload path (stalled sync detection)
+        // where load_snapshot() is called on an already-populated database.
+        // For initial load (fresh DB from open_from_snapshot), these indexes
+        // are empty and the loops are no-ops.
+        //
         // init_genesis() creates initial accounts, authorities, witnesses, and metadata
         // that would conflict with the snapshot's objects. Singletons (dgp, witness_schedule,
         // hardfork_property) and block_summaries are handled separately (modify-in-place).
         {
-            ilog(CLOG_ORANGE "Clearing genesis objects before snapshot import..." CLOG_RESET);
+            ilog(CLOG_ORANGE "Clearing existing objects before snapshot import..." CLOG_RESET);
             const auto& acc_idx = db.get_index<account_index>().indices();
             while (!acc_idx.empty()) { db.remove(*acc_idx.begin()); }
 
@@ -1187,6 +1204,83 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
 
             const auto& meta_idx = db.get_index<account_metadata_index>().indices();
             while (!meta_idx.empty()) { db.remove(*meta_idx.begin()); }
+
+            // Also clear all other multi-instance object types that may exist
+            // from a previous snapshot (hot-reload path). These are no-ops on
+            // a fresh database.
+            const auto& wv_idx = db.get_index<witness_vote_index>().indices();
+            while (!wv_idx.empty()) { db.remove(*wv_idx.begin()); }
+
+            const auto& bs_idx = db.get_index<block_summary_index>().indices();
+            while (!bs_idx.empty()) { db.remove(*bs_idx.begin()); }
+
+            const auto& cnt_idx = db.get_index<content_index>().indices();
+            while (!cnt_idx.empty()) { db.remove(*cnt_idx.begin()); }
+
+            const auto& cv_idx = db.get_index<content_vote_index>().indices();
+            while (!cv_idx.empty()) { db.remove(*cv_idx.begin()); }
+
+            const auto& bpv_idx = db.get_index<block_post_validation_index>().indices();
+            while (!bpv_idx.empty()) { db.remove(*bpv_idx.begin()); }
+
+            const auto& tx_idx = db.get_index<transaction_index>().indices();
+            while (!tx_idx.empty()) { db.remove(*tx_idx.begin()); }
+
+            const auto& vd_idx = db.get_index<vesting_delegation_index>().indices();
+            while (!vd_idx.empty()) { db.remove(*vd_idx.begin()); }
+
+            const auto& vde_idx = db.get_index<vesting_delegation_expiration_index>().indices();
+            while (!vde_idx.empty()) { db.remove(*vde_idx.begin()); }
+
+            const auto& fvd_idx = db.get_index<fix_vesting_delegation_index>().indices();
+            while (!fvd_idx.empty()) { db.remove(*fvd_idx.begin()); }
+
+            const auto& wvr_idx = db.get_index<withdraw_vesting_route_index>().indices();
+            while (!wvr_idx.empty()) { db.remove(*wvr_idx.begin()); }
+
+            const auto& esc_idx = db.get_index<escrow_index>().indices();
+            while (!esc_idx.empty()) { db.remove(*esc_idx.begin()); }
+
+            const auto& prop_idx = db.get_index<proposal_index>().indices();
+            while (!prop_idx.empty()) { db.remove(*prop_idx.begin()); }
+
+            const auto& ra_idx = db.get_index<required_approval_index>().indices();
+            while (!ra_idx.empty()) { db.remove(*ra_idx.begin()); }
+
+            const auto& cr_idx = db.get_index<committee_request_index>().indices();
+            while (!cr_idx.empty()) { db.remove(*cr_idx.begin()); }
+
+            const auto& cv2_idx = db.get_index<committee_vote_index>().indices();
+            while (!cv2_idx.empty()) { db.remove(*cv2_idx.begin()); }
+
+            const auto& inv_idx = db.get_index<invite_index>().indices();
+            while (!inv_idx.empty()) { db.remove(*inv_idx.begin()); }
+
+            const auto& ase_idx = db.get_index<award_shares_expire_index>().indices();
+            while (!ase_idx.empty()) { db.remove(*ase_idx.begin()); }
+
+            const auto& ps_idx = db.get_index<paid_subscription_index>().indices();
+            while (!ps_idx.empty()) { db.remove(*ps_idx.begin()); }
+
+            const auto& psb_idx = db.get_index<paid_subscribe_index>().indices();
+            while (!psb_idx.empty()) { db.remove(*psb_idx.begin()); }
+
+            const auto& wpe_idx = db.get_index<witness_penalty_expire_index>().indices();
+            while (!wpe_idx.empty()) { db.remove(*wpe_idx.begin()); }
+
+            const auto& ct_idx = db.get_index<content_type_index>().indices();
+            while (!ct_idx.empty()) { db.remove(*ct_idx.begin()); }
+
+            const auto& mah_idx = db.get_index<master_authority_history_index>().indices();
+            while (!mah_idx.empty()) { db.remove(*mah_idx.begin()); }
+
+            const auto& arr_idx = db.get_index<account_recovery_request_index>().indices();
+            while (!arr_idx.empty()) { db.remove(*arr_idx.begin()); }
+
+            const auto& cra_idx = db.get_index<change_recovery_account_request_index>().indices();
+            while (!cra_idx.empty()) { db.remove(*cra_idx.begin()); }
+
+            ilog(CLOG_ORANGE "Existing objects cleared" CLOG_RESET);
         }
         // CRITICAL - singleton objects (modify existing)
         if (state.contains("dynamic_global_property")) {
@@ -1362,7 +1456,10 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         ilog(CLOG_ORANGE "All objects imported successfully" CLOG_RESET);
     });
 
-    // Seed fork_db with head block from snapshot
+    // Seed fork_db with head block from snapshot.
+    // Reset fork_db first to clear stale entries from a previous snapshot
+    // (important for the hot-reload path during stalled sync detection).
+    db.get_fork_db().reset();
     if (state.contains("fork_db_head_block")) {
         auto head_block = state["fork_db_head_block"].as<signed_block>();
         db.get_fork_db().start_block(head_block);
@@ -1451,12 +1548,10 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     // Check --snapshot-at-block: one-time snapshot at exact block
     if (snapshot_at_block > 0 && block_num == snapshot_at_block && !is_syncing) {
         fc::path output;
-        if (!snapshot_dir.empty()) {
-            output = fc::path(snapshot_dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
-        } else if (!create_snapshot_path.empty()) {
+        if (!create_snapshot_path.empty()) {
             output = fc::path(create_snapshot_path);
         } else {
-            output = fc::path("snapshot-block-" + std::to_string(block_num) + ".vizjson");
+            output = fc::path(snapshot_dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         }
         if (is_witness_producing_soon()) {
             ilog(CLOG_GREEN "Deferring snapshot-at-block ${b}: witness scheduled to produce next block" CLOG_RESET, ("b", block_num));
@@ -1470,7 +1565,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
 
     // Check --snapshot-every-n-blocks: periodic snapshots (only when synced)
     if (snapshot_every_n_blocks > 0 && block_num % snapshot_every_n_blocks == 0 && !is_syncing) {
-        std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
+        std::string dir = snapshot_dir;
         fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         if (is_witness_producing_soon()) {
             ilog(CLOG_GREEN "Deferring periodic snapshot at block ${b}: witness scheduled to produce next block" CLOG_RESET, ("b", block_num));
@@ -1747,7 +1842,7 @@ std::tuple<bool, uint32_t, std::vector<char>> read_message_with_timeout(
 // ============================================================================
 
 fc::path snapshot_plugin::plugin_impl::find_latest_snapshot() {
-    std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
+    std::string dir = snapshot_dir;
     fc::path dir_path(dir);
 
     if (!fc::exists(dir_path) || !fc::is_directory(dir_path)) {
@@ -1791,7 +1886,7 @@ fc::path snapshot_plugin::plugin_impl::find_latest_snapshot() {
 }
 
 void snapshot_plugin::plugin_impl::cleanup_old_snapshots() {
-    if (snapshot_max_age_days == 0 || snapshot_dir.empty()) return;
+    if (snapshot_max_age_days == 0) return;
 
     std::string dir = snapshot_dir;
     if (!fc::exists(fc::path(dir)) || !fc::is_directory(fc::path(dir))) return;
@@ -2515,7 +2610,7 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
         ("s", best->compressed_size)("l", MAX_SNAPSHOT_SIZE));
 
     // Create temp file for download
-    std::string dir = snapshot_dir.empty() ? "." : snapshot_dir;
+    std::string dir = snapshot_dir;
     if (!boost::filesystem::exists(dir)) {
         boost::filesystem::create_directories(dir);
         ilog(CLOG_YELLOW "Created snapshot directory: ${d}" CLOG_RESET, ("d", dir));
@@ -2824,7 +2919,7 @@ void snapshot_plugin::set_program_options(
         ("snapshot-every-n-blocks", bpo::value<uint32_t>()->default_value(0),
             "Automatically create a snapshot every N blocks (0 = disabled)")
         ("snapshot-dir", bpo::value<std::string>()->default_value(""),
-            "Directory for auto-generated snapshot files")
+            "Directory for auto-generated snapshot files (default: <data-dir>/snapshots)")
         ("snapshot-max-age-days", bpo::value<uint32_t>()->default_value(90),
             "Delete snapshots older than N days after creating a new one (0 = disabled)")
         ("allow-snapshot-serving", bpo::value<bool>()->default_value(false),
@@ -2875,10 +2970,17 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     // because find_latest_snapshot() reads snapshot_dir to locate files.
     if (options.count("snapshot-dir")) {
         my->snapshot_dir = options.at("snapshot-dir").as<std::string>();
-        if (!my->snapshot_dir.empty()) {
-            ilog("Snapshot directory: ${d}", ("d", my->snapshot_dir));
-        }
     }
+    // If snapshot-dir is not set, default to <data_dir>/snapshots
+    if (my->snapshot_dir.empty()) {
+        my->snapshot_dir = (appbase::app().data_dir() / "snapshots").string();
+    }
+    // Ensure the snapshot directory exists
+    if (!boost::filesystem::exists(my->snapshot_dir)) {
+        boost::filesystem::create_directories(my->snapshot_dir);
+        ilog("Created default snapshot directory: ${d}", ("d", my->snapshot_dir));
+    }
+    ilog("Snapshot directory: ${d}", ("d", my->snapshot_dir));
 
     my->snapshot_auto_latest = options.at("snapshot-auto-latest").as<bool>();
     if (my->snapshot_auto_latest) {
@@ -3165,6 +3267,11 @@ void snapshot_plugin::create_snapshot_at(const std::string& path) {
     FC_ASSERT(my, "Snapshot plugin not initialized");
     my->create_snapshot(fc::path(path));
     // Note: create_snapshot() already calls update_snapshot_cache()
+}
+
+const std::vector<std::string>& snapshot_plugin::get_trusted_snapshot_peers() const {
+    static const std::vector<std::string> empty;
+    return my ? my->trusted_snapshot_peers : empty;
 }
 
 } } } // graphene::plugins::snapshot
