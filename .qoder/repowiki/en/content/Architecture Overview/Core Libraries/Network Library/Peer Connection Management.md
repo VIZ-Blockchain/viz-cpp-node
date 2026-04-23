@@ -16,14 +16,20 @@
 - [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp)
 - [peer_database.cpp](file://libraries/network/peer_database.cpp)
 - [message.hpp](file://libraries/network/include/graphene/network/message.hpp)
+- [exceptions.hpp](file://libraries/network/include/graphene/network/exceptions.hpp)
+- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
+- [database.cpp](file://libraries/chain/database.cpp)
+- [fork_database.cpp](file://libraries/chain/fork_database.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced peer information handling with improved IP address extraction reliability
-- Added robust error handling mechanisms with try-catch fallbacks throughout peer statistics logging
-- Strengthened connection lifecycle management with better exception safety
-- Improved peer state tracking with enhanced error recovery capabilities
+- Enhanced P2P network reliability with proper handling of blocks returned as false by chain
+- Improved unlinkable_block_exception conversion to network exceptions for soft-ban functionality
+- Strengthened connection lifecycle management with soft-ban mechanisms
+- Added fork_rejected_until and inhibit_fetching_sync_blocks peer state fields
+- Implemented HF12 soft-ban functionality for emergency consensus scenarios
+- Enhanced block processing with proper exception handling and peer reputation management
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -40,21 +46,22 @@
 ## Introduction
 This document provides comprehensive coverage of Peer Connection Management in the VIZ C++ node networking stack. It focuses on the peer_connection.hpp implementation for managing bidirectional peer communication channels, connection state tracking, and message routing. The document explains peer connection establishment protocols, authentication mechanisms, and handshake procedures. It covers connection lifecycle management including initiation, maintenance, graceful disconnection, and error recovery. It details peer state tracking, connection quality metrics, and peer reputation systems. Message queuing, priority handling, and connection multiplexing are documented along with practical examples and guidance on peer selection, balancing, and fault tolerance.
 
-**Updated** Enhanced with improved IP address extraction reliability and robust error handling mechanisms for more stable peer connection operations.
+**Updated** Enhanced with improved P2P network reliability featuring soft-ban functionality for handling unlinkable blocks, proper block processing with exception conversion, and strengthened connection lifecycle management with fork rejection mechanisms.
 
 ## Project Structure
 The peer connection management system is composed of several interconnected components:
-- Peer-level abstraction: peer_connection encapsulates a single peer's state and messaging with enhanced error handling.
+- Peer-level abstraction: peer_connection encapsulates a single peer's state and messaging with enhanced error handling and soft-ban support.
 - Transport abstraction: message_oriented_connection wraps a secure transport socket and handles message framing with improved logging.
 - Security: stcp_socket performs ECDH key exchange and AES encryption for secure communication.
 - Protocol messages: core_messages defines the handshake and operational messages exchanged between peers with reliable IP address handling.
-- Node orchestration: node coordinates peer connections, maintains peer databases, and manages lifecycle events with better exception safety.
+- Node orchestration: node coordinates peer connections, maintains peer databases, and manages lifecycle events with enhanced exception safety and soft-ban functionality.
 - Configuration: config.hpp centralizes tunable constants for timeouts, limits, and behavior.
+- Chain integration: database and fork_database handle block validation with proper exception propagation for P2P layer consumption.
 
 ```mermaid
 graph TB
 subgraph "Peer Layer"
-PC["peer_connection<br/>Bidirectional channel<br/>Enhanced Error Handling"]
+PC["peer_connection<br/>Bidirectional channel<br/>Enhanced Error Handling<br/>Soft-ban Support"]
 end
 subgraph "Transport Layer"
 MOC["message_oriented_connection<br/>Message framing<br/>Robust Logging"]
@@ -65,8 +72,13 @@ CM["core_messages<br/>Handshake & ops<br/>Reliable IP Extraction"]
 MSG["message<br/>Header + payload"]
 end
 subgraph "Node Orchestration"
-N["node<br/>Connection manager<br/>Exception Safety"]
+N["node<br/>Connection manager<br/>Exception Safety<br/>Soft-ban Logic"]
 PD["peer_database<br/>Peer reputation<br/>Improved Recovery"]
+END
+subgraph "Chain Integration"
+DB["database<br/>Block validation<br/>Exception propagation"]
+FD["fork_database<br/>Fork management<br/>Link handling"]
+EX["exceptions<br/>Network exceptions<br/>Soft-ban types"]
 end
 PC --> MOC
 MOC --> STCP
@@ -74,6 +86,9 @@ PC --> CM
 CM --> MSG
 N --> PC
 N --> PD
+N --> DB
+DB --> FD
+DB --> EX
 ```
 
 **Diagram sources**
@@ -84,6 +99,9 @@ N --> PD
 - [message.hpp:42-106](file://libraries/network/include/graphene/network/message.hpp#L42-L106)
 - [node.hpp:190-304](file://libraries/network/include/graphene/network/node.hpp#L190-L304)
 - [peer_database.hpp:104-134](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
+- [database.cpp:1215-1246](file://libraries/chain/database.cpp#L1215-L1246)
+- [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
+- [exceptions.hpp:33-45](file://libraries/network/include/graphene/network/exceptions.hpp#L33-L45)
 
 **Section sources**
 - [peer_connection.hpp:1-383](file://libraries/network/include/graphene/network/peer_connection.hpp#L1-L383)
@@ -93,20 +111,26 @@ N --> PD
 - [node.hpp:1-355](file://libraries/network/include/graphene/network/node.hpp#L1-L355)
 - [peer_database.hpp:1-141](file://libraries/network/include/graphene/network/peer_database.hpp#L1-L141)
 - [message.hpp:1-114](file://libraries/network/include/graphene/network/message.hpp#L1-L114)
+- [database.cpp:1-6389](file://libraries/chain/database.cpp#L1-L6389)
+- [fork_database.cpp:1-271](file://libraries/chain/fork_database.cpp#L1-L271)
+- [exceptions.hpp:1-49](file://libraries/network/include/graphene/network/exceptions.hpp#L1-L49)
 
 ## Core Components
-- peer_connection: Manages a single peer's connection state, queues outgoing messages, tracks inventory, and exposes metrics with enhanced error handling and IP address extraction reliability. It delegates message delivery to message_oriented_connection and integrates with node-level callbacks.
+- peer_connection: Manages a single peer's connection state, queues outgoing messages, tracks inventory, and exposes metrics with enhanced error handling and IP address extraction reliability. It delegates message delivery to message_oriented_connection and integrates with node-level callbacks. **Enhanced** with fork_rejected_until and inhibit_fetching_sync_blocks fields for soft-ban functionality.
 - message_oriented_connection: Provides a message-oriented API over a secure socket, handling read/write loops, padding, and error propagation with improved logging mechanisms.
 - stcp_socket: Implements ECDH key exchange and AES encryption for secure transport.
 - core_messages: Defines the protocol messages used during handshake and runtime operations with reliable IP address handling and enhanced error reporting.
-- node: Orchestrates peer connections, manages peer databases, and coordinates synchronization and broadcasting with better exception safety and recovery mechanisms.
+- node: Orchestrates peer connections, manages peer databases, and coordinates synchronization and broadcasting with better exception safety, soft-ban logic, and fork rejection handling.
 - peer_database: Tracks potential peers, connection attempts, and outcomes for peer selection and reputation with improved error handling.
+- **New** database: Handles block validation with proper exception propagation, converting chain exceptions to network exceptions for P2P layer consumption.
+- **New** fork_database: Manages fork relationships and block linking with proper exception handling for unlinkable blocks.
 
 Key responsibilities:
 - Handshake and authentication: ECDH key exchange via stcp_socket, hello/connection_accepted messages via core_messages with reliable IP address extraction.
-- Lifecycle management: Connect, accept, close, destroy, and cleanup with enhanced error recovery and exception safety.
+- Lifecycle management: Connect, accept, close, destroy, and cleanup with enhanced error recovery and exception safety, including soft-ban mechanisms.
 - Message routing: Queueing, priority, and multiplexing across peers with improved logging and monitoring.
 - Metrics and reputation: Connection times, bytes sent/received, inventory lists, and peer selection with robust error handling.
+- **Enhanced** Block processing: Proper handling of blocks returned as false by chain, conversion of unlinkable_block_exception to network exceptions, and soft-ban functionality for peer management.
 
 **Section sources**
 - [peer_connection.hpp:79-351](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L351)
@@ -116,14 +140,17 @@ Key responsibilities:
 - [core_messages.hpp:233-306](file://libraries/network/include/graphene/network/core_messages.hpp#L233-L306)
 - [node.cpp:424-799](file://libraries/network/node.cpp#L424-L799)
 - [peer_database.cpp:100-174](file://libraries/network/peer_database.cpp#L100-L174)
+- [database.cpp:1215-1246](file://libraries/chain/database.cpp#L1215-L1246)
+- [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
 
 ## Architecture Overview
-The peer connection architecture follows a layered design with enhanced error handling:
-- Application (node) controls peer lifecycle and delegates message processing to the node delegate with improved exception safety.
-- Peer (peer_connection) holds per-peer state and queues messages with robust error handling mechanisms.
+The peer connection architecture follows a layered design with enhanced error handling and soft-ban functionality:
+- Application (node) controls peer lifecycle and delegates message processing to the node delegate with improved exception safety and soft-ban logic.
+- Peer (peer_connection) holds per-peer state and queues messages with robust error handling mechanisms, including soft-ban state tracking.
 - Transport (message_oriented_connection) frames messages and manages the read/write loop with enhanced logging.
 - Security (stcp_socket) negotiates keys and encrypts traffic.
 - Protocol (core_messages) defines the message types and semantics with reliable IP address extraction.
+- **Enhanced** Chain integration (database/fork_database) validates blocks and propagates exceptions to the P2P layer for proper peer management.
 
 ```mermaid
 sequenceDiagram
@@ -132,6 +159,7 @@ participant Peer as "peer_connection"
 participant MOC as "message_oriented_connection"
 participant STCP as "stcp_socket"
 participant Remote as "Remote Peer"
+participant Chain as "database/fork_database"
 Node->>Peer : "connect_to(endpoint)"
 Peer->>MOC : "connect_to(endpoint)"
 MOC->>STCP : "connect_to(endpoint)"
@@ -146,7 +174,7 @@ Peer->>Node : "on_message(hello)"
 Node->>Peer : "on_hello_message()"
 Peer->>Peer : "send connection_accepted"
 Peer->>Node : "on_connection_accepted"
-Note over Peer,Node : "Negotiation complete with enhanced error handling"
+Note over Peer,Node : "Negotiation complete with enhanced error handling and soft-ban support"
 ```
 
 **Diagram sources**
@@ -164,6 +192,7 @@ peer_connection encapsulates:
 - Message queueing: real_queued_message and virtual_queued_message for immediate and deferred message generation with enhanced logging.
 - Inventory tracking: sets for advertised and requested items, sync state, and throttling with robust error recovery.
 - Metrics: bytes sent/received, last message timestamps, connection durations, and shared secret exposure with improved monitoring.
+- **Enhanced** Soft-ban state: fork_rejected_until timestamp and inhibit_fetching_sync_blocks flag for peer management during emergency scenarios.
 
 ```mermaid
 classDiagram
@@ -182,6 +211,8 @@ class peer_connection {
 +fc : : ip : : address inbound_address
 +uint16_t inbound_port
 +uint16_t outbound_port
++bool inhibit_fetching_sync_blocks
++fc : : time_point fork_rejected_until
 +uint64_t get_total_bytes_sent()
 +uint64_t get_total_bytes_received()
 +void send_message(message)
@@ -190,6 +221,7 @@ class peer_connection {
 +void destroy_connection()
 +Enhanced error handling with try-catch fallbacks
 +Improved IP address extraction reliability
++Soft-ban state management
 }
 class queued_message {
 <<abstract>>
@@ -220,10 +252,12 @@ Key behaviors:
 - Outgoing message pipeline: send_message enqueues a real_queued_message with enhanced error handling; send_item enqueues a virtual_queued_message; send_queueable_message validates queue size and triggers send_queued_messages_task with improved logging.
 - Inbound message pipeline: on_message delegates to node delegate with robust error recovery; on_connection_closed transitions negotiation_status and notifies node with proper exception handling.
 - Lifecycle: accept_connection and connect_to manage transport setup with enhanced error handling; close_connection and destroy_connection coordinate teardown with improved exception safety.
+- **Enhanced** Soft-ban management: fork_rejected_until tracks soft-ban expiration; inhibit_fetching_sync_blocks prevents sync operations during ban period.
 
 **Section sources**
 - [peer_connection.hpp:79-351](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L351)
 - [peer_connection.cpp:244-338](file://libraries/network/peer_connection.cpp#L244-L338)
+- [peer_connection.hpp:240-278](file://libraries/network/include/graphene/network/peer_connection.hpp#L240-L278)
 
 ### message_oriented_connection: Enhanced Message Framing and Transport Loop
 message_oriented_connection:
@@ -325,13 +359,14 @@ Note over Local,Remote : "Enhanced error handling and IP address reliability"
 - [peer_connection.cpp:208-242](file://libraries/network/peer_connection.cpp#L208-L242)
 
 ### Connection Lifecycle Management
-Lifecycle stages with enhanced error handling:
+Lifecycle stages with enhanced error handling and soft-ban functionality:
 - Initiation: connect_to for outbound, accept_connection for inbound with improved exception safety.
 - Negotiation: hello/connection_accepted or connection_rejected with enhanced logging and monitoring.
-- Operation: message exchange, inventory advertisement, sync with robust error recovery mechanisms.
-- Maintenance: keep-alive via time requests, bandwidth monitoring with improved reliability.
+- Operation: message exchange, inventory advertisement, sync with robust error recovery mechanisms and soft-ban enforcement.
+- Maintenance: keep-alive via time requests, bandwidth monitoring with improved reliability, soft-ban expiration checking.
 - Graceful disconnection: closing_connection message, close_connection, destroy_connection with enhanced error handling.
 - Error recovery: queue overflow closes connection with proper cleanup, peer database updates with improved logging, retry timers with better exception safety.
+- **Enhanced** Soft-ban management: fork_rejected_until timestamp enforcement, inhibit_fetching_sync_blocks flag management, automatic soft-ban expiration handling.
 
 ```mermaid
 stateDiagram-v2
@@ -341,7 +376,9 @@ Disconnected --> Accepting : "accept_connection() with enhanced safety"
 Connecting --> Connected : "hello + accepted"
 Accepting --> Connected : "hello + accepted"
 Connected --> NegotiationComplete : "inventory sync"
-NegotiationComplete --> Closing : "close_connection() with proper cleanup"
+NegotiationComplete --> SoftBan : "fork_rejected_until set"
+SoftBan --> Connected : "soft-ban expired"
+Connected --> Closing : "close_connection() with proper cleanup"
 Closing --> Closed : "on_connection_closed with enhanced logging"
 Closed --> [*]
 ```
@@ -387,15 +424,17 @@ EnhancedMonitoring --> Done["Done with proper cleanup"]
 - [config.hpp:58-58](file://libraries/network/include/graphene/network/config.hpp#L58-L58)
 
 ### Peer State Tracking, Metrics, and Reputation
-Peer state tracking with enhanced error handling:
+Peer state tracking with enhanced error handling and soft-ban support:
 - Connection states: negotiated status, direction, firewalled state, clock offset, round-trip delay with improved monitoring and logging.
 - Inventory: advertised to peer, advertised to us, requested, sync state, throttling windows with robust error recovery mechanisms.
 - Metrics: bytes sent/received, last message times, connection duration, termination time with enhanced logging and monitoring.
+- **Enhanced** Soft-ban state: fork_rejected_until timestamp tracks soft-ban expiration; inhibit_fetching_sync_blocks prevents sync operations during ban period.
 
 Reputation and selection with improved reliability:
 - peer_database tracks endpoints, last seen, disposition, and attempt counts with enhanced error handling.
 - node selects peers based on desired/max connections, retry timeouts, and peer database entries with better exception safety.
 - Enhanced logging and monitoring throughout the peer selection and balancing process.
+- **Enhanced** Soft-ban enforcement: Automatic soft-ban detection and enforcement during block processing.
 
 **Section sources**
 - [peer_connection.hpp:175-279](file://libraries/network/include/graphene/network/peer_connection.hpp#L175-L279)
@@ -403,6 +442,43 @@ Reputation and selection with improved reliability:
 - [peer_database.hpp:47-71](file://libraries/network/include/graphene/network/peer_database.hpp#L47-L71)
 - [peer_database.cpp:100-174](file://libraries/network/peer_database.cpp#L100-L174)
 - [node.cpp:518-526](file://libraries/network/node.cpp#L518-L526)
+
+### Enhanced Block Processing and Soft-Ban Functionality
+**New** Enhanced block processing with proper exception handling and soft-ban mechanisms:
+- Database layer converts chain exceptions to network exceptions for P2P consumption.
+- Fork database handles unlinkable blocks with proper exception propagation.
+- Node layer implements soft-ban functionality for peer management during emergency scenarios.
+- P2P plugin converts chain exceptions to network exceptions for consistent handling.
+
+```mermaid
+flowchart TD
+BlockIn["Block received from peer"] --> ProcessBlock["Process block in database"]
+ProcessBlock --> CheckChain["Check chain state"]
+CheckChain --> |Valid| AcceptBlock["Accept block"]
+CheckChain --> |Unlinkable| ThrowException["Throw unlinkable_block_exception"]
+CheckChain --> |Too old| ThrowOld["Throw block_older_than_undo_history"]
+ThrowException --> ConvertNet["Convert to network exception"]
+ThrowOld --> ConvertNet
+ConvertNet --> NodeHandle["Node handles exception"]
+NodeHandle --> SoftBan{"Peer on stale fork?"}
+SoftBan --> |Yes| SetBan["Set fork_rejected_until + inhibit_fetching_sync_blocks"]
+SoftBan --> |No| Resync["Restart sync or disconnect"]
+AcceptBlock --> Broadcast["Broadcast to peers"]
+SetBan --> Broadcast
+Resync --> Broadcast
+```
+
+**Diagram sources**
+- [database.cpp:1215-1246](file://libraries/chain/database.cpp#L1215-L1246)
+- [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
+- [node.cpp:3598-3626](file://libraries/network/node.cpp#L3598-L3626)
+- [p2p_plugin.cpp:172-182](file://plugins/p2p/p2p_plugin.cpp#L172-L182)
+
+**Section sources**
+- [database.cpp:1215-1246](file://libraries/chain/database.cpp#L1215-L1246)
+- [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
+- [node.cpp:3598-3626](file://libraries/network/node.cpp#L3598-L3626)
+- [p2p_plugin.cpp:172-182](file://plugins/p2p/p2p_plugin.cpp#L172-L182)
 
 ### Examples and Patterns
 - Peer connection setup with enhanced error handling:
@@ -414,6 +490,8 @@ Reputation and selection with improved reliability:
   - get_total_bytes_sent/get_total_bytes_received, last_message_sent_time/last_message_received, get_connection_time/get_connection_terminated_time with improved error recovery.
 - Peer selection and balancing with better exception safety:
   - node maintains desired/max connections, peer database, and retry timers; balances by selecting candidates from peer_database and initiating connect_to with enhanced error handling.
+- **Enhanced** Soft-ban management:
+  - Automatic soft-ban detection for peers sending unlinkable blocks; fork_rejected_until timestamp enforcement; inhibit_fetching_sync_blocks flag management; automatic soft-ban expiration handling.
 
 **Section sources**
 - [peer_connection.cpp:208-242](file://libraries/network/peer_connection.cpp#L208-L242)
@@ -423,12 +501,14 @@ Reputation and selection with improved reliability:
 - [peer_database.cpp:100-174](file://libraries/network/peer_database.cpp#L100-L174)
 
 ## Dependency Analysis
-The peer connection subsystem exhibits clear layering and low coupling with enhanced error handling:
+The peer connection subsystem exhibits clear layering and low coupling with enhanced error handling and soft-ban functionality:
 - peer_connection depends on message_oriented_connection and node delegate with improved exception safety.
 - message_oriented_connection depends on stcp_socket and delegates to peer_connection with enhanced logging.
 - stcp_socket depends on fc crypto primitives and tcp socket with robust error recovery.
-- node orchestrates peer_connection instances and peer_database with better exception handling.
+- node orchestrates peer_connection instances and peer_database with better exception handling and soft-ban logic.
 - core_messages defines protocol contracts used across layers with reliable IP address handling.
+- **Enhanced** database and fork_database depend on chain exceptions and propagate network exceptions to P2P layer.
+- **Enhanced** p2p_plugin converts chain exceptions to network exceptions for consistent handling.
 
 ```mermaid
 graph LR
@@ -437,7 +517,10 @@ MOC --> STCP["stcp_socket"]
 PC --> CM["core_messages"]
 N["node"] --> PC
 N --> PD["peer_database"]
-CM --> MSG["message"]
+N --> DB["database"]
+DB --> FD["fork_database"]
+DB --> EX["exceptions"]
+N --> EX
 ```
 
 **Diagram sources**
@@ -448,6 +531,9 @@ CM --> MSG["message"]
 - [node.hpp:190-304](file://libraries/network/include/graphene/network/node.hpp#L190-L304)
 - [peer_database.hpp:104-134](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
 - [message.hpp:42-106](file://libraries/network/include/graphene/network/message.hpp#L42-L106)
+- [database.cpp:1215-1246](file://libraries/chain/database.cpp#L1215-L1246)
+- [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
+- [exceptions.hpp:33-45](file://libraries/network/include/graphene/network/exceptions.hpp#L33-L45)
 
 **Section sources**
 - [peer_connection.hpp:26-45](file://libraries/network/include/graphene/network/peer_connection.hpp#L26-L45)
@@ -457,6 +543,9 @@ CM --> MSG["message"]
 - [node.hpp:26-31](file://libraries/network/include/graphene/network/node.hpp#L26-L31)
 - [peer_database.hpp:26-35](file://libraries/network/include/graphene/network/peer_database.hpp#L26-L35)
 - [message.hpp:26-31](file://libraries/network/include/graphene/network/message.hpp#L26-L31)
+- [database.cpp:1215-1246](file://libraries/chain/database.cpp#L1215-L1246)
+- [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
+- [exceptions.hpp:33-45](file://libraries/network/include/graphene/network/exceptions.hpp#L33-L45)
 
 ## Performance Considerations
 - Message sizing: MAX_MESSAGE_SIZE caps payload; padding to 16 bytes ensures AES compatibility with enhanced error handling.
@@ -465,24 +554,31 @@ CM --> MSG["message"]
 - Bandwidth monitoring: node tracks read/write rates and applies rate limiting groups with enhanced logging.
 - Sync optimization: interleaved prefetching and prioritization reduce sync time with robust error recovery mechanisms.
 - Enhanced error handling: Comprehensive try-catch fallbacks throughout peer statistics logging ensure more robust operation of the P2P network layer.
+- **Enhanced** Soft-ban optimization: Automatic soft-ban enforcement prevents cascading disconnections during emergency scenarios, improving network stability.
+- **Enhanced** Block processing efficiency: Proper exception handling reduces unnecessary reprocessing and improves overall network performance.
 
 ## Troubleshooting Guide
-Common issues and remedies with enhanced error handling:
+Common issues and remedies with enhanced error handling and soft-ban functionality:
 - Connection refused or rejected: Review rejection reasons in connection_rejected_message with improved logging; check protocol version, chain ID, and node policies with better error reporting.
 - Handshake failures: Verify ECDH key exchange succeeded with enhanced error handling; inspect stcp_socket logs with improved monitoring; ensure endpoints are reachable with robust error recovery.
 - Queue overflow: Monitor queue size with enhanced logging; adjust rate or reduce message sizes; consider disconnecting misbehaving peers with proper cleanup.
 - Idle peers: Use inactivity timeouts with improved exception safety; terminate inactive connections; rebalance peers with better error handling.
 - Peer reputation: Inspect peer_database entries with enhanced logging; prune failed peers; respect retry delays with improved error recovery mechanisms.
 - IP address extraction issues: Enhanced safe static_cast operations with try-catch fallback mechanisms ensure reliable IP address extraction throughout peer information handling.
+- **Enhanced** Soft-ban issues: Check fork_rejected_until timestamps and inhibit_fetching_sync_blocks flags; verify automatic soft-ban expiration handling; monitor soft-ban effectiveness.
+- **Enhanced** Block processing errors: Review unlinkable_block_exception handling and soft-ban enforcement; verify proper exception conversion from chain to network exceptions.
 
 **Section sources**
 - [core_messages.hpp:285-306](file://libraries/network/include/graphene/network/core_messages.hpp#L285-L306)
 - [config.hpp:48-50](file://libraries/network/include/graphene/network/config.hpp#L48-L50)
 - [peer_database.cpp:100-174](file://libraries/network/peer_database.cpp#L100-L174)
 - [peer_connection.cpp:314-325](file://libraries/network/peer_connection.cpp#L314-L325)
+- [node.cpp:3448-3470](file://libraries/network/node.cpp#L3448-L3470)
 
 ## Conclusion
-Peer Connection Management in this codebase provides a robust, layered architecture for secure, multiplexed peer communication with enhanced error handling and reliability. It supports comprehensive lifecycle management, strict authentication via ECDH/AES, and sophisticated message queuing with priority and throttling. The node orchestrates peers, maintains reputation, and optimizes selection and balancing with improved exception safety. Enhanced peer information handling with reliable IP address extraction using safe static_cast operations with try-catch fallback mechanisms, combined with improved error handling and performance optimizations throughout peer statistics logging, ensures more robust operation of the P2P network layer. Together, these components deliver reliable peer-to-peer connectivity suitable for blockchain synchronization and transaction propagation with superior error recovery and monitoring capabilities.
+Peer Connection Management in this codebase provides a robust, layered architecture for secure, multiplexed peer communication with enhanced error handling, reliability, and soft-ban functionality. It supports comprehensive lifecycle management, strict authentication via ECDH/AES, and sophisticated message queuing with priority and throttling. The node orchestrates peers, maintains reputation, and optimizes selection and balancing with improved exception safety. Enhanced peer information handling with reliable IP address extraction using safe static_cast operations with try-catch fallback mechanisms, combined with improved error handling and performance optimizations throughout peer statistics logging, ensures more robust operation of the P2P network layer.
+
+**Enhanced** The system now includes sophisticated soft-ban functionality for handling unlinkable blocks, proper exception conversion between chain and network layers, and improved fork rejection mechanisms. These enhancements provide superior error recovery, monitoring capabilities, and network stability during emergency consensus scenarios. Together, these components deliver reliable peer-to-peer connectivity suitable for blockchain synchronization and transaction propagation with superior error recovery, soft-ban management, and enhanced network reliability.
 
 ## Appendices
 
@@ -496,3 +592,15 @@ Important tunables affecting peer connection behavior:
 
 **Section sources**
 - [config.hpp:26-106](file://libraries/network/include/graphene/network/config.hpp#L26-L106)
+
+### Network Exception Types
+**New** Enhanced exception types for improved error handling:
+- unlinkable_block_exception: Used for blocks from dead forks with parents not in fork database.
+- block_older_than_undo_history: Used for blocks too old for fork database processing.
+- peer_is_on_an_unreachable_fork: Used when peers are on incompatible forks.
+- Enhanced error propagation: Chain exceptions converted to network exceptions for consistent P2P layer handling.
+
+**Section sources**
+- [exceptions.hpp:33-45](file://libraries/network/include/graphene/network/exceptions.hpp#L33-L45)
+- [p2p_plugin.cpp:172-182](file://plugins/p2p/p2p_plugin.cpp#L172-L182)
+- [database.cpp:1239-1241](file://libraries/chain/database.cpp#L1239-L1241)

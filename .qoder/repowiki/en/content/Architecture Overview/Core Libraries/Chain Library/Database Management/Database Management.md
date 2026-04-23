@@ -10,6 +10,7 @@
 - [dlt_block_log.cpp](file://libraries/chain/dlt_block_log.cpp)
 - [fork_database.hpp](file://libraries/chain/include/graphene/chain/fork_database.hpp)
 - [fork_database.cpp](file://libraries/chain/fork_database.cpp)
+- [database_exceptions.hpp](file://libraries/chain/include/graphene/chain/database_exceptions.hpp)
 - [plugin.cpp](file://plugins/snapshot/plugin.cpp)
 - [db_with.hpp](file://libraries/chain/include/graphene/chain/db_with.hpp)
 - [witness.cpp](file://plugins/witness/witness.cpp)
@@ -22,10 +23,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced database memory management with improved boost::interprocess::bad_alloc exception handling
-- Implemented deferred shared memory resize mechanism with enhanced thread safety
-- Updated push_block() function to gracefully handle memory allocation failures by returning false instead of throwing
-- Enhanced apply_pending_resize() method with proper write lock acquisition and race condition prevention
+- Enhanced fork database handling with proper unlinkable_block_exception throwing for dead fork detection
+- Improved memory management with detailed resize logging and deferred resize mechanism
+- Enhanced error handling for shared memory exhaustion with graceful degradation
+- New deferred resize mechanism with thread safety improvements and race condition prevention
+- Enhanced block collision detection with rate-limiting and scenario differentiation
 - Improved peer connectivity preservation during memory pressure scenarios
 
 ## Table of Contents
@@ -52,6 +54,7 @@ The database subsystem is implemented primarily in the chain library with enhanc
 - Block log abstraction: libraries/chain/include/graphene/chain/block_log.hpp and libraries/chain/block_log.cpp
 - DLT block log for rolling window storage: libraries/chain/include/graphene/chain/dlt_block_log.hpp and libraries/chain/dlt_block_log.cpp
 - Fork database for reversible blocks: libraries/chain/include/graphene/chain/fork_database.hpp and libraries/chain/fork_database.cpp
+- Database exceptions including unlinkable_block_exception: libraries/chain/include/graphene/chain/database_exceptions.hpp
 - Snapshot plugin integration: plugins/snapshot/plugin.cpp for DLT mode initialization
 - Postponed transaction processing: libraries/chain/include/graphene/chain/db_with.hpp for transaction queue management
 - Witness plugin integration: plugins/witness/witness.cpp for block production coordination
@@ -70,6 +73,7 @@ DLTH["dlt_block_log.hpp"]
 DLTCPP["dlt_block_log.cpp"]
 FDH["fork_database.hpp"]
 FDCPP["fork_database.cpp"]
+DEH["database_exceptions.hpp"]
 DBWH["db_with.hpp"]
 ENDH["emergency_consensus_constants"]
 CB["chainbase.cpp"]
@@ -90,6 +94,7 @@ DBCPP --> DLTH
 DBCPP --> DLTCPP
 DBCPP --> FDH
 DBCPP --> FDCPP
+DBCPP --> DEH
 DBCPP --> DBWH
 DBCPP --> ENDH
 DBCPP --> CB
@@ -102,13 +107,14 @@ EXC --> NODE
 
 **Diagram sources**
 - [database.hpp:1-642](file://libraries/chain/include/graphene/chain/database.hpp#L1-L642)
-- [database.cpp:1-6396](file://libraries/chain/database.cpp#L1-L6396)
+- [database.cpp:1-6389](file://libraries/chain/database.cpp#L1-L6389)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
 - [dlt_block_log.cpp:1-414](file://libraries/chain/dlt_block_log.cpp#L1-L414)
-- [fork_database.hpp:1-125](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L125)
-- [fork_database.cpp:1-245](file://libraries/chain/fork_database.cpp#L1-L245)
+- [fork_database.hpp:1-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L138)
+- [fork_database.cpp:1-271](file://libraries/chain/fork_database.cpp#L1-L271)
+- [database_exceptions.hpp:1-134](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L1-L134)
 - [db_with.hpp:1-154](file://libraries/chain/include/graphene/chain/db_with.hpp#L1-L154)
 - [plugin.cpp:2130-2140](file://plugins/snapshot/plugin.cpp#L2130-L2140)
 - [witness.cpp:449-467](file://plugins/witness/witness.cpp#L449-L467)
@@ -120,13 +126,14 @@ EXC --> NODE
 
 **Section sources**
 - [database.hpp:1-642](file://libraries/chain/include/graphene/chain/database.hpp#L1-L642)
-- [database.cpp:1-6396](file://libraries/chain/database.cpp#L1-L6396)
+- [database.cpp:1-6389](file://libraries/chain/database.cpp#L1-L6389)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
 - [dlt_block_log.cpp:1-414](file://libraries/chain/dlt_block_log.cpp#L1-L414)
-- [fork_database.hpp:1-125](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L125)
-- [fork_database.cpp:1-245](file://libraries/chain/fork_database.cpp#L1-L245)
+- [fork_database.hpp:1-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L138)
+- [fork_database.cpp:1-271](file://libraries/chain/fork_database.cpp#L1-L271)
+- [database_exceptions.hpp:1-134](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L1-L134)
 - [db_with.hpp:1-154](file://libraries/chain/include/graphene/chain/db_with.hpp#L1-L154)
 - [plugin.cpp:2130-2140](file://plugins/snapshot/plugin.cpp#L2130-L2140)
 - [witness.cpp:449-467](file://plugins/witness/witness.cpp#L449-L467)
@@ -140,7 +147,7 @@ EXC --> NODE
 - database class: Public interface for blockchain state management, block and transaction processing, checkpoints, and event notifications with enhanced DLT mode support, emergency consensus implementation, and improved error handling.
 - block_log: Append-only block storage with random-access indexing.
 - dlt_block_log: Rolling window block storage specifically designed for DLT (snapshot-based) nodes.
-- fork_database: Maintains reversible blocks and supports fork selection and switching with emergency mode support.
+- fork_database: Maintains reversible blocks and supports fork selection and switching with emergency mode support and enhanced unlinkable block detection.
 - chainbase integration: Provides persistent object storage and undo sessions with enhanced memory management.
 - signal_guard: Enhanced signal handling for graceful restart sequence management.
 - **_dlt_gap_logged flag**: New mechanism to suppress repeated warnings about missing blocks in fork database after snapshot import, with automatic reset upon successful DLT block writes.
@@ -152,6 +159,7 @@ EXC --> NODE
 - **Enhanced Memory Management**: Comprehensive logging system for shared memory allocation with detailed free memory and maximum memory state reporting.
 - **Deferred Shared Memory Resize**: New mechanism that defers memory resize operations until a safe point when no read locks are held, improving thread safety and performance during high-load scenarios.
 - **Enhanced Error Handling**: Graceful handling of boost::interprocess::bad_alloc exceptions with deferred resize scheduling and peer connectivity preservation.
+- **Enhanced Fork Database Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic.
 
 Key responsibilities:
 - Lifecycle: open(), open_from_snapshot(), reindex(), close(), wipe() with improved error handling
@@ -170,13 +178,14 @@ Key responsibilities:
 - **Enhanced Memory Management**: Detailed logging of memory states before and after resizing operations for administrator visibility
 - **Thread-Safe Memory Resizing**: Deferred resize mechanism that acquires exclusive write locks to prevent race conditions and stale pointer issues
 - **Memory Pressure Handling**: Graceful degradation of shared memory exhaustion with peer connectivity preservation
+- **Enhanced Fork Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic
 
 **Section sources**
 - [database.hpp:61-115](file://libraries/chain/include/graphene/chain/database.hpp#L61-L115)
 - [database.cpp:281-324](file://libraries/chain/database.cpp#L281-L324)
 - [block_log.hpp:38-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L38-L75)
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
-- [fork_database.hpp:53-125](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L125)
+- [fork_database.hpp:53-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L138)
 - [database.cpp:929-984](file://libraries/chain/database.cpp#L929-L984)
 - [db_with.hpp:33-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L33-L100)
 - [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
@@ -185,7 +194,7 @@ Key responsibilities:
 ## Architecture Overview
 The database composes four primary subsystems with enhanced DLT mode support, emergency consensus implementation, and improved error handling:
 - Chainbase: Persistent object database with undo/redo capabilities and enhanced memory management
-- Fork database: Holds recent blocks for fork resolution with emergency mode support
+- Fork database: Holds recent blocks for fork resolution with emergency mode support and enhanced unlinkable block detection
 - Block log: Immutable, append-only block storage with index
 - DLT block log: Rolling window block storage for DLT (snapshot-based) nodes
 - Signal guard: Enhanced signal handling for graceful restart sequences
@@ -198,6 +207,7 @@ The database composes four primary subsystems with enhanced DLT mode support, em
 - **Enhanced Memory Management**: Comprehensive logging system for shared memory allocation with detailed state reporting
 - **Deferred Memory Resize**: Thread-safe memory resize mechanism that defers operations until safe points to prevent race conditions
 - **Enhanced Error Handling**: Graceful exception handling for shared memory exhaustion with peer connectivity preservation
+- **Enhanced Fork Database**: Proper unlinkable block exception handling for dead fork detection and improved fork switching
 
 ```mermaid
 classDiagram
@@ -257,6 +267,8 @@ class fork_database {
 +fetch_branch_from(first, second)
 +set_max_size(n)
 +set_emergency_mode(active)
++is_known_block(id)
++fetch_block_by_number(num)
 }
 class signal_guard {
 +setup()
@@ -278,12 +290,17 @@ class chainbase {
 +set_reserved_memory(value)
 +resize(new_size)
 }
+class unlinkable_block_exception {
++inherits from chain_exception
++thrown for dead fork detection
+}
 database --> block_log : "uses (normal mode)"
 database --> dlt_block_log : "uses (DLT mode)"
-database --> fork_database : "uses with emergency support"
+database --> fork_database : "uses with enhanced error handling"
 database --> signal_guard : "enhanced restart handling"
 database --> pending_transactions_restorer : "manages postponed tx"
 database --> chainbase : "enhanced memory management"
+database --> unlinkable_block_exception : "enhanced fork handling"
 ```
 
 **Diagram sources**
@@ -291,10 +308,11 @@ database --> chainbase : "enhanced memory management"
 - [database.cpp:281-324](file://libraries/chain/database.cpp#L281-L324)
 - [block_log.hpp:38-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L38-L75)
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
-- [fork_database.hpp:53-125](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L125)
+- [fork_database.hpp:53-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L138)
 - [database.cpp:94-184](file://libraries/chain/database.cpp#L94-L184)
 - [db_with.hpp:33-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L33-L100)
 - [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
+- [database_exceptions.hpp:83](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L83)
 
 ## Detailed Component Analysis
 
@@ -766,6 +784,61 @@ Exception --> |No| Success
 - [database.cpp:1106-1145](file://libraries/chain/database.cpp#L1106-L1145)
 - [database.cpp:1460-1470](file://libraries/chain/database.cpp#L1460-L1470)
 
+### Enhanced Fork Database Handling with Unlinkable Block Exception
+**New** - The fork database now includes enhanced error handling for proper dead fork detection:
+
+- **Proper Exception Throwing**: The fork_database::push_block() method now properly throws unlinkable_block_exception when blocks fail to link, enabling better dead fork detection.
+- **Enhanced Logging**: Improved logging of fork database linking failures with detailed block information and head block context.
+- **Unlinked Block Caching**: Previously unlinked blocks are cached in _unlinked_index for later processing when their parents become available.
+- **Improved Fork Switching**: The database's fork switching logic now properly handles unlinkable_block_exception to prevent processing blocks from dead forks.
+
+```mermaid
+flowchart TD
+Start(["fork_database::push_block(block)"]) --> TryPush["_push_block(item)"]
+TryPush --> Success{"Link successful?"}
+Success --> |Yes| ReturnHead["Return _head"]
+Success --> |No| CacheUnlinked["Cache in _unlinked_index"]
+CacheUnlinked --> ThrowException["Throw unlinkable_block_exception"]
+ThrowException --> Propagate["Propagate to caller"]
+ReturnHead --> Propagate
+```
+
+**Diagram sources**
+- [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
+
+**Section sources**
+- [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
+- [database_exceptions.hpp:83](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L83)
+
+### Enhanced Fork Switching Logic with Dead Fork Detection
+**New** - The database's fork switching logic now includes improved dead fork detection:
+
+- **Dead Fork Detection**: When attempting to switch forks, the system checks if the current head block exists in the fork database before proceeding.
+- **Proper Exception Handling**: If the head block is not in the fork database, the system removes the candidate block and throws unlinkable_block_exception.
+- **Enhanced Branch Comparison**: Improved fork comparison logic with proper handling of emergency consensus mode tie-breaking.
+- **Safe Fork Switching**: The system ensures fork switching only occurs when both chains are valid and linked to the current state.
+
+```mermaid
+flowchart TD
+Start(["Fork Switch Decision"]) --> CheckHead{"Head in fork_db?"}
+CheckHead --> |No| RejectFork["Remove candidate block"]
+RejectFork --> ThrowException["Throw unlinkable_block_exception"]
+CheckHead --> |Yes| CompareBranches["Compare fork branches"]
+CompareBranches --> ComputeWeight["Compute branch weights"]
+ComputeWeight --> DecideSwitch{"Should switch forks?"}
+DecideSwitch --> |Yes| SwitchForks["Perform fork switch"]
+DecideSwitch --> |No| KeepCurrent["Keep current fork"]
+SwitchForks --> UpdateHead["Update fork_db head"]
+KeepCurrent --> End(["Complete"])
+UpdateHead --> End
+```
+
+**Diagram sources**
+- [database.cpp:1295-1377](file://libraries/chain/database.cpp#L1295-L1377)
+
+**Section sources**
+- [database.cpp:1295-1377](file://libraries/chain/database.cpp#L1295-L1377)
+
 ### Checkpoint System for Fast Synchronization
 - Checkpoints: A map of block number to expected block ID is maintained; when a checkpoint matches, the system skips expensive validations and authority checks for subsequent blocks until the last checkpoint.
 - before_last_checkpoint(): Determines whether the current head is before the last checkpoint to decide whether to enforce stricter checks.
@@ -860,6 +933,7 @@ These signals are used by plugins to react to blockchain events without tight co
 - **Enhanced Memory Management**: Comprehensive logging of memory states before and after resizing operations for administrator visibility
 - **Deferred Memory Resize**: Thread-safe memory resize mechanism that applies operations at safe points to prevent race conditions
 - **Enhanced Error Handling**: Graceful handling of shared memory exhaustion with peer connectivity preservation
+- **Enhanced Fork Database**: Proper unlinkable block exception handling for dead fork detection and improved fork switching logic
 - Query helpers:
   - get_block_id_for_num(uint32_t)
   - fetch_block_by_id(block_id_type)
@@ -1073,7 +1147,7 @@ The database depends on:
 - chainbase for persistent storage and undo sessions with enhanced memory management
 - block_log for immutable block storage and random access
 - dlt_block_log for rolling window storage in DLT mode
-- fork_database for reversible blocks and fork resolution with emergency mode support
+- fork_database for reversible blocks and fork resolution with emergency mode support and enhanced unlinkable block detection
 - protocol types and evaluators for operation processing
 - signal_guard for enhanced error handling during restart sequences
 - snapshot plugin for DLT mode initialization
@@ -1087,6 +1161,7 @@ The database depends on:
 - **Enhanced memory management**: Comprehensive logging system for shared memory allocation with detailed state reporting
 - **Deferred memory resize mechanism**: Thread-safe memory management with proper lock handling and race condition prevention
 - **Enhanced error handling**: Graceful exception handling for shared memory exhaustion with peer connectivity preservation
+- **Enhanced fork database**: Proper unlinkable block exception handling for dead fork detection and improved fork switching logic
 
 ```mermaid
 graph LR
@@ -1109,6 +1184,7 @@ DB --> MEMLOG["enhanced memory management logging"]
 DB --> DEFER["deferred memory resize mechanism"]
 DB --> ERROR["enhanced error handling"]
 DB --> NETWORK["network layer integration"]
+DB --> UNLINK["unlinkable_block_exception"]
 ```
 
 **Diagram sources**
@@ -1116,12 +1192,14 @@ DB --> NETWORK["network layer integration"]
 - [database.cpp:1-30](file://libraries/chain/database.cpp#L1-L30)
 - [database.cpp:94-184](file://libraries/chain/database.cpp#L94-L184)
 - [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
+- [database_exceptions.hpp:83](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L83)
 
 **Section sources**
 - [database.hpp:1-10](file://libraries/chain/include/graphene/chain/database.hpp#L1-L10)
 - [database.cpp:1-30](file://libraries/chain/database.cpp#L1-L30)
 - [database.cpp:94-184](file://libraries/chain/database.cpp#L94-L184)
 - [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
+- [database_exceptions.hpp:83](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L83)
 
 ## Performance Considerations
 - Use skip flags during reindex to bypass expensive validations and improve replay speed.
@@ -1149,6 +1227,8 @@ DB --> NETWORK["network layer integration"]
 - **Deferred Memory Resize Efficiency**: The new deferred resize mechanism prevents race conditions and stale pointer issues during high-load scenarios, improving overall system reliability and performance.
 - **Thread-Safe Memory Operations**: Proper lock management during memory resize operations ensures data consistency and prevents performance degradation from thread contention.
 - **Enhanced Error Handling**: Graceful handling of shared memory exhaustion prevents peer disconnections and maintains network connectivity during memory pressure situations.
+- **Enhanced Fork Database Performance**: Proper unlinkable block exception handling reduces processing overhead by eliminating dead fork blocks from consideration.
+- **Improved Fork Switching**: Enhanced fork switching logic with proper dead fork detection prevents unnecessary processing and improves fork resolution performance.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -1183,6 +1263,9 @@ Common issues and remedies:
 - **Performance Degradation**: Check if the deferred memory resize mechanism is causing unexpected delays or if memory operations are blocking other threads.
 - **Shared Memory Exhaustion**: Monitor boost::interprocess::bad_alloc exceptions and verify that deferred resize scheduling is working correctly to prevent peer disconnections.
 - **Peer Connectivity Issues**: Verify that memory pressure handling is preserving peer connections and not causing network instability.
+- **Enhanced Fork Database Issues**: Monitor unlinkable_block_exception handling to ensure dead fork blocks are properly detected and excluded from processing.
+- **Fork Switching Problems**: Verify that fork switching logic properly handles unlinkable_block_exception and prevents processing of invalid forks.
+- **Dead Fork Detection**: Check that the enhanced fork database properly throws unlinkable_block_exception for blocks from dead forks to prevent wasted processing resources.
 
 **Section sources**
 - [database.cpp:800-830](file://libraries/chain/database.cpp#L800-L830)
@@ -1195,6 +1278,8 @@ Common issues and remedies:
 - [database.cpp:454-482](file://libraries/chain/database.cpp#L454-L482)
 - [database.cpp:1106-1145](file://libraries/chain/database.cpp#L1106-L1145)
 - [database.cpp:1460-1470](file://libraries/chain/database.cpp#L1460-L1470)
+- [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
+- [database.cpp:1295-1377](file://libraries/chain/database.cpp#L1295-L1377)
 
 ## Conclusion
 The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support, emergency consensus implementation, and improved error handling. It integrates chainbase for persistent storage, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, and the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals.
@@ -1210,3 +1295,5 @@ The emergency consensus implementation represents a significant advancement in b
 The deferred memory resize mechanism represents a major improvement in thread safety and system reliability. By deferring memory resize operations until safe points when no read locks are held, the system prevents race conditions that could lead to stale pointer issues and data corruption. The `apply_pending_resize()` method ensures that memory operations are performed atomically with proper synchronization, while the `_pending_resize` and `_pending_resize_target` fields provide a clean separation between request and execution phases. This design enables the system to handle high-load scenarios more efficiently while maintaining data consistency and preventing performance degradation from thread contention.
 
 **Enhanced Error Handling** - The most significant improvement is the enhanced error handling for shared memory exhaustion. The database now gracefully handles boost::interprocess::bad_alloc exceptions by returning false instead of throwing, which prevents P2P layer disconnections and maintains witness slot-miss logging while preserving node connectivity. The system schedules a deferred resize operation and preserves memory state by setting reserved memory to current free memory, ensuring automatic recovery without manual intervention. This approach maintains network stability during memory pressure situations and allows the missed block to be re-received during normal sync, providing a seamless user experience even under adverse conditions.
+
+**Enhanced Fork Database Handling** - The fork database now includes proper unlinkable_block_exception throwing for dead fork detection, significantly improving the system's ability to identify and reject blocks from invalid forks. This enhancement prevents wasted processing resources on dead forks and improves overall network efficiency. The improved fork switching logic with proper dead fork detection ensures that only valid, linked forks are considered for switching, reducing the risk of processing invalid chain states and improving the reliability of fork resolution operations.

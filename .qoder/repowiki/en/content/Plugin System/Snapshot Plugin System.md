@@ -21,12 +21,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced snapshot creation with comprehensive configuration options including multiple trusted snapshot peers, snapshot scheduling parameters, and serving options
-- Added watchdog monitoring system with dedicated server thread for improved reliability and automatic recovery
-- Implemented automatic snapshot discovery functionality with --snapshot-auto-latest option
-- Enhanced recovery workflow with integrated DLT replay and stalled sync detection
-- Added comprehensive anti-spam protection with new configuration options and improved trust enforcement
-- Enhanced P2P synchronization with improved peer connection handling and diagnostic tools
+- Enhanced memory usage optimization with immediate JSON string clearing during snapshot import
+- Improved reliability with comprehensive cleanup routines for anti-spam state management
+- Enhanced snapshot import with fork database reset and comprehensive object clearing
+- Added new watchdog monitoring system for server reliability with automatic accept loop restart
+- Implemented major optimizations for peak memory reduction during snapshot processing
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -40,7 +39,7 @@
 9. [Automatic Snapshot Discovery](#automatic-snapshot-discovery)
 10. [Integrated Recovery Workflow](#integrated-recovery-workflow)
 11. [DLT Replay Integration](#dlt-replay-integration)
-12. [Peer-to-Peer Snapshot Synchronization](#peer-to-peer-snapshot-synchronization)
+12. [Peer-to-Peer Snapshot Synchronization](#peer-to-pair-snapshot-synchronization)
 13. [Watchdog and Stalled Sync Detection](#watchdog-and-stalled-sync-detection)
 14. [Emergency Consensus Handling](#emergency-consensus-handling)
 15. [Enhanced Anti-Spam Protection](#enhanced-anti-spam-protection)
@@ -251,7 +250,7 @@ Plugin-->>CLI : completion_status
 
 ### Snapshot Loading and Validation
 
-Snapshot loading implements rigorous validation and reconstruction procedures:
+Snapshot loading implements rigorous validation and reconstruction procedures with enhanced memory management:
 
 ```mermaid
 flowchart TD
@@ -272,7 +271,7 @@ SeedForkDB --> PromoteLIB["Promote LIB to Head Block"]
 PromoteLIB --> Complete([Load Complete])
 ```
 
-**Updated** The loading process includes extensive validation steps to ensure data integrity and compatibility with the current node configuration, showcasing the robustness of the modular design. Recent improvements include enhanced LIB promotion for DLT mode, improved fork database seeding for reliable P2P synchronization, integrated recovery workflow integration, and comprehensive error handling for unlinkable_block_exception scenarios.
+**Updated** The loading process includes extensive validation steps to ensure data integrity and compatibility with the current node configuration, showcasing the robustness of the modular design. Recent improvements include enhanced LIB promotion for DLT mode, improved fork database seeding for reliable P2P synchronization, integrated recovery workflow integration, comprehensive error handling for unlinkable_block_exception scenarios, and comprehensive object clearing for hot-reload scenarios.
 
 **Diagram sources**
 - [plugin.cpp:1046-1288](file://plugins/snapshot/plugin.cpp#L1046-L1288)
