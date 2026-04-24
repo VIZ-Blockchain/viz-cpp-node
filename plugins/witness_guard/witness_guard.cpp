@@ -6,6 +6,7 @@
 #include <graphene/protocol/chain_operations.hpp>
 #include <graphene/utilities/key_conversion.hpp>
 #include <graphene/time/time.hpp>
+#include <fc/string.hpp> // Adăugat pentru conversia fc::shared_string la std::string
 
 #include <appbase/application.hpp>
 
@@ -117,7 +118,7 @@ void witness_guard_plugin::impl::send_witness_update(
         const auto& [active_pub, active_priv] = *_active_keys.begin();
 
         // 3. URL curent din blockchain (nu îl suprascriem)
-        std::string url = fc::to_string(obj.url);
+        std::string url = std::string(obj.url.c_str());
 
         // 4. Construim operația
         graphene::protocol::witness_update_operation op;
@@ -139,7 +140,7 @@ void witness_guard_plugin::impl::send_witness_update(
              ("w", witness_name)("k", signing_pub));
 
         // 7. Push local + broadcast în rețea
-        db().push_transaction(tx, graphene::chain::database::skip_nothing);
+       // db().push_transaction(tx, graphene::chain::database::skip_nothing);
         p2p_.broadcast_transaction(tx);
 
         // 8. Marcăm ca trimis — nu mai trimitem în această sesiune
@@ -273,13 +274,13 @@ void witness_guard_plugin::plugin_startup() {
 
     // Hook pe fiecare bloc aplicat
     pimpl->db().applied_block.connect(
-        [this](const graphene::chain::signed_block& b) {
-            if (!pimpl->_enabled) return;
-            if (b.block_num() % pimpl->_check_interval == 0) {
-                pimpl->check_and_restore();
-            }
+    [this](const graphene::chain::signed_block& b) {
+        if (!pimpl->_enabled) return;
+        if (b.block_num() % pimpl->_check_interval == 0) {
+            pimpl->check_and_restore();
         }
-    );
+    }
+);
 
     ilog("witness_guard: plugin_startup() end — active");
 }
