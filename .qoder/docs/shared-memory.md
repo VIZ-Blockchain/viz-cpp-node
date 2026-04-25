@@ -42,6 +42,8 @@ The VIZ node stores all blockchain state in a memory-mapped file (`shared_memory
 | `libraries/chain/database.cpp` | Chain-level `open()`, `_resize()`, `check_free_memory()`, `push_block()`, `_generate_block()` |
 | `libraries/chain/include/graphene/chain/database.hpp` | Chain database class declaration, resize/memory parameters |
 | `plugins/chain/plugin.cpp` | Config option definitions, initialization, snapshot loading |
+| `plugins/witness/witness.cpp` | Lockless reads in `maybe_produce_block()` and `is_witness_scheduled_soon()`, guarded by `operation_guard` |
+| `plugins/p2p/p2p_plugin.cpp` | Lockless reads in block post-validation (`get_witness_key()`), guarded by `operation_guard` |
 
 ---
 
@@ -235,8 +237,11 @@ The **resize barrier** (`chainbase::database`) solves this with an atomic operat
 | Code Path | How It Participates |
 |-----------|--------------------|
 | `with_read_lock()` / `with_write_lock()` | `operation_guard` acquired automatically inside the lock wrapper before the `boost::shared_mutex` lock |
-| `_generate_block()` lockless reads | Explicit scoped `operation_guard` around `get_slot_at_time()`, `get_scheduled_witness()`, `get_witness()`, `find_account()` |
+| `_generate_block()` lockless reads (pre-write-lock) | Explicit scoped `operation_guard` around `get_slot_at_time()`, `get_scheduled_witness()`, `get_witness()`, `find_account()` |
+| `_generate_block()` lockless reads (post-write-lock) | Second `operation_guard` (`op_guard2`) around `get_dynamic_global_properties()`, `head_block_id()`, `get_witness()`, `get_hardfork_property_object()`; released via `release()` before `push_block()` |
 | Witness plugin `maybe_produce_block()` | Explicit `operation_guard` around `get_slot_at_time()`, `get_scheduled_witness()`, index lookups; released via `release()` before `generate_block()` |
+| Witness plugin `is_witness_scheduled_soon()` | Explicit `operation_guard` around `get_slot_at_time()`, `get_scheduled_witness()`, index lookups; released via `release()` before return |
+| P2P plugin block post-validation | Explicit `operation_guard` around `get_witness_key()` calls; released via `release()` before `apply_block_post_validation()` |
 
 **Key classes:**
 
@@ -314,7 +319,7 @@ with_strong_write_lock([&]() {  // operation_guard acquired inside
 });
 ```
 
-### Lockless Reads (Witness Plugin, Block Generation)
+### Lockless Reads (Witness Plugin, Block Generation, P2P)
 
 Some code paths read from chainbase indices **without** holding a `boost::shared_mutex` lock. These must explicitly use an `operation_guard` to participate in the resize barrier:
 
@@ -328,15 +333,42 @@ op_guard.release();  // release before generate_block() which has its own guard
 ```
 
 ```cpp
-// database.cpp — _generate_block()
+// witness.cpp — is_witness_scheduled_soon()
+auto op_guard = db.make_operation_guard();
+uint32_t slot = db.get_slot_at_time(now);
+string scheduled = db.get_scheduled_witness(s);
+// ...
+op_guard.release();  // release before returning true
+```
+
+```cpp
+// database.cpp — _generate_block() (pre-write-lock reads)
 {
     auto op_guard = make_operation_guard();
     uint32_t slot_num = get_slot_at_time(when);
     string scheduled_witness = get_scheduled_witness(slot_num);
     const auto& witness_obj = get_witness(witness_owner);
     const auto* witness_acct = find_account(witness_owner);
-    // ...
 } // op_guard released before with_strong_write_lock
+```
+
+```cpp
+// database.cpp — _generate_block() (post-write-lock reads)
+auto op_guard2 = make_operation_guard();
+auto maximum_block_size = get_dynamic_global_properties().maximum_block_size;
+// ... with_strong_write_lock, then post-lock reads ...
+pending_block.previous = head_block_id();
+const auto& witness = get_witness(witness_owner);
+const auto& hfp = get_hardfork_property_object();
+const auto& dgp_block = get_dynamic_global_properties();
+op_guard2.release();  // release before push_block()
+```
+
+```cpp
+// p2p_plugin.cpp — block post-validation
+auto op_guard = chain.db().make_operation_guard();
+fc::ecc::public_key w_signing_key = chain.db().get_witness_key(account);
+op_guard.release();  // release before apply_block_post_validation()
 ```
 
 ### single-write-thread Mode
