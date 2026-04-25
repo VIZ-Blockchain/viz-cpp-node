@@ -597,7 +597,7 @@ namespace graphene {
                 std::set<uint32_t> _trusted_peer_ips;
 
                 // Soft-ban durations
-                static constexpr uint32_t SOFT_BAN_DURATION_SEC = 3600;        // 1 hour (default)
+                static constexpr uint32_t SOFT_BAN_DURATION_SEC = 900;         // 15 minutes (default)
                 static constexpr uint32_t TRUSTED_SOFT_BAN_DURATION_SEC = 300; // 5 minutes (trusted peers)
 
                 bool _node_is_shutting_down; // set to true when we begin our destructor, used to prevent us from starting new tasks while we're shutting down
