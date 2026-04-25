@@ -42,6 +42,8 @@ The VIZ node stores all blockchain state in a memory-mapped file (`shared_memory
 | `libraries/chain/database.cpp` | Chain-level `open()`, `_resize()`, `check_free_memory()`, `push_block()`, `_generate_block()` |
 | `libraries/chain/include/graphene/chain/database.hpp` | Chain database class declaration, resize/memory parameters |
 | `plugins/chain/plugin.cpp` | Config option definitions, initialization, snapshot loading |
+| `plugins/witness/witness.cpp` | Lockless reads in `maybe_produce_block()` and `is_witness_scheduled_soon()`, guarded by `operation_guard` |
+| `plugins/p2p/p2p_plugin.cpp` | Lockless reads in block post-validation (`get_witness_key()`), guarded by `operation_guard` |
 
 ---
 
@@ -204,21 +206,63 @@ The resize is implemented in `chainbase::database::resize()` (`thirdparty/chainb
        index_type->add_index(*this) ← Rebuild index pointers from new mapping
 ```
 
-### Critical Race Condition
+### Resize Barrier
 
-**The resize operation is inherently dangerous in a multi-threaded environment.** When `_segment.reset()` destroys the old mapping:
+Because `_segment.reset()` invalidates **all** pointers/references into shared memory, the resize must ensure that **no thread** — whether holding a lock or reading locklessly — has any live reference into the mapped segment. A simple write lock is insufficient because several code paths read chainbase indices without holding any lock ("lockless reads").
 
-- All pointers/references into the old segment become **dangling**
-- `boost::shared_mutex` does **not** protect against this — a read lock only prevents concurrent writes, but the resize **is** the write
-- If any thread holds a read lock and has cached a reference/pointer to an object in the old mapping, that reference becomes invalid after `_segment.reset()`
+The **resize barrier** (`chainbase::database`) solves this with an atomic operation counter, a flag, and a condition variable:
 
-The `resize()` function checks `_undo_session_count` but does **not** check for active read locks. The write lock held during `push_block()` prevents other threads from acquiring **new** read locks during the resize, but threads that already hold read locks can still be accessing the old mapping.
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    Resize Barrier Protocol                       │
+│                                                                  │
+│  Normal operation:                                               │
+│    enter_operation()  ── wait while _resize_in_progress          │
+│                       ── increment _active_operations            │
+│    ... access shared memory ...                                  │
+│    exit_operation()   ── decrement _active_operations            │
+│                       ── notify resize thread if last op         │
+│                                                                  │
+│  Resize:                                                         │
+│    begin_resize_barrier()  ── set _resize_in_progress = true     │
+│                            ── wait until _active_operations == 0 │
+│    ... _segment.reset() + open() + rebuild indices ...           │
+│    end_resize_barrier()    ── set _resize_in_progress = false    │
+│                            ── notify all waiting threads         │
+└──────────────────────────────────────────────────────────────────┘
+```
 
-**This is the root cause of shared memory corruption** when resize occurs while API threads are reading.
+**Participation points:**
+
+| Code Path | How It Participates |
+|-----------|--------------------|
+| `with_read_lock()` / `with_write_lock()` | `operation_guard` acquired automatically inside the lock wrapper before the `boost::shared_mutex` lock |
+| `_generate_block()` lockless reads (pre-write-lock) | Explicit scoped `operation_guard` around `get_slot_at_time()`, `get_scheduled_witness()`, `get_witness()`, `find_account()` |
+| `_generate_block()` lockless reads (post-write-lock) | Second `operation_guard` (`op_guard2`) around `get_dynamic_global_properties()`, `head_block_id()`, `get_witness()`, `get_hardfork_property_object()`; released via `release()` before `push_block()` |
+| Witness plugin `maybe_produce_block()` | Explicit `operation_guard` around `get_slot_at_time()`, `get_scheduled_witness()`, index lookups; released via `release()` before `generate_block()` |
+| Witness plugin `is_witness_scheduled_soon()` | Explicit `operation_guard` around `get_slot_at_time()`, `get_scheduled_witness()`, index lookups; released via `release()` before return |
+| P2P plugin block post-validation | Explicit `operation_guard` around `get_witness_key()` calls; released via `release()` before `apply_block_post_validation()` |
+
+**Key classes:**
+
+- `chainbase::database::operation_guard` — RAII guard that calls `enter_operation()` on construction and `exit_operation()` on destruction. Supports early release via `release()`. Move-only (non-copyable).
+- `chainbase::database::make_operation_guard()` — Factory method returning an `operation_guard`.
+- `chainbase::database::begin_resize_barrier()` / `end_resize_barrier()` — Called by `apply_pending_resize()` to establish exclusive access for the resize.
+
+**Immediate resize (reindex) does NOT use the barrier.** During reindex, the caller already holds an exclusive write lock and no API threads are running. Using the barrier would deadlock because the write lock itself holds an operation guard.
+
+### Historical Context: Pre-Barrier Race Condition
+
+Before the resize barrier was added, the resize used `with_strong_write_lock()` which only blocked threads holding or waiting for a `boost::shared_mutex` lock. This left lockless reads unprotected:
+
+- `boost::shared_mutex` does **not** protect against segment destruction — a read lock only prevents concurrent writes, but the resize **is** the write
+- Threads performing lockless reads (witness plugin, `_generate_block()`) could hold stale pointers into the old mapping after `_segment.reset()`
+
+This was the root cause of shared memory corruption symptoms like `CRITICAL: Witness X account object MISSING from database!`.
 
 ### Corruption Symptoms
 
-Typical corruption indicators:
+Typical corruption indicators (should not occur with the resize barrier in place, but listed for historical reference and diagnostics):
 
 - `CRITICAL: Witness X account object MISSING from database!` — account index entry not found despite `account_index_size` showing entries exist
 - `Could not modify object, most likely a uniqueness constraint was violated` — internal index pointers corrupted, uniqueness check fails
@@ -233,7 +277,7 @@ inc-shared-file-size = 500M
 min-free-shared-file-size = 1000M    ← THRESHOLD > INCREMENT!
 ```
 
-After one resize (500M → 1000M), free space is still below 1000M, triggering **another resize on the next check**, causing cascading resizes that dramatically increase the chance of corruption.
+After one resize (500M → 1000M), free space is still below 1000M, triggering **another resize on the next check**, causing cascading resizes. While the resize barrier prevents corruption, frequent resizes still cause latency spikes as all operations are paused during each resize.
 
 ---
 
@@ -255,12 +299,12 @@ Most `database_api` methods use `with_weak_read_lock()`:
 ```cpp
 // Example: get_accounts
 auto result = with_weak_read_lock([&]() {
-    // Read from chainbase indices
+    // Read from chainbase indices — operation_guard acquired automatically
     return accounts;
 });
 ```
 
-If the read lock cannot be acquired within `read-wait-micro × max-read-wait-retries`, the API returns error: `"Unable to acquire READ lock"`.
+If the read lock cannot be acquired within `read-wait-micro × max-read-wait-retries`, the API returns error: `"Unable to acquire READ lock"`. If a resize barrier is active, the `operation_guard` inside `with_weak_read_lock()` will block until the resize completes before attempting the lock.
 
 ### Write Path (Block Application)
 
@@ -268,10 +312,63 @@ All state modifications go through `with_strong_write_lock()`:
 
 ```cpp
 // push_block
-with_strong_write_lock([&]() {
+apply_pending_resize();  // uses resize barrier (begin/end)
+with_strong_write_lock([&]() {  // operation_guard acquired inside
     _push_block(new_block, skip);
     check_free_memory(false, new_block.block_num());
 });
+```
+
+### Lockless Reads (Witness Plugin, Block Generation, P2P)
+
+Some code paths read from chainbase indices **without** holding a `boost::shared_mutex` lock. These must explicitly use an `operation_guard` to participate in the resize barrier:
+
+```cpp
+// witness.cpp — maybe_produce_block()
+auto op_guard = db.make_operation_guard();
+uint32_t slot = db.get_slot_at_time(now);           // lockless read
+string scheduled = db.get_scheduled_witness(slot);  // lockless read
+// ... more lockless reads ...
+op_guard.release();  // release before generate_block() which has its own guard
+```
+
+```cpp
+// witness.cpp — is_witness_scheduled_soon()
+auto op_guard = db.make_operation_guard();
+uint32_t slot = db.get_slot_at_time(now);
+string scheduled = db.get_scheduled_witness(s);
+// ...
+op_guard.release();  // release before returning true
+```
+
+```cpp
+// database.cpp — _generate_block() (pre-write-lock reads)
+{
+    auto op_guard = make_operation_guard();
+    uint32_t slot_num = get_slot_at_time(when);
+    string scheduled_witness = get_scheduled_witness(slot_num);
+    const auto& witness_obj = get_witness(witness_owner);
+    const auto* witness_acct = find_account(witness_owner);
+} // op_guard released before with_strong_write_lock
+```
+
+```cpp
+// database.cpp — _generate_block() (post-write-lock reads)
+auto op_guard2 = make_operation_guard();
+auto maximum_block_size = get_dynamic_global_properties().maximum_block_size;
+// ... with_strong_write_lock, then post-lock reads ...
+pending_block.previous = head_block_id();
+const auto& witness = get_witness(witness_owner);
+const auto& hfp = get_hardfork_property_object();
+const auto& dgp_block = get_dynamic_global_properties();
+op_guard2.release();  // release before push_block()
+```
+
+```cpp
+// p2p_plugin.cpp — block post-validation
+auto op_guard = chain.db().make_operation_guard();
+fc::ecc::public_key w_signing_key = chain.db().get_witness_key(account);
+op_guard.release();  // release before apply_block_post_validation()
 ```
 
 ### single-write-thread Mode
@@ -393,9 +490,10 @@ FATAL write lock timeout!!!
 
 ## Safety Rules
 
-1. **`min-free-shared-file-size` must be less than `inc-shared-file-size`** — otherwise cascading resizes occur, dramatically increasing corruption risk
-2. **Pre-allocate generously** — set `shared-file-size` large enough that resize is rare. Resizing is the most dangerous operation.
-3. **Use `single-write-thread = true`** in production — prevents write lock contention and reduces the window for resize race conditions
-4. **Avoid resize during witness production** — a witness node should have enough pre-allocated memory that resize never triggers during block generation
+1. **`min-free-shared-file-size` must be less than `inc-shared-file-size`** — otherwise cascading resizes occur, causing frequent operation pauses
+2. **Pre-allocate generously** — set `shared-file-size` large enough that resize is rare. Each resize pauses all operations while the segment is remapped.
+3. **Use `single-write-thread = true`** in production — prevents write lock contention
+4. **Avoid resize during witness production** — a witness node should have enough pre-allocated memory that resize never triggers during block generation. The resize barrier guarantees safety but introduces latency.
 5. **After corruption, always replay** — there is no safe way to repair a corrupted `shared_memory.bin`. Use `--replay-blockchain` or `--snapshot` to rebuild state from block_log/dlt_block_log.
 6. **Backup before config changes** — changing `shared-file-size` to a larger value triggers `grow()` on next startup, which is safe. Reducing it has no effect (file doesn't shrink).
+7. **Any new lockless read path must use `operation_guard`** — if you add code that reads from chainbase indices without `with_read_lock()`/`with_write_lock()`, wrap it with `make_operation_guard()` to participate in the resize barrier. Failing to do so can cause stale pointer access during resize.

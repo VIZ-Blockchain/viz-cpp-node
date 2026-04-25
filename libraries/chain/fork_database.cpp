@@ -266,5 +266,12 @@ namespace graphene {
             _index.get<block_id>().erase(id);
         }
 
+        void fork_database::remove_blocks_by_number(uint32_t num) {
+            auto blocks = fetch_block_by_number(num);
+            for (const auto& b : blocks) {
+                _index.get<block_id>().erase(b->id);
+            }
+        }
+
     }
 } // graphene::chain

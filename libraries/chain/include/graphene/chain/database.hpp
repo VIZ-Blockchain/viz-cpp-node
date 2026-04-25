@@ -532,6 +532,17 @@ namespace graphene { namespace chain {
 
             void check_block_post_validation_chain();
 
+            /**
+             * Compare two fork branches by vote weight (HF12 logic).
+             * Sums wit_obj.votes (on-chain stake) for all unique witnesses in each branch,
+             * from the tip back to the common ancestor.
+             * The longer chain gets a +10% bonus on its total weight (reflects that more
+             * witnesses kept producing on it by consensus rules without deferring).
+             * @return >0 if branch_a is heavier, <0 if branch_b is heavier, 0 if tied
+             * @return 0 if either tip is not in fork_db (cannot compare)
+             */
+            int compare_fork_branches(const block_id_type& branch_a_tip, const block_id_type& branch_b_tip) const;
+
         protected:
             //Mark pop_undo() as protected -- we do not want outside calling pop_undo(); it should call pop_block() instead
             //void pop_undo() { object_database::pop_undo(); }

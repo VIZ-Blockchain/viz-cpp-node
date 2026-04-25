@@ -572,8 +572,8 @@ namespace graphene { namespace chain {
 
             if (!immediate) {
                 // Deferred mode: just set the flag. The actual resize will be
-                // performed by apply_pending_resize() at a safe point where
-                // no other threads hold read locks or lockless references.
+                // performed by apply_pending_resize() using the resize barrier,
+                // which pauses all operations (including lockless reads).
                 ilog(
                     "\033[33mShared memory resize deferred on block ${block}: actual data ${used_before}M / current ${max_before}M -> will grow to ${mem}M\033[0m",
                     ("block", current_block_num)("mem", new_max / (1024 * 1024))
@@ -585,6 +585,10 @@ namespace graphene { namespace chain {
 
             // Immediate mode: used during reindex when we already hold an
             // exclusive write lock and no API threads are running.
+            // NOTE: This path intentionally does NOT use begin_resize_barrier()
+            // because during reindex there are no concurrent readers or lockless
+            // operations. Using the barrier here would deadlock since the caller
+            // already holds a write lock (which itself holds an operation guard).
             ilog(
                 "\033[33mShared memory growing on block ${block}: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
                 ("block", current_block_num)("mem", new_max / (1024 * 1024))
@@ -611,38 +615,41 @@ namespace graphene { namespace chain {
                 return;
             }
 
-            // Acquire our own write lock. This waits for ALL read locks to be
-            // released, so by the time we enter the lambda no other thread has
-            // any reference into the shared memory segment.
-            with_strong_write_lock([&]() {
-                if (!_pending_resize) {
-                    return; // another thread beat us
-                }
+            // Use the resize barrier to pause ALL database operations.
+            // This is stronger than with_strong_write_lock: it also blocks
+            // lockless reads (e.g. get_slot_at_time, get_scheduled_witness,
+            // find_account in _generate_block and witness plugin) that do not
+            // acquire any chainbase lock.  After begin_resize_barrier()
+            // returns, no thread holds any reference into shared memory.
+            ilog("Resize barrier: pausing all database operations...");
+            begin_resize_barrier();
 
-                size_t target = _pending_resize_target;
-                _pending_resize = false;
-                _pending_resize_target = 0;
+            size_t target = _pending_resize_target;
+            _pending_resize = false;
+            _pending_resize_target = 0;
 
-                uint64_t max_mem_before = max_memory();
-                uint64_t free_mem_before = free_memory();
-                uint64_t used_mem_before = max_mem_before - free_mem_before;
+            uint64_t max_mem_before = max_memory();
+            uint64_t free_mem_before = free_memory();
+            uint64_t used_mem_before = max_mem_before - free_mem_before;
 
-                ilog("\033[33mApplying deferred shared memory resize: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
-                     ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem_before / (1024 * 1024))
-                     ("mem", target / (1024 * 1024)));
-                resize(target);
+            ilog("\033[33mApplying deferred shared memory resize: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
+                 ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem_before / (1024 * 1024))
+                 ("mem", target / (1024 * 1024)));
+            resize(target);
 
-                uint64_t free_mem = free_memory();
-                uint64_t reserved_mem = reserved_memory();
-                uint64_t used_mem_after = target - free_mem;
-                if (free_mem > reserved_mem) {
-                    free_mem -= reserved_mem;
-                }
-                uint32_t free_mb = uint32_t(free_mem / (1024 * 1024));
-                ilog("\033[33mDeferred shared memory grow complete: actual data ${used_after}M / new ${max_after}M (free ${free}M)\033[0m",
-                     ("used_after", used_mem_after / (1024 * 1024))("max_after", target / (1024 * 1024))("free", free_mb));
-                _last_free_gb_printed = free_mb / 1024;
-            });
+            uint64_t free_mem = free_memory();
+            uint64_t reserved_mem = reserved_memory();
+            uint64_t used_mem_after = target - free_mem;
+            if (free_mem > reserved_mem) {
+                free_mem -= reserved_mem;
+            }
+            uint32_t free_mb = uint32_t(free_mem / (1024 * 1024));
+            ilog("\033[33mDeferred shared memory grow complete: actual data ${used_after}M / new ${max_after}M (free ${free}M)\033[0m",
+                 ("used_after", used_mem_after / (1024 * 1024))("max_after", target / (1024 * 1024))("free", free_mb));
+            _last_free_gb_printed = free_mb / 1024;
+
+            end_resize_barrier();
+            ilog("Resize barrier: all database operations resumed.");
         }
 
         void database::check_free_memory(bool skip_print, uint32_t current_block_num, bool immediate_resize) {
@@ -1116,9 +1123,9 @@ namespace graphene { namespace chain {
             //fc::time_point begin_time = fc::time_point::now();
 
             // Apply any deferred resize BEFORE acquiring the main write lock.
-            // This is the safe point: no read locks are held, no lockless reads
-            // are in progress. apply_pending_resize() acquires its own write lock
-            // internally, which waits for all readers to finish first.
+            // apply_pending_resize() uses the resize barrier to pause ALL operations
+            // (including lockless reads), ensuring no thread has any reference into
+            // the shared memory segment during the remap.
             apply_pending_resize();
 
             bool result = false;
@@ -1213,6 +1220,52 @@ namespace graphene { namespace chain {
             return;
         }
 
+        int database::compare_fork_branches(const block_id_type& branch_a_tip, const block_id_type& branch_b_tip) const {
+            try {
+                if (!_fork_db.is_known_block(branch_a_tip) || !_fork_db.is_known_block(branch_b_tip))
+                    return 0;  // Cannot compare — one or both tips not in fork_db
+
+                auto branches = _fork_db.fetch_branch_from(branch_a_tip, branch_b_tip);
+
+                auto compute_branch_weight = [&](const fork_database::branch_type& branch) -> share_type {
+                    flat_set<account_name_type> seen_witnesses;
+                    share_type total_weight = 0;
+                    for (const auto& item : branch) {
+                        const auto& wit_name = item->data.witness;
+                        if (wit_name == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
+                        if (seen_witnesses.insert(wit_name).second) {
+                            try {
+                                const auto& wit_obj = get_witness(wit_name);
+                                total_weight += wit_obj.votes;
+                            } catch (...) {}
+                        }
+                    }
+                    return total_weight;
+                };
+
+                share_type weight_a = compute_branch_weight(branches.first);
+                share_type weight_b = compute_branch_weight(branches.second);
+
+                // Longer chain gets +10% bonus on its vote weight.
+                // Each block produced is a consensus "vote" — witnesses on the longer
+                // chain didn't defer and kept producing by consensus rules.
+                // This reflects the stronger network support signal.
+                auto a_num = block_header::num_from_id(branch_a_tip);
+                auto b_num = block_header::num_from_id(branch_b_tip);
+                if (a_num > b_num) {
+                    weight_a = weight_a + weight_a / 10;  // +10%
+                } else if (b_num > a_num) {
+                    weight_b = weight_b + weight_b / 10;  // +10%
+                }
+
+                if (weight_a > weight_b) return 1;   // branch_a is heavier
+                if (weight_b > weight_a) return -1;  // branch_b is heavier
+                return 0;  // tied
+            } catch (...) {
+                return 0;  // Cannot compare
+            }
+        }
+
         bool database::_push_block(const signed_block &new_block, uint32_t skip) {
             try {
                 // Early rejection: if the block is at or before our head block number
@@ -1290,35 +1343,13 @@ namespace graphene { namespace chain {
                         //Only switch forks if new_head is actually higher than head
                         bool should_switch = false;
                         if (has_hardfork(CHAIN_HARDFORK_12)) {
-                            // HF12: Vote-weighted chain comparison
-                            // Primary criterion: sum of raw votes of unique non-committee witnesses per branch
-                            // Secondary criterion (tie): longer chain wins
+                            // HF12: Vote-weighted chain comparison with +10% longer-chain bonus
                             if (new_head->data.block_num() >= head_block_num() &&
                                 _fork_db.is_known_block(head_block_id())) {
-                                auto branches = _fork_db.fetch_branch_from(new_head->data.id(), head_block_id());
-
-                                auto compute_branch_weight = [&](const fork_database::branch_type& branch) -> share_type {
-                                    flat_set<account_name_type> seen_witnesses;
-                                    share_type total_weight = 0;
-                                    for (const auto& item : branch) {
-                                        const auto& wit_name = item->data.witness;
-                                        if (wit_name == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
-                                        if (seen_witnesses.insert(wit_name).second) {
-                                            try {
-                                                const auto& wit_obj = get_witness(wit_name);
-                                                total_weight += wit_obj.votes;
-                                            } catch (...) {}
-                                        }
-                                    }
-                                    return total_weight;
-                                };
-
-                                share_type new_weight = compute_branch_weight(branches.first);
-                                share_type old_weight = compute_branch_weight(branches.second);
-
-                                if (new_weight > old_weight) {
+                                int cmp = compare_fork_branches(new_head->data.id(), head_block_id());
+                                if (cmp > 0) {
                                     should_switch = true;
-                                } else if (new_weight == old_weight) {
+                                } else if (cmp == 0) {
                                     // Tie: longer chain wins
                                     should_switch = (new_head->data.block_num() > head_block_num());
                                 }
@@ -1423,6 +1454,22 @@ namespace graphene { namespace chain {
                     throw;
                 }
 
+                // Prune stale competing blocks from dead forks at this height.
+                // A competing block is only safe to remove if its parent is no longer
+                // in the fork_db — without a parent the fork cannot be extended, so
+                // the block is truly dead. Removing blocks whose parent is still known
+                // would break legitimate fork switches when later blocks arrive.
+                {
+                    auto competing = _fork_db.fetch_block_by_number(new_block.block_num());
+                    for (const auto& cb : competing) {
+                        if (cb->id != new_block.id() && !_fork_db.is_known_block(cb->data.previous)) {
+                            wlog("Pruning stale competing block ${id} at height ${n} from fork_db (dead fork)",
+                                 ("id", cb->id)("n", new_block.block_num()));
+                            _fork_db.remove(cb->id);
+                        }
+                    }
+                }
+
                 return false;
             } FC_CAPTURE_AND_RETHROW()
         }
@@ -1499,35 +1546,50 @@ namespace graphene { namespace chain {
             // If resize happened on another thread, those pointers could be stale.
             apply_pending_resize();
 
-            uint32_t slot_num = get_slot_at_time(when);
-            FC_ASSERT(slot_num > 0);
-            string scheduled_witness = get_scheduled_witness(slot_num);
-            FC_ASSERT(scheduled_witness == witness_owner);
+            // Guard all lockless reads with the resize barrier operation guard.
+            // This prevents a concurrent resize from remapping shared memory
+            // while we hold raw pointers/references into the mapped segment.
+            // The guard is scoped so it is released before with_strong_write_lock
+            // (which acquires its own operation guard internally).
+            {
+                auto op_guard = make_operation_guard();
 
-            const auto &witness_obj = get_witness(witness_owner);
+                uint32_t slot_num = get_slot_at_time(when);
+                FC_ASSERT(slot_num > 0);
+                string scheduled_witness = get_scheduled_witness(slot_num);
+                FC_ASSERT(scheduled_witness == witness_owner);
 
-            // Pre-check: ensure the witness account exists before generating the block.
-            // If the account is missing from the database (shared memory corruption),
-            // the block will be produced but fail to apply internally (process_funds
-            // calls get_account which would throw "unknown key").
-            const auto* witness_acct = find_account(witness_owner);
-            if (!witness_acct) {
-                auto& acc_idx = get_index<account_index>().indices().get<by_name>();
-                elog("CRITICAL: Witness ${w} account object MISSING from database! "
-                     "This is impossible state - shared memory may be corrupted. "
-                     "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
-                     "account_index_size=${idx_size}",
-                     ("w", witness_owner)("k", witness_obj.signing_key)
-                     ("m", witness_obj.total_missed)("p", witness_obj.penalty_percent)
-                     ("lc", witness_obj.last_confirmed_block_num)
-                     ("idx_size", acc_idx.size()));
-                FC_ASSERT(false, "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected. Node must be restarted with replay.",
-                          ("w", witness_owner));
-            }
+                const auto &witness_obj = get_witness(witness_owner);
 
-            if (!(skip & skip_witness_signature))
-                FC_ASSERT(witness_obj.signing_key ==
-                          block_signing_private_key.get_public_key());
+                // Pre-check: ensure the witness account exists before generating the block.
+                // If the account is missing from the database (shared memory corruption),
+                // the block will be produced but fail to apply internally (process_funds
+                // calls get_account which would throw "unknown key").
+                const auto* witness_acct = find_account(witness_owner);
+                if (!witness_acct) {
+                    auto& acc_idx = get_index<account_index>().indices().get<by_name>();
+                    elog("CRITICAL: Witness ${w} account object MISSING from database! "
+                         "This is impossible state - shared memory may be corrupted. "
+                         "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
+                         "account_index_size=${idx_size}",
+                         ("w", witness_owner)("k", witness_obj.signing_key)
+                         ("m", witness_obj.total_missed)("p", witness_obj.penalty_percent)
+                         ("lc", witness_obj.last_confirmed_block_num)
+                         ("idx_size", acc_idx.size()));
+                    FC_ASSERT(false, "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected. Node must be restarted with replay.",
+                              ("w", witness_owner));
+                }
+
+                if (!(skip & skip_witness_signature))
+                    FC_ASSERT(witness_obj.signing_key ==
+                              block_signing_private_key.get_public_key());
+            } // op_guard released here
+
+            // Second operation guard covers all remaining lockless reads
+            // in this function: get_dynamic_global_properties(), head_block_id(),
+            // get_witness(), get_hardfork_property_object(). Released before
+            // push_block() which has its own guards.
+            auto op_guard2 = make_operation_guard();
 
             static const size_t max_block_header_size =
                     fc::raw::pack_size(signed_block_header()) + 4;
@@ -1655,6 +1717,8 @@ namespace graphene { namespace chain {
             if (!(skip & skip_block_size_check)) {
                 FC_ASSERT(fc::raw::pack_size(pending_block) <= CHAIN_BLOCK_SIZE);
             }
+
+            op_guard2.release();  // release before push_block(), which has its own guards
 
             push_block(pending_block, skip);
 

@@ -276,6 +276,9 @@ namespace graphene {
             // HF12: soft-ban peers on losing forks during emergency consensus
             fc::time_point fork_rejected_until;
 
+            // Reason for disconnect (set before move_peer_to_closing_list)
+            std::string closing_reason;
+
             fc::future<void> accept_or_connect_task_done;
 
             firewall_check_state_data *firewall_check_state;
