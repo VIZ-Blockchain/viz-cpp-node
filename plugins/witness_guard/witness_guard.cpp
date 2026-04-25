@@ -77,6 +77,20 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
         return false; // Node not in sync, full check not performed
     }
 
+    // Detect potential long fork by checking Last Irreversible Block (LIB) age
+    const auto& dgp = database.get_dynamic_global_properties();
+    const uint32_t lib_num = dgp.last_irreversible_block_num;
+    auto lib_header = database.fetch_block_header_by_number(lib_num);
+    if (lib_header) {
+        const auto lib_time = lib_header->timestamp;
+        // If LIB is older than 200 seconds, we are likely on a long fork or network is stalled
+        if (now - lib_time > fc::seconds(200)) {
+            wlog("witness_guard: POTENTIAL LONG FORK DETECTED! LIB #${n} is ${sec}s old. Skipping restoration.",
+                 ("n", lib_num)("sec", (now - lib_time).to_seconds()));
+            return false;
+        }
+    }
+
     // Clean up _pending_confirmations once per check, not inside the witness loop.
     // Removes trackers that have expired or are no longer relevant.
     for (auto it = _pending_confirmations.begin(); it != _pending_confirmations.end(); ) {
