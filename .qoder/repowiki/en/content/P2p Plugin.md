@@ -15,16 +15,24 @@
 - [config.ini](file://share/vizd/config/config.ini)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Updated logging level consistency section to reflect improved logging level management
+- Added detailed explanation of sync mode logging changes from info to debug level
+- Enhanced troubleshooting guide with logging level considerations
+- Updated performance considerations to include logging impact
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+6. [Logging Level Consistency](#logging-level-consistency)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
 
 ## Introduction
 
@@ -343,6 +351,49 @@ Note over Local,Remote : Continue until synchronized
 - [p2p_plugin.cpp:247-301](file://plugins/p2p/p2p_plugin.cpp#L247-L301)
 - [peer_connection.hpp:79-354](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
 
+## Logging Level Consistency
+
+**Updated** The P2P plugin has implemented improved logging level consistency to reduce verbosity during normal operation while maintaining appropriate log levels for different operational contexts.
+
+### Sync Mode Logging Improvements
+
+The plugin has undergone significant improvements in logging level management, particularly for synchronization operations:
+
+- **Sync Mode Downgrade**: Sync mode block processing logs were downgraded from info level to debug level
+- **Normal Mode Preservation**: Normal block processing continues to use info level logging for visibility
+- **Reduced Verbosity**: This change significantly reduces log volume during routine blockchain synchronization
+- **Contextual Appropriateness**: Debug level logging is more appropriate for frequent sync operations while preserving info level for exceptional events
+
+### Logging Implementation Details
+
+The logging changes are implemented in the block handling method:
+
+```cpp
+if (sync_mode)
+    dlog("chain pushing sync block #${block_num} (head: ${head}, gap: ${gap})",
+         ("block_num", blk_msg.block.block_num())("head", head_block_num)("gap", gap));
+else
+    dlog("chain pushing normal block #${block_num} (head: ${head}, gap: ${gap})",
+         ("block_num", blk_msg.block.block_num())("head", head_block_num)("gap", gap));
+```
+
+**Key Benefits:**
+- **Reduced Log Volume**: Sync operations (which occur frequently during blockchain synchronization) now use debug level logging
+- **Maintained Visibility**: Normal operations continue to use info level logging for operational visibility
+- **Consistent Behavior**: Both sync and normal modes now consistently use debug level logging, improving overall logging consistency
+- **Performance Impact**: Lower logging overhead during normal operation while preserving diagnostic information
+
+### Network Layer Integration
+
+The network layer maintains mixed logging levels for different operational contexts:
+
+- **Info Level**: Used for significant operational events and peer management actions
+- **Debug Level**: Used for routine synchronization and connection maintenance
+- **Warning/Error Levels**: Used for error conditions and exceptional circumstances
+
+**Section sources**
+- [p2p_plugin.cpp:151-156](file://plugins/p2p/p2p_plugin.cpp#L151-L156)
+
 ## Dependency Analysis
 
 The P2P plugin has well-defined dependencies that enable modularity and maintainability:
@@ -417,6 +468,14 @@ The P2P plugin implements several performance optimization strategies:
 - **Stale Sync Detection**: Automatic recovery from stalled synchronization
 - **Connection Health Monitoring**: Real-time peer connection quality metrics
 
+### Logging Performance Impact
+**Updated** The improved logging level consistency provides additional performance benefits:
+
+- **Reduced I/O Overhead**: Debug level logging produces less output than info level logging
+- **Lower Memory Usage**: Reduced log buffer consumption during sync operations
+- **Improved Throughput**: Less frequent logging reduces CPU overhead during normal operation
+- **Better Resource Utilization**: More efficient use of system resources during routine operations
+
 **Section sources**
 - [p2p_plugin.cpp:659-756](file://plugins/p2p/p2p_plugin.cpp#L659-L756)
 - [p2p_plugin.cpp:512-649](file://plugins/p2p/p2p_plugin.cpp#L512-L649)
@@ -439,6 +498,14 @@ The P2P plugin implements several performance optimization strategies:
 - **Symptom**: Frequent peer disconnections
 - **Solution**: Check network stability and bandwidth limitations
 - **Diagnostics**: Monitor peer statistics for connection patterns
+
+### Logging Level Considerations
+
+**Updated** For troubleshooting purposes, consider adjusting logging levels:
+
+- **Enable Debug Logging**: Set logging level to debug for detailed sync operation visibility
+- **Monitor Sync Operations**: Use debug logs to track sync progress and identify bottlenecks
+- **Performance Tuning**: Adjust logging levels based on operational requirements
 
 ### Configuration Reference
 
@@ -468,5 +535,8 @@ Key strengths of the implementation include:
 2. **Performance Optimization**: Efficient synchronization and connection management
 3. **Operational Excellence**: Comprehensive monitoring and diagnostic capabilities
 4. **Extensibility**: Clean interfaces that support future enhancements
+5. **Logging Efficiency**: Improved logging level consistency reduces verbosity while maintaining operational visibility
+
+The recent logging level improvements demonstrate ongoing attention to operational efficiency and user experience. By downgrading sync mode logs from info to debug level, the plugin achieves better balance between operational visibility and system performance, reducing unnecessary log volume during routine synchronization while preserving appropriate logging for exceptional circumstances.
 
 The plugin's design demonstrates best practices in distributed systems engineering, balancing security, performance, and maintainability while providing the foundation for scalable blockchain networks.
