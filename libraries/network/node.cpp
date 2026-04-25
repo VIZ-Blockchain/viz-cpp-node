@@ -3145,7 +3145,7 @@ namespace graphene {
 
                 try {
                     std::vector<fc::uint160_t> contained_transaction_message_ids;
-                    fc_ilog(fc::logger::get("sync"),
+                    fc_dlog(fc::logger::get("sync"),
                             "p2p pushing sync block #${block_num} ${block_hash}",
                             ("block_num", block_message_to_send.block.block_num())
                                     ("block_hash", block_message_to_send.block_id));
