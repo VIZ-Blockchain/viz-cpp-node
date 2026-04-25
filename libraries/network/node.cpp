@@ -4953,6 +4953,19 @@ namespace graphene {
                     bool caused_by_error /* = false */,
                     const fc::oexception &error /* = fc::oexception() */ ) {
                 VERIFY_CORRECT_THREAD();
+
+                // Always log disconnect reason at info level for debugging
+                if (caused_by_error) {
+                    wlog("Disconnecting peer ${peer}: ${reason} (error: ${err})",
+                         ("peer", peer_to_disconnect->get_remote_endpoint())
+                         ("reason", reason_for_disconnect)
+                         ("err", error ? error->to_detail_string() : std::string("none")));
+                } else {
+                    ilog("Disconnecting peer ${peer}: ${reason}",
+                         ("peer", peer_to_disconnect->get_remote_endpoint())
+                         ("reason", reason_for_disconnect));
+                }
+
                 move_peer_to_closing_list(peer_to_disconnect->shared_from_this());
 
                 if (peer_to_disconnect->they_have_requested_close) {
@@ -4990,9 +5003,7 @@ namespace graphene {
                                   <<
                                   " for reason: " << reason_for_disconnect;
                     _delegate->error_encountered(error_message.str(), fc::oexception());
-                    dlog(error_message.str());
-                } else
-                    dlog("Disconnecting from ${peer} for ${reason}", ("peer", peer_to_disconnect->get_remote_endpoint())("reason", reason_for_disconnect));
+                }
                 // peer_to_disconnect->close_connection();
             }
 
