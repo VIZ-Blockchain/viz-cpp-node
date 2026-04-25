@@ -597,8 +597,13 @@ namespace graphene {
                 std::set<uint32_t> _trusted_peer_ips;
 
                 // Soft-ban durations
-                static constexpr uint32_t SOFT_BAN_DURATION_SEC = 3600;        // 1 hour (default)
+                static constexpr uint32_t SOFT_BAN_DURATION_SEC = 900;         // 15 minutes (default)
                 static constexpr uint32_t TRUSTED_SOFT_BAN_DURATION_SEC = 300; // 5 minutes (trusted peers)
+                static constexpr uint32_t DISCONNECT_RECONNECT_COOLDOWN_SEC = 30; // cooldown before reconnecting to a recently disconnected peer
+
+                // Per-IP cooldown after disconnect to prevent rapid reconnect loops.
+                // Key: 32-bit IP address, Value: time point when cooldown expires.
+                std::map<uint32_t, fc::time_point> _disconnect_cooldown;
 
                 bool _node_is_shutting_down; // set to true when we begin our destructor, used to prevent us from starting new tasks while we're shutting down
 
@@ -998,6 +1003,15 @@ namespace graphene {
                             bool initiated_connection_this_pass = false;
                             _potential_peer_database_updated = false;
 
+                            // Clean up expired disconnect cooldowns
+                            {
+                                auto now = fc::time_point::now();
+                                for (auto it = _disconnect_cooldown.begin(); it != _disconnect_cooldown.end(); ) {
+                                    if (it->second <= now) it = _disconnect_cooldown.erase(it);
+                                    else ++it;
+                                }
+                            }
+
                             for (peer_database::iterator iter = _potential_peer_db.begin();
                                  iter != _potential_peer_db.end() &&
                                  is_wanting_new_connections();
@@ -1005,6 +1019,16 @@ namespace graphene {
                                 fc::microseconds delay_until_retry = fc::seconds(
                                         (iter->number_of_failed_connection_attempts +
                                          1) * _peer_connection_retry_timeout);
+
+                                // Skip peers in disconnect cooldown to prevent rapid reconnect loops
+                                uint32_t peer_ip = uint32_t(iter->endpoint.get_address());
+                                auto cooldown_it = _disconnect_cooldown.find(peer_ip);
+                                if (cooldown_it != _disconnect_cooldown.end() && cooldown_it->second > fc::time_point::now()) {
+                                    dlog("Skipping peer ${ep}: disconnect cooldown (${sec}s remaining)",
+                                         ("ep", iter->endpoint)
+                                         ("sec", (cooldown_it->second - fc::time_point::now()).count() / 1000000));
+                                    continue;
+                                }
 
                                 if (!is_connection_to_endpoint_in_progress(iter->endpoint) &&
                                     ((iter->last_connection_disposition !=
@@ -3027,6 +3051,16 @@ namespace graphene {
                 VERIFY_CORRECT_THREAD();
                 originating_peer->they_have_requested_close = true;
 
+                // Record per-IP reconnect cooldown (receiver side)
+                auto remote_ep = originating_peer->get_remote_endpoint();
+                if (remote_ep.valid()) {
+                    uint32_t ip = uint32_t(remote_ep->get_address());
+                    _disconnect_cooldown[ip] = fc::time_point::now() + fc::seconds(DISCONNECT_RECONNECT_COOLDOWN_SEC);
+                }
+
+                // Store reason on peer so move_peer_to_closing_list can display it
+                originating_peer->closing_reason = "remote: " + closing_connection_message_received.reason_for_closing;
+
                 if (closing_connection_message_received.closing_due_to_error) {
                     elog("Peer ${peer} is disconnecting us because of an error: ${msg}, exception: ${error}",
                             ("peer", originating_peer->get_remote_endpoint())
@@ -3145,7 +3179,7 @@ namespace graphene {
 
                 try {
                     std::vector<fc::uint160_t> contained_transaction_message_ids;
-                    fc_ilog(fc::logger::get("sync"),
+                    fc_dlog(fc::logger::get("sync"),
                             "p2p pushing sync block #${block_num} ${block_hash}",
                             ("block_num", block_message_to_send.block.block_num())
                                     ("block_hash", block_message_to_send.block_id));
@@ -3566,7 +3600,7 @@ namespace graphene {
                         _most_recent_blocks_accepted.end()) {
                         std::vector<fc::uint160_t> contained_transaction_message_ids;
                         _message_ids_currently_being_processed.insert(message_hash);
-                        fc_ilog(fc::logger::get("sync"),
+                        fc_dlog(fc::logger::get("sync"),
                                 "\033[90mp2p pushing block #${block_num} ${block_hash} from ${peer} (message_id was ${id})\033[0m",
                                 ("block_num", block_message_to_process.block.block_num())
                                         ("block_hash", block_message_to_process.block_id)
@@ -4434,6 +4468,21 @@ namespace graphene {
 
                     try {
                         _tcp_server.accept(new_peer->get_socket());
+
+                        // Check disconnect cooldown for inbound connections
+                        {
+                            fc::ip::endpoint remote_ep = new_peer->get_socket().remote_endpoint();
+                            uint32_t remote_ip = uint32_t(remote_ep.get_address());
+                            auto cooldown_it = _disconnect_cooldown.find(remote_ip);
+                            if (cooldown_it != _disconnect_cooldown.end() && cooldown_it->second > fc::time_point::now()) {
+                                auto remaining_sec = (cooldown_it->second - fc::time_point::now()).count() / 1000000;
+                                ilog("Rejecting inbound connection from ${ep}: disconnect cooldown (${sec}s remaining)",
+                                     ("ep", remote_ep)("sec", remaining_sec));
+                                new_peer->get_socket().close();
+                                continue;
+                            }
+                        }
+
                         ilog("accepted inbound connection from ${remote_endpoint}", ("remote_endpoint", new_peer->get_socket().remote_endpoint()));
                         if (_node_is_shutting_down) {
                             return;
@@ -4893,9 +4942,16 @@ namespace graphene {
                 _handshaking_connections.erase(peer);
                 _closing_connections.insert(peer);
                 _terminating_connections.erase(peer);
-                fc_ilog(fc::logger::get("sync"), CLOG_ORANGE "Peer connection closing (${peer}), now ${count} active peers" CLOG_RESET,
-                        ("peer", peer->get_remote_endpoint())
-                                ("count", _active_connections.size()));
+                if (peer->closing_reason.empty()) {
+                    fc_ilog(fc::logger::get("sync"), CLOG_ORANGE "Peer connection closing (${peer}), now ${count} active peers" CLOG_RESET,
+                            ("peer", peer->get_remote_endpoint())
+                                    ("count", _active_connections.size()));
+                } else {
+                    fc_ilog(fc::logger::get("sync"), CLOG_ORANGE "Peer connection closing (${peer}): ${reason}, now ${count} active peers" CLOG_RESET,
+                            ("peer", peer->get_remote_endpoint())
+                                    ("reason", peer->closing_reason)
+                                    ("count", _active_connections.size()));
+                }
             }
 
             void node_impl::move_peer_to_terminating_list(const peer_connection_ptr &peer) {
@@ -4953,6 +5009,17 @@ namespace graphene {
                     bool caused_by_error /* = false */,
                     const fc::oexception &error /* = fc::oexception() */ ) {
                 VERIFY_CORRECT_THREAD();
+
+                // Store reason on peer so move_peer_to_closing_list can display it
+                peer_to_disconnect->closing_reason = reason_for_disconnect;
+
+                // Record per-IP reconnect cooldown to prevent rapid reconnect loops
+                auto remote_ep = peer_to_disconnect->get_remote_endpoint();
+                if (remote_ep.valid()) {
+                    uint32_t ip = uint32_t(remote_ep->get_address());
+                    _disconnect_cooldown[ip] = fc::time_point::now() + fc::seconds(DISCONNECT_RECONNECT_COOLDOWN_SEC);
+                }
+
                 move_peer_to_closing_list(peer_to_disconnect->shared_from_this());
 
                 if (peer_to_disconnect->they_have_requested_close) {
@@ -4990,9 +5057,7 @@ namespace graphene {
                                   <<
                                   " for reason: " << reason_for_disconnect;
                     _delegate->error_encountered(error_message.str(), fc::oexception());
-                    dlog(error_message.str());
-                } else
-                    dlog("Disconnecting from ${peer} for ${reason}", ("peer", peer_to_disconnect->get_remote_endpoint())("reason", reason_for_disconnect));
+                }
                 // peer_to_disconnect->close_connection();
             }
 

@@ -1213,6 +1213,52 @@ namespace graphene { namespace chain {
             return;
         }
 
+        int database::compare_fork_branches(const block_id_type& branch_a_tip, const block_id_type& branch_b_tip) const {
+            try {
+                if (!_fork_db.is_known_block(branch_a_tip) || !_fork_db.is_known_block(branch_b_tip))
+                    return 0;  // Cannot compare — one or both tips not in fork_db
+
+                auto branches = _fork_db.fetch_branch_from(branch_a_tip, branch_b_tip);
+
+                auto compute_branch_weight = [&](const fork_database::branch_type& branch) -> share_type {
+                    flat_set<account_name_type> seen_witnesses;
+                    share_type total_weight = 0;
+                    for (const auto& item : branch) {
+                        const auto& wit_name = item->data.witness;
+                        if (wit_name == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
+                        if (seen_witnesses.insert(wit_name).second) {
+                            try {
+                                const auto& wit_obj = get_witness(wit_name);
+                                total_weight += wit_obj.votes;
+                            } catch (...) {}
+                        }
+                    }
+                    return total_weight;
+                };
+
+                share_type weight_a = compute_branch_weight(branches.first);
+                share_type weight_b = compute_branch_weight(branches.second);
+
+                // Longer chain gets +10% bonus on its vote weight.
+                // Each block produced is a consensus "vote" — witnesses on the longer
+                // chain didn't defer and kept producing by consensus rules.
+                // This reflects the stronger network support signal.
+                auto a_num = block_header::num_from_id(branch_a_tip);
+                auto b_num = block_header::num_from_id(branch_b_tip);
+                if (a_num > b_num) {
+                    weight_a = weight_a + weight_a / 10;  // +10%
+                } else if (b_num > a_num) {
+                    weight_b = weight_b + weight_b / 10;  // +10%
+                }
+
+                if (weight_a > weight_b) return 1;   // branch_a is heavier
+                if (weight_b > weight_a) return -1;  // branch_b is heavier
+                return 0;  // tied
+            } catch (...) {
+                return 0;  // Cannot compare
+            }
+        }
+
         bool database::_push_block(const signed_block &new_block, uint32_t skip) {
             try {
                 // Early rejection: if the block is at or before our head block number
@@ -1290,35 +1336,13 @@ namespace graphene { namespace chain {
                         //Only switch forks if new_head is actually higher than head
                         bool should_switch = false;
                         if (has_hardfork(CHAIN_HARDFORK_12)) {
-                            // HF12: Vote-weighted chain comparison
-                            // Primary criterion: sum of raw votes of unique non-committee witnesses per branch
-                            // Secondary criterion (tie): longer chain wins
+                            // HF12: Vote-weighted chain comparison with +10% longer-chain bonus
                             if (new_head->data.block_num() >= head_block_num() &&
                                 _fork_db.is_known_block(head_block_id())) {
-                                auto branches = _fork_db.fetch_branch_from(new_head->data.id(), head_block_id());
-
-                                auto compute_branch_weight = [&](const fork_database::branch_type& branch) -> share_type {
-                                    flat_set<account_name_type> seen_witnesses;
-                                    share_type total_weight = 0;
-                                    for (const auto& item : branch) {
-                                        const auto& wit_name = item->data.witness;
-                                        if (wit_name == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
-                                        if (seen_witnesses.insert(wit_name).second) {
-                                            try {
-                                                const auto& wit_obj = get_witness(wit_name);
-                                                total_weight += wit_obj.votes;
-                                            } catch (...) {}
-                                        }
-                                    }
-                                    return total_weight;
-                                };
-
-                                share_type new_weight = compute_branch_weight(branches.first);
-                                share_type old_weight = compute_branch_weight(branches.second);
-
-                                if (new_weight > old_weight) {
+                                int cmp = compare_fork_branches(new_head->data.id(), head_block_id());
+                                if (cmp > 0) {
                                     should_switch = true;
-                                } else if (new_weight == old_weight) {
+                                } else if (cmp == 0) {
                                     // Tie: longer chain wins
                                     should_switch = (new_head->data.block_num() > head_block_num());
                                 }
@@ -1421,6 +1445,21 @@ namespace graphene { namespace chain {
                     elog("Failed to push new block:\n${e}", ("e", e.to_detail_string()));
                     _fork_db.remove(new_block.id());
                     throw;
+                }
+
+                // Prune stale competing blocks from dead forks at this height.
+                // After successfully applying a block, any other block at the same
+                // height with a different parent is from a dead fork and should be
+                // removed to prevent false fork-collision detection in the witness plugin.
+                {
+                    auto competing = _fork_db.fetch_block_by_number(new_block.block_num());
+                    for (const auto& cb : competing) {
+                        if (cb->id != new_block.id() && cb->data.previous != head_block_id()) {
+                            wlog("Pruning stale competing block ${id} at height ${n} from fork_db (dead fork)",
+                                 ("id", cb->id)("n", new_block.block_num()));
+                            _fork_db.remove(cb->id);
+                        }
+                    }
                 }
 
                 return false;

@@ -567,6 +567,38 @@ namespace graphene {
                             }
                         }
                         _stats_bytes_received_last = std::move(new_bytes_map);
+
+                        // Dump potential peer database: shows all known peers including
+                        // failed, rejected, and banned ones that are no longer connected.
+                        // This is critical for debugging post-snapshot sync failures.
+                        auto potential_peers = node->get_potential_peers();
+                        uint32_t failed_count = 0;
+                        for (const auto &pp : potential_peers) {
+                            if (pp.last_connection_disposition != graphene::network::last_connection_succeeded &&
+                                pp.last_connection_disposition != graphene::network::never_attempted_to_connect) {
+                                ++failed_count;
+                                std::string disposition;
+                                switch (pp.last_connection_disposition) {
+                                    case graphene::network::last_connection_failed: disposition = "failed"; break;
+                                    case graphene::network::last_connection_rejected: disposition = "rejected"; break;
+                                    case graphene::network::last_connection_handshaking_failed: disposition = "handshake_failed"; break;
+                                    default: disposition = "unknown"; break;
+                                }
+                                std::string error_str;
+                                if (pp.last_error) {
+                                    error_str = pp.last_error->to_string();
+                                }
+                                dlog(CLOG_CYAN "P2P peer_db | ${ep} | status: ${disp} | last_attempt: ${time} | fails: ${f} | error: ${err}" CLOG_RESET,
+                                    ("ep", pp.endpoint)("disp", disposition)
+                                    ("time", pp.last_connection_attempt_time.to_iso_string())
+                                    ("f", pp.number_of_failed_connection_attempts)
+                                    ("err", error_str));
+                            }
+                        }
+                        if (failed_count > 0) {
+                            dlog(CLOG_CYAN "P2P peer_db: ${n} peers with failed/rejected status (of ${total} total)" CLOG_RESET,
+                                ("n", failed_count)("total", potential_peers.size()));
+                        }
                     } catch (const fc::exception &e) {
                         wlog("Exception in P2P stats task: ${e}", ("e", e.to_detail_string()));
                     } catch (...) {
