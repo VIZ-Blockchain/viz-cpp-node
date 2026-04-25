@@ -7,6 +7,8 @@
 #include <graphene/utilities/key_conversion.hpp>
 #include <graphene/time/time.hpp>
 #include <fc/string.hpp> // Adăugat pentru conversia fc::shared_string la std::string
+#include <fc/io/json.hpp>
+#include <sstream>
 
 #include <appbase/application.hpp>
 
@@ -30,26 +32,24 @@ struct witness_guard_plugin::impl {
 
     // ── config ────────────────────────────────────────────────────────────────
     bool     _enabled        = true;
-    uint32_t _check_interval = 20;   // blocuri între verificări
+    uint32_t _check_interval = 20;   // blocks between checks
 
-    // Witness accounts de monitorizat
-    std::set<std::string> _witnesses;
+    struct witness_info {
+        fc::ecc::private_key signing_key;
+        fc::ecc::private_key active_key;
+    };
 
-    // signing_pub → signing_priv  (cheia cu care semnează blocuri)
-    std::map<graphene::protocol::public_key_type,
-             fc::ecc::private_key> _signing_keys;
+    // Mapping witness_name -> config (keys)
+    std::map<std::string, witness_info> _witness_configs;
 
-    // active_pub → active_priv   (cheia cu care semnăm witness_update)
-    std::map<graphene::protocol::public_key_type,
-             fc::ecc::private_key> _active_keys;
-
-    // guard anti-spam: nu trimitem a doua oară până nodul nu repornește
+    // anti-spam guard: don't send a second time until the node restarts
     std::set<std::string> _restore_sent;
 
     // ── core ──────────────────────────────────────────────────────────────────
     void check_and_restore();
     void send_witness_update(const std::string& witness_name,
-                             const graphene::chain::witness_object& obj);
+                             const graphene::chain::witness_object& obj,
+                             const witness_info& config);
 
     graphene::plugins::chain::plugin&   chain_;
     graphene::plugins::p2p::p2p_plugin& p2p_;
@@ -60,8 +60,8 @@ struct witness_guard_plugin::impl {
 void witness_guard_plugin::impl::check_and_restore() {
     auto& database = db();
 
-    // Verificăm doar dacă nodul e sincronizat
-    // (head block în ultimele 2 * CHAIN_BLOCK_INTERVAL secunde)
+    // Check only if the node is synchronized
+    // (head block within the last 2 * CHAIN_BLOCK_INTERVAL seconds)
     const auto head_time = database.head_block_time();
     const auto now       = fc::time_point_sec(graphene::time::now());
     if (head_time < now - fc::seconds(CHAIN_BLOCK_INTERVAL * 2)) {
@@ -76,21 +76,26 @@ void witness_guard_plugin::impl::check_and_restore() {
 
     static const graphene::protocol::public_key_type null_key;
 
-    for (const auto& name : _witnesses) {
-        // Deja am trimis restore pentru acesta la această sesiune
-        if (_restore_sent.count(name)) continue;
-
+    for (const auto& [name, config] : _witness_configs) {
         auto itr = idx.find(name);
         if (itr == idx.end()) {
             wlog("witness_guard: witness '${w}' not found in database", ("w", name));
             continue;
         }
 
-        if (itr->signing_key != null_key) continue;   // cheia e ok
+        if (itr->signing_key != null_key) {
+        // If the key is valid on-chain, reset the guard for this witness.
+        // This allows the plugin to intervene again if the key becomes null later.
+            _restore_sent.erase(name);
+            continue;
+        }
+
+    // If restore has already been sent and the transaction is not yet included in a block, wait.
+        if (_restore_sent.count(name)) continue;
 
         ilog("witness_guard: '${w}' has null signing key on-chain — initiating restore",
              ("w", name));
-        send_witness_update(name, *itr);
+        send_witness_update(name, *itr, config);
     }
 }
 
@@ -98,52 +103,39 @@ void witness_guard_plugin::impl::check_and_restore() {
 
 void witness_guard_plugin::impl::send_witness_update(
         const std::string& witness_name,
-        const graphene::chain::witness_object& obj)
+        const graphene::chain::witness_object& obj,
+        const witness_info& config)
 {
     try {
-        // 1. Găsim cheia de signing din config
-        if (_signing_keys.empty()) {
-            elog("witness_guard: no witness-guard-signing-key configured for '${w}'",
-                 ("w", witness_name));
-            return;
-        }
-        const auto& [signing_pub, signing_priv] = *_signing_keys.begin();
+        const auto signing_pub = config.signing_key.get_public_key();
+        const auto& active_priv = config.active_key;
 
-        // 2. Găsim cheia active din config
-        if (_active_keys.empty()) {
-            elog("witness_guard: no witness-guard-active-key configured for '${w}'",
-                 ("w", witness_name));
-            return;
-        }
-        const auto& [active_pub, active_priv] = *_active_keys.begin();
-
-        // 3. URL curent din blockchain (nu îl suprascriem)
+        // Current URL from blockchain (do not overwrite)
         std::string url = std::string(obj.url.c_str());
 
-        // 4. Construim operația
+        // Construct the operation
         graphene::protocol::witness_update_operation op;
         op.owner            = witness_name;
         op.url              = url;
         op.block_signing_key = signing_pub;
 
-        // 5. Construim tranzacția
+        // Construct the transaction
         graphene::chain::signed_transaction tx;
         tx.operations.push_back(op);
         tx.set_expiration(db().head_block_time() + fc::seconds(30));
         tx.set_reference_block(db().head_block_id());
 
-        // 6. Semnăm cu cheia active
+        // Sign with the active key
         tx.sign(active_priv, db().get_chain_id());
 
         ilog("witness_guard: broadcasting witness_update for '${w}' "
              "— restoring signing key to ${k}",
              ("w", witness_name)("k", signing_pub));
 
-        // 7. Push local + broadcast în rețea
-       // db().push_transaction(tx, graphene::chain::database::skip_nothing);
-        p2p_.broadcast_transaction(tx);
+        // Only network broadcast
+            p2p_.broadcast_transaction(tx);
 
-        // 8. Marcăm ca trimis — nu mai trimitem în această sesiune
+        // Mark as sent — do not send again in this session
         _restore_sent.insert(witness_name);
 
         ilog("witness_guard: witness_update for '${w}' sent successfully", ("w", witness_name));
@@ -151,7 +143,7 @@ void witness_guard_plugin::impl::send_witness_update(
     } catch (const fc::exception& e) {
         elog("witness_guard: witness_update FAILED for '${w}': ${e}",
              ("w", witness_name)("e", e.to_detail_string()));
-        // Nu adăugăm în _restore_sent — vom reîncerca la următoarea verificare
+        // Do not add to _restore_sent — we will retry at the next check
     }
 }
 
@@ -171,20 +163,9 @@ void witness_guard_plugin::set_program_options(
          "When true, the plugin monitors configured witnesses and sends "
          "witness_update if the on-chain signing key is reset to null.")
 
-        ("witness-guard-account",
+        ("witness-guard-witness",
          bpo::value<std::vector<std::string>>()->composing()->multitoken(),
-         "Witness account name to monitor (can be specified multiple times).")
-
-        ("witness-guard-signing-key",
-         bpo::value<std::vector<std::string>>()->composing()->multitoken(),
-         "WIF private key to restore as the signing key on-chain. "
-         "This is the block-signing key (same as private-key in witness plugin).")
-
-        ("witness-guard-active-key",
-         bpo::value<std::vector<std::string>>()->composing()->multitoken(),
-         "WIF private key with active authority on the witness account. "
-         "Used to sign the witness_update transaction. "
-         "WARNING: stored in plaintext in config.ini — use a dedicated key.")
+         "Witness to monitor: name signing_wif active_wif (triplets). Can be specified multiple times.")
 
         ("witness-guard-interval",
          bpo::value<uint32_t>()->default_value(20),
@@ -214,52 +195,41 @@ void witness_guard_plugin::plugin_initialize(
         pimpl->_check_interval = options["witness-guard-interval"].as<uint32_t>();
         if (pimpl->_check_interval == 0) pimpl->_check_interval = 1;
 
-        // witness accounts
-        if (options.count("witness-guard-account")) {
-            const auto& names =
-                options["witness-guard-account"].as<std::vector<std::string>>();
-            for (const auto& n : names) {
-                pimpl->_witnesses.insert(n);
+        // witness configs (triplets)
+        if (options.count("witness-guard-witness")) {
+            const auto& entries = options["witness-guard-witness"].as<std::vector<std::string>>();
+            for (const auto& entry : entries) {
+                try {
+                    // Parse each line as a JSON array: ["name", "signing_wif", "active_wif"]
+                    auto arr = fc::json::from_string(entry).get_array();
+                    FC_ASSERT(arr.size() == 3, "witness-guard-witness expects [name, signing_wif, active_wif]");
+
+                    std::string name = arr[0].as_string();
+                    auto sign_priv = graphene::utilities::wif_to_key(arr[1].as_string());
+                    auto active_priv = graphene::utilities::wif_to_key(arr[2].as_string());
+
+                    FC_ASSERT(sign_priv.valid(), "witness-guard-witness: invalid signing WIF for ${n}", ("n", name));
+                    FC_ASSERT(active_priv.valid(), "witness-guard-witness: invalid active WIF for ${n}", ("n", name));
+
+                    pimpl->_witness_configs[name] = { *sign_priv, *active_priv };
+                    
+                    ilog("witness_guard: monitoring witness '${w}' (signing key: ${k})",
+                         ("w", name)("k", sign_priv->get_public_key()));
+
+                } catch (const fc::exception& e) {
+                    elog("witness_guard: failed to parse witness entry '${entry}': ${e}",
+                         ("entry", entry)("e", e.to_detail_string()));
+                }
             }
         }
 
-        // signing keys
-        if (options.count("witness-guard-signing-key")) {
-            const auto& keys =
-                options["witness-guard-signing-key"].as<std::vector<std::string>>();
-            for (const auto& wif : keys) {
-                auto priv = graphene::utilities::wif_to_key(wif);
-                FC_ASSERT(priv.valid(), "witness-guard-signing-key: invalid WIF key");
-                pimpl->_signing_keys[priv->get_public_key()] = *priv;
-            }
-        }
-
-        // active keys
-        if (options.count("witness-guard-active-key")) {
-            const auto& keys =
-                options["witness-guard-active-key"].as<std::vector<std::string>>();
-            for (const auto& wif : keys) {
-                auto priv = graphene::utilities::wif_to_key(wif);
-                FC_ASSERT(priv.valid(), "witness-guard-active-key: invalid WIF key");
-                pimpl->_active_keys[priv->get_public_key()] = *priv;
-            }
-        }
-
-        // Validare minimă
-        if (!pimpl->_witnesses.empty() &&
-            pimpl->_signing_keys.empty()) {
-            wlog("witness_guard: witness-guard-account set but no "
-                 "witness-guard-signing-key configured — plugin will not restore keys");
-        }
-        if (!pimpl->_witnesses.empty() &&
-            pimpl->_active_keys.empty()) {
-            wlog("witness_guard: witness-guard-account set but no "
-                 "witness-guard-active-key configured — plugin will not restore keys");
+        if (pimpl->_witness_configs.empty()) {
+            wlog("witness_guard: no witnesses configured for monitoring");
         }
 
         ilog("witness_guard: plugin_initialize() end — "
              "monitoring ${n} witness(es), interval=${i} blocks",
-             ("n", pimpl->_witnesses.size())("i", pimpl->_check_interval));
+             ("n", pimpl->_witness_configs.size())("i", pimpl->_check_interval));
 
     } FC_LOG_AND_RETHROW()
 }
@@ -267,12 +237,12 @@ void witness_guard_plugin::plugin_initialize(
 void witness_guard_plugin::plugin_startup() {
     ilog("witness_guard: plugin_startup() begin");
 
-    if (!pimpl->_enabled || pimpl->_witnesses.empty()) {
+    if (!pimpl->_enabled || pimpl->_witness_configs.empty()) {
         ilog("witness_guard: nothing to monitor, plugin inactive");
         return;
     }
 
-    // Hook pe fiecare bloc aplicat
+    // Hook on every applied block
     pimpl->db().applied_block.connect(
     [this](const graphene::chain::signed_block& b) {
         if (!pimpl->_enabled) return;
