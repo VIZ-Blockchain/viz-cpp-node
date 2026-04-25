@@ -29,11 +29,15 @@ struct witness_guard_plugin::impl {
     {}
 
     graphene::chain::database& db() { return chain_.db(); }
+    graphene::chain::database& db() const { return chain_.db(); }
 
     // ── config ────────────────────────────────────────────────────────────────
-    bool     _enabled        = true;
-    uint32_t _check_interval = 20;   // blocks between checks
+    bool                        _enabled        = true;
+    uint32_t                    _check_interval = 20;   // blocks between checks
+    bool                        _initial_check_done = false; // Whether we've detected that the node is synchronized at startup
+    fc::connection              _applied_block_connection; // Connection for applied_block signal
 
+    // --- witness_info struct ---
     struct witness_info {
         fc::ecc::private_key signing_key;
         fc::ecc::private_key active_key;
@@ -42,11 +46,15 @@ struct witness_guard_plugin::impl {
     // Mapping witness_name -> config (keys)
     std::map<std::string, witness_info> _witness_configs;
 
-    // anti-spam guard: don't send a second time until the node restarts
-    std::set<std::string> _restore_sent;
+    // Tracking pending restores: witness_name -> expiration_time
+    std::map<std::string, fc::time_point_sec> _restore_pending;
+
+    // Tracking transaction IDs to confirm their inclusion in a block
+    std::map<graphene::chain::transaction_id_type, std::pair<std::string, fc::time_point_sec>> _pending_confirmations;
 
     // ── core ──────────────────────────────────────────────────────────────────
     void check_and_restore();
+    bool check_and_restore_internal();
     void send_witness_update(const std::string& witness_name,
                              const graphene::chain::witness_object& obj,
                              const witness_info& config);
@@ -56,8 +64,8 @@ struct witness_guard_plugin::impl {
 };
 
 // ─── check_and_restore ───────────────────────────────────────────────────────
-
-void witness_guard_plugin::impl::check_and_restore() {
+// Returns true if the node is in sync and a full check was performed, false otherwise.
+bool witness_guard_plugin::impl::check_and_restore_internal() {
     auto& database = db();
 
     // Check only if the node is synchronized
@@ -66,7 +74,22 @@ void witness_guard_plugin::impl::check_and_restore() {
     const auto now       = fc::time_point_sec(graphene::time::now());
     if (head_time < now - fc::seconds(CHAIN_BLOCK_INTERVAL * 2)) {
         dlog("witness_guard: node not in sync, skipping check");
-        return;
+        return false; // Node not in sync, full check not performed
+    }
+
+    // Clean up _pending_confirmations once per check, not inside the witness loop.
+    // Removes trackers that have expired or are no longer relevant.
+    for (auto it = _pending_confirmations.begin(); it != _pending_confirmations.end(); ) {
+        // If the transaction ID is expired, remove it from confirmation tracking
+        if (now > it->second.second) {
+            // If a transaction expires from _pending_confirmations, it means it was not included.
+            // We should also remove the corresponding entry from _restore_pending to allow a retry
+            // without waiting for _restore_pending's own expiration.
+            _restore_pending.erase(it->second.first);
+            it = _pending_confirmations.erase(it);
+        } else {
+            ++it;
+        }
     }
 
     const auto& idx = database
@@ -84,19 +107,23 @@ void witness_guard_plugin::impl::check_and_restore() {
         }
 
         if (itr->signing_key != null_key) {
-        // If the key is valid on-chain, reset the guard for this witness.
-        // This allows the plugin to intervene again if the key becomes null later.
-            _restore_sent.erase(name);
+            // Key is healthy on-chain, clear any pending retry state for this witness
+            _restore_pending.erase(name);
             continue;
         }
 
-    // If restore has already been sent and the transaction is not yet included in a block, wait.
-        if (_restore_sent.count(name)) continue;
+        // If a restore is already in flight and hasn't expired yet, wait.
+        if (_restore_pending.count(name)) {
+            if (now <= _restore_pending[name]) continue;
+            ilog("witness_guard: previous restore for '${w}' expired, retrying", ("w", name));
+        }
 
         ilog("witness_guard: '${w}' has null signing key on-chain — initiating restore",
              ("w", name));
         send_witness_update(name, *itr, config);
     }
+
+    return true; // Node was in sync, full check performed
 }
 
 // ─── send_witness_update ─────────────────────────────────────────────────────
@@ -110,33 +137,32 @@ void witness_guard_plugin::impl::send_witness_update(
         const auto signing_pub = config.signing_key.get_public_key();
         const auto& active_priv = config.active_key;
 
-        // Current URL from blockchain (do not overwrite)
-        std::string url = std::string(obj.url.c_str());
-
         // Construct the operation
         graphene::protocol::witness_update_operation op;
         op.owner            = witness_name;
-        op.url              = url;
+        op.url              = std::string(obj.url); // Conversie directă sigură
         op.block_signing_key = signing_pub;
+
+        // Set expiration to 30 seconds from now
+        auto expiration = graphene::time::now() + fc::seconds(30);
 
         // Construct the transaction
         graphene::chain::signed_transaction tx;
         tx.operations.push_back(op);
-        tx.set_expiration(db().head_block_time() + fc::seconds(30));
+        tx.set_expiration(expiration);
         tx.set_reference_block(db().head_block_id());
 
         // Sign with the active key
-        tx.sign(active_priv, db().get_chain_id());
+        tx.sign(active_priv, db().get_chain_id()); // tx.id() is computed here
 
-        ilog("witness_guard: broadcasting witness_update for '${w}' "
-             "— restoring signing key to ${k}",
-             ("w", witness_name)("k", signing_pub));
+        const auto tx_id = tx.id(); // Store tx.id() to avoid re-computation
+        ilog("witness_guard: broadcasting witness_update [ID: ${id}] for '${w}' — restoring key to ${k}",
+             ("id", tx_id)("w", witness_name)("k", signing_pub));
 
-        // Only network broadcast
-            p2p_.broadcast_transaction(tx);
+        p2p_.broadcast_transaction(tx);
 
-        // Mark as sent — do not send again in this session
-        _restore_sent.insert(witness_name);
+        _restore_pending[witness_name] = expiration;
+        _pending_confirmations[tx_id] = { witness_name, expiration }; 
 
         ilog("witness_guard: witness_update for '${w}' sent successfully", ("w", witness_name));
 
@@ -211,6 +237,8 @@ void witness_guard_plugin::plugin_initialize(
                     FC_ASSERT(sign_priv.valid(), "witness-guard-witness: invalid signing WIF for ${n}", ("n", name));
                     FC_ASSERT(active_priv.valid(), "witness-guard-witness: invalid active WIF for ${n}", ("n", name));
 
+                                     
+
                     pimpl->_witness_configs[name] = { *sign_priv, *active_priv };
                     
                     ilog("witness_guard: monitoring witness '${w}' (signing key: ${k})",
@@ -241,13 +269,86 @@ void witness_guard_plugin::plugin_startup() {
         ilog("witness_guard: nothing to monitor, plugin inactive");
         return;
     }
+  // --- NEW: Authority Check moved here ---
+    // At this point, the chain_plugin has started and the database is open.
+    for (auto it = pimpl->_witness_configs.begin(); it != pimpl->_witness_configs.end(); ) {
+        const std::string& name = it->first;
+        try {
+            const auto& account_obj = pimpl->db().get_account(name);
+            const auto active_pub_key = it->second.active_key.get_public_key();
+            bool active_key_has_authority = false;
+            for (const auto& auth : account_obj.active.key_auths) {
+                if (auth.first == active_pub_key) {
+                    active_key_has_authority = true;
+                    break;
+                }
+            }
+            if (!active_key_has_authority) {
+                elog("witness_guard: WARNING: Configured active key for witness '${w}' "
+                     "does NOT have authority on-chain. Restoration will fail.", ("w", name));
+            }
+            ++it;
+        } catch (const graphene::chain::unknown_account_exception& e) {
+            elog("witness_guard: ERROR: Account '${w}' not found on chain. Removing from monitor.", ("w", name));
+            it = pimpl->_witness_configs.erase(it);
+        }
+    }
+    // --- END Authority Check ---
 
-    // Hook on every applied block
-    pimpl->db().applied_block.connect(
+    if (pimpl->_witness_configs.empty()) return;
+
+    // Perform an initial check at startup.
+    // If the node is already synchronized, mark the initial check as completed.
+    // The check_and_restore_internal() function now returns true if the node is in sync.
+    if (pimpl->check_and_restore_internal()) {
+        pimpl->_initial_check_done = true;
+    }
+
+    // Hook on every applied block and store the connection
+    pimpl->_applied_block_connection = pimpl->db().applied_block.connect(
     [this](const graphene::chain::signed_block& b) {
         if (!pimpl->_enabled) return;
-        if (b.block_num() % pimpl->_check_interval == 0) {
-            pimpl->check_and_restore();
+
+        // 1. Check for transaction confirmations in the new block
+        if (!pimpl->_pending_confirmations.empty()) {
+            for (const auto& tx : b.transactions) {
+                auto it = pimpl->_pending_confirmations.find(tx.id());
+                if (it != pimpl->_pending_confirmations.end()) {
+                    const auto  tx_id  = it->first;           
+                    const auto  w_name = it->second.first;   
+                    pimpl->_restore_pending.erase(w_name);
+                    pimpl->_pending_confirmations.erase(it);  
+                    ilog("witness_guard: CONFIRMED restoration for '${w}' in block #${n} [TX: ${id}]",
+                         ("w", w_name)("n", b.block_num())("id", tx_id));
+                    
+                }
+            }
+        }
+
+        // 2. Look-ahead: If any of our witnesses are scheduled in the next 3 slots, check now!
+        bool scheduled_soon = false;
+        if (pimpl->_initial_check_done) {
+            for (uint32_t i = 1; i <= 3; ++i) {
+                if (pimpl->_witness_configs.count(pimpl->db().get_scheduled_witness(i))) {
+                    scheduled_soon = true;
+                    break;
+                }
+            }
+        }
+
+        // If the node was not synchronized at startup, check on each new block
+        // until we detect that synchronization has finished.
+        if (scheduled_soon) {
+            pimpl->check_and_restore_internal();
+        }
+        else if (!pimpl->_initial_check_done && (b.block_num() % 10 == 0)) {
+            // The sync check is now inside check_and_restore_internal()
+            if (pimpl->check_and_restore_internal()) {
+                pimpl->_initial_check_done = true;
+            }
+        }
+        else if (b.block_num() % pimpl->_check_interval == 0) {
+            pimpl->check_and_restore_internal();
         }
     }
 );
@@ -256,6 +357,9 @@ void witness_guard_plugin::plugin_startup() {
 }
 
 void witness_guard_plugin::plugin_shutdown() {
+    if (pimpl && pimpl->_applied_block_connection.connected()) {
+        pimpl->_applied_block_connection.disconnect();
+    }
     ilog("witness_guard: plugin_shutdown()");
 }
 
