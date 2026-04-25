@@ -572,8 +572,8 @@ namespace graphene { namespace chain {
 
             if (!immediate) {
                 // Deferred mode: just set the flag. The actual resize will be
-                // performed by apply_pending_resize() at a safe point where
-                // no other threads hold read locks or lockless references.
+                // performed by apply_pending_resize() using the resize barrier,
+                // which pauses all operations (including lockless reads).
                 ilog(
                     "\033[33mShared memory resize deferred on block ${block}: actual data ${used_before}M / current ${max_before}M -> will grow to ${mem}M\033[0m",
                     ("block", current_block_num)("mem", new_max / (1024 * 1024))
@@ -585,6 +585,10 @@ namespace graphene { namespace chain {
 
             // Immediate mode: used during reindex when we already hold an
             // exclusive write lock and no API threads are running.
+            // NOTE: This path intentionally does NOT use begin_resize_barrier()
+            // because during reindex there are no concurrent readers or lockless
+            // operations. Using the barrier here would deadlock since the caller
+            // already holds a write lock (which itself holds an operation guard).
             ilog(
                 "\033[33mShared memory growing on block ${block}: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
                 ("block", current_block_num)("mem", new_max / (1024 * 1024))
@@ -611,38 +615,41 @@ namespace graphene { namespace chain {
                 return;
             }
 
-            // Acquire our own write lock. This waits for ALL read locks to be
-            // released, so by the time we enter the lambda no other thread has
-            // any reference into the shared memory segment.
-            with_strong_write_lock([&]() {
-                if (!_pending_resize) {
-                    return; // another thread beat us
-                }
+            // Use the resize barrier to pause ALL database operations.
+            // This is stronger than with_strong_write_lock: it also blocks
+            // lockless reads (e.g. get_slot_at_time, get_scheduled_witness,
+            // find_account in _generate_block and witness plugin) that do not
+            // acquire any chainbase lock.  After begin_resize_barrier()
+            // returns, no thread holds any reference into shared memory.
+            ilog("Resize barrier: pausing all database operations...");
+            begin_resize_barrier();
 
-                size_t target = _pending_resize_target;
-                _pending_resize = false;
-                _pending_resize_target = 0;
+            size_t target = _pending_resize_target;
+            _pending_resize = false;
+            _pending_resize_target = 0;
 
-                uint64_t max_mem_before = max_memory();
-                uint64_t free_mem_before = free_memory();
-                uint64_t used_mem_before = max_mem_before - free_mem_before;
+            uint64_t max_mem_before = max_memory();
+            uint64_t free_mem_before = free_memory();
+            uint64_t used_mem_before = max_mem_before - free_mem_before;
 
-                ilog("\033[33mApplying deferred shared memory resize: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
-                     ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem_before / (1024 * 1024))
-                     ("mem", target / (1024 * 1024)));
-                resize(target);
+            ilog("\033[33mApplying deferred shared memory resize: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
+                 ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem_before / (1024 * 1024))
+                 ("mem", target / (1024 * 1024)));
+            resize(target);
 
-                uint64_t free_mem = free_memory();
-                uint64_t reserved_mem = reserved_memory();
-                uint64_t used_mem_after = target - free_mem;
-                if (free_mem > reserved_mem) {
-                    free_mem -= reserved_mem;
-                }
-                uint32_t free_mb = uint32_t(free_mem / (1024 * 1024));
-                ilog("\033[33mDeferred shared memory grow complete: actual data ${used_after}M / new ${max_after}M (free ${free}M)\033[0m",
-                     ("used_after", used_mem_after / (1024 * 1024))("max_after", target / (1024 * 1024))("free", free_mb));
-                _last_free_gb_printed = free_mb / 1024;
-            });
+            uint64_t free_mem = free_memory();
+            uint64_t reserved_mem = reserved_memory();
+            uint64_t used_mem_after = target - free_mem;
+            if (free_mem > reserved_mem) {
+                free_mem -= reserved_mem;
+            }
+            uint32_t free_mb = uint32_t(free_mem / (1024 * 1024));
+            ilog("\033[33mDeferred shared memory grow complete: actual data ${used_after}M / new ${max_after}M (free ${free}M)\033[0m",
+                 ("used_after", used_mem_after / (1024 * 1024))("max_after", target / (1024 * 1024))("free", free_mb));
+            _last_free_gb_printed = free_mb / 1024;
+
+            end_resize_barrier();
+            ilog("Resize barrier: all database operations resumed.");
         }
 
         void database::check_free_memory(bool skip_print, uint32_t current_block_num, bool immediate_resize) {
@@ -1116,9 +1123,9 @@ namespace graphene { namespace chain {
             //fc::time_point begin_time = fc::time_point::now();
 
             // Apply any deferred resize BEFORE acquiring the main write lock.
-            // This is the safe point: no read locks are held, no lockless reads
-            // are in progress. apply_pending_resize() acquires its own write lock
-            // internally, which waits for all readers to finish first.
+            // apply_pending_resize() uses the resize barrier to pause ALL operations
+            // (including lockless reads), ensuring no thread has any reference into
+            // the shared memory segment during the remap.
             apply_pending_resize();
 
             bool result = false;
@@ -1539,35 +1546,44 @@ namespace graphene { namespace chain {
             // If resize happened on another thread, those pointers could be stale.
             apply_pending_resize();
 
-            uint32_t slot_num = get_slot_at_time(when);
-            FC_ASSERT(slot_num > 0);
-            string scheduled_witness = get_scheduled_witness(slot_num);
-            FC_ASSERT(scheduled_witness == witness_owner);
+            // Guard all lockless reads with the resize barrier operation guard.
+            // This prevents a concurrent resize from remapping shared memory
+            // while we hold raw pointers/references into the mapped segment.
+            // The guard is scoped so it is released before with_strong_write_lock
+            // (which acquires its own operation guard internally).
+            {
+                auto op_guard = make_operation_guard();
 
-            const auto &witness_obj = get_witness(witness_owner);
+                uint32_t slot_num = get_slot_at_time(when);
+                FC_ASSERT(slot_num > 0);
+                string scheduled_witness = get_scheduled_witness(slot_num);
+                FC_ASSERT(scheduled_witness == witness_owner);
 
-            // Pre-check: ensure the witness account exists before generating the block.
-            // If the account is missing from the database (shared memory corruption),
-            // the block will be produced but fail to apply internally (process_funds
-            // calls get_account which would throw "unknown key").
-            const auto* witness_acct = find_account(witness_owner);
-            if (!witness_acct) {
-                auto& acc_idx = get_index<account_index>().indices().get<by_name>();
-                elog("CRITICAL: Witness ${w} account object MISSING from database! "
-                     "This is impossible state - shared memory may be corrupted. "
-                     "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
-                     "account_index_size=${idx_size}",
-                     ("w", witness_owner)("k", witness_obj.signing_key)
-                     ("m", witness_obj.total_missed)("p", witness_obj.penalty_percent)
-                     ("lc", witness_obj.last_confirmed_block_num)
-                     ("idx_size", acc_idx.size()));
-                FC_ASSERT(false, "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected. Node must be restarted with replay.",
-                          ("w", witness_owner));
-            }
+                const auto &witness_obj = get_witness(witness_owner);
 
-            if (!(skip & skip_witness_signature))
-                FC_ASSERT(witness_obj.signing_key ==
-                          block_signing_private_key.get_public_key());
+                // Pre-check: ensure the witness account exists before generating the block.
+                // If the account is missing from the database (shared memory corruption),
+                // the block will be produced but fail to apply internally (process_funds
+                // calls get_account which would throw "unknown key").
+                const auto* witness_acct = find_account(witness_owner);
+                if (!witness_acct) {
+                    auto& acc_idx = get_index<account_index>().indices().get<by_name>();
+                    elog("CRITICAL: Witness ${w} account object MISSING from database! "
+                         "This is impossible state - shared memory may be corrupted. "
+                         "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
+                         "account_index_size=${idx_size}",
+                         ("w", witness_owner)("k", witness_obj.signing_key)
+                         ("m", witness_obj.total_missed)("p", witness_obj.penalty_percent)
+                         ("lc", witness_obj.last_confirmed_block_num)
+                         ("idx_size", acc_idx.size()));
+                    FC_ASSERT(false, "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected. Node must be restarted with replay.",
+                              ("w", witness_owner));
+                }
+
+                if (!(skip & skip_witness_signature))
+                    FC_ASSERT(witness_obj.signing_key ==
+                              block_signing_private_key.get_public_key());
+            } // op_guard released here
 
             static const size_t max_block_header_size =
                     fc::raw::pack_size(signed_block_header()) + 4;

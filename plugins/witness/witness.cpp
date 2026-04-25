@@ -498,6 +498,12 @@ namespace graphene {
                     }
                 }
 
+                // Guard lockless reads into shared memory with the resize barrier.
+                // This prevents a concurrent shared memory resize from invalidating
+                // pointers while we read witness schedule, slot time, etc.
+                // The guard is released before generate_block() which has its own.
+                auto op_guard = db.make_operation_guard();
+
                 // is anyone scheduled to produce now or one second in the future?
                 uint32_t slot = db.get_slot_at_time(now);
                 if (slot == 0) {
@@ -651,6 +657,11 @@ namespace graphene {
                         }
                     }
                 }
+
+                // Release the operation guard before generate_block(), which
+                // acquires its own guard internally via apply_pending_resize()
+                // and with_strong_write_lock().
+                op_guard.release();
 
                 int retry = 0;
                 do {
