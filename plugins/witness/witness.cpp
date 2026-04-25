@@ -116,6 +116,10 @@ namespace graphene {
                 std::set<string> _witnesses;
 
                 fc::time_point last_block_post_validation_time;
+
+                // Fork collision resolution state
+                uint32_t fork_collision_defer_count_ = 0;
+                uint32_t _fork_collision_timeout_blocks = 21;  // one full witness round (21 blocks = 63s)
             };
 
             void witness_plugin::set_program_options(
@@ -149,6 +153,9 @@ namespace graphene {
                          "Rejection threshold as a percentage of the absolute moving average; deltas deviating more are rejected (default: 50).")
                         ("ntp-rejection-min-threshold", bpo::value<uint32_t>()->default_value(5),
                          "Minimum rejection threshold in milliseconds, applied regardless of the percentage rule (default: 5).")
+                        ("fork-collision-timeout-blocks", bpo::value<uint32_t>()->default_value(21),
+                         "Number of consecutive fork-collision deferrals (block slots) before forcing production. "
+                         "One full witness schedule round is 21 blocks (63 seconds). Default: 21.")
                         ;
 
                 config_file_options.add(command_line_options);
@@ -210,6 +217,10 @@ namespace graphene {
                         ntp_cfg.rejection_threshold_pct = options["ntp-rejection-threshold-pct"].as<uint32_t>();
                         ntp_cfg.rejection_min_threshold_ms = options["ntp-rejection-min-threshold"].as<uint32_t>();
                         graphene::time::configure_ntp(ntp_cfg);
+                    }
+
+                    if (options.count("fork-collision-timeout-blocks")) {
+                        pimpl->_fork_collision_timeout_blocks = options["fork-collision-timeout-blocks"].as<uint32_t>();
                     }
 
                     ilog("witness plugin:  plugin_initialize() end");
@@ -334,14 +345,17 @@ namespace graphene {
                 switch (result) {
                     case block_production_condition::produced:
                         ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w}\033[0m", (capture));
+                        fork_collision_defer_count_ = 0;
                         break;
                     case block_production_condition::not_synced:
                         // This log-record is commented, because it outputs very often
                         // ilog("Not producing block because production is disabled until we receive a recent block (see: --enable-stale-production)");
+                        fork_collision_defer_count_ = 0;
                         break;
                     case block_production_condition::not_my_turn:
                         // This log-record is commented, because it outputs very often
                         // ilog("Not producing block because it isn't my turn");
+                        fork_collision_defer_count_ = 0;
                         break;
                     case block_production_condition::not_time_yet:
                         // This log-record is commented, because it outputs very often
@@ -543,36 +557,97 @@ namespace graphene {
                 }
 
                 // Check if a competing block already exists in the fork database for this block height.
-                // If another block at the same height already exists, it means we are on a fork
-                // and producing would create a collision. Skip production to let fork resolution proceed.
+                // Two-level fork collision resolution:
+                //   Level 1: Vote-weighted comparison when both forks are in fork_db
+                //   Level 2: Stuck-head timeout after one full witness round (21 blocks = 63s)
                 {
                     auto existing_blocks = db.get_fork_db().fetch_block_by_number(db.head_block_num() + 1);
                     if (existing_blocks.size() > 0) {
                         bool has_competing_block = false;
+                        graphene::chain::item_ptr competing_block;
 
                         if (dgp.emergency_consensus_active) {
                             // During emergency mode: ANY block at this height is competing.
                             // Multiple nodes with the emergency key may have produced.
                             // Defer to the deterministic hash-based resolution in fork_db.
                             has_competing_block = true;
+                            competing_block = existing_blocks[0];
                         } else {
                             // Normal mode: only count blocks from different witnesses
-                            // on a different parent as competing (existing logic)
+                            // on a different parent as competing
                             for (const auto &eb : existing_blocks) {
                                 if (eb->data.witness != scheduled_witness &&
                                     eb->data.previous != db.head_block_id()) {
                                     has_competing_block = true;
+                                    competing_block = eb;
                                     break;
                                 }
                             }
                         }
 
-                        if (has_competing_block) {
-                            capture("height", db.head_block_num() + 1)("scheduled_witness", scheduled_witness);
-                            wlog("Skipping block production at height ${h} due to existing competing block "
-                                 "in fork database (witness ${w} deferring to allow fork resolution)",
-                                 ("h", db.head_block_num() + 1)("w", scheduled_witness));
-                            return block_production_condition::fork_collision;
+                        if (has_competing_block && competing_block) {
+                            fork_collision_defer_count_++;
+
+                            // LEVEL 2: Stuck-head timeout
+                            // If we've been deferring and the head hasn't advanced, the competing
+                            // block is from a dead fork. The network has moved on without it.
+                            // After 21 consecutive deferrals (one full witness round = 63s),
+                            // we can be sure the longer chain had all scheduled witnesses
+                            // produce on it — confirming it's the canonical chain.
+                            // This applies regardless of hardfork version — even pre-HF12
+                            // nodes must not defer forever.
+                            if (fork_collision_defer_count_ > _fork_collision_timeout_blocks) {
+                                wlog("Fork collision timeout exceeded (${n} deferrals, head stuck at ${h}). "
+                                     "Removing dead-fork competing block and producing on our chain.",
+                                     ("n", fork_collision_defer_count_)("h", db.head_block_num()));
+                                db.get_fork_db().remove_blocks_by_number(db.head_block_num() + 1);
+                                fork_collision_defer_count_ = 0;
+                                // Fall through to produce block
+                            }
+                            // LEVEL 1: Vote-weighted comparison (when both forks are in fork_db)
+                            else if (db.has_hardfork(CHAIN_HARDFORK_12)) {
+                                int weight_cmp = db.compare_fork_branches(
+                                    competing_block->id, db.head_block_id());
+
+                                if (weight_cmp < 0) {
+                                    // Our fork has MORE vote weight -> produce on our fork
+                                    wlog("Our fork has more vote weight at height ${h}. "
+                                         "Producing despite competing block from weaker fork.",
+                                         ("h", db.head_block_num() + 1));
+                                    // Remove the losing competing block
+                                    db.get_fork_db().remove(competing_block->id);
+                                    fork_collision_defer_count_ = 0;
+                                    // Fall through to produce block
+                                } else if (weight_cmp > 0) {
+                                    // Competing fork has MORE vote weight
+                                    // Defer to let the fork switch happen naturally via _push_block.
+                                    capture("height", db.head_block_num() + 1)("scheduled_witness", scheduled_witness);
+                                    wlog("Competing fork at height ${h} has more vote weight. "
+                                         "Deferring to allow fork switch to stronger chain.",
+                                         ("h", db.head_block_num() + 1));
+                                    return block_production_condition::fork_collision;
+                                } else {
+                                    // Tied or comparison impossible (one tip not in fork_db)
+                                    // Defer briefly, timeout will kick in
+                                    capture("height", db.head_block_num() + 1)("scheduled_witness", scheduled_witness);
+                                    wlog("Fork collision at height ${h} with tied/unknown vote weight. "
+                                         "Deferring (attempt ${n}/${max}).",
+                                         ("h", db.head_block_num() + 1)
+                                         ("n", fork_collision_defer_count_)
+                                         ("max", _fork_collision_timeout_blocks));
+                                    return block_production_condition::fork_collision;
+                                }
+                            }
+                            // Pre-HF12: defer, but timeout still applies on next iteration
+                            else {
+                                capture("height", db.head_block_num() + 1)("scheduled_witness", scheduled_witness);
+                                wlog("Fork collision at height ${h} (pre-HF12). "
+                                     "Deferring (attempt ${n}/${max}).",
+                                     ("h", db.head_block_num() + 1)
+                                     ("n", fork_collision_defer_count_)
+                                     ("max", _fork_collision_timeout_blocks));
+                                return block_production_condition::fork_collision;
+                            }
                         }
                     }
                 }

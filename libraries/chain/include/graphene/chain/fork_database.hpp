@@ -64,6 +64,12 @@ namespace graphene {
 
             void remove(block_id_type b);
 
+            /**
+             * Remove all blocks at the given height from the fork database.
+             * Used to clear stale competing blocks from dead forks.
+             */
+            void remove_blocks_by_number(uint32_t num);
+
             void set_head(shared_ptr<fork_item> h);
 
             bool is_known_block(const block_id_type &id) const;
