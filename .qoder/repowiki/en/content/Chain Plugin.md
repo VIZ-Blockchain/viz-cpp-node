@@ -9,14 +9,18 @@
 - [application.cpp](file://thirdparty/appbase/application.cpp)
 - [README.md](file://README.md)
 - [snapshot-plugin.md](file://documentation/snapshot-plugin.md)
+- [console_appender.cpp](file://thirdparty/fc/src/log/console_appender.cpp)
+- [console_defines.h](file://thirdparty/fc/src/log/console_defines.h)
+- [logger_config.cpp](file://thirdparty/fc/src/log/logger_config.cpp)
+- [main.cpp](file://programs/vizd/main.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Updated default shared-file-dir from 'blockchain' to 'state' for improved configuration clarity and consistency
-- Enhanced plugin coordination with deferred execution support for snapshot loading
-- Expanded snapshot plugin configuration options including snapshot-dir, snapshot-every-n-blocks, snapshot-max-age-days, allow-snapshot-serving, and trusted-snapshot-peer settings
-- Improved data directory path handling with consistent 'state' directory usage across chain plugin components
+- Enhanced logging with green color support for sync mode completion messages, improving visual differentiation in console output for better debugging experience
+- Updated error logging color scheme to use cyan instead of red for better visual hierarchy
+- Improved sync mode status messages with ANSI escape code formatting for better console readability
+- Enhanced debugging experience through color-coded console output for different sync states
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -24,13 +28,14 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+6. [Enhanced Logging System](#enhanced-logging-system)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
 
 ## Introduction
-The Chain Plugin is the core component responsible for managing the blockchain state, accepting blocks and transactions, maintaining database consistency, and coordinating with other plugins in the VIZ node. It integrates tightly with the underlying database layer and provides APIs for block acceptance, transaction processing, and state queries. Recent enhancements focus on improved plugin coordination, deferred execution support for snapshot loading, comprehensive recovery system integration with DLT block log capabilities, and expanded snapshot management infrastructure with consistent data directory usage.
+The Chain Plugin is the core component responsible for managing the blockchain state, accepting blocks and transactions, maintaining database consistency, and coordinating with other plugins in the VIZ node. It integrates tightly with the underlying database layer and provides APIs for block acceptance, transaction processing, and state queries. Recent enhancements focus on improved plugin coordination, deferred execution support for snapshot loading, comprehensive recovery system integration with DLT block log capabilities, expanded snapshot management infrastructure with consistent data directory usage, and enhanced logging system with visual differentiation for better debugging experience.
 
 ## Project Structure
 The Chain Plugin resides under the `plugins/chain` directory and interfaces with the `libraries/chain` database implementation. The plugin exposes a clean interface for other plugins and the application to interact with the blockchain state, with enhanced deferred execution support and comprehensive recovery capabilities. The data directory path has been standardized to use 'state' for improved organizational clarity.
@@ -82,8 +87,9 @@ Key responsibilities include:
 - Supporting DLT (Dynamic Ledger Technology) block logging with comprehensive replay capabilities
 - Implementing advanced recovery procedures with automatic snapshot detection and restoration
 - Integrating with comprehensive snapshot management infrastructure including automatic discovery, rotation, and serving capabilities
+- **Enhanced** Providing visual feedback through color-coded console logging for improved debugging experience
 
-**Updated** Enhanced plugin coordination with deferred execution support allows seamless integration between chain and snapshot plugins, enabling flexible startup sequences and improved error recovery mechanisms. The default shared memory directory has been changed from 'blockchain' to 'state' for better organizational clarity and consistency across data directory usage.
+**Updated** Enhanced plugin coordination with deferred execution support allows seamless integration between chain and snapshot plugins, enabling flexible startup sequences and improved error recovery mechanisms. The default shared memory directory has been changed from 'blockchain' to 'state' for better organizational clarity and consistency across data directory usage. The enhanced logging system now provides visual differentiation through ANSI escape codes for better console output readability.
 
 **Section sources**
 - [plugin.hpp:21-124](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L21-L124)
@@ -241,7 +247,7 @@ The plugin supports extensive configuration through command-line and configurati
 | **replay-from-snapshot** | bool | Snapshot + dlt_block_log replay | false |
 | **snapshot-dir** | string | Directory for auto-generated snapshots | empty |
 
-**Updated** Enhanced plugin coordination with deferred execution support for snapshot operations, allowing flexible startup sequences between chain and snapshot plugins. The default shared-file-dir has been changed from 'blockchain' to 'state' for improved organizational clarity and consistency across data directory usage.
+**Updated** Enhanced plugin coordination with deferred execution support for snapshot operations, allowing flexible startup sequences between chain and snapshot plugins. The default shared-file-dir has been changed from 'blockchain' to 'state' for improved organizational clarity and consistency across data directory usage. Enhanced logging system provides visual feedback through color-coded console output.
 
 **Section sources**
 - [plugin.cpp:197-272](file://plugins/chain/plugin.cpp#L197-L272)
@@ -449,6 +455,53 @@ DownloadSnap --> LoadState
 - [plugin.cpp:2817-2861](file://plugins/snapshot/plugin.cpp#L2817-L2861)
 - [plugin.cpp:2908-2920](file://plugins/snapshot/plugin.cpp#L2908-L2920)
 
+## Enhanced Logging System
+
+**Updated** The Chain Plugin now features an enhanced logging system with visual differentiation for improved debugging experience:
+
+### Color-Coded Console Output
+The logging system uses ANSI escape codes to provide visual feedback:
+
+- **Green Color** (`\033[92m`): Used for sync mode start and completion messages
+- **Brown/Yellow Color** (`\033[93m`): Used for periodic sync progress notifications
+- **Default Colors**: Maintained for other log levels (debug, warn, error)
+
+### Sync Mode Status Messages
+The enhanced logging provides clear visual indicators for different sync states:
+
+```mermaid
+flowchart TD
+SyncStart["Sync Mode Started"] --> GreenStart["\033[92m>>> Syncing Blockchain started from block #${n} (head: ${head})\033[0m"]
+SyncProgress["Sync Progress"] --> YellowProgress["\033[93mSyncing Blockchain --- Got block: #${n} time: ${t} producer: ${p}\033[0m"]
+SyncEnd["Sync Mode Ended"] --> GreenEnd["\033[92mSync mode ended: received normal block #${n} (head: ${head}), sync_start_logged reset\033[0m"]
+```
+
+**Diagram sources**
+- [plugin.cpp:105-121](file://plugins/chain/plugin.cpp#L105-L121)
+
+### Logging Framework Enhancements
+The underlying logging framework supports comprehensive color configuration:
+
+- **Default Configuration**: Debug (green), Warn (brown), Error (red)
+- **Application Override**: Error level now uses cyan instead of red for better visual hierarchy
+- **Platform Support**: Windows and Unix terminal color support through ANSI escape codes
+- **File Output**: Color codes are stripped when logging to files to prevent garbled output
+
+### Visual Differentiation Benefits
+The enhanced logging system improves debugging experience through:
+
+- **Immediate Visual Feedback**: Sync start and completion clearly highlighted in green
+- **Progress Indicators**: Periodic sync progress shown in yellow/brown for easy scanning
+- **Consistent Color Scheme**: Maintains visual hierarchy with appropriate colors for different log levels
+- **Cross-Platform Compatibility**: ANSI escape codes work across different terminal environments
+
+**Section sources**
+- [plugin.cpp:105-121](file://plugins/chain/plugin.cpp#L105-L121)
+- [console_appender.cpp:71-84](file://thirdparty/fc/src/log/console_appender.cpp#L71-L84)
+- [console_defines.h:146-188](file://thirdparty/fc/src/log/console_defines.h#L146-L188)
+- [logger_config.cpp:69-89](file://thirdparty/fc/src/log/logger_config.cpp#L69-L89)
+- [main.cpp:234-250](file://programs/vizd/main.cpp#L234-L250)
+
 ## Dependency Analysis
 The Chain Plugin has well-defined dependencies and integration points with enhanced plugin coordination:
 
@@ -490,7 +543,7 @@ The plugin integrates with several other components with enhanced coordination:
 - Witness plugin for block production
 - Database plugin for state persistence
 
-**Updated** Enhanced integration with snapshot plugin includes sophisticated deferred execution mechanisms, automatic callback registration, and comprehensive recovery system coordination. The default shared memory directory has been changed from 'blockchain' to 'state' for better organizational structure and consistent data directory usage.
+**Updated** Enhanced integration with snapshot plugin includes sophisticated deferred execution mechanisms, automatic callback registration, and comprehensive recovery system coordination. The default shared memory directory has been changed from 'blockchain' to 'state' for better organizational structure and consistent data directory usage. The enhanced logging system provides visual feedback for better debugging experience.
 
 **Section sources**
 - [plugin.hpp:23-24](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L23-L24)
@@ -521,6 +574,14 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 - Reduced redundant operations through intelligent state checking
 - Optimized snapshot loading with automatic path validation
 - Improved snapshot serving performance with trust model and anti-spam protection
+- **Enhanced** Color-coded logging reduces visual scanning time for important sync events
+
+### Logging Performance Considerations
+**Updated** The enhanced logging system maintains performance through:
+- Minimal overhead for color code insertion
+- Efficient ANSI escape code handling
+- Platform-specific optimization for Windows and Unix terminals
+- Stripping of color codes for file output to prevent performance degradation
 
 **Section sources**
 - [plugin.cpp:24-51](file://plugins/chain/plugin.cpp#L24-L51)
@@ -546,6 +607,7 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 - Monitor shared memory usage and growth patterns
 - **Updated** Enable verbose logging for snapshot plugin coordination failures
 - Monitor snapshot serving metrics and trust model compliance
+- **Enhanced** Use color-coded logs to quickly identify sync mode status and progress
 
 ### Enhanced Plugin Coordination Troubleshooting
 **Updated** Specific troubleshooting for plugin coordination issues:
@@ -573,6 +635,23 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 - Configure trusted peers properly with `--trusted-snapshot-peer`
 - Monitor snapshot P2P sync performance and reliability
 
+### Enhanced Logging Troubleshooting
+**Updated** Specific troubleshooting for logging issues:
+- Verify terminal supports ANSI escape codes for color output
+- Check logging configuration for proper color scheme setup
+- Ensure color codes are properly formatted in log messages
+- Test color output in different terminal environments
+- Verify color codes are stripped when logging to files
+- Check for proper terminal reset sequences after color output
+
+### Sync Mode Troubleshooting
+**Updated** Specific troubleshooting for sync mode logging:
+- Verify green color appears for sync start and completion messages
+- Check yellow/brown color for periodic sync progress notifications
+- Ensure sync mode status messages appear only during active synchronization
+- Verify sync mode completion messages reset properly when normal blocks arrive
+- Check that sync mode guard variables work correctly to prevent duplicate messages
+
 **Section sources**
 - [plugin.cpp:562-601](file://plugins/chain/plugin.cpp#L562-L601)
 - [plugin.cpp:251-271](file://plugins/chain/plugin.cpp#L251-L271)
@@ -580,4 +659,4 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 ## Conclusion
 The Chain Plugin provides a robust foundation for blockchain state management in the VIZ node. Its modular design, comprehensive configuration options, and efficient database operations make it suitable for production deployments while maintaining flexibility for development and testing scenarios. Recent enhancements focus on improved plugin coordination with deferred execution support, comprehensive recovery system integration with DLT block log capabilities, and sophisticated snapshot loading mechanisms. The plugin's integration with snapshot technology, emergency consensus mode, and advanced recovery procedures provides strong operational resilience and enhanced error handling capabilities with improved plugin coordination and seamless user experience.
 
-**Updated** The default shared-memory directory has been changed from 'blockchain' to 'state' for better organizational clarity, ensuring consistency across data directory usage in plugin initialization and snapshot plugin deferred loading functionality. The comprehensive snapshot management infrastructure provides powerful automation capabilities including automatic discovery, periodic creation, rotation, serving, and P2P synchronization with trust models and anti-spam protection.
+**Updated** The default shared-memory directory has been changed from 'blockchain' to 'state' for better organizational clarity, ensuring consistency across data directory usage in plugin initialization and snapshot plugin deferred loading functionality. The comprehensive snapshot management infrastructure provides powerful automation capabilities including automatic discovery, periodic creation, rotation, serving, and P2P synchronization with trust models and anti-spam protection. The enhanced logging system significantly improves debugging experience through color-coded console output, providing immediate visual feedback for sync mode status and progress indicators with green color for important completion messages and yellow/brown for periodic progress notifications.

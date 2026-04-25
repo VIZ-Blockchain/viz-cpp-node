@@ -13,14 +13,11 @@
 
 ## Update Summary
 **Changes Made**
-- Modernized Boost library usage by replacing boost::bind with std::bind and std::placeholders in thread pool creation and WebSocket message handlers
-- Enhanced JSON-RPC response caching system with proper fc::variant-based JSON parsing using fc::json::from_string
-- Implemented id-independent cache keys to prevent cache bypass attacks via id rotation
-- Improved cache validation with comprehensive error handling for malformed requests
-- Added enhanced WebSocket/HTTP handler support with proper JSON-RPC 2.0 response ID patching
-- Updated request classification system with robust fc::variant parsing for mutating API detection
-- Enhanced cache configuration options with comprehensive size management and thread-safe operations
-- Improved configuration management with rpc-endpoint processing order changes prioritizing specific endpoints over deprecated combined endpoints
+- Enhanced JSON RPC logging with gray color support for data dumps, improving log readability and debugging capabilities for RPC operations
+- Updated diagnostic logging system to use ANSI escape sequences for visual distinction between normal operation and diagnostic information
+- Improved developer experience with colored log output for request/response data visualization
+- Enhanced timing measurements with precise elapsed time tracking for request processing
+- Added comprehensive error tracking with timing context for better debugging
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -39,7 +36,7 @@
 ## Introduction
 The Webserver Plugin provides HTTP and WebSocket endpoints for JSON-RPC API access to the VIZ blockchain node. It serves as a bridge between external clients and the internal JSON-RPC system, offering both persistent WebSocket connections for real-time updates and standard HTTP endpoints for traditional API calls. The plugin includes an intelligent caching mechanisms that automatically classifies requests as mutating or non-mutating using robust fc::variant-based JSON parsing, optimizing performance for frequently accessed read-only API methods while preventing cache pollution from state-changing operations.
 
-**Updated** Enhanced with major performance optimizations to the JSON-RPC caching mechanism, including fc::variant-based JSON parsing, id-independent keys, robust request classification, comprehensive cache validation, improved WebSocket/HTTP handler support with proper JSON-RPC 2.0 compliance, and modernized Boost library usage with std::bind and std::placeholders for better C++11 compatibility.
+**Updated** Enhanced with major performance optimizations to the JSON-RPC caching mechanism, including fc::variant-based JSON parsing, id-independent keys, robust request classification, comprehensive cache validation, improved WebSocket/HTTP handler support with proper JSON-RPC 2.0 response ID patching, modernized Boost library usage with std::bind and std::placeholders for better C++11 compatibility, and enhanced diagnostic logging with ANSI gray color support for improved debugging capabilities.
 
 ## Project Structure
 The webserver plugin is organized within the plugins/webserver directory structure, following the standard VIZ plugin architecture pattern:
@@ -56,6 +53,7 @@ I[websocketpp/server.hpp] --> J[WebSocket Library]
 K[std::bind/std::placeholders] --> L[C++11 Standard Bindings]
 M[fc::json::from_string] --> N[Proper JSON Parsing]
 O[fc::variant] --> P[Robust Data Structures]
+Q[ANSI Color Logging] --> R[Enhanced Diagnostics]
 end
 D --> E
 D --> G
@@ -63,6 +61,7 @@ D --> I
 D --> K
 D --> M
 D --> O
+D --> Q
 end
 ```
 
@@ -116,15 +115,17 @@ J[Cache Key Generator]
 K[Malformed Request Handler]
 end
 subgraph "JSON-RPC Layer"
-L[JSON-RPC Plugin]
+L[JSON-RPC Plugin with Enhanced Logging]
 M[API Registry]
 N[fc::json::from_string]
 O[fc::variant Objects]
+P[ANSI Color Logging]
+Q[Diagnostic Timers]
 end
 subgraph "Blockchain Layer"
-P[Chain Plugin]
-Q[Database]
-R[Block Event Signals]
+R[Chain Plugin]
+S[Database]
+T[Block Event Signals]
 end
 A --> C
 B --> D
@@ -148,11 +149,12 @@ F -.-> E
 G --> L
 L --> M
 M --> N
-N --> P
-O --> P
+N --> R
+O --> R
+R --> S
+R --> T
+T --> F
 P --> Q
-P --> R
-R --> F
 ```
 
 **Diagram sources**
@@ -160,6 +162,7 @@ R --> F
 - [webserver_plugin.cpp:236-289](file://plugins/webserver/webserver_plugin.cpp#L236-L289)
 - [webserver_plugin.cpp:352-416](file://plugins/webserver/webserver_plugin.cpp#L352-L416)
 - [webserver_plugin.cpp:418-495](file://plugins/webserver/webserver_plugin.cpp#L418-L495)
+- [plugin.cpp:258-288](file://plugins/json_rpc/plugin.cpp#L258-L288)
 
 The architecture implements several key design patterns:
 - **Separation of Concerns**: HTTP and WebSocket servers run in separate threads with dedicated io_service instances
@@ -169,8 +172,9 @@ The architecture implements several key design patterns:
 - **Blacklist Pattern**: Mutating API detection and prevention of cache pollution using fc::variant-based method analysis
 - **fc::variant Pattern**: Robust JSON parsing and manipulation using fc library variants for optimal performance
 - **Error Handling Pattern**: Comprehensive fc::json::from_string-based error handling preventing crashes and improving reliability
+- **Enhanced Logging Pattern**: ANSI color-coded diagnostic logging for improved debugging and monitoring
 
-**Updated** Enhanced with fc::variant-based JSON parsing, response ID patching, comprehensive error handling capabilities, improved cache management using fc::variant objects, and modernized std::bind-based thread pool management.
+**Updated** Enhanced with fc::variant-based JSON parsing, response ID patching, comprehensive error handling capabilities, improved cache management using fc::variant objects, modernized std::bind-based thread pool management, and enhanced diagnostic logging with ANSI gray color support.
 
 ## Detailed Component Analysis
 
@@ -447,55 +451,66 @@ E[fc::json::from_string]
 F[fc::variant]
 G[fc::mutable_variant_object]
 H[std::bind/std::placeholders]
+I[ANSI Color Sequences]
+J[Terminal Logging]
 end
 subgraph "Internal Dependencies"
-I[JSON-RPC Plugin]
-J[Chain Plugin]
-K[Application Core]
+K[JSON-RPC Plugin with Enhanced Logging]
+L[Chain Plugin]
+M[Application Core]
 end
 subgraph "Webserver Plugin"
-L[webserver_plugin]
-M[is_cacheable_request]
-N[make_cache_key]
-O[extract_request_id]
-P[patch_response_id]
-Q[fc::variant Parser]
-R[Cache Key Generator]
-S[Response ID Patcher]
-T[std::bind Message Handlers]
+N[webserver_plugin]
+O[is_cacheable_request]
+P[make_cache_key]
+Q[extract_request_id]
+R[patch_response_id]
+S[fc::variant Parser]
+T[Cache Key Generator]
+U[Response ID Patcher]
+V[std::bind Message Handlers]
+W[Diagnostic Logging]
+X[Colorized Output]
 end
 J --> I
-J --> K
-J --> L
-L --> A
-L --> B
-L --> C
-L --> D
-L --> E
-L --> F
-L --> G
-L --> H
-M --> N
-N --> O
+K --> W
+W --> X
+L --> K
+L --> M
+L --> N
+N --> A
+N --> B
+N --> C
+N --> D
+N --> E
+N --> F
+N --> G
+N --> H
+N --> I
+N --> J
 O --> P
 P --> Q
 Q --> R
 R --> S
 S --> T
+T --> U
+U --> V
+W --> X
 ```
 
 **Diagram sources**
 - [webserver_plugin.hpp:3-9](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L3-L9)
 - [webserver_plugin.cpp:12-31](file://plugins/webserver/webserver_plugin.cpp#L12-L31)
 - [webserver_plugin.cpp:87-113](file://plugins/webserver/webserver_plugin.cpp#L87-L113)
+- [plugin.cpp:258-288](file://plugins/json_rpc/plugin.cpp#L258-L288)
 
 ### JSON-RPC Integration Details
-The plugin integrates with the JSON-RPC system through method registration and call delegation using fc::json::from_string for proper JSON parsing with enhanced fc::variant object handling and modernized std::bind-based handler implementations:
+The plugin integrates with the JSON-RPC system through method registration and call delegation using fc::json::from_string for proper JSON parsing with enhanced fc::variant object handling, modernized std::bind-based handler implementations, and enhanced diagnostic logging with ANSI color support:
 
 ```mermaid
 sequenceDiagram
 participant WS as "Webserver Plugin"
-participant JR as "JSON-RPC Plugin"
+participant JR as "JSON-RPC Plugin with Enhanced Logging"
 participant AR as "API Registry"
 participant AP as "API Method"
 WS->>JR : call(json_body, callback)
@@ -503,7 +518,7 @@ JR->>AR : Find API method
 AR->>AP : Execute method(args)
 AP-->>AR : Return result
 AR-->>JR : Return variant result
-JR-->>WS : Stringified response
+JR-->>WS : Stringified response with colored diagnostics
 WS-->>Client : Send response
 ```
 
@@ -512,7 +527,7 @@ WS-->>Client : Send response
 - [webserver_plugin.cpp:398](file://plugins/webserver/webserver_plugin.cpp#L398)
 - [webserver_plugin.cpp:468](file://plugins/webserver/webserver_plugin.cpp#L468)
 
-**Updated** Enhanced with fc::json::from_string-based JSON parsing, robust error handling, comprehensive fc::variant object processing, and modernized std::bind-based handler implementations.
+**Updated** Enhanced with fc::json::from_string-based JSON parsing, robust error handling, comprehensive fc::variant object processing, modernized std::bind-based handler implementations, and enhanced diagnostic logging with ANSI gray color support.
 
 **Section sources**
 - [webserver_plugin.hpp:38](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L38)
@@ -533,6 +548,7 @@ The webserver plugin implements several performance optimization strategies with
 - **Robust JSON Parsing**: Reliable fc::json::from_string-based request parsing instead of complex object traversal
 - **fc::variant Efficiency**: Optimized fc::variant usage for JSON parsing and manipulation with proper object lifetime management
 - **Modernized Bindings**: Efficient std::bind usage with std::placeholders for better C++11 compatibility and performance
+- **Enhanced Logging Performance**: ANSI color logging with minimal overhead for improved debugging without impacting performance
 
 ### Concurrency Model
 - **Separate IO Services**: HTTP and WebSocket servers use dedicated io_service instances for isolation
@@ -547,8 +563,9 @@ The webserver plugin implements several performance optimization strategies with
 - **Blacklist Optimization**: Reduces unnecessary cache storage for mutating API calls
 - **fc::variant Efficiency**: Optimized fc::variant usage for JSON parsing and manipulation with proper memory management
 - **Modernized Bindings**: Efficient std::bind usage with std::placeholders for better performance and C++11 compatibility
+- **Color Logging Overhead**: Minimal performance impact from ANSI color sequences in diagnostic logging
 
-**Updated** Enhanced with fc::variant-based JSON parsing, robust cache validation, comprehensive performance optimizations, improved fc::variant object handling, and modernized std::bind-based thread pool management.
+**Updated** Enhanced with fc::variant-based JSON parsing, robust cache validation, comprehensive performance optimizations, improved fc::variant object handling, modernized std::bind-based thread pool management, and enhanced diagnostic logging with ANSI gray color support.
 
 **Section sources**
 - [webserver-plugin.md:29-64](file://documentation/webserver-plugin.md#L29-L64)
@@ -584,8 +601,9 @@ The webserver plugin provides multiple layers of security for production deploym
 - **Robust Error Handling**: Comprehensive fc::variant-based error handling prevents crashes
 - **Malformed Request Protection**: Invalid JSON requests are handled gracefully without cache pollution
 - **Modernized Bindings**: Efficient std::bind usage with std::placeholders for better performance and security
+- **Enhanced Logging Security**: ANSI color logging provides clear visibility without exposing sensitive data
 
-**Updated** Enhanced with fc::variant-based JSON parsing, robust error handling, comprehensive security measures, improved fc::variant object validation, and modernized std::bind-based security implementations.
+**Updated** Enhanced with fc::variant-based JSON parsing, robust error handling, comprehensive security measures, improved fc::variant object validation, modernized std::bind-based security implementations, and enhanced diagnostic logging with ANSI gray color support.
 
 **Section sources**
 - [webserver-plugin.md:77-108](file://documentation/webserver-plugin.md#L77-L108)
@@ -718,8 +736,9 @@ ParseError --> Complete
 - **fc::variant Parsing**: Monitor JSON parsing performance and error rates
 - **Configuration Processing**: Monitor rpc-endpoint processing order and endpoint resolution
 - **Modernized Bindings**: Monitor std::bind usage and std::placeholders performance
+- **Enhanced Logging**: Monitor ANSI color logging output for improved debugging visibility
 
-**Updated** Enhanced with fc::variant-based JSON parsing monitoring, comprehensive debugging capabilities, improved configuration processing diagnostics, and modernized std::bind-based monitoring implementations.
+**Updated** Enhanced with fc::variant-based JSON parsing monitoring, comprehensive debugging capabilities, improved configuration processing diagnostics, modernized std::bind-based monitoring implementations, and enhanced diagnostic logging with ANSI gray color support.
 
 **Section sources**
 - [webserver_plugin.cpp:352-416](file://plugins/webserver/webserver_plugin.cpp#L352-L416)
@@ -728,27 +747,27 @@ ParseError --> Complete
 
 ## Logging and Diagnostics
 
-### Enhanced Diagnostic Logging
-The JSON RPC plugin now includes enhanced diagnostic logging with ANSI gray color codes to help developers quickly distinguish between normal operation and diagnostic information:
+### Enhanced Diagnostic Logging with ANSI Color Support
+The JSON RPC plugin now includes enhanced diagnostic logging with ANSI gray color support to help developers quickly distinguish between normal operation and diagnostic information:
 
 ```mermaid
 sequenceDiagram
 participant Client as "Client"
-participant JSONRPC as "JSON-RPC Plugin"
+participant JSONRPC as "JSON-RPC Plugin with Enhanced Logging"
 participant Timer as "dump_rpc_time"
 participant Logger as "Diagnostic Logger"
 Client->>JSONRPC : JSON-RPC Request
 JSONRPC->>Timer : Create timer instance
 Timer->>Logger : Log colored diagnostic data
-Logger-->>Timer : Colored output : "data : ${data}"
+Logger-->>Timer : Colored output : "data : ${data}" (ANSI Gray)
 Timer->>JSONRPC : Process request
 JSONRPC->>Timer : Handle completion
 alt Success
 Timer->>Logger : Log elapsed time and data
-Logger-->>Client : Colored output : "elapsed : ${time} sec, data : ${data}"
+Logger-->>Client : Colored output : "elapsed : ${time} sec, data : ${data}" (ANSI Gray)
 else Error
 Timer->>Logger : Log elapsed time, error, and data
-Logger-->>Client : Colored output : "elapsed : ${time} sec, error : '${error}', data : ${data}"
+Logger-->>Client : Colored output : "elapsed : ${time} sec, error : '${error}', data : ${data}" (ANSI Gray)
 end
 ```
 
@@ -761,17 +780,19 @@ The diagnostic logging system uses ANSI escape sequences for visual distinction:
 - **Gray Color Codes**: `\033[90m` for diagnostic information
 - **Reset Code**: `\033[0m` to restore normal terminal colors
 - **Timing Information**: Elapsed time measurements in seconds
-- **Data Processing**: Request/response data visualization
+- **Data Processing**: Request/response data visualization with enhanced readability
 - **Error Context**: Error messages with associated timing data
+- **Improved Debugging**: Visual separation between normal application logs and diagnostic information
 
 ### Developer Experience Improvements
 - **Visual Separation**: Gray-colored diagnostic logs help distinguish from normal application logs
 - **Real-time Timing**: Precise timing measurements for request processing
-- **Data Visibility**: Structured logging of request/response data
-- **Error Tracking**: Comprehensive error logging with timing context
+- **Data Visibility**: Structured logging of request/response data with enhanced formatting
+- **Error Tracking**: Comprehensive error logging with timing context for better debugging
 - **Performance Insights**: Easy identification of slow operations through timing data
+- **Enhanced Readability**: Improved log readability with color-coded diagnostic information
 
-**Updated** Enhanced with fc::variant-based JSON parsing and comprehensive diagnostic logging.
+**Updated** Enhanced with fc::variant-based JSON parsing and comprehensive diagnostic logging with ANSI gray color support for improved developer experience and debugging capabilities.
 
 **Section sources**
 - [plugin.cpp:258-288](file://plugins/json_rpc/plugin.cpp#L258-L288)
@@ -786,7 +807,7 @@ Key strengths of the implementation include:
 - **Flexible Deployment**: Separate HTTP and WebSocket endpoints with independent configuration
 - **Production Ready**: Comprehensive error handling and graceful degradation
 - **Security Features**: Multiple layers of security including intelligent request classification for mutating APIs
-- **Enhanced Diagnostics**: ANSI color-coded logging system for improved developer experience
+- **Enhanced Diagnostics**: ANSI color-coded logging system with gray color support for improved developer experience
 - **Extensible Design**: Clean separation of concerns enabling easy maintenance and enhancement
 - **Performance Optimizations**: Major improvements to caching mechanism with id-independent keys and fc::variant-based JSON parsing
 - **Robust Request Processing**: Enhanced WebSocket/HTTP handler support with improved request classification and cache management using modernized std::bind bindings
@@ -795,7 +816,8 @@ Key strengths of the implementation include:
 - **Enhanced Configuration Management**: Improved rpc-endpoint processing order with proper endpoint resolution and deprecation warnings
 - **Modernized C++11 Compatibility**: Efficient std::bind usage with std::placeholders for better C++11 compatibility and performance
 - **Efficient Thread Pool Management**: Modernized std::bind-based thread pool management with std::placeholders for optimal performance
+- **Enhanced Logging System**: ANSI color-coded diagnostic logging with gray color support for improved debugging and monitoring capabilities
 
-The plugin serves as an excellent foundation for building applications that require programmatic access to VIZ blockchain data and operations, with performance characteristics suitable for both private deployments and public API services. Its sophisticated caching mechanism with intelligent request classification, multi-threaded architecture with modernized std::bind bindings, comprehensive error handling, fc::variant-based JSON parsing, enhanced diagnostic logging, improved configuration management with rpc-endpoint processing order changes, and efficient std::bind-based thread pool management make it a production-ready solution for enterprise-grade blockchain applications.
+The plugin serves as an excellent foundation for building applications that require programmatic access to VIZ blockchain data and operations, with performance characteristics suitable for both private deployments and public API services. Its sophisticated caching mechanism with intelligent request classification, multi-threaded architecture with modernized std::bind bindings, comprehensive error handling, fc::variant-based JSON parsing, enhanced diagnostic logging with ANSI gray color support, improved configuration management with rpc-endpoint processing order changes, and efficient std::bind-based thread pool management make it a production-ready solution for enterprise-grade blockchain applications.
 
-**Updated** Enhanced conclusion reflecting the expanded implementation details, fc::variant-based JSON parsing, intelligent request classification system, selective caching mechanisms, enhanced WebSocket/HTTP handler support with modernized std::bind bindings, major performance optimizations including id-independent cache keys, comprehensive cache configuration options, improved configuration management with rpc-endpoint processing order changes, and modernized C++11 compatibility with std::bind and std::placeholders usage.
+**Updated** Enhanced conclusion reflecting the expanded implementation details, fc::variant-based JSON parsing, intelligent request classification system, selective caching mechanisms, enhanced WebSocket/HTTP handler support with modernized std::bind bindings, major performance optimizations including id-independent cache keys, comprehensive cache configuration options, improved configuration management with rpc-endpoint processing order changes, modernized C++11 compatibility with std::bind and std::placeholders usage, and enhanced diagnostic logging with ANSI gray color support for improved debugging capabilities.

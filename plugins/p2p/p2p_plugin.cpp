@@ -229,9 +229,11 @@ namespace graphene {
 
                         //recover public key from signature
                         fc::ecc::public_key recovered_public_key(bpvl.witness_signature, enc.result(), true);
-                        //get signing_key from witness_account
+                        //get signing_key from witness_account (guard against concurrent resize)
+                        auto op_guard = chain.db().make_operation_guard();
                         fc::ecc::public_key w_signing_key=chain.db().get_witness_key(bpvl.witness_account);
                         if(chain.db().get_witness_key(bpvl.witness_account) == recovered_public_key){
+                            op_guard.release();
                             //trigger db block validation
                             //ilog("recovered_public_key EQUAL to witness ${w}", ("w", bpvl.witness_account));
                             chain.db().apply_block_post_validation(validate_block_id,bpvl.witness_account);

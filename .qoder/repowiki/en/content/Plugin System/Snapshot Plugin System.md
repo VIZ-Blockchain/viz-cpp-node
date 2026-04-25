@@ -26,12 +26,10 @@
 
 ## Update Summary
 **Changes Made**
-- Added comprehensive P2P stale sync detection documentation with detailed explanation of how the system works
-- Enhanced watchdog monitoring to work with trusted peer integration
-- Updated configuration options to include p2p-stale-sync-detection and p2p-stale-sync-timeout-seconds
-- Added troubleshooting guidance for P2P stale sync detection
-- Enhanced comparison between P2P stale sync detection and snapshot-based stalled sync detection
-- Updated peer-to-peer snapshot synchronization with improved trusted peer handling
+- Updated anti-spam configuration documentation to reflect increased maximum sessions per IP from 2 to 3 and maximum connections per hour from 6 to 10
+- Enhanced access control and security mechanisms documentation with new configuration values
+- Updated troubleshooting guide to include new anti-spam limits and their implications
+- Revised configuration reference to show updated anti-spam parameters
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -863,7 +861,7 @@ end
 end
 ```
 
-### Enhanced Stalled Sync Detection
+### Enhanced Stalled Sync Detection for DLT Mode
 
 The stalled sync detection provides DLT mode monitoring with improved reliability:
 
@@ -1004,17 +1002,24 @@ Start([Incoming Connection]) --> CheckAntiSpam{"Anti-Spam Enabled?"}
 CheckAntiSpam --> |No| CheckTrust{"Allow Only Trusted?"}
 CheckAntiSpam --> |Yes| CheckConcurrent{"Concurrent Connections < 5?"}
 CheckTrust --> |Yes| ValidateTrust{"IP in Trusted List?"}
-CheckTrust --> |No| CheckSession{"Active Sessions < 2/IP?"}
+CheckTrust --> |No| CheckSession{"Active Sessions < 3/IP?"}
 CheckConcurrent --> |No| DenyMaxConnections["Send DENY_MAX_CONNECTIONS"]
 CheckConcurrent --> |Yes| CheckSession
 CheckSession --> |No| DenySessionLimit["Send DENY_SESSION_LIMIT"]
-CheckSession --> |Yes| CheckRate{"Connections < 6/Hour/IP?"}
+CheckSession --> |Yes| CheckRate{"Connections < 10/Hour/IP?"}
 CheckRate --> |No| DenyRateLimited["Send DENY_RATE_LIMITED"]
 CheckRate --> |Yes| Accept["Accept Connection"]
 ValidateTrust --> |No| DenyUntrusted["Send DENY_UNTRUSTED"]
 ValidateTrust --> |Yes| Accept
 Accept --> Process["Process Snapshot Request"]
 ```
+
+**Updated** The anti-spam system has been enhanced with increased limits to improve service accessibility while maintaining security controls. The new configuration values are:
+
+- **Maximum sessions per IP**: Increased from 2 to 3 sessions per IP
+- **Maximum connections per hour**: Increased from 6 to 10 connections per hour per IP
+
+These changes provide better support for legitimate users while maintaining effective protection against abuse.
 
 ### Enhanced New Configuration Options
 
@@ -1059,9 +1064,9 @@ CheckTrust --> |No| CheckConcurrent{"Concurrent Connections < 5?"}
 ValidateTrust --> |No| DenyUntrusted["Send DENY_UNTRUSTED"]
 ValidateTrust --> |Yes| CheckConcurrent
 CheckConcurrent --> |No| DenyMaxConnections["Send DENY_MAX_CONNECTIONS"]
-CheckConcurrent --> |Yes| CheckSession{"Active Sessions < 2/IP?"}
+CheckConcurrent --> |Yes| CheckSession{"Active Sessions < 3/IP?"}
 CheckSession --> |No| DenySessionLimit["Send DENY_SESSION_LIMIT"]
-CheckSession --> |Yes| CheckRate{"Connections < 6/Hour/IP?"}
+CheckSession --> |Yes| CheckRate{"Connections < 10/Hour/IP?"}
 CheckRate --> |No| DenyRateLimited["Send DENY_RATE_LIMITED"]
 CheckRate --> |Yes| Accept["Accept Connection"]
 DenyUntrusted --> Close["Close Connection"]
@@ -1071,6 +1076,12 @@ DenyRateLimited --> Close
 Accept --> Process["Process Snapshot Request"]
 ```
 
+**Updated** The access control system now enforces the enhanced anti-spam limits with improved session management and rate limiting:
+
+- **Maximum concurrent connections**: 5 simultaneous connections
+- **Maximum sessions per IP**: 3 active sessions per IP (increased from 2)
+- **Maximum connections per hour**: 10 connections per hour per IP (increased from 6)
+
 ### Enhanced Denial Reason Codes
 
 The system provides specific denial reasons for different violation types:
@@ -1079,8 +1090,8 @@ The system provides specific denial reasons for different violation types:
 |-------------|------------|-------------|
 | `deny_untrusted` | 1 | IP address not in trusted list |
 | `deny_max_connections` | 2 | Server has reached maximum concurrent connections (5) |
-| `deny_session_limit` | 3 | Too many active sessions from this IP (2 per IP limit) |
-| `deny_rate_limited` | 4 | Too many connections per hour from this IP (6 per hour limit) |
+| `deny_session_limit` | 3 | Too many active sessions from this IP (3 per IP limit) |
+| `deny_rate_limited` | 4 | Too many connections per hour from this IP (10 per hour limit) |
 
 ### Enhanced Anti-Spam Protection Features
 
@@ -1088,8 +1099,8 @@ The access control system implements multiple enhanced anti-spam mechanisms:
 
 #### Connection Throttling
 - **Maximum Concurrent Connections**: 5 simultaneous connections
-- **Per-IP Session Limit**: 2 active sessions per IP address
-- **Rate Limiting**: 6 connections per hour per IP address
+- **Per-IP Session Limit**: 3 active sessions per IP (increased from 2)
+- **Rate Limiting**: 10 connections per hour per IP (increased from 6)
 
 #### Enhanced Session Management
 - **Active Session Tracking**: Monitors concurrent sessions per IP
@@ -1304,16 +1315,16 @@ The snapshot plugin implements several performance optimization strategies throu
 **Connection Denied - Maximum Connections**
 - **Symptom**: Server responds with "server at max concurrent connections"
 - **Cause**: 5 concurrent connections already active
-- **Solution**: Reduce concurrent clients or increase connection limits
+- **Solution**: Wait for connections to close or increase connection limits
 
 **Connection Denied - Session Limit**
 - **Symptom**: "too many active sessions from this IP" error
-- **Cause**: Client already has 2 active sessions
+- **Cause**: Client already has 3 active sessions (increased from 2)
 - **Solution**: Wait for session cleanup or reduce concurrent sessions
 
 **Connection Denied - Rate Limited**
 - **Symptom**: "rate limit exceeded (too many connections per hour)" error
-- **Cause**: Client exceeded 6 connections per hour limit
+- **Cause**: Client exceeded 10 connections per hour limit (increased from 6)
 - **Solution**: Wait for rate limit window to reset or reduce connection frequency
 
 **Enhanced P2P Integration Issues**
@@ -1350,6 +1361,11 @@ The snapshot plugin implements several performance optimization strategies throu
 - **Cause**: Trusted peers not providing newer snapshots or network connectivity issues
 - **Solution**: Verify trusted peer configuration, check snapshot availability, review network connectivity
 
+**Enhanced Anti-Spam Configuration Issues**
+- **Symptom**: Users experiencing connection denials despite legitimate usage
+- **Cause**: Anti-spam limits too restrictive with new values (3 sessions/IP, 10 connections/hour/IP)
+- **Solution**: Review anti-spam configuration, consider increasing limits for legitimate use cases, monitor connection patterns
+
 **Enhanced Diagnostic Tools**
 
 The plugin includes comprehensive enhanced diagnostic capabilities:
@@ -1366,6 +1382,7 @@ The plugin includes comprehensive enhanced diagnostic capabilities:
 - **Snapshot Directory Management**: Monitors automatic directory creation and cleanup processes
 - **Enhanced Logging Diagnostics**: Monitors ANSI color code application and terminal compatibility
 - **P2P Stale Sync Detection Diagnostics**: Monitors LIB reset, peer reconnection, and seed node management
+- **Enhanced Anti-Spam Configuration Diagnostics**: Monitors session limits, rate limiting, and connection patterns
 
 **Updated** The modular architecture provides enhanced diagnostic capabilities through separate layers for serialization, networking, database operations, security controls, recovery workflows, asynchronous execution, watchdog monitoring, and **enhanced P2P integration**. Recent improvements include watchdog monitoring, enhanced P2P fallback diagnostics, emergency consensus status tracking, comprehensive recovery workflow diagnostics, DLT replay status monitoring, asynchronous execution health monitoring, **P2P stale sync detection diagnostics**, and **dual-tier soft-ban system diagnostics**.
 

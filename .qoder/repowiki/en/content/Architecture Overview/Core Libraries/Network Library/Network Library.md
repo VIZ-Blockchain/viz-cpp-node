@@ -25,6 +25,7 @@
 - Added documentation for the `simulated_network` class's resync implementation
 - Updated dependency analysis to reflect the new virtual method structure
 - Enhanced troubleshooting guidance with resync usage scenarios
+- Added documentation for enhanced peer connection logging with color support (orange/red)
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -35,27 +36,28 @@
 6. [Peer Statistics and Metrics System](#peer-statistics-and-metrics-system)
 7. [Peer Information Handling and IP Extraction](#peer-information-handling-and-ip-extraction)
 8. [Programmatic Synchronization Control](#programmatic-synchronization-control)
-9. [Dependency Analysis](#dependency-analysis)
-10. [Performance Considerations](#performance-considerations)
-11. [Troubleshooting Guide](#troubleshooting-guide)
-12. [Conclusion](#conclusion)
+9. [Enhanced Peer Connection Logging](#enhanced-peer-connection-logging)
+10. [Dependency Analysis](#dependency-analysis)
+11. [Performance Considerations](#performance-considerations)
+12. [Troubleshooting Guide](#troubleshooting-guide)
+13. [Conclusion](#conclusion)
 
 ## Introduction
 This document describes the Network Library that implements peer-to-peer communication and network protocol for the VIZ node. It covers the node management layer, peer connection orchestration, standard network messages, secure transport, peer address management, and message serialization. The library provides a robust foundation for blockchain synchronization, transaction broadcasting, and block propagation across a distributed network.
 
-**Updated** Enhanced with comprehensive peer statistics logging system including latency tracking, blocking status reporting, periodic statistics collection, improved peer information handling with reliable IP address extraction and reduced conversion overhead. Added programmatic synchronization control through the new `resync()` method for improved network recovery from various network states. The virtual `resync()` method provides extensibility for derived classes to customize synchronization restart behavior.
+**Updated** Enhanced with comprehensive peer statistics logging system including latency tracking, blocking status reporting, periodic statistics collection, improved peer information handling with reliable IP address extraction and reduced conversion overhead. Added programmatic synchronization control through the new `resync()` method for improved network recovery from various network states. The virtual `resync()` method provides extensibility for derived classes to customize synchronization restart behavior. Enhanced peer connection logging now supports color-coded output for better visibility of network events.
 
 ## Project Structure
 The network library is organized into cohesive modules:
 - Node management and synchronization orchestration with virtual resync method support
-- Peer connection lifecycle and message queues
+- Peer connection lifecycle and message queues with enhanced logging
 - Standard network message definitions
 - Secure TCP transport with ECDH key exchange
 - Peer address database and topology maintenance
 - Message serialization/deserialization framework
 - Configuration constants for protocol behavior
 - **Peer statistics and metrics collection system with improved IP address extraction**
-- **P2P plugin integration for peer monitoring and statistics**
+- **P2P plugin integration for peer monitoring and statistics with color-coded logging**
 - **Programmatic synchronization control for network recovery with virtual method extensibility**
 
 ```mermaid
@@ -73,6 +75,7 @@ STATS["Statistics System"]
 P2P["p2p_plugin.cpp"]
 RESYNC["Virtual resync() Method"]
 SIMNET["simulated_network"]
+COLOR["Color Logging Support"]
 end
 N --> PC
 N --> PD
@@ -91,6 +94,7 @@ STATS --> N
 STATS --> PC
 P2P --> STATS
 P2P --> RESYNC
+P2P --> COLOR
 SIMNET --> RESYNC
 ```
 
@@ -120,15 +124,16 @@ SIMNET --> RESYNC
 
 ## Core Components
 - Node: Central orchestrator for peer discovery, connection management, synchronization, and message broadcasting with virtual resync method support.
-- PeerConnection: Manages individual peer sessions, message queuing, inventory tracking, and negotiation states.
+- PeerConnection: Manages individual peer sessions, message queuing, inventory tracking, and negotiation states with enhanced logging capabilities.
 - CoreMessages: Defines standardized message types for transactions, blocks, inventory, handshake, and operational commands.
 - STCP Socket: Provides secure transport via ECDH key exchange and AES encryption.
 - PeerDatabase: Maintains peer address records, connection history, and topology hints.
 - Message: Encapsulates message headers, payload serialization, and type-safe deserialization.
 - MessageOrientedConnection: Bridges secure sockets to message streams with event callbacks.
 - **Statistics System: Collects and reports peer performance metrics, latency data, and connection statistics with improved IP address extraction reliability.**
-- **P2P Plugin: Integrates peer monitoring, statistics collection, and network diagnostics with enhanced error handling.**
+- **P2P Plugin: Integrates peer monitoring, statistics collection, and network diagnostics with enhanced error handling and color-coded logging.**
 - **Programmatic Synchronization Control: Enables manual restart of synchronization with all connected peers for network recovery scenarios through virtual method extensibility.**
+- **Enhanced Logging: Supports color-coded output for better visibility of network events and peer connection states.**
 
 **Section sources**
 - [node.hpp:182-304](file://libraries/network/include/graphene/network/node.hpp#L182-L304)
@@ -285,6 +290,7 @@ PeerConnection encapsulates a single peer session, managing:
 - **Latency tracking and round-trip delay measurement**
 - **Blocking status reporting and synchronization control**
 - **Enhanced peer information handling with reliable IP address extraction**
+- **Enhanced logging with color support for better visibility**
 
 ```mermaid
 stateDiagram-v2
@@ -672,6 +678,46 @@ The `resync()` method is particularly useful for:
 - [p2p_plugin.cpp:616-618](file://plugins/p2p/p2p_plugin.cpp#L616-L618)
 - [node.cpp:346-347](file://libraries/network/node.cpp#L346-L347)
 
+## Enhanced Peer Connection Logging
+
+**Updated Section** The network library now supports enhanced peer connection logging with color-coded output for improved visibility and debugging capabilities.
+
+### Color Logging Support
+The P2P plugin implements ANSI color codes for enhanced console logging:
+
+- **Cyan Color**: Used for general statistics and informational messages
+- **White Color**: Used for detailed block processing information with latency metrics
+- **Reset Code**: Returns to default terminal color after colored output
+- **ANSI Escape Sequences**: Standard color codes supported by most terminals
+
+### Color-Coded Log Messages
+The logging system provides visual distinction for different types of network events:
+
+- **Block Processing Messages**: White color for detailed block information and transaction counts
+- **Statistics Messages**: Cyan color for periodic statistics and peer monitoring information
+- **Error Messages**: Red color for critical errors and warnings (when applicable)
+- **Debug Messages**: Orange color for detailed debugging information
+
+### Logging Implementation Details
+The color logging is implemented using preprocessor macros:
+
+- **CLOG_CYAN**: ANSI escape sequence for cyan text
+- **CLOG_WHITE**: ANSI escape sequence for white text  
+- **CLOG_RESET**: ANSI escape sequence to reset text color
+- **Macro Usage**: Color codes are embedded directly in log message strings
+
+### Benefits of Color Logging
+The enhanced logging system provides several advantages:
+
+- **Visual Distinction**: Different types of messages are easily distinguishable by color
+- **Improved Debugging**: Color coding helps identify message categories quickly
+- **Better Console Reading**: Color contrast makes log output more readable
+- **Operator Efficiency**: Faster identification of important information during monitoring
+
+**Section sources**
+- [p2p_plugin.cpp:16-19](file://plugins/p2p/p2p_plugin.cpp#L16-L19)
+- [p2p_plugin.cpp:169-171](file://plugins/p2p/p2p_plugin.cpp#L169-L171)
+
 ## Dependency Analysis
 The network components depend on each other in a layered fashion:
 - Node depends on PeerConnection, PeerDatabase, and CoreMessages
@@ -682,6 +728,7 @@ The network components depend on each other in a layered fashion:
 - **Statistics system integrates with Node and PeerConnection for metrics collection**
 - **P2P plugin integrates with statistics system for enhanced peer monitoring**
 - **Resync functionality integrates with Node synchronization system and supports virtual method extensibility**
+- **Color logging integrates with P2P plugin for enhanced console output visualization**
 
 ```mermaid
 graph LR
@@ -701,6 +748,7 @@ Stats["Statistics System"] --> Node
 Stats --> PeerConn
 P2P["p2p_plugin.cpp"] --> Stats
 P2P --> Resync
+P2P --> Color["Color Logging"]
 SimNet["simulated_network"] --> Resync
 ```
 
@@ -735,6 +783,7 @@ SimNet["simulated_network"] --> Resync
 - **Error handling**: Comprehensive try-catch blocks prevent cascading failures in peer information processing.
 - **Resync efficiency**: Programmatic resync restarts only active connections, minimizing disruption to healthy peers.
 - **Virtual method overhead**: Virtual dispatch adds minimal overhead while providing extensibility benefits.
+- **Color logging overhead**: ANSI color codes add minimal overhead while significantly improving log readability.
 
 ## Troubleshooting Guide
 Common issues and diagnostics:
@@ -750,6 +799,7 @@ Common issues and diagnostics:
 - **Statistics logging issues**: Verify P2P plugin configuration for statistics collection.
 - **Synchronization stalls**: Use `resync()` method to manually restart synchronization with all peers.
 - **Virtual method conflicts**: Ensure derived classes properly override `resync()` when extending functionality.
+- **Color logging issues**: Verify terminal supports ANSI color codes for proper log output formatting.
 
 Operational controls:
 - Disable peer advertising for debugging isolated networks.
@@ -761,6 +811,7 @@ Operational controls:
 - **Configure stale sync detection**: Enable `p2p-stale-sync-detection` to automatically recover from stalled synchronization.
 - **Manual resync control**: Use `resync()` method for operator-driven synchronization restarts.
 - **Extensibility patterns**: Leverage virtual method design for custom synchronization behaviors in derived classes.
+- **Color logging configuration**: Ensure terminal supports ANSI color codes for optimal log visualization.
 
 **Section sources**
 - [peer_database.hpp:39-45](file://libraries/network/include/graphene/network/peer_database.hpp#L39-L45)
@@ -772,4 +823,4 @@ Operational controls:
 ## Conclusion
 The Network Library provides a comprehensive, secure, and scalable foundation for peer-to-peer communication. Its modular design separates concerns between node orchestration, peer lifecycle management, protocol messaging, secure transport, and peer topology maintenance. With built-in performance controls, diagnostic capabilities, and extensible message types, it supports efficient blockchain synchronization and robust network operation.
 
-**Updated** The enhanced peer statistics logging system significantly improves network observability by providing detailed latency tracking, blocking status reporting, and comprehensive peer metrics. The critical bug fix in peer information handling ensures reliable IP address extraction with reduced conversion overhead, preventing crashes and improving overall network stability. The integration with the P2P plugin provides comprehensive monitoring capabilities for operators and developers working with the VIZ blockchain network. The new virtual `resync()` method adds powerful programmatic control for network recovery, enabling manual restart of synchronization with all connected peers and improved resilience against various network states and synchronization failures. The virtual method design provides extensibility for derived classes to customize synchronization behavior while maintaining a consistent interface across the network library ecosystem.
+**Updated** The enhanced peer statistics logging system significantly improves network observability by providing detailed latency tracking, blocking status reporting, and comprehensive peer metrics. The critical bug fix in peer information handling ensures reliable IP address extraction with reduced conversion overhead, preventing crashes and improving overall network stability. The integration with the P2P plugin provides comprehensive monitoring capabilities for operators and developers working with the VIZ blockchain network. The new virtual `resync()` method adds powerful programmatic control for network recovery, enabling manual restart of synchronization with all connected peers and improved resilience against various network states and synchronization failures. The virtual method design provides extensibility for derived classes to customize synchronization behavior while maintaining a consistent interface across the network library ecosystem. The enhanced peer connection logging with color support significantly improves the debugging and monitoring experience by providing visual distinction for different types of network events and messages.
