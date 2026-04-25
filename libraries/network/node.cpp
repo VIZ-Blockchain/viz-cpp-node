@@ -4956,12 +4956,12 @@ namespace graphene {
 
                 // Always log disconnect reason at info level for debugging
                 if (caused_by_error) {
-                    wlog("Disconnecting peer ${peer}: ${reason} (error: ${err})",
+                    dlog("Disconnecting peer ${peer}: ${reason} (error: ${err})",
                          ("peer", peer_to_disconnect->get_remote_endpoint())
                          ("reason", reason_for_disconnect)
                          ("err", error ? error->to_detail_string() : std::string("none")));
                 } else {
-                    ilog("Disconnecting peer ${peer}: ${reason}",
+                    dlog("Disconnecting peer ${peer}: ${reason}",
                          ("peer", peer_to_disconnect->get_remote_endpoint())
                          ("reason", reason_for_disconnect));
                 }

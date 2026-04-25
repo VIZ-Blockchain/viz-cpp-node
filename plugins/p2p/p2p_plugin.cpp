@@ -588,7 +588,7 @@ namespace graphene {
                                 if (pp.last_error) {
                                     error_str = pp.last_error->to_string();
                                 }
-                                wlog(CLOG_CYAN "P2P peer_db | ${ep} | status: ${disp} | last_attempt: ${time} | fails: ${f} | error: ${err}" CLOG_RESET,
+                                dlog(CLOG_CYAN "P2P peer_db | ${ep} | status: ${disp} | last_attempt: ${time} | fails: ${f} | error: ${err}" CLOG_RESET,
                                     ("ep", pp.endpoint)("disp", disposition)
                                     ("time", pp.last_connection_attempt_time.to_iso_string())
                                     ("f", pp.number_of_failed_connection_attempts)
@@ -596,7 +596,7 @@ namespace graphene {
                             }
                         }
                         if (failed_count > 0) {
-                            ilog(CLOG_CYAN "P2P peer_db: ${n} peers with failed/rejected status (of ${total} total)" CLOG_RESET,
+                            dlog(CLOG_CYAN "P2P peer_db: ${n} peers with failed/rejected status (of ${total} total)" CLOG_RESET,
                                 ("n", failed_count)("total", potential_peers.size()));
                         }
                     } catch (const fc::exception &e) {
