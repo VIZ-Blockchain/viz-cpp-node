@@ -269,6 +269,7 @@ namespace graphene {
                     }
 
                     auto& db = pimpl->database();
+                    auto op_guard = db.make_operation_guard();
                     fc::time_point now_fine = graphene::time::now();
                     fc::time_point_sec now = now_fine + fc::microseconds(250000);
 
@@ -296,6 +297,7 @@ namespace graphene {
                         }
 
                         if (pimpl->_private_keys.find(scheduled_key) != pimpl->_private_keys.end()) {
+                            op_guard.release();
                             return true; // We have the private key and are scheduled soon
                         }
                     }

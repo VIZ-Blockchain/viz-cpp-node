@@ -1585,6 +1585,12 @@ namespace graphene { namespace chain {
                               block_signing_private_key.get_public_key());
             } // op_guard released here
 
+            // Second operation guard covers all remaining lockless reads
+            // in this function: get_dynamic_global_properties(), head_block_id(),
+            // get_witness(), get_hardfork_property_object(). Released before
+            // push_block() which has its own guards.
+            auto op_guard2 = make_operation_guard();
+
             static const size_t max_block_header_size =
                     fc::raw::pack_size(signed_block_header()) + 4;
             auto maximum_block_size = get_dynamic_global_properties().maximum_block_size; //CHAIN_BLOCK_SIZE;
@@ -1711,6 +1717,8 @@ namespace graphene { namespace chain {
             if (!(skip & skip_block_size_check)) {
                 FC_ASSERT(fc::raw::pack_size(pending_block) <= CHAIN_BLOCK_SIZE);
             }
+
+            op_guard2.release();  // release before push_block(), which has its own guards
 
             push_block(pending_block, skip);
 
