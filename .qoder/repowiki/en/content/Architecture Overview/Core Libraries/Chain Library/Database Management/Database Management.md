@@ -4,6 +4,8 @@
 **Referenced Files in This Document**
 - [database.hpp](file://libraries/chain/include/graphene/chain/database.hpp)
 - [database.cpp](file://libraries/chain/database.cpp)
+- [chainbase.hpp](file://thirdparty/chainbase/include/chainbase/chainbase.hpp)
+- [chainbase.cpp](file://thirdparty/chainbase/src/chainbase.cpp)
 - [block_log.hpp](file://libraries/chain/include/graphene/chain/block_log.hpp)
 - [block_log.cpp](file://libraries/chain/block_log.cpp)
 - [dlt_block_log.hpp](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp)
@@ -14,9 +16,8 @@
 - [plugin.cpp](file://plugins/snapshot/plugin.cpp)
 - [db_with.hpp](file://libraries/chain/include/graphene/chain/db_with.hpp)
 - [witness.cpp](file://plugins/witness/witness.cpp)
+- [witness.hpp](file://plugins/witness/include/graphene/plugins/witness/witness.hpp)
 - [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
-- [chainbase.cpp](file://thirdparty/chainbase/src/chainbase.cpp)
-- [chainbase.hpp](file://thirdparty/chainbase/include/chainbase/chainbase.hpp)
 - [node.cpp](file://libraries/network/node.cpp)
 - [exceptions.hpp](file://libraries/network/include/graphene/network/exceptions.hpp)
 - [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
@@ -24,11 +25,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced fork database exception prevention mechanisms with comprehensive early rejection logic
-- Implemented intelligent early block rejection that prevents fork database exceptions and synchronization restart loops
-- Added proactive block rejection for blocks at or below head on dead forks, avoiding unnecessary fork database operations
-- Improved P2P synchronization integration with early rejection logic classification
-- Enhanced error handling for unlinkable blocks with proper peer classification
+- Enhanced database operations with systematic implementation of operation guards for concurrent access protection
+- Improved witness scheduling calculations with dual operation guard patterns for thread safety
+- Enhanced P2P plugin block validation with operation guard protection for concurrent resize safety
+- Comprehensive concurrency safety improvements throughout critical sections using resize barrier mechanisms
+- Integrated operation_guard RAII pattern for automatic concurrent access protection
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -38,30 +39,30 @@
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Emergency Consensus Implementation](#emergency-consensus-implementation)
 7. [Dependency Analysis](#dependency-analysis)
-8 [Performance Considerations](#performance-considerations)
+8. [Performance Considerations](#performance-considerations)
 9. [Troubleshooting Guide](#troubleshooting-guide)
 10. [Conclusion](#conclusion)
 
 ## Introduction
-This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for suppressing repeated warnings, and practical examples of database operations and performance optimization.
+This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for suppressing repeated warnings, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, and practical examples of database operations and performance optimization.
 
-**Updated** - Enhanced with comprehensive early rejection logic that prevents fork database exceptions and sync restart loops during snapshot imports. The system now includes sophisticated block validation with intelligent rejection strategies for blocks far ahead of the current head with unknown parents, significantly improving synchronization reliability and preventing unnecessary processing overhead. The enhanced fork database exception prevention mechanisms ensure that dead fork blocks are properly identified and handled, while the intelligent early rejection logic optimizes network synchronization performance.
+**Updated** - Enhanced with comprehensive operation guard implementation that systematically protects concurrent access to shared memory operations. The database now features dual operation guard patterns in witness scheduling calculations, enhanced P2P plugin block validation with operation guard protection, and comprehensive concurrency safety improvements throughout critical sections using resize barrier mechanisms. These enhancements ensure thread safety during high-load scenarios and prevent race conditions that could lead to stale pointer issues or data corruption.
 
 ## Project Structure
-The database subsystem is implemented primarily in the chain library with enhanced support for DLT mode and emergency consensus:
+The database subsystem is implemented primarily in the chain library with enhanced support for operation guards and concurrent access protection:
 - Core database interface and declarations: libraries/chain/include/graphene/chain/database.hpp
-- Implementation of database operations with enhanced DLT mode support and emergency consensus: libraries/chain/database.cpp
+- Implementation of database operations with enhanced DLT mode support, emergency consensus, operation guards, and concurrent access protection: libraries/chain/database.cpp
+- Chainbase integration with operation_guard RAII pattern and resize barrier mechanisms: thirdparty/chainbase/include/chainbase/chainbase.hpp and thirdparty/chainbase/src/chainbase.cpp
 - Block log abstraction: libraries/chain/include/graphene/chain/block_log.hpp and libraries/chain/block_log.cpp
 - DLT block log for rolling window storage: libraries/chain/include/graphene/chain/dlt_block_log.hpp and libraries/chain/dlt_block_log.cpp
 - Fork database for reversible blocks: libraries/chain/include/graphene/chain/fork_database.hpp and libraries/chain/fork_database.cpp
 - Database exceptions including unlinkable_block_exception: libraries/chain/include/graphene/chain/database_exceptions.hpp
 - Snapshot plugin integration: plugins/snapshot/plugin.cpp for DLT mode initialization
 - Postponed transaction processing: libraries/chain/include/graphene/chain/db_with.hpp for transaction queue management
-- Witness plugin integration: plugins/witness/witness.cpp for block production coordination
+- Witness plugin integration with dual operation guard patterns: plugins/witness/witness.cpp and plugins/witness/include/graphene/plugins/witness/witness.hpp
 - Protocol configuration: libraries/protocol/include/graphene/protocol/config.hpp for emergency consensus constants
-- Chainbase integration: thirdparty/chainbase/src/chainbase.cpp for shared memory management
 - Network layer integration: libraries/network/node.cpp for peer connectivity management
-- P2P plugin integration: plugins/p2p/p2p_plugin.cpp for enhanced exception handling
+- P2P plugin integration with operation guard protection: plugins/p2p/p2p_plugin.cpp for enhanced exception handling and concurrent access safety
 
 ```mermaid
 graph TB
@@ -77,12 +78,15 @@ FDCPP["fork_database.cpp"]
 DEH["database_exceptions.hpp"]
 DBWH["db_with.hpp"]
 ENDH["emergency_consensus_constants"]
-CB["chainbase.cpp"]
+end
+subgraph "Chainbase Integration"
 CBH["chainbase.hpp"]
+CBCPP["chainbase.cpp"]
 end
 subgraph "Plugins"
 SNAPH["snapshot/plugin.cpp"]
 WITNESS["witness/witness.cpp"]
+WITNESSH["witness.hpp"]
 P2PH["p2p/p2p_plugin.cpp"]
 end
 subgraph "Network Layer"
@@ -99,10 +103,11 @@ DBCPP --> FDCPP
 DBCPP --> DEH
 DBCPP --> DBWH
 DBCPP --> ENDH
-DBCPP --> CB
 DBCPP --> CBH
+DBCPP --> CBCPP
 SNAPH --> DBH
 WITNESS --> DBH
+WITNESSH --> WITNESS
 P2PH --> DBH
 NODE --> DBH
 EXC --> NODE
@@ -110,7 +115,9 @@ EXC --> NODE
 
 **Diagram sources**
 - [database.hpp:1-642](file://libraries/chain/include/graphene/chain/database.hpp#L1-L642)
-- [database.cpp:1-6424](file://libraries/chain/database.cpp#L1-L6424)
+- [database.cpp:1-6506](file://libraries/chain/database.cpp#L1-L6506)
+- [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
+- [chainbase.cpp:1-200](file://thirdparty/chainbase/src/chainbase.cpp#L1-L200)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
@@ -119,18 +126,19 @@ EXC --> NODE
 - [fork_database.cpp:1-271](file://libraries/chain/fork_database.cpp#L1-L271)
 - [database_exceptions.hpp:1-136](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L1-L136)
 - [db_with.hpp:1-154](file://libraries/chain/include/graphene/chain/db_with.hpp#L1-L154)
-- [plugin.cpp:1420-1430](file://plugins/snapshot/plugin.cpp#L1420-L1430)
-- [witness.cpp:449-467](file://plugins/witness/witness.cpp#L449-L467)
+- [plugin.cpp:1180-1379](file://plugins/snapshot/plugin.cpp#L1180-L1379)
+- [witness.cpp:270-469](file://plugins/witness/witness.cpp#L270-L469)
+- [witness.hpp:38-73](file://plugins/witness/include/graphene/plugins/witness/witness.hpp#L38-L73)
 - [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
-- [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
-- [chainbase.hpp:1200-1260](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1200-L1260)
 - [node.cpp:3185-3384](file://libraries/network/node.cpp#L3185-L3384)
 - [exceptions.hpp:27-48](file://libraries/network/include/graphene/network/exceptions.hpp#L27-L48)
-- [p2p_plugin.cpp:181-196](file://plugins/p2p/p2p_plugin.cpp#L181-L196)
+- [p2p_plugin.cpp:225-424](file://plugins/p2p/p2p_plugin.cpp#L225-L424)
 
 **Section sources**
 - [database.hpp:1-642](file://libraries/chain/include/graphene/chain/database.hpp#L1-L642)
-- [database.cpp:1-6424](file://libraries/chain/database.cpp#L1-L6424)
+- [database.cpp:1-6506](file://libraries/chain/database.cpp#L1-L6506)
+- [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
+- [chainbase.cpp:1-200](file://thirdparty/chainbase/src/chainbase.cpp#L1-L200)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
@@ -139,21 +147,20 @@ EXC --> NODE
 - [fork_database.cpp:1-271](file://libraries/chain/fork_database.cpp#L1-L271)
 - [database_exceptions.hpp:1-136](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L1-L136)
 - [db_with.hpp:1-154](file://libraries/chain/include/graphene/chain/db_with.hpp#L1-L154)
-- [plugin.cpp:1420-1430](file://plugins/snapshot/plugin.cpp#L1420-L1430)
-- [witness.cpp:449-467](file://plugins/witness/witness.cpp#L449-L467)
+- [plugin.cpp:1180-1379](file://plugins/snapshot/plugin.cpp#L1180-L1379)
+- [witness.cpp:270-469](file://plugins/witness/witness.cpp#L270-L469)
+- [witness.hpp:38-73](file://plugins/witness/include/graphene/plugins/witness/witness.hpp#L38-L73)
 - [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
-- [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
-- [chainbase.hpp:1200-1260](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1200-L1260)
 - [node.cpp:3185-3384](file://libraries/network/node.cpp#L3185-L3384)
 - [exceptions.hpp:27-48](file://libraries/network/include/graphene/network/exceptions.hpp#L27-L48)
-- [p2p_plugin.cpp:181-196](file://plugins/p2p/p2p_plugin.cpp#L181-L196)
+- [p2p_plugin.cpp:225-424](file://plugins/p2p/p2p_plugin.cpp#L225-L424)
 
 ## Core Components
-- database class: Public interface for blockchain state management, block and transaction processing, checkpoints, and event notifications with enhanced DLT mode support, emergency consensus implementation, and improved error handling.
+- database class: Public interface for blockchain state management, block and transaction processing, checkpoints, and event notifications with enhanced DLT mode support, emergency consensus implementation, operation guard integration, and improved error handling.
+- chainbase integration: Provides persistent object storage and undo sessions with enhanced memory management, operation_guard RAII pattern, and resize barrier mechanisms for concurrent access protection.
 - block_log: Append-only block storage with random-access indexing.
 - dlt_block_log: Rolling window block storage specifically designed for DLT (snapshot-based) nodes.
 - fork_database: Maintains reversible blocks and supports fork selection and switching with emergency mode support and enhanced unlinkable block detection.
-- chainbase integration: Provides persistent object storage and undo sessions with enhanced memory management.
 - signal_guard: Enhanced signal handling for graceful restart sequence management.
 - **_dlt_gap_logged flag**: New mechanism to suppress repeated warnings about missing blocks in fork database after snapshot import, with automatic reset upon successful DLT block writes.
 - **Enhanced block collision detection**: Sophisticated logging system that differentiates between same-parent double production and different-parent fork scenarios with rate-limiting.
@@ -162,16 +169,21 @@ EXC --> NODE
 - **Hybrid witness scheduling**: Dynamic witness schedule that combines real witnesses with committee members during emergency periods.
 - **LIB monitoring system**: Continuous monitoring of last irreversible block timestamp to detect network stalls and trigger emergency procedures.
 - **Enhanced Memory Management**: Comprehensive logging system for shared memory allocation with detailed free memory and maximum memory state reporting.
-- **Deferred Shared Memory Resize**: New mechanism that defers memory resize operations until a safe point when no read locks are held, improving thread safety and performance during high-load scenarios.
+- **Deferred Shared Memory Resize**: New mechanism that defers memory resize operations until a safe point when no read locks are held, preventing race conditions and stale pointer issues.
 - **Enhanced Error Handling**: Graceful handling of boost::interprocess::bad_alloc exceptions with deferred resize scheduling and peer connectivity preservation.
 - **Enhanced Fork Database Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking.
 - **Early Rejection Logic**: Sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents, preventing fork database exceptions and sync restart loops.
 - **Enhanced Fork Database Exception Prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection.
+- **Operation Guard System**: Comprehensive concurrent access protection using operation_guard RAII pattern, dual operation guard patterns for witness scheduling safety, and resize barrier mechanisms.
+- **Dual Operation Guard Patterns**: Systematic implementation of operation_guard for both lockless reads and write operations to prevent race conditions during shared memory operations.
+- **Concurrent Resize Safety**: Enhanced resize barrier mechanisms that pause all database operations during memory resizing to prevent stale pointer issues.
+- **P2P Plugin Protection**: Operation guard integration in P2P plugin for safe concurrent access during block validation and witness key retrieval.
+- **Witness Scheduling Safety**: Dual operation guard patterns in witness scheduling calculations to ensure thread safety during slot determination and witness validation.
 
 Key responsibilities:
 - Lifecycle: open(), open_from_snapshot(), reindex(), close(), wipe() with improved error handling
 - Validation: validate_block(), validate_transaction(), with configurable skip flags
-- Operations: push_block(), push_transaction(), generate_block() with enhanced memory pressure handling
+- Operations: push_block(), push_transaction(), generate_block() with enhanced memory pressure handling and concurrent access protection
 - DLT Mode: Conditional block log operations, rolling window management, snapshot-aware initialization
 - Observers: signals for pre/post operation, applied block, pending/applied transactions
 - Persistence: integrates with block_log and dlt_block_log for different operational modes
@@ -188,10 +200,15 @@ Key responsibilities:
 - **Enhanced Fork Database Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking
 - **Early Rejection Strategy**: Intelligent block rejection for far-ahead blocks with unknown parents to prevent unnecessary fork database operations and sync restart loops
 - **Enhanced Fork Database Exception Prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
+- **Operation Guard Integration**: Systematic implementation of operation_guard RAII pattern for automatic concurrent access protection across all critical sections
+- **Dual Guard Patterns**: Implementation of dual operation guards for witness scheduling to ensure thread safety during complex calculations
+- **P2P Concurrent Safety**: Operation guard protection in P2P plugin for safe concurrent access during block validation and witness key operations
+- **Resize Barrier Safety**: Comprehensive resize barrier mechanisms that pause all operations during memory resizing to prevent data corruption
 
 **Section sources**
 - [database.hpp:61-115](file://libraries/chain/include/graphene/chain/database.hpp#L61-L115)
 - [database.cpp:281-324](file://libraries/chain/database.cpp#L281-L324)
+- [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 - [block_log.hpp:38-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L38-L75)
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
 - [fork_database.hpp:53-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L138)
@@ -201,8 +218,8 @@ Key responsibilities:
 - [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
 
 ## Architecture Overview
-The database composes four primary subsystems with enhanced DLT mode support, emergency consensus implementation, and improved error handling:
-- Chainbase: Persistent object database with undo/redo capabilities and enhanced memory management
+The database composes four primary subsystems with enhanced DLT mode support, emergency consensus implementation, operation guard integration, and improved error handling:
+- Chainbase: Persistent object database with undo/redo capabilities, operation_guard RAII pattern, and resize barrier mechanisms for concurrent access protection
 - Fork database: Holds recent blocks for fork resolution with emergency mode support and enhanced unlinkable block detection
 - Block log: Immutable, append-only block storage with index
 - DLT block log: Rolling window block storage for DLT (snapshot-based) nodes
@@ -219,6 +236,11 @@ The database composes four primary subsystems with enhanced DLT mode support, em
 - **Enhanced Fork Database**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching
 - **Early Rejection Logic**: Sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents
 - **Enhanced Fork Database Exception Prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
+- **Operation Guard System**: Comprehensive concurrent access protection using operation_guard RAII pattern, dual operation guard patterns for witness scheduling safety, and resize barrier mechanisms
+- **Dual Operation Guard Patterns**: Systematic implementation of operation_guard for both lockless reads and write operations to prevent race conditions during shared memory operations
+- **Concurrent Resize Safety**: Enhanced resize barrier mechanisms that pause all database operations during memory resizing to prevent stale pointer issues
+- **P2P Plugin Protection**: Operation guard integration in P2P plugin for safe concurrent access during block validation and witness key retrieval
+- **Witness Scheduling Safety**: Dual operation guard patterns in witness scheduling calculations to ensure thread safety during slot determination and witness validation
 
 ```mermaid
 classDiagram
@@ -255,6 +277,25 @@ class database {
 +apply_pending_resize() : thread-safe memory management
 +early_rejection_logic : intelligent block rejection
 +enhanced_fork_exception_prevention : comprehensive exception prevention
++make_operation_guard() : concurrent access protection
++begin_resize_barrier() : resize safety
++end_resize_barrier() : resize safety
+}
+class chainbase {
++free_memory() : size_t
++max_memory() : size_t
++reserved_memory() : size_t
++set_reserved_memory(value)
++resize(new_size)
++operation_guard : concurrent access protection
++begin_resize_barrier() : resize safety
++end_resize_barrier() : resize safety
+}
+class operation_guard {
++operation_guard(database& db)
++~operation_guard()
++release() : manual guard release
++operation_guard(operation_guard&& other)
 }
 class block_log {
 +open(path)
@@ -297,13 +338,6 @@ class pending_transactions_restorer {
 +applied_txs : uint32_t
 +postponed_txs : uint32_t
 }
-class chainbase {
-+free_memory() : size_t
-+max_memory() : size_t
-+reserved_memory() : size_t
-+set_reserved_memory(value)
-+resize(new_size)
-}
 class unlinkable_block_exception {
 +inherits from chain_exception
 +thrown for dead fork detection
@@ -323,15 +357,17 @@ database --> dlt_block_log : "uses (DLT mode)"
 database --> fork_database : "uses with enhanced error handling"
 database --> signal_guard : "enhanced restart handling"
 database --> pending_transactions_restorer : "manages postponed tx"
-database --> chainbase : "enhanced memory management"
+database --> chainbase : "enhanced memory management with operation guards"
 database --> unlinkable_block_exception : "enhanced fork handling"
 database --> early_rejection_logic : "prevents unnecessary operations"
 database --> enhanced_fork_exception_prevention : "comprehensive exception prevention"
+chainbase --> operation_guard : "RAII concurrent access protection"
 ```
 
 **Diagram sources**
 - [database.hpp:61-115](file://libraries/chain/include/graphene/chain/database.hpp#L61-L115)
 - [database.cpp:281-324](file://libraries/chain/database.cpp#L281-L324)
+- [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 - [block_log.hpp:38-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L38-L75)
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
 - [fork_database.hpp:53-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L138)
@@ -983,6 +1019,94 @@ UpdatePeers --> End(["Complete"])
 - [node.cpp:3185-3384](file://libraries/network/node.cpp#L3185-L3384)
 - [p2p_plugin.cpp:181-196](file://plugins/p2p/p2p_plugin.cpp#L181-L196)
 
+### Enhanced Operation Guard Implementation for Concurrent Access Protection
+**New** - The database now features comprehensive operation guard implementation for concurrent access protection:
+
+- **Operation Guard RAII Pattern**: The `operation_guard` class provides automatic concurrent access protection using RAII pattern, ensuring proper cleanup when guards go out of scope.
+- **Dual Operation Guard Patterns**: Systematic implementation of dual operation guards in witness scheduling calculations to prevent race conditions during complex slot determination operations.
+- **Resize Barrier Integration**: Operation guards participate in resize barrier mechanisms, blocking during memory resizing operations to prevent stale pointer issues.
+- **P2P Plugin Protection**: Operation guard integration in P2P plugin for safe concurrent access during block validation and witness key retrieval operations.
+- **Witness Scheduling Safety**: Dual operation guard patterns ensure thread safety during witness scheduling calculations, protecting lockless reads from concurrent memory resizing.
+- **Concurrent Resize Safety**: Enhanced resize barrier mechanisms that pause all database operations during memory resizing, preventing data corruption and stale pointer issues.
+
+```mermaid
+flowchart TD
+Start(["Operation Guard Usage"]) --> CheckCritical{"Critical Section?"}
+CheckCritical --> |Yes| CreateGuard["auto op_guard = make_operation_guard()"]
+CheckCritical --> |No| NormalOp["Normal Operation"]
+CreateGuard --> ExecuteOp["Execute Critical Operation"]
+ExecuteOp --> ReleaseGuard["op_guard.release() (optional)"]
+ReleaseGuard --> End(["Complete"])
+NormalOp --> End
+```
+
+**Diagram sources**
+- [database.cpp:1556-1588](file://libraries/chain/database.cpp#L1556-L1588)
+- [database.cpp:1593-1594](file://libraries/chain/database.cpp#L1593-L1594)
+- [witness.cpp:271-300](file://plugins/witness/witness.cpp#L271-L300)
+- [witness.cpp:506-507](file://plugins/witness/witness.cpp#L506-L507)
+- [p2p_plugin.cpp:232-243](file://plugins/p2p/p2p_plugin.cpp#L232-L243)
+
+**Section sources**
+- [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
+- [database.cpp:1556-1588](file://libraries/chain/database.cpp#L1556-L1588)
+- [database.cpp:1593-1594](file://libraries/chain/database.cpp#L1593-L1594)
+- [witness.cpp:271-300](file://plugins/witness/witness.cpp#L271-L300)
+- [witness.cpp:506-507](file://plugins/witness/witness.cpp#L506-L507)
+- [p2p_plugin.cpp:232-243](file://plugins/p2p/p2p_plugin.cpp#L232-L243)
+
+### Enhanced Witness Scheduling with Dual Operation Guard Patterns
+**New** - The witness plugin now implements dual operation guard patterns for enhanced thread safety:
+
+- **First Operation Guard**: Protects lockless reads during slot determination and witness validation operations.
+- **Second Operation Guard**: Provides additional protection for critical witness scheduling calculations.
+- **Safe Memory Access**: Prevents race conditions during witness scheduling by guarding access to shared memory structures.
+- **Concurrent Resize Protection**: Ensures witness scheduling operations are protected during memory resizing operations.
+- **Automatic Cleanup**: Operation guards automatically release protection when going out of scope, preventing resource leaks.
+
+```mermaid
+flowchart TD
+Start(["Witness Scheduling"]) --> FirstGuard["auto op_guard = make_operation_guard()"]
+FirstGuard --> SlotCalc["Calculate slot and witness"]
+SlotCalc --> SecondGuard["auto op_guard2 = make_operation_guard()"]
+SecondGuard --> ValidateWitness["Validate witness key and permissions"]
+ValidateWitness --> ReleaseGuards["Release both operation guards"]
+ReleaseGuards --> GenerateBlock["Generate block if eligible"]
+```
+
+**Diagram sources**
+- [database.cpp:1556-1588](file://libraries/chain/database.cpp#L1556-L1588)
+- [database.cpp:1593-1594](file://libraries/chain/database.cpp#L1593-L1594)
+- [witness.cpp:506-507](file://plugins/witness/witness.cpp#L506-L507)
+
+**Section sources**
+- [database.cpp:1556-1588](file://libraries/chain/database.cpp#L1556-L1588)
+- [database.cpp:1593-1594](file://libraries/chain/database.cpp#L1593-L1594)
+- [witness.cpp:506-507](file://plugins/witness/witness.cpp#L506-L507)
+
+### Enhanced P2P Plugin Block Validation with Operation Guard Protection
+**New** - The P2P plugin now includes operation guard protection for concurrent access safety:
+
+- **Operation Guard Integration**: P2P plugin uses operation guards to protect witness key retrieval during block validation.
+- **Concurrent Access Safety**: Prevents race conditions during witness key access while memory resizing is occurring.
+- **Safe Signature Verification**: Ensures witness signature verification operations are protected from concurrent memory modifications.
+- **Automatic Protection**: Operation guards automatically manage protection lifecycle, preventing resource leaks and ensuring proper cleanup.
+
+```mermaid
+flowchart TD
+Start(["P2P Block Validation"]) --> CreateGuard["auto op_guard = chain.db().make_operation_guard()"]
+CreateGuard --> GetWitnessKey["Retrieve witness signing key"]
+GetWitnessKey --> VerifySignature["Verify witness signature"]
+VerifySignature --> ReleaseGuard["op_guard.release()"]
+ReleaseGuard --> ApplyValidation["Apply block post validation"]
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:232-243](file://plugins/p2p/p2p_plugin.cpp#L232-L243)
+
+**Section sources**
+- [p2p_plugin.cpp:232-243](file://plugins/p2p/p2p_plugin.cpp#L232-L243)
+
 ### Checkpoint System for Fast Synchronization
 - Checkpoints: A map of block number to expected block ID is maintained; when a checkpoint matches, the system skips expensive validations and authority checks for subsequent blocks until the last checkpoint.
 - before_last_checkpoint(): Determines whether the current head is before the last checkpoint to decide whether to enforce stricter checks.
@@ -1066,7 +1190,7 @@ These signals are used by plugins to react to blockchain events without tight co
 - Open database and initialize: open(data_dir, shared_mem_dir, initial_supply, shared_file_size, chainbase_flags)
 - **Open from snapshot**: open_from_snapshot(data_dir, shared_mem_dir, initial_supply, shared_file_size, chainbase_flags) - **Enhanced**
 - Rebuild state from history: reindex(data_dir, shared_mem_dir, from_block_num, shared_file_size) - **Enhanced with signal handling**
-- Push a block: push_block(signed_block, skip_flags) - **Enhanced with shared memory error handling and early rejection logic**
+- Push a block: push_block(signed_block, skip_flags) - **Enhanced with shared memory error handling, early rejection logic, and operation guard protection**
 - Push a transaction: push_transaction(signed_transaction, skip_flags)
 - Validate a block: validate_block(signed_block, skip_flags)
 - Validate a transaction: validate_transaction(signed_transaction, skip_flags)
@@ -1080,6 +1204,10 @@ These signals are used by plugins to react to blockchain events without tight co
 - **Enhanced Fork Database**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking
 - **Early Rejection Logic**: Intelligent block rejection for far-ahead blocks with unknown parents to prevent unnecessary fork database operations and sync restart loops
 - **Enhanced Fork Database Exception Prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
+- **Operation Guard Integration**: Systematic implementation of operation_guard RAII pattern for automatic concurrent access protection across all critical sections
+- **Dual Guard Patterns**: Implementation of dual operation guards for witness scheduling to ensure thread safety during complex calculations
+- **P2P Concurrent Safety**: Operation guard protection in P2P plugin for safe concurrent access during block validation and witness key operations
+- **Resize Barrier Safety**: Comprehensive resize barrier mechanisms that pause all operations during memory resizing to prevent data corruption
 - Query helpers:
   - get_block_id_for_num(uint32_t)
   - fetch_block_by_id(block_id_type)
@@ -1290,7 +1418,7 @@ The enhanced error logging system ensures that operators have comprehensive visi
 
 ## Dependency Analysis
 The database depends on:
-- chainbase for persistent storage and undo sessions with enhanced memory management
+- chainbase for persistent storage and undo sessions with enhanced memory management, operation_guard RAII pattern, and resize barrier mechanisms
 - block_log for immutable block storage and random access
 - dlt_block_log for rolling window storage in DLT mode
 - fork_database for reversible blocks and fork resolution with emergency mode support and enhanced unlinkable block detection
@@ -1310,6 +1438,11 @@ The database depends on:
 - **Enhanced fork database**: Proper unlinkable_block_exception handling for dead fork detection and improved fork switching logic with deterministic tie-breaking
 - **Early rejection logic**: Sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents
 - **Enhanced fork database exception prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
+- **Operation guard system**: Comprehensive concurrent access protection using operation_guard RAII pattern, dual operation guard patterns for witness scheduling safety, and resize barrier mechanisms
+- **Dual operation guard patterns**: Systematic implementation of operation_guard for both lockless reads and write operations to prevent race conditions during shared memory operations
+- **Concurrent resize safety**: Enhanced resize barrier mechanisms that pause all database operations during memory resizing to prevent stale pointer issues
+- **P2P plugin protection**: Operation guard integration in P2P plugin for safe concurrent access during block validation and witness key retrieval
+- **Witness scheduling safety**: Dual operation guard patterns in witness scheduling calculations to ensure thread safety during slot determination and witness validation
 
 ```mermaid
 graph LR
@@ -1335,6 +1468,11 @@ DB --> NETWORK["network layer integration"]
 DB --> UNLINK["unlinkable_block_exception"]
 DB --> EARLY["early rejection logic"]
 DB --> EXCEP["enhanced fork exception prevention"]
+DB --> OPGUARD["operation guard system"]
+DB --> DUALGUARD["dual operation guard patterns"]
+DB --> RESIZEBARRIER["resize barrier safety"]
+DB --> P2PSECURE["P2P plugin protection"]
+DB --> WITNESSSEC["witness scheduling safety"]
 ```
 
 **Diagram sources**
@@ -1381,6 +1519,10 @@ DB --> EXCEP["enhanced fork exception prevention"]
 - **Improved Fork Switching**: Enhanced fork switching logic with proper dead fork detection and deterministic tie-breaking prevents unnecessary processing and improves fork resolution performance.
 - **Early Rejection Efficiency**: The new early rejection logic eliminates unnecessary fork database operations for far-ahead blocks with unknown parents, significantly reducing processing overhead and preventing sync restart loops.
 - **Enhanced Fork Database Exception Prevention**: Comprehensive early rejection mechanisms prevent fork database exceptions before they occur, eliminating the need for exception handling and improving overall system efficiency.
+- **Operation Guard Performance**: The operation guard RAII pattern provides automatic concurrent access protection with minimal overhead, ensuring thread safety without significant performance impact.
+- **Dual Guard Patterns**: Systematic implementation of dual operation guards in witness scheduling provides comprehensive thread safety with optimized performance characteristics.
+- **P2P Concurrent Safety**: Operation guard protection in P2P plugin ensures safe concurrent access during block validation with minimal performance overhead.
+- **Resize Barrier Efficiency**: Enhanced resize barrier mechanisms provide comprehensive concurrent access protection during memory resizing with optimized performance characteristics.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -1423,6 +1565,11 @@ Common issues and remedies:
 - **P2P Sync Restart Loops**: Verify that the early rejection logic is working correctly to prevent sync restart loops during snapshot imports and normal operation.
 - **Enhanced Fork Database Exception Prevention**: Monitor the comprehensive exception prevention mechanisms to ensure they're properly classifying and handling different types of unlinkable blocks.
 - **Unlinkable Block Exception Handling**: Check that the P2P layer properly classifies and handles different types of unlinkable blocks (dead fork vs. far-ahead) to prevent soft-banning or unnecessary sync restarts.
+- **Operation Guard Issues**: Monitor operation guard functionality to ensure concurrent access protection is working correctly during high-load scenarios.
+- **Dual Guard Pattern Problems**: Verify that dual operation guards are properly protecting witness scheduling calculations and preventing race conditions.
+- **P2P Concurrent Access Issues**: Check that operation guard protection is working correctly in P2P plugin for safe concurrent access during block validation.
+- **Resize Barrier Failures**: Monitor resize barrier mechanisms to ensure they're properly pausing all database operations during memory resizing.
+- **Concurrent Resize Safety**: Verify that resize barrier mechanisms are preventing stale pointer issues and data corruption during memory operations.
 
 **Section sources**
 - [database.cpp:800-830](file://libraries/chain/database.cpp#L800-L830)
@@ -1441,11 +1588,12 @@ Common issues and remedies:
 - [database.cpp:1216-1286](file://libraries/chain/database.cpp#L1216-L1286)
 - [node.cpp:3185-3384](file://libraries/network/node.cpp#L3185-L3384)
 - [p2p_plugin.cpp:181-196](file://plugins/p2p/p2p_plugin.cpp#L181-L196)
+- [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 
 ## Conclusion
-The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support, emergency consensus implementation, and improved error handling. It integrates chainbase for persistent storage, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, and the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals.
+The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support, emergency consensus implementation, operation guard integration, and improved error handling. It integrates chainbase for persistent storage with comprehensive concurrent access protection, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, and the systematic implementation of resize barrier mechanisms, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals.
 
-**Updated** - The system now includes comprehensive early rejection logic that significantly improves synchronization reliability and prevents unnecessary processing overhead. The sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents prevents fork database exceptions and eliminates sync restart loops during snapshot imports. This enhancement, combined with the existing deferred shared memory resize mechanism, enhanced error handling for shared memory exhaustion, and improved P2P synchronization integration, makes the database management system more resilient to memory pressure situations while maintaining system stability and network connectivity.
+**Updated** - The system now includes comprehensive operation guard implementation that systematically protects concurrent access to shared memory operations. The database features dual operation guard patterns in witness scheduling calculations, enhanced P2P plugin block validation with operation guard protection, and comprehensive concurrency safety improvements throughout critical sections using resize barrier mechanisms. These enhancements ensure thread safety during high-load scenarios and prevent race conditions that could lead to stale pointer issues or data corruption. The systematic implementation of operation_guard RAII pattern provides automatic concurrent access protection across all critical sections, while the dual operation guard patterns in witness scheduling calculations ensure thread safety during complex slot determination operations. The enhanced P2P plugin protection with operation guard integration ensures safe concurrent access during block validation and witness key operations, and the comprehensive resize barrier mechanisms prevent data corruption during memory resizing operations.
 
 The enhanced DLT mode detection and block availability checking logic ensures accurate P2P synchronization and prevents false positives in block availability reporting. The new gap suppression mechanism provides intelligent warning management that prevents log spam during normal DLT operations while maintaining comprehensive diagnostic capability for troubleshooting. The automatic state management of the `_dlt_gap_logged` flag ensures optimal logging behavior without manual intervention, making the system more maintainable and operable in production environments. The sophisticated block collision detection system with rate-limiting and scenario differentiation provides enhanced diagnostic capabilities for network health monitoring. The intelligent postponed transaction processing system ensures stable operation under high load conditions with automatic queue management and time-based execution limits.
 
@@ -1462,3 +1610,5 @@ The deferred memory resize mechanism represents a major improvement in thread sa
 **Enhanced Early Rejection Logic** - The new early rejection logic represents a significant improvement in synchronization reliability and performance. By intelligently rejecting blocks far ahead with unknown parents before attempting fork database operations, the system prevents unnecessary processing overhead and eliminates the possibility of fork database exceptions that could trigger sync restart loops. This enhancement is particularly beneficial during snapshot imports where the fork database may only contain the head block, preventing the common scenario where P2P peers send blocks that are far ahead and would otherwise cause continuous sync restarts. The early rejection strategy ensures that only blocks with known parents are processed through the fork database, significantly improving the efficiency of the synchronization process and reducing the likelihood of encountering unlinkable blocks that would require peer soft-banning or sync restarts.
 
 **Enhanced Fork Database Exception Prevention** - The comprehensive exception prevention mechanisms represent a major advancement in fork database reliability. The system now includes multiple layers of protection against fork database exceptions, starting with intelligent early rejection of blocks with unknown parents and extending to proper classification and handling of different types of unlinkable blocks. The dead fork detection at or below head ensures that stale fork blocks are properly identified and rejected, while the far-ahead block rejection prevents unnecessary fork database operations that could trigger sync restart loops. This multi-layered approach to exception prevention significantly improves the robustness of the fork database and reduces the likelihood of synchronization issues caused by malformed or malicious blocks. The enhanced error propagation and classification mechanisms ensure that downstream components can properly handle different types of unlinkable blocks, leading to more efficient and reliable network synchronization.
+
+**Enhanced Operation Guard Implementation** - The comprehensive operation guard system represents a fundamental improvement in concurrent access protection throughout the database management system. The systematic implementation of operation_guard RAII pattern provides automatic concurrent access protection across all critical sections, while the dual operation guard patterns in witness scheduling calculations ensure thread safety during complex slot determination operations. The integration of operation guards in P2P plugin block validation protects witness key retrieval operations from concurrent memory modifications, and the comprehensive resize barrier mechanisms prevent data corruption during memory resizing operations. These enhancements ensure that the database management system can handle high-load scenarios safely and reliably while maintaining data consistency and preventing race conditions that could lead to system instability or data corruption.

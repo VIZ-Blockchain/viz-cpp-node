@@ -95,10 +95,10 @@ FD --> END6
 - [fork_database.hpp:1-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L144)
 - [fork_database.cpp:1-278](file://libraries/chain/fork_database.cpp#L1-L278)
 - [database.hpp:1-200](file://libraries/chain/include/graphene/chain/database.hpp#L1-L200)
-- [database.cpp:1-6480](file://libraries/chain/database.cpp#L1-L6480)
+- [database.cpp:1-6506](file://libraries/chain/database.cpp#L1-L6506)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
 - [dlt_block_log.cpp:1-454](file://libraries/chain/dlt_block_log.cpp#L1-L454)
-- [witness.cpp:1-695](file://plugins/witness/witness.cpp#L1-L695)
+- [witness.cpp:1-697](file://plugins/witness/witness.cpp#L1-L697)
 - [config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [12.hf:1-7](file://libraries/chain/hardfork.d/12.hf#L1-L7)
 
@@ -866,17 +866,17 @@ PRUNE["remove_blocks_by_number()"] --> FDB
 
 **Diagram sources**
 - [fork_database.cpp:1-278](file://libraries/chain/fork_database.cpp#L1-L278)
-- [database.cpp:1-6480](file://libraries/chain/database.cpp#L1-L6480)
+- [database.cpp:1-6506](file://libraries/chain/database.cpp#L1-L6506)
 - [dlt_block_log.cpp:1-454](file://libraries/chain/dlt_block_log.cpp#L1-L454)
-- [witness.cpp:1-695](file://plugins/witness/witness.cpp#L1-L695)
+- [witness.cpp:1-697](file://plugins/witness/witness.cpp#L1-L697)
 - [config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [12.hf:1-7](file://libraries/chain/hardfork.d/12.hf#L1-L7)
 
 **Section sources**
 - [fork_database.cpp:1-278](file://libraries/chain/fork_database.cpp#L1-L278)
-- [database.cpp:1-6480](file://libraries/chain/database.cpp#L1-L6480)
+- [database.cpp:1-6506](file://libraries/chain/database.cpp#L1-L6506)
 - [dlt_block_log.cpp:1-454](file://libraries/chain/dlt_block_log.cpp#L1-L454)
-- [witness.cpp:1-695](file://plugins/witness/witness.cpp#L1-L695)
+- [witness.cpp:1-697](file://plugins/witness/witness.cpp#L1-L697)
 - [config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [12.hf:1-7](file://libraries/chain/hardfork.d/12.hf#L1-L7)
 
