@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "witness-guard-spec.json",
+  "title": "Witness Guard Plugin Specification",
+  "description": "Technical specification for the automated witness key restoration plugin",
+  "version": "1.0.0",
+
+  "definitions": {
+    "witness_entry": {
+      "type": "array",
+      "description": "A JSON array representing a witness configuration triplet",
+      "items": [
+        { "name": "account_name", "type": "string", "description": "The name of the witness account to monitor" },
+        { "name": "signing_wif", "type": "string", "description": "The WIF private key to be restored as the signing key" },
+        { "name": "active_wif", "type": "string", "description": "The WIF private key with active authority to sign the update transaction" }
+      ],
+      "example": "[\"mywitness\", \"5Ksigning...\", \"5Kactive...\"]"
+    }
+  },
+
+  "configuration": {
+    "options": [
+      {
+        "name": "witness-guard-enabled",
+        "type": "boolean",
+        "default": true,
+        "description": "Global toggle for the plugin logic"
+      },
+      {
+        "name": "witness-guard-witness",
+        "type": "vector<string>",
+        "description": "List of witness triplets in JSON format. Can be specified multiple times.",
+        "ref": "#/definitions/witness_entry"
+      },
+      {
+        "name": "witness-guard-interval",
+        "type": "uint32",
+        "default": 20,
+        "description": "Frequency of checks measured in blocks (20 blocks is approx. 60 seconds)"
+      }
+    ]
+  },
+
+  "algorithms": {
+    "check_and_restore": {
+      "description": "Iterative process to detect and fix null signing keys",
+      "steps": [
+        { "step": 1, "action": "Verify node sync: head_block_time must be within 2 * CHAIN_BLOCK_INTERVAL" },
+        { "step": 2, "action": "Fetch witness index from database" },
+        { "step": 3, "action": "For each configured witness: find record by name" },
+        { "step": 4, "condition": "signing_key is NOT null", "action": "Remove witness from 'restore_sent' cache to allow future monitoring" },
+        { "step": 5, "condition": "signing_key IS null AND NOT in 'restore_sent'", "action": "Invoke send_witness_update" }
+      ]
+    },
+
+    "send_witness_update": {
+      "description": "Constructs and broadcasts a witness_update_operation",
+      "steps": [
+        { "step": 1, "action": "Extract current URL from the chain object (preserves metadata)" },
+        { "step": 2, "action": "Create witness_update_operation with target signing_pub_key" },
+        { "step": 3, "action": "Wrap operation in a signed_transaction" },
+        { "step": 4, "action": "Set expiration (30s) and reference block (head)" },
+        { "step": 5, "action": "Sign with the configured active_private_key" },
+        { "step": 6, "action": "Broadcast via P2P plugin" },
+        { "step": 7, "action": "Add witness name to 'restore_sent' cache to prevent duplicate broadcasts" }
+      ]
+    }
+  },
+
+  "internal_state": {
+    "restore_sent": {
+      "type": "std::set<string>",
+      "description": "In-memory cache of witnesses for which a restoration transaction has been broadcast in the current block cycle or since the last key reset"
+    }
+  }
+}
