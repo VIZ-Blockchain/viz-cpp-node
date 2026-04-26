@@ -42,6 +42,7 @@ target_link_libraries(
         graphene::paid_subscription_api
         graphene::custom_protocol_api
         graphene::snapshot
+        graphene::witness_guard
         ${MONGO_LIB}
         graphene_protocol
         fc

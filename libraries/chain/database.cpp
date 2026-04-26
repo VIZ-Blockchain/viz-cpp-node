@@ -1456,22 +1456,6 @@ namespace graphene { namespace chain {
                     throw;
                 }
 
-                // Prune stale competing blocks from dead forks at this height.
-                // A competing block is only safe to remove if its parent is no longer
-                // in the fork_db — without a parent the fork cannot be extended, so
-                // the block is truly dead. Removing blocks whose parent is still known
-                // would break legitimate fork switches when later blocks arrive.
-                {
-                    auto competing = _fork_db.fetch_block_by_number(new_block.block_num());
-                    for (const auto& cb : competing) {
-                        if (cb->id != new_block.id() && !_fork_db.is_known_block(cb->data.previous)) {
-                            wlog("Pruning stale competing block ${id} at height ${n} from fork_db (dead fork)",
-                                 ("id", cb->id)("n", new_block.block_num()));
-                            _fork_db.remove(cb->id);
-                        }
-                    }
-                }
-
                 return false;
             } FC_CAPTURE_AND_RETHROW()
         }
