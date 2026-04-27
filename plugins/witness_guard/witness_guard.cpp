@@ -7,9 +7,9 @@
 #include <graphene/protocol/chain_operations.hpp>
 #include <graphene/utilities/key_conversion.hpp>
 #include <graphene/time/time.hpp>
-#include <fc/string.hpp> // Adăugat pentru conversia fc::shared_string la std::string
+//#include <fc/string.hpp> // Adăugat pentru conversia fc::shared_string la std::string
 #include <fc/io/json.hpp>
-#include <sstream>
+//#include <sstream>
 
 #include <boost/signals2/connection.hpp>
 #include <appbase/application.hpp>
@@ -24,6 +24,13 @@ namespace bpo = boost::program_options;
 
 // ─── impl ────────────────────────────────────────────────────────────────────
 
+/**
+ * @brief Internal implementation details for the Witness Guard plugin.
+ * 
+ * This struct maintains the internal state of monitored witnesses and manages 
+ * the lifecycle of restoration transactions. It uses the PIMPL pattern to 
+ * decouple the plugin interface from the chain and database dependencies.
+ */
 struct witness_guard_plugin::impl {
     impl()
         : chain_(appbase::app().get_plugin<graphene::plugins::chain::plugin>())
@@ -33,28 +40,31 @@ struct witness_guard_plugin::impl {
     graphene::chain::database& db() { return chain_.db(); }
     graphene::chain::database& db() const { return chain_.db(); }
 
-    // ── config ────────────────────────────────────────────────────────────────
     bool                        _enabled        = true;
-    uint32_t                    _check_interval = 20;   // blocks between checks
-    bool                        _initial_check_done = false; // Whether we've detected that the node is synchronized at startup
-    boost::signals2::connection _applied_block_connection; // Connection for applied_block signal
+    uint32_t                    _check_interval = 20;        ///< Check signing keys every N blocks
+    bool                        _initial_check_done = false; ///< True once the node is confirmed to be in sync
+    boost::signals2::connection _applied_block_connection;   ///< Subscription handle for the applied_block signal
 
-    // --- witness_info struct ---
+    /**
+     * @brief Storage for keys required to perform a witness update.
+     */
     struct witness_info {
-        fc::ecc::private_key signing_key;
-        fc::ecc::private_key active_key;
+        fc::ecc::private_key signing_key; // The key we want to restore on the witness object
+        fc::ecc::private_key active_key;  // The key required to sign the witness_update transaction
     };
 
-    // Mapping witness_name -> config (keys)
+    // Configured witnesses to monitor: account_name -> keys
     std::map<std::string, witness_info> _witness_configs;
 
-    // Tracking pending restores: witness_name -> expiration_time
+    /** 
+     * Rate-limiting map: Tracks witnesses with an update already in the network.
+     * Key: account name, Value: time when the pending request expires.
+     */
     std::map<std::string, fc::time_point_sec> _restore_pending;
 
-    // Tracking transaction IDs to confirm their inclusion in a block
+    /// Confirmation tracking: maps transaction IDs to their associated witness and expiration time.
+    /// Used to clean up internal state once a transaction is successfully included in a block.
     std::map<graphene::chain::transaction_id_type, std::pair<std::string, fc::time_point_sec>> _pending_confirmations;
-
-    // ── core ──────────────────────────────────────────────────────────────────
 
     bool check_and_restore_internal();
     void send_witness_update(const std::string& witness_name,
@@ -66,12 +76,16 @@ struct witness_guard_plugin::impl {
 };
 
 // ─── check_and_restore ───────────────────────────────────────────────────────
-// Returns true if the node is in sync and a full check was performed, false otherwise.
+
+/**
+ * @brief Scans all monitored witnesses to check if their on-chain signing key needs restoration.
+ * @return true if the node is synchronized and the check proceeded, false if skipped due to sync issues.
+ */
 bool witness_guard_plugin::impl::check_and_restore_internal() {
     auto& database = db();
 
-    // Check only if the node is synchronized
-    // (head block within the last 2 * CHAIN_BLOCK_INTERVAL seconds)
+    // Safety Check: Ensure the node is synchronized. 
+    // Broadcasting updates during replay or deep sync can lead to expired or invalid transactions.
     const auto head_time = database.head_block_time();
     const auto now       = fc::time_point_sec(graphene::time::now());
     if (head_time < now - fc::seconds(CHAIN_BLOCK_INTERVAL * 2)) {
@@ -82,14 +96,16 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
     // Detect potential long fork by checking Last Irreversible Block (LIB) age
     const auto& dgp = database.get_dynamic_global_properties();
     const uint32_t lib_num = dgp.last_irreversible_block_num;
+
+    // Get block by number instead of header as some versions of database.hpp may lack fetch_block_header
     auto lib_block = database.fetch_block_by_number(lib_num);
     if (lib_block) {
         const auto lib_time = lib_block->timestamp;
-        // If LIB is older than 200 seconds, we are likely on a long fork or network is stalled
+        // Long Fork Protection: If the LIB is stale, the node's view of the chain is unreliable.
         if (now - lib_time > fc::seconds(200)) {
             wlog("witness_guard: POTENTIAL LONG FORK DETECTED! LIB #${n} is ${sec}s old. Skipping restoration.",
                  ("n", lib_num)("sec", (now - lib_time).to_seconds()));
-            return false;
+            return false; // View of state is potentially invalid; do not broadcast.
         }
     }
 
@@ -126,12 +142,19 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
         }
 
         if (itr->signing_key != null_key) {
-            // Key is healthy on-chain, clear any pending retry state for this witness
+            // Key is healthy on-chain: ensure we are not holding any stale retry or confirmation state.
             _restore_pending.erase(name);
+            for (auto it_conf = _pending_confirmations.begin(); it_conf != _pending_confirmations.end(); ) {
+                if (it_conf->second.first == name)
+                    it_conf = _pending_confirmations.erase(it_conf); // Cleanup any orphan trackers
+                else
+                    ++it_conf;
+            }
             continue;
         }
 
-        // If a restore is already in flight and hasn't expired yet, wait.
+        // Rate-limiting: Check if we already have a pending transaction in flight for this witness.
+        // We only retry if the previous attempt has passed its expiration window.
         if (_restore_pending.count(name)) {
             if (now <= _restore_pending[name]) continue;
             ilog("witness_guard: previous restore for '${w}' expired, retrying", ("w", name));
@@ -147,6 +170,10 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
 
 // ─── send_witness_update ─────────────────────────────────────────────────────
 
+/**
+ * @brief Constructs, signs, and broadcasts a witness_update transaction to the network.
+ * @param obj The current on-chain witness object state.
+ */
 void witness_guard_plugin::impl::send_witness_update(
         const std::string& witness_name,
         const graphene::chain::witness_object& obj,
@@ -156,28 +183,36 @@ void witness_guard_plugin::impl::send_witness_update(
         const auto signing_pub = config.signing_key.get_public_key();
         const auto& active_priv = config.active_key;
 
-        // Construct the operation
+        // Prepare the operation
         graphene::protocol::witness_update_operation op;
         op.owner            = witness_name;
+        // Chainbase shared_string must be manually copied to std::string for the protocol operation.
         op.url              = std::string(obj.url.begin(), obj.url.end()); 
         op.block_signing_key = signing_pub;
 
-        // Set expiration to 30 seconds from now
-        fc::time_point_sec expiration(graphene::time::now() + fc::seconds(30));
+        // 30s expiration is a safe window for an automated bot to either succeed or retry 
+        // without clogging the expiration buffers of the network.
+        fc::time_point_sec expiration(graphene::time::now() + fc::seconds(30)); 
 
-        // Construct the transaction
         graphene::chain::signed_transaction tx;
         tx.operations.push_back(op);
         tx.set_expiration(expiration);
+        // Use TaPOS (Transactions as Proof of Stake) to anchor the transaction to the current head block.
         tx.set_reference_block(db().head_block_id());
 
         tx.sign(active_priv, db().get_chain_id());
-        // After signing, we can get the final transaction ID
         const auto tx_id = tx.id();
 
+        // Memory safety: Prevent map overflow in case of extreme network congestion or logic errors.
         if (_pending_confirmations.size() > 1000) {
-            wlog("witness_guard: _pending_confirmations limit reached, clearing old entries");
-            _pending_confirmations.clear();
+            wlog("witness_guard: _pending_confirmations limit reached, purging expired entries");
+            const auto now_sec = fc::time_point_sec(graphene::time::now());
+            for (auto it = _pending_confirmations.begin(); it != _pending_confirmations.end(); ) {
+                if (now_sec > it->second.second)
+                    it = _pending_confirmations.erase(it);
+                else
+                    ++it;
+            }
         }
 
         ilog("witness_guard: broadcasting witness_update [ID: ${id}] for '${w}' — restoring key to ${k}",
@@ -185,6 +220,7 @@ void witness_guard_plugin::impl::send_witness_update(
 
         p2p_.broadcast_transaction(tx);
 
+        // Update internal state to track this flight.
         _restore_pending[witness_name] = expiration;
         _pending_confirmations[tx_id] = { witness_name, expiration }; 
 
@@ -193,7 +229,6 @@ void witness_guard_plugin::impl::send_witness_update(
     } catch (const fc::exception& e) {
         elog("witness_guard: witness_update FAILED for '${w}': ${e}",
              ("w", witness_name)("e", e.to_detail_string()));
-        // Do not add to _restore_sent — we will retry at the next check
     }
 }
 
@@ -232,7 +267,6 @@ void witness_guard_plugin::plugin_initialize(
         ilog("witness_guard: plugin_initialize() begin");
         pimpl = std::make_unique<impl>();
 
-        // enabled flag
         if (options.count("witness-guard-enabled")) {
             pimpl->_enabled = options["witness-guard-enabled"].as<bool>();
         }
@@ -241,11 +275,10 @@ void witness_guard_plugin::plugin_initialize(
             return;
         }
 
-        // interval
         pimpl->_check_interval = options["witness-guard-interval"].as<uint32_t>();
         if (pimpl->_check_interval == 0) pimpl->_check_interval = 1;
 
-        // witness configs (triplets)
+        // Parse witness configurations provided in config.ini or CLI.
         if (options.count("witness-guard-witness")) {
             const auto& entries = options["witness-guard-witness"].as<std::vector<std::string>>();
             for (const auto& entry : entries) {
@@ -260,15 +293,13 @@ void witness_guard_plugin::plugin_initialize(
 
                     FC_ASSERT(sign_priv.valid(), "witness-guard-witness: invalid signing WIF for ${n}", ("n", name));
                     FC_ASSERT(active_priv.valid(), "witness-guard-witness: invalid active WIF for ${n}", ("n", name));
-
-                                     
-
                     pimpl->_witness_configs[name] = { *sign_priv, *active_priv };
                     
-                    ilog("witness_guard: monitoring witness '${w}' (signing key: ${k})",
+                    ilog("witness_guard: added monitor for witness '${w}' (signing key: ${k})",
                          ("w", name)("k", sign_priv->get_public_key()));
 
                 } catch (const fc::exception& e) {
+                    // Individual entry failure doesn't stop the whole plugin.
                     elog("witness_guard: failed to parse witness entry '${entry}': ${e}",
                          ("entry", entry)("e", e.to_detail_string()));
                 }
@@ -293,14 +324,15 @@ void witness_guard_plugin::plugin_startup() {
         ilog("witness_guard: nothing to monitor, plugin inactive");
         return;
     }
-  // --- NEW: Authority Check moved here ---
-    // At this point, the chain_plugin has started and the database is open.
+
+    // Logic: Verify configured active keys against the on-chain account authorities.
+    // This prevents the plugin from running silently while lacking the permission to broadcast updates.
     for (auto it = pimpl->_witness_configs.begin(); it != pimpl->_witness_configs.end(); ) {
         const std::string& name = it->first;
         const impl::witness_info& config = it->second;
 
         try {
-           // Authorities in VIZ are stored in account_authority_object, not account_object
+            // Cryptographic authorities are stored in account_authority_object, separate from balances.
             const auto& account_auth_obj = pimpl->db().get<graphene::chain::account_authority_object, graphene::chain::by_account>(name);
             
             const auto active_pub_key = config.active_key.get_public_key();
@@ -321,28 +353,28 @@ void witness_guard_plugin::plugin_startup() {
             it = pimpl->_witness_configs.erase(it);
         }
     }
-    // --- END Authority Check ---
 
     if (pimpl->_witness_configs.empty()) return;
 
-    // Perform an initial check at startup.
-    // If the node is already synchronized, mark the initial check as completed.
-    // The check_and_restore_internal() function now returns true if the node is in sync.
+    // Run an initial check if the node is already synced. 
+    // If not, the check will be deferred to the applied_block handler.
     if (pimpl->check_and_restore_internal()) {
         pimpl->_initial_check_done = true;
     }
 
-    // Hook on every applied block and store the connection
+    // Main logic hook: execute on every block applied to the database.
     pimpl->_applied_block_connection = pimpl->db().applied_block.connect(
     [this](const graphene::chain::signed_block& b) {
         if (!pimpl->_enabled) return;
 
         // 1. Check for transaction confirmations in the new block
+        // We first collect IDs to avoid iterator invalidation issues if a map modification is triggered.
         if (!pimpl->_pending_confirmations.empty()) {
             std::vector<graphene::chain::transaction_id_type> confirmed_ids;
             for (const auto& tx : b.transactions) {
+                // Checking for presence is faster than a full find/iterator extraction here.
                 if (pimpl->_pending_confirmations.count(tx.id()))
-                    confirmed_ids.push_back(tx.id());
+                    confirmed_ids.push_back(tx.id()); 
             }
 
             for (const auto& id : confirmed_ids) {
@@ -358,6 +390,9 @@ void witness_guard_plugin::plugin_startup() {
         }
 
         // 2. Look-ahead: If any of our witnesses are scheduled in the next 3 slots, check now!
+        // We check 3 slots ahead (~9s) to allow enough time for the restoration transaction 
+        // to propagate and be included in the block immediately preceding our witness's turn,
+        // thus preventing missed blocks.
         bool scheduled_soon = false;
         if (pimpl->_initial_check_done) {
             for (uint32_t i = 1; i <= 3; ++i) {
@@ -368,15 +403,15 @@ void witness_guard_plugin::plugin_startup() {
             }
         }
 
-        // If the node was not synchronized at startup, check on each new block
-        // until we detect that synchronization has finished.
+        // Execution logic based on urgency and node state.
         if (scheduled_soon) {
+            // High priority: Witness is scheduled to produce soon.
             pimpl->check_and_restore_internal();
         }
         else if (!pimpl->_initial_check_done && (b.block_num() % 10 == 0)) {
-            // The sync check is now inside check_and_restore_internal()
+            // Background priority: Catching up with sync.
             if (pimpl->check_and_restore_internal()) {
-                pimpl->_initial_check_done = true;
+                pimpl->_initial_check_done = true; // Sync detected.
             }
         }
         else if (b.block_num() % pimpl->_check_interval == 0) {
