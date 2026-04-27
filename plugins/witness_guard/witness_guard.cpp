@@ -1,6 +1,7 @@
 #include <graphene/plugins/witness_guard/witness_guard.hpp>
 
 #include <graphene/chain/database.hpp>
+#include <graphene/chain/account_object.hpp>
 #include <graphene/chain/witness_objects.hpp>
 #include <graphene/chain/chain_object_types.hpp>
 #include <graphene/protocol/chain_operations.hpp>
@@ -10,6 +11,7 @@
 #include <fc/io/json.hpp>
 #include <sstream>
 
+#include <boost/signals2/connection.hpp>
 #include <appbase/application.hpp>
 
 #include <fc/smart_ref_impl.hpp>
@@ -35,7 +37,7 @@ struct witness_guard_plugin::impl {
     bool                        _enabled        = true;
     uint32_t                    _check_interval = 20;   // blocks between checks
     bool                        _initial_check_done = false; // Whether we've detected that the node is synchronized at startup
-    fc::connection              _applied_block_connection; // Connection for applied_block signal
+    boost::signals2::connection _applied_block_connection; // Connection for applied_block signal
 
     // --- witness_info struct ---
     struct witness_info {
@@ -53,7 +55,7 @@ struct witness_guard_plugin::impl {
     std::map<graphene::chain::transaction_id_type, std::pair<std::string, fc::time_point_sec>> _pending_confirmations;
 
     // ── core ──────────────────────────────────────────────────────────────────
-    void check_and_restore();
+
     bool check_and_restore_internal();
     void send_witness_update(const std::string& witness_name,
                              const graphene::chain::witness_object& obj,
@@ -80,9 +82,9 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
     // Detect potential long fork by checking Last Irreversible Block (LIB) age
     const auto& dgp = database.get_dynamic_global_properties();
     const uint32_t lib_num = dgp.last_irreversible_block_num;
-    auto lib_header = database.fetch_block_header_by_number(lib_num);
-    if (lib_header) {
-        const auto lib_time = lib_header->timestamp;
+    auto lib_block = database.fetch_block_by_number(lib_num);
+    if (lib_block) {
+        const auto lib_time = lib_block->timestamp;
         // If LIB is older than 200 seconds, we are likely on a long fork or network is stalled
         if (now - lib_time > fc::seconds(200)) {
             wlog("witness_guard: POTENTIAL LONG FORK DETECTED! LIB #${n} is ${sec}s old. Skipping restoration.",
@@ -113,7 +115,10 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
 
     static const graphene::protocol::public_key_type null_key;
 
-    for (const auto& [name, config] : _witness_configs) {
+    for (const auto& entry : _witness_configs) {
+        const std::string& name = entry.first;
+        const witness_info& config = entry.second;
+
         auto itr = idx.find(name);
         if (itr == idx.end()) {
             wlog("witness_guard: witness '${w}' not found in database", ("w", name));
@@ -154,11 +159,11 @@ void witness_guard_plugin::impl::send_witness_update(
         // Construct the operation
         graphene::protocol::witness_update_operation op;
         op.owner            = witness_name;
-        op.url              = std::string(obj.url); // Conversie directă sigură
+        op.url              = std::string(obj.url.begin(), obj.url.end()); 
         op.block_signing_key = signing_pub;
 
         // Set expiration to 30 seconds from now
-        auto expiration = graphene::time::now() + fc::seconds(30);
+        fc::time_point_sec expiration(graphene::time::now() + fc::seconds(30));
 
         // Construct the transaction
         graphene::chain::signed_transaction tx;
@@ -166,10 +171,15 @@ void witness_guard_plugin::impl::send_witness_update(
         tx.set_expiration(expiration);
         tx.set_reference_block(db().head_block_id());
 
-        // Sign with the active key
-        tx.sign(active_priv, db().get_chain_id()); // tx.id() is computed here
+        tx.sign(active_priv, db().get_chain_id());
+        // After signing, we can get the final transaction ID
+        const auto tx_id = tx.id();
 
-        const auto tx_id = tx.id(); // Store tx.id() to avoid re-computation
+        if (_pending_confirmations.size() > 1000) {
+            wlog("witness_guard: _pending_confirmations limit reached, clearing old entries");
+            _pending_confirmations.clear();
+        }
+
         ilog("witness_guard: broadcasting witness_update [ID: ${id}] for '${w}' — restoring key to ${k}",
              ("id", tx_id)("w", witness_name)("k", signing_pub));
 
@@ -287,11 +297,15 @@ void witness_guard_plugin::plugin_startup() {
     // At this point, the chain_plugin has started and the database is open.
     for (auto it = pimpl->_witness_configs.begin(); it != pimpl->_witness_configs.end(); ) {
         const std::string& name = it->first;
+        const impl::witness_info& config = it->second;
+
         try {
-            const auto& account_obj = pimpl->db().get_account(name);
-            const auto active_pub_key = it->second.active_key.get_public_key();
+           // Authorities in VIZ are stored in account_authority_object, not account_object
+            const auto& account_auth_obj = pimpl->db().get<graphene::chain::account_authority_object, graphene::chain::by_account>(name);
+            
+            const auto active_pub_key = config.active_key.get_public_key();
             bool active_key_has_authority = false;
-            for (const auto& auth : account_obj.active.key_auths) {
+            for (const auto& auth : account_auth_obj.active.key_auths) {
                 if (auth.first == active_pub_key) {
                     active_key_has_authority = true;
                     break;
@@ -302,7 +316,7 @@ void witness_guard_plugin::plugin_startup() {
                      "does NOT have authority on-chain. Restoration will fail.", ("w", name));
             }
             ++it;
-        } catch (const graphene::chain::unknown_account_exception& e) {
+        } catch (const fc::exception& e) {
             elog("witness_guard: ERROR: Account '${w}' not found on chain. Removing from monitor.", ("w", name));
             it = pimpl->_witness_configs.erase(it);
         }
@@ -325,16 +339,20 @@ void witness_guard_plugin::plugin_startup() {
 
         // 1. Check for transaction confirmations in the new block
         if (!pimpl->_pending_confirmations.empty()) {
+            std::vector<graphene::chain::transaction_id_type> confirmed_ids;
             for (const auto& tx : b.transactions) {
-                auto it = pimpl->_pending_confirmations.find(tx.id());
+                if (pimpl->_pending_confirmations.count(tx.id()))
+                    confirmed_ids.push_back(tx.id());
+            }
+
+            for (const auto& id : confirmed_ids) {
+                auto it = pimpl->_pending_confirmations.find(id);
                 if (it != pimpl->_pending_confirmations.end()) {
-                    const auto  tx_id  = it->first;           
-                    const auto  w_name = it->second.first;   
+                    const auto w_name = it->second.first;
                     pimpl->_restore_pending.erase(w_name);
-                    pimpl->_pending_confirmations.erase(it);  
+                    pimpl->_pending_confirmations.erase(it);
                     ilog("witness_guard: CONFIRMED restoration for '${w}' in block #${n} [TX: ${id}]",
-                         ("w", w_name)("n", b.block_num())("id", tx_id));
-                    
+                         ("w", w_name)("n", b.block_num())("id", id));
                 }
             }
         }
