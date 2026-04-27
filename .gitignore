@@ -2,7 +2,6 @@
 *.so
 *.dylib
 *.sw*
-
 *.cmake
 CMakeCache.txt
 CMakeFiles
@@ -50,3 +49,4 @@ documentation/doxygen/latex
 *.pyo
 *.egg-info/
 build
+vizd-production.tar
