@@ -150,10 +150,10 @@ namespace graphene {
                         });
                         int32_t gap = (int32_t)blk_msg.block.block_num() - (int32_t)head_block_num - 1;
                         if (sync_mode)
-                            ilog(CLOG_WHITE "Chain pushing sync block #${block_num} (head: ${head}, gap: ${gap})" CLOG_RESET,
+                            dlog("Chain pushing sync block #${block_num} (head: ${head}, gap: ${gap})",
                                  ("block_num", blk_msg.block.block_num())("head", head_block_num)("gap", gap));
                         else
-                            ilog(CLOG_WHITE "Chain pushing normal block #${block_num} (head: ${head}, gap: ${gap})" CLOG_RESET,
+                            dlog("Chain pushing normal block #${block_num} (head: ${head}, gap: ${gap})",
                                  ("block_num", blk_msg.block.block_num())("head", head_block_num)("gap", gap));
 
                         try {
@@ -165,9 +165,9 @@ namespace graphene {
                                                                                        ? database::skip_nothing
                                                                                        : database::skip_transaction_signatures);
 
-                            if (!sync_mode && result) {
+                            if (!sync_mode) {
                                 fc::microseconds latency = fc::time_point::now() - blk_msg.block.timestamp;
-                                ilog(CLOG_WHITE "Got ${t} transactions on block ${b} by ${w} -- latency: ${l} ms" CLOG_RESET,
+                                ilog(CLOG_WHITE "Got ${t} transactions on block ${b} by ${w} - latency: ${l} ms" CLOG_RESET,
                                      ("t", blk_msg.block.transactions.size())("b", blk_msg.block.block_num())("w", blk_msg.block.witness)("l", latency.count() / 1000));
                             }
 
