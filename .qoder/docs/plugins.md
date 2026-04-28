@@ -56,7 +56,22 @@ The fundamental plugin that manages the blockchain database, block validation, a
 shared-file-size = 2G
 shared-file-dir = /path/to/blockchain
 flush-state-interval = 0
+enable-emergency-mode = false
 ```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `shared-file-size` | `2G` | Start size of the shared memory file |
+| `shared-file-dir` | `state` | Location of the shared memory files |
+| `inc-shared-file-size` | `2G` | Size increment when shared memory runs low |
+| `min-free-shared-file-size` | `500M` | Minimum free space before auto-grow |
+| `block-num-check-free-size` | `1000` | Check free space every N blocks |
+| `flush-state-interval` | `10000` | Flush shared memory to disk every N blocks |
+| `single-write-thread` | `false` | Push blocks/transactions from one thread |
+| `skip-virtual-ops` | `false` | Skip virtual operations (saves memory) |
+| `enable-plugins-on-push-transaction` | `false` | Notify plugins on push_transaction |
+| `enable-emergency-mode` | `false` | Allow emergency consensus activation when the network stalls (no blocks for >1 hour since LIB). Must be explicitly set to `true` by the operator. |
+| `dlt-block-log-max-blocks` | `100000` | Blocks to keep in the DLT rolling block_log |
 
 ---
 

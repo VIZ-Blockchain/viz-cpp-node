@@ -6,13 +6,16 @@ Parameters used to restart stuck consensus, their operational mechanics, and the
 
 ## Overview
 
-When the VIZ network stalls — no blocks are produced because too few witnesses are online — operators can activate three emergency parameters to unblock production:
+When the VIZ network stalls — no blocks are produced because too few witnesses are online — operators can activate emergency parameters to unblock production:
 
 | Parameter | Normal Value | Emergency Value | Location |
 |---|---|---|---|
+| `enable-emergency-mode` | `false` | `true` | chain plugin |
 | `enable-stale-production` | `false` | `true` | witness plugin |
 | `required-participation` | `3300` (33%) | `0` | witness plugin |
 | `fork_db` `_max_size` | `1024` (dynamic) | `1024` (initial) | chain library |
+
+Starting with Hardfork 12, the primary emergency mechanism is `enable-emergency-mode`, which gates the on-chain automatic emergency consensus activation. When enabled and the network stalls for >1 hour, the node activates emergency consensus mode (committee witness fills empty schedule slots, penalties reset, hybrid schedule). The older `enable-stale-production` and `required-participation` overrides are still available for pre-HF12 scenarios or manual recovery.
 
 These parameters are essential for chain recovery, but if left in emergency mode after the network stabilizes, they become the **root cause of micro-forks**: isolated delegates continue producing blocks on their own divergent chain during any subsequent network partition.
 
@@ -301,6 +304,10 @@ When the network has stalled and block production must be restarted:
 
 1. **Edit config.ini** (or pass command-line flags):
    ```ini
+   # Hardfork 12+: enable on-chain emergency consensus (recommended)
+   enable-emergency-mode = true
+
+   # Also needed for block production:
    enable-stale-production = true
    required-participation = 0
    ```
@@ -320,6 +327,7 @@ When the network has stalled and block production must be restarted:
 ### Reverting Emergency Mode (Critical Step)
 
 ```ini
+enable-emergency-mode = false
 enable-stale-production = false
 required-participation = 3300
 ```
@@ -330,12 +338,13 @@ Then restart the node. **Do not skip this step.** Leaving emergency settings act
 
 | Step | Action | Verification |
 |------|--------|-------------|
-| 1 | Set `enable-stale-production = true` | Node produces blocks on stale chain |
-| 2 | Set `required-participation = 0` | Production continues despite low participation |
-| 3 | Monitor participation rate via API | `witness_participation_rate` rises as others rejoin |
-| 4 | **When participation > 50%** | Revert both settings to normal values |
-| 5 | Restart node with normal config | Confirm production continues with normal checks active |
-| 6 | Verify `low_participation` safeguard works | Node would stop if isolated (test by briefly disconnecting) |
+| 1 | Set `enable-emergency-mode = true` | Node will activate emergency consensus when network stalls |
+| 2 | Set `enable-stale-production = true` | Node produces blocks on stale chain |
+| 3 | Set `required-participation = 0` | Production continues despite low participation |
+| 4 | Monitor participation rate via API | `witness_participation_rate` rises as others rejoin |
+| 5 | **When participation > 50%** | Revert all three settings to normal values |
+| 6 | Restart node with normal config | Confirm production continues with normal checks active |
+| 7 | Verify `low_participation` safeguard works | Node would stop if isolated (test by briefly disconnecting) |
 
 ### Red Flags: Emergency Settings Still Active
 
@@ -374,6 +383,7 @@ Source: [config_debug.ini:95-99](../../share/vizd/config/config_debug.ini#L95), 
 
 ```ini
 # EMERGENCY ONLY — revert immediately after network recovers!
+enable-emergency-mode = true
 enable-stale-production = true
 required-participation = 0
 ```
@@ -389,6 +399,7 @@ required-participation = 0
 | `CHAIN_100_PERCENT` | 10000 | 100% in basis points | [config.hpp:57](../../libraries/protocol/include/graphene/protocol/config.hpp#L57) |
 | `CHAIN_1_PERCENT` | 100 | 1% in basis points | [config.hpp:58](../../libraries/protocol/include/graphene/protocol/config.hpp#L58) |
 | `CHAIN_MAX_UNDO_HISTORY` | 10000 | Max head-LIB gap before undo history exception | [config.hpp:108](../../libraries/protocol/include/graphene/protocol/config.hpp#L108) |
+| `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` | 3600 | Seconds since LIB before emergency activates | [config.hpp:112](../../libraries/protocol/include/graphene/protocol/config.hpp#L112) |
 | `CHAIN_IRREVERSIBLE_THRESHOLD` | 7500 (75%) | Witness validation threshold for LIB advancement | [config.hpp:110](../../libraries/protocol/include/graphene/protocol/config.hpp#L110) |
 | `fork_db._max_size` | 1024 | Default fork database depth | [fork_database.hpp:117](../../libraries/chain/include/graphene/chain/fork_database.hpp#L117) |
 | `MAX_BLOCK_REORDERING` | 1024 | Max out-of-order block insertion distance | [fork_database.hpp:57](../../libraries/chain/include/graphene/chain/fork_database.hpp#L57) |
@@ -421,6 +432,9 @@ With 3-second block intervals and 128-slot window:
 ```
 maybe_produce_block()
   │
+  ├─ [HF12+] Is emergency_consensus_active?
+  │   └─ Yes: Three-state safety handles production/sync checks automatically
+  │
   ├─ Is _production_enabled?
   │   ├─ No: Is chain synced (get_slot_time(1) >= now)?
   │   │   ├─ Yes: _production_enabled = true (auto-enable)
@@ -442,8 +456,19 @@ maybe_produce_block()
   ├─ Fork collision in fork_db?
   │   └─ Yes: return fork_collision
   │
+  ├─ Minority fork detection? (last 21 blocks all ours)
+  │   └─ Yes: return minority_fork            ← BYPASSED when enable-stale-production=true
+  │
   └─ Generate and broadcast block
       └─ return produced
+
+update_global_dynamic_data() — Emergency activation:
+  │
+  ├─ enable-emergency-mode=false? → skip
+  ├─ Is node syncing (replay/reindex or blocks_since_lib > 210)? → skip
+  ├─ LIB block not available (snapshot restore)? → skip
+  ├─ seconds_since_lib < 3600? → skip
+  └─ Activate emergency consensus mode
 ```
 
 The two emergency parameters bypass the two most important safeguards (steps 1 and 4), removing all automatic protection against solo production during network partitions.
