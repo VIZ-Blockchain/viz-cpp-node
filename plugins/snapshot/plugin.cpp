@@ -1716,8 +1716,10 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
             elog("Error in stalled sync check: ${e}", ("e", e.what()));
             // Reset timer to avoid immediate retry on unexpected errors
             last_block_received_time = fc::time_point::now();
-            fc::usleep(fc::seconds(5));
         }
+        // Sleep outside catch — fc::usleep cannot yield while an exception is active.
+        // On error, the 30s sleep at loop top provides the retry delay.
+
     }
 }
 
@@ -2607,21 +2609,25 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
     // cleanup hasn't completed yet (anti-spam duplicate session check).
     const int max_connect_retries = 3;
     for (int retry = 0; retry < max_connect_retries; ++retry) {
+        bool connected = false;
         try {
             auto connect_future = fc::async([&sock, &ep]() {
                 sock.connect_to(ep);
             });
             connect_future.wait(SNAPSHOT_PEER_TIMEOUT);
-            break;  // connected
+            connected = true;
         } catch (...) {
             if (retry + 1 >= max_connect_retries) throw;
-            wlog("Phase 2 connect to ${p} failed (attempt ${a}/${m}), retrying...",
-                 ("p", best->endpoint_str)("a", retry + 1)("m", max_connect_retries));
-            std::cerr << "   Connect retry " << (retry + 1) << "/" << max_connect_retries << "...\n";
-            try { sock.close(); } catch (...) {}
-            sock.open();
-            fc::usleep(fc::seconds(2));
         }
+        if (connected) break;
+        // Retry logic outside catch block — fc::usleep cannot yield
+        // while an exception is active (fc asserts std::current_exception() == nullptr).
+        wlog("Phase 2 connect to ${p} failed (attempt ${a}/${m}), retrying...",
+             ("p", best->endpoint_str)("a", retry + 1)("m", max_connect_retries));
+        std::cerr << "   Connect retry " << (retry + 1) << "/" << max_connect_retries << "...\n";
+        try { sock.close(); } catch (...) {}
+        sock.open();
+        fc::usleep(fc::seconds(2));
     }
 
     // Request info again to establish session
