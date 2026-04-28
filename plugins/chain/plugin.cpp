@@ -57,6 +57,8 @@ namespace chain {
 
         bool single_write_thread = false;
 
+        bool enable_emergency_mode = false;
+
         bool sync_start_logged = false; // guard to log sync start only once
 
         bool pending_snapshot_load = false; // set when snapshot args present but callback not yet registered
@@ -250,6 +252,11 @@ namespace chain {
                 "enable-plugins-on-push-transaction", boost::program_options::value<bool>()->default_value(false),
                 "enable calling of plugins for operations on push_transaction"
             ) (
+                "enable-emergency-mode", boost::program_options::value<bool>()->default_value(false),
+                "Enable emergency consensus mode activation when the network is stalled "
+                "(no blocks for >1 hour since last irreversible block). "
+                "Default: false. Set to true only when you are sure the network is truly stalled."
+            ) (
                 "dlt-block-log-max-blocks", boost::program_options::value<uint32_t>()->default_value(100000),
                 "Number of recent blocks to keep in the DLT rolling block_log (0 = disabled)"
             );
@@ -313,6 +320,7 @@ namespace chain {
         my->inc_shared_memory_size = fc::parse_size(options.at("inc-shared-file-size").as<std::string>());
         my->min_free_shared_memory_size = fc::parse_size(options.at("min-free-shared-file-size").as<std::string>());
         my->skip_virtual_ops = options.at("skip-virtual-ops").as<bool>();
+        my->enable_emergency_mode = options.at("enable-emergency-mode").as<bool>();
 
         if (options.count("block-num-check-free-size")) {
             my->block_num_check_free_size = options.at("block-num-check-free-size").as<uint32_t>();
@@ -425,6 +433,12 @@ namespace chain {
         }
 
         my->db.enable_plugins_on_push_transaction(my->enable_plugins_on_push_transaction);
+
+        if (my->enable_emergency_mode) {
+            my->db.set_enable_emergency_mode(true);
+            wlog("Emergency consensus mode ENABLED via config. "
+                 "Node will activate emergency mode if the network stalls.");
+        }
 
         // ========== Snapshot loading path ==========
         if (!my->snapshot_path.empty() && !my->replay_from_snapshot) {

@@ -165,6 +165,9 @@ namespace graphene { namespace chain {
 
             void set_skip_virtual_ops();
 
+            void set_enable_emergency_mode(bool enabled) { _enable_emergency_mode = enabled; }
+            bool get_enable_emergency_mode() const { return _enable_emergency_mode; }
+
             /**
              * @brief wipe Delete database from disk, and potentially the raw chain as well.
              * @param include_blocks If true, delete the raw chain as well as the database.
@@ -644,6 +647,7 @@ namespace graphene { namespace chain {
 
             bool _skip_virtual_ops = false;
             bool _enable_plugins_on_push_transaction = false;
+            bool _enable_emergency_mode = false;
 
 
             flat_map<std::string, std::shared_ptr<custom_operation_interpreter>> _custom_operation_interpreters;

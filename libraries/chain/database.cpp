@@ -4667,7 +4667,7 @@ namespace graphene { namespace chain {
                 }
 
                 // === HARDFORK 12: EMERGENCY CONSENSUS MODE ACTIVATION ===
-                if (has_hardfork(CHAIN_HARDFORK_12) && !_dgp.emergency_consensus_active) {
+                if (has_hardfork(CHAIN_HARDFORK_12) && !_dgp.emergency_consensus_active && _enable_emergency_mode) {
                     // Check if we should enter emergency mode:
                     // More than CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC seconds have elapsed
                     // since the last irreversible block timestamp.
