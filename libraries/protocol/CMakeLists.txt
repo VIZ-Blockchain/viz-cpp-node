@@ -52,11 +52,9 @@ endif()
 add_library(graphene::${CURRENT_TARGET} ALIAS graphene_${CURRENT_TARGET})
 set_property(TARGET graphene_${CURRENT_TARGET} PROPERTY EXPORT_NAME ${CURRENT_TARGET})
 
-#add_dependencies(graphene_${CURRENT_TARGET} graphene::version)
-
-target_link_libraries(graphene_${CURRENT_TARGET} fc) #graphene::version)
+target_link_libraries(graphene_${CURRENT_TARGET} fc)
 target_include_directories(graphene_${CURRENT_TARGET}
-        PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/../../version/include" "${CMAKE_CURRENT_BINARY_DIR}/include" "${CMAKE_CURRENT_BINARY_DIR}/../../version/include")
+        PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_BINARY_DIR}/include")
 
 install(TARGETS
         graphene_${CURRENT_TARGET}
