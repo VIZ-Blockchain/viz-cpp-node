@@ -79,6 +79,7 @@
 // ANSI color codes for console ban notifications
 #define CLOG_RED    "\033[91m"
 #define CLOG_ORANGE "\033[33m"
+#define CLOG_GRAY   "\033[90m"
 #define CLOG_RESET  "\033[0m"
 
 #define INVOCATION_COUNTER(name) \
@@ -1183,9 +1184,9 @@ namespace graphene {
                                     }
                                 } else if (peer->we_need_sync_items_from_peer &&
                                            !peer->ids_of_items_to_get.empty()) {
-                                    fc_ilog(fc::logger::get("sync"),
-                                         "fetch_sync_items_loop: peer ${peer} has ${count} items but NOT IDLE "
-                                         "(items_req=${items_req}, sync_req=${sync_req}, ids_req=${ids_req})",
+                                    fc_dlog(fc::logger::get("sync"),
+                                         CLOG_GRAY "fetch_sync_items_loop: peer ${peer} has ${count} items but NOT IDLE "
+                                         "(items_req=${items_req}, sync_req=${sync_req}, ids_req=${ids_req})" CLOG_RESET,
                                          ("peer", peer->get_remote_endpoint())
                                          ("count", peer->ids_of_items_to_get.size())
                                          ("items_req", peer->items_requested_from_peer.size())
@@ -1196,8 +1197,8 @@ namespace graphene {
                         } // end non-preemptable section
 
                         if (!sync_item_requests_to_send.empty()) {
-                            fc_ilog(fc::logger::get("sync"),
-                                 "fetch_sync_items_loop: requesting blocks from ${count} peer(s)",
+                            fc_dlog(fc::logger::get("sync"),
+                                 CLOG_GRAY "fetch_sync_items_loop: requesting blocks from ${count} peer(s)" CLOG_RESET,
                                  ("count", sync_item_requests_to_send.size()));
                         }
 
@@ -2614,7 +2615,7 @@ namespace graphene {
                     uint32_t synopsis_block_num = blockchain_synopsis.empty()
                                                  ? 0
                                                  : _delegate->get_block_number(blockchain_synopsis.back());
-                    fc_ilog(fc::logger::get("sync"),
+                    fc_dlog(fc::logger::get("sync"),
                          "sync: sending synopsis to peer ${peer}: ${count} entries, "
                          "last_item=#${num} (${hash})",
                          ("peer", peer->get_remote_endpoint())
@@ -2647,12 +2648,12 @@ namespace graphene {
                         first_num = _delegate->get_block_number(blockchain_item_ids_inventory_message_received.item_hashes_available.front());
                         last_num = _delegate->get_block_number(blockchain_item_ids_inventory_message_received.item_hashes_available.back());
                     }
-                    fc_ilog(fc::logger::get("sync"),
-                         "on_blockchain_item_ids_inventory: peer=${peer}, "
+                    fc_dlog(fc::logger::get("sync"),
+                         CLOG_GRAY "on_blockchain_item_ids_inventory: peer=${peer}, "
                          "items_available=${count} (blocks #${first}..#${last}), "
                          "remaining=${remaining}, "
                          "we_requested=${requested}, "
-                         "we_need_sync=${sync}, peer_needs_sync=${peer_sync}",
+                         "we_need_sync=${sync}, peer_needs_sync=${peer_sync}" CLOG_RESET,
                          ("peer", originating_peer->get_remote_endpoint())
                          ("count", blockchain_item_ids_inventory_message_received.item_hashes_available.size())
                          ("first", first_num)("last", last_num)
@@ -2768,7 +2769,7 @@ namespace graphene {
                         if (new_number_of_unfetched_items == 0) {
                             _delegate->sync_status(blockchain_item_ids_inventory_message_received.item_type, 0);
                         }
-                        fc_ilog(fc::logger::get("sync"),
+                        fc_dlog(fc::logger::get("sync"),
                              "Sync: peer ${peer} says we're up-to-date (items_available=${avail}, remaining=${remain}, "
                              "ids_to_get=${ids}, unfetched_from_all_peers=${total})",
                              ("peer", originating_peer->get_remote_endpoint())
@@ -2786,7 +2787,7 @@ namespace graphene {
                     if (!item_hashes_received.empty()) {
                         uint32_t first_num = _delegate->get_block_number(item_hashes_received.front());
                         uint32_t last_num = _delegate->get_block_number(item_hashes_received.back());
-                        fc_ilog(fc::logger::get("sync"),
+                        fc_dlog(fc::logger::get("sync"),
                              "Sync: received ${count} block IDs from peer ${peer} "
                              "(range: #${first}..#${last}, remaining: ${remaining})",
                              ("count", item_hashes_received.size())
@@ -4329,7 +4330,7 @@ namespace graphene {
             void node_impl::start_synchronizing_with_peer(const peer_connection_ptr &peer) {
                 VERIFY_CORRECT_THREAD();
                 uint32_t head_num = _delegate->get_block_number(_delegate->get_head_block_id());
-                fc_ilog(fc::logger::get("sync"),
+                fc_dlog(fc::logger::get("sync"),
                      "Starting sync with peer ${peer} (our head_block: #${head}, peer state: we_need=${we_need}, peer_needs=${peer_needs})",
                      ("peer", peer->get_remote_endpoint())("head", head_num)
                      ("we_need", peer->we_need_sync_items_from_peer)
