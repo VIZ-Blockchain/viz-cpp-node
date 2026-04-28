@@ -82,13 +82,14 @@ COPY thirdparty $APPDIR/thirdparty
 COPY plugins $APPDIR/plugins
 COPY libraries $APPDIR/libraries
 
-# Build vizd. The named cache mount `viz-ccache` is shared across all VIZ
-# Dockerfiles so that production and testnet builds in the same workflow
-# benefit from each other's compiled-object cache. `make -j$(nproc) vizd`
-# (instead of unscoped `make`) skips cli_wallet, util programs, and tests
-# that are not installed into the final image. `sharing=locked` is
-# required because ccache is not concurrent-safe; `shared` would risk cache
-# corruption under any future matrix-build setup.
+# Build vizd and cli_wallet. The named cache mount `viz-ccache` is shared across
+# all VIZ Dockerfiles so that production and testnet builds in the same workflow
+# benefit from each other's compiled-object cache. Listing both targets explicitly
+# (instead of unscoped `make`) skips util programs, tests, and examples that are
+# not shipped in the runtime image, while still compile-checking and shipping the
+# wallet CLI that operators invoke via `docker exec`. `sharing=locked` is required
+# because ccache is not concurrent-safe; `shared` would risk cache corruption
+# under any future matrix-build setup.
 RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
     cd $APPDIR && \
     git submodule update --init --recursive -f && \
@@ -104,23 +105,25 @@ RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
         -DENABLE_MONGO_PLUGIN=FALSE \
         .. \
     && \
-    make -j$(nproc) vizd && \
+    make -j$(nproc) vizd cli_wallet && \
     ccache -s
 
 # `make install` would re-trigger the `all` target through CMake's install-depends-on-all
-# rule, rebuilding cli_wallet, util programs, tests, and examples that were deliberately
-# skipped by `make -j$(nproc) vizd` above. The runtime image only invokes
-# /usr/local/bin/vizd (see share/vizd/vizd.sh), so we copy the single binary directly.
+# rule, rebuilding util programs, tests, and examples that were deliberately skipped
+# by the scoped `make` above. We copy the two binaries we ship directly instead.
 # `rm -rf $APPDIR` is unnecessary because the builder stage is discarded in multi-stage.
 RUN set -xe ;\
-    cp $APPDIR/build/programs/vizd/vizd /usr/local/bin/vizd
+    cp $APPDIR/build/programs/vizd/vizd /usr/local/bin/vizd ;\
+    cp $APPDIR/build/programs/cli_wallet/cli_wallet /usr/local/bin/cli_wallet
 
 FROM phusion/baseimage:noble-1.0.3 AS production
-# Only the daemon binary is needed at runtime (see share/vizd/vizd.sh). Static link
-# (-DBUILD_SHARED_LIBRARIES=FALSE) means no .so dependencies to ship. Copying just
-# the binary instead of the entire builder /usr/local shrinks the runtime image and
-# the layer graph exported to the GHA layer cache.
+# Two binaries are shipped: vizd (the daemon, started by share/vizd/vizd.sh) and
+# cli_wallet (invoked manually via `docker exec` for wallet operations). Static link
+# (-DBUILD_SHARED_LIBRARIES=FALSE) means no .so dependencies beyond the base image's
+# system libs. Copying just the binaries instead of the entire builder /usr/local
+# shrinks the runtime image and the layer graph exported to the GHA layer cache.
 COPY --from=builder /usr/local/bin/vizd /usr/local/bin/vizd
+COPY --from=builder /usr/local/bin/cli_wallet /usr/local/bin/cli_wallet
 
 RUN set -xe ;\
     useradd -s /bin/bash -m -d /var/lib/vizd vizd ;\
