@@ -1474,6 +1474,17 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         // block and stalling P2P sync.
         auto dlt_head = db.get_dlt_block_log().head();
         if (!dlt_head || dlt_head->block_num() < head_block.block_num()) {
+            // If the existing dlt_block_log has blocks but there's a gap
+            // between its head and the snapshot head, reset it first.
+            // Otherwise append() asserts on index position mismatch.
+            if (dlt_head) {
+                uint32_t dlt_head_num = dlt_head->block_num();
+                if (head_block.block_num() > dlt_head_num + 1) {
+                    ilog(CLOG_ORANGE "DLT block log: gap detected (dlt_head=${dh}, snapshot_head=${sh}), resetting" CLOG_RESET,
+                         ("dh", dlt_head_num)("sh", head_block.block_num()));
+                    db.get_dlt_block_log().reset();
+                }
+            }
             db.get_dlt_block_log().append(head_block);
             db.get_dlt_block_log().flush();
             ilog(CLOG_ORANGE "DLT block log seeded with head block ${n}" CLOG_RESET, ("n", header.snapshot_block_num));
