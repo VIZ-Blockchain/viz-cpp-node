@@ -22,11 +22,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced peer block ID range handling with detailed peer block ID ranges, item requests, and sync status information
-- Improved error logs with clear block availability context in DLT mode including comprehensive block range information
-- Enhanced peer status reporting with detailed sync status updates and peer synchronization metrics
-- Improved DLT mode error logging with contextual information about available block ranges and dlt_block_log boundaries
-- Enhanced peer connection state management with detailed synchronization progress tracking
+- Enhanced peer synchronization logging with comprehensive peer status updates including sync item counts, peer states, and timing information
+- Added detailed logging for peer synchronization progress with block ranges, remaining item counts, and sync status reporting
+- Implemented enhanced peer status reporting with memory usage metrics and peer connection state information
+- Improved error reporting for peer synchronization states with detailed timing and progress information
+- Enhanced sync status monitoring with item count tracking and peer coordination metrics
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -34,22 +34,22 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Enhanced Peer Handling and Soft-Banning](#enhanced-peer-handling-and-soft-banning)
-7. [Emergency Consensus Network-Level Improvements](#emergency-consensus-network-level-improvements)
-8. [DLT Mode Error Logging Enhancements](#dlt-mode-error-logging-enhancements)
-9. [Peer Status and Sync Status Reporting](#peer-status-and-sync-status-reporting)
+6. [Enhanced Peer Synchronization Logging](#enhanced-peer-synchronization-logging)
+7. [Comprehensive Peer Status Reporting](#comprehensive-peer-status-reporting)
+8. [Enhanced Error Reporting and Diagnostics](#enhanced-error-reporting-and-diagnostics)
+9. [Peer State Management and Monitoring](#peer-state-management-and-monitoring)
 10. [Dependency Analysis](#dependency-analysis)
 11. [Performance Considerations](#performance-considerations)
 12. [Troubleshooting Guide](#troubleshooting-guide)
 13. [Conclusion](#conclusion)
 
 ## Introduction
-This document describes the Node Management component responsible for orchestrating network peers, maintaining connectivity, and managing blockchain synchronization in the P2P layer. It covers the node.hpp class interface, the node_delegate integration for blockchain callbacks, configuration and lifecycle APIs, peer management, and network broadcasting with inventory tracking. The documentation now includes comprehensive coverage of enhanced peer handling logic with intelligent soft-banning mechanisms, improved unlinkable_block_exception handling, and prevention of infinite sync loops.
+This document describes the Node Management component responsible for orchestrating network peers, maintaining connectivity, and managing blockchain synchronization in the P2P layer. It covers the node.hpp class interface, the node_delegate integration for blockchain callbacks, configuration and lifecycle APIs, peer management, and network broadcasting with inventory tracking. The documentation now includes comprehensive coverage of enhanced peer synchronization logging, detailed peer status reporting, and improved error diagnostics for better debugging and monitoring capabilities.
 
 ## Project Structure
 The Node Management functionality spans several headers and the implementation source file:
 - Public interface: node.hpp defines the node class, node_delegate interface, and related types.
-- Implementation: node.cpp implements the node lifecycle, peer orchestration, message routing, synchronization, and inventory management with enhanced peer handling logic.
+- Implementation: node.cpp implements the node lifecycle, peer orchestration, message routing, synchronization, and inventory management with enhanced logging and diagnostics.
 - Peer model: peer_connection.hpp defines the peer connection abstraction and state machine with emergency consensus support and soft-ban functionality.
 - Persistence: peer_database.hpp provides persistent peer discovery records.
 - Messaging: message.hpp defines the generic message envelope; core_messages.hpp enumerates core P2P message types.
@@ -60,7 +60,7 @@ The Node Management functionality spans several headers and the implementation s
 graph TB
 subgraph "Network Layer"
 N["node.hpp<br/>Public API"]
-NI["node.cpp<br/>Enhanced Implementation"]
+NI["node.cpp<br/>Enhanced Implementation<br/>with Logging & Diagnostics"]
 PC["peer_connection.hpp<br/>Peer Abstraction<br/>with Soft-Ban Support"]
 PD["peer_database.hpp<br/>Persistent Peers"]
 MSG["message.hpp<br/>Message Envelope"]
@@ -111,22 +111,23 @@ NI --> P2P
 - [node.cpp:869-905](file://libraries/network/node.cpp#L869-L905)
 
 ## Core Components
-- node class: Provides P2P orchestration, configuration, peer management, and broadcast APIs.
-- node_delegate interface: Bridges the P2P layer to the blockchain, handling block ingestion, transaction processing, and sync callbacks.
+- node class: Provides P2P orchestration, configuration, peer management, and broadcast APIs with comprehensive logging capabilities.
+- node_delegate interface: Bridges the P2P layer to the blockchain, handling block ingestion, transaction processing, and sync callbacks with enhanced status reporting.
 - peer_connection: Encapsulates a single peer link with state machine, inventory tracking, rate-limited messaging, emergency consensus support, and intelligent soft-ban functionality.
 - peer_database: Persistent store of potential peers with connection history and disposition.
 - message: Generic envelope for all P2P messages with hashing and typed serialization.
 - fork_database: Manages blockchain forks with emergency consensus mode support and deterministic tie-breaking.
 
 Key responsibilities:
-- Lifecycle: Construction, configuration loading, listener setup, and graceful shutdown.
-- Peer orchestration: Connecting to configured seeds, accepting inbound connections, pruning inactive peers, and enforcing connection limits.
-- Synchronization: Requesting and processing blockchain item IDs, fetching blocks/transactions, and notifying the delegate.
-- Broadcasting: Advertising inventory and sending items to peers.
-- Inventory management: Tracking what peers have, what we need, and what we've recently processed.
-- Emergency consensus: Managing soft-bans, automatic flag resets, and emergency mode operations.
+- Lifecycle: Construction, configuration loading, listener setup, and graceful shutdown with detailed logging.
+- Peer orchestration: Connecting to configured seeds, accepting inbound connections, pruning inactive peers, and enforcing connection limits with comprehensive status reporting.
+- Synchronization: Requesting and processing blockchain item IDs, fetching blocks/transactions, and notifying the delegate with enhanced progress tracking.
+- Broadcasting: Advertising inventory and sending items to peers with detailed synchronization metrics.
+- Inventory management: Tracking what peers have, what we need, and what we've recently processed with peer-specific logging.
+- Emergency consensus: Managing soft-bans, automatic flag resets, and emergency mode operations with enhanced diagnostics.
 - Intelligent peer handling: Differentiating between stale fork peers and legitimate sync candidates to prevent infinite loops.
 - DLT mode support: Enhanced error logging with comprehensive block range information for distributed ledger technology mode.
+- Comprehensive logging: Detailed peer synchronization progress, item counts, block ranges, and timing information for better debugging and monitoring.
 
 **Section sources**
 - [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
@@ -137,7 +138,7 @@ Key responsibilities:
 - [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
 
 ## Architecture Overview
-The node delegates blockchain integration to a node_delegate and coordinates peers via peer_connection instances. The node maintains separate queues for sync and normal operation, enforces bandwidth and connection limits, and periodically prunes stale peers. The enhanced peer handling system provides network-level resilience through intelligent soft-ban mechanisms, automatic flag resets, and deterministic tie-breaking to prevent cascading failures and infinite sync loops.
+The node delegates blockchain integration to a node_delegate and coordinates peers via peer_connection instances. The node maintains separate queues for sync and normal operation, enforces bandwidth and connection limits, and periodically prunes stale peers. The enhanced peer handling system provides network-level resilience through intelligent soft-ban mechanisms, automatic flag resets, and deterministic tie-breaking to prevent cascading failures and infinite sync loops. The comprehensive logging system provides detailed peer synchronization progress, item counts, block ranges, and timing information for better debugging and monitoring capabilities.
 
 ```mermaid
 classDiagram
@@ -239,6 +240,7 @@ Operational loops:
 - terminate_inactive_connections_loop: Detects and disconnects idle/inactive peers.
 - bandwidth_monitor_loop: Updates rolling averages of read/write throughput.
 - fetch_updated_peer_lists_loop: Requests updated peer lists periodically.
+- dump_node_status_task: Periodically logs comprehensive peer status and synchronization progress.
 
 ```mermaid
 sequenceDiagram
@@ -386,7 +388,7 @@ Impl->>Impl : "broadcast transactions from contained_txs"
 
 ### Peer Management Functions
 - add_node/connect_to_endpoint: Adds a seed or forces immediate connection.
-- get_connected_peers: Returns status for UI/monitoring.
+- get_connected_peers: Returns status for UI/monitoring with comprehensive peer information.
 - get_connection_count/is_connected: Reports current connectivity.
 - set_allowed_peers/clear_peer_database: Controls allowed peers and resets peer DB for diagnostics.
 - get_potential_peers/disable_peer_advertising: Inspect and control peer discovery.
@@ -424,317 +426,286 @@ Send --> Deliver["Deliver item via fetch_items_message"]
 - [node.cpp:2830-2892](file://libraries/network/node.cpp#L2830-L2892)
 - [node.cpp:111-217](file://libraries/network/node.cpp#L111-L217)
 
-## Enhanced Peer Handling and Soft-Banning
+## Enhanced Peer Synchronization Logging
 
-### Intelligent Soft-Ban Mechanisms
-The node now implements sophisticated soft-ban mechanisms to prevent cascading disconnections during emergency consensus scenarios and improve peer classification accuracy.
+### Comprehensive Peer Status Updates
+The node now provides detailed peer status updates with comprehensive synchronization metrics and peer state information. The dump_node_status() function logs extensive information about peer connections, synchronization progress, and resource usage.
 
-Key features:
-- **Soft-ban duration**: 1 hour (3600 seconds) for fork-rejected blocks, reduced to 5 minutes (300 seconds) for trusted peers
-- **Automatic expiration**: Soft-bans automatically expire after the designated period
-- **Intelligent peer classification**: Differentiates between stale fork peers and legitimate sync candidates
-- **Flag reset logic**: When soft-bans expire, the inhibit_fetching_sync_blocks flag is automatically reset
-- **Emergency mode protection**: Prevents cascading failures during network emergencies
-- **Infinite loop prevention**: Smart peer state management prevents endless sync attempts
-- **Trusted peer support**: Special handling for peers in trusted-snapshot-peer configuration
+**Enhanced Status Logging Features**:
+- **Peer Connection States**: Logs active, handshaking, and closing peer counts with detailed state information
+- **Synchronization Progress**: Tracks sync item counts, peer synchronization status, and remaining item counts
+- **Memory Usage Metrics**: Monitors node and peer-specific memory usage including queue sizes
+- **Timing Information**: Logs connection times, last message timestamps, and synchronization timing
+- **Block Information**: Tracks current head blocks, block numbers, and block times for each peer
 
-```mermaid
-sequenceDiagram
-participant Peer as "Peer Connection"
-participant Node as "Node Implementation"
-participant Delegate as "Blockchain Delegate"
-Node->>Peer : "Block with fork rejection"
-alt unlinkable_block_exception
-Node->>Node : "Check peer position vs local head"
-alt peer below or equal to head
-Node->>Peer : "Soft-ban (1 hour) - Stale fork"
-Node->>Peer : "Set inhibit_fetching_sync_blocks = true"
-else peer above head
-Node->>Node : "Restart sync - Legitimate candidate"
-end
-else block_older_than_undo_history
-Node->>Peer : "Soft-ban (1 hour) - Too old"
-Node->>Peer : "Set inhibit_fetching_sync_blocks = true"
-else normal invalid block
-Node->>Peer : "Disconnect peer"
-end
-Note over Node : "After 1 hour"
-Node->>Node : "Check soft-ban expiration"
-Node->>Peer : "Reset inhibit_fetching_sync_blocks = false"
+**Status Update Logging Format**:
 ```
-
-**Diagram sources**
-- [node.cpp:3574-3629](file://libraries/network/node.cpp#L3574-L3629)
-- [node.cpp:3436-3458](file://libraries/network/node.cpp#L3436-L3458)
-
-### Enhanced Unlinkable Block Exception Handling
-The system now provides intelligent handling for unlinkable_block_exception based on peer position relative to local blockchain head:
-
-**Stale Fork Detection**:
-- When peer block number ≤ local head block number
-- Peer is on a stale fork that cannot be resolved
-- Immediate soft-ban for 1 hour with inhibit_fetching_sync_blocks = true
-- Prevents wasted bandwidth and prevents infinite sync loops
-- Trusted peers receive 5-minute soft-ban duration instead of 1 hour
-
-**Legitimate Sync Candidate**:
-- When peer block number > local head block number  
-- Peer may be ahead of us, indicating legitimate sync opportunity
-- Restarts sync process instead of disconnecting
-- Allows peer to potentially help us catch up
-- Prevents unnecessary network churn during legitimate catch-up scenarios
+----------------- PEER STATUS UPDATE --------------------
+ number of peers: ${active} active, ${handshaking}, ${closing} closing.  attempting to maintain ${desired} - ${maximum} peers
+       active peer ${endpoint} peer_is_in_sync_with_us:${in_sync_with_us} we_are_in_sync_with_peer:${in_sync_with_them}
+              above peer has ${count} sync items we might need
+              we are not fetching sync blocks from the above peer (inhibit_fetching_sync_blocks == true)
+  handshaking peer ${endpoint} in state ours(${our_state}) theirs(${their_state})
+--------- MEMORY USAGE ------------
+node._active_sync_requests size: ${size}
+node._received_sync_items size: ${size}
+node._new_received_sync_items size: ${size}
+node._items_to_fetch size: ${size}
+node._new_inventory size: ${size}
+node._message_cache size: ${size}
+  peer ${endpoint}
+    peer.ids_of_items_to_get size: ${size}
+    peer.inventory_peer_advertised_to_us size: ${size}
+    peer.inventory_advertised_to_peer size: ${size}
+    peer.items_requested_from_peer size: ${size}
+    peer.sync_items_requested_from_peer size: ${size}
+--------- END MEMORY USAGE ------------
+```
 
 **Section sources**
-- [node.cpp:3574-3629](file://libraries/network/node.cpp#L3574-L3629)
-- [node.cpp:3436-3458](file://libraries/network/node.cpp#L3436-L3458)
-- [exceptions.hpp:45](file://libraries/network/include/graphene/network/exceptions.hpp#L45)
+- [node.cpp:5113-5150](file://libraries/network/node.cpp#L5113-L5150)
+- [node.cpp:5152-5207](file://libraries/network/node.cpp#L5152-L5207)
 
-### Automatic Flag Reset Logic
-The system includes intelligent flag management to ensure peers can resume normal operations after soft-ban expiration.
+### Detailed Synchronization Progress Tracking
+The node implements comprehensive logging for peer synchronization progress with detailed item count tracking and block range information.
 
-Reset conditions:
-- **Soft-ban expiration**: When fork_rejected_until <= current_time
-- **Flag state**: Only reset if inhibit_fetching_sync_blocks is currently true
-- **Peer eligibility**: Only affects peers with non-zero fork_rejected_until timestamps
-- **Network recovery**: Ensures long-term network health during extended emergency operations
+**Enhanced Sync Logging Features**:
+- **Item Count Tracking**: Logs remaining item counts, sync item counts, and total unfetched items
+- **Block Range Information**: Provides detailed block number ranges in synchronization responses
+- **Peer Coordination Metrics**: Tracks synchronization progress across multiple peers
+- **Timing Information**: Logs synchronization timing, request timestamps, and response delays
+- **Progress Monitoring**: Real-time monitoring of synchronization completion percentages
 
-```mermaid
-flowchart TD
-Start["Block Received"] --> CheckBan{"fork_rejected_until > now?"}
-CheckBan --> |Yes| Discard["Silently discard block"]
-CheckBan --> |No| CheckFlag{"inhibit_fetching_sync_blocks && fork_rejected_until != 0 && fork_rejected_until <= now?"}
-CheckFlag --> |Yes| ResetFlag["Reset inhibit_fetching_sync_blocks = false"]
-CheckFlag --> |No| ProcessBlock["Process block normally"]
-ResetFlag --> Log["Log flag reset"]
-Log --> ProcessBlock
+**Sync Progress Logging Examples**:
 ```
-
-**Diagram sources**
-- [node.cpp:3444-3458](file://libraries/network/node.cpp#L3444-L3458)
+sync: sending synopsis to peer ${peer}: ${count} entries, last_item=#${num} (${hash})
+on_blockchain_item_ids_inventory: peer=${peer}, items_available=${count} (blocks #${first}..#${last}), remaining=${remaining}, we_requested=${requested}, we_need_sync=${sync}, peer_needs_sync=${peer_sync}
+```
 
 **Section sources**
-- [node.cpp:3444-3458](file://libraries/network/node.cpp#L3444-L3458)
+- [node.cpp:2616-2663](file://libraries/network/node.cpp#L2616-L2663)
+- [node.cpp:2649-2663](file://libraries/network/node.cpp#L2649-L2663)
 
-### Infinite Sync Loop Prevention
-The enhanced peer handling logic prevents infinite sync loops through intelligent peer state management:
+### Enhanced Request Timeout and Keepalive Logging
+The node provides detailed logging for peer request timeouts, keepalive messages, and connection termination events with comprehensive timing information.
 
-**Smart Peer Classification**:
-- Stale fork peers (peer_num ≤ local_head) → Soft-ban and ignore
-- Legitimate sync candidates (peer_num > local_head) → Continue sync attempts
-- Automatic flag reset ensures fair peer rotation during extended operations
+**Enhanced Timeout Logging Features**:
+- **Request Timeout Detection**: Logs peer request timeouts with item details, block numbers, and timing thresholds
+- **Keepalive Message Tracking**: Monitors peer inactivity and sends keepalive messages with timeout information
+- **Connection Termination Events**: Logs forced disconnections, closing timeouts, and termination failures
+- **Detailed Error Context**: Provides comprehensive error context including peer endpoints, item types, and block numbers
 
-**Preventive Measures**:
-- Soft-ban mechanism prevents repeated attempts with unresponsive peers
-- Intelligent flag management ensures peers can recover after expiration
-- Network-level emergency mode support provides graceful degradation
+**Timeout Logging Examples**:
+```
+Disconnecting peer ${peer} because they didn't respond to my request for item ${id} (type=${type}, block_num=${num}, requested_at=${time}, threshold=${thresh})
+Sending a keepalive message to peer ${peer} who hasn't sent us any messages in the last ${timeout} seconds
+Forcibly disconnecting peer ${peer} who failed to close their connection in a timely manner
+```
 
 **Section sources**
-- [node.cpp:3574-3629](file://libraries/network/node.cpp#L3574-L3629)
-- [node.cpp:3444-3458](file://libraries/network/node.cpp#L3444-L3458)
+- [node.cpp:1574-1590](file://libraries/network/node.cpp#L1574-L1590)
+- [node.cpp:1600-1603](file://libraries/network/node.cpp#L1600-L1603)
+- [node.cpp:1615-1618](file://libraries/network/node.cpp#L1615-L1618)
 
-## Emergency Consensus Network-Level Improvements
+## Comprehensive Peer Status Reporting
 
-### Soft-Ban Expiration Handling
-The node now implements sophisticated soft-ban mechanisms to prevent cascading disconnections during emergency consensus scenarios. When peers offer blocks that cause fork rejections, the system applies soft-bans instead of immediate disconnections.
+### Enhanced Peer Information Collection
+The node provides comprehensive peer status information through the get_connected_peers() method, collecting detailed metrics for monitoring and debugging purposes.
 
-Key features:
-- **Soft-ban duration**: 1 hour (3600 seconds) for fork-rejected blocks, reduced to 5 minutes for trusted peers
-- **Automatic expiration**: Soft-bans automatically expire after the designated period
-- **Flag reset logic**: When soft-bans expire, the inhibit_fetching_sync_blocks flag is automatically reset
-- **Emergency mode protection**: Prevents cascading failures during network emergencies
+**Enhanced Peer Status Fields**:
+- **Basic Connection Info**: Host endpoint, local endpoint, connection direction, and service information
+- **Network Statistics**: Bytes sent/received, connection time, latency measurements, and bandwidth usage
+- **Peer Classification**: Firewall status, banned status, sync node designation, and platform information
+- **Block Information**: Current head block, block number, block time, and git revision details
+- **Synchronization Status**: Sync inhibition status, blocked reason, and peer synchronization state
 
-```mermaid
-sequenceDiagram
-participant Peer as "Peer Connection"
-participant Node as "Node Implementation"
-participant Delegate as "Blockchain Delegate"
-Peer->>Node : "Block with fork rejection"
-Node->>Node : "Check if fork rejection"
-alt unlinkable_block_exception
-Node->>Peer : "Apply soft-ban (1 hour)"
-Node->>Peer : "Set inhibit_fetching_sync_blocks = true"
-else normal invalid block
-Node->>Peer : "Disconnect peer"
-end
-Note over Node : "After 1 hour"
-Node->>Node : "Check soft-ban expiration"
-Node->>Peer : "Reset inhibit_fetching_sync_blocks = false"
+**Peer Status Data Collection**:
+```cpp
+peer_details["addr"] = endpoint ? (std::string)*endpoint : std::string();
+peer_details["addrlocal"] = (std::string)peer->get_local_endpoint();
+peer_details["services"] = "00000001";
+peer_details["lastsend"] = peer->get_last_message_sent_time().sec_since_epoch();
+peer_details["lastrecv"] = peer->get_last_message_received_time().sec_since_epoch();
+peer_details["bytessent"] = peer->get_total_bytes_sent();
+peer_details["bytesrecv"] = peer->get_total_bytes_received();
+peer_details["conntime"] = peer->get_connection_time();
+peer_details["latency_ms"] = peer->round_trip_delay.count() / 1000;
+peer_details["is_blocked"] = peer->inhibit_fetching_sync_blocks;
+peer_details["blocked_reason"] = peer->inhibit_fetching_sync_blocks ? std::string("fork_rejected") : std::string("");
+peer_details["current_head_block"] = peer->last_block_delegate_has_seen;
+peer_details["current_head_block_number"] = _delegate->get_block_number(peer->last_block_delegate_has_seen);
+peer_details["current_head_block_time"] = peer->last_block_time_delegate_has_seen;
 ```
-
-**Diagram sources**
-- [node.cpp:3574-3595](file://libraries/network/node.cpp#L3574-L3595)
-- [node.cpp:3436-3449](file://libraries/network/node.cpp#L3436-L3449)
-
-### Inhibit Fetching Sync Blocks Flag Reset Logic
-The system includes intelligent flag management to ensure peers can resume normal operations after soft-ban expiration.
-
-Reset conditions:
-- **Soft-ban expiration**: When fork_rejected_until <= current_time
-- **Flag state**: Only reset if inhibit_fetching_sync_blocks is currently true
-- **Peer eligibility**: Only affects peers with non-zero fork_rejected_until timestamps
-
-```mermaid
-flowchart TD
-Start["Block Received"] --> CheckBan{"fork_rejected_until > now?"}
-CheckBan --> |Yes| Discard["Silently discard block"]
-CheckBan --> |No| CheckFlag{"inhibit_fetching_sync_blocks && fork_rejected_until != 0 && fork_rejected_until <= now?"}
-CheckFlag --> |Yes| ResetFlag["Reset inhibit_fetching_sync_blocks = false"]
-CheckFlag --> |No| ProcessBlock["Process block normally"]
-ResetFlag --> Log["Log flag reset"]
-Log --> ProcessBlock
-```
-
-**Diagram sources**
-- [node.cpp:3428-3449](file://libraries/network/node.cpp#L3428-L3449)
-
-### Network-Level Emergency Mode Support
-The emergency consensus system provides comprehensive network-level resilience through multiple coordinated mechanisms.
-
-#### Emergency Mode Activation
-Emergency mode activates when no blocks are produced for CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC (3600 seconds) since the last irreversible block:
-
-```mermaid
-flowchart TD
-Start["New Block Applied"] --> CheckHF{"Hardfork 12 Active?"}
-CheckHF --> |No| End["Normal Operation"]
-CheckHF --> |Yes| CheckActive{"Emergency Mode Active?"}
-CheckActive --> |Yes| End
-CheckActive --> |No| CalcLIB["Calculate LIB Time"]
-CalcLIB --> CheckAvailable{"LIB Available?"}
-CheckAvailable --> |No| End
-CheckAvailable --> |Yes| CalcDiff["Calculate Seconds Since LIB"]
-CalcDiff --> CheckTimeout{"Seconds >= 3600?"}
-CheckTimeout --> |No| End
-CheckTimeout --> |Yes| Activate["Activate Emergency Mode"]
-Activate --> SetupWitness["Setup Emergency Witness"]
-Activate --> ResetPenalties["Reset Penalties"]
-Activate --> OverrideSchedule["Override Schedule"]
-Activate --> NotifyForkDB["Notify Fork Database"]
-```
-
-**Diagram sources**
-- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
-- [fork_database.cpp:260-262](file://libraries/chain/fork_database.cpp#L260-L262)
-
-#### Deterministic Tie-Breaking
-During emergency mode, the system uses deterministic hash-based tie-breaking to ensure network convergence:
-
-- **Hash comparison**: When multiple blocks compete at the same height, prefer the lower block_id hash
-- **Consistent behavior**: All nodes converge regardless of P2P arrival order
-- **Emergency witness dominance**: Emergency witness produces all blocks during emergency periods
-
-#### Automatic Emergency Mode Exit
-Emergency mode automatically exits after CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS (21) consecutive blocks produced by normal witnesses:
-
-- **Normal block threshold**: 21 blocks equal to one full round of 21 witnesses
-- **Witness rejoining detection**: Monitors when real witnesses resume production
-- **Graceful transition**: Smooth return to normal consensus operation
 
 **Section sources**
-- [node.cpp:3428-3449](file://libraries/network/node.cpp#L3428-L3449)
-- [node.cpp:3574-3595](file://libraries/network/node.cpp#L3574-L3595)
-- [node.cpp:3436-3449](file://libraries/network/node.cpp#L3436-L3449)
-- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
-- [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
-- [config.hpp:110-123](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L123)
+- [node.cpp:5234-5312](file://libraries/network/node.cpp#L5234-L5312)
 
-## DLT Mode Error Logging Enhancements
+### Memory Usage and Resource Monitoring
+The node implements comprehensive memory usage monitoring for both node-level and peer-level resource tracking, providing insights into synchronization performance and resource utilization.
 
-### Comprehensive Block Range Information
-The DLT (Distributed Ledger Technology) mode now provides enhanced error logging with detailed block availability context, including comprehensive block range information for better troubleshooting and monitoring.
+**Memory Usage Monitoring Features**:
+- **Node-Level Metrics**: Active sync requests, received sync items, new received sync items, items to fetch, new inventory, and message cache sizes
+- **Peer-Level Metrics**: Per-peer queue sizes including sync items, inventory tracking, and request tracking
+- **Resource Allocation**: Memory usage tracking for different synchronization phases and operational modes
+- **Performance Indicators**: Queue depths, cache sizes, and memory pressure indicators
+
+**Memory Usage Logging Format**:
+```
+--------- MEMORY USAGE ------------
+node._active_sync_requests size: ${size}
+node._received_sync_items size: ${size}
+node._new_received_sync_items size: ${size}
+node._items_to_fetch size: ${size}
+node._new_inventory size: ${size}
+node._message_cache size: ${size}
+  peer ${endpoint}
+    peer.ids_of_items_to_get size: ${size}
+    peer.inventory_peer_advertised_to_us size: ${size}
+    peer.inventory_advertised_to_peer size: ${size}
+    peer.items_requested_from_peer size: ${size}
+    peer.sync_items_requested_from_peer size: ${size}
+--------- END MEMORY USAGE ------------
+```
+
+**Section sources**
+- [node.cpp:5134-5150](file://libraries/network/node.cpp#L5134-L5150)
+
+### Connection State and Lifecycle Logging
+The node provides detailed logging for peer connection lifecycle events including connection establishment, closure, and termination with comprehensive status information.
+
+**Connection Lifecycle Logging Features**:
+- **Connection Events**: New peer connections, peer closure notifications, and connection terminations
+- **State Transitions**: Detailed logging of peer state changes including active, handshaking, and closing states
+- **Reason Information**: Logging of connection closure reasons including user-initiated closures and error conditions
+- **Timing Information**: Connection initiation times, closure times, and termination timestamps
+
+**Connection Lifecycle Logging Examples**:
+```
+New peer is connected (${peer}), now ${count} active peers
+Peer connection closing (${peer}), now ${count} active peers
+Peer connection closing (${peer}): ${reason}, now ${count} active peers
+Peer connection terminating (${peer}), now ${count} active peers
+```
+
+**Section sources**
+- [node.cpp:5073-5111](file://libraries/network/node.cpp#L5073-L5111)
+
+## Enhanced Error Reporting and Diagnostics
+
+### Comprehensive Error Logging Infrastructure
+The node implements a comprehensive error logging infrastructure with detailed context information for peer synchronization issues, providing actionable insights for debugging and monitoring.
 
 **Enhanced Error Logging Features**:
-- **Block Number Context**: Logs the specific block number being requested (#${num})
-- **Block Hash Information**: Includes the block hash (id) for precise identification
-- **Available Range Details**: Shows the complete available block range [earliest..head]
-- **DLT Block Log Boundaries**: Displays dlt_block_log boundaries [dlt_start..dlt_end]
-- **Contextual Information**: Provides comprehensive context for troubleshooting DLT mode issues
+- **Peer-Specific Errors**: Detailed error logging with peer endpoints, item types, and block information
+- **Synchronization Errors**: Comprehensive logging of synchronization failures including timeout errors and item availability issues
+- **Connection Errors**: Detailed connection error reporting with reason codes, error types, and resolution suggestions
+- **Diagnostic Information**: Context-rich error messages including timing information, peer states, and synchronization progress
 
-**Error Log Format**:
+**Error Logging Examples**:
 ```
-DLT mode: cannot serve block #${num} (${id}) — 
-available block range: [${earliest}..${head}], 
-dlt_block_log: [${dlt_start}..${dlt_end}]
-```
-
-**Section sources**
-- [p2p_plugin.cpp:330-360](file://plugins/p2p/p2p_plugin.cpp#L330-L360)
-- [dlt_block_log.cpp:368-379](file://libraries/chain/dlt_block_log.cpp#L368-L379)
-
-### DLT Mode Block Availability Monitoring
-The system now monitors and logs DLT mode block availability with detailed metrics:
-
-**Monitoring Capabilities**:
-- **Earliest Available Block**: Tracks the earliest block number available in the system
-- **Current Head Block**: Monifies the current head block number
-- **DLT Block Log Range**: Shows the actual range covered by the dlt_block_log
-- **Synopsis Generation**: Logs detailed information during get_blockchain_synopsis() operations
-
-**Section sources**
-- [p2p_plugin.cpp:479-489](file://plugins/p2p/p2p_plugin.cpp#L479-L489)
-
-## Peer Status and Sync Status Reporting
-
-### Enhanced Peer Status Updates
-The node now provides comprehensive peer status reporting with detailed synchronization metrics and peer state information.
-
-**Peer Status Information**:
-- **Connection Counts**: Active, handshaking, and closing peer counts
-- **Sync Status**: Whether peers are in sync with us or need synchronization
-- **Sync Item Counts**: Number of sync items each peer might need
-- **Soft-Ban Status**: Indicates if peers are inhibited from sync fetching
-- **Block Information**: Current head block, block number, and block time for each peer
-
-**Status Update Features**:
-- **Periodic Status Reports**: Regular peer status updates logged for monitoring
-- **Detailed Metrics**: Comprehensive metrics for each peer connection
-- **Sync Progress Tracking**: Real-time tracking of synchronization progress
-- **Resource Usage Monitoring**: Memory usage and queue sizes for each peer
-
-```mermaid
-sequenceDiagram
-participant Node as "Node Implementation"
-participant Peer as "Peer Connection"
-Node->>Node : "dump_node_status_task()"
-Node->>Peer : "get_connected_peers()"
-Peer-->>Node : "peer_status with detailed info"
-Node->>Node : "log peer status update"
-Node->>Node : "log memory usage metrics"
+Disconnecting peer ${peer} because they didn't respond to my request for item ${id} (type=${type}, block_num=${num}, requested_at=${time}, threshold=${thresh})
+Disconnecting peer ${peer} because they didn't respond to my request for sync item ids after ${synopsis}
+Disconnecting from peer ${peer} who offered us an implausible number of blocks, their last block would be in the future (${timestamp})
+Peer ${peer} doesn't have the requested item ${item} (block #${num})
 ```
 
-**Diagram sources**
-- [node.cpp:5015-5030](file://libraries/network/node.cpp#L5015-L5030)
-- [node.cpp:5042-5050](file://libraries/network/node.cpp#L5042-L5050)
+**Section sources**
+- [node.cpp:1574-1590](file://libraries/network/node.cpp#L1574-L1590)
+- [node.cpp:1561-1561](file://libraries/network/node.cpp#L1561-L1561)
+- [node.cpp:2890-2901](file://libraries/network/node.cpp#L2890-L2901)
+- [node.cpp:3034-3038](file://libraries/network/node.cpp#L3034-L3038)
+
+### Item Availability and Not Available Logging
+The node provides detailed logging for item availability issues during synchronization, helping identify peers with limited block history or synchronization problems.
+
+**Enhanced Item Availability Logging Features**:
+- **Item Request Failures**: Logging of items not available from peers with detailed block information
+- **DLT Node Detection**: Recognition of DLT (snapshot) nodes with limited block history
+- **Peer Limitation Handling**: Intelligent handling of peers with restricted synchronization capabilities
+- **Alternative Peer Assignment**: Logging of alternative peer assignment when items are unavailable
+
+**Item Availability Logging Examples**:
+```
+Block ${hash} (num #${num}) not available to serve to peer — sending item_not_available
+item_not_available: peer ${peer} doesn't have sync block #${num} (${id}) but also needs items from us — inhibiting sync fetch
+item_not_available: peer ${peer} can't serve sync block #${num} (${id}) — inhibiting sync from this peer, will try other peers.
+```
 
 **Section sources**
-- [node.cpp:5015-5030](file://libraries/network/node.cpp#L5015-L5030)
-- [node.cpp:5042-5050](file://libraries/network/node.cpp#L5042-L5050)
+- [node.cpp:2951-2956](file://libraries/network/node.cpp#L2951-L2956)
+- [node.cpp:3052-3077](file://libraries/network/node.cpp#L3052-L3077)
 
-### Sync Status Reporting Enhancement
-The node now provides enhanced sync status reporting with detailed item count information and progress tracking.
+### Synchronization Status and Progress Reporting
+The node implements comprehensive synchronization status reporting with detailed item count tracking and progress monitoring for better understanding of synchronization performance.
 
-**Sync Status Features**:
-- **Item Type Information**: Identifies the type of items being synchronized
-- **Remaining Item Count**: Tracks the number of items remaining to be fetched
-- **Progress Monitoring**: Real-time monitoring of synchronization progress
-- **Peer Coordination**: Coordinates sync status across multiple peers
+**Enhanced Sync Status Reporting Features**:
+- **Item Count Tracking**: Real-time tracking of total unfetched items across all peers
+- **Progress Monitoring**: Continuous monitoring of synchronization progress with item type and count information
+- **Peer Coordination**: Coordinated status reporting across multiple peers for comprehensive synchronization view
+- **Threshold-Based Updates**: Efficient status updates only when significant changes occur in synchronization progress
 
-**Section sources**
-- [node.cpp:2840-2847](file://libraries/network/node.cpp#L2840-L2847)
-- [node.cpp:2848-2873](file://libraries/network/node.cpp#L2848-L2873)
-
-### Peer Block ID Range Handling
-The node now implements enhanced peer block ID range handling with detailed peer block ID ranges and improved item request processing.
-
-**Enhanced Features**:
-- **Detailed Block ID Ranges**: Tracks and logs detailed block ID ranges for each peer
-- **Item Request Processing**: Improved handling of item requests with comprehensive logging
-- **Sync Status Updates**: Real-time sync status updates with detailed peer information
-- **Range Validation**: Validates block ranges and provides context for troubleshooting
+**Sync Status Reporting Examples**:
+```
+new_number_of_unfetched_items = calculate_unsynced_block_count_from_all_peers()
+_delegate->sync_status(blockchain_item_ids_inventory_message_received.item_type, new_number_of_unfetched_items)
+```
 
 **Section sources**
-- [node.cpp:2395-2500](file://libraries/network/node.cpp#L2395-L2500)
-- [node.cpp:2572-2592](file://libraries/network/node.cpp#L2572-L2592)
+- [node.cpp:2903-2910](file://libraries/network/node.cpp#L2903-L2910)
+- [node.cpp:2906-2908](file://libraries/network/node.cpp#L2906-L2908)
+
+## Peer State Management and Monitoring
+
+### Intelligent Peer State Classification
+The node implements intelligent peer state classification with detailed monitoring of peer synchronization states, connection health, and resource utilization.
+
+**Peer State Classification Features**:
+- **Synchronization States**: Active synchronization, peer synchronization, and inhibit fetching states
+- **Connection Health**: Monitoring of peer connection quality, latency, and bandwidth utilization
+- **Resource Utilization**: Tracking of peer-specific resource usage including queue depths and memory allocation
+- **Performance Metrics**: Latency measurements, round-trip delays, and connection timing information
+
+**Peer State Monitoring Examples**:
+```
+peer_is_in_sync_with_us:${in_sync_with_us} we_are_in_sync_with_peer:${in_sync_with_them}
+above peer has ${count} sync items we might need
+we are not fetching sync blocks from the above peer (inhibit_fetching_sync_blocks == true)
+```
+
+**Section sources**
+- [node.cpp:5119-5127](file://libraries/network/node.cpp#L5119-L5127)
+
+### Connection Limit and Bandwidth Monitoring
+The node provides comprehensive monitoring of connection limits, bandwidth utilization, and peer resource allocation to ensure optimal network performance.
+
+**Connection and Bandwidth Monitoring Features**:
+- **Connection Limits**: Monitoring of active connections, handshaking peers, and connection caps
+- **Bandwidth Utilization**: Real-time tracking of upload/download speeds and bandwidth allocation
+- **Resource Allocation**: Monitoring of peer-specific resource allocation and queue management
+- **Performance Optimization**: Dynamic adjustment of connection parameters based on network conditions
+
+**Connection Monitoring Examples**:
+```
+number of peers: ${active} active, ${handshaking}, ${closing} closing.  attempting to maintain ${desired} - ${maximum} peers
+node._active_sync_requests size: ${size}
+node._items_to_fetch size: ${size}
+```
+
+**Section sources**
+- [node.cpp:5116-5118](file://libraries/network/node.cpp#L5116-L5118)
+- [node.cpp:5135-5139](file://libraries/network/node.cpp#L5135-L5139)
+
+### Peer Discovery and Potential Peer Management
+The node implements comprehensive peer discovery and management with detailed logging of potential peer database operations and peer relationship tracking.
+
+**Peer Discovery and Management Features**:
+- **Potential Peer Database**: Comprehensive tracking of potential peers with connection history and disposition
+- **Peer Relationship Tracking**: Monitoring of peer relationships, connection success rates, and failure patterns
+- **Discovery Optimization**: Intelligent peer discovery with exponential backoff and retry strategies
+- **Database Operations**: Detailed logging of peer database updates, lookups, and maintenance operations
+
+**Section sources**
+- [node.cpp:2517-2522](file://libraries/network/node.cpp#L2517-L2522)
 
 ## Dependency Analysis
 The node depends on:
@@ -794,6 +765,8 @@ Impl --> P2P["p2p_plugin.cpp"]
 - Trusted peer optimization: Reduced soft-ban duration for trusted peers enables faster network recovery.
 - DLT mode monitoring: Enhanced logging provides better visibility into block availability without significant performance impact.
 - Peer status reporting: Comprehensive status updates enable better monitoring and resource management.
+- Comprehensive logging: Detailed peer synchronization progress, item counts, and timing information provide valuable debugging insights without significant performance impact.
+- Memory usage monitoring: Efficient memory tracking helps identify resource bottlenecks and optimize performance.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -813,6 +786,9 @@ Common issues and resolutions:
 - DLT mode errors: Review enhanced error logs for detailed block availability context including available range and dlt_block_log boundaries.
 - Sync status monitoring: Use peer status updates to monitor synchronization progress and identify stuck peers.
 - Memory usage: Monitor peer queue sizes and memory usage through status reports to identify resource bottlenecks.
+- Request timeouts: Review detailed timeout logs with item types, block numbers, and timing thresholds to identify slow or unresponsive peers.
+- Connection lifecycle: Monitor connection establishment, closure, and termination events to identify connection stability issues.
+- Synchronization progress: Use comprehensive sync status reporting to track synchronization completion and identify bottlenecks.
 
 **Section sources**
 - [node.cpp:2251-2280](file://libraries/network/node.cpp#L2251-L2280)
@@ -823,10 +799,10 @@ Common issues and resolutions:
 - [p2p_plugin.cpp:330-360](file://plugins/p2p/p2p_plugin.cpp#L330-L360)
 
 ## Conclusion
-The Node Management component provides a robust, configurable, and efficient P2P orchestration layer with comprehensive emergency consensus support and enhanced peer handling capabilities. The recent improvements significantly enhance network resilience through intelligent soft-ban mechanisms, automatic flag reset logic, and deterministic tie-breaking algorithms.
+The Node Management component provides a robust, configurable, and efficient P2P orchestration layer with comprehensive emergency consensus support and enhanced peer handling capabilities. The recent enhancements significantly improve debugging and monitoring capabilities through comprehensive peer synchronization logging, detailed peer status reporting, and enhanced error diagnostics.
 
-The enhanced peer handling logic with improved unlinkable_block_exception handling and intelligent peer soft-banning mechanisms prevents cascading failures during emergency consensus scenarios while differentiating between stale fork peers and legitimate sync candidates to prevent infinite sync loops. The system now provides sophisticated peer classification based on block position relative to local blockchain head, ensuring optimal resource utilization and network stability.
+The enhanced peer synchronization logging system provides detailed peer status updates including sync item counts, peer states, memory usage metrics, and timing information. The comprehensive logging infrastructure captures peer connection lifecycle events, synchronization progress, error conditions, and resource utilization patterns. These enhancements enable better troubleshooting of peer synchronization issues, improved monitoring of network health, and more effective debugging of synchronization problems.
 
-The new DLT mode error logging enhancements provide comprehensive block availability context with detailed block range information, enabling better troubleshooting and monitoring of distributed ledger technology operations. The enhanced peer status reporting and sync status monitoring capabilities provide unprecedented visibility into network operations and peer synchronization progress.
+The comprehensive peer status reporting system collects detailed metrics for monitoring and debugging, including connection information, network statistics, peer classification, block information, and synchronization status. The enhanced error reporting infrastructure provides actionable insights for debugging peer synchronization issues with detailed context information including peer endpoints, item types, block numbers, and timing information.
 
-These enhancements ensure the network can recover from extended periods without block production while maintaining operational efficiency and preventing cascading failures. The integration of emergency mode support with peer connection management, synchronization logic, and broadcast capabilities creates a comprehensive solution for maintaining network stability under adverse conditions. Proper configuration of limits, bandwidth, peer discovery, emergency consensus parameters, and the enhanced soft-ban mechanisms, combined with monitoring and troubleshooting practices, yields a stable, performant, and resilient network node capable of handling both normal operations and emergency scenarios with intelligent peer management and comprehensive diagnostic capabilities.
+These enhancements ensure the network can recover from extended periods without block production while maintaining operational efficiency and preventing cascading failures. The integration of comprehensive logging, peer status reporting, and enhanced error diagnostics creates a powerful toolkit for maintaining network stability under adverse conditions. Proper configuration of limits, bandwidth, peer discovery, emergency consensus parameters, and the enhanced logging mechanisms, combined with monitoring and troubleshooting practices, yields a stable, performant, and resilient network node capable of handling both normal operations and emergency scenarios with comprehensive diagnostic capabilities and detailed peer synchronization insights.

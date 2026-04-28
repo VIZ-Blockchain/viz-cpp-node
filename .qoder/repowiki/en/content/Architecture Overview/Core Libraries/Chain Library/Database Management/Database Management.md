@@ -26,11 +26,10 @@
 ## Update Summary
 **Changes Made**
 - Enhanced database robustness with improved fallback mechanisms for critical block data retrieval
-- Added systematic approaches to handle missing irreversible blocks by checking fork database when primary block log fails to locate required data
-- Implemented comprehensive multi-layered block retrieval with DLT fallback support
-- Enhanced last irreversible block advancement logic with fallback to fork database
-- Improved DLT gap logging with automatic state management and warning suppression
-- Updated block fetching methods with hierarchical retrieval strategy
+- Added systematic multi-tiered block retrieval approach: fork database → block log → DLT block log, providing graceful degradation when certain storage layers are unavailable
+- Implemented comprehensive fallback logic for last irreversible block advancement with fork database as backup
+- Enhanced DLT gap logging with automatic state management and warning suppression
+- Updated block fetching methods with hierarchical retrieval strategy for improved fault tolerance
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -47,7 +46,7 @@
 ## Introduction
 This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, and practical examples of database operations and performance optimization.
 
-**Updated** - Enhanced with comprehensive database robustness improvements including systematic fallback mechanisms for critical block data retrieval. The database now implements multi-layered block retrieval strategies that check fork database when primary block log fails to locate required data, ensuring consistent behavior across different block logging configurations. These enhancements provide improved fault tolerance and data availability during various operational scenarios.
+**Updated** - Enhanced with comprehensive database robustness improvements including systematic fallback mechanisms for critical block data retrieval. The database now implements multi-tiered block retrieval strategies that check fork database when primary block log fails to locate required data, ensuring consistent behavior across different block logging configurations. These enhancements provide improved fault tolerance and data availability during various operational scenarios.
 
 ## Project Structure
 The database subsystem is implemented primarily in the chain library with enhanced support for operation guards and concurrent access protection:
@@ -115,14 +114,14 @@ EXC --> NODE
 ```
 
 **Diagram sources**
-- [database.hpp:1-655](file://libraries/chain/include/graphene/chain/database.hpp#L1-L655)
-- [database.cpp:1-6539](file://libraries/chain/database.cpp#L1-L6539)
+- [database.hpp:1-670](file://libraries/chain/include/graphene/chain/database.hpp#L1-L670)
+- [database.cpp:1-6623](file://libraries/chain/database.cpp#L1-L6623)
 - [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 - [chainbase.cpp:1-200](file://thirdparty/chainbase/src/chainbase.cpp#L1-L200)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
-- [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
-- [dlt_block_log.cpp:1-414](file://libraries/chain/dlt_block_log.cpp#L1-L414)
+- [dlt_block_log.hpp:1-80](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L80)
+- [dlt_block_log.cpp:1-476](file://libraries/chain/dlt_block_log.cpp#L1-L476)
 - [fork_database.hpp:1-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L144)
 - [fork_database.cpp:1-278](file://libraries/chain/fork_database.cpp#L1-L278)
 - [database_exceptions.hpp:1-136](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L1-L136)
@@ -136,14 +135,14 @@ EXC --> NODE
 - [p2p_plugin.cpp:225-424](file://plugins/p2p/p2p_plugin.cpp#L225-L424)
 
 **Section sources**
-- [database.hpp:1-655](file://libraries/chain/include/graphene/chain/database.hpp#L1-L655)
-- [database.cpp:1-6539](file://libraries/chain/database.cpp#L1-L6539)
+- [database.hpp:1-670](file://libraries/chain/include/graphene/chain/database.hpp#L1-L670)
+- [database.cpp:1-6623](file://libraries/chain/database.cpp#L1-L6623)
 - [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 - [chainbase.cpp:1-200](file://thirdparty/chainbase/src/chainbase.cpp#L1-L200)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
-- [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
-- [dlt_block_log.cpp:1-414](file://libraries/chain/dlt_block_log.cpp#L1-L414)
+- [dlt_block_log.hpp:1-80](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L80)
+- [dlt_block_log.cpp:1-476](file://libraries/chain/dlt_block_log.cpp#L1-L476)
 - [fork_database.hpp:1-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L144)
 - [fork_database.cpp:1-278](file://libraries/chain/fork_database.cpp#L1-L278)
 - [database_exceptions.hpp:1-136](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L1-L136)
@@ -1052,7 +1051,7 @@ ForkDBPush --> ReturnResult["return result"]
 ### Enhanced Fork Database Exception Prevention Mechanisms
 **New** - The database now includes comprehensive mechanisms to prevent fork database exceptions through intelligent early rejection and proper dead fork detection:
 
-- **Dead Fork Detection at or Below Head**: Blocks at or before the head but on different forks whose parents are not in the fork database are immediately rejected with unlinkable_block_exception, enabling P2P layer to soft-ban the offending peer.
+- **Dead Fork Detection at or Below Head**: Blocks at or below the head but on different forks whose parents are not in the fork database are immediately rejected with unlinkable_block_exception, enabling P2P layer to soft-ban the offending peer.
 - **Far-Ahead Block Rejection**: Blocks far ahead of the head with completely unknown parents are silently rejected to prevent fork database operations and sync restart loops.
 - **Proper Exception Classification**: The system distinguishes between dead fork blocks (at/below head) and far-ahead blocks that slipped past early rejection for proper P2P handling.
 - **Enhanced Error Propagation**: Proper unlinkable_block_exception throwing ensures downstream components can classify and handle different types of unlinkable blocks appropriately.

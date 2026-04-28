@@ -23,11 +23,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced DLT mode block range management with improved get_block_ids() and get_item() methods
-- Added comprehensive logging throughout sync process for DLT mode operations
-- Implemented graceful degradation capabilities when peers cannot serve requested items
-- Updated minority fork recovery with enhanced peer interaction handling
-- Improved peer database logging and statistics collection for troubleshooting
+- Enhanced get_block_ids() method with sophisticated clamping logic to prevent advertising blocks not available in node storage
+- Improved gap detection and automatic recovery mechanisms for DLT mode synchronization
+- Added comprehensive logging for DLT mode block range management and gap handling
+- Enhanced peer interaction handling to avoid item_not_available responses and peer disconnections
+- Updated block serving logic with improved DLT mode awareness and storage boundary detection
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -35,18 +35,20 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [DLT Mode Block Range Management](#dlt-mode-block-range-management)
-7. [Enhanced Peer Interaction Handling](#enhanced-peer-interaction-handling)
-8. [Comprehensive Logging Throughout Sync Process](#comprehensive-logging-throughout-sync-process)
-9. [Graceful Degradation Capabilities](#graceful-degradation-capabilities)
-10. [Minority Fork Recovery](#minority-fork-recovery)
-11. [Enhanced Block Validation](#enhanced-block-validation)
-12. [Concurrent Access Safety](#concurrent-access-safety)
-13. [Logging Level Consistency](#logging-level-consistency)
-14. [Dependency Analysis](#dependency-analysis)
-15. [Performance Considerations](#performance-considerations)
-16. [Troubleshooting Guide](#troubleshooting-guide)
-17. [Conclusion](#conclusion)
+6. [Enhanced DLT Mode Block Range Management](#enhanced-dlt-mode-block-range-management)
+7. [Improved Gap Detection and Recovery](#improved-gap-detection-and-recovery)
+8. [Sophisticated Clamping Logic](#sophisticated-clamping-logic)
+9. [Enhanced Peer Interaction Handling](#enhanced-peer-interaction-handling)
+10. [Comprehensive Logging Throughout Sync Process](#comprehensive-logging-throughout-sync-process)
+11. [Graceful Degradation Capabilities](#graceful-degradation-capabilities)
+12. [Minority Fork Recovery](#minority-fork-recovery)
+13. [Enhanced Block Validation](#enhanced-block-validation)
+14. [Concurrent Access Safety](#concurrent-access-safety)
+15. [Logging Level Consistency](#logging-level-consistency)
+16. [Dependency Analysis](#dependency-analysis)
+17. [Performance Considerations](#performance-considerations)
+18. [Troubleshooting Guide](#troubleshooting-guide)
+19. [Conclusion](#conclusion)
 
 ## Introduction
 
@@ -54,7 +56,7 @@ The P2P (Peer-to-Peer) Plugin is a critical component of the VIZ blockchain node
 
 The plugin implements a sophisticated networking layer built on top of the Graphene network library, providing features such as automatic peer discovery, blockchain synchronization protocols, transaction broadcasting, and advanced peer management capabilities including soft-ban mechanisms and connection monitoring.
 
-**Updated** The plugin now includes enhanced DLT mode block range management, improved peer interaction handling, comprehensive logging throughout the sync process, and graceful degradation capabilities when peers cannot serve requested items. These enhancements provide better support for snapshot-based nodes and improve overall network reliability.
+**Updated** The plugin now includes enhanced DLT mode block range management with improved gap detection and automatic recovery mechanisms. The get_block_ids() method now includes sophisticated clamping logic to prevent advertising blocks that aren't available in node storage, avoiding peer disconnections due to item_not_available responses. These enhancements provide better support for snapshot-based nodes and improve overall network reliability.
 
 ## Project Structure
 
@@ -272,10 +274,11 @@ Node->>P2P : handle_message(fetch_items)
 P2P->>Chain : Fetch items
 P2P->>Node : Return items
 Node->>Peer : Send items
-Note over P2P,Chain : DLT Mode Enhancement
+Note over P2P,Chain : Enhanced DLT Mode with Gap Detection
 P2P->>Chain : Check DLT availability
 Chain-->>P2P : Earliest available block
-P2P->>Node : Clamp block range
+P2P->>Node : Clamp block range with gap detection
+P2P->>Node : Advertise only available blocks
 Peer->>Node : New block/transaction
 Node->>P2P : handle_block()/handle_transaction()
 P2P->>Chain : Accept/validate block
@@ -289,14 +292,14 @@ P2P->>Node : Broadcast to peers
 The architecture provides several key capabilities:
 
 1. **Automatic Peer Discovery**: The plugin automatically discovers and connects to seed nodes specified in configuration
-2. **Blockchain Synchronization**: Implements efficient blockchain synchronization using selective block fetching with DLT mode awareness
+2. **Blockchain Synchronization**: Implements efficient blockchain synchronization using selective block fetching with DLT mode awareness and gap detection
 3. **Transaction Propagation**: Broadcasts transactions to connected peers with intelligent caching
 4. **Peer Management**: Manages peer connections with soft-ban mechanisms and connection limits
 5. **Monitoring and Statistics**: Provides comprehensive peer statistics and network health monitoring
 6. **Minority Fork Recovery**: Specialized recovery mechanism for handling minority fork scenarios
 7. **Concurrent Access Safety**: Enhanced protection against concurrent access conflicts during block processing
-8. **DLT Mode Support**: Intelligent block range management for snapshot-based nodes
-9. **Graceful Degradation**: Handles peer unavailability with fallback mechanisms
+8. **DLT Mode Support**: Intelligent block range management for snapshot-based nodes with sophisticated gap detection
+9. **Graceful Degradation**: Handles peer unavailability with fallback mechanisms and automatic recovery
 
 ## Detailed Component Analysis
 
@@ -372,7 +375,7 @@ Fetching --> NormalOperation : item_fetched
 
 ### Blockchain Synchronization Protocol
 
-The synchronization protocol efficiently handles blockchain state reconciliation:
+The synchronization protocol efficiently handles blockchain state reconciliation with enhanced gap detection:
 
 ```mermaid
 sequenceDiagram
@@ -388,10 +391,10 @@ Local->>Remote : blockchain_item_ids_inventory_message
 Remote->>Local : fetch_items_message
 Local->>Chain : get_item(item_id)
 Chain-->>Local : item data
-Note over Local,Chain : DLT Mode Enhancement
+Note over Local,Chain : Enhanced DLT Mode with Gap Detection
 Chain->>Local : earliest_available_block_num()
-Local->>Remote : item_message
-Note over Local,Remote : Continue until synchronized
+Local->>Remote : item_message (only available blocks)
+Note over Local,Remote : Continue until synchronized with gap awareness
 ```
 
 **Diagram sources**
@@ -403,13 +406,13 @@ Note over Local,Remote : Continue until synchronized
 - [p2p_plugin.cpp:247-301](file://plugins/p2p/p2p_plugin.cpp#L247-L301)
 - [peer_connection.hpp:79-354](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
 
-## DLT Mode Block Range Management
+## Enhanced DLT Mode Block Range Management
 
-**New** The P2P plugin now includes enhanced DLT (Data Ledger Technology) mode block range management that provides intelligent block serving capabilities for snapshot-based nodes.
+**New** The P2P plugin now includes enhanced DLT (Data Ledger Technology) mode block range management that provides intelligent block serving capabilities for snapshot-based nodes with sophisticated gap detection and automatic recovery mechanisms.
 
-### Enhanced get_block_ids() Method
+### Sophisticated Clamping Logic in get_block_ids()
 
-The `get_block_ids()` method has been enhanced to properly handle DLT mode block range constraints:
+The `get_block_ids()` method has been enhanced with sophisticated clamping logic to prevent advertising blocks not available in node storage:
 
 ```mermaid
 flowchart TD
@@ -423,22 +426,61 @@ ContinueLoop --> CheckKnown
 FoundBlock --> CalcStart["Calculate start_num from last_known_block_id"]
 CalcStart --> CheckDLT{"In DLT mode?"}
 CheckDLT --> |No| BuildRange["Build block range normally"]
-CheckDLT --> |Yes| ClampRange["Clamp start to earliest_available_block_num"]
-ClampRange --> LogClamp["Log DLT mode clamp operation"]
+CheckDLT --> |Yes| ClampStart["Clamp start to earliest_available_block_num"]
+ClampStart --> LogClamp["Log DLT mode clamp operation"]
+ClampStart --> CheckStorageGaps["Check for storage gaps"]
+CheckStorageGaps --> |Gap Detected| ClampEnd["Clamp end to storage boundary"]
+CheckStorageGaps --> |No Gap| CheckUpperBound["Check upper bound gaps"]
+CheckUpperBound --> |Gap Detected| ClampEnd
+CheckUpperBound --> |No Gap| BuildRange
+ClampEnd --> LogGap["Log gap detection and clamping"]
+LogGap --> BuildRange
 BuildRange --> CheckLimit["Check block limit"]
 CheckLimit --> |Exceeded| ReturnResult["Return partial result"]
 CheckLimit --> |Within limit| ContinueBuild["Continue building range"]
 ContinueBuild --> ReturnResult
 ReturnResult --> End([End])
 LogClamp --> BuildRange
+LogGap --> BuildRange
 ```
 
 **Diagram sources**
-- [p2p_plugin.cpp:290-325](file://plugins/p2p/p2p_plugin.cpp#L290-L325)
+- [p2p_plugin.cpp:290-364](file://plugins/p2p/p2p_plugin.cpp#L290-L364)
 
-### Enhanced get_item() Method
+### Enhanced Gap Detection and Recovery
 
-The `get_item()` method now provides comprehensive DLT mode error handling:
+The plugin now includes comprehensive gap detection and automatic recovery mechanisms:
+
+```mermaid
+flowchart TD
+Start([Block Range Request]) --> CheckDLT{"DLT Mode Active?"}
+CheckDLT --> |No| NormalRange["Build normal block range"]
+CheckDLT --> |Yes| CheckStartGap["Check start_num vs earliest_available"]
+CheckStartGap --> |Below Earliest| ClampToEarliest["Clamp start to earliest_available"]
+CheckStartGap --> |Within Range| CheckStorageBoundary["Check storage boundaries"]
+CheckStorageBoundary --> |Gap Found| ClampToBoundary["Clamp to storage boundary"]
+CheckStorageBoundary --> |No Gap| CheckForkDBGap["Check fork_db gap"]
+CheckForkDBGap --> |Gap Found| ClampToForkDB["Clamp to fork_db boundary"]
+CheckForkDBGap --> |No Gap| BuildRange
+ClampToEarliest --> LogClamp["Log clamping action"]
+ClampToBoundary --> LogGap["Log gap detection"]
+ClampToForkDB --> LogGap
+LogClamp --> BuildRange
+LogGap --> BuildRange
+BuildRange --> CheckLimit["Check against block limit"]
+CheckLimit --> |Exceeded| ReturnPartial["Return partial range"]
+CheckLimit --> |Within Limit| ReturnFull["Return full range"]
+ReturnPartial --> End([End])
+ReturnFull --> End
+NormalRange --> End
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:295-340](file://plugins/p2p/p2p_plugin.cpp#L295-L340)
+
+### Enhanced get_item() Method with Gap Awareness
+
+The `get_item()` method now provides comprehensive DLT mode error handling with gap detection:
 
 ```mermaid
 flowchart TD
@@ -448,28 +490,32 @@ CheckItemType --> |Yes| CheckDLT{"In DLT mode?"}
 CheckDLT --> |No| FetchBlock["Fetch block normally"]
 CheckDLT --> |Yes| CheckAvailability["Check block availability"]
 CheckAvailability --> |Available| FetchBlock
-CheckAvailability --> |Not Available| LogError["Log DLT availability error"]
-LogError --> ThrowException["Throw key_not_found_exception"]
+CheckAvailability --> |Not Available| CheckGap["Check if in DLT gap"]
+CheckGap --> |In Gap| LogGapError["Log DLT gap error:<br/>- Block number<br/>- Available range<br/>- DLT log bounds"]
+CheckGap --> |Not In Gap| LogMissingError["Log missing block error:<br/>- Block not found anywhere"]
+LogGapError --> ThrowGapException["Throw key_not_found_exception"]
+LogMissingError --> ThrowMissingException["Throw key_not_found_exception"]
 FetchTx --> End([End])
 FetchBlock --> ReturnBlock["Return block_message"]
 ReturnBlock --> End
 ```
 
 **Diagram sources**
-- [p2p_plugin.cpp:330-364](file://plugins/p2p/p2p_plugin.cpp#L330-L364)
+- [p2p_plugin.cpp:371-405](file://plugins/p2p/p2p_plugin.cpp#L371-L405)
 
 ### DLT Mode Integration Points
 
-The DLT mode integration affects multiple plugin methods:
+The enhanced DLT mode integration affects multiple plugin methods with sophisticated gap detection:
 
-1. **Block ID Generation**: `get_block_ids()` clamps starting block numbers to available DLT range
-2. **Item Serving**: `get_item()` provides detailed logging for unavailable DLT blocks
-3. **Synopsis Generation**: `get_blockchain_synopsis()` includes DLT availability context
-4. **Earliest Block Calculation**: Database provides `earliest_available_block_num()` for DLT mode
+1. **Block ID Generation**: `get_block_ids()` clamps starting block numbers to available DLT range and detects storage gaps
+2. **Item Serving**: `get_item()` provides detailed logging for unavailable DLT blocks and gap detection
+3. **Synopsis Generation**: `get_blockchain_synopsis()` includes DLT availability context with gap awareness
+4. **Earliest Block Calculation**: Database provides `earliest_available_block_num()` for DLT mode with gap detection
+5. **Storage Boundary Detection**: Enhanced logic to detect gaps between dlt_block_log and fork_db
 
 ### Database Integration
 
-The database provides DLT-specific functionality:
+The database provides DLT-specific functionality with gap detection:
 
 ```mermaid
 classDiagram
@@ -479,6 +525,9 @@ class database {
 +uint32_t earliest_available_block_num()
 +void set_dlt_mode(enabled)
 +const dlt_block_log& get_dlt_block_log()
++uint32_t head_block_num()
++uint32_t last_non_undoable_block_num()
++optional<signed_block> fetch_block_by_number(num)
 }
 class dlt_block_log {
 +uint32_t start_block_num()
@@ -494,17 +543,200 @@ database --> dlt_block_log : "contains"
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
 
 **Section sources**
-- [p2p_plugin.cpp:290-364](file://plugins/p2p/p2p_plugin.cpp#L290-L364)
+- [p2p_plugin.cpp:290-405](file://plugins/p2p/p2p_plugin.cpp#L290-L405)
 - [database.hpp:57-78](file://libraries/chain/include/graphene/chain/database.hpp#L57-L78)
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
 
+## Improved Gap Detection and Automatic Recovery
+
+**New** The P2P plugin now includes sophisticated gap detection and automatic recovery mechanisms that prevent peer disconnections due to item_not_available responses.
+
+### Comprehensive Gap Detection Logic
+
+The enhanced gap detection system monitors multiple storage boundaries:
+
+```mermaid
+flowchart TD
+Start([Gap Detection]) --> CheckDLTMode{"DLT Mode Active?"}
+CheckDLTMode --> |No| NormalProcessing["Normal processing"]
+CheckDLTMode --> |Yes| CheckStartBoundary["Check start_num boundary"]
+CheckStartBoundary --> GetEarliest["Get earliest_available_block_num()"]
+GetEarliest --> CheckBelowEarliest{"start_num < earliest?"}
+CheckBelowEarliest --> |Yes| ClampToEarliest["Clamp to earliest"]
+CheckBelowEarliest --> |No| CheckStorageBoundary["Check storage boundary"]
+CheckStorageBoundary --> GetDLTEnd["Get dlt_block_log.head_block_num()"]
+GetDLTEnd --> GetBlogEnd["Get block_log.head_block_num()"]
+GetBlogEnd --> GetStorageEnd["storage_end = max(dlt_end, blog_end)"]
+GetStorageEnd --> CheckBeyondStorage{"start_num > storage_end?"}
+CheckBeyondStorage --> |Yes| CheckForkDB["Check fork_db availability"]
+CheckBeyondStorage --> |No| CheckForkDBGap["Check fork_db gap"]
+CheckForkDB --> |Available| UseForkDB["Use fork_db block"]
+CheckForkDB --> |Not Available| LogGap["Log gap detected"]
+CheckForkDBGap --> |Gap Exists| ClampToForkDB["Clamp to fork_db boundary"]
+CheckForkDBGap --> |No Gap| CheckContiguous["Check contiguity"]
+ClampToEarliest --> LogClamp["Log clamping action"]
+ClampToForkDB --> LogClamp
+UseForkDB --> LogForkDB["Log fork_db usage"]
+LogGap --> LogError["Log gap error"]
+LogClamp --> BuildRange["Build clamped range"]
+LogForkDB --> BuildRange
+LogError --> BuildEmpty["Build empty range"]
+BuildEmpty --> End([End])
+BuildRange --> End
+NormalProcessing --> End
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:295-340](file://plugins/p2p/p2p_plugin.cpp#L295-L340)
+
+### Automatic Recovery Mechanisms
+
+The plugin implements automatic recovery from gap-related synchronization issues:
+
+```mermaid
+flowchart TD
+Start([Gap Recovery Triggered]) --> DetectGap["Detect gap in block range"]
+DetectGap --> LogGapInfo["Log gap information:<br/>- Gap start/end<br/>- Available ranges<br/>- Storage boundaries"]
+LogGapInfo --> CheckPeerResponse["Check peer response type"]
+CheckPeerResponse --> |item_not_available| LogPeerIssue["Log peer disconnection issue"]
+CheckPeerResponse --> |other_error| LogOtherError["Log other error"]
+LogPeerIssue --> SoftBanPeer["Soft-ban peer appropriately"]
+LogOtherError --> SoftBanPeer
+SoftBanPeer --> CheckRecoveryOptions["Check recovery options:<br/>- Alternative peers<br/>- Different sync strategy"]
+CheckRecoveryOptions --> SwitchPeer["Switch to alternative peer"]
+CheckRecoveryOptions --> AdjustSync["Adjust sync parameters"]
+CheckRecoveryOptions --> WaitAndRetry["Wait and retry later"]
+SwitchPeer --> ContinueSync["Continue synchronization"]
+AdjustSync --> ContinueSync
+WaitAndRetry --> ContinueSync
+ContinueSync --> End([Recovery Complete])
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:371-405](file://plugins/p2p/p2p_plugin.cpp#L371-L405)
+
+### Enhanced Error Handling and Logging
+
+The gap detection system provides comprehensive logging for troubleshooting:
+
+```mermaid
+flowchart TD
+Start([Gap Error]) --> ClassifyError["Classify gap type:<br/>- Below earliest<br/>- Beyond storage<br/>- Fork_db gap<br/>- Missing block"]
+ClassifyError --> LogDetailedInfo["Log detailed gap info:<br/>- Block numbers<br/>- Available ranges<br/>- Storage locations<br/>- Error context"]
+LogDetailedInfo --> DetermineImpact["Determine impact:<br/>- Peer disconnection risk<br/>- Sync delay<br/>- Data availability"]
+DetermineImpact --> ApplyRecovery["Apply recovery:<br/>- Range clamping<br/>- Peer switching<br/>- Parameter adjustment"]
+ApplyRecovery --> LogRecovery["Log recovery actions:<br/>- Actions taken<br/>- Results<br/>- Next steps"]
+LogRecovery --> ContinueSync["Continue sync process"]
+ContinueSync --> End([End])
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:295-340](file://plugins/p2p/p2p_plugin.cpp#L295-L340)
+
+**Section sources**
+- [p2p_plugin.cpp:295-405](file://plugins/p2p/p2p_plugin.cpp#L295-L405)
+
+## Sophisticated Clamping Logic
+
+**New** The P2P plugin now includes sophisticated clamping logic in the get_block_ids() method to prevent advertising blocks that aren't available in node storage, avoiding peer disconnections due to item_not_available responses.
+
+### Advanced Clamping Algorithm
+
+The enhanced clamping logic implements multiple layers of block availability validation:
+
+```mermaid
+flowchart TD
+Start([Block Range Request]) --> GetStartNum["Get calculated start_num"]
+GetStartNum --> CheckDLTMode{"DLT Mode Active?"}
+CheckDLTMode --> |No| BuildNormalRange["Build normal range"]
+CheckDLTMode --> |Yes| CheckEarliest["Check against earliest_available"]
+CheckEarliest --> GetEarliest["Get earliest_available_block_num()"]
+GetEarliest --> CompareEarliest{"start_num < earliest?"}
+CompareEarliest --> |Yes| ClampToEarliest["Clamp start_num = earliest"]
+CompareEarliest --> |No| CheckStorageBoundary["Check storage boundary"]
+CheckStorageBoundary --> GetStorageEnd["Get storage_end = max(dlt_end, blog_end)"]
+GetStorageEnd --> CompareStorage{"start_num > storage_end?"}
+CompareStorage --> |Yes| CheckForkDB["Check fork_db availability"]
+CompareStorage --> |No| CheckForkDBGap["Check fork_db gap"]
+CheckForkDB --> |Available| UseForkDB["Use fork_db block"]
+CheckForkDB --> |Not Available| CheckForkDBGap
+CheckForkDBGap --> |Gap Exists| ClampToForkDB["Clamp to fork_db boundary"]
+CheckForkDBGap --> |No Gap| CheckContiguous["Check contiguity"]
+ClampToEarliest --> LogClamp["Log clamping to earliest"]
+ClampToForkDB --> LogClamp
+UseForkDB --> LogForkDB["Log fork_db usage"]
+LogClamp --> BuildClampedRange["Build clamped range"]
+LogForkDB --> BuildClampedRange
+CheckContiguous --> CheckGap["Check for gap between storage_end+1 and fork_db"]
+CheckGap --> |Gap| ClampToStorageEnd["Clamp to storage_end"]
+CheckGap --> |No Gap| BuildClampedRange
+ClampToStorageEnd --> LogGap["Log gap detection"]
+LogGap --> BuildClampedRange
+BuildNormalRange --> End([End])
+BuildClampedRange --> End
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:295-340](file://plugins/p2p/p2p_plugin.cpp#L295-L340)
+
+### Storage Boundary Detection
+
+The clamping logic includes sophisticated storage boundary detection:
+
+```mermaid
+flowchart TD
+Start([Storage Boundary Check]) --> GetDLTInfo["Get DLT block log info:<br/>- start_block_num()<br/>- head_block_num()"]
+GetDLTInfo --> GetBlogInfo["Get block log info:<br/>- head_block_num()"]
+GetBlogInfo --> CalcStorageEnd["Calculate storage_end:<br/>storage_end = max(dlt_end, blog_end)"]
+CalcStorageEnd --> CheckStartBeyond["Check: start_num > storage_end"]
+CheckStartBeyond --> |Yes| CheckForkDBRange["Check fork_db range:<br/>fetch_block_by_number(storage_end+1)"]
+CheckStartBeyond --> |No| CheckForkDBGap["Check fork_db gap:<br/>between storage_end and fork_db"]
+CheckForkDBRange --> |Block Found| UseForkDB["Use fork_db block"]
+CheckForkDBRange --> |No Block| LogNoBlock["Log no block found"]
+CheckForkDBGap --> |Gap Exists| ClampToStorage["Clamp to storage_end"]
+CheckForkDBGap --> |No Gap| CheckContiguity["Check contiguity"]
+UseForkDB --> LogForkDB["Log fork_db usage"]
+LogNoBlock --> LogError["Log error: block not found"]
+ClampToStorage --> LogClamp["Log clamping to storage boundary"]
+LogForkDB --> BuildRange["Build range up to boundary"]
+LogError --> BuildEmpty["Build empty range"]
+LogClamp --> BuildRange
+CheckContiguity --> BuildRange
+BuildEmpty --> End([End])
+BuildRange --> End
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:308-340](file://plugins/p2p/p2p_plugin.cpp#L308-L340)
+
+### Enhanced Logging for Clamping Operations
+
+The clamping logic provides comprehensive logging for troubleshooting and monitoring:
+
+```mermaid
+flowchart TD
+Start([Clamping Operation]) --> LogClampStart["Log clamping start:<br/>- Original start_num<br/>- Reason for clamping"]
+LogClampStart --> PerformClamp["Perform clamping:<br/>- Clamp to earliest<br/>- Clamp to storage_end<br/>- Clamp to fork_db"]
+PerformClamp --> LogClampResult["Log clamping result:<br/>- New start_num<br/>- Effective head<br/>- Range size"]
+LogClampResult --> LogContext["Log context:<br/>- DLT mode active<br/>- Earliest available<br/>- Storage boundaries"]
+LogContext --> LogDecision["Log decision:<br/>- Why clamping was needed<br/>- Impact on sync<br/>- Peer compatibility"]
+LogDecision --> End([End])
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:298-302](file://plugins/p2p/p2p_plugin.cpp#L298-L302)
+- [p2p_plugin.cpp:335-338](file://plugins/p2p/p2p_plugin.cpp#L335-L338)
+
+**Section sources**
+- [p2p_plugin.cpp:295-340](file://plugins/p2p/p2p_plugin.cpp#L295-L340)
+
 ## Enhanced Peer Interaction Handling
 
-**New** The P2P plugin now includes enhanced peer interaction handling with improved error management and graceful degradation capabilities.
+**New** The P2P plugin now includes enhanced peer interaction handling with improved error management, graceful degradation capabilities, and sophisticated gap-aware block serving to avoid item_not_available responses.
 
 ### Comprehensive Peer Database Logging
 
-The plugin provides detailed peer database logging for troubleshooting:
+The plugin provides detailed peer database logging for troubleshooting with gap detection awareness:
 
 ```mermaid
 flowchart TD
@@ -517,11 +749,11 @@ LogPeer --> CheckPotential["Check potential peers"]
 CheckPotential --> IteratePotential["Iterate potential peers"]
 IteratePotential --> CheckStatus{"Failed/rejected status?"}
 CheckStatus --> |No| NextPeer["Next potential peer"]
-CheckStatus --> |Yes| LogPotential["Log failed/rejected peer:<br/>- Endpoint<br/>- Last attempt time<br/>- Failed attempts<br/>- Error details"]
+CheckStatus --> |Yes| LogPotential["Log failed/rejected peer:<br/>- Endpoint<br/>- Last attempt time<br/>- Failed attempts<br/>- Error details<br/>- Gap-related errors"]
 LogPotential --> NextPeer
 NextPeer --> CheckMore{"More potential peers?"}
 CheckMore --> |Yes| IteratePotential
-CheckMore --> |No| LogSummary["Log summary of failed peers"]
+CheckMore --> |No| LogSummary["Log summary of failed peers<br/>including gap detection results"]
 LogSummary --> End([End])
 LogNoPeers --> End
 ```
@@ -529,29 +761,36 @@ LogNoPeers --> End
 **Diagram sources**
 - [p2p_plugin.cpp:614-650](file://plugins/p2p/p2p_plugin.cpp#L614-650)
 
-### Graceful Degradation on Peer Failure
+### Graceful Degradation on Peer Failure with Gap Awareness
 
-The plugin implements graceful degradation when peers cannot serve requested items:
+The plugin implements graceful degradation when peers cannot serve requested items with sophisticated gap detection:
 
 ```mermaid
 flowchart TD
 Start([Peer Request Failed]) --> CheckError{"Error type?"}
-CheckError --> |DLT Mode Error| LogDLTError["Log DLT availability error:<br/>- Block number<br/>- Available range<br/>- DLT log bounds"]
-CheckError --> |Other Error| LogGenericError["Log generic error:<br/>- Error details<br/>- Peer endpoint"]
-LogDLTError --> SoftBanPeer["Soft-ban peer appropriately"]
-LogGenericError --> SoftBanPeer
-SoftBanPeer --> ReconnectSeed["Reconnect to seed peers"]
-ReconnectSeed --> ResetTimer["Reset stale sync timer"]
+CheckError --> |DLT Mode Error| CheckGapError["Check if gap-related error:<br/>- item_not_available<br/>- block not in dlt_block_log<br/>- missing from storage"]
+CheckGapError --> |Gap Error| LogDLTError["Log DLT availability error:<br/>- Block number<br/>- Available range<br/>- DLT log bounds<br/>- Gap detection results"]
+CheckGapError --> |Other Error| LogGenericError["Log generic error:<br/>- Error details<br/>- Peer endpoint<br/>- Error context"]
+CheckError --> |Other Error Type| LogOtherError["Log other error type:<br/>- Error classification<br/>- Peer status<br/>- Recovery actions"]
+LogDLTError --> CheckRecovery{"Check recovery options:<br/>- Peer switching<br/>- Range adjustment<br/>- Wait and retry"}
+LogGenericError --> CheckRecovery
+LogOtherError --> CheckRecovery
+CheckRecovery --> |Peer Switching| SwitchPeer["Switch to alternative peer"]
+CheckRecovery --> |Range Adjustment| AdjustRange["Adjust block range<br/>with gap detection"]
+CheckRecovery --> |Wait and Retry| WaitRetry["Wait and retry later"]
+SwitchPeer --> ResetTimer["Reset stale sync timer"]
+AdjustRange --> ResetTimer
+WaitRetry --> ResetTimer
 ResetTimer --> ContinueSync["Continue synchronization"]
 ContinueSync --> End([End])
 ```
 
 **Diagram sources**
-- [p2p_plugin.cpp:342-350](file://plugins/p2p/p2p_plugin.cpp#L342-L350)
+- [p2p_plugin.cpp:371-405](file://plugins/p2p/p2p_plugin.cpp#L371-L405)
 
-### Enhanced Stale Sync Detection
+### Enhanced Stale Sync Detection with Gap Awareness
 
-The stale sync detection has been enhanced with better peer interaction:
+The stale sync detection has been enhanced with better peer interaction and gap detection:
 
 ```mermaid
 sequenceDiagram
@@ -568,138 +807,157 @@ Node->>Node : sync_from(LIB, [])
 Node->>Node : resync()
 Node->>Node : add_node(seed) for each seed
 Node->>Node : connect_to_endpoint(seed) for each seed
+Note over Node : Enhanced with gap detection
+Node->>Chain : Check DLT gaps during recovery
+Chain-->>Node : Return gap information
+Node->>Node : Adjust sync parameters based on gaps
 Node->>Timer : Reset _last_block_received_time
 end
 ```
 
 **Diagram sources**
-- [p2p_plugin.cpp:660-724](file://plugins/p2p/p2p_plugin.cpp#L660-L724)
+- [p2p_plugin.cpp:701-765](file://plugins/p2p/p2p_plugin.cpp#L701-L765)
 
 **Section sources**
 - [p2p_plugin.cpp:614-650](file://plugins/p2p/p2p_plugin.cpp#L614-L650)
-- [p2p_plugin.cpp:342-350](file://plugins/p2p/p2p_plugin.cpp#L342-L350)
-- [p2p_plugin.cpp:660-724](file://plugins/p2p/p2p_plugin.cpp#L660-L724)
+- [p2p_plugin.cpp:371-405](file://plugins/p2p/p2p_plugin.cpp#L371-L405)
+- [p2p_plugin.cpp:701-765](file://plugins/p2p/p2p_plugin.cpp#L701-L765)
 
 ## Comprehensive Logging Throughout Sync Process
 
-**New** The P2P plugin now includes comprehensive logging throughout the sync process, providing detailed visibility into DLT mode operations and peer interactions.
+**New** The P2P plugin now includes comprehensive logging throughout the sync process, providing detailed visibility into DLT mode operations, gap detection, and peer interactions with sophisticated gap-aware logging.
 
-### DLT Mode Logging Enhancements
+### DLT Mode Logging Enhancements with Gap Detection
 
-The plugin provides detailed logging for DLT mode operations:
+The plugin provides detailed logging for DLT mode operations with gap detection awareness:
 
 ```mermaid
 flowchart TD
-Start([DLT Mode Operation]) --> LogClamp["Log DLT clamp:<br/>- Old start number<br/>- New start number<br/>- Earliest available<br/>- Head block"]
-LogClamp --> LogIDs["Log get_block_ids result:<br/>- Number of IDs<br/>- Start block<br/>- Head block<br/>- Earliest available"]
-LogIDs --> LogSynopsis["Log get_blockchain_synopsis:<br/>- Entry count<br/>- Low/high blocks<br/>- Head/LIB<br/>- Earliest available"]
-LogSynopsis --> LogAvailability["Log DLT availability:<br/>- Block number<br/>- Available range<br/>- DLT log bounds"]
-LogAvailability --> End([End])
+Start([DLT Mode Operation]) --> LogClamp["Log DLT clamp:<br/>- Old start number<br/>- New start number<br/>- Earliest available<br/>- Head block<br/>- Gap detection results"]
+LogClamp --> LogIDs["Log get_block_ids result:<br/>- Number of IDs<br/>- Start block<br/>- Head block<br/>- Earliest available<br/>- Gap information"]
+LogIDs --> LogSynopsis["Log get_blockchain_synopsis:<br/>- Entry count<br/>- Low/high blocks<br/>- Head/LIB<br/>- Earliest available<br/>- Gap boundaries"]
+LogSynopsis --> LogAvailability["Log DLT availability:<br/>- Block number<br/>- Available range<br/>- DLT log bounds<br/>- Storage boundaries"]
+LogAvailability --> LogGap["Log gap detection:<br/>- Gap location<br/>- Gap size<br/>- Available alternatives<br/>- Recovery actions"]
+LogGap --> End([End])
 ```
 
 **Diagram sources**
-- [p2p_plugin.cpp:297-323](file://plugins/p2p/p2p_plugin.cpp#L297-L323)
-- [p2p_plugin.cpp:480-487](file://plugins/p2p/p2p_plugin.cpp#L480-L487)
+- [p2p_plugin.cpp:298-302](file://plugins/p2p/p2p_plugin.cpp#L298-L302)
+- [p2p_plugin.cpp:355-364](file://plugins/p2p/p2p_plugin.cpp#L355-L364)
+- [p2p_plugin.cpp:520-528](file://plugins/p2p/p2p_plugin.cpp#L520-L528)
 
-### Enhanced Block Processing Logs
+### Enhanced Block Processing Logs with Gap Awareness
 
-The block processing logging has been enhanced with more context:
+The block processing logging has been enhanced with more context including gap detection:
 
 ```mermaid
 flowchart TD
-Start([Handle Block]) --> LogGap["Log block gap:<br/>- Block number<br/>- Head block<br/>- Gap size"]
+Start([Handle Block]) --> LogGap["Log block gap:<br/>- Block number<br/>- Head block<br/>- Gap size<br/>- Gap detection context"]
 LogGap --> CheckSyncMode{"Sync mode?"}
-CheckSyncMode --> |Yes| LogSync["Log sync block:<br/>- Block number<br/>- Head<br/>- Gap"]
-CheckSyncMode --> |No| LogNormal["Log normal block:<br/>- Block number<br/>- Transactions<br/>- Witness<br/>- Latency"]
+CheckSyncMode --> |Yes| LogSync["Log sync block:<br/>- Block number<br/>- Head<br/>- Gap<br/>- Clamping info"]
+CheckSyncMode --> |No| LogNormal["Log normal block:<br/>- Block number<br/>- Transactions<br/>- Witness<br/>- Latency<br/>- Gap context"]
 LogSync --> AcceptBlock["Accept block via chain.accept_block()"]
 LogNormal --> AcceptBlock
 AcceptBlock --> HandleErrors{"Error occurred?"}
 HandleErrors --> |No| End([End])
-HandleErrors --> |Yes| LogError["Log detailed error:<br/>- Block number<br/>- Head block<br/>- Error type<br/>- Error details"]
+HandleErrors --> |Yes| LogError["Log detailed error:<br/>- Block number<br/>- Head block<br/>- Error type<br/>- Error details<br/>- Gap detection results"]
 LogError --> End
 ```
 
 **Diagram sources**
 - [p2p_plugin.cpp:151-208](file://plugins/p2p/p2p_plugin.cpp#L151-L208)
 
-### Peer Interaction Logging
+### Peer Interaction Logging with Gap Detection
 
-The plugin provides comprehensive peer interaction logging:
+The plugin provides comprehensive peer interaction logging with gap detection awareness:
 
 ```mermaid
 flowchart TD
-Start([Peer Interaction]) --> LogPeerStats["Log peer stats:<br/>- IP/port<br/>- Latency<br/>- Bytes received<br/>- Blocked status<br/>- Reason"]
-LogPeerStats --> LogPotential["Log potential peers:<br/>- Endpoint<br/>- Status<br/>- Last attempt<br/>- Failed attempts<br/>- Error"]
-LogPotential --> LogFailed["Log failed peers:<br/>- Count<br/>- Total peers<br/>- Status distribution"]
-LogFailed --> End([End])
+Start([Peer Interaction]) --> LogPeerStats["Log peer stats:<br/>- IP/port<br/>- Latency<br/>- Bytes received<br/>- Blocked status<br/>- Reason<br/>- Gap-related interactions"]
+LogPeerStats --> LogPotential["Log potential peers:<br/>- Endpoint<br/>- Status<br/>- Last attempt<br/>- Failed attempts<br/>- Error<br/>- Gap detection results"]
+LogPotential --> LogFailed["Log failed peers:<br/>- Count<br/>- Total peers<br/>- Status distribution<br/>- Gap-related failures"]
+LogFailed --> LogRecovery["Log recovery actions:<br/>- Peer switching<br/>- Range adjustments<br/>- Gap handling<br/>- Success rates"]
+LogRecovery --> End([End])
 ```
 
 **Diagram sources**
-- [p2p_plugin.cpp:566-644](file://plugins/p2p/p2p_plugin.cpp#L566-L644)
+- [p2p_plugin.cpp:614-650](file://plugins/p2p/p2p_plugin.cpp#L614-L650)
 
 **Section sources**
-- [p2p_plugin.cpp:297-323](file://plugins/p2p/p2p_plugin.cpp#L297-L323)
-- [p2p_plugin.cpp:480-487](file://plugins/p2p/p2p_plugin.cpp#L480-L487)
+- [p2p_plugin.cpp:298-302](file://plugins/p2p/p2p_plugin.cpp#L298-L302)
+- [p2p_plugin.cpp:355-364](file://plugins/p2p/p2p_plugin.cpp#L355-L364)
+- [p2p_plugin.cpp:520-528](file://plugins/p2p/p2p_plugin.cpp#L520-L528)
 - [p2p_plugin.cpp:151-208](file://plugins/p2p/p2p_plugin.cpp#L151-L208)
-- [p2p_plugin.cpp:566-644](file://plugins/p2p/p2p_plugin.cpp#L566-L644)
+- [p2p_plugin.cpp:614-650](file://plugins/p2p/p2p_plugin.cpp#L614-L650)
 
 ## Graceful Degradation Capabilities
 
-**New** The P2P plugin now includes comprehensive graceful degradation capabilities when peers cannot serve requested items, ensuring network resilience and continued operation.
+**New** The P2P plugin now includes comprehensive graceful degradation capabilities when peers cannot serve requested items, ensuring network resilience and continued operation with sophisticated gap detection and automatic recovery.
 
-### DLT Mode Graceful Degradation
+### DLT Mode Graceful Degradation with Gap Detection
 
-When peers cannot serve DLT-mode blocks, the plugin implements graceful degradation:
+When peers cannot serve DLT-mode blocks, the plugin implements graceful degradation with comprehensive gap detection:
 
 ```mermaid
 flowchart TD
-Start([DLT Block Request]) --> CheckAvailability["Check block availability:<br/>- Block number<br/>- Earliest available<br/>- DLT log range"]
+Start([DLT Block Request]) --> CheckAvailability["Check block availability:<br/>- Block number<br/>- Earliest available<br/>- DLT log range<br/>- Gap detection"]
 CheckAvailability --> |Available| ServeBlock["Serve block normally"]
-CheckAvailability --> |Not Available| LogUnavailable["Log unavailability:<br/>- Block number<br/>- Available range<br/>- DLT bounds"]
-LogUnavailable --> SoftBan["Soft-ban peer:<br/>- Appropriate penalty<br/>- Reason: unavailable block"]
-SoftBan --> LogRecovery["Log recovery actions:<br/>- Peer soft-banned<br/>- Potential peers checked<br/>- Reconnection attempts"]
+CheckAvailability --> |Not Available| CheckGap["Check if gap-related:<br/>- Below earliest<br/>- Beyond storage<br/>- Fork_db gap"]
+CheckGap --> |Gap Error| LogUnavailable["Log gap-related unavailability:<br/>- Block number<br/>- Available range<br/>- DLT bounds<br/>- Gap location"]
+CheckGap --> |Other Error| LogGenericUnavailable["Log generic unavailability:<br/>- Error details<br/>- Peer endpoint<br/>- Context"]
+LogUnavailable --> CheckRecovery["Check recovery options:<br/>- Peer switching<br/>- Range adjustment<br/>- Wait and retry"]
+LogGenericUnavailable --> CheckRecovery
+CheckRecovery --> |Peer Switching| SwitchPeer["Switch to alternative peer"]
+CheckRecovery --> |Range Adjustment| AdjustRange["Adjust block range<br/>with gap detection"]
+CheckRecovery --> |Wait and Retry| WaitRetry["Wait and retry later"]
+SwitchPeer --> LogRecovery["Log recovery actions:<br/>- Peer switched<br/>- Reason<br/>- Success"]
+AdjustRange --> LogRecovery
+WaitRetry --> LogRecovery
 LogRecovery --> ContinueSync["Continue sync with available peers"]
 ContinueSync --> End([End])
 ServeBlock --> End
 ```
 
 **Diagram sources**
-- [p2p_plugin.cpp:336-350](file://plugins/p2p/p2p_plugin.cpp#L336-L350)
+- [p2p_plugin.cpp:371-405](file://plugins/p2p/p2p_plugin.cpp#L371-L405)
 
-### Error Handling and Recovery
+### Error Handling and Recovery with Gap Awareness
 
-The plugin implements comprehensive error handling and recovery mechanisms:
+The plugin implements comprehensive error handling and recovery mechanisms with gap detection:
 
 ```mermaid
 flowchart TD
-Start([Error Occurred]) --> ClassifyError["Classify error:<br/>- block_too_old_exception<br/>- deferred_resize_exception<br/>- unlinkable_block_exception<br/>- network exceptions"]
+Start([Error Occurred]) --> ClassifyError["Classify error:<br/>- block_too_old_exception<br/>- deferred_resize_exception<br/>- unlinkable_block_exception<br/>- network exceptions<br/>- gap-related errors"]
 ClassifyError --> HandleBlockTooOld["Handle block too old:<br/>- Log warning<br/>- Convert to network exception<br/>- Soft-ban peer"]
 ClassifyError --> HandleDeferredResize["Handle deferred resize:<br/>- Log info<br/>- Convert to network exception<br/>- No peer penalty"]
 ClassifyError --> HandleUnlinkable["Handle unlinkable block:<br/>- Log warning<br/>- Convert to network exception<br/>- Peer soft-ban or resync"]
+ClassifyError --> HandleGapError["Handle gap error:<br/>- Log gap detection<br/>- Adjust sync parameters<br/>- Peer switching"]
 HandleBlockTooOld --> ContinueSync["Continue synchronization"]
 HandleDeferredResize --> ContinueSync
 HandleUnlinkable --> ContinueSync
+HandleGapError --> CheckRecovery["Check recovery:<br/>- Peer switching<br/>- Range adjustment<br/>- Wait and retry"]
+CheckRecovery --> ContinueSync
 ContinueSync --> End([End])
 ```
 
 **Diagram sources**
 - [p2p_plugin.cpp:173-204](file://plugins/p2p/p2p_plugin.cpp#L173-L204)
 
-### Peer Soft-Ban Management
+### Peer Soft-Ban Management with Gap Detection
 
-The plugin manages peer soft-bans based on error severity:
+The plugin manages peer soft-bans based on error severity with gap detection awareness:
 
 ```mermaid
 flowchart TD
 Start([Peer Action]) --> CheckAction{"Action type?"}
 CheckAction --> |Successful| DecreasePenalty["Decrease peer penalty"]
 CheckAction --> |Minor Error| MaintainPenalty["Maintain current penalty"]
-CheckAction --> |Major Error| IncreasePenalty["Increase penalty:<br/>- Hard fork error<br/>- Unavailable block<br/>- Invalid block"]
+CheckAction --> |Major Error| IncreasePenalty["Increase penalty:<br/>- Hard fork error<br/>- Gap-related error<br/>- Invalid block"]
 CheckAction --> |Peer Disconnect| ResetPenalty["Reset penalty:<br/>- Peer disconnected<br/>- Handshake failed<br/>- Rejected"]
 IncreasePenalty --> CheckThreshold{"Penalty threshold exceeded?"}
 CheckThreshold --> |No| Continue["Continue with current peer"]
-CheckThreshold --> |Yes| RemovePeer["Remove peer:<br/>- Add to banned list<br/>- Clear from potential peers<br/>- Log removal"]
-RemovePeer --> FindAlternative["Find alternative peer:<br/>- Check potential peers<br/>- Attempt reconnection"]
+CheckThreshold --> |Yes| RemovePeer["Remove peer:<br/>- Add to banned list<br/>- Clear from potential peers<br/>- Log removal<br/>- Gap detection context"]
+RemovePeer --> FindAlternative["Find alternative peer:<br/>- Check potential peers<br/>- Consider gap compatibility<br/>- Attempt reconnection"]
 FindAlternative --> Continue
 DecreasePenalty --> Continue
 MaintainPenalty --> Continue
@@ -711,48 +969,48 @@ Continue --> End([End])
 - [p2p_plugin.cpp:614-650](file://plugins/p2p/p2p_plugin.cpp#L614-L650)
 
 **Section sources**
-- [p2p_plugin.cpp:336-350](file://plugins/p2p/p2p_plugin.cpp#L336-L350)
+- [p2p_plugin.cpp:371-405](file://plugins/p2p/p2p_plugin.cpp#L371-L405)
 - [p2p_plugin.cpp:173-204](file://plugins/p2p/p2p_plugin.cpp#L173-L204)
 - [p2p_plugin.cpp:614-650](file://plugins/p2p/p2p_plugin.cpp#L614-L650)
 
 ## Minority Fork Recovery
 
-**Updated** The minority fork recovery mechanism has been enhanced with improved peer interaction handling and comprehensive logging throughout the recovery process.
+**Updated** The minority fork recovery mechanism has been enhanced with improved peer interaction handling, comprehensive logging, and sophisticated gap detection throughout the recovery process.
 
-### Enhanced resync_from_lib() Method
+### Enhanced resync_from_lib() Method with Gap Detection
 
-The `resync_from_lib()` method now includes comprehensive logging and improved peer interaction:
+The `resync_from_lib()` method now includes comprehensive logging, improved peer interaction, and gap detection:
 
 ```mermaid
 flowchart TD
 Start([Minority Fork Detected]) --> CheckState{"Check LIB vs Head:<br/>- LIB == 0?<br/>- Head <= LIB?"}
 CheckState --> |LIB == 0 or Head <= LIB| NoAction["No recovery needed:<br/>- Already at/after LIB<br/>- Log info message"]
-CheckState --> |Head > LIB| PopBlocks["Pop reversible blocks:<br/>- While head > LIB<br/>- db.pop_block()<br/>- Clear pending<br/>- Reset fork_db"]
-PopBlocks --> RebuildForkDB["Re-seed fork DB:<br/>- Fetch LIB block<br/>- start_block(LIB_block)<br/>- Log recovery step"]
-RebuildForkDB --> TriggerSync["Trigger P2P sync:<br/>- sync_from(LIB_block_id)<br/>- resync()<br/>- Log sync initiation"]
-TriggerSync --> ReconnectPeers["Reconnect to seed peers:<br/>- add_node(seed)<br/>- connect_to_endpoint(seed)<br/>- Log reconnection"]
-ReconnectPeers --> ResetTimer["Reset stale sync timer:<br/>- _last_block_received_time = now<br/>- Log timer reset"]
+CheckState --> |Head > LIB| PopBlocks["Pop reversible blocks:<br/>- While head > LIB<br/>- db.pop_block()<br/>- Clear pending<br/>- Reset fork_db<br/>- Log gap detection context"]
+PopBlocks --> RebuildForkDB["Re-seed fork DB:<br/>- Fetch LIB block<br/>- start_block(LIB_block)<br/>- Log recovery step<br/>- Check gap boundaries"]
+RebuildForkDB --> TriggerSync["Trigger P2P sync:<br/>- sync_from(LIB_block_id)<br/>- resync()<br/>- Log sync initiation<br/>- Include gap detection info"]
+TriggerSync --> ReconnectPeers["Reconnect to seed peers:<br/>- add_node(seed)<br/>- connect_to_endpoint(seed)<br/>- Log peer switching<br/>- Consider gap compatibility"]
+ReconnectPeers --> ResetTimer["Reset stale sync timer:<br/>- _last_block_received_time = now<br/>- Log timer reset<br/>- Gap detection monitoring"]
 ResetTimer --> Complete([Recovery Complete])
 NoAction --> Complete
 ```
 
 **Diagram sources**
-- [p2p_plugin.cpp:951-1020](file://plugins/p2p/p2p_plugin.cpp#L951-L1020)
+- [p2p_plugin.cpp:992-1061](file://plugins/p2p/p2p_plugin.cpp#L992-L1061)
 
-### Enhanced Recovery Process Implementation
+### Enhanced Recovery Process Implementation with Gap Awareness
 
-The minority fork recovery process now includes several critical enhancements:
+The minority fork recovery process now includes several critical enhancements with gap detection:
 
-1. **State Analysis**: Improved comparison logic with comprehensive logging
-2. **Block Popping**: Enhanced loop with proper error handling and logging
-3. **Fork Database Reset**: Better error handling and state validation
-4. **Network Resynchronization**: Improved sync triggering with logging
-5. **Peer Reconnection**: Enhanced peer management with error handling
-6. **Timer Reset**: Proper timing management to prevent immediate re-trigger
+1. **State Analysis**: Improved comparison logic with comprehensive logging including gap detection context
+2. **Block Popping**: Enhanced loop with proper error handling, logging, and gap boundary awareness
+3. **Fork Database Reset**: Better error handling, state validation, and gap boundary detection
+4. **Network Resynchronization**: Improved sync triggering with logging and gap-aware parameters
+5. **Peer Reconnection**: Enhanced peer management with error handling and gap compatibility checking
+6. **Timer Reset**: Proper timing management to prevent immediate re-trigger with gap monitoring
 
-### Integration with Witness Plugin
+### Integration with Witness Plugin and Gap Detection
 
-The minority fork recovery is triggered automatically by the witness plugin with enhanced logging:
+The minority fork recovery is triggered automatically by the witness plugin with enhanced logging and gap detection:
 
 ```mermaid
 sequenceDiagram
@@ -762,29 +1020,29 @@ participant Chain as Chain Database
 participant Network as Network Layer
 Witness->>Chain : Check recent blocks
 Chain-->>Witness : Block validation results
-Witness->>Witness : Analyze fork scenario
+Witness->>Witness : Analyze fork scenario<br/>with gap detection
 alt Minority fork detected
 Witness->>P2P : resync_from_lib()
-Note over P2P : Enhanced logging throughout
-P2P->>Chain : Pop blocks to LIB
-P2P->>Chain : Reset fork database
-P2P->>Network : Trigger sync from LIB
-P2P->>Network : Reconnect to peers
-Note over P2P : Comprehensive recovery logging
+Note over P2P : Enhanced logging with gap context
+P2P->>Chain : Pop blocks to LIB<br/>with gap boundary awareness
+P2P->>Chain : Reset fork database<br/>including gap detection
+P2P->>Network : Trigger sync from LIB<br/>with gap-aware parameters
+P2P->>Network : Reconnect to peers<br/>considering gap compatibility
+Note over P2P : Comprehensive recovery logging<br/>with gap detection results
 end
 ```
 
 **Diagram sources**
 - [witness.cpp:540-552](file://plugins/witness/witness.cpp#L540-L552)
-- [p2p_plugin.cpp:951-1020](file://plugins/p2p/p2p_plugin.cpp#L951-L1020)
+- [p2p_plugin.cpp:992-1061](file://plugins/p2p/p2p_plugin.cpp#L992-L1061)
 
 **Section sources**
-- [p2p_plugin.cpp:951-1020](file://plugins/p2p/p2p_plugin.cpp#L951-L1020)
+- [p2p_plugin.cpp:992-1061](file://plugins/p2p/p2p_plugin.cpp#L992-L1061)
 - [witness.cpp:540-552](file://plugins/witness/witness.cpp#L540-L552)
 
 ## Enhanced Block Validation
 
-**Updated** The block validation process has been enhanced with operation guard protection to ensure concurrent access safety during critical validation operations.
+**Updated** The block validation process has been enhanced with operation guard protection to ensure concurrent access safety during critical validation operations with improved gap detection awareness.
 
 ### Operation Guard Integration
 
@@ -804,14 +1062,15 @@ ApplyValidation --> BroadcastBlock["Broadcast block to peers"]
 **Diagram sources**
 - [p2p_plugin.cpp:216-245](file://plugins/p2p/p2p_plugin.cpp#L216-L245)
 
-### Concurrent Access Protection
+### Concurrent Access Protection with Gap Detection
 
-The operation guard mechanism provides several layers of protection:
+The operation guard system provides several layers of protection with gap detection awareness:
 
 1. **Resize Barrier Participation**: Operation guards participate in the shared memory resize barrier
 2. **Lock Acquisition**: Automatically waits for resize operations to complete
 3. **Thread Safety**: Prevents concurrent access conflicts during witness key validation
 4. **Resource Management**: Ensures proper cleanup and release of resources
+5. **Gap Detection Integration**: Operation guards work with gap detection mechanisms
 
 ### Database Integration
 
@@ -843,7 +1102,7 @@ operation_guard --> database : "guards access to"
 
 ## Concurrent Access Safety
 
-**New** The P2P plugin now includes comprehensive concurrent access safety mechanisms to prevent data corruption and ensure thread-safe operations during high-load conditions.
+**New** The P2P plugin now includes comprehensive concurrent access safety mechanisms to prevent data corruption and ensure thread-safe operations during high-load conditions with gap detection integration.
 
 ### Operation Guard Implementation
 
@@ -862,23 +1121,25 @@ ExitOperation --> End([Operation Complete])
 **Diagram sources**
 - [chainbase.hpp:1130-1137](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1130-L1137)
 
-### Thread Safety Enhancements
+### Thread Safety Enhancements with Gap Detection
 
-The concurrent access safety includes several key features:
+The concurrent access safety includes several key features with gap detection integration:
 
 1. **Automatic Lock Management**: Operation guards automatically manage database locks
 2. **Resize Barrier Integration**: Participates in shared memory resize barriers
 3. **Timeout Handling**: Implements timeout mechanisms for lock acquisition
 4. **Resource Cleanup**: Ensures proper cleanup of resources on completion
+5. **Gap Detection Integration**: Operation guards work seamlessly with gap detection mechanisms
 
 ### Error Handling Improvements
 
-Enhanced error handling protects against various failure scenarios:
+Enhanced error handling protects against various failure scenarios with gap detection:
 
 1. **Concurrent Resize Exceptions**: Proper handling of shared memory resize operations
 2. **Deadlock Prevention**: Timeout mechanisms prevent indefinite blocking
 3. **Graceful Degradation**: Fallback mechanisms for critical operations
 4. **Diagnostic Information**: Comprehensive logging for debugging concurrent issues
+5. **Gap Detection Logging**: Enhanced logging for concurrent gap detection scenarios
 
 **Section sources**
 - [chainbase.hpp:1130-1137](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1130-L1137)
@@ -886,16 +1147,17 @@ Enhanced error handling protects against various failure scenarios:
 
 ## Logging Level Consistency
 
-**Updated** The P2P plugin has implemented improved logging level consistency to reduce verbosity during normal operation while maintaining appropriate log levels for different operational contexts.
+**Updated** The P2P plugin has implemented improved logging level consistency to reduce verbosity during normal operation while maintaining appropriate log levels for different operational contexts with enhanced gap detection logging.
 
 ### Sync Mode Logging Improvements
 
-The plugin has undergone significant improvements in logging level management, particularly for synchronization operations:
+The plugin has undergone significant improvements in logging level management, particularly for synchronization operations with gap detection awareness:
 
 - **Sync Mode Downgrade**: Sync mode block processing logs were downgraded from info level to debug level
 - **Normal Mode Preservation**: Normal block processing continues to use info level logging for visibility
 - **Reduced Verbosity**: This change significantly reduces log volume during routine blockchain synchronization
 - **Contextual Appropriateness**: Debug level logging is more appropriate for frequent sync operations while preserving info level for exceptional events
+- **Gap Detection Logging**: Enhanced gap detection logs use appropriate levels for troubleshooting
 
 ### Logging Implementation Details
 
@@ -915,21 +1177,23 @@ else
 - **Maintained Visibility**: Normal operations continue to use info level logging for operational visibility
 - **Consistent Behavior**: Both sync and normal modes now consistently use debug level logging, improving overall logging consistency
 - **Performance Impact**: Lower logging overhead during normal operation while preserving diagnostic information
+- **Gap Detection Visibility**: Gap detection logs provide appropriate visibility for troubleshooting
 
 ### Network Layer Integration
 
-The network layer maintains mixed logging levels for different operational contexts:
+The network layer maintains mixed logging levels for different operational contexts with gap detection awareness:
 
 - **Info Level**: Used for significant operational events and peer management actions
 - **Debug Level**: Used for routine synchronization and connection maintenance
 - **Warning/Error Levels**: Used for error conditions and exceptional circumstances
+- **Gap Detection Levels**: Specialized logging for gap-related operations and recovery
 
 **Section sources**
 - [p2p_plugin.cpp:151-156](file://plugins/p2p/p2p_plugin.cpp#L151-L156)
 
 ## Dependency Analysis
 
-The P2P plugin has well-defined dependencies that enable modularity and maintainability:
+The P2P plugin has well-defined dependencies that enable modularity and maintainability with enhanced gap detection integration:
 
 ```mermaid
 graph TB
@@ -984,13 +1248,14 @@ Database --> DLTLog
 
 Key dependency relationships:
 
-1. **Chain Integration**: Direct dependency on the chain plugin for blockchain state access
-2. **Network Foundation**: Relies on the network library for peer communication
+1. **Chain Integration**: Direct dependency on the chain plugin for blockchain state access with gap detection
+2. **Network Foundation**: Relies on the network library for peer communication with gap-aware protocols
 3. **Application Framework**: Uses appbase for plugin lifecycle management
-4. **Snapshot Coordination**: Integrates with snapshot plugin for trusted peer management
-5. **Witness Integration**: Works closely with witness plugin for fork detection
-6. **Database Protection**: Leverages chainbase operation guards for concurrent access safety
-7. **DLT Mode Support**: Integrates with dlt_block_log for snapshot-based block serving
+4. **Snapshot Coordination**: Integrates with snapshot plugin for trusted peer management with gap detection
+5. **Witness Integration**: Works closely with witness plugin for fork detection and gap monitoring
+6. **Database Protection**: Leverages chainbase operation guards for concurrent access safety with gap detection
+7. **DLT Mode Support**: Integrates with dlt_block_log for snapshot-based block serving with sophisticated gap detection
+8. **Gap Detection**: Enhanced integration with gap detection mechanisms throughout the plugin stack
 
 **Section sources**
 - [CMakeLists.txt:27-34](file://plugins/p2p/CMakeLists.txt#L27-L34)
@@ -998,30 +1263,31 @@ Key dependency relationships:
 
 ## Performance Considerations
 
-The P2P plugin implements several performance optimization strategies:
+The P2P plugin implements several performance optimization strategies with enhanced gap detection efficiency:
 
 ### Connection Management
 - **Connection Limits**: Configurable maximum connections to prevent resource exhaustion
-- **Soft-Ban Mechanisms**: Automatic peer banning for misbehaving nodes
+- **Soft-Ban Mechanisms**: Automatic peer banning for misbehaving nodes with gap detection awareness
 - **Trusted Peer System**: Reduced soft-ban duration for snapshot-provided trusted peers
 
 ### Network Efficiency
-- **Selective Synchronization**: Only fetches missing blockchain data
+- **Selective Synchronization**: Only fetches missing blockchain data with gap-aware range limiting
 - **Message Caching**: Prevents redundant message propagation
 - **Bandwidth Throttling**: Configurable upload/download limits
 
 ### Monitoring and Diagnostics
-- **Periodic Statistics**: Configurable logging intervals for peer statistics
-- **Stale Sync Detection**: Automatic recovery from stalled synchronization
-- **Connection Health Monitoring**: Real-time peer connection quality metrics
+- **Periodic Statistics**: Configurable logging intervals for peer statistics with gap detection
+- **Stale Sync Detection**: Automatic recovery from stalled synchronization with gap monitoring
+- **Connection Health Monitoring**: Real-time peer connection quality metrics with gap awareness
 
-### DLT Mode Performance
-**New** The DLT mode introduces several performance optimizations:
+### DLT Mode Performance with Gap Detection
+**New** The DLT mode introduces several performance optimizations with gap detection:
 
-- **Intelligent Block Range Clamping**: Prevents requesting unavailable blocks
-- **Early Availability Checking**: Reduces network requests for unavailable items
-- **Optimized Peer Selection**: Better handling of DLT-capable peers
-- **Reduced Error Handling Overhead**: Graceful degradation minimizes performance impact
+- **Intelligent Block Range Clamping**: Prevents requesting unavailable blocks with sophisticated gap detection
+- **Early Availability Checking**: Reduces network requests for unavailable items with gap awareness
+- **Optimized Peer Selection**: Better handling of DLT-capable peers with gap compatibility
+- **Reduced Error Handling Overhead**: Graceful degradation minimizes performance impact with gap detection
+- **Gap-Aware Recovery**: Automatic recovery mechanisms minimize performance impact during gap scenarios
 
 ### Logging Performance Impact
 **Updated** The improved logging level consistency provides additional performance benefits:
@@ -1030,18 +1296,20 @@ The P2P plugin implements several performance optimization strategies:
 - **Lower Memory Usage**: Reduced log buffer consumption during sync operations
 - **Improved Throughput**: Less frequent logging reduces CPU overhead during normal operation
 - **Better Resource Utilization**: More efficient use of system resources during routine operations
+- **Gap Detection Efficiency**: Optimized logging for gap detection scenarios
 
 ### Concurrent Access Optimization
-**New** The operation guard system provides performance benefits through:
+**New** The operation guard system provides performance benefits through gap detection integration:
 
 - **Reduced Contention**: Automatic lock management reduces thread contention
 - **Efficient Resource Usage**: Operation guards minimize overhead during validation
-- **Scalable Design**: Thread-safe operations scale better under load
+- **Scalable Design**: Thread-safe operations scale better under load with gap detection
 - **Graceful Degradation**: Timeout mechanisms prevent performance degradation
+- **Gap Detection Optimization**: Integrated gap detection reduces unnecessary operations
 
 **Section sources**
-- [p2p_plugin.cpp:659-756](file://plugins/p2p/p2p_plugin.cpp#L659-L756)
-- [p2p_plugin.cpp:512-649](file://plugins/p2p/p2p_plugin.cpp#L512-L649)
+- [p2p_plugin.cpp:701-765](file://plugins/p2p/p2p_plugin.cpp#L701-L765)
+- [p2p_plugin.cpp:596-699](file://plugins/p2p/p2p_plugin.cpp#L596-L699)
 
 ## Troubleshooting Guide
 
@@ -1055,47 +1323,49 @@ The P2P plugin implements several performance optimization strategies:
 #### Synchronization Delays
 - **Symptom**: Slow blockchain synchronization
 - **Solution**: Increase `p2p-max-connections` setting
-- **Monitoring**: Enable P2P statistics to identify slow peers
+- **Monitoring**: Enable P2P statistics to identify slow peers with gap detection awareness
 
 #### Peer Quality Issues
 - **Symptom**: Frequent peer disconnections
 - **Solution**: Check network stability and bandwidth limitations
-- **Diagnostics**: Monitor peer statistics for connection patterns
+- **Diagnostics**: Monitor peer statistics for connection patterns with gap-related errors
 
-### DLT Mode Troubleshooting
+### DLT Mode Troubleshooting with Gap Detection
 
-**New** For DLT mode-specific issues:
+**New** For DLT mode-specific issues with gap detection:
 
-1. **Block Availability Errors**: Check `earliest_available_block_num()` and DLT log bounds
-2. **Peer Compatibility**: Verify peers support DLT mode block serving
-3. **Recovery Actions**: Monitor graceful degradation logs for peer soft-bans
-4. **Sync Performance**: Use DLT-specific logging to identify block range issues
+1. **Block Availability Errors**: Check `earliest_available_block_num()` and DLT log bounds with gap detection
+2. **Peer Compatibility**: Verify peers support DLT mode block serving with gap awareness
+3. **Recovery Actions**: Monitor graceful degradation logs for peer soft-bans with gap detection
+4. **Sync Performance**: Use DLT-specific logging to identify block range issues with gap information
+5. **Gap Detection**: Monitor gap detection logs for storage boundary issues
 
 ### Minority Fork Recovery Procedures
 
-**Updated** For minority fork scenarios:
+**Updated** For minority fork scenarios with gap detection:
 
-1. **Detection**: Monitor witness plugin logs for minority fork warnings
-2. **Automatic Recovery**: The system automatically triggers `resync_from_lib()`
+1. **Detection**: Monitor witness plugin logs for minority fork warnings with gap context
+2. **Automatic Recovery**: The system automatically triggers `resync_from_lib()` with gap detection
 3. **Manual Intervention**: Use RPC commands to trigger recovery if automatic detection fails
-4. **Verification**: Monitor logs to confirm successful recovery and synchronization
-
-### Logging Level Considerations
-
-**Updated** For troubleshooting purposes, consider adjusting logging levels:
-
-- **Enable Debug Logging**: Set logging level to debug for detailed sync operation visibility
-- **Monitor Sync Operations**: Use debug logs to track sync progress and identify bottlenecks
-- **Performance Tuning**: Adjust logging levels based on operational requirements
+4. **Verification**: Monitor logs to confirm successful recovery and synchronization with gap awareness
 
 ### Enhanced Peer Database Analysis
 
-**New** Use the enhanced peer database logging for troubleshooting:
+**New** Use the enhanced peer database logging for troubleshooting with gap detection:
 
-1. **Failed Peer Analysis**: Review logs for failed/rejected peer status
-2. **Connection Attempts**: Monitor last connection attempt times and reasons
-3. **Error Patterns**: Identify recurring error patterns across multiple peers
-4. **Recovery Effectiveness**: Track peer reconnection success rates
+1. **Failed Peer Analysis**: Review logs for failed/rejected peer status with gap-related errors
+2. **Connection Attempts**: Monitor last connection attempt times and reasons with gap context
+3. **Error Patterns**: Identify recurring error patterns across multiple peers with gap detection
+4. **Recovery Effectiveness**: Track peer reconnection success rates with gap-aware metrics
+
+### Gap Detection Troubleshooting
+
+**New** Specific gap detection troubleshooting procedures:
+
+1. **Gap Detection Logs**: Review gap detection logs for storage boundary issues
+2. **Clamping Operations**: Monitor clamping operations for proper gap handling
+3. **Peer Compatibility**: Check peer compatibility with gap detection mechanisms
+4. **Recovery Actions**: Verify automatic recovery actions for gap-related issues
 
 ### Configuration Reference
 
@@ -1113,16 +1383,17 @@ The P2P plugin supports extensive configuration options:
 
 ### Concurrent Access Issues
 
-**New** For concurrent access problems:
+**New** For concurrent access problems with gap detection:
 
-1. **Monitor Operation Guards**: Check for operation guard timeouts in logs
+1. **Monitor Operation Guards**: Check for operation guard timeouts in logs with gap context
 2. **Check Shared Memory**: Verify shared memory resize operations are completing
 3. **Adjust Timeouts**: Increase operation guard timeout values if needed
-4. **Resource Monitoring**: Monitor system resources during high-load periods
+4. **Resource Monitoring**: Monitor system resources during high-load periods with gap detection
+5. **Gap Detection Monitoring**: Monitor gap detection operations for performance impact
 
 **Section sources**
-- [p2p_plugin.cpp:659-683](file://plugins/p2p/p2p_plugin.cpp#L659-L683)
-- [p2p_plugin.cpp:951-1020](file://plugins/p2p/p2p_plugin.cpp#L951-L1020)
+- [p2p_plugin.cpp:701-765](file://plugins/p2p/p2p_plugin.cpp#L701-L765)
+- [p2p_plugin.cpp:992-1061](file://plugins/p2p/p2p_plugin.cpp#L992-L1061)
 - [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
 
 ## Conclusion
@@ -1131,19 +1402,21 @@ The P2P Plugin represents a sophisticated implementation of blockchain networkin
 
 **Updated** Key enhancements include:
 
-1. **Security Focus**: Advanced block validation and witness verification mechanisms
-2. **Performance Optimization**: Efficient synchronization and connection management
-3. **Operational Excellence**: Comprehensive monitoring and diagnostic capabilities
-4. **Extensibility**: Clean interfaces that support future enhancements
+1. **Security Focus**: Advanced block validation and witness verification mechanisms with gap detection
+2. **Performance Optimization**: Efficient synchronization and connection management with gap-aware optimizations
+3. **Operational Excellence**: Comprehensive monitoring and diagnostic capabilities with gap detection
+4. **Extensibility**: Clean interfaces that support future enhancements with gap detection integration
 5. **Logging Efficiency**: Improved logging level consistency reduces verbosity while maintaining operational visibility
-6. **Minority Fork Recovery**: Specialized recovery mechanism for handling fork scenarios
-7. **Concurrent Access Safety**: Enhanced protection against race conditions and data corruption
-8. **Integration Capabilities**: Seamless coordination with witness and snapshot plugins
-9. **DLT Mode Support**: Intelligent block range management for snapshot-based nodes
-10. **Graceful Degradation**: Robust error handling and peer interaction management
-11. **Enhanced Diagnostics**: Comprehensive logging throughout the sync process
-12. **Peer Database Analytics**: Detailed peer interaction tracking and troubleshooting
+6. **Minority Fork Recovery**: Specialized recovery mechanism for handling fork scenarios with gap awareness
+7. **Concurrent Access Safety**: Enhanced protection against race conditions and data corruption with gap detection
+8. **Integration Capabilities**: Seamless coordination with witness and snapshot plugins with gap detection
+9. **DLT Mode Support**: Intelligent block range management for snapshot-based nodes with sophisticated gap detection
+10. **Graceful Degradation**: Robust error handling and peer interaction management with gap-aware recovery
+11. **Enhanced Diagnostics**: Comprehensive logging throughout the sync process with gap detection
+12. **Peer Database Analytics**: Detailed peer interaction tracking and troubleshooting with gap awareness
 
-The recent additions demonstrate ongoing attention to operational efficiency and user experience. The new DLT mode block range management provides intelligent support for snapshot-based nodes, while the enhanced peer interaction handling improves network resilience. The comprehensive logging throughout the sync process provides unprecedented visibility into network operations, and the graceful degradation capabilities ensure reliable operation even when peers cannot serve requested items.
+The recent additions demonstrate ongoing attention to operational efficiency and user experience. The new DLT mode block range management with sophisticated gap detection provides intelligent support for snapshot-based nodes, while the enhanced peer interaction handling improves network resilience. The comprehensive logging throughout the sync process provides unprecedented visibility into network operations, and the graceful degradation capabilities ensure reliable operation even when peers cannot serve requested items.
 
-The plugin's design demonstrates best practices in distributed systems engineering, balancing security, performance, and maintainability while providing the foundation for scalable blockchain networks. The integration of DLT mode support, graceful degradation mechanisms, and enhanced diagnostic capabilities positions the P2P plugin to handle increasingly complex blockchain networking requirements with improved reliability and operability.
+The plugin's design demonstrates best practices in distributed systems engineering, balancing security, performance, and maintainability while providing the foundation for scalable blockchain networks. The integration of DLT mode support, graceful degradation mechanisms, enhanced diagnostic capabilities, and sophisticated gap detection positions the P2P plugin to handle increasingly complex blockchain networking requirements with improved reliability and operability.
+
+The enhanced gap detection and automatic recovery mechanisms represent a significant advancement in P2P synchronization reliability, preventing peer disconnections due to item_not_available responses and ensuring continuous network operation even in challenging storage boundary scenarios. These improvements make the P2P plugin more robust and suitable for production environments with diverse node configurations and storage setups.
