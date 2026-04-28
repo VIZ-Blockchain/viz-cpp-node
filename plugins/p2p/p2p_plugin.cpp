@@ -150,10 +150,10 @@ namespace graphene {
                         });
                         int32_t gap = (int32_t)blk_msg.block.block_num() - (int32_t)head_block_num - 1;
                         if (sync_mode)
-                            dlog("chain pushing sync block #${block_num} (head: ${head}, gap: ${gap})",
+                            ilog(CLOG_WHITE "Chain pushing sync block #${block_num} (head: ${head}, gap: ${gap})" CLOG_RESET,
                                  ("block_num", blk_msg.block.block_num())("head", head_block_num)("gap", gap));
                         else
-                            dlog("chain pushing normal block #${block_num} (head: ${head}, gap: ${gap})",
+                            ilog(CLOG_WHITE "Chain pushing normal block #${block_num} (head: ${head}, gap: ${gap})" CLOG_RESET,
                                  ("block_num", blk_msg.block.block_num())("head", head_block_num)("gap", gap));
 
                         try {

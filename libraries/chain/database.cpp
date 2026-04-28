@@ -1419,10 +1419,15 @@ namespace graphene { namespace chain {
                             }
                             auto branches = _fork_db.fetch_branch_from(new_head->data.id(), head_block_id());
 
-                            // pop blocks until we hit the forked block
-                            while (head_block_id() !=
-                                   branches.second.back()->data.previous) {
-                                pop_block();
+                            // pop blocks until we hit the forked block.
+                            // branches.second is empty when the new chain extends
+                            // directly from the current head (e.g. unlinked blocks
+                            // auto-linked via _push_next after a missed block arrived).
+                            if (!branches.second.empty()) {
+                                while (head_block_id() !=
+                                       branches.second.back()->data.previous) {
+                                    pop_block();
+                                }
                             }
 
                             // push all blocks on the new fork
@@ -1446,9 +1451,11 @@ namespace graphene { namespace chain {
                                         ++ritr;
                                     }
                                     // pop all blocks from the bad fork
-                                    while (head_block_id() !=
-                                           branches.second.back()->data.previous) {
-                                        pop_block();
+                                    if (!branches.second.empty()) {
+                                        while (head_block_id() !=
+                                               branches.second.back()->data.previous) {
+                                            pop_block();
+                                        }
                                     }
 
                                     // restore all blocks from the good fork

@@ -3523,13 +3523,28 @@ namespace graphene {
                                 peer->inhibit_fetching_sync_blocks = true;
                                 peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(peer.get()));
                             } else {
-                                fc_ilog(fc::logger::get("sync"),
-                                     "Soft-banning peer ${endpoint} for ${dur}s: rejected sync block #${num}",
-                                     ("endpoint", peer->get_remote_endpoint())
-                                     ("num", block_message_to_send.block.block_num())
-                                     ("dur", get_soft_ban_duration(peer.get())));
-                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(peer.get()));
-                                peer->inhibit_fetching_sync_blocks = true;
+                                // Generic sync block rejection (not dead-fork).
+                                // Use strike counter to tolerate occasional failures
+                                // (e.g. timing races, transient errors after snapshot reload).
+                                ++peer->unlinkable_block_strikes;
+                                static constexpr uint32_t SYNC_REJECT_STRIKE_THRESHOLD = 20;
+                                if (peer->unlinkable_block_strikes >= SYNC_REJECT_STRIKE_THRESHOLD) {
+                                    fc_ilog(fc::logger::get("sync"),
+                                         "Soft-banning peer ${endpoint} for ${dur}s: ${strikes} rejected sync blocks (last: #${num})",
+                                         ("endpoint", peer->get_remote_endpoint())
+                                         ("num", block_message_to_send.block.block_num())
+                                         ("strikes", peer->unlinkable_block_strikes)
+                                         ("dur", get_soft_ban_duration(peer.get())));
+                                    peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(peer.get()));
+                                    peer->inhibit_fetching_sync_blocks = true;
+                                    peer->unlinkable_block_strikes = 0;
+                                } else {
+                                    dlog("Sync block #${num} rejected from ${peer} (strike ${s}/${max})",
+                                         ("num", block_message_to_send.block.block_num())
+                                         ("peer", peer->get_remote_endpoint())
+                                         ("s", peer->unlinkable_block_strikes)
+                                         ("max", SYNC_REJECT_STRIKE_THRESHOLD));
+                                }
                             }
                         }
                     }
