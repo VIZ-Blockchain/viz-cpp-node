@@ -450,4 +450,26 @@ namespace graphene { namespace chain {
              ("s", my->_start_block_num)("h", (my->head.valid() ? my->head->block_num() : 0)));
     } FC_CAPTURE_AND_RETHROW((new_start)) }
 
+    void dlt_block_log::reset() { try {
+        detail::write_lock lock(my->mutex);
+
+        uint32_t old_start = my->_start_block_num;
+        uint32_t old_end = my->head.valid() ? my->head->block_num() : 0;
+
+        my->close();
+
+        boost::filesystem::remove_all(my->block_path);
+        boost::filesystem::remove_all(my->index_path);
+        // Also remove stale temp/backup files
+        boost::filesystem::remove_all(my->block_path + ".tmp");
+        boost::filesystem::remove_all(my->index_path + ".tmp");
+        boost::filesystem::remove_all(my->block_path + ".bak");
+        boost::filesystem::remove_all(my->index_path + ".bak");
+
+        my->open(fc::path(my->block_path));
+
+        ilog("DLT block log: reset complete (was blocks ${s}-${h}, now empty)",
+             ("s", old_start)("h", old_end));
+    } FC_CAPTURE_AND_RETHROW() }
+
 } } // graphene::chain

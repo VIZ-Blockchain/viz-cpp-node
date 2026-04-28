@@ -291,6 +291,7 @@ namespace graphene {
                             // (dlt_block_log + fork_db). Don't advertise blocks we can't serve,
                             // otherwise the peer will request them, get item_not_available, and
                             // disconnect us with "You are missing a sync item you claim to have".
+                            uint32_t effective_head = chain.db().head_block_num();
                             if (chain.db()._dlt_mode) {
                                 uint32_t earliest = chain.db().earliest_available_block_num();
                                 if (start_num < earliest) {
@@ -299,10 +300,47 @@ namespace graphene {
                                          ("old", start_num)("new", earliest)("head", chain.db().head_block_num()));
                                     start_num = earliest;
                                 }
+
+                                // Also check for upper-bound gaps: in DLT mode there can be a gap
+                                // between dlt_block_log end and fork_db start (e.g. after snapshot
+                                // import when fork_db is empty).  Only advertise blocks we can
+                                // actually serve from contiguous storage.
+                                uint32_t dlt_end = chain.db().get_dlt_block_log().head_block_num();
+                                uint32_t blog_end = 0;
+                                auto blog_head = chain.db().get_block_log().head();
+                                if (blog_head) {
+                                    blog_end = blog_head->block_num();
+                                }
+                                uint32_t storage_end = std::max(dlt_end, blog_end);
+
+                                if (start_num > storage_end) {
+                                    // start_num is beyond all log storage — check if it's in fork_db
+                                    auto test_block = chain.db().fetch_block_by_number(start_num);
+                                    if (!test_block) {
+                                        ilog("DLT mode: get_block_ids() cannot serve blocks from #${num} "
+                                             "(not in dlt_block_log [${dlt_start}-${dlt_end}], block_log, or fork_db). "
+                                             "Returning empty.",
+                                             ("num", start_num)
+                                             ("dlt_start", chain.db().get_dlt_block_log().start_block_num())
+                                             ("dlt_end", dlt_end));
+                                        return result;
+                                    }
+                                } else if (storage_end < effective_head) {
+                                    // start_num is in log storage, but check if there's a gap
+                                    // between storage end and fork_db
+                                    auto gap_block = chain.db().fetch_block_by_number(storage_end + 1);
+                                    if (!gap_block) {
+                                        // Gap exists — only serve up to storage_end
+                                        effective_head = storage_end;
+                                        ilog("DLT mode: get_block_ids() clamping end to #${end} "
+                                             "(gap between storage and fork_db), head=${head}",
+                                             ("end", effective_head)("head", chain.db().head_block_num()));
+                                    }
+                                }
                             }
 
                             for (uint32_t num = start_num;
-                                 num <= chain.db().head_block_num() && result.size() < limit; ++num) {
+                                 num <= effective_head && result.size() < limit; ++num) {
                                 if (num > 0) {
                                     result.push_back(chain.db().get_block_id_for_num(num));
                                 }
@@ -316,10 +354,13 @@ namespace graphene {
 
                             if (chain.db()._dlt_mode) {
                                 dlog("DLT mode: get_block_ids() returning ${n} block IDs "
-                                     "(start=${start}, head=${head}, earliest_available=${earliest})",
+                                     "(start=${start}, effective_head=${ehead}, head=${head}, "
+                                     "earliest_available=${earliest}, dlt_end=${dlt_end})",
                                      ("n", result.size())("start", start_num)
+                                     ("ehead", effective_head)
                                      ("head", chain.db().head_block_num())
-                                     ("earliest", chain.db().earliest_available_block_num()));
+                                     ("earliest", chain.db().earliest_available_block_num())
+                                     ("dlt_end", chain.db().get_dlt_block_log().head_block_num()));
                             }
 
                             return result;

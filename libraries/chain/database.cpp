@@ -4913,9 +4913,36 @@ namespace graphene { namespace chain {
                                             std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
                                                     dlt_head_num + 1);
                                             if (!block) {
-                                                // Block not in fork database — normal after restart when fork_db
-                                                // hasn't accumulated blocks back to LIB yet. Will catch up once
-                                                // LIB advances past the post-restart head.
+                                                // Block not in fork database — after DLT restart there
+                                                // can be a gap between dlt_block_log end and fork_db start.
+                                                // Find the earliest block fork_db has and reset dlt_block_log
+                                                // to start from there so future blocks are saved.
+                                                uint32_t fork_start = 0;
+                                                for (uint32_t n = dlt_head_num + 2; n <= dpo.last_irreversible_block_num; ++n) {
+                                                    if (_fork_db.fetch_block_on_main_branch_by_number(n)) {
+                                                        fork_start = n;
+                                                        break;
+                                                    }
+                                                }
+                                                if (fork_start > 0) {
+                                                    ilog("DLT block log: gap detected between dlt_end=${dlt_end} and "
+                                                         "fork_db_start=${fork_start} (LIB=${lib}). "
+                                                         "Resetting dlt_block_log to start from fork_db.",
+                                                         ("dlt_end", dlt_head_num)
+                                                         ("fork_start", fork_start)
+                                                         ("lib", dpo.last_irreversible_block_num));
+                                                    _dlt_block_log.reset();
+                                                    // Write all available blocks from fork_start to LIB
+                                                    for (uint32_t n = fork_start; n <= dpo.last_irreversible_block_num; ++n) {
+                                                        auto fb = _fork_db.fetch_block_on_main_branch_by_number(n);
+                                                        if (fb) {
+                                                            _dlt_block_log.append(fb->data);
+                                                            wrote_any = true;
+                                                        } else {
+                                                            break; // end of contiguous range
+                                                        }
+                                                    }
+                                                }
                                                 break;
                                             }
                                             _dlt_block_log.append(block->data);
@@ -5077,9 +5104,36 @@ namespace graphene { namespace chain {
                                             std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
                                                     dlt_head_num + 1);
                                             if (!block) {
-                                                // Block not in fork database — normal after restart when fork_db
-                                                // hasn't accumulated blocks back to LIB yet. Will catch up once
-                                                // LIB advances past the post-restart head.
+                                                // Block not in fork database — after DLT restart there
+                                                // can be a gap between dlt_block_log end and fork_db start.
+                                                // Find the earliest block fork_db has and reset dlt_block_log
+                                                // to start from there so future blocks are saved.
+                                                uint32_t fork_start = 0;
+                                                for (uint32_t n = dlt_head_num + 2; n <= dpo.last_irreversible_block_num; ++n) {
+                                                    if (_fork_db.fetch_block_on_main_branch_by_number(n)) {
+                                                        fork_start = n;
+                                                        break;
+                                                    }
+                                                }
+                                                if (fork_start > 0) {
+                                                    ilog("DLT block log: gap detected between dlt_end=${dlt_end} and "
+                                                         "fork_db_start=${fork_start} (LIB=${lib}). "
+                                                         "Resetting dlt_block_log to start from fork_db.",
+                                                         ("dlt_end", dlt_head_num)
+                                                         ("fork_start", fork_start)
+                                                         ("lib", dpo.last_irreversible_block_num));
+                                                    _dlt_block_log.reset();
+                                                    // Write all available blocks from fork_start to LIB
+                                                    for (uint32_t n = fork_start; n <= dpo.last_irreversible_block_num; ++n) {
+                                                        auto fb = _fork_db.fetch_block_on_main_branch_by_number(n);
+                                                        if (fb) {
+                                                            _dlt_block_log.append(fb->data);
+                                                            wrote_any = true;
+                                                        } else {
+                                                            break; // end of contiguous range
+                                                        }
+                                                    }
+                                                }
                                                 break;
                                             }
                                             _dlt_block_log.append(block->data);

@@ -65,6 +65,10 @@ namespace graphene {
             /// Creates temp files, copies the retained blocks, swaps, reopens.
             void truncate_before(uint32_t new_start);
 
+            /// Reset the log: close, delete files, reopen empty.
+            /// The next append() will start a fresh log from whatever block is written.
+            void reset();
+
             static const uint64_t npos = std::numeric_limits<uint64_t>::max();
 
         private:
