@@ -1419,6 +1419,10 @@ namespace graphene { namespace chain {
                             }
                             auto branches = _fork_db.fetch_branch_from(new_head->data.id(), head_block_id());
 
+                            ilog("Fork switch: new_head=#${nh}, db_head=#${dh}, branches.first=${f}, branches.second=${s}",
+                                 ("nh", new_head->data.block_num())("dh", head_block_num())
+                                 ("f", branches.first.size())("s", branches.second.size()));
+
                             // pop blocks until we hit the forked block.
                             // branches.second is empty when the new chain extends
                             // directly from the current head (e.g. unlinked blocks
@@ -1426,6 +1430,10 @@ namespace graphene { namespace chain {
                             if (!branches.second.empty()) {
                                 while (head_block_id() !=
                                        branches.second.back()->data.previous) {
+                                    ilog("FORK-SWITCH-POP: popping head #${h} (target=${t}, branches.second.back=#${b})",
+                                         ("h", head_block_num())
+                                         ("t", branches.second.back()->data.previous)
+                                         ("b", branches.second.back()->data.block_num()));
                                     pop_block();
                                 }
                             }
@@ -1444,35 +1452,46 @@ namespace graphene { namespace chain {
                                     except = e;
                                 }
                                 if (except) {
-                                    // wlog( "exception thrown while switching forks ${e}", ("e",except->to_detail_string() ) );
+                                    wlog("Exception during fork switch at block #${n}: ${e}",
+                                         ("n", (*ritr)->data.block_num())("e", except->to_detail_string()));
                                     // remove the rest of branches.first from the fork_db, those blocks are invalid
                                     while (ritr != branches.first.rend()) {
                                         _fork_db.remove((*ritr)->data.id());
                                         ++ritr;
                                     }
-                                    // pop all blocks from the bad fork
+
                                     if (!branches.second.empty()) {
+                                        // Actual fork: pop applied blocks from new fork,
+                                        // restore original fork blocks.
                                         while (head_block_id() !=
                                                branches.second.back()->data.previous) {
+                                            ilog("FORK-RECOVER-POP: popping head #${h} (target=${t})",
+                                                 ("h", head_block_num())("t", branches.second.back()->data.previous));
                                             pop_block();
                                         }
-                                    }
 
-                                    // restore all blocks from the good fork
-                                    for (auto ritr = branches.second.rbegin();
-                                         ritr !=
-                                         branches.second.rend(); ++ritr) {
-                                        auto session = start_undo_session();
-                                        apply_block((*ritr)->data, skip);
-                                        session.push();
-                                    }
+                                        for (auto ritr2 = branches.second.rbegin();
+                                             ritr2 != branches.second.rend(); ++ritr2) {
+                                            auto session = start_undo_session();
+                                            apply_block((*ritr2)->data, skip);
+                                            session.push();
+                                        }
 
-                                    // Restore fork_db head to the original chain tip.
-                                    // pop_block() above moved _head backwards via
-                                    // _fork_db.pop_block(), but apply_block() does not
-                                    // advance it.  Without this, _head stays at the fork
-                                    // point instead of the original chain tip.
-                                    _fork_db.set_head(branches.second.front());
+                                        _fork_db.set_head(branches.second.front());
+                                    } else {
+                                        // Linear extension (no fork): some blocks from
+                                        // branches.first were already applied before the
+                                        // failure.  There is nothing to pop or restore.
+                                        // Reset fork_db to match the current database head
+                                        // so subsequent blocks can link cleanly.
+                                        auto head_blk = fetch_block_by_number(head_block_num());
+                                        if (head_blk) {
+                                            _fork_db.reset();
+                                            _fork_db.start_block(*head_blk);
+                                        }
+                                        wlog("Linear extension failed. DB head=#${h}, fork_db reset.",
+                                             ("h", head_block_num()));
+                                    }
 
                                     throw *except;
                                 }
@@ -1788,6 +1807,13 @@ namespace graphene { namespace chain {
                 /// save the head block so we can recover its transactions
                 optional<signed_block> head_block = fetch_block_by_id(head_id);
                 CHAIN_ASSERT(head_block.valid(), pop_empty_chain, "there are no blocks to pop");
+
+                // Debug: log fork_db state before pop to diagnose crashes
+                auto fork_head = _fork_db.head();
+                ilog("POP_BLOCK: db_head=#${dh}, fork_db_head=#${fh}, fork_db_head_prev=${prev}",
+                     ("dh", head_block_num())
+                     ("fh", fork_head ? fork_head->num : 0)
+                     ("prev", (fork_head && fork_head->prev.lock()) ? fork_head->prev.lock()->num : 0));
 
                 _fork_db.pop_block();
                 undo();
