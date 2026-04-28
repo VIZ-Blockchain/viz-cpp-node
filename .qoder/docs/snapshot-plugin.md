@@ -391,6 +391,21 @@ After snapshot import, the node must sync all subsequent blocks from P2P. Severa
 - Fresh snapshot import: `fork_db` is seeded with the head block via `start_block()`. The head block is also appended to `dlt_block_log` so that restart can reconstruct `fork_db` from it.
 - DLT mode restart: `fork_db` is in-memory and lost on restart. The node seeds it from `dlt_block_log` if it covers the head block (guaranteed after the fix above). If `dlt_block_log` somehow does not cover the head, the early rejection logic in `_push_block` handles the empty `fork_db` case by always allowing blocks whose `previous == head_block_id()`
 
+**Block ID advertisement clamping (`get_block_ids`):** After snapshot import, the `block_summary` (TAPOS buffer, 65536 entries) contains block IDs for blocks the node *knows about* but cannot serve (the actual block data only exists in `dlt_block_log` which starts at the snapshot head). Without clamping, `get_block_ids()` would advertise these un-serveable blocks to peers, causing them to request the blocks, receive `item_not_available`, and disconnect with "You are missing a sync item you claim to have, your database is probably corrupted."
+
+Fix: `database::earliest_available_block_num()` returns the lowest block the node can actually serve (from `dlt_block_log`, `block_log`, or `fork_db`). In DLT mode after snapshot import, this is typically the snapshot head block. `get_block_ids()` in `p2p_plugin.cpp` clamps its start to `earliest_available_block_num()`, ensuring the node only advertises blocks it can deliver.
+
+**Graceful `item_not_available` handling:** When a peer sends `item_not_available` for a sync block, the node no longer disconnects with a "corrupted database" message. Instead, it sets `inhibit_fetching_sync_blocks = true` on that peer and tries other peers. This allows DLT nodes with limited block history to participate in the network without being aggressively disconnected.
+
+**Broadcast inventory suppression during sync:** During initial sync (catching up from snapshot), peers send both sync data (block IDs for catch-up) and broadcast items (recent transactions/blocks at chain tip). If the node tries to fetch these broadcast items, the 1-second `active_ignored_request_timeout` in `terminate_inactive_connections()` fires before the items arrive, disconnecting peers and killing sync connections.
+
+The node suppresses broadcast inventory (`on_item_ids_inventory_message`) with a 3-layer defense:
+1. **Per-peer sync check:** Skip if the originating peer has `we_need_sync_items_from_peer = true`
+2. **Global sync check:** Skip if *any* active peer has `we_need_sync_items_from_peer = true` — prevents inventory from non-syncing peers from polluting `items_requested_from_peer`
+3. **Head block time check:** Skip if the node's head block is >30 seconds behind wall clock — catches the brief window after all peers respond "up to date" but the node is still behind (e.g., when the peer was at the same block and set `we_need_sync_items_from_peer = false`)
+
+Broadcast items are useless during sync — the node will receive them naturally once caught up.
+
 **Early block rejection in `_push_block`:** When a node is far behind, it receives sync blocks (sequential, must accept) and broadcast blocks (real-time, potentially thousands ahead, must reject silently). Checks prevent sync disruption:
 1. Duplicate blocks at/before head with matching ID → skipped silently
 2. Blocks at/before head on a different fork with parent not in fork_db → silently rejected (prevents infinite P2P sync restart loop where each failure triggers another sync attempt with the same peer)
