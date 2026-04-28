@@ -16,14 +16,25 @@ jobs:
         with:
           submodules: recursive
 
+      # setup-buildx-action is required for advanced cache features
+      # (cache-from / cache-to with type=gha and mode=max).
+      - uses: docker/setup-buildx-action@v3
+
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      # Cache scope is keyed on the PR's base branch so all PRs targeting
+      # master share one warm-cache pool, while PRs against release branches
+      # cannot poison master's cache. mode=max is required for BuildKit to
+      # also export the contents of named --mount=type=cache directories
+      # (notably /root/.ccache) across CI runs.
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: ./share/vizd/docker/Dockerfile-production
           push: true
           tags: vizblockchain/vizd:${{ github.head_ref }}
+          cache-from: type=gha,scope=pr-${{ github.event.pull_request.base_ref }}
+          cache-to:   type=gha,scope=pr-${{ github.event.pull_request.base_ref }},mode=max
