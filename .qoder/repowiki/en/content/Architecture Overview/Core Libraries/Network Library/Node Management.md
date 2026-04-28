@@ -16,15 +16,17 @@
 - [fork_database.cpp](file://libraries/chain/fork_database.cpp)
 - [database.cpp](file://libraries/chain/database.cpp)
 - [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
+- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
+- [dlt_block_log.cpp](file://libraries/chain/dlt_block_log.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced peer soft-ban handling with intelligent stale fork detection and automatic flag reset logic
-- Improved unlinkable block exception management with differentiated handling based on peer position relative to local blockchain head
-- Strengthened fork database capabilities with enhanced emergency consensus support and improved block rejection handling
-- Added trusted peer soft-ban duration reduction (5 minutes vs 1 hour) for faster recovery from transient errors
-- Implemented comprehensive soft-ban expiration handling with automatic flag reset during network synchronization
+- Enhanced peer block ID range handling with detailed peer block ID ranges, item requests, and sync status information
+- Improved error logs with clear block availability context in DLT mode including comprehensive block range information
+- Enhanced peer status reporting with detailed sync status updates and peer synchronization metrics
+- Improved DLT mode error logging with contextual information about available block ranges and dlt_block_log boundaries
+- Enhanced peer connection state management with detailed synchronization progress tracking
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -34,10 +36,12 @@
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Enhanced Peer Handling and Soft-Banning](#enhanced-peer-handling-and-soft-banning)
 7. [Emergency Consensus Network-Level Improvements](#emergency-consensus-network-level-improvements)
-8. [Dependency Analysis](#dependency-analysis)
-9. [Performance Considerations](#performance-considerations)
-10. [Troubleshooting Guide](#troubleshooting-guide)
-11. [Conclusion](#conclusion)
+8. [DLT Mode Error Logging Enhancements](#dlt-mode-error-logging-enhancements)
+9. [Peer Status and Sync Status Reporting](#peer-status-and-sync-status-reporting)
+10. [Dependency Analysis](#dependency-analysis)
+11. [Performance Considerations](#performance-considerations)
+12. [Troubleshooting Guide](#troubleshooting-guide)
+13. [Conclusion](#conclusion)
 
 ## Introduction
 This document describes the Node Management component responsible for orchestrating network peers, maintaining connectivity, and managing blockchain synchronization in the P2P layer. It covers the node.hpp class interface, the node_delegate integration for blockchain callbacks, configuration and lifecycle APIs, peer management, and network broadcasting with inventory tracking. The documentation now includes comprehensive coverage of enhanced peer handling logic with intelligent soft-banning mechanisms, improved unlinkable_block_exception handling, and prevention of infinite sync loops.
@@ -71,6 +75,10 @@ FD["fork_database.hpp<br/>Emergency Mode"]
 DBC["database.cpp<br/>Consensus Logic"]
 CFG["config.hpp<br/>Emergency Constants"]
 end
+subgraph "DLT Mode Support"
+DLP["dlt_block_log.cpp<br/>DLT Block Log"]
+P2P["p2p_plugin.cpp<br/>Enhanced Error Logging"]
+end
 N --> NI
 NI --> PC
 NI --> PD
@@ -81,6 +89,8 @@ PC --> MOC
 NI --> FD
 FD --> DBC
 DBC --> CFG
+NI --> DLP
+NI --> P2P
 ```
 
 **Diagram sources**
@@ -93,6 +103,8 @@ DBC --> CFG
 - [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
 - [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
 - [config.hpp:110-123](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L123)
+- [dlt_block_log.cpp:368-379](file://libraries/chain/dlt_block_log.cpp#L368-L379)
+- [p2p_plugin.cpp:330-360](file://plugins/p2p/p2p_plugin.cpp#L330-L360)
 
 **Section sources**
 - [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
@@ -114,6 +126,7 @@ Key responsibilities:
 - Inventory management: Tracking what peers have, what we need, and what we've recently processed.
 - Emergency consensus: Managing soft-bans, automatic flag resets, and emergency mode operations.
 - Intelligent peer handling: Differentiating between stale fork peers and legitimate sync candidates to prevent infinite loops.
+- DLT mode support: Enhanced error logging with comprehensive block range information for distributed ledger technology mode.
 
 **Section sources**
 - [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
@@ -625,6 +638,104 @@ Emergency mode automatically exits after CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS (21)
 - [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
 - [config.hpp:110-123](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L123)
 
+## DLT Mode Error Logging Enhancements
+
+### Comprehensive Block Range Information
+The DLT (Distributed Ledger Technology) mode now provides enhanced error logging with detailed block availability context, including comprehensive block range information for better troubleshooting and monitoring.
+
+**Enhanced Error Logging Features**:
+- **Block Number Context**: Logs the specific block number being requested (#${num})
+- **Block Hash Information**: Includes the block hash (id) for precise identification
+- **Available Range Details**: Shows the complete available block range [earliest..head]
+- **DLT Block Log Boundaries**: Displays dlt_block_log boundaries [dlt_start..dlt_end]
+- **Contextual Information**: Provides comprehensive context for troubleshooting DLT mode issues
+
+**Error Log Format**:
+```
+DLT mode: cannot serve block #${num} (${id}) — 
+available block range: [${earliest}..${head}], 
+dlt_block_log: [${dlt_start}..${dlt_end}]
+```
+
+**Section sources**
+- [p2p_plugin.cpp:330-360](file://plugins/p2p/p2p_plugin.cpp#L330-L360)
+- [dlt_block_log.cpp:368-379](file://libraries/chain/dlt_block_log.cpp#L368-L379)
+
+### DLT Mode Block Availability Monitoring
+The system now monitors and logs DLT mode block availability with detailed metrics:
+
+**Monitoring Capabilities**:
+- **Earliest Available Block**: Tracks the earliest block number available in the system
+- **Current Head Block**: Monifies the current head block number
+- **DLT Block Log Range**: Shows the actual range covered by the dlt_block_log
+- **Synopsis Generation**: Logs detailed information during get_blockchain_synopsis() operations
+
+**Section sources**
+- [p2p_plugin.cpp:479-489](file://plugins/p2p/p2p_plugin.cpp#L479-L489)
+
+## Peer Status and Sync Status Reporting
+
+### Enhanced Peer Status Updates
+The node now provides comprehensive peer status reporting with detailed synchronization metrics and peer state information.
+
+**Peer Status Information**:
+- **Connection Counts**: Active, handshaking, and closing peer counts
+- **Sync Status**: Whether peers are in sync with us or need synchronization
+- **Sync Item Counts**: Number of sync items each peer might need
+- **Soft-Ban Status**: Indicates if peers are inhibited from sync fetching
+- **Block Information**: Current head block, block number, and block time for each peer
+
+**Status Update Features**:
+- **Periodic Status Reports**: Regular peer status updates logged for monitoring
+- **Detailed Metrics**: Comprehensive metrics for each peer connection
+- **Sync Progress Tracking**: Real-time tracking of synchronization progress
+- **Resource Usage Monitoring**: Memory usage and queue sizes for each peer
+
+```mermaid
+sequenceDiagram
+participant Node as "Node Implementation"
+participant Peer as "Peer Connection"
+Node->>Node : "dump_node_status_task()"
+Node->>Peer : "get_connected_peers()"
+Peer-->>Node : "peer_status with detailed info"
+Node->>Node : "log peer status update"
+Node->>Node : "log memory usage metrics"
+```
+
+**Diagram sources**
+- [node.cpp:5015-5030](file://libraries/network/node.cpp#L5015-L5030)
+- [node.cpp:5042-5050](file://libraries/network/node.cpp#L5042-L5050)
+
+**Section sources**
+- [node.cpp:5015-5030](file://libraries/network/node.cpp#L5015-L5030)
+- [node.cpp:5042-5050](file://libraries/network/node.cpp#L5042-L5050)
+
+### Sync Status Reporting Enhancement
+The node now provides enhanced sync status reporting with detailed item count information and progress tracking.
+
+**Sync Status Features**:
+- **Item Type Information**: Identifies the type of items being synchronized
+- **Remaining Item Count**: Tracks the number of items remaining to be fetched
+- **Progress Monitoring**: Real-time monitoring of synchronization progress
+- **Peer Coordination**: Coordinates sync status across multiple peers
+
+**Section sources**
+- [node.cpp:2840-2847](file://libraries/network/node.cpp#L2840-L2847)
+- [node.cpp:2848-2873](file://libraries/network/node.cpp#L2848-L2873)
+
+### Peer Block ID Range Handling
+The node now implements enhanced peer block ID range handling with detailed peer block ID ranges and improved item request processing.
+
+**Enhanced Features**:
+- **Detailed Block ID Ranges**: Tracks and logs detailed block ID ranges for each peer
+- **Item Request Processing**: Improved handling of item requests with comprehensive logging
+- **Sync Status Updates**: Real-time sync status updates with detailed peer information
+- **Range Validation**: Validates block ranges and provides context for troubleshooting
+
+**Section sources**
+- [node.cpp:2395-2500](file://libraries/network/node.cpp#L2395-L2500)
+- [node.cpp:2572-2592](file://libraries/network/node.cpp#L2572-L2592)
+
 ## Dependency Analysis
 The node depends on:
 - peer_connection for per-peer state and messaging with emergency consensus support and soft-ban functionality.
@@ -633,6 +744,8 @@ The node depends on:
 - stcp_socket and message_oriented_connection for transport and framing.
 - fc::rate_limiting_group for bandwidth control.
 - fork_database for emergency consensus mode management.
+- dlt_block_log for DLT mode block availability tracking.
+- p2p_plugin for enhanced error logging and DLT mode support.
 
 ```mermaid
 graph LR
@@ -647,6 +760,8 @@ PeerConn --> ForkDB["fork_database.hpp"]
 Impl --> Rate["fc::rate_limiting_group"]
 ForkDB --> DBC["database.cpp"]
 DBC --> CFG["config.hpp"]
+Impl --> DLT["dlt_block_log.cpp"]
+Impl --> P2P["p2p_plugin.cpp"]
 ```
 
 **Diagram sources**
@@ -659,6 +774,8 @@ DBC --> CFG["config.hpp"]
 - [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
 - [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
 - [config.hpp:110-123](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L123)
+- [dlt_block_log.cpp:368-379](file://libraries/chain/dlt_block_log.cpp#L368-L379)
+- [p2p_plugin.cpp:330-360](file://plugins/p2p/p2p_plugin.cpp#L330-L360)
 
 **Section sources**
 - [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
@@ -675,6 +792,8 @@ DBC --> CFG["config.hpp"]
 - Intelligent peer classification: Optimizes peer selection and reduces wasted bandwidth on stale forks.
 - Soft-ban caching: Prevents repeated attempts with problematic peers during emergency periods.
 - Trusted peer optimization: Reduced soft-ban duration for trusted peers enables faster network recovery.
+- DLT mode monitoring: Enhanced logging provides better visibility into block availability without significant performance impact.
+- Peer status reporting: Comprehensive status updates enable better monitoring and resource management.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -691,6 +810,9 @@ Common issues and resolutions:
 - Stale fork detection: System automatically soft-bans peers on stale forks to prevent wasted resources.
 - Trusted peer issues: Verify trusted-snapshot-peer configuration for reduced 5-minute soft-ban duration.
 - Block rejection handling: Monitor unlinkable_block_exception patterns to identify stale fork vs legitimate sync scenarios.
+- DLT mode errors: Review enhanced error logs for detailed block availability context including available range and dlt_block_log boundaries.
+- Sync status monitoring: Use peer status updates to monitor synchronization progress and identify stuck peers.
+- Memory usage: Monitor peer queue sizes and memory usage through status reports to identify resource bottlenecks.
 
 **Section sources**
 - [node.cpp:2251-2280](file://libraries/network/node.cpp#L2251-L2280)
@@ -698,10 +820,13 @@ Common issues and resolutions:
 - [node.cpp:1686-1713](file://libraries/network/node.cpp#L1686-L1713)
 - [node.cpp:1326-1398](file://libraries/network/node.cpp#L1326-L1398)
 - [database.cpp:4455-4460](file://libraries/chain/database.cpp#L4455-L4460)
+- [p2p_plugin.cpp:330-360](file://plugins/p2p/p2p_plugin.cpp#L330-L360)
 
 ## Conclusion
 The Node Management component provides a robust, configurable, and efficient P2P orchestration layer with comprehensive emergency consensus support and enhanced peer handling capabilities. The recent improvements significantly enhance network resilience through intelligent soft-ban mechanisms, automatic flag reset logic, and deterministic tie-breaking algorithms.
 
 The enhanced peer handling logic with improved unlinkable_block_exception handling and intelligent peer soft-banning mechanisms prevents cascading failures during emergency consensus scenarios while differentiating between stale fork peers and legitimate sync candidates to prevent infinite sync loops. The system now provides sophisticated peer classification based on block position relative to local blockchain head, ensuring optimal resource utilization and network stability.
 
-These enhancements ensure the network can recover from extended periods without block production while maintaining operational efficiency and preventing cascading failures. The integration of emergency mode support with peer connection management, synchronization logic, and broadcast capabilities creates a comprehensive solution for maintaining network stability under adverse conditions. Proper configuration of limits, bandwidth, peer discovery, emergency consensus parameters, and the enhanced soft-ban mechanisms, combined with monitoring and troubleshooting practices, yields a stable, performant, and resilient network node capable of handling both normal operations and emergency scenarios with intelligent peer management.
+The new DLT mode error logging enhancements provide comprehensive block availability context with detailed block range information, enabling better troubleshooting and monitoring of distributed ledger technology operations. The enhanced peer status reporting and sync status monitoring capabilities provide unprecedented visibility into network operations and peer synchronization progress.
+
+These enhancements ensure the network can recover from extended periods without block production while maintaining operational efficiency and preventing cascading failures. The integration of emergency mode support with peer connection management, synchronization logic, and broadcast capabilities creates a comprehensive solution for maintaining network stability under adverse conditions. Proper configuration of limits, bandwidth, peer discovery, emergency consensus parameters, and the enhanced soft-ban mechanisms, combined with monitoring and troubleshooting practices, yields a stable, performant, and resilient network node capable of handling both normal operations and emergency scenarios with intelligent peer management and comprehensive diagnostic capabilities.

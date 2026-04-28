@@ -45,7 +45,7 @@
 10. [Conclusion](#conclusion)
 
 ## Introduction
-This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for suppressing repeated warnings, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, and practical examples of database operations and performance optimization.
+This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, and practical examples of database operations and performance optimization.
 
 **Updated** - Enhanced with comprehensive database robustness improvements including systematic fallback mechanisms for critical block data retrieval. The database now implements multi-layered block retrieval strategies that check fork database when primary block log fails to locate required data, ensuring consistent behavior across different block logging configurations. These enhancements provide improved fault tolerance and data availability during various operational scenarios.
 
@@ -208,6 +208,9 @@ Key responsibilities:
 - **Dual Guard Patterns**: Implementation of dual operation guards for witness scheduling to ensure thread safety during complex calculations
 - **P2P Concurrent Safety**: Operation guard protection in P2P plugin for safe concurrent access during block validation and witness key operations
 - **Resize Barrier Safety**: Comprehensive resize barrier mechanisms that pause all operations during memory resizing to prevent data corruption
+- **Enhanced Multi-Layered Block Retrieval**: Systematic fallback mechanisms that check fork database when primary block log fails to locate required data, ensuring consistent behavior across different block logging configurations
+- **Improved Last Irreversible Block Advancement**: Enhanced logic that falls back to fork database when block log lacks required data, maintaining data consistency and availability
+- **Comprehensive DLT Gap Management**: Intelligent warning suppression and automatic state management for DLT block gaps during normal operations
 
 **Section sources**
 - [database.hpp:61-115](file://libraries/chain/include/graphene/chain/database.hpp#L61-L115)
@@ -588,11 +591,11 @@ CheckWrote --> |No| Continue
 ```
 
 **Diagram sources**
-- [database.cpp:5399-5417](file://libraries/chain/database.cpp#L5399-L5417)
+- [database.cpp:5420-5444](file://libraries/chain/database.cpp#L5420-L5444)
 
 **Section sources**
 - [database.hpp:75-77](file://libraries/chain/include/graphene/chain/database.hpp#L75-L77)
-- [database.cpp:5399-5417](file://libraries/chain/database.cpp#L5399-L5417)
+- [database.cpp:5420-5444](file://libraries/chain/database.cpp#L5420-L5444)
 
 ### Enhanced Multi-Layered Block Retrieval System
 **New** - The database now implements comprehensive multi-layered block retrieval with systematic fallback mechanisms:
@@ -626,14 +629,14 @@ FoundAny --> |No| ReturnNull["Return null"]
 ```
 
 **Diagram sources**
-- [database.cpp:805-824](file://libraries/chain/database.cpp#L805-L824)
-- [database.cpp:835-856](file://libraries/chain/database.cpp#L835-L856)
-- [database.cpp:859-875](file://libraries/chain/database.cpp#L859-L875)
+- [database.cpp:789-827](file://libraries/chain/database.cpp#L789-L827)
+- [database.cpp:860-882](file://libraries/chain/database.cpp#L860-L882)
+- [database.cpp:884-901](file://libraries/chain/database.cpp#L884-L901)
 
 **Section sources**
-- [database.cpp:805-824](file://libraries/chain/database.cpp#L805-L824)
-- [database.cpp:835-856](file://libraries/chain/database.cpp#L835-L856)
-- [database.cpp:859-875](file://libraries/chain/database.cpp#L859-L875)
+- [database.cpp:789-827](file://libraries/chain/database.cpp#L789-L827)
+- [database.cpp:860-882](file://libraries/chain/database.cpp#L860-L882)
+- [database.cpp:884-901](file://libraries/chain/database.cpp#L884-L901)
 
 ### Enhanced Last Irreversible Block Advancement Logic
 **New** - The `update_last_irreversible_block()` method now includes comprehensive fallback mechanisms:
@@ -669,12 +672,12 @@ UpdateFields --> End
 ```
 
 **Diagram sources**
-- [database.cpp:5080-5105](file://libraries/chain/database.cpp#L5080-L5105)
-- [database.cpp:5442-5456](file://libraries/chain/database.cpp#L5442-L5456)
+- [database.cpp:5452-5482](file://libraries/chain/database.cpp#L5452-L5482)
+- [database.cpp:5467-5480](file://libraries/chain/database.cpp#L5467-L5480)
 
 **Section sources**
-- [database.cpp:5080-5105](file://libraries/chain/database.cpp#L5080-L5105)
-- [database.cpp:5442-5456](file://libraries/chain/database.cpp#L5442-L5456)
+- [database.cpp:5452-5482](file://libraries/chain/database.cpp#L5452-L5482)
+- [database.cpp:5467-5480](file://libraries/chain/database.cpp#L5467-L5480)
 
 ### Enhanced Block Number Collision Detection and Logging
 **New** - The database now features sophisticated collision detection with rate-limiting and scenario differentiation:
@@ -1680,7 +1683,7 @@ Common issues and remedies:
 - **DLT Gap Management Issues**: Check that the comprehensive DLT gap management system is properly suppressing warnings and managing gap states.
 
 **Section sources**
-- [database.cpp:800-830](file://libraries/chain/database.cpp#L800-L830)
+- [database.cpp:789-827](file://libraries/chain/database.cpp#L789-L827)
 - [database.cpp:270-279](file://libraries/chain/database.cpp#L270-L279)
 - [database.cpp:492-501](file://libraries/chain/database.cpp#L492-L501)
 - [database.cpp:1147-1202](file://libraries/chain/database.cpp#L1147-L1202)
