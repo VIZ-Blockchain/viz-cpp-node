@@ -4915,6 +4915,12 @@ namespace graphene { namespace chain {
                                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
                                         if (!_dlt_mode) {
                                             auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                                            if (!irreversible_block.valid()) {
+                                                auto fork_block = _fork_db.fetch_block_on_main_branch_by_number(_dpo.last_irreversible_block_num);
+                                                if (fork_block) {
+                                                    irreversible_block = fork_block->data;
+                                                }
+                                            }
                                             if (irreversible_block.valid()) {
                                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
@@ -4922,6 +4928,12 @@ namespace graphene { namespace chain {
                                             }
                                         } else if (_dlt_block_log_max_blocks > 0) {
                                             auto irreversible_block = _dlt_block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                                            if (!irreversible_block.valid()) {
+                                                auto fork_block = _fork_db.fetch_block_on_main_branch_by_number(_dpo.last_irreversible_block_num);
+                                                if (fork_block) {
+                                                    irreversible_block = fork_block->data;
+                                                }
+                                            }
                                             if (irreversible_block.valid()) {
                                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
@@ -5066,6 +5078,12 @@ namespace graphene { namespace chain {
                                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
                                         if (!_dlt_mode) {
                                             auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                                            if (!irreversible_block.valid()) {
+                                                auto fork_block = _fork_db.fetch_block_on_main_branch_by_number(_dpo.last_irreversible_block_num);
+                                                if (fork_block) {
+                                                    irreversible_block = fork_block->data;
+                                                }
+                                            }
                                             if (irreversible_block.valid()) {
                                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
@@ -5073,6 +5091,12 @@ namespace graphene { namespace chain {
                                             }
                                         } else if (_dlt_block_log_max_blocks > 0) {
                                             auto irreversible_block = _dlt_block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                                            if (!irreversible_block.valid()) {
+                                                auto fork_block = _fork_db.fetch_block_on_main_branch_by_number(_dpo.last_irreversible_block_num);
+                                                if (fork_block) {
+                                                    irreversible_block = fork_block->data;
+                                                }
+                                            }
                                             if (irreversible_block.valid()) {
                                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
@@ -5404,6 +5428,12 @@ namespace graphene { namespace chain {
                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
                         if (!_dlt_mode) {
                             auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                            if (!irreversible_block.valid()) {
+                                auto fork_block = _fork_db.fetch_block_on_main_branch_by_number(_dpo.last_irreversible_block_num);
+                                if (fork_block) {
+                                    irreversible_block = fork_block->data;
+                                }
+                            }
                             if (irreversible_block.valid()) {
                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
@@ -5411,6 +5441,12 @@ namespace graphene { namespace chain {
                             }
                         } else if (_dlt_block_log_max_blocks > 0) {
                             auto irreversible_block = _dlt_block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                            if (!irreversible_block.valid()) {
+                                auto fork_block = _fork_db.fetch_block_on_main_branch_by_number(_dpo.last_irreversible_block_num);
+                                if (fork_block) {
+                                    irreversible_block = fork_block->data;
+                                }
+                            }
                             if (irreversible_block.valid()) {
                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
