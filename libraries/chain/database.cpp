@@ -1421,16 +1421,24 @@ namespace graphene { namespace chain {
 
                             // fetch_branch_from() always appends the common ancestor
                             // to BOTH branches.  For a linear extension (no actual
-                            // fork), the common ancestor IS the current database head:
+                            // fork), the common ancestor IS the current database head
+                            // AND the same block in both branches:
                             //   branches.first  = [new_tip, ..., HEAD]
                             //   branches.second = [HEAD]
                             // We must NOT pop the common ancestor in this case — in
                             // DLT mode the undo stack is empty (committed) so undo()
                             // is a no-op, causing an infinite pop loop and crash.
+                            //
+                            // For a real 1-block fork (e.g. two different blocks at
+                            // the same height), branches.second also has size 1 and
+                            // back()->id == head_block_id(), BUT branches.first.back()
+                            // is a DIFFERENT block (the competing block).  We must
+                            // pop and re-apply in that case.
                             bool is_linear_extension =
                                 (!branches.second.empty() &&
                                  branches.second.size() == 1 &&
-                                 branches.second.back()->data.id() == head_block_id());
+                                 branches.second.back()->data.id() == head_block_id() &&
+                                 branches.first.back()->data.id() == branches.second.back()->data.id());
 
                             ilog("Fork switch: new_head=#${nh}, db_head=#${dh}, branches.first=${f}, branches.second=${s}, linear=${lin}",
                                  ("nh", new_head->data.block_num())("dh", head_block_num())
