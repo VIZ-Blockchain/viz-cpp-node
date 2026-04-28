@@ -1551,10 +1551,18 @@ namespace graphene {
                                 for (const peer_connection::item_to_time_map_type::value_type &item_and_time : active_peer->items_requested_from_peer) {
                                     if (item_and_time.second <
                                         active_ignored_request_threshold) {
-                                        fc_wlog(fc::logger::get("sync"), "Disconnecting peer ${peer} because they didn't respond to my request for item ${id}",
-                                                ("peer", active_peer->get_remote_endpoint())("id", item_and_time.first.item_hash));
-                                        wlog("Disconnecting peer ${peer} because they didn't respond to my request for item ${id}",
-                                                ("peer", active_peer->get_remote_endpoint())("id", item_and_time.first.item_hash));
+                                        uint32_t item_block_num = _delegate->get_block_number(item_and_time.first.item_hash);
+                                        fc_wlog(fc::logger::get("sync"), "Disconnecting peer ${peer} because they didn't respond to my request for item ${id} "
+                                                "(type=${type}, block_num=${num}, requested_at=${time}, threshold=${thresh})",
+                                                ("peer", active_peer->get_remote_endpoint())("id", item_and_time.first.item_hash)
+                                                ("type", item_and_time.first.item_type)("num", item_block_num)
+                                                ("time", item_and_time.second)("thresh", active_ignored_request_threshold));
+                                        wlog("Disconnecting peer ${peer} because they didn't respond to my request for item ${id} "
+                                                "(type=${type}, block_num=${num}, we_need_sync=${sync}, peer_needs_sync=${peer_sync})",
+                                                ("peer", active_peer->get_remote_endpoint())("id", item_and_time.first.item_hash)
+                                                ("type", item_and_time.first.item_type)("num", item_block_num)
+                                                ("sync", active_peer->we_need_sync_items_from_peer)
+                                                ("peer_sync", active_peer->peer_needs_sync_items_from_us));
                                         disconnect_due_to_request_timeout = true;
                                         break;
                                     }
@@ -3017,6 +3025,65 @@ namespace graphene {
 
             void node_impl::on_item_ids_inventory_message(peer_connection *originating_peer, const item_ids_inventory_message &item_ids_inventory_message_received) {
                 VERIFY_CORRECT_THREAD();
+
+                // During block sync (catching up after snapshot import or initial sync),
+                // skip ALL broadcast item inventory processing — not just from the peer
+                // we're syncing from.
+                //
+                // Why: If we request broadcast items (transactions at chain tip) from
+                // ANY peer while syncing, the 1-second inactivity timeout in
+                // terminate_inactive_connections() fires before the items arrive,
+                // disconnecting peers and killing sync connections.
+                //
+                // We check two conditions:
+                // 1. If the originating peer is one we're syncing from
+                // 2. If ANY other peer is being synced from (global sync in progress)
+                // 3. If our head block is significantly behind real time
+                //
+                // The broadcast items are useless during sync anyway — we'll receive
+                // them naturally once we're caught up.
+                if (originating_peer->we_need_sync_items_from_peer) {
+                    dlog("Skipping broadcast inventory of ${count} items from peer ${peer} — "
+                         "we are syncing from this peer",
+                         ("count", item_ids_inventory_message_received.item_hashes_available.size())
+                         ("peer", originating_peer->get_remote_endpoint()));
+                    return;
+                }
+
+                // Check if we're syncing from ANY peer — if so, skip broadcast inventory
+                // from all peers to avoid polluting items_requested_from_peer which would
+                // trigger the 1-second timeout and kill connections
+                for (const peer_connection_ptr &peer : _active_connections) {
+                    if (peer->we_need_sync_items_from_peer) {
+                        dlog("Skipping broadcast inventory of ${count} items from peer ${peer} — "
+                             "global sync in progress (syncing from ${sync_peer})",
+                             ("count", item_ids_inventory_message_received.item_hashes_available.size())
+                             ("peer", originating_peer->get_remote_endpoint())
+                             ("sync_peer", peer->get_remote_endpoint()));
+                        return;
+                    }
+                }
+
+                // Also skip if our head block is significantly behind real time.
+                // After DLT snapshot import, the node may briefly have
+                // we_need_sync_items_from_peer=false for all peers (if peers replied
+                // "up to date" before new blocks arrived). During this window, broadcast
+                // inventory would still cause timeouts. Suppress if head block is >30s old.
+                {
+                    fc::time_point_sec head_time = _delegate->get_block_time(_delegate->get_head_block_id());
+                    fc::time_point_sec now = fc::time_point::now();
+                    if (head_time != fc::time_point_sec::min() &&
+                        now > head_time &&
+                        (now.sec_since_epoch() - head_time.sec_since_epoch()) > 30) {
+                        dlog("Skipping broadcast inventory of ${count} items from peer ${peer} — "
+                             "node is behind (head_time=${head}, now=${now}, delta=${delta}s)",
+                             ("count", item_ids_inventory_message_received.item_hashes_available.size())
+                             ("peer", originating_peer->get_remote_endpoint())
+                             ("head", head_time)("now", now)
+                             ("delta", now.sec_since_epoch() - head_time.sec_since_epoch()));
+                        return;
+                    }
+                }
 
                 // expire old inventory so we'll be making decisions our about whether to fetch blocks below based only on recent inventory
                 originating_peer->clear_old_inventory();
