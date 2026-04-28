@@ -1,10 +1,9 @@
 name: Reset CI Cache
 
-# Manual recovery for failure-mode #1 in
-# docs/superpowers/specs/2026-04-28-ci-build-time-reduction-design.md:
-# if a cache scope is poisoned (compile-time-only failures that warm
-# builds reproduce but cold builds do not), run this workflow with the
-# scope substring to delete all matching cache entries.
+# Manual recovery for poisoned BuildKit/ccache state: if a cache scope
+# is producing compile-time-only failures that warm builds reproduce
+# but cold builds do not, run this workflow with the scope substring
+# to delete all matching cache entries and force a cold rebuild.
 #
 # Usage: GitHub UI -> Actions -> Reset CI Cache -> Run workflow
 #        Enter scope substring, e.g.:
