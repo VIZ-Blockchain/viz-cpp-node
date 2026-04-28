@@ -113,7 +113,7 @@ When a node switches to a different fork:
 
 1. `pop_block()` removes the current head block
    - Transactions from the popped block are saved to `_popped_tx`
-   - Source: [database.cpp:1223-1238](../../libraries/chain/database.cpp#L1223)
+   - Source: [database.cpp](../../libraries/chain/database.cpp)
 
 2. The new block is applied via `push_block()`
 
@@ -121,6 +121,86 @@ When a node switches to a different fork:
    - `_popped_tx` transactions are processed first (from the old fork)
    - Then original `_pending_transactions` are processed
    - Duplicate transactions (already in the new chain) are silently skipped
+
+### Linear Extension vs. Actual Fork
+
+When `fork_db._push_next()` auto-links orphan blocks from the unlinked index, the fork_db head can jump multiple blocks ahead of the database head in a single `push_block()` call. This triggers the fork switch code path (`new_head->data.previous != head_block_id()`), but there is no actual fork — the new chain extends directly from the current head.
+
+`fetch_branch_from(new_head, head_block_id)` returns:
+- `branches.first` = `[new_head, ..., head+1]` (blocks to apply)
+- `branches.second` = `[]` (empty — no blocks to undo)
+
+**Guard:** All `pop_block()` calls in the fork switch are wrapped in `if (!branches.second.empty())` to prevent undefined behavior (calling `.back()` on an empty vector).
+
+**Error recovery:** If `apply_block()` fails during a linear extension:
+- Remaining blocks are removed from fork_db
+- `fork_db.reset()` + `start_block(current_head)` resets fork_db to match the database
+- The exception is re-thrown
+
+This replaces the original code which called `branches.second.front()` unconditionally — undefined behavior when `branches.second` is empty, corrupting `fork_db._head` and causing cascading `pop_block()` crashes.
+
+### Debug Logging
+
+Diagnostic logs at every `pop_block()` call site:
+
+| Log prefix | Location | Meaning |
+|---|---|---|
+| `Fork switch: new_head=#X, db_head=#Y, branches.first=N, branches.second=M` | Before fork switch | Shows branch sizes; `branches.second=0` = linear extension |
+| `FORK-SWITCH-POP: popping head #H` | Main pop loop | Normal fork switch pop |
+| `FORK-RECOVER-POP: popping head #H` | Error recovery pop loop | Reverting failed fork switch |
+| `POP_BLOCK: db_head=#X, fork_db_head=#Y, fork_db_head_prev=Z` | Inside `database::pop_block()` | Fork_db state before every pop; `prev=0` = root block (will crash) |
+
+---
+
+## Orphan Block Handling (Unlinked Index)
+
+Source: [database.cpp `_push_block`](../../libraries/chain/database.cpp), [fork_database.cpp](../../libraries/chain/fork_database.cpp)
+
+When a block arrives whose parent is unknown (missed broadcast), the node can either reject it or defer it for later linking.
+
+### Pre-check in `_push_block()`
+
+```
+if block.num > head_num
+   AND block.previous != head_block_id
+   AND block.previous not in fork_db:
+     if gap > 100 → reject (too far ahead, avoid memory bloat)
+     if gap <= 100 → allow through to fork_db
+```
+
+Blocks within 100 of head pass to `fork_db.push_block()`, which throws `unlinkable_block_exception` but stores the block in `_unlinked_index` first.
+
+### Auto-linking via `_push_next()`
+
+When the missing parent block finally arrives and is pushed to fork_db:
+1. `_push_block(parent)` links the parent to the chain
+2. `_push_next(parent)` searches `_unlinked_index` for children of `parent`
+3. Found children are moved from `_unlinked_index` to `_index` and recursively linked
+4. fork_db head may jump multiple blocks ahead in one call
+
+This triggers the linear extension fork switch (see above).
+
+### P2P Recovery
+
+When `unlinkable_block_exception` propagates to the P2P layer (`process_block_during_normal_operation`):
+- Block **at or below head** → strike counter incremented (soft-ban after 20 strikes)
+- Block **ahead of head** → `start_synchronizing_with_peer()` restarts sync to fetch the missing block
+
+---
+
+## Peer Strike-Based Soft-Ban
+
+Source: [node.cpp](../../libraries/network/node.cpp), [peer_connection.hpp](../../libraries/network/include/graphene/network/peer_connection.hpp)
+
+Peers are not immediately soft-banned for sending unlinkable or rejected blocks. Instead, a strike counter accumulates:
+
+| Path | Threshold | Counter field |
+|---|---|---|
+| Normal operation: unlinkable block at/below head | 20 strikes | `unlinkable_block_strikes` |
+| Sync path: generic block rejection | 20 strikes | `unlinkable_block_strikes` |
+| Dead fork / block too old | Immediate | N/A |
+
+**Reset on valid block:** When a peer sends a block that is successfully accepted (normal or sync), their `unlinkable_block_strikes` counter resets to 0. This allows honest peers to recover from transient errors (snapshot reload, timing races, brief micro-forks).
 
 ---
 
