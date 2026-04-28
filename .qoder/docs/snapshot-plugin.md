@@ -761,6 +761,322 @@ Alternatively, add a cron job on the **host** machine:
 | Check snapshot creation logs | `docker logs vizd \| grep -i snapshot` |
 | Force re-import | `docker run -e VIZD_EXTRA_OPTS="--resync-blockchain --snapshot /path/snap.json --plugin snapshot" ...` |
 
+## P2P Sync Flow (DLT Mode)
+
+This section documents the complete P2P sync protocol for a DLT node that loaded from a snapshot. The example uses a snapshot with head block #79504801 — the node has exactly **1 block** in its state, **1 entry** in fork_db, and its blockchain synopsis contains that single block ID.
+
+### Node state after snapshot import
+
+| Property | Value |
+|----------|-------|
+| `head_block_num` | 79504801 |
+| `last_irreversible_block_num` (LIB) | 79504801 (promoted to head after snapshot import) |
+| `block_log` | Empty |
+| `dlt_block_log` | Contains block #79504801 only |
+| `fork_db` | Contains 1 item: block #79504801 |
+| `block_summary` (TAPOS buffer) | 65536 entries surviving from snapshot (blocks ~79439265..79504801) |
+| `earliest_available_block_num()` | 79504801 |
+| `_dlt_mode` | `true` |
+
+### Flow 1: Outbound sync — our node fetches blocks FROM a peer
+
+This is the primary sync flow. Our DLT node connects to peers and downloads blocks to catch up.
+
+#### Step 1: Connection & handshake
+
+```
+connect_to_peer(seed_node)
+  → TCP connect
+  → send_hello_message()     [our_state = just_connected]
+  → peer responds: connection_accepted_message
+  → on_connection_accepted_message()  [our_state = connection_accepted]
+  → send address_request_message
+  → peer responds: address_message
+  → on_address_message()
+    → both our_state and their_state == connection_accepted
+    → move_peer_to_active_list(peer)     ← LOG: "New peer is connected (X.X.X.X:2001), now N active peers"
+    → new_peer_just_added(peer)
+```
+
+**Code path:** `node.cpp` lines 4793→4802 (outbound connect), 2287 (connection accepted), 2373→2397 (address message completes handshake).
+
+#### Step 2: Sync initiation — `new_peer_just_added()`
+
+Called immediately after handshake completes:
+
+```cpp
+void new_peer_just_added(peer) {
+    send current_time_request_message;
+    start_synchronizing_with_peer(peer);   // ← triggers sync
+}
+```
+
+#### Step 3: `start_synchronizing_with_peer(peer)`
+
+Resets peer sync state and begins fetching:
+
+```cpp
+peer->ids_of_items_to_get.clear();
+peer->number_of_unfetched_item_ids = 0;
+peer->we_need_sync_items_from_peer = true;    // ← marks peer as sync source
+peer->last_block_delegate_has_seen = item_hash_t();  // empty — no reference point yet
+peer->inhibit_fetching_sync_blocks = false;
+fetch_next_batch_of_item_ids_from_peer(peer);
+```
+
+#### Step 4: `fetch_next_batch_of_item_ids_from_peer(peer)`
+
+Builds our blockchain synopsis and sends it to the peer:
+
+```
+create_blockchain_synopsis_for_peer(peer)
+  → reference_point = peer->last_block_delegate_has_seen = empty (first call)
+  → ids_of_items_to_get is empty (just cleared)
+  → calls _delegate->get_blockchain_synopsis(item_hash_t(), 0)
+```
+
+#### Step 5: `get_blockchain_synopsis()` — what our DLT node sends
+
+In `p2p_plugin.cpp`, with empty reference point (= "summarize whole chain"):
+
+```
+high_block_num = head_block_num() = 79504801
+low_block_num  = last_non_undoable_block_num() = 79504801  (LIB == head)
+
+Loop iteration:
+  push get_block_id_for_num(79504801)  →  block_id_79504801
+  low_block_num += (79504801 - 79504801 + 2) / 2 = 1
+  low_block_num = 79504802 > 79504801 → stop
+
+Result: synopsis = [block_id_79504801]   (1 entry)
+```
+
+LOG: `"DLT mode: get_blockchain_synopsis() returning 1 entries, low=79504801, high=79504801, head=79504801, LIB=79504801, earliest_available=79504801"`
+
+The node sends `fetch_blockchain_item_ids_message { type=block, synopsis=[block_id_79504801] }` to the peer.
+
+Also stores: `peer->item_ids_requested_from_peer = (synopsis, timestamp)` — records that we're waiting for a response.
+
+#### Step 6: Peer processes our synopsis
+
+The **peer** (a normal full node, e.g. at head #80000000) receives our `fetch_blockchain_item_ids_message` and processes it in their `on_fetch_blockchain_item_ids_message()`:
+
+```
+peer's get_block_ids(synopsis=[block_id_79504801], remaining):
+  → iterates synopsis in reverse
+  → is_known_block(block_id_79504801)?
+    → block_summary: slot 79504801 & 0xFFFF was overwritten by block ~79570337 → no match
+    → fetch_block_by_id: read block #79504801 from block_log, check id matches → YES
+  → is_included_block(block_id_79504801)?
+    → get_block_id_for_num(79504801): reads from block_log → same id → YES
+  → found! last_known_block_id = block_id_79504801, start_num = 79504801
+
+  → Loop from 79504801 to min(peer_head, 79504801 + limit):
+    result = [block_id_79504801, block_id_79504802, block_id_79504803, ..., block_id_X]
+  → remaining_item_count = peer_head - X
+```
+
+Peer sends back `blockchain_item_ids_inventory_message`:
+- `item_hashes_available`: [block_id_79504801, block_id_79504802, ..., block_id_X] (up to `limit`, typically 2000)
+- `total_remaining_item_count`: N (many thousands more blocks)
+
+#### Step 7: Our node receives peer's block ID list
+
+`on_blockchain_item_ids_inventory_message()` processes the response:
+
+```
+1. Diagnostic log: peer, count, block range, remaining
+
+2. Check: item_ids_requested_from_peer is set? YES (set in step 4)
+
+3. Validate: item_hashes_available is sequential? YES
+
+4. Validate: first item (block_id_79504801) is in our synopsis? YES
+
+5. Reset: item_ids_requested_from_peer = empty
+
+6. Check "up to date" condition:
+   total_remaining_item_count == 0?  NO (N > 0)
+   → NOT up to date, proceed to receive blocks
+
+7. Dedup: pop blocks we already have from front of list:
+   - block_id_79504801: has_item() → is_known_block() → YES → pop
+   - block_id_79504802: has_item() → is_known_block() → NO → stop
+
+8. Remaining: item_hashes_received = [block_id_79504802, ..., block_id_X]
+
+9. Append to: peer->ids_of_items_to_get
+
+10. Since total_remaining_item_count > 0:
+    if ids_of_items_to_get.size() > GRAPHENE_NET_MIN_BLOCK_IDS_TO_PREFETCH:
+      trigger_fetch_sync_items_loop()    ← starts downloading actual blocks
+    else:
+      fetch_next_batch_of_item_ids_from_peer()  ← get more IDs first
+```
+
+#### Step 8: Block fetching and application
+
+`fetch_sync_items_loop()` requests actual block data from peers:
+
+```
+For each block_id in ids_of_items_to_get:
+  → send fetch_items_message to peer
+  → peer responds with block_message containing full signed_block
+  → process_block_message():
+    → _delegate->handle_block()
+    → chain.accept_block() → database::push_block() → fork_db → apply
+    → head advances: 79504802, 79504803, ...
+```
+
+As blocks are applied:
+- `dlt_block_log` receives new irreversible blocks
+- `block_summary` is updated with new block IDs
+- `fork_db` grows with new blocks
+- LIB advances as witnesses produce super-majority
+
+#### Step 9: Subsequent synopsis rounds
+
+After all IDs from the first batch are fetched, or when more IDs are needed:
+
+```
+fetch_next_batch_of_item_ids_from_peer(peer):
+  → peer->last_block_delegate_has_seen is now set to the last deduped block
+  → create_blockchain_synopsis_for_peer:
+    → reference_point = last block peer told us about that we already had
+    → synopsis includes blocks from our chain + ids_of_items_to_get
+  → sends next fetch_blockchain_item_ids_message
+  → peer responds with the next batch of block IDs
+  → cycle continues until peer says total_remaining_item_count == 0
+```
+
+#### Step 10: Sync complete
+
+When peer responds with `total_remaining_item_count == 0` and all blocks have been fetched:
+
+```
+on_blockchain_item_ids_inventory_message:
+  → "up to date" condition is true
+  → peer->we_need_sync_items_from_peer = false
+  → LOG: "Sync: peer X says we're up-to-date"
+  → node transitions to normal operation (receiving broadcast blocks)
+```
+
+### Flow 2: Inbound sync — peer fetches blocks FROM our DLT node
+
+This flow describes what happens when another node connects to our DLT node and asks for blocks.
+
+#### Step 1: Peer connects to us
+
+The peer initiates a TCP connection. We receive their hello message in `on_hello_message()`:
+
+```
+Validate: signature, protocol version, chain ID
+  → all pass → their_state = connection_accepted
+  → send connection_accepted_message
+  → exchange address messages
+  → move_peer_to_active_list()
+  → new_peer_just_added()  ← we also start syncing FROM them (Flow 1)
+```
+
+Meanwhile, the peer also starts syncing from us (they send their synopsis).
+
+#### Step 2: Peer sends us their synopsis
+
+The peer sends `fetch_blockchain_item_ids_message` with their synopsis, e.g. `[..., block_id_79501245]` (their most recent known block). Our `on_fetch_blockchain_item_ids_message()` processes it:
+
+```
+_delegate->get_block_ids(synopsis=[..., block_id_79501245], remaining):
+  → iterate synopsis in reverse looking for a known block
+  → find block_id_79501245 (if it's in our block_summary and on our chain)
+  → start_num = 79501245
+
+  DLT mode clamping:
+  → earliest_available = earliest_available_block_num() = 79504801
+  → 79501245 < 79504801 → clamp start_num to 79504801
+
+  → Loop from 79504801 to head (79504801):
+    result = [block_id_79504801]
+  → remaining_item_count = 0
+
+  LOG: "DLT mode: get_block_ids() clamping start from 79501245 to 79504801"
+  LOG: "DLT mode: get_block_ids() returning 1 block IDs (start=79504801, head=79504801)"
+```
+
+We respond with `blockchain_item_ids_inventory_message`:
+- `item_hashes_available`: [block_id_79504801]
+- `total_remaining_item_count`: 0
+
+#### Step 3: Peer processes our response
+
+On the peer's side, they receive our 1-block response:
+- `item_hashes_available.size() == 1`
+- `has_item(block_id_79504801)` → YES (peer already has this block)
+- `total_remaining_item_count == 0`
+- Conclusion: **we're up to date** — the peer marks `we_need_sync_items_from_peer = false` for us
+
+This is correct — our DLT node only has 1 block, so the peer can't get anything useful from us yet. As our node syncs and accumulates blocks in `dlt_block_log`, future peers will get more blocks from us.
+
+#### Step 4: Peer determines sync direction
+
+The peer also checks `peer_needs_sync_items_from_us`:
+- Our synopsis had `[block_id_79504801]`
+- Peer's `get_block_ids(our_synopsis)` → finds block #79504801, returns blocks after it
+- `peer_needs_sync_items_from_us = true` → peer will send us blocks (Flow 1, step 6)
+
+### Flow 3: Broadcast inventory suppression
+
+During sync (Flow 1), peers also send real-time broadcast inventory (new transactions/blocks at chain tip). Without suppression, this causes timeout disconnects:
+
+```
+Peer sends item_ids_inventory_message (broadcast transactions)
+  → on_item_ids_inventory_message():
+    Layer 1: originating_peer->we_need_sync_items_from_peer? → YES → SKIP
+    (or)
+    Layer 2: any active peer has we_need_sync_items_from_peer? → YES → SKIP
+    (or)
+    Layer 3: head block time > 30s behind wall clock? → YES → SKIP
+
+    → broadcast inventory silently dropped during sync
+    → prevents items_requested_from_peer pollution
+    → prevents 1-second active_ignored_request_timeout disconnects
+```
+
+### Key code locations
+
+| Function | File | Purpose |
+|----------|------|---------|
+| `new_peer_just_added()` | node.cpp:4356 | Entry point: triggers sync after handshake |
+| `start_synchronizing_with_peer()` | node.cpp:4333 | Sets sync flags, begins ID fetch |
+| `fetch_next_batch_of_item_ids_from_peer()` | node.cpp:2580 | Builds synopsis, sends to peer |
+| `create_blockchain_synopsis_for_peer()` | node.cpp:2527 | Generates synopsis from chain state |
+| `get_blockchain_synopsis()` | p2p_plugin.cpp:370 | DLT-aware synopsis generation |
+| `on_blockchain_item_ids_inventory_message()` | node.cpp:2618 | Processes peer's block ID response |
+| `on_fetch_blockchain_item_ids_message()` | node.cpp:2403 | Responds to peer's synopsis with block IDs |
+| `get_block_ids()` | p2p_plugin.cpp:249 | DLT-aware block ID enumeration with clamping |
+| `on_item_ids_inventory_message()` | node.cpp:3048 | Broadcast inventory suppression |
+| `fetch_sync_items_loop()` | node.cpp | Requests actual block data from peers |
+| `is_known_block()` | database.cpp:726 | DLT-aware block existence check |
+| `earliest_available_block_num()` | database.cpp | Lowest block the node can actually serve |
+
+### Diagnostic logging
+
+All sync negotiation messages use `fc_ilog(fc::logger::get("sync"), ...)` to go through the **"sync" logger**, which must be configured in `config.ini`:
+
+```ini
+[logger.sync]
+level = info
+appenders = stderr
+```
+
+Key diagnostic messages:
+- `"Starting sync with peer ..."` — sync initiation with peer state flags
+- `"sync: sending synopsis to peer ..."` — synopsis details (count, last block)
+- `"on_blockchain_item_ids_inventory: ..."` — peer's response (block range, remaining, sync flags)
+- `"Sync: peer X says we're up-to-date"` — sync complete for this peer
+- `"Sync: received N block IDs from peer ..."` — block ID batch received
+
+**Important:** `node.cpp` defines `#define DEFAULT_LOGGER "p2p"` (line 75), so all `ilog()`/`dlog()`/`wlog()` macros in that file go to the "p2p" logger, NOT the default logger. To make messages visible, either configure the "p2p" logger or use `fc_ilog(fc::logger::get("sync"), ...)` explicitly.
+
 ## Modified Components
 
 The snapshot plugin required changes to several core components:
