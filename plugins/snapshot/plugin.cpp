@@ -1416,6 +1416,12 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             ilog(CLOG_ORANGE "Imported ${n} change recovery account requests" CLOG_RESET, ("n", n));
         }
 
+        // Clear the undo stack before setting revision.
+        // During hot-reload (stalled sync detection), the database has
+        // active undo sessions from normal block processing.
+        // set_revision() requires an empty undo stack.
+        db.undo_all();
+
         // Set the chainbase revision to match the snapshot head block
         db.set_revision(header.snapshot_block_num);
 
