@@ -1169,7 +1169,7 @@ namespace graphene { namespace chain {
                         auto msg = std::string(e.what());
                         // TODO: there is no easy way to catch boost::interprocess::bad_alloc
                         if (msg.find("boost::interprocess::bad_alloc") == msg.npos) {
-                            throw e;
+                            throw;  // preserve derived exception type (e.g. unlinkable_block_exception)
                         }
                         // Out of shared memory. Schedule a deferred resize.
                         // Throw a specific exception so the P2P layer can distinguish
