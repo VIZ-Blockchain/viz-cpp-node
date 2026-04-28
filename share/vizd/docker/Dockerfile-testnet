@@ -107,10 +107,13 @@ RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
     make -j$(nproc) vizd && \
     ccache -s
 
+# `make install` would re-trigger the `all` target through CMake's install-depends-on-all
+# rule, rebuilding cli_wallet, util programs, tests, and examples that were deliberately
+# skipped by `make -j$(nproc) vizd` above. The runtime image only invokes
+# /usr/local/bin/vizd (see share/vizd/vizd.sh), so we copy the single binary directly.
+# `rm -rf $APPDIR` is unnecessary because the builder stage is discarded in multi-stage.
 RUN set -xe ;\
-    cd $APPDIR/build ;\
-    make install ;\
-    rm -rf $APPDIR
+    cp $APPDIR/build/programs/vizd/vizd /usr/local/bin/vizd
 
 # Final cleanup of the builder stage. apt cache mounts above are not affected
 # by these rm/clean calls because cache mounts are unmounted by the time this
