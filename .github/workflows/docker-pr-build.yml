@@ -51,10 +51,10 @@ jobs:
         id: cache-mounts
         with:
           path: cache-mount
-          key: viz-cache-mount-${{ runner.os }}-pr-${{ github.event.pull_request.base_ref }}-${{ hashFiles('share/vizd/docker/Dockerfile-production') }}-${{ github.sha }}
+          key: viz-cache-mount-${{ runner.os }}-pr-${{ github.base_ref }}-${{ hashFiles('share/vizd/docker/Dockerfile-production') }}-${{ github.sha }}
           restore-keys: |
-            viz-cache-mount-${{ runner.os }}-pr-${{ github.event.pull_request.base_ref }}-${{ hashFiles('share/vizd/docker/Dockerfile-production') }}-
-            viz-cache-mount-${{ runner.os }}-pr-${{ github.event.pull_request.base_ref }}-
+            viz-cache-mount-${{ runner.os }}-pr-${{ github.base_ref }}-${{ hashFiles('share/vizd/docker/Dockerfile-production') }}-
+            viz-cache-mount-${{ runner.os }}-pr-${{ github.base_ref }}-
 
       - name: Inject cache mounts into BuildKit
         uses: reproducible-containers/buildkit-cache-dance@v3
@@ -80,5 +80,5 @@ jobs:
           file: ./share/vizd/docker/Dockerfile-production
           push: true
           tags: vizblockchain/vizd:${{ steps.tag.outputs.value }}
-          cache-from: type=gha,scope=pr-${{ github.event.pull_request.base_ref }}
-          cache-to:   type=gha,scope=pr-${{ github.event.pull_request.base_ref }},mode=max
+          cache-from: type=gha,scope=pr-${{ github.base_ref }}
+          cache-to:   type=gha,scope=pr-${{ github.base_ref }},mode=max
