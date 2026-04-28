@@ -115,16 +115,12 @@ RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
 RUN set -xe ;\
     cp $APPDIR/build/programs/vizd/vizd /usr/local/bin/vizd
 
-# Final cleanup of the builder stage. apt cache mounts above are not affected
-# by these rm/clean calls because cache mounts are unmounted by the time this
-# RUN executes; this only removes anything that landed in real layers.
-RUN \
-    apt-get clean && \
-    apt-get autoremove -y && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/*
-
 FROM phusion/baseimage:noble-1.0.3 AS production
-COPY --from=builder /usr/local /usr/local
+# Only the daemon binary is needed at runtime (see share/vizd/vizd.sh). Static link
+# (-DBUILD_SHARED_LIBRARIES=FALSE) means no .so dependencies to ship. Copying just
+# the binary instead of the entire builder /usr/local shrinks the runtime image and
+# the layer graph exported to the GHA layer cache.
+COPY --from=builder /usr/local/bin/vizd /usr/local/bin/vizd
 
 RUN set -xe ;\
     useradd -s /bin/bash -m -d /var/lib/vizd vizd ;\
