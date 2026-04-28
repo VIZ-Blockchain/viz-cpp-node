@@ -1464,6 +1464,18 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         auto head_block = state["fork_db_head_block"].as<signed_block>();
         db.get_fork_db().start_block(head_block);
         ilog(CLOG_ORANGE "Fork database seeded with head block ${n}" CLOG_RESET, ("n", header.snapshot_block_num));
+
+        // Persist the head block into dlt_block_log so that database::open()
+        // can reconstruct fork_db on restart. Without this, a restart shortly
+        // after snapshot import leaves fork_db empty (dlt_block_log does not
+        // cover head), causing unlinkable_block_exception on any stale broadcast
+        // block and stalling P2P sync.
+        auto dlt_head = db.get_dlt_block_log().head();
+        if (!dlt_head || dlt_head->block_num() < head_block.block_num()) {
+            db.get_dlt_block_log().append(head_block);
+            db.get_dlt_block_log().flush();
+            ilog(CLOG_ORANGE "DLT block log seeded with head block ${n}" CLOG_RESET, ("n", header.snapshot_block_num));
+        }
     }
 
     auto end = fc::time_point::now();
