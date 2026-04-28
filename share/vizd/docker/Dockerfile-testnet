@@ -26,7 +26,7 @@ ENV CCACHE_COMPRESS=1
 # We also intentionally do NOT run `apt-get clean` or `rm -rf /var/lib/apt/lists/*`
 # at the end, because those paths are mounted as BuildKit caches that we want
 # to persist across CI runs. The builder stage is discarded in the final image
-# regardless, so leftover cache contents have no effect on the production image.
+# regardless, so leftover cache contents have no effect on the final image.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && \
