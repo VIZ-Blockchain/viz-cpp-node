@@ -3876,16 +3876,30 @@ namespace graphene {
                     uint32_t our_head = _delegate->get_block_number(_delegate->get_head_block_id());
 
                     if (peer_block_num <= our_head) {
-                        // Block is at or below our head — peer is on a stale fork. Soft-ban.
-                        fc_ilog(fc::logger::get("sync"),
-                             "Soft-banning peer ${endpoint} for ${dur}s: "
-                             "unlinkable block #${num} at or below our head #${head}",
-                             ("endpoint", originating_peer->get_remote_endpoint())
-                             ("num", peer_block_num)("head", our_head)
-                             ("dur", get_soft_ban_duration(originating_peer)));
-                        originating_peer->fork_rejected_until =
-                            fc::time_point::now() + fc::seconds(get_soft_ban_duration(originating_peer));
-                        originating_peer->inhibit_fetching_sync_blocks = true;
+                        // Block is at or below our head — peer may be on a stale fork.
+                        // Accumulate strikes before soft-banning to tolerate occasional
+                        // stale blocks (e.g. after snapshot reload or brief micro-forks).
+                        ++originating_peer->unlinkable_block_strikes;
+                        static constexpr uint32_t SOFT_BAN_STRIKE_THRESHOLD = 20;
+                        if (originating_peer->unlinkable_block_strikes >= SOFT_BAN_STRIKE_THRESHOLD) {
+                            fc_ilog(fc::logger::get("sync"),
+                                 "Soft-banning peer ${endpoint} for ${dur}s: "
+                                 "${strikes} unlinkable blocks at or below our head #${head}",
+                                 ("endpoint", originating_peer->get_remote_endpoint())
+                                 ("strikes", originating_peer->unlinkable_block_strikes)
+                                 ("head", our_head)
+                                 ("dur", get_soft_ban_duration(originating_peer)));
+                            originating_peer->fork_rejected_until =
+                                fc::time_point::now() + fc::seconds(get_soft_ban_duration(originating_peer));
+                            originating_peer->inhibit_fetching_sync_blocks = true;
+                            originating_peer->unlinkable_block_strikes = 0;
+                        } else {
+                            dlog("Unlinkable block #${num} at/below head #${head} from ${peer} (strike ${s}/${max})",
+                                 ("num", peer_block_num)("head", our_head)
+                                 ("peer", originating_peer->get_remote_endpoint())
+                                 ("s", originating_peer->unlinkable_block_strikes)
+                                 ("max", SOFT_BAN_STRIKE_THRESHOLD));
+                        }
                     } else {
                         // Block is ahead of us — we may be behind. Resync is justified.
                         ilog("Normal block #${num} is unlinkable and ahead of our head #${head}, will restart sync with peer ${peer}",

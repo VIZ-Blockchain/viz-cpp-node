@@ -276,6 +276,12 @@ namespace graphene {
             // HF12: soft-ban peers on losing forks during emergency consensus
             fc::time_point fork_rejected_until;
 
+            // Strike counter for unlinkable blocks at/below our head.
+            // Only soft-ban after accumulating enough strikes to avoid
+            // punishing peers for occasional stale blocks (e.g. after
+            // snapshot reload or brief micro-forks).
+            uint32_t unlinkable_block_strikes = 0;
+
             // Reason for disconnect (set before move_peer_to_closing_list)
             std::string closing_reason;
 
