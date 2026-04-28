@@ -1,0 +1,52 @@
+name: Reset CI Cache
+
+# Manual recovery for failure-mode #1 in
+# docs/superpowers/specs/2026-04-28-ci-build-time-reduction-design.md:
+# if a cache scope is poisoned (compile-time-only failures that warm
+# builds reproduce but cold builds do not), run this workflow with the
+# scope substring to delete all matching cache entries.
+#
+# Usage: GitHub UI -> Actions -> Reset CI Cache -> Run workflow
+#        Enter scope substring, e.g.:
+#          - "main"            -> deletes master-branch cache
+#          - "pr-master"       -> deletes shared PR-against-master cache
+#          - "pr-release-1.0"  -> deletes a specific release-branch PR cache
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope_substring:
+        description: 'Substring of cache key to delete (e.g., main, pr-master)'
+        required: true
+        type: string
+
+permissions:
+  actions: write   # required to delete caches
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete matching caches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass user input via env (not direct ${{ }} interpolation in the
+          # run: block) to avoid workflow-injection if the substring contains
+          # shell metacharacters like single quotes.
+          SCOPE_PATTERN: ${{ inputs.scope_substring }}
+        run: |
+          set -euo pipefail
+          echo "Listing caches matching: $SCOPE_PATTERN"
+          # gh cache list returns id<TAB>key<TAB>... ; jq filters by key substring.
+          ids=$(gh cache list --repo "$GITHUB_REPOSITORY" --limit 100 --json id,key \
+                  | jq -r --arg pat "$SCOPE_PATTERN" '.[] | select(.key | contains($pat)) | .id')
+          if [ -z "$ids" ]; then
+            echo "No caches matched substring: $SCOPE_PATTERN"
+            exit 0
+          fi
+          echo "Will delete cache IDs:"
+          echo "$ids"
+          echo "$ids" | while read -r id; do
+            gh cache delete "$id" --repo "$GITHUB_REPOSITORY"
+          done
+          echo "Done."
