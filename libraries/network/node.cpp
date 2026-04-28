@@ -2591,6 +2591,16 @@ namespace graphene {
                     item_hash_t last_item_seen = blockchain_synopsis.empty()
                                                  ? item_hash_t()
                                                  : blockchain_synopsis.back();
+                    uint32_t synopsis_block_num = blockchain_synopsis.empty()
+                                                 ? 0
+                                                 : _delegate->get_block_number(blockchain_synopsis.back());
+                    fc_ilog(fc::logger::get("sync"),
+                         "sync: sending synopsis to peer ${peer}: ${count} entries, "
+                         "last_item=#${num} (${hash})",
+                         ("peer", peer->get_remote_endpoint())
+                         ("count", blockchain_synopsis.size())
+                         ("num", synopsis_block_num)
+                         ("hash", last_item_seen));
                     dlog("sync: sending a request for the next items after ${last_item_seen} to peer ${peer}, (full request is ${blockchain_synopsis})",
                             ("last_item_seen", last_item_seen)
                                     ("peer", peer->get_remote_endpoint())
@@ -2609,6 +2619,29 @@ namespace graphene {
             void node_impl::on_blockchain_item_ids_inventory_message(peer_connection *originating_peer,
                     const blockchain_item_ids_inventory_message &blockchain_item_ids_inventory_message_received) {
                 VERIFY_CORRECT_THREAD();
+
+                // Diagnostic: log every sync block ID response we receive
+                {
+                    uint32_t first_num = 0, last_num = 0;
+                    if (!blockchain_item_ids_inventory_message_received.item_hashes_available.empty()) {
+                        first_num = _delegate->get_block_number(blockchain_item_ids_inventory_message_received.item_hashes_available.front());
+                        last_num = _delegate->get_block_number(blockchain_item_ids_inventory_message_received.item_hashes_available.back());
+                    }
+                    fc_ilog(fc::logger::get("sync"),
+                         "on_blockchain_item_ids_inventory: peer=${peer}, "
+                         "items_available=${count} (blocks #${first}..#${last}), "
+                         "remaining=${remaining}, "
+                         "we_requested=${requested}, "
+                         "we_need_sync=${sync}, peer_needs_sync=${peer_sync}",
+                         ("peer", originating_peer->get_remote_endpoint())
+                         ("count", blockchain_item_ids_inventory_message_received.item_hashes_available.size())
+                         ("first", first_num)("last", last_num)
+                         ("remaining", blockchain_item_ids_inventory_message_received.total_remaining_item_count)
+                         ("requested", originating_peer->item_ids_requested_from_peer.valid())
+                         ("sync", originating_peer->we_need_sync_items_from_peer)
+                         ("peer_sync", originating_peer->peer_needs_sync_items_from_us));
+                }
+
                 // ignore unless we asked for the data
                 if (originating_peer->item_ids_requested_from_peer) {
                     // verify that the peer's the block ids the peer sent is a valid response to our request;
@@ -2715,7 +2748,8 @@ namespace graphene {
                         if (new_number_of_unfetched_items == 0) {
                             _delegate->sync_status(blockchain_item_ids_inventory_message_received.item_type, 0);
                         }
-                        ilog("Sync: peer ${peer} says we're up-to-date (items_available=${avail}, remaining=${remain}, "
+                        fc_ilog(fc::logger::get("sync"),
+                             "Sync: peer ${peer} says we're up-to-date (items_available=${avail}, remaining=${remain}, "
                              "ids_to_get=${ids}, unfetched_from_all_peers=${total})",
                              ("peer", originating_peer->get_remote_endpoint())
                              ("avail", blockchain_item_ids_inventory_message_received.item_hashes_available.size())
@@ -2732,7 +2766,8 @@ namespace graphene {
                     if (!item_hashes_received.empty()) {
                         uint32_t first_num = _delegate->get_block_number(item_hashes_received.front());
                         uint32_t last_num = _delegate->get_block_number(item_hashes_received.back());
-                        ilog("Sync: received ${count} block IDs from peer ${peer} "
+                        fc_ilog(fc::logger::get("sync"),
+                             "Sync: received ${count} block IDs from peer ${peer} "
                              "(range: #${first}..#${last}, remaining: ${remaining})",
                              ("count", item_hashes_received.size())
                              ("peer", originating_peer->get_remote_endpoint())
@@ -4298,7 +4333,8 @@ namespace graphene {
             void node_impl::start_synchronizing_with_peer(const peer_connection_ptr &peer) {
                 VERIFY_CORRECT_THREAD();
                 uint32_t head_num = _delegate->get_block_number(_delegate->get_head_block_id());
-                ilog("Starting sync with peer ${peer} (our head_block: #${head}, peer state: we_need=${we_need}, peer_needs=${peer_needs})",
+                fc_ilog(fc::logger::get("sync"),
+                     "Starting sync with peer ${peer} (our head_block: #${head}, peer state: we_need=${we_need}, peer_needs=${peer_needs})",
                      ("peer", peer->get_remote_endpoint())("head", head_num)
                      ("we_need", peer->we_need_sync_items_from_peer)
                      ("peer_needs", peer->peer_needs_sync_items_from_us));
