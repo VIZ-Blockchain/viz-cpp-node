@@ -11,16 +11,20 @@
 - [message.hpp](file://libraries/network/include/graphene/network/message.hpp)
 - [config.hpp](file://libraries/network/include/graphene/network/config.hpp)
 - [node.cpp](file://libraries/network/node.cpp)
+- [database.hpp](file://libraries/chain/include/graphene/chain/database.hpp)
+- [chainbase.hpp](file://thirdparty/chainbase/include/chainbase/chainbase.hpp)
+- [witness.cpp](file://plugins/witness/witness.cpp)
 - [CMakeLists.txt](file://plugins/p2p/CMakeLists.txt)
 - [config.ini](file://share/vizd/config/config.ini)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Updated logging level consistency section to reflect improved logging level management
-- Added detailed explanation of sync mode logging changes from info to debug level
-- Enhanced troubleshooting guide with logging level considerations
-- Updated performance considerations to include logging impact
+- Added new resync_from_lib() method documentation for minority fork recovery scenarios
+- Enhanced block validation section with operation guard protection details
+- Updated error handling documentation for concurrent access safety during block processing
+- Added comprehensive coverage of the new minority fork recovery functionality
+- Expanded troubleshooting guide with minority fork recovery procedures
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -28,17 +32,22 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Logging Level Consistency](#logging-level-consistency)
-7. [Dependency Analysis](#dependency-analysis)
-8. [Performance Considerations](#performance-considerations)
-9. [Troubleshooting Guide](#troubleshooting-guide)
-10. [Conclusion](#conclusion)
+6. [Minority Fork Recovery](#minority-fork-recovery)
+7. [Enhanced Block Validation](#enhanced-block-validation)
+8. [Concurrent Access Safety](#concurrent-access-safety)
+9. [Logging Level Consistency](#logging-level-consistency)
+10. [Dependency Analysis](#dependency-analysis)
+11. [Performance Considerations](#performance-considerations)
+12. [Troubleshooting Guide](#troubleshooting-guide)
+13. [Conclusion](#conclusion)
 
 ## Introduction
 
 The P2P (Peer-to-Peer) Plugin is a critical component of the VIZ blockchain node that enables decentralized communication between nodes in the network. This plugin provides the foundation for blockchain synchronization, transaction propagation, and peer discovery mechanisms that keep the entire network synchronized and functional.
 
 The plugin implements a sophisticated networking layer built on top of the Graphene network library, providing features such as automatic peer discovery, blockchain synchronization protocols, transaction broadcasting, and advanced peer management capabilities including soft-ban mechanisms and connection monitoring.
+
+**Updated** The plugin now includes specialized minority fork recovery capabilities and enhanced concurrent access safety mechanisms to handle complex network scenarios and prevent data corruption during high-load conditions.
 
 ## Project Structure
 
@@ -49,6 +58,8 @@ graph TB
 subgraph "P2P Plugin Layer"
 P2P[p2p_plugin.hpp/cpp]
 Impl[p2p_plugin_impl]
+Resync[resync_from_lib method]
+Guard[operation_guard integration]
 end
 subgraph "Network Library"
 Node[node.hpp]
@@ -59,23 +70,30 @@ end
 subgraph "Chain Integration"
 Chain[chain::plugin]
 Database[database.hpp]
+ForkDB[fork_database]
 end
 subgraph "External Dependencies"
 AppBase[appbase]
 Snapshot[snapshot_plugin]
+Witness[witness_plugin]
 end
 P2P --> Node
 P2P --> Chain
 P2P --> AppBase
 P2P --> Snapshot
+P2P --> Resync
+P2P --> Guard
 Node --> PeerConn
 Node --> Messages
 Node --> Config
 Chain --> Database
+Chain --> ForkDB
+Witness --> Resync
 ```
 
 **Diagram sources**
-- [p2p_plugin.hpp:18-52](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L52)
+- [p2p_plugin.hpp:18-55](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L55)
+- [p2p_plugin.cpp:910-979](file://plugins/p2p/p2p_plugin.cpp#L910-L979)
 - [node.hpp:190-320](file://libraries/network/include/graphene/network/node.hpp#L190-L320)
 
 **Section sources**
@@ -99,6 +117,7 @@ class p2p_plugin {
 +broadcast_block_post_validation(block_id, witness_account, signature)
 +broadcast_transaction(tx)
 +set_block_production(producing_blocks)
++resync_from_lib()
 -my : p2p_plugin_impl
 }
 class p2p_plugin_impl {
@@ -137,7 +156,7 @@ p2p_plugin --> p2p_plugin_impl : "owns"
 ```
 
 **Diagram sources**
-- [p2p_plugin.hpp:18-52](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L52)
+- [p2p_plugin.hpp:18-55](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L55)
 - [p2p_plugin.cpp:49-126](file://plugins/p2p/p2p_plugin.cpp#L49-L126)
 
 ### Network Node Architecture
@@ -201,7 +220,7 @@ node --> peer_connection : "manages"
 - [peer_connection.hpp:79-354](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
 
 **Section sources**
-- [p2p_plugin.hpp:18-52](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L52)
+- [p2p_plugin.hpp:18-55](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L55)
 - [node.hpp:190-320](file://libraries/network/include/graphene/network/node.hpp#L190-L320)
 
 ## Architecture Overview
@@ -253,6 +272,8 @@ The architecture provides several key capabilities:
 3. **Transaction Propagation**: Broadcasts transactions to connected peers with intelligent caching
 4. **Peer Management**: Manages peer connections with soft-ban mechanisms and connection limits
 5. **Monitoring and Statistics**: Provides comprehensive peer statistics and network health monitoring
+6. **Minority Fork Recovery**: Specialized recovery mechanism for handling minority fork scenarios
+7. **Concurrent Access Safety**: Enhanced protection against concurrent access conflicts during block processing
 
 ## Detailed Component Analysis
 
@@ -283,12 +304,18 @@ style BroadcastBlock fill:#ccffcc
 - [p2p_plugin.cpp:216-245](file://plugins/p2p/p2p_plugin.cpp#L216-L245)
 - [p2p_plugin.cpp:855-865](file://plugins/p2p/p2p_plugin.cpp#L855-L865)
 
-The block validation protocol includes several security enhancements:
+**Updated** The block validation protocol now includes enhanced concurrent access safety through operation guard protection:
+
+The block validation process incorporates operation guards to prevent concurrent access conflicts during witness key validation and block post-validation processing. This ensures thread-safe access to shared blockchain state during high-load conditions.
+
+The enhanced validation includes:
 
 1. **Witness Signature Verification**: Validates that the block signature matches the claimed witness's public key
 2. **Chain ID Consistency**: Ensures blocks belong to the correct blockchain instance
 3. **Hard Fork Protection**: Handles different validation requirements across blockchain hard forks
 4. **Post-Validation Processing**: Applies additional validation steps after initial acceptance
+5. **Concurrent Access Protection**: Uses operation guards to prevent race conditions during validation
+6. **Error Handling**: Comprehensive error handling for various failure scenarios
 
 ### Peer Connection Management
 
@@ -351,6 +378,175 @@ Note over Local,Remote : Continue until synchronized
 - [p2p_plugin.cpp:247-301](file://plugins/p2p/p2p_plugin.cpp#L247-L301)
 - [peer_connection.hpp:79-354](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
 
+## Minority Fork Recovery
+
+**New** The P2P plugin now includes a specialized minority fork recovery mechanism designed to handle scenarios where the node is on a minority fork that differs from the majority of the network.
+
+### resync_from_lib() Method
+
+The `resync_from_lib()` method provides a comprehensive solution for minority fork recovery:
+
+```mermaid
+flowchart TD
+Start([Minority Fork Detected]) --> CheckState{"Check LIB vs Head"}
+CheckState --> |LIB >= Head| NoAction["No recovery needed<br/>(already at or before LIB)"]
+CheckState --> |Head > LIB| PopBlocks["Pop reversible blocks<br/>back to LIB"]
+PopBlocks --> ResetForkDB["Reset fork database"]
+ResetForkDB --> RebuildForkDB["Re-seed fork DB with LIB block"]
+RebuildForkDB --> TriggerSync["Trigger P2P sync from LIB"]
+TriggerSync --> ReconnectPeers["Reconnect to seed peers"]
+ReconnectPeers --> ResetTimer["Reset stale sync timer"]
+ResetTimer --> Complete([Recovery Complete])
+NoAction --> Complete
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:910-979](file://plugins/p2p/p2p_plugin.cpp#L910-L979)
+
+### Recovery Process Implementation
+
+The minority fork recovery process involves several critical steps:
+
+1. **State Analysis**: Compares current head block with last irreversible block (LIB)
+2. **Block Popping**: Pops all reversible blocks from current head back to LIB
+3. **Fork Database Reset**: Resets the fork database to prevent conflicts
+4. **State Reinitialization**: Re-seeds the fork database with the LIB block
+5. **Network Resynchronization**: Triggers P2P synchronization from the LIB position
+6. **Peer Reconnection**: Reconnects to seed nodes to ensure proper peer selection
+7. **Timer Reset**: Resets stale sync detection timers to prevent false positives
+
+### Integration with Witness Plugin
+
+The minority fork recovery is triggered automatically by the witness plugin when it detects a minority fork scenario:
+
+```mermaid
+sequenceDiagram
+participant Witness as Witness Plugin
+participant P2P as P2P Plugin
+participant Chain as Chain Database
+participant Network as Network Layer
+Witness->>Chain : Check recent blocks
+Chain-->>Witness : Block validation results
+Witness->>Witness : Analyze fork scenario
+alt Minority fork detected
+Witness->>P2P : resync_from_lib()
+P2P->>Chain : Pop blocks to LIB
+P2P->>Chain : Reset fork database
+P2P->>Network : Trigger sync from LIB
+P2P->>Network : Reconnect to peers
+end
+```
+
+**Diagram sources**
+- [witness.cpp:540-552](file://plugins/witness/witness.cpp#L540-L552)
+- [p2p_plugin.cpp:910-979](file://plugins/p2p/p2p_plugin.cpp#L910-L979)
+
+**Section sources**
+- [p2p_plugin.cpp:910-979](file://plugins/p2p/p2p_plugin.cpp#L910-L979)
+- [witness.cpp:540-552](file://plugins/witness/witness.cpp#L540-L552)
+
+## Enhanced Block Validation
+
+**Updated** The block validation process has been enhanced with operation guard protection to ensure concurrent access safety during critical validation operations.
+
+### Operation Guard Integration
+
+The enhanced block validation incorporates operation guards to prevent race conditions and ensure thread-safe access to shared blockchain state:
+
+```mermaid
+flowchart TD
+BlockReceived([Block Received]) --> ExtractWitness["Extract witness information"]
+ExtractWitness --> AcquireGuard["Acquire operation guard"]
+AcquireGuard --> VerifyWitness["Verify witness exists"]
+VerifyWitness --> VerifySignature["Verify signature matches witness key"]
+VerifySignature --> ReleaseGuard["Release operation guard"]
+ReleaseGuard --> ApplyValidation["Apply block post-validation"]
+ApplyValidation --> BroadcastBlock["Broadcast block to peers"]
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:216-245](file://plugins/p2p/p2p_plugin.cpp#L216-L245)
+
+### Concurrent Access Protection
+
+The operation guard mechanism provides several layers of protection:
+
+1. **Resize Barrier Participation**: Operation guards participate in the shared memory resize barrier
+2. **Lock Acquisition**: Automatically waits for resize operations to complete
+3. **Thread Safety**: Prevents concurrent access conflicts during witness key validation
+4. **Resource Management**: Ensures proper cleanup and release of resources
+
+### Database Integration
+
+The enhanced validation leverages the chainbase database's operation guard functionality:
+
+```mermaid
+classDiagram
+class operation_guard {
++operation_guard(database& db)
++~operation_guard()
++release()
+- database& _db
+- bool _active
+}
+class database {
++make_operation_guard() operation_guard
++enter_operation()
++exit_operation()
+}
+operation_guard --> database : "guards access to"
+```
+
+**Diagram sources**
+- [chainbase.hpp:1078-1115](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1115)
+
+**Section sources**
+- [p2p_plugin.cpp:216-245](file://plugins/p2p/p2p_plugin.cpp#L216-L245)
+- [chainbase.hpp:1078-1115](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1115)
+
+## Concurrent Access Safety
+
+**New** The P2P plugin now includes comprehensive concurrent access safety mechanisms to prevent data corruption and ensure thread-safe operations during high-load conditions.
+
+### Operation Guard Implementation
+
+The operation guard system provides automatic protection against concurrent access conflicts:
+
+```mermaid
+flowchart TD
+Start([Operation Begins]) --> EnterOperation["Enter operation barrier"]
+EnterOperation --> AcquireLock["Acquire database lock"]
+AcquireLock --> PerformOperation["Perform database operation"]
+PerformOperation --> ReleaseLock["Release database lock"]
+ReleaseLock --> ExitOperation["Exit operation barrier"]
+ExitOperation --> End([Operation Complete])
+```
+
+**Diagram sources**
+- [chainbase.hpp:1130-1137](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1130-L1137)
+
+### Thread Safety Enhancements
+
+The concurrent access safety includes several key features:
+
+1. **Automatic Lock Management**: Operation guards automatically manage database locks
+2. **Resize Barrier Integration**: Participates in shared memory resize barriers
+3. **Timeout Handling**: Implements timeout mechanisms for lock acquisition
+4. **Resource Cleanup**: Ensures proper cleanup of resources on completion
+
+### Error Handling Improvements
+
+Enhanced error handling protects against various failure scenarios:
+
+1. **Concurrent Resize Exceptions**: Proper handling of shared memory resize operations
+2. **Deadlock Prevention**: Timeout mechanisms prevent indefinite blocking
+3. **Graceful Degradation**: Fallback mechanisms for critical operations
+4. **Diagnostic Information**: Comprehensive logging for debugging concurrent issues
+
+**Section sources**
+- [chainbase.hpp:1130-1137](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1130-L1137)
+- [p2p_plugin.cpp:173-208](file://plugins/p2p/p2p_plugin.cpp#L173-L208)
+
 ## Logging Level Consistency
 
 **Updated** The P2P plugin has implemented improved logging level consistency to reduce verbosity during normal operation while maintaining appropriate log levels for different operational contexts.
@@ -405,6 +601,7 @@ P2P[p2p_plugin]
 Chain[chain::plugin]
 AppBase[appbase]
 Snapshot[snapshot_plugin]
+Witness[witness_plugin]
 end
 subgraph "Network Dependencies"
 Node[node.hpp]
@@ -418,10 +615,16 @@ Block[block.hpp]
 Transaction[transaction.hpp]
 Types[types.hpp]
 end
+subgraph "Database Dependencies"
+Database[database.hpp]
+Chainbase[chainbase.hpp]
+OperationGuard[operation_guard]
+end
 P2P --> Chain
 P2P --> Node
 P2P --> AppBase
 P2P --> Snapshot
+P2P --> Witness
 Node --> PeerConn
 Node --> Messages
 Node --> PeerDB
@@ -429,9 +632,10 @@ Node --> Config
 Messages --> Block
 Messages --> Transaction
 Messages --> Types
-Chain --> Block
-Chain --> Transaction
-Chain --> Types
+Chain --> Database
+Chain --> Chainbase
+Chain --> OperationGuard
+Database --> OperationGuard
 ```
 
 **Diagram sources**
@@ -444,6 +648,8 @@ Key dependency relationships:
 2. **Network Foundation**: Relies on the network library for peer communication
 3. **Application Framework**: Uses appbase for plugin lifecycle management
 4. **Snapshot Coordination**: Integrates with snapshot plugin for trusted peer management
+5. **Witness Integration**: Works closely with witness plugin for fork detection
+6. **Database Protection**: Leverages chainbase operation guards for concurrent access safety
 
 **Section sources**
 - [CMakeLists.txt:27-34](file://plugins/p2p/CMakeLists.txt#L27-L34)
@@ -476,6 +682,14 @@ The P2P plugin implements several performance optimization strategies:
 - **Improved Throughput**: Less frequent logging reduces CPU overhead during normal operation
 - **Better Resource Utilization**: More efficient use of system resources during routine operations
 
+### Concurrent Access Optimization
+**New** The operation guard system provides performance benefits through:
+
+- **Reduced Contention**: Automatic lock management reduces thread contention
+- **Efficient Resource Usage**: Operation guards minimize overhead during validation
+- **Scalable Design**: Thread-safe operations scale better under load
+- **Graceful Degradation**: Timeout mechanisms prevent performance degradation
+
 **Section sources**
 - [p2p_plugin.cpp:659-756](file://plugins/p2p/p2p_plugin.cpp#L659-L756)
 - [p2p_plugin.cpp:512-649](file://plugins/p2p/p2p_plugin.cpp#L512-L649)
@@ -499,6 +713,15 @@ The P2P plugin implements several performance optimization strategies:
 - **Solution**: Check network stability and bandwidth limitations
 - **Diagnostics**: Monitor peer statistics for connection patterns
 
+### Minority Fork Recovery Procedures
+
+**New** For minority fork scenarios:
+
+1. **Detection**: Monitor witness plugin logs for minority fork warnings
+2. **Automatic Recovery**: The system automatically triggers `resync_from_lib()`
+3. **Manual Intervention**: Use RPC commands to trigger recovery if automatic detection fails
+4. **Verification**: Monitor logs to confirm successful recovery and synchronization
+
 ### Logging Level Considerations
 
 **Updated** For troubleshooting purposes, consider adjusting logging levels:
@@ -521,22 +744,35 @@ The P2P plugin supports extensive configuration options:
 | `p2p-stale-sync-detection` | Enable stale sync detection | false |
 | `p2p-stale-sync-timeout-seconds` | Stale sync timeout | 120 |
 
+### Concurrent Access Issues
+
+**New** For concurrent access problems:
+
+1. **Monitor Operation Guards**: Check for operation guard timeouts in logs
+2. **Check Shared Memory**: Verify shared memory resize operations are completing
+3. **Adjust Timeouts**: Increase operation guard timeout values if needed
+4. **Resource Monitoring**: Monitor system resources during high-load periods
+
 **Section sources**
 - [p2p_plugin.cpp:659-683](file://plugins/p2p/p2p_plugin.cpp#L659-L683)
+- [p2p_plugin.cpp:910-979](file://plugins/p2p/p2p_plugin.cpp#L910-L979)
 - [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
 
 ## Conclusion
 
 The P2P Plugin represents a sophisticated implementation of blockchain networking infrastructure that provides essential functionality for distributed consensus systems. Its modular architecture, comprehensive peer management, and robust synchronization protocols make it a cornerstone component of the VIZ blockchain ecosystem.
 
-Key strengths of the implementation include:
+**Updated** Key enhancements include:
 
 1. **Security Focus**: Advanced block validation and witness verification mechanisms
 2. **Performance Optimization**: Efficient synchronization and connection management
 3. **Operational Excellence**: Comprehensive monitoring and diagnostic capabilities
 4. **Extensibility**: Clean interfaces that support future enhancements
 5. **Logging Efficiency**: Improved logging level consistency reduces verbosity while maintaining operational visibility
+6. **Minority Fork Recovery**: Specialized recovery mechanism for handling fork scenarios
+7. **Concurrent Access Safety**: Enhanced protection against race conditions and data corruption
+8. **Integration Capabilities**: Seamless coordination with witness and snapshot plugins
 
-The recent logging level improvements demonstrate ongoing attention to operational efficiency and user experience. By downgrading sync mode logs from info to debug level, the plugin achieves better balance between operational visibility and system performance, reducing unnecessary log volume during routine synchronization while preserving appropriate logging for exceptional circumstances.
+The recent additions demonstrate ongoing attention to operational efficiency and user experience. The new minority fork recovery functionality provides automated solutions for complex network scenarios, while the enhanced concurrent access safety mechanisms ensure reliable operation under high-load conditions. The improved logging level consistency further optimizes system performance while maintaining appropriate diagnostic capabilities.
 
-The plugin's design demonstrates best practices in distributed systems engineering, balancing security, performance, and maintainability while providing the foundation for scalable blockchain networks.
+The plugin's design demonstrates best practices in distributed systems engineering, balancing security, performance, and maintainability while providing the foundation for scalable blockchain networks. The integration of operation guards and specialized recovery mechanisms positions the P2P plugin to handle increasingly complex blockchain networking requirements.
