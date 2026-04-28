@@ -17,12 +17,12 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced gap-based early rejection logic with 100-block threshold to prevent memory bloat from dead-fork blocks
-- Improved fork switching with automatic chain linking when parent blocks arrive via _push_next()
-- Added support for remove_blocks_by_number() to prevent memory bloat from dead-fork blocks
-- Strengthened duplicate detection and prevention mechanisms
-- Enhanced early rejection logic to handle unlinkable blocks more efficiently
-- Improved automatic stale fork pruning system
+- Enhanced fork database management with improved fork switch handling and separate processing paths for linear extensions vs actual fork switches
+- Implemented comprehensive gap-based early rejection logic with 100-block threshold to prevent memory bloat from dead-fork blocks
+- Added detailed debug logging prefixes (FORK-SWITCH-POP, FORK-RECOVER-POP) for better traceability and debugging
+- Strengthened duplicate detection and prevention mechanisms throughout the system
+- Improved automatic stale fork pruning system with enhanced pruning logic
+- Enhanced early rejection logic to handle unlinkable blocks more efficiently with separate handling paths
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -100,7 +100,7 @@ FD --> END8
 - [fork_database.hpp:1-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L144)
 - [fork_database.cpp:1-278](file://libraries/chain/fork_database.cpp#L1-L278)
 - [database.hpp:1-200](file://libraries/chain/include/graphene/chain/database.hpp#L1-L200)
-- [database.cpp:1-6506](file://libraries/chain/database.cpp#L1-L6506)
+- [database.cpp:1-6669](file://libraries/chain/database.cpp#L1-L6669)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
 - [dlt_block_log.cpp:1-454](file://libraries/chain/dlt_block_log.cpp#L1-L454)
 - [witness.cpp:1-697](file://plugins/witness/witness.cpp#L1-L697)
@@ -135,6 +135,8 @@ Key responsibilities:
 - **New**: Implement gap-based early rejection logic with 100-block threshold to prevent memory bloat
 - **New**: Enable automatic chain linking when parent blocks arrive via _push_next() mechanism
 - **New**: Enhance duplicate detection and prevention throughout the system
+- **New**: Implement separate handling paths for linear extensions vs actual fork switches during chain reorganization
+- **New**: Add detailed debug logging prefixes (FORK-SWITCH-POP, FORK-RECOVER-POP) for better traceability
 
 **Section sources**
 - [fork_database.hpp:53-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L144)
@@ -381,6 +383,8 @@ When a new head is higher and does not build off the current head, the database:
 - **New**: Skips LIB advancement during emergency mode to prevent premature irreversibility
 - **New**: Implements vote-weighted chain comparison for HF12 and above for more robust consensus
 - **New**: Integrates automatic chain linking via _push_next() when parent blocks arrive
+- **New**: Implements separate handling paths for linear extensions vs actual fork switches
+- **New**: Adds detailed debug logging prefixes (FORK-SWITCH-POP, FORK-RECOVER-POP) for better traceability
 
 ```mermaid
 sequenceDiagram
@@ -408,6 +412,57 @@ DB-->>DB : "return true (switched)"
 
 **Section sources**
 - [database.cpp:1037-1177](file://libraries/chain/database.cpp#L1037-L1177)
+
+### Enhanced Chain Reorganization with Separate Handling Paths
+**New Section** The chain reorganization process now implements separate handling paths for linear extensions versus actual fork switches, providing more efficient processing and better error recovery.
+
+When a new head is higher and does not build off the current head, the database:
+- **Linear Extension Path**: When `branches.second` is empty (block extends directly from current head)
+  - No fork switching required
+  - Some blocks from `branches.first` may have been already applied
+  - Reset fork database to match current database head
+  - No pop operations needed
+- **Actual Fork Switch Path**: When `branches.second` is not empty (divergent fork)
+  - Pop blocks from current fork until common ancestor
+  - Apply blocks from new fork in reverse order
+  - Comprehensive exception handling with rollback
+  - Detailed debug logging with FORK-SWITCH-POP prefix
+
+```mermaid
+flowchart TD
+Start(["Fork Switch Decision"]) --> CheckBranches{"branches.second empty?"}
+CheckBranches --> |Yes| LinearExt["Linear Extension Path"]
+CheckBranches --> |No| ActualFork["Actual Fork Switch Path"]
+LinearExt --> ResetFork["Reset fork_db to match DB head"]
+ResetFork --> Complete["Complete without pop operations"]
+ActualFork --> PopBlocks["Pop blocks until common ancestor"]
+PopBlocks --> ApplyBlocks["Apply blocks from new fork"]
+ApplyBlocks --> CheckExceptions{"Exception occurred?"}
+CheckExceptions --> |Yes| Rollback["Rollback and restore original fork"]
+CheckExceptions --> |No| UpdateHead["Update fork_db head"]
+Rollback --> Complete
+UpdateHead --> Complete
+```
+
+**Diagram sources**
+- [database.cpp:1420-1510](file://libraries/chain/database.cpp#L1420-L1510)
+
+**Section sources**
+- [database.cpp:1420-1510](file://libraries/chain/database.cpp#L1420-L1510)
+
+### Enhanced Debug Logging with Prefixes
+**New Section** The system now includes detailed debug logging prefixes for better traceability and debugging of fork resolution processes.
+
+Debug logging prefixes:
+- **FORK-SWITCH-POP**: Logs when popping blocks during actual fork switching
+- **FORK-RECOVER-POP**: Logs when popping blocks during fork recovery after exceptions
+- **FORK-SWITCH-APPLY**: Logs when applying blocks from new fork during fork switch
+- **FORK-RECOVER-APPLY**: Logs when re-applying blocks to restore original fork
+
+These prefixes help developers and operators quickly identify the type of fork resolution operation being performed and troubleshoot issues more effectively.
+
+**Section sources**
+- [database.cpp:1432-1498](file://libraries/chain/database.cpp#L1432-L1498)
 
 ### DLT Mode Integration and Automatic Seeding
 **New Section** The database now supports DLT (Data Ledger Technology) mode for snapshot-based nodes, with automatic seeding of the fork database to enable immediate P2P synchronization.
@@ -450,6 +505,7 @@ The database updates last irreversible block (LIB) and writes blocks to logs whe
 - **Rolling window management**: Automatically truncates DLT block log when it exceeds configured limits
 - **Emergency mode integration**: Skips LIB advancement during emergency consensus mode to prevent premature irreversibility
 - **Enhanced validation**: Sophisticated block validation prevents invalid blocks from becoming irreversible
+- **Stale fork pruning**: Automatically prunes stale competing blocks from dead forks at each height
 
 ```mermaid
 flowchart TD
@@ -465,8 +521,9 @@ SkipBlockLog --> WriteDLT
 WriteDLT --> CheckDLTWindow["Check DLT window size"]
 CheckDLTWindow --> Truncate{"Exceeds limit?"}
 Truncate --> |Yes| TruncateDLT["Truncate DLT block log"]
-Truncate --> |No| End(["Ready for recovery"])
-TruncateDLT --> End
+Truncate --> |No| PruneStale["Prune stale competing blocks"]
+TruncateDLT --> PruneStale
+PruneStale --> End(["Ready for recovery"])
 SkipLIB --> End
 ```
 
@@ -543,6 +600,9 @@ end
 - **New**: Automatic chain linking:
   - _push_next(): Iterative processing of cached unlinked blocks when parents arrive
   - Gap-based protection prevents memory bloat from dead-fork chains
+- **New**: Separate handling paths:
+  - Linear extension vs actual fork switch processing for improved efficiency
+  - Detailed debug logging with FORK-SWITCH-POP and FORK-RECOVER-POP prefixes
 
 **Section sources**
 - [database.hpp:115-128](file://libraries/chain/include/graphene/chain/database.hpp#L115-L128)
@@ -554,7 +614,7 @@ end
 - [fork_database.cpp:269-274](file://libraries/chain/fork_database.cpp#L269-L274)
 
 ### Examples of Enhanced Fork Scenarios and Resolution Processes
-**Updated** Enhanced with improved out-of-order block handling, duplicate detection, DLT mode integration, automatic seeding capabilities, emergency consensus recovery, sophisticated early rejection logic, advanced fork collision resolution, automatic chain linking, and stale fork pruning.
+**Updated** Enhanced with improved out-of-order block handling, duplicate detection, DLT mode integration, automatic seeding capabilities, emergency consensus recovery, sophisticated early rejection logic, advanced fork collision resolution, automatic chain linking, stale fork pruning, separate handling paths, and detailed debug logging.
 
 - Scenario A: Out-of-order arrival of blocks with improved caching and automatic linking
   - Behavior: New blocks are inserted into the unlinked cache and later inserted when their parent appears via `_push_next`, which automatically links the entire chain
@@ -598,6 +658,12 @@ end
 - **New Scenario N**: Automatic chain linking when parent arrives
   - Behavior: Database caches unlinkable blocks and automatically links them when their parents arrive via _push_next()
   - Mechanism: Iterative processing of cached blocks prevents memory bloat and maintains network efficiency
+- **New Scenario O**: Linear extension vs fork switch distinction
+  - Behavior: Database distinguishes between linear extensions (no fork) and actual fork switches (divergent chains) with separate handling paths
+  - Mechanism: When `branches.second` is empty, database resets fork_db without pop operations; when not empty, database performs full fork switch with detailed logging
+- **New Scenario P**: Detailed debug logging with prefixes
+  - Behavior: Database logs detailed information about fork resolution operations with FORK-SWITCH-POP and FORK-RECOVER-POP prefixes
+  - Mechanism: Enhanced logging helps developers trace fork resolution steps and identify issues more quickly
 
 **Section sources**
 - [fork_database.cpp:92-103](file://libraries/chain/fork_database.cpp#L92-L103)
@@ -842,6 +908,7 @@ The pruning system consists of two main components:
 - **Size Limit Exceeded**: When fork database exceeds configured maximum size
 - **Network Recovery**: After fork resolution, stale competing blocks are cleaned up
 - **Gap-Based Protection**: Prevents memory bloat from dead-fork chains with 100-block threshold
+- **Post-Application Cleanup**: Automatic pruning of stale competing blocks at each height
 
 ```mermaid
 flowchart TD
@@ -865,7 +932,7 @@ CleanUp --> End
 - [fork_database.cpp:114-146](file://libraries/chain/fork_database.cpp#L114-L146)
 
 ## Dependency Analysis
-**Updated** The fork resolution system now includes DLT mode dependencies, automatic seeding capabilities, comprehensive emergency consensus integration, sophisticated early rejection logic, HF12 fork comparison capabilities, advanced fork collision resolution systems, gap-based early rejection protection, and automatic chain linking features.
+**Updated** The fork resolution system now includes DLT mode dependencies, automatic seeding capabilities, comprehensive emergency consensus integration, sophisticated early rejection logic, HF12 fork comparison capabilities, advanced fork collision resolution systems, gap-based early rejection protection, automatic chain linking features, separate handling paths, and detailed debug logging.
 
 The fork resolution system depends on:
 - fork_database for in-memory fork chain management with enhanced caching, duplicate detection, emergency mode tie-breaking, comprehensive error handling, automatic stale fork pruning, HF12 fork comparison, and gap-based early rejection
@@ -879,6 +946,8 @@ The fork resolution system depends on:
 - **New**: Automatic stale fork pruning system with remove_blocks_by_number() function
 - **New**: Gap-based early rejection logic with 100-block threshold for memory protection
 - **New**: Automatic chain linking system via _push_next() for efficient out-of-order block processing
+- **New**: Separate handling paths for linear extensions vs actual fork switches during chain reorganization
+- **New**: Detailed debug logging prefixes (FORK-SWITCH-POP, FORK-RECOVER-POP) for better traceability
 
 ```mermaid
 graph LR
@@ -895,11 +964,13 @@ CMP["compare_fork_branches()"] --> DBCPP
 PRUNE["remove_blocks_by_number()"] --> FDB
 GAP["Gap-Based Rejection"] --> DBCPP
 LINK["Automatic Chain Linking"] --> FDB
+SEPARATE["Separate Handling Paths"] --> DBCPP
+DEBUG["Debug Logging Prefixes"] --> DBCPP
 ```
 
 **Diagram sources**
 - [fork_database.cpp:1-278](file://libraries/chain/fork_database.cpp#L1-L278)
-- [database.cpp:1-6506](file://libraries/chain/database.cpp#L1-L6506)
+- [database.cpp:1-6669](file://libraries/chain/database.cpp#L1-L6669)
 - [dlt_block_log.cpp:1-454](file://libraries/chain/dlt_block_log.cpp#L1-L454)
 - [witness.cpp:1-697](file://plugins/witness/witness.cpp#L1-L697)
 - [config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
@@ -907,14 +978,14 @@ LINK["Automatic Chain Linking"] --> FDB
 
 **Section sources**
 - [fork_database.cpp:1-278](file://libraries/chain/fork_database.cpp#L1-L278)
-- [database.cpp:1-6506](file://libraries/chain/database.cpp#L1-L6506)
+- [database.cpp:1-6669](file://libraries/chain/database.cpp#L1-L6669)
 - [dlt_block_log.cpp:1-454](file://libraries/chain/dlt_block_log.cpp#L1-L454)
 - [witness.cpp:1-697](file://plugins/witness/witness.cpp#L1-L697)
 - [config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [12.hf:1-7](file://libraries/chain/hardfork.d/12.hf#L1-L7)
 
 ## Performance Considerations
-**Updated** Enhanced with improved caching, duplicate detection, DLT mode integration, automatic seeding mechanisms, emergency consensus recovery optimizations, sophisticated early rejection logic, HF12 fork comparison capabilities, advanced fork collision resolution systems, gap-based early rejection protection, and automatic chain linking features.
+**Updated** Enhanced with improved caching, duplicate detection, DLT mode integration, automatic seeding mechanisms, emergency consensus recovery optimizations, sophisticated early rejection logic, HF12 fork comparison capabilities, advanced fork collision resolution systems, gap-based early rejection protection, automatic chain linking features, separate handling paths, and detailed debug logging.
 
 - Maximum fork depth: The fork database limits the maximum number of blocks that may be skipped in an out-of-order push, preventing excessive memory usage with enhanced cleanup
 - Multi-index containers: Efficient lookups by block ID and previous ID minimize traversal costs with improved indexing
@@ -937,9 +1008,11 @@ LINK["Automatic Chain Linking"] --> FDB
 - **Stuck-head timeout**: 21-block timeout provides reasonable balance between network stability and production efficiency
 - **Gap-based protection**: 100-block threshold prevents memory bloat from dead-fork chains while maintaining network efficiency
 - **Automatic chain linking**: _push_next() mechanism prevents memory bloat and maintains optimal performance under out-of-order block conditions
+- **Separate handling paths**: Linear extension vs fork switch processing improves efficiency by avoiding unnecessary operations
+- **Debug logging overhead**: Detailed debug logging prefixes add minimal overhead while providing significant debugging benefits
 
 ## Troubleshooting Guide
-**Updated** Enhanced with improved error handling, duplicate detection, DLT mode support, automatic seeding capabilities, comprehensive emergency consensus troubleshooting, sophisticated early rejection logic, HF12 fork comparison troubleshooting, advanced fork collision resolution guidance, gap-based early rejection troubleshooting, and automatic chain linking guidance.
+**Updated** Enhanced with improved error handling, duplicate detection, DLT mode support, automatic seeding capabilities, comprehensive emergency consensus troubleshooting, sophisticated early rejection logic, HF12 fork comparison troubleshooting, advanced fork collision resolution guidance, gap-based early rejection troubleshooting, automatic chain linking guidance, separate handling paths, and detailed debug logging.
 
 Common issues and remedies:
 - **Unlinkable block errors**: Occur when a block does not link to a known chain; the fork DB logs and caches the block for later insertion when its parent arrives with enhanced logging and processing via _push_next()
@@ -965,6 +1038,8 @@ Common issues and remedies:
 - **Timeout configuration problems**: Adjust fork-collision-timeout-blocks parameter if network experiences frequent fork collisions or insufficient timeout
 - **Gap-based rejection issues**: Verify 100-block threshold is working correctly and check that legitimate out-of-order blocks are not being rejected
 - **Automatic chain linking failures**: Check _push_next() mechanism and ensure cached unlinked blocks are being processed correctly when parents arrive
+- **Linear extension vs fork switch confusion**: Monitor FORK-SWITCH-POP and FORK-RECOVER-POP debug logs to distinguish between different types of fork resolution operations
+- **Debug logging issues**: Verify that debug logging prefixes are appearing correctly and check log level configuration for proper visibility
 
 **Section sources**
 - [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
@@ -977,12 +1052,12 @@ Common issues and remedies:
 - [fork_database.cpp:269-274](file://libraries/chain/fork_database.cpp#L269-L274)
 
 ## Conclusion
-**Updated** The fork resolution and consensus system combines an efficient in-memory fork database with robust chain reorganization, irreversible block persistence, comprehensive DLT mode support, and advanced emergency consensus recovery mechanisms. The system has been significantly enhanced with sophisticated gap-based early rejection logic, comprehensive duplicate detection, DLT mode integration, automatic seeding capabilities, comprehensive emergency consensus implementation, HF12 vote-weighted fork comparison, two-level fork collision resolution, automatic stale fork pruning, and automatic chain linking. The enhanced fork database now supports snapshot-based nodes with immediate P2P synchronization, while the DLT block log provides efficient serving of recent irreversible blocks to peers. The emergency consensus recovery system ensures blockchain continuity through timeout-based activation, hybrid witness scheduling, and deterministic tie-breaking mechanisms. The HF12 fork comparison system provides more robust consensus decisions by weighting chains based on witness vote support with +10% bonus for longer chains. The two-level fork collision resolution system combines immediate vote-weighted comparison with stuck-head timeout to ensure network progress while maintaining consensus integrity. The automatic stale fork pruning system prevents memory bloat and maintains optimal performance under fork collision conditions. The gap-based early rejection logic with 100-block threshold prevents memory bloat from dead-fork chains while maintaining network efficiency. The automatic chain linking system via _push_next() ensures efficient processing of out-of-order blocks. The system integrates tightly with witness scheduling to ensure timely and valid block production, with emergency mode awareness enabling seamless transition between normal and emergency operations. The enhanced APIs enable reliable fork detection, chain validation, and recovery with DLT mode, emergency consensus, HF12 fork comparison, gap-based protection, and automatic chain linking awareness. Performance controls keep resource usage manageable while improving synchronization reliability, network health, and consensus stability during emergency conditions. The sophisticated early rejection logic and block validation mechanisms prevent infinite synchronization loops and system degradation, ensuring robust operation under various network conditions.
+**Updated** The fork resolution and consensus system combines an efficient in-memory fork database with robust chain reorganization, irreversible block persistence, comprehensive DLT mode support, and advanced emergency consensus recovery mechanisms. The system has been significantly enhanced with sophisticated gap-based early rejection logic, comprehensive duplicate detection, DLT mode integration, automatic seeding capabilities, comprehensive emergency consensus implementation, HF12 vote-weighted fork comparison, two-level fork collision resolution, automatic stale fork pruning, and automatic chain linking. The enhanced fork database now supports snapshot-based nodes with immediate P2P synchronization, while the DLT block log provides efficient serving of recent irreversible blocks to peers. The emergency consensus recovery system ensures blockchain continuity through timeout-based activation, hybrid witness scheduling, and deterministic tie-breaking mechanisms. The HF12 fork comparison system provides more robust consensus decisions by weighting chains based on witness vote support with +10% bonus for longer chains. The two-level fork collision resolution system combines immediate vote-weighted comparison with stuck-head timeout to ensure network progress while maintaining consensus integrity. The automatic stale fork pruning system prevents memory bloat and maintains optimal performance under fork collision conditions. The gap-based early rejection logic with 100-block threshold prevents memory bloat from dead-fork chains while maintaining network efficiency. The automatic chain linking system via _push_next() ensures efficient processing of out-of-order blocks. The system integrates tightly with witness scheduling to ensure timely and valid block production, with emergency mode awareness enabling seamless transition between normal and emergency operations. The enhanced APIs enable reliable fork detection, chain validation, and recovery with DLT mode, emergency consensus, HF12 fork comparison, gap-based protection, and automatic chain linking awareness. Performance controls keep resource usage manageable while improving synchronization reliability, network health, and consensus stability during emergency conditions. The sophisticated early rejection logic and block validation mechanisms prevent infinite synchronization loops and system degradation, ensuring robust operation under various network conditions. The separate handling paths for linear extensions vs actual fork switches improve efficiency by avoiding unnecessary operations. The detailed debug logging with FORK-SWITCH-POP and FORK-RECOVER-POP prefixes provides excellent traceability for troubleshooting and monitoring fork resolution operations.
 
 ## Appendices
 
 ### Appendix A: Enhanced Key Data Structures and Complexity
-**Updated** Enhanced with improved duplicate detection, caching mechanisms, DLT mode support, automatic seeding capabilities, emergency consensus integration, sophisticated early rejection logic, HF12 fork comparison capabilities, advanced fork collision resolution systems, gap-based early rejection protection, and automatic chain linking features.
+**Updated** Enhanced with improved duplicate detection, caching mechanisms, DLT mode support, automatic seeding capabilities, emergency consensus integration, sophisticated early rejection logic, HF12 fork comparison capabilities, advanced fork collision resolution systems, gap-based early rejection protection, automatic chain linking features, separate handling paths, and detailed debug logging.
 
 - fork_item: Stores block data, previous link, and invalid flag
 - fork_database:
@@ -997,6 +1072,8 @@ Common issues and remedies:
   - **New**: Automatic stale fork pruning: O(k) removal of all blocks at specific height (k = number of competing blocks)
   - **New**: Enhanced pruning system: O(N) cleanup of both _index and _unlinked_index for optimal memory management
   - **New**: Gap-based early rejection: O(1) gap calculation and threshold checking
+  - **New**: Separate handling paths: O(1) branching between linear extension and fork switch operations
+  - **New**: Debug logging: Minimal overhead with detailed prefix-based logging for traceability
 - **New**: database compare_fork_branches():
   - O(B) where B = number of blocks in longer branch
   - Calculates vote weights for each unique witness
@@ -1041,6 +1118,13 @@ Common issues and remedies:
 - **New**: Automatic chain linking:
   - _push_next() processing: O(k) where k = number of cached blocks linked
   - Gap-based protection: Prevents memory bloat from dead-fork chains
+- **New**: Separate handling paths:
+  - Linear extension: O(1) reset without pop operations
+  - Fork switch: O(F) where F = number of blocks popped and applied
+- **New**: Debug logging:
+  - Minimal overhead with prefix-based categorization
+  - FORK-SWITCH-POP: O(1) logging for fork switching operations
+  - FORK-RECOVER-POP: O(1) logging for fork recovery operations
 
 **Section sources**
 - [fork_database.hpp:20-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L20-L144)
@@ -1086,6 +1170,8 @@ Exception categories and handling:
 - **infinite_sync_loop_exception**: Prevented through sophisticated early rejection logic that detects and rejects problematic blocks
 - **fork_collision_exception**: Handled through two-level fork collision resolution system with timeout-based fallback
 - **gap_based_rejection**: Prevented through 100-block threshold logic that protects against memory bloat
+- **linear_extension_exception**: Prevented through separate handling path that avoids unnecessary operations
+- **fork_switch_exception**: Handled through detailed debug logging with FORK-SWITCH-POP prefix for troubleshooting
 
 Exception handling strategies:
 - **Early rejection**: Prevents unnecessary processing of invalid blocks
@@ -1096,6 +1182,8 @@ Exception handling strategies:
 - **HF12 integration**: Vote-weighted fork comparison provides additional error context for fork resolution decisions
 - **Automatic chain linking**: _push_next() mechanism prevents memory bloat while maintaining network efficiency
 - **Gap-based protection**: 100-block threshold prevents accumulation of stale blocks
+- **Separate handling paths**: Linear extension vs fork switch processing improves efficiency
+- **Debug logging**: FORK-SWITCH-POP and FORK-RECOVER-POP prefixes provide excellent traceability
 
 **Section sources**
 - [fork_database.cpp:38-46](file://libraries/chain/fork_database.cpp#L38-L46)

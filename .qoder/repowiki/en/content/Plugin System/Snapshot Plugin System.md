@@ -28,12 +28,12 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced snapshot plugin with improved error handling and undo stack management during snapshot loading
-- Implemented db.undo_all() clearing before import operations to address hot-reload scenarios
-- Added comprehensive exception handling for both fc::exception and std::exception types during snapshot download attempts
-- Improved undo stack management in load_snapshot method with proper cleanup before set_revision operations
-- Enhanced stalled sync detection with improved error handling for snapshot download operations
-- Added proper cleanup of database state by ensuring db.undo_all() is called before set_revision operations during snapshot loading
+- Fixed critical reliability issues in snapshot plugin including moving sleep calls outside exception handling blocks
+- Refactored connection retry logic to track connection status properly
+- Improved socket reopening with proper retry timing
+- Enhanced error handling for snapshot download operations with improved exception coverage
+- Added comprehensive undo stack management during snapshot loading
+- Implemented proper database state cleanup for hot-reload scenarios
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -1192,8 +1192,8 @@ Accept --> Process["Process Snapshot Request"]
 **Updated** The access control system now enforces the enhanced anti-spam limits with improved session management and rate limiting:
 
 - **Maximum concurrent connections**: 5 simultaneous connections
-- **Maximum sessions per IP**: 3 active sessions per IP (increased from 2)
-- **Maximum connections per hour**: 10 connections per hour per IP (increased from 6)
+- **Per-IP session limit**: 3 active sessions per IP (increased from 2)
+- **Rate limit**: 10 connections per hour per IP (increased from 6)
 
 These enhanced limits provide better support for legitimate users while maintaining effective protection against abuse.
 
