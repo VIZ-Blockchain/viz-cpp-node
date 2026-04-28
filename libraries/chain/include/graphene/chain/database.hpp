@@ -515,6 +515,13 @@ namespace graphene { namespace chain {
             const dlt_block_log &get_dlt_block_log() const { return _dlt_block_log; }
             dlt_block_log &get_dlt_block_log() { return _dlt_block_log; }
 
+            /// Returns the lowest block number for which this node can serve
+            /// full block data (block_log, dlt_block_log, or fork_db).
+            /// In DLT mode after snapshot import, this is typically the head
+            /// block number (only the head block is in dlt_block_log).
+            /// Used by P2P layer to avoid advertising blocks we can't serve.
+            uint32_t earliest_available_block_num() const;
+
             fork_database &get_fork_db() {
                 return _fork_db;
             }

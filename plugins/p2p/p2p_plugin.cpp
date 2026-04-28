@@ -284,7 +284,24 @@ namespace graphene {
                                     FC_THROW_EXCEPTION(graphene::network::peer_is_on_an_unreachable_fork, "Unable to provide a list of blocks starting at any of the blocks in peer's synopsis");
                             }
 
-                            for (uint32_t num = block_header::num_from_id(last_known_block_id);
+                            // Determine the starting block number for the response.
+                            uint32_t start_num = block_header::num_from_id(last_known_block_id);
+
+                            // In DLT mode, we can only serve blocks from our available range
+                            // (dlt_block_log + fork_db). Don't advertise blocks we can't serve,
+                            // otherwise the peer will request them, get item_not_available, and
+                            // disconnect us with "You are missing a sync item you claim to have".
+                            if (chain.db()._dlt_mode) {
+                                uint32_t earliest = chain.db().earliest_available_block_num();
+                                if (start_num < earliest) {
+                                    ilog("DLT mode: get_block_ids() clamping start from ${old} to ${new} "
+                                         "(earliest available block), head=${head}",
+                                         ("old", start_num)("new", earliest)("head", chain.db().head_block_num()));
+                                    start_num = earliest;
+                                }
+                            }
+
+                            for (uint32_t num = start_num;
                                  num <= chain.db().head_block_num() && result.size() < limit; ++num) {
                                 if (num > 0) {
                                     result.push_back(chain.db().get_block_id_for_num(num));
@@ -295,6 +312,14 @@ namespace graphene {
                                 block_header::num_from_id(result.back()) < chain.db().head_block_num()) {
                                 remaining_item_count =
                                         chain.db().head_block_num() - block_header::num_from_id(result.back());
+                            }
+
+                            if (chain.db()._dlt_mode) {
+                                dlog("DLT mode: get_block_ids() returning ${n} block IDs "
+                                     "(start=${start}, head=${head}, earliest_available=${earliest})",
+                                     ("n", result.size())("start", start_num)
+                                     ("head", chain.db().head_block_num())
+                                     ("earliest", chain.db().earliest_available_block_num()));
                             }
 
                             return result;
@@ -309,11 +334,18 @@ namespace graphene {
                                 auto opt_block = chain.db().fetch_block_by_id(id.item_hash);
                                 if (!opt_block) {
                                     if (chain.db()._dlt_mode) {
+                                        uint32_t block_num = block_header::num_from_id(id.item_hash);
+                                        uint32_t earliest = chain.db().earliest_available_block_num();
+                                        uint32_t head = chain.db().head_block_num();
                                         // In DLT mode, block data may not be available for blocks
-                                        // before the dlt_block_log range. This is expected — peer
-                                        // will get the block from another node.
-                                        dlog("Block ${id} (num ${num}) not available in DLT mode (no block data for this range)",
-                                            ("id", id.item_hash)("num", block_header::num_from_id(id.item_hash)));
+                                        // outside the dlt_block_log range. Log with full context.
+                                        wlog("DLT mode: cannot serve block #${num} (${id}) — "
+                                             "available block range: [${earliest}..${head}], "
+                                             "dlt_block_log: [${dlt_start}..${dlt_end}]",
+                                            ("num", block_num)("id", id.item_hash)
+                                            ("earliest", earliest)("head", head)
+                                            ("dlt_start", chain.db().get_dlt_block_log().start_block_num())
+                                            ("dlt_end", chain.db().get_dlt_block_log().head_block_num()));
                                         FC_THROW_EXCEPTION(fc::key_not_found_exception, "");
                                     }
                                     elog("Couldn't find block ${id} -- corresponding ID in our chain is ${id2}",
@@ -444,6 +476,15 @@ namespace graphene {
                             } while (low_block_num <= high_block_num);
 
                             //idump((synopsis));
+                            if (chain.db()._dlt_mode) {
+                                dlog("DLT mode: get_blockchain_synopsis() returning ${n} entries, "
+                                     "low=${low}, high=${high}, head=${head}, LIB=${lib}, "
+                                     "earliest_available=${earliest}",
+                                     ("n", synopsis.size())("low", chain.db().last_non_undoable_block_num())
+                                     ("high", high_block_num)("head", chain.db().head_block_num())
+                                     ("lib", chain.db().last_non_undoable_block_num())
+                                     ("earliest", chain.db().earliest_available_block_num()));
+                            }
                             return;
                         });
 

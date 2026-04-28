@@ -2707,13 +2707,31 @@ namespace graphene {
                         if (new_number_of_unfetched_items == 0) {
                             _delegate->sync_status(blockchain_item_ids_inventory_message_received.item_type, 0);
                         }
-
+                        ilog("Sync: peer ${peer} says we're up-to-date (items_available=${avail}, remaining=${remain}, "
+                             "ids_to_get=${ids}, unfetched_from_all_peers=${total})",
+                             ("peer", originating_peer->get_remote_endpoint())
+                             ("avail", blockchain_item_ids_inventory_message_received.item_hashes_available.size())
+                             ("remain", blockchain_item_ids_inventory_message_received.total_remaining_item_count)
+                             ("ids", originating_peer->ids_of_items_to_get.size())
+                             ("total", new_number_of_unfetched_items));
                         return;
                     }
 
                     std::deque<item_hash_t> item_hashes_received(blockchain_item_ids_inventory_message_received.item_hashes_available.begin(),
                             blockchain_item_ids_inventory_message_received.item_hashes_available.end());
                     originating_peer->number_of_unfetched_item_ids = blockchain_item_ids_inventory_message_received.total_remaining_item_count;
+
+                    if (!item_hashes_received.empty()) {
+                        uint32_t first_num = _delegate->get_block_number(item_hashes_received.front());
+                        uint32_t last_num = _delegate->get_block_number(item_hashes_received.back());
+                        ilog("Sync: received ${count} block IDs from peer ${peer} "
+                             "(range: #${first}..#${last}, remaining: ${remaining})",
+                             ("count", item_hashes_received.size())
+                             ("peer", originating_peer->get_remote_endpoint())
+                             ("first", first_num)("last", last_num)
+                             ("remaining", blockchain_item_ids_inventory_message_received.total_remaining_item_count));
+                    }
+
                     // flush any items this peer sent us that we've already received and processed from another peer
                     if (!item_hashes_received.empty() &&
                         originating_peer->ids_of_items_to_get.empty()) {
@@ -2868,6 +2886,9 @@ namespace graphene {
                     return _delegate->get_item(item);
                 }
                 catch (fc::key_not_found_exception &) {
+                    wlog("Block ${hash} (num #${num}) not available to serve to peer — sending item_not_available",
+                         ("hash", item.item_hash)
+                         ("num", _delegate->get_block_number(item.item_hash)));
                 }
                 return item_not_available_message(item);
             }
@@ -2947,7 +2968,10 @@ namespace graphene {
                     if (is_item_in_any_peers_inventory(requested_item)) {
                         _items_to_fetch.insert(prioritized_item_id(requested_item, _items_to_fetch_sequence_counter++));
                     }
-                    wlog("Peer doesn't have the requested item.");
+                    wlog("Peer ${peer} doesn't have the requested item ${item} (block #${num})",
+                         ("peer", originating_peer->get_remote_endpoint())
+                         ("item", requested_item.item_hash)
+                         ("num", _delegate->get_block_number(requested_item.item_hash)));
                     trigger_fetch_items_loop();
                     return;
                 }
@@ -2957,14 +2981,33 @@ namespace graphene {
                     originating_peer->sync_items_requested_from_peer.end()) {
                     originating_peer->sync_items_requested_from_peer.erase(sync_item_iter);
 
+                    uint32_t block_num = _delegate->get_block_number(requested_item.item_hash);
+
                     if (originating_peer->peer_needs_sync_items_from_us) {
+                        // Peer also needs items from us — don't disconnect, just stop
+                        // fetching sync blocks from this peer for now.
+                        wlog("Peer ${peer} doesn't have sync block #${num} (${id}) but also needs items from us — "
+                             "inhibiting sync fetch from this peer",
+                             ("peer", originating_peer->get_remote_endpoint())
+                             ("num", block_num)("id", requested_item.item_hash));
                         originating_peer->inhibit_fetching_sync_blocks = true;
                     } else {
-                        disconnect_from_peer(originating_peer, "You are missing a sync item you claim to have, your database is probably corrupted. Try --rebuild-index.", true,
-                                fc::exception(FC_LOG_MESSAGE(error, "You are missing a sync item you claim to have, your database is probably corrupted. Try --rebuild-index.",
-                                        ("item_id", requested_item))));
+                        // Peer claimed to have this block (it was in their blockchain_item_ids
+                        // response) but can't serve it. This can happen legitimately when the
+                        // peer is a DLT (snapshot) node with limited block history.
+                        // Instead of disconnecting with a scary "corrupted database" message,
+                        // inhibit sync from this peer and try to get the block elsewhere.
+                        wlog("Peer ${peer} can't serve sync block #${num} (${id}) — "
+                             "peer may be a DLT node with limited block history. "
+                             "Inhibiting sync from this peer, will try other peers.",
+                             ("peer", originating_peer->get_remote_endpoint())
+                             ("num", block_num)("id", requested_item.item_hash));
+                        originating_peer->inhibit_fetching_sync_blocks = true;
+
+                        // Move the unavailable item back to the global sync list
+                        // so another peer can provide it
+                        // (trigger_fetch_sync_items_loop will reassign it)
                     }
-                    wlog("Peer doesn't have the requested sync item.  This really shouldn't happen");
                     trigger_fetch_sync_items_loop();
                     return;
                 }
@@ -4187,8 +4230,11 @@ namespace graphene {
 
             void node_impl::start_synchronizing_with_peer(const peer_connection_ptr &peer) {
                 VERIFY_CORRECT_THREAD();
-                ilog("Starting sync with peer ${peer} (head_block: ${head})",
-                     ("peer", peer->get_remote_endpoint())("head", _delegate->get_block_number(_delegate->get_head_block_id())));
+                uint32_t head_num = _delegate->get_block_number(_delegate->get_head_block_id());
+                ilog("Starting sync with peer ${peer} (our head_block: #${head}, peer state: we_need=${we_need}, peer_needs=${peer_needs})",
+                     ("peer", peer->get_remote_endpoint())("head", head_num)
+                     ("we_need", peer->we_need_sync_items_from_peer)
+                     ("peer_needs", peer->peer_needs_sync_items_from_us));
                 peer->ids_of_items_to_get.clear();
                 peer->number_of_unfetched_item_ids = 0;
                 peer->we_need_sync_items_from_peer = true;

@@ -832,6 +832,31 @@ namespace graphene { namespace chain {
             return bid;
         }
 
+        uint32_t database::earliest_available_block_num() const {
+            // In non-DLT mode, block_log contains all irreversible blocks from genesis.
+            if (!_dlt_mode) {
+                auto blog_head = _block_log.head();
+                if (blog_head) {
+                    return 1; // block_log always starts from block 1
+                }
+                // No block_log — check fork_db
+                return head_block_num(); // only head in fork_db
+            }
+
+            // DLT mode: blocks come from dlt_block_log and fork_db.
+            // After snapshot import, dlt_block_log may have only the head block.
+            uint32_t earliest = head_block_num();
+
+            // Check dlt_block_log range
+            uint32_t dlt_start = _dlt_block_log.start_block_num();
+            if (dlt_start > 0 && dlt_start < earliest) {
+                earliest = dlt_start;
+            }
+
+            // fork_db blocks are typically at/above head, so they don't lower the floor.
+            return earliest;
+        }
+
         optional<signed_block> database::fetch_block_by_id(const block_id_type &id) const {
             try {
                 auto b = _fork_db.fetch_block(id);
