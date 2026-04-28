@@ -575,7 +575,7 @@ CheckDLTMode --> |No| NormalProcessing["Normal processing"]
 CheckDLTMode --> |Yes| CheckStartBoundary["Check start_num boundary"]
 CheckStartBoundary --> GetEarliest["Get earliest_available_block_num()"]
 GetEarliest --> CheckBelowEarliest{"start_num < earliest?"}
-CheckBelowEarliest --> |Yes| ClampToEarliest["Clamp to earliest"]
+CheckBelowEarliest --> |Yes| ClampToEarliest["Clamp start to earliest"]
 CheckBelowEarliest --> |No| CheckStorageBoundary["Check storage boundary"]
 CheckStorageBoundary --> GetDLTEnd["Get dlt_block_log.head_block_num()"]
 GetDLTEnd --> GetBlogEnd["Get block_log.head_block_num()"]
@@ -1608,7 +1608,5 @@ The P2P Plugin represents a sophisticated implementation of blockchain networkin
 The recent additions demonstrate ongoing attention to operational efficiency and user experience. The new DLT mode block range management with sophisticated gap detection provides intelligent support for snapshot-based nodes, while the enhanced peer interaction handling improves network resilience. The comprehensive logging throughout the sync process provides unprecedented visibility into network operations, and the graceful degradation capabilities ensure reliable operation even when peers cannot serve requested items.
 
 The plugin's design demonstrates best practices in distributed systems engineering, balancing security, performance, and maintainability while providing the foundation for scalable blockchain networks. The integration of DLT mode support, graceful degradation mechanisms, enhanced diagnostic capabilities, and sophisticated gap detection positions the P2P plugin to handle increasingly complex blockchain networking requirements with improved reliability and operability.
-
-The enhanced gap detection and automatic recovery mechanisms represent a significant advancement in P2P synchronization reliability, preventing peer disconnections due to item_not_available responses and ensuring continuous network operation even in challenging storage boundary scenarios. These improvements make the P2P plugin more robust and suitable for production environments with diverse node configurations and storage setups.
 
 The implementation of ANSI color codes further enhances the plugin's operational capabilities by providing visual distinction between different types of log messages, enabling operators to quickly identify and respond to different operational scenarios. The strategic use of gray, cyan, and white color codes creates a clear visual hierarchy that improves troubleshooting efficiency and reduces operator workload during complex network operations.
