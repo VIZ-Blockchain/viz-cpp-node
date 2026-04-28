@@ -15,12 +15,12 @@
 
 ## Update Summary
 **Changes Made**
-- Added new reset() method for safe DLT block log clearing and reinitialization
-- Enhanced automatic gap detection and recovery between DLT block log end and fork database start positions
-- Implemented intelligent gap recovery mechanisms with automatic DLT block log reset functionality
-- Added comprehensive gap handling during synchronization with improved logging and monitoring
-- Enhanced database integration with automatic gap detection and recovery system
-- Updated snapshot plugin integration with dlt_block_log_was_reset signal for automatic snapshot creation
+- Enhanced DLT block log reset functionality with comprehensive reset() method for safe clearing and reinitialization
+- Implemented automatic gap recovery system that detects synchronization gaps and automatically resets DLT block log
+- Added intelligent gap detection and suppression of redundant gap warnings through _dlt_gap_logged state management
+- Enhanced comprehensive logging for gap detection events with detailed gap information
+- Integrated automatic state management to suppress redundant warnings during gap recovery operations
+- Added signal-based integration with snapshot plugin for automatic fresh snapshot creation after DLT reset
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -121,7 +121,7 @@ PP --> DH
 - **Enhanced P2P Synchronization Capabilities**: Provides comprehensive block range validation, advertising prevention, and detailed error reporting for DLT mode operations with improved peer interaction handling.
 - **Multi-Layered Fallback Mechanisms**: Implements sophisticated block retrieval chain with fork database, primary block log, and DLT block log fallback layers, providing robust error handling and graceful degradation.
 - **Enhanced DLT Block Log Reset Functionality**: Provides safe log clearing and reinitialization through the new reset() method, enabling automatic recovery from synchronization gaps and improved operational flexibility.
-- **Automatic Gap Recovery System**: Implements intelligent gap detection and automatic recovery mechanisms that monitor synchronization gaps between DLT block log and fork database, automatically resetting the DLT block log when gaps are detected.
+- **Automatic Gap Recovery System**: Implements intelligent gap detection and automatic recovery mechanisms that monitor synchronization gaps between DLT block log and fork database, automatically resetting the DLT block log when gaps are detected and suppressing redundant warnings.
 
 **Enhanced Key Capabilities**:
 - Offset-aware index layout supporting arbitrary start block numbers with intelligent retention policies
@@ -955,53 +955,17 @@ The gap handling system provides comprehensive logging and monitoring capabiliti
 - [database.cpp:4581-4608](file://libraries/chain/database.cpp#L4581-L4608)
 - [database.cpp:4910-5150](file://libraries/chain/database.cpp#L4910-L5150)
 
-## Enhanced DLT Block Log Reset Functionality
-
-### Safe Log Clearing and Reinitialization
-The new reset() method provides comprehensive safe log clearing and reinitialization capabilities. When called, it closes the current DLT block log, deletes all data and index files, removes stale temporary and backup files, then reopens the log as empty. This functionality is essential for automatic gap recovery and synchronization gap management.
-
-**Reset Method Features**:
-- Safe log clearing with comprehensive file cleanup including .tmp and .bak files
-- Atomic file deletion and recreation process with proper error handling
-- Preservation of file path and configuration while resetting internal state
-- Comprehensive logging with old range information for debugging and monitoring
-- Thread-safe operation with proper locking mechanisms
-
-**Enhanced Reset Process**:
-- Close current DLT block log with proper cleanup
-- Delete all data files (block_path, block_path + ".tmp", block_path + ".bak")
-- Delete all index files (index_path, index_path + ".tmp", index_path + ".bak")
-- Reopen DLT block log with original path
-- Log completion with old range information
-
-**Section sources**
-- [dlt_block_log.cpp:453-473](file://libraries/chain/dlt_block_log.cpp#L453-L473)
-
-### Automatic Gap Recovery Integration
-The reset() method is automatically triggered during gap recovery operations when synchronization gaps are detected between the DLT block log and fork database. This ensures that the DLT block log is properly aligned with the fork database for continued synchronization.
-
-**Gap Recovery Integration Features**:
-- Automatic detection of gaps between dlt_end and fork_db_start positions
-- Triggering of reset() method when gaps exceed acceptable thresholds
-- Seamless continuation of block synchronization after reset
-- Integration with snapshot plugin for automatic fresh snapshot creation
-- Comprehensive logging of gap recovery actions and outcomes
-
-**Section sources**
-- [database.cpp:4910-5150](file://libraries/chain/database.cpp#L4910-L5150)
-
-## Automatic Gap Recovery System
-
-### Intelligent Gap Detection and Recovery
+### Automatic Gap Recovery System
 The automatic gap recovery system provides sophisticated gap detection and automatic recovery mechanisms that monitor synchronization gaps between DLT block log and fork database. When gaps are detected, the system automatically resets the DLT block log and aligns it with the fork database.
 
-**Gap Recovery System Features**:
+**Enhanced Gap Recovery System Features**:
 - Intelligent gap detection between DLT block log end and fork database start positions
 - Automatic DLT block log reset when gaps exceed acceptable thresholds
 - Seamless continuation of block synchronization after reset
 - Integration with snapshot plugin for automatic fresh snapshot creation
 - Comprehensive logging of gap recovery actions and outcomes
 - Prevention of repeated gap recovery operations for the same gap
+- **Enhanced State Management**: Automatic suppression of redundant gap warnings through _dlt_gap_logged flag
 
 **Enhanced Gap Recovery Process**:
 - Detection of gap between dlt_end and fork_db_start positions
@@ -1010,6 +974,7 @@ The automatic gap recovery system provides sophisticated gap detection and autom
 - Sequential writing of available blocks from fork database
 - Signal emission to snapshot plugin for fresh snapshot creation
 - Continued gap monitoring and recovery as needed
+- **Enhanced Warning Suppression**: Automatic logging state management to prevent redundant gap warnings
 
 ```mermaid
 flowchart TD
@@ -1033,7 +998,113 @@ ContinueSync
 ### Signal-Based Integration with Snapshot Plugin
 The automatic gap recovery system integrates with the snapshot plugin through the dlt_block_log_was_reset signal. When the DLT block log is reset due to gap recovery, the signal is emitted, prompting the snapshot plugin to create a fresh snapshot for other DLT nodes.
 
-**Signal Integration Features**:
+**Enhanced Signal Integration Features**:
+- Automatic emission of dlt_block_log_was_reset signal upon DLT block log reset
+- Snapshot plugin listening for reset signal to create fresh snapshots
+- Seamless coordination between gap recovery and snapshot creation
+- Enhanced bootstrap capability for other DLT nodes
+- Comprehensive logging of signal-based integration actions
+
+**Section sources**
+- [database.hpp:332-338](file://libraries/chain/include/graphene/chain/database.hpp#L332-L338)
+- [snapshot_plugin.cpp:3254](file://plugins/snapshot/plugin.cpp#L3254)
+
+### Automatic State Management for Gap Warnings
+The automatic gap recovery system includes intelligent state management to suppress redundant gap warnings. A boolean flag _dlt_gap_logged is used to track whether a gap warning has already been logged, preventing repeated logging for the same gap condition.
+
+**Enhanced State Management Features**:
+- _dlt_gap_logged boolean flag for gap warning suppression
+- Automatic setting of flag when gap warning is first logged
+- Reset of flag when gap begins to fill with new blocks
+- Re-enabling of gap logging when gaps reappear
+- Prevention of redundant gap warnings during recovery operations
+- Enhanced debugging information for gap state management
+
+**Section sources**
+- [database.cpp:5482-5499](file://libraries/chain/database.cpp#L5482-L5499)
+
+## Enhanced DLT Block Log Reset Functionality
+
+### Safe Log Clearing and Reinitialization
+The new reset() method provides comprehensive safe log clearing and reinitialization capabilities. When called, it closes the current DLT block log, deletes all data and index files, removes stale temporary and backup files, then reopens the log as empty. This functionality is essential for automatic gap recovery and synchronization gap management.
+
+**Enhanced Reset Method Features**:
+- Safe log clearing with comprehensive file cleanup including .tmp and .bak files
+- Atomic file deletion and recreation process with proper error handling
+- Preservation of file path and configuration while resetting internal state
+- Comprehensive logging with old range information for debugging and monitoring
+- Thread-safe operation with proper locking mechanisms
+
+**Enhanced Reset Process**:
+- Close current DLT block log with proper cleanup
+- Delete all data files (block_path, block_path + ".tmp", block_path + ".bak")
+- Delete all index files (index_path, index_path + ".tmp", index_path + ".bak")
+- Reopen DLT block log with original path
+- Log completion with old range information
+
+**Section sources**
+- [dlt_block_log.cpp:453-473](file://libraries/chain/dlt_block_log.cpp#L453-L473)
+
+### Automatic Gap Recovery Integration
+The reset() method is automatically triggered during gap recovery operations when synchronization gaps are detected between the DLT block log and fork database. This ensures that the DLT block log is properly aligned with the fork database for continued synchronization.
+
+**Enhanced Gap Recovery Integration Features**:
+- Automatic detection of gaps between dlt_end and fork_db_start positions
+- Triggering of reset() method when gaps exceed acceptable thresholds
+- Seamless continuation of block synchronization after reset
+- Integration with snapshot plugin for automatic fresh snapshot creation
+- Comprehensive logging of gap recovery actions and outcomes
+- Prevention of repeated gap recovery operations for the same gap
+
+**Section sources**
+- [database.cpp:4910-5150](file://libraries/chain/database.cpp#L4910-L5150)
+
+## Automatic Gap Recovery System
+
+### Intelligent Gap Detection and Recovery
+The automatic gap recovery system provides sophisticated gap detection and automatic recovery mechanisms that monitor synchronization gaps between DLT block log and fork database. When gaps are detected, the system automatically resets the DLT block log and aligns it with the fork database.
+
+**Enhanced Gap Recovery System Features**:
+- Intelligent gap detection between DLT block log end and fork database start positions
+- Automatic DLT block log reset when gaps exceed acceptable thresholds
+- Seamless continuation of block synchronization after reset
+- Integration with snapshot plugin for automatic fresh snapshot creation
+- Comprehensive logging of gap recovery actions and outcomes
+- Prevention of repeated gap recovery operations for the same gap
+- **Enhanced Warning Suppression**: Automatic suppression of redundant gap warnings through _dlt_gap_logged state management
+
+**Enhanced Gap Recovery Process**:
+- Detection of gap between dlt_end and fork_db_start positions
+- Identification of earliest available block in fork database
+- Automatic reset() method invocation to clear DLT block log
+- Sequential writing of available blocks from fork database
+- Signal emission to snapshot plugin for fresh snapshot creation
+- Continued gap monitoring and recovery as needed
+- **Enhanced State Management**: Automatic logging state management to prevent redundant gap warnings
+
+```mermaid
+flowchart TD
+GapDetection["Gap Detection"] --> CheckGap{"Gap > Threshold?"}
+CheckGap --> |No| ContinueSync["Continue Normal Sync"]
+CheckGap --> |Yes| FindForkStart["Find Earliest Fork Block"]
+FindForkStart --> ResetDLT["Call reset() method"]
+ResetDLT --> WriteBlocks["Write Available Blocks"]
+WriteBlocks --> EmitSignal["Emit dlt_block_log_was_reset"]
+EmitSignal --> CreateSnapshot["Create Fresh Snapshot"]
+CreateSnapshot --> ContinueSync
+ContinueSync
+```
+
+**Diagram sources**
+- [database.cpp:4910-5150](file://libraries/chain/database.cpp#L4910-L5150)
+
+**Section sources**
+- [database.cpp:4910-5150](file://libraries/chain/database.cpp#L4910-L5150)
+
+### Signal-Based Integration with Snapshot Plugin
+The automatic gap recovery system integrates with the snapshot plugin through the dlt_block_log_was_reset signal. When the DLT block log is reset due to gap recovery, the signal is emitted, prompting the snapshot plugin to create a fresh snapshot for other DLT nodes.
+
+**Enhanced Signal Integration Features**:
 - Automatic emission of dlt_block_log_was_reset signal upon DLT block log reset
 - Snapshot plugin listening for reset signal to create fresh snapshots
 - Seamless coordination between gap recovery and snapshot creation
@@ -1053,7 +1124,7 @@ The DLT block log accessibility has been significantly enhanced with the introdu
 - `const dlt_block_log &get_dlt_block_log() const` - Provides read-only access for general use
 - `dlt_block_log &get_dlt_block_log()` - Provides mutable access for external components to modify DLT block log properties during runtime operations
 
-**Runtime Property Modification Capabilities**:
+**Enhanced Runtime Property Modification Capabilities**:
 - External components can modify DLT block log properties during runtime operations
 - Maintains thread safety through proper locking mechanisms
 - Enables dynamic configuration of DLT block log behavior based on operational requirements
@@ -1074,7 +1145,7 @@ The DLT block log accessibility has been significantly enhanced with the introdu
 ### Enhanced External Component Integration
 The enhanced accessibility model provides comprehensive integration capabilities for external components that need to interact with the DLT block log during runtime operations.
 
-**External Component Integration Features**:
+**Enhanced External Component Integration Features**:
 - Chain plugin can access DLT block log for recovery operations with mutable access
 - Snapshot plugin can modify DLT block log properties during snapshot import
 - P2P plugin can optimize DLT block log access patterns for peer synchronization
@@ -1091,7 +1162,7 @@ The enhanced accessibility model provides comprehensive integration capabilities
 ### Earliest Available Block Number Method
 The comprehensive DLT block range management system introduces the earliest_available_block_num() method, which provides precise block availability tracking for DLT mode operations. This method determines the lowest block number for which the node can serve full block data from block_log, DLT block log, or fork database.
 
-**Earliest Available Block Number Features**:
+**Enhanced Earliest Available Block Number Features**:
 - Determines the lowest block number that can be served across all available sources
 - In non-DLT mode, returns 1 (block_log always starts from block 1)
 - In DLT mode, returns the minimum of head_block_num() and DLT block log start_block_num()
@@ -1264,6 +1335,7 @@ Comprehensive troubleshooting guidance for DLT-specific scenarios, retention pol
 - **Enhanced DLT Block Log Reset Issues**: Problems with safe log clearing and reinitialization functionality
 - **Automatic Gap Recovery Failures**: Issues with intelligent gap detection and automatic recovery mechanisms
 - **Signal Integration Problems**: Issues with dlt_block_log_was_reset signal emission and snapshot plugin integration
+- **Gap Warning Suppression Issues**: Problems with _dlt_gap_logged state management and redundant warning prevention
 
 **Section sources**
 - [dlt_block_log.cpp:161-209](file://libraries/chain/dlt_block_log.cpp#L161-L209)
@@ -1278,6 +1350,7 @@ Comprehensive troubleshooting guidance for DLT-specific scenarios, retention pol
 - [database.cpp:835-858](file://libraries/chain/database.cpp#L835-L858)
 - [dlt_block_log.cpp:453-473](file://libraries/chain/dlt_block_log.cpp#L453-L473)
 - [database.cpp:4910-5150](file://libraries/chain/database.cpp#L4910-L5150)
+- [database.cpp:5482-5499](file://libraries/chain/database.cpp#L5482-L5499)
 
 ## Conclusion
 The DLT Rolling Block Log provides a comprehensive, offset-aware append-only storage mechanism specifically designed for snapshot-based nodes with advanced selective retention policies and automatic pruning capabilities. Recent enhancements include critical memory safety improvements replacing unsafe pointer casts with std::memcpy operations throughout the implementation, comprehensive crash recovery mechanisms with .bak file restoration for atomic file operations, enhanced cross-platform compatibility through standardized file operations, and strengthened validation logic with comprehensive error reporting. The most significant enhancement is the comprehensive DLT block range management system with the earliest_available_block_num() method, which provides precise block availability tracking and enables sophisticated P2P synchronization with multi-layered fallback mechanisms. The enhanced P2P synchronization capabilities now provide robust error handling with detailed logging and graceful fallback mechanisms for DLT mode scenarios, while the multi-layered fallback mechanisms ensure reliable block retrieval across fork database, primary block log, and DLT block log sources. The enhanced accessibility model provides comprehensive integration capabilities for external components that need to interact with the DLT block log during runtime operations. The chain plugin can now modify DLT block log properties during recovery operations, the snapshot plugin can adjust DLT block log behavior during snapshot import, and the P2P plugin can optimize DLT block log access patterns for peer synchronization. This enhancement maintains thread safety through proper locking mechanisms while enabling dynamic configuration of DLT block log behavior based on operational requirements. The enhanced P2P fallback mechanisms now provide graceful handling of DLT mode scenarios where block data may not be available for certain ranges, with detailed logging and appropriate error responses including specific messages like "Block ${id} not available in DLT mode (no block data for this range)". The most notable recent enhancement is the sophisticated gap handling during synchronization between fork database and DLT block log. This system automatically manages the critical period when the DLT block log is catching up to the fork database, with intelligent logging, automatic seeding, and graceful handling of missing blocks. The gap handling system prevents repeated logging for the same gap status and provides detailed progress notifications, ensuring smooth operation during the synchronization process. The new enhanced blockchain recovery system represents a major advancement in DLT node reliability and operational efficiency. The reindex_from_dlt method provides core functionality for rebuilding blockchain state from DLT rolling block log after snapshot import, with comprehensive error handling, progress tracking, enhanced fork database seeding, and detailed logging capabilities. This system enables rapid recovery from corrupted states while maintaining data integrity and operational continuity, with enhanced progress reporting and memory management optimization. Its sophisticated integration with the database ensures seamless fallback when the primary block log is empty, while configurable limits, intelligent retention enforcement, and automatic cleanup mechanisms help manage disk usage efficiently. The implementation leverages advanced memory-mapped files, strict position validation using std::memcpy operations, and comprehensive error handling to deliver reliable performance and data integrity for modern blockchain operations. The improved error handling and fallback mechanisms ensure that DLT mode operations are robust, well-documented, and provide excellent user experience for both operators and P2P peers with comprehensive logging and graceful degradation capabilities. The critical memory safety improvements eliminate undefined behavior risks, while the crash recovery mechanisms ensure data integrity even during unexpected system failures. The enhanced fork database seeding and block availability checking logic provide comprehensive support for DLT mode operations, making the system more reliable and user-friendly for snapshot-based node operations. The stalled sync detection feature further enhances the system's resilience and operational efficiency by automatically handling network connectivity issues without manual intervention. The enhanced gap handling capabilities and new blockchain recovery system represent significant improvements in DLT mode synchronization reliability, user experience, and operational efficiency. The latest accessibility enhancement completes the comprehensive DLT block log functionality by enabling external components to modify DLT block log properties during runtime operations while maintaining read-only access for general use, providing a robust foundation for advanced DLT node operations. The comprehensive DLT block range management system with the earliest_available_block_num() method, enhanced P2P synchronization capabilities with multi-layered fallback mechanisms, and sophisticated peer interaction handling represent the most significant advancement in DLT mode support and P2P synchronization reliability. The new reset() method and automatic gap recovery system provide enhanced operational flexibility and improved synchronization reliability, making the DLT rolling block log a cornerstone component of the VIZ blockchain's advanced node capabilities.
