@@ -4942,6 +4942,9 @@ namespace graphene { namespace chain {
                                                             break; // end of contiguous range
                                                         }
                                                     }
+                                                    // Signal snapshot plugin to create a fresh snapshot
+                                                    // so other DLT nodes can catch up from us
+                                                    try { dlt_block_log_was_reset(); } catch (...) {}
                                                 }
                                                 break;
                                             }
@@ -5133,6 +5136,8 @@ namespace graphene { namespace chain {
                                                             break; // end of contiguous range
                                                         }
                                                     }
+                                                    // Signal snapshot plugin to create a fresh snapshot
+                                                    try { dlt_block_log_was_reset(); } catch (...) {}
                                                 }
                                                 break;
                                             }

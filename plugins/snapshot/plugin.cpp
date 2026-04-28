@@ -777,6 +777,7 @@ public:
     static constexpr uint64_t MAX_SNAPSHOT_SIZE = 2ULL * 1024 * 1024 * 1024;
 
     boost::signals2::scoped_connection applied_block_conn;
+    boost::signals2::scoped_connection dlt_reset_conn;
 
     // Stalled sync detection for DLT mode
     bool enable_stalled_sync_detection = false;
@@ -3246,6 +3247,46 @@ void snapshot_plugin::plugin_startup() {
     // Start stalled sync detection if enabled (for DLT mode)
     if (my->enable_stalled_sync_detection && !my->trusted_snapshot_peers.empty()) {
         my->start_stalled_sync_detection();
+    }
+
+    // Listen for dlt_block_log reset events — create a fresh snapshot so other
+    // DLT nodes can bootstrap from us (ignores snapshot-every-n-blocks, is_syncing, etc.)
+    if (my->db._dlt_mode && !my->snapshot_dir.empty()) {
+        my->dlt_reset_conn = my->db.dlt_block_log_was_reset.connect([this]() {
+            std::string dir = my->snapshot_dir;
+            uint32_t head = my->db.head_block_num();
+            fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(head) + ".vizjson");
+
+            ilog(CLOG_GREEN "dlt_block_log was reset — scheduling fresh snapshot for other nodes: ${p}" CLOG_RESET,
+                 ("p", output.string()));
+
+            // Reuse the async snapshot scheduling logic
+            if (my->snapshot_in_progress.exchange(true)) {
+                wlog("Snapshot already in progress, skipping post-reset snapshot");
+                return;
+            }
+            if (!my->snapshot_thread) {
+                my->snapshot_thread = std::make_unique<fc::thread>("async_snapshot");
+            }
+            my->snapshot_future = my->snapshot_thread->async([this, output]() {
+                struct flag_guard {
+                    std::atomic<bool>& flag;
+                    ~flag_guard() { flag = false; }
+                };
+                flag_guard guard{my->snapshot_in_progress};
+                try {
+                    my->create_snapshot(output);
+                    my->cleanup_old_snapshots();
+                } catch (const fc::exception& e) {
+                    elog("Failed to create post-reset snapshot: ${e}", ("e", e.to_detail_string()));
+                } catch (const std::exception& e) {
+                    elog("Failed to create post-reset snapshot: ${e}", ("e", e.what()));
+                } catch (...) {
+                    elog("Failed to create post-reset snapshot: unknown exception");
+                }
+            }, "async_snapshot_dlt_reset");
+        });
+        ilog("Listening for dlt_block_log reset events to create fresh snapshots");
     }
 }
 

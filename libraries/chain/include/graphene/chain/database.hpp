@@ -330,6 +330,14 @@ namespace graphene { namespace chain {
             fc::signal<void(const signed_block &)> applied_block;
 
             /**
+             * Emitted when dlt_block_log is reset due to a gap between
+             * dlt_block_log end and fork_db start.  The snapshot plugin
+             * listens for this to create a fresh snapshot so other DLT
+             * nodes can bootstrap from us.
+             */
+            fc::signal<void()> dlt_block_log_was_reset;
+
+            /**
              * This signal is emitted any time a new transaction is added to the pending
              * block state.
              */
