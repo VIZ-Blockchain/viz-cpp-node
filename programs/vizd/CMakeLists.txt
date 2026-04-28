@@ -27,7 +27,6 @@ target_link_libraries(
         graphene::operation_history
         graphene::account_by_key
         graphene::account_history
-        graphene::auth_util
         graphene::raw_block
         graphene::block_info
         graphene::json_rpc
