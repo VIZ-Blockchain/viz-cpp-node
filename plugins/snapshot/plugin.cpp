@@ -783,6 +783,7 @@ public:
     bool enable_stalled_sync_detection = false;
     uint32_t stalled_sync_timeout_minutes = 5;
     fc::time_point last_block_received_time;
+    std::unique_ptr<fc::thread> stalled_sync_thread;  // dedicated thread (main thread can't run fc fibers)
     fc::future<void> stalled_sync_check_future;
     std::atomic<bool> stalled_sync_check_running{false};
 
@@ -1596,7 +1597,13 @@ void snapshot_plugin::plugin_impl::start_stalled_sync_detection() {
         return; // Already running
     }
     last_block_received_time = fc::time_point::now();
-    stalled_sync_check_future = fc::async([this]() {
+    // Must run on a dedicated fc::thread — the main thread is blocked in
+    // io_serv->run() and never pumps the fc fiber scheduler, so fc::async()
+    // fibers scheduled there will never execute.
+    if (!stalled_sync_thread) {
+        stalled_sync_thread = std::make_unique<fc::thread>("stalled_sync");
+    }
+    stalled_sync_check_future = stalled_sync_thread->async([this]() {
         check_stalled_sync_loop();
     }, "stalled_sync_check");
     ilog(CLOG_YELLOW "Stalled sync detection started (timeout: ${m} min)" CLOG_RESET, ("m", stalled_sync_timeout_minutes));
@@ -1608,6 +1615,10 @@ void snapshot_plugin::plugin_impl::stop_stalled_sync_detection() {
     }
     if (stalled_sync_check_future.valid()) {
         stalled_sync_check_future.cancel_and_wait();
+    }
+    if (stalled_sync_thread) {
+        stalled_sync_thread->quit();
+        stalled_sync_thread.reset();
     }
     ilog(CLOG_YELLOW "Stalled sync detection stopped" CLOG_RESET);
 }
