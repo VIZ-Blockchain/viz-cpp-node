@@ -25,11 +25,15 @@
 
 ## Update Summary
 **Changes Made**
-- Refined database handling for unlinkable blocks with gap-based decision system (≤100 gap deferred to fork_db, >100 gap rejected)
-- Improved fork management logic with enhanced early rejection mechanisms
+- Enhanced database synchronization with sophisticated gap-based decision system that analyzes relationship between incoming blocks and current chain head
+- Improved fork database exception prevention through comprehensive early rejection mechanisms
+- Implemented multi-layered block retrieval processes with systematic fallback mechanisms for better fault tolerance
+- Added intelligent gap-based early rejection logic (≤100 gap deferred to fork_db, >100 gap rejected)
 - Enhanced early rejection logic for blocks far ahead with unknown parents
-- Updated fork database exception prevention with comprehensive gap-based handling
+- Improved fork database exception prevention with comprehensive gap-based handling
 - Strengthened P2P synchronization with improved unlinkable block classification
+- Enhanced multi-layered block retrieval system with hierarchical fallback mechanisms
+- Improved last irreversible block advancement logic with comprehensive fallback mechanisms
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -46,7 +50,7 @@
 ## Introduction
 This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, and practical examples of database operations and performance optimization.
 
-**Updated** - Enhanced with refined database handling for unlinkable blocks featuring a sophisticated gap-based decision system. The system now implements intelligent early rejection logic that rejects blocks with gaps > 100 immediately while deferring blocks with gaps ≤ 100 to the fork database for automatic chain linking when parent blocks arrive. This improvement prevents memory bloat from dead-fork blocks and eliminates sync restart loops during snapshot imports and normal operation.
+**Updated** - Enhanced with sophisticated gap-based decision system for database synchronization that analyzes the relationship between incoming blocks and current chain head. The system now implements intelligent early rejection logic that rejects blocks with gaps > 100 immediately while deferring blocks with gaps ≤ 100 to the fork database for automatic chain linking when parent blocks arrive. This improvement prevents memory bloat from dead-fork blocks and eliminates sync restart loops during snapshot imports and normal operation. The enhanced fork database exception prevention provides comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection.
 
 ## Project Structure
 The database subsystem is implemented primarily in the chain library with enhanced support for operation guards and concurrent access protection:
@@ -115,7 +119,7 @@ EXC --> NODE
 
 **Diagram sources**
 - [database.hpp:1-670](file://libraries/chain/include/graphene/chain/database.hpp#L1-L670)
-- [database.cpp:1-6623](file://libraries/chain/database.cpp#L1-L6623)
+- [database.cpp:1-6643](file://libraries/chain/database.cpp#L1-L6643)
 - [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 - [chainbase.cpp:1-200](file://thirdparty/chainbase/src/chainbase.cpp#L1-L200)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
@@ -136,7 +140,7 @@ EXC --> NODE
 
 **Section sources**
 - [database.hpp:1-670](file://libraries/chain/include/graphene/chain/database.hpp#L1-L670)
-- [database.cpp:1-6623](file://libraries/chain/database.cpp#L1-L6623)
+- [database.cpp:1-6643](file://libraries/chain/database.cpp#L1-L6643)
 - [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 - [chainbase.cpp:1-200](file://thirdparty/chainbase/src/chainbase.cpp#L1-L200)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
@@ -684,7 +688,7 @@ UpdateFields --> End
 **New** - The database now features sophisticated collision detection with rate-limiting and scenario differentiation:
 
 - **Same-Parent vs Different-Parent Detection**: The system differentiates between same-parent double production (colliding blocks from the same parent) and different-parent fork scenarios (divergent chain tips).
-- **Rate-Limited Warnings**: Uses a static counter and timestamp to suppress repeated warnings at the same block height within a 5-second window.
+- **Rate-Limited Warnings**: Uses a static counter and timestamp to suppress repeated warnings at the same block height to avoid log spam during sustained fork conditions.
 - **Timestamp Delta Analysis**: Calculates time differences between colliding blocks to help diagnose timing issues.
 - **Witness Information Logging**: Logs witness names and timestamps for all colliding blocks to aid in forensic analysis.
 - **Parent Block ID Tracking**: Records previous block IDs to help analyze fork topology and collision origins.
@@ -1035,7 +1039,7 @@ CheckExisting --> |Yes| IgnoreBlock["Ignore block (already on chain)"]
 CheckExisting --> |No| CheckParent{"new_block.previous != block_id_type() && !_fork_db.is_known_block(new_block.previous)?"}
 CheckParent --> |Yes| RejectDeadFork["Reject dead fork block"]
 CheckParent --> |No| FallThrough["Fall through to normal logic"]
-CheckAtOrBelow --> |No| CheckFarAhead{"new_block.block_num() > head_block_num() && new_block.previous != head_block_id() && !_fork_db.is_known_block(new_block.previous)?"}
+CheckAtOrBelow --> |No| CheckFarAhead{"new_block.block_num() > head_block_num() && new_block.previous != block_id_type() && !_fork_db.is_known_block(new_block.previous)?"}
 CheckFarAhead --> |Yes| CheckGap{"gap = new_block.block_num() - head_block_num()"}
 CheckGap --> |gap > 100| RejectLargeGap["Reject large gap (>100) immediately"]
 CheckGap --> |gap <= 100| DeferSmallGap["Defer small gap (<=100) to fork_db"]
