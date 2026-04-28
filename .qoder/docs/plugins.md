@@ -49,6 +49,7 @@ The fundamental plugin that manages the blockchain database, block validation, a
 | `--replay-if-corrupted` | `bool` (default: `true`) | Replay all blocks if shared memory is corrupted |
 | `--force-replay-blockchain` | `bool` | Force clear chain database and replay all blocks |
 | `--replay-from-snapshot` | `bool` | Crash recovery: import snapshot and replay dlt_block_log |
+| `--auto-recover-from-snapshot` | `bool` (default: `true`) | Automatic runtime recovery from shared memory corruption via snapshot |
 | `--resync-blockchain` | `bool` | Clear chain database and block log |
 
 **Config options:**
@@ -222,6 +223,7 @@ Snapshot creation, loading, and P2P sync for fast node bootstrap and crash recov
 | `--snapshot <path>` | `string` | Load state from a snapshot file (DLT mode) |
 | `--snapshot-auto-latest` | `bool` | Auto-discover latest snapshot in `snapshot-dir` |
 | `--replay-from-snapshot` | `bool` | Crash recovery: import snapshot + replay dlt_block_log |
+| `--auto-recover-from-snapshot` | `bool` (default: `true`) | Automatic runtime recovery from shared memory corruption |
 | `--create-snapshot <path>` | `string` | Create a snapshot and exit |
 | `--sync-snapshot-from-trusted-peer` | `bool` | Download snapshot from trusted peers on empty state |
 

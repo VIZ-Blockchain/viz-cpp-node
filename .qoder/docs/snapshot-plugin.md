@@ -19,6 +19,7 @@ The snapshot plugin enables near-instant node startup by serializing and restori
 | `--snapshot <path>` | `string` | Load state from a snapshot file instead of replaying blockchain. The node opens in DLT mode (no block log). Safe for restarts — skips import if shared_memory already exists, and renames the file to `.used` after successful import. |
 | `--snapshot-auto-latest` | `bool` (default: `false`) | Auto-discover the latest snapshot file in `snapshot-dir` by parsing block numbers from filenames (`snapshot-block-NNNNN.vizjson` or `.json`). Typically used with `--replay-from-snapshot` to avoid specifying the file path manually. Ignored if `--snapshot` is already specified. |
 | `--replay-from-snapshot` | `bool` (default: `false`) | Crash recovery mode: import a snapshot and then replay blocks from `dlt_block_log` to bring the node up to the latest available state. Unlike `--snapshot`, this always wipes shared memory (assumes corruption), does NOT rename the snapshot to `.used`, and replays subsequent blocks from the DLT rolling block log. Requires `--snapshot <path>` or `--snapshot-auto-latest`. |
+| `--auto-recover-from-snapshot` | `bool` (default: `true`) | Automatic runtime recovery from shared memory corruption. When corruption is detected during block processing or generation (e.g., missing witness account), the node immediately closes the database, finds the latest snapshot, wipes shared memory, imports the snapshot, replays `dlt_block_log`, and resumes P2P sync — all without a restart. Requires `plugin = snapshot` and snapshots in `snapshot-dir`. |
 | `--create-snapshot <path>` | `string` | Create a snapshot file at the given path using the current database state, then exit. |
 | `--sync-snapshot-from-trusted-peer` | `bool` (default: `false`) | Download and load snapshot from trusted peers when state is empty (`head_block_num == 0`). Requires `trusted-snapshot-peer` to be configured. Defaults to `false` (opt-in) — must be explicitly enabled to prevent accidental state wipe via `chainbase::wipe()`. |
 
@@ -517,6 +518,48 @@ The node is now at block 79,274,318 and P2P sync fills the gap to the live chain
 | Hardfork initialization | In callback | In callback + explicit call |
 | Typical use case | First-time node setup | Crash recovery |
 
+## Automatic Runtime Recovery: `--auto-recover-from-snapshot`
+
+While `--replay-from-snapshot` requires a manual restart, `--auto-recover-from-snapshot` (enabled by default) provides **immediate, automatic recovery** when shared memory corruption is detected at runtime — without any restart.
+
+### How it works
+
+When the node detects corruption during normal operation (e.g., a witness account object is missing from the database during block processing or block generation), it throws a `shared_memory_corruption_exception`. This exception is caught at the plugin level:
+
+1. **Block acceptance path** (P2P sync): `plugin::accept_block()` catches the exception and calls `attempt_auto_recovery()`.
+2. **Block generation path** (witness): The witness plugin's `generate_block` retry loop catches the exception before the generic `fc::exception` handler, and calls `chain().attempt_auto_recovery()`.
+
+### Recovery flow (`attempt_auto_recovery`)
+
+1. **Find snapshot** — Scans `snapshot-dir` for the latest `snapshot-block-*.vizjson` or `.json` file (same logic as `--snapshot-auto-latest`).
+2. **Close database** — Calls `db.close(false)` (no rewind — state is corrupted anyway). Errors during close are ignored.
+3. **Wipe & import** — Calls `do_snapshot_load(data_dir, true)`, which is the exact same code path as `--replay-from-snapshot`: wipes `shared_memory.bin`, opens from genesis via `open_from_snapshot()`, imports snapshot state via callback, replays `dlt_block_log` blocks.
+4. **Resume** — Calls `on_sync()` to resume P2P sync from the recovered head block. The node continues running.
+
+If recovery fails at any step (no snapshots found, snapshot plugin not configured, import error), the node logs an error and calls `appbase::app().quit()`.
+
+### Prerequisites
+
+- `plugin = snapshot` must be enabled
+- Snapshots must exist in `snapshot-dir` (default: `<data-dir>/snapshots/`). Use `--snapshot-every-n-blocks` to create them automatically.
+- The `dlt_block_log` should cover blocks beyond the snapshot for minimal data loss.
+
+### Key differences from `--replay-from-snapshot`
+
+| Aspect | `--replay-from-snapshot` | `--auto-recover-from-snapshot` |
+|--------|--------------------------|-------------------------------|
+| Trigger | Manual (restart with CLI flag) | Automatic (runtime exception) |
+| Requires restart | Yes | No |
+| Snapshot selection | `--snapshot` or `--snapshot-auto-latest` | Always auto-discovers latest |
+| Default | `false` (opt-in) | `true` (enabled by default) |
+| Database state before recovery | Failed to open | Open but corrupted → closed |
+| Startup corruption | Yes (catch blocks in `plugin_startup`) | Yes (catch blocks in `plugin_startup`) |
+| Runtime corruption | No | Yes (`accept_block`, `generate_block`) |
+
+### Disabling
+
+To disable automatic recovery (e.g., for debugging), pass `--no-auto-recover-from-snapshot` on the command line.
+
 ## P2P Snapshot Sync
 
 Nodes can download snapshots directly from trusted peers over a custom TCP protocol, enabling fully automated bootstrap without manual file transfers.
@@ -756,6 +799,7 @@ Alternatively, add a cron job on the **host** machine:
 | One-shot snapshot | `docker run --rm -e VIZD_EXTRA_OPTS="--create-snapshot /var/lib/vizd/snapshots/snap.json --plugin snapshot" ...` |
 | Load from snapshot | `docker run -e VIZD_EXTRA_OPTS="--snapshot /var/lib/vizd/snapshots/snap.json --plugin snapshot" ...` |
 | Crash recovery | `docker run -e VIZD_EXTRA_OPTS="--replay-from-snapshot --snapshot-auto-latest --plugin snapshot" ...` |
+| Auto-recovery (default) | Enabled by default with `--auto-recover-from-snapshot`. Ensure `plugin = snapshot` and `snapshot-every-n-blocks` are set in config. |
 | P2P auto-bootstrap | Add `trusted-snapshot-peer = <ip>:<port>` to config, start container with `--plugin snapshot` |
 | Find snapshots on host | `ls -lt ~/vizhome/snapshots/` |
 | Check snapshot creation logs | `docker logs vizd \| grep -i snapshot` |
@@ -1085,9 +1129,10 @@ The snapshot plugin required changes to several core components:
 |-----------|--------|
 | `chainbase::generic_index` | Added `set_next_id()` / `next_id()` for ID preservation during import |
 | `fork_database.cpp` | Fixed `_unlinked_index.insert()` dead code (moved before `throw`); added `_push_next(item)` call at end of `_push_block` to resolve previously-unlinkable blocks; added duplicate block check in `_push_block`; added `_unlinked_index.clear()` to `reset()` |
-| `database.hpp/cpp` | Added `open_from_snapshot()`, `initialize_hardforks()`, `reindex_from_dlt()`, `get_fork_db()`, `_dlt_mode` flag with `set_dlt_mode()` setter; DLT mode skips block_log writes and detects empty block_log on restart; `is_known_block()` in DLT mode checks block_summary then verifies preferred chain via `find_block_id_for_num()` (prevents both lying to peers and breaking sync negotiation); DLT restart seeds fork_db from dlt_block_log when available; early rejection in `_push_block`: duplicate blocks (at/before head, same ID), blocks at/before head on different fork with unknown parent (prevents P2P sync restart loop), far-ahead broadcast blocks (parent unknown and not head_block_id), with immediate successor (`previous == head_block_id()`) always allowed; DLT block log gap logging via `wlog`; DLT block log empty-skip logic for fresh snapshot imports |
+| `database.hpp/cpp` | Added `open_from_snapshot()`, `initialize_hardforks()`, `reindex_from_dlt()`, `get_fork_db()`, `_dlt_mode` flag with `set_dlt_mode()` setter; DLT mode skips block_log writes and detects empty block_log on restart; `is_known_block()` in DLT mode checks block_summary then verifies preferred chain via `find_block_id_for_num()` (prevents both lying to peers and breaking sync negotiation); DLT restart seeds fork_db from dlt_block_log when available; early rejection in `_push_block`: duplicate blocks (at/before head, same ID), blocks at/before head on different fork with unknown parent (prevents P2P sync restart loop), far-ahead broadcast blocks (parent unknown and not head_block_id), with immediate successor (`previous == head_block_id()`) always allowed; DLT block log gap logging via `wlog`; DLT block log empty-skip logic for fresh snapshot imports; corruption detection throws `shared_memory_corruption_exception` (instead of `FC_ASSERT`) from all witness-account-missing checks (generate_block, process_funds, HF4 path) |
+| `database_exceptions.hpp` | Added `shared_memory_corruption_exception` (code 4140000) for runtime corruption detection |
 | `dlt_block_log.hpp/cpp` | New class: offset-aware rolling block log with 8-byte header index, `truncate_before()` for rotation, read/write with mutex locking |
-| `chain plugin` | Added `snapshot_load_callback`, `snapshot_create_callback`, `snapshot_p2p_sync_callback`; restart safety (shared_memory check + `.used` rename + file existence check); LIB promotion after snapshot import (LIB = head_block_num for correct P2P synopsis); `dlt-block-log-max-blocks` config option; diagnostic warning when node has 0 blocks and no snapshot sync configured; `--replay-from-snapshot` crash recovery mode (wipes shared_memory, imports snapshot, replays dlt_block_log via `reindex_from_dlt`, does not rename snapshot); `--snapshot-auto-latest` auto-discovery of latest snapshot in `snapshot-dir` |
+| `chain plugin` | Added `snapshot_load_callback`, `snapshot_create_callback`, `snapshot_p2p_sync_callback`; restart safety (shared_memory check + `.used` rename + file existence check); LIB promotion after snapshot import (LIB = head_block_num for correct P2P synopsis); `dlt-block-log-max-blocks` config option; diagnostic warning when node has 0 blocks and no snapshot sync configured; `--replay-from-snapshot` crash recovery mode (wipes shared_memory, imports snapshot, replays dlt_block_log via `reindex_from_dlt`, does not rename snapshot); `--snapshot-auto-latest` auto-discovery of latest snapshot in `snapshot-dir`; `--auto-recover-from-snapshot` (default: `true`) immediate runtime recovery — `accept_block` and witness `generate_block` catch `shared_memory_corruption_exception`, call `attempt_auto_recovery()` which closes DB, finds latest snapshot, wipes shared memory, imports snapshot, replays dlt_block_log, and resumes P2P sync without restart |
 | `snapshot plugin` | Full implementation: create/load/periodic snapshots; P2P TCP sync (serve + download with concurrent fiber handling on a dedicated `fc::thread`); 5-second peer operation timeout (connect, send, read); anti-spam (rate limiting, mutex-protected session tracking, enforced per-operation connection deadline); cached snapshot info; streaming SHA-256 checksum; built-in rotation (`snapshot-max-age-days`); elapsed time logging for all operations; console progress logging for download/import; `sync-snapshot-from-trusted-peer` defaults to `false` (opt-in); auto-creates snapshot directory; periodic snapshots only trigger on live blocks (skipped during P2P sync); memory optimization: compressed data freed immediately after decompression; `--snapshot-auto-latest` auto-discovery of latest snapshot file by block number; `find_latest_snapshot()` helper; **async snapshot creation**: `on_applied_block` schedules snapshot on a dedicated `fc::thread` (not the main thread's fc scheduler, which is blocked by `io_serv->run()`); `create_snapshot` splits into Phase 1 (read lock for DB serialization only) and Phase 2 (compression + file I/O without lock); `snapshot_in_progress` atomic flag prevents overlapping snapshots; `write_snapshot_to_file` accepts pre-captured header+state (no DB access needed); shutdown waits for in-progress snapshot before quitting thread; **DLT restart safety**: `load_snapshot()` persists the snapshot's head block into `dlt_block_log` so `database::open()` can seed `fork_db` on restart |
 | `content_object.hpp` | Added missing `FC_REFLECT` for `content_object`, `content_type_object`, `content_vote_object` |
 | `witness_objects.hpp` | Added missing `FC_REFLECT` for `witness_vote_object` |
