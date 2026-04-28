@@ -1,4 +1,3 @@
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/libraries/fc/GitVersionGen")
 include(GetGitRevisionDescription)
 get_git_head_revision(GIT_REFSPEC GRAPHENE_GIT_REVISION_SHA)
 get_git_unix_timestamp(GRAPHENE_GIT_REVISION_UNIX_TIMESTAMP)
