@@ -37,7 +37,7 @@ struct witness_guard_plugin::impl {
     bool                        _enabled        = true;
     uint32_t                    _check_interval = 20;   // blocks between periodic checks
     bool                        _initial_check_done = false; // true once the node is confirmed in sync at startup
-    bool                        _stale_production = false;   // mirrors enable-stale-production from witness config
+    bool                        _stale_production_config = false; // mirrors enable-stale-production from witness config
     boost::signals2::connection _applied_block_connection;   // applied_block signal connection
 
     // Per-witness key pair used for signing and for broadcasting the update
@@ -72,12 +72,27 @@ struct witness_guard_plugin::impl {
 bool witness_guard_plugin::impl::check_and_restore_internal() {
     auto& database = db();
 
-    // Skip auto-restore when stale production is enabled (enable-stale-production=true).
-    // In that mode the operator deliberately runs on a minority fork, so restoring
-    // signing keys would be unsafe — the update could land on the wrong fork.
-    if (_stale_production) {
-        dlog("witness_guard: stale production enabled, auto-restore disabled");
-        return false;
+    // Skip auto-restore when stale production is enabled AND the network is
+    // not yet healthy. Once participation reaches >= 33% the stale-production
+    // override is no longer needed — auto-clear it (same logic as witness plugin)
+    // to remove operator human error and re-enable key restoration.
+    if (_stale_production_config) {
+        const auto& dgp = database.get_dynamic_global_properties();
+        if (!dgp.emergency_consensus_active) {
+            uint32_t prate = database.witness_participation_rate();
+            if (prate >= 33 * CHAIN_1_PERCENT) {
+                ilog("witness_guard: network is healthy (participation ${p}%), "
+                     "auto-clearing stale production override",
+                     ("p", prate / CHAIN_1_PERCENT));
+                _stale_production_config = false;
+            } else {
+                dlog("witness_guard: stale production enabled and network not yet healthy, "
+                     "auto-restore disabled");
+                return false;
+            }
+        }
+        // In emergency mode we do NOT skip — emergency consensus handles
+        // its own recovery and key restoration may still be needed.
     }
 
     // Require the node to be synchronized: head block must be recent
@@ -169,7 +184,7 @@ void witness_guard_plugin::impl::send_witness_update(
         // Build the witness_update operation with the correct signing key
         graphene::protocol::witness_update_operation op;
         op.owner            = witness_name;
-        op.url              = std::string(obj.url.begin(), obj.url.end()); 
+        op.url              = std::string(obj.url.begin(), obj.url.end());
         op.block_signing_key = signing_pub;
 
         // 30-second expiration window for the transaction
@@ -197,7 +212,7 @@ void witness_guard_plugin::impl::send_witness_update(
 
         // Track so we can confirm inclusion in a future block
         _restore_pending[witness_name] = expiration;
-        _pending_confirmations[tx_id] = { witness_name, expiration }; 
+        _pending_confirmations[tx_id] = { witness_name, expiration };
 
         ilog("witness_guard: witness_update for '${w}' sent successfully", ("w", witness_name));
 
@@ -255,12 +270,13 @@ void witness_guard_plugin::plugin_initialize(
         // Detect whether enable-stale-production is active.
         // When stale production is on the operator intentionally produces on a
         // minority fork, so auto-restoring signing keys would be dangerous.
+        // This flag is auto-cleared once the network becomes healthy (>= 33%).
         if (options.count("enable-stale-production")) {
-            pimpl->_stale_production = options["enable-stale-production"].as<bool>();
+            pimpl->_stale_production_config = options["enable-stale-production"].as<bool>();
         }
-        if (pimpl->_stale_production) {
+        if (pimpl->_stale_production_config) {
             wlog("witness_guard: enable-stale-production detected — "
-                 "auto-restore is DISABLED to avoid broadcasting on a minority fork");
+                 "auto-restore is DISABLED until network participation >= 33%%");
         }
 
         // check interval (in blocks)
@@ -284,7 +300,7 @@ void witness_guard_plugin::plugin_initialize(
                     FC_ASSERT(active_priv.valid(), "witness-guard-witness: invalid active WIF for ${n}", ("n", name));
 
                     pimpl->_witness_configs[name] = { *sign_priv, *active_priv };
-                    
+
                     ilog("witness_guard: monitoring witness '${w}' (signing key: ${k})",
                          ("w", name)("k", sign_priv->get_public_key()));
 
@@ -322,7 +338,7 @@ void witness_guard_plugin::plugin_startup() {
         try {
            // VIZ stores authorities in account_authority_object (not account_object)
             const auto& account_auth_obj = pimpl->db().get<graphene::chain::account_authority_object, graphene::chain::by_account>(name);
-            
+
             const auto active_pub_key = config.active_key.get_public_key();
             bool active_key_has_authority = false;
             for (const auto& auth : account_auth_obj.active.key_auths) {
