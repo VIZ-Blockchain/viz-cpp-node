@@ -1176,10 +1176,30 @@ namespace graphene {
                                                 }
                                             }
                                         }
+                                    } else {
+                                        fc_ilog(fc::logger::get("sync"),
+                                             "fetch_sync_items_loop: peer ${peer} inhibited",
+                                             ("peer", peer->get_remote_endpoint()));
                                     }
+                                } else if (peer->we_need_sync_items_from_peer &&
+                                           !peer->ids_of_items_to_get.empty()) {
+                                    fc_ilog(fc::logger::get("sync"),
+                                         "fetch_sync_items_loop: peer ${peer} has ${count} items but NOT IDLE "
+                                         "(items_req=${items_req}, sync_req=${sync_req}, ids_req=${ids_req})",
+                                         ("peer", peer->get_remote_endpoint())
+                                         ("count", peer->ids_of_items_to_get.size())
+                                         ("items_req", peer->items_requested_from_peer.size())
+                                         ("sync_req", peer->sync_items_requested_from_peer.size())
+                                         ("ids_req", peer->item_ids_requested_from_peer.valid()));
                                 }
                             }
                         } // end non-preemptable section
+
+                        if (!sync_item_requests_to_send.empty()) {
+                            fc_ilog(fc::logger::get("sync"),
+                                 "fetch_sync_items_loop: requesting blocks from ${count} peer(s)",
+                                 ("count", sync_item_requests_to_send.size()));
+                        }
 
                         // make all the requests we scheduled in the loop above
                         for (auto sync_item_request : sync_item_requests_to_send) {
