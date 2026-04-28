@@ -782,7 +782,7 @@ LogNoPeers --> End
 ```
 
 **Diagram sources**
-- [p2p_plugin.cpp:614-650](file://plugins/p2p/p2p_plugin.cpp#L614-650)
+- [p2p_plugin.cpp:614-650](file://plugins/p2p/p2p_plugin.cpp#L614-L650)
 
 ### Graceful Degradation on Peer Failure with Gap Awareness
 
@@ -940,7 +940,7 @@ Red --> CriticalErrors["Critical Errors<br/>in red color"]
 
 **Diagram sources**
 - [p2p_plugin.cpp:16-21](file://plugins/p2p/p2p_plugin.cpp#L16-L21)
-- [node.cpp:79-83](file://libraries/network/node.cpp#L79-83)
+- [node.cpp:79-83](file://libraries/network/node.cpp#L79-L83)
 
 ### Color Code Usage Patterns
 
@@ -978,7 +978,7 @@ Note over P2P,Console : Consistent color coding<br/>throughout all logging opera
 - [p2p_plugin.cpp:169-171](file://plugins/p2p/p2p_plugin.cpp#L169-L171)
 - [p2p_plugin.cpp:299-301](file://plugins/p2p/p2p_plugin.cpp#L299-L301)
 - [p2p_plugin.cpp:522-528](file://plugins/p2p/p2p_plugin.cpp#L522-L528)
-- [node.cpp:79-83](file://libraries/network/node.cpp#L79-83)
+- [node.cpp:79-83](file://libraries/network/node.cpp#L79-L83)
 
 ## Enhanced DLT Mode Debug Logging
 
