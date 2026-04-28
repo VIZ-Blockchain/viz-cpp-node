@@ -118,6 +118,8 @@ namespace graphene {
         FC_DECLARE_DERIVED_EXCEPTION(database_revision_exception, graphene::chain::chain_exception, 4120000, "database revision exception")
 
         FC_DECLARE_DERIVED_EXCEPTION(database_signal_exception, graphene::chain::chain_exception, 4130000, "database signal exception")
+
+        FC_DECLARE_DERIVED_EXCEPTION(shared_memory_corruption_exception, graphene::chain::chain_exception, 4140000, "shared memory corruption detected")
     }
 } // graphene::chain
 

@@ -109,6 +109,12 @@ namespace graphene {
                 // during startup() when state is empty (head_block_num == 0), BEFORE on_sync().
                 std::function<void()> snapshot_p2p_sync_callback;
 
+                /// Attempt immediate auto-recovery from shared memory corruption.
+                /// Closes database, finds latest snapshot, wipes shared memory,
+                /// imports snapshot, replays dlt_block_log, and resumes.
+                /// Can be called from any plugin that detects corruption at runtime.
+                void attempt_auto_recovery();
+
             private:
                 class plugin_impl;
 

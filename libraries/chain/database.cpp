@@ -1687,7 +1687,8 @@ namespace graphene { namespace chain {
                          ("m", witness_obj.total_missed)("p", witness_obj.penalty_percent)
                          ("lc", witness_obj.last_confirmed_block_num)
                          ("idx_size", acc_idx.size()));
-                    FC_ASSERT(false, "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected. Node must be restarted with replay.",
+                    FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                              "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected.",
                               ("w", witness_owner));
                 }
 
@@ -3229,7 +3230,8 @@ namespace graphene { namespace chain {
                          ("w", cwit.owner)("k", cwit.signing_key)("m", cwit.total_missed)
                          ("p", cwit.penalty_percent)("lc", cwit.last_confirmed_block_num)
                          ("idx_size", acc_idx.size()));
-                    FC_ASSERT(false, "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected. Node must be restarted with replay.",
+                    FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                              "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected.",
                               ("w", cwit.owner));
                 }
                 auto witness_reward_shares = create_vesting(*witness_account, asset(witness_reward, TOKEN_SYMBOL));
@@ -3276,7 +3278,8 @@ namespace graphene { namespace chain {
                              ("w", cwit.owner)("k", cwit.signing_key)("m", cwit.total_missed)
                              ("p", cwit.penalty_percent)("lc", cwit.last_confirmed_block_num)
                              ("idx_size", acc_idx.size()));
-                        FC_ASSERT(false, "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected. Node must be restarted with replay.",
+                        FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                                  "CRITICAL: Witness ${w} account not found in database (HF4 path)! Shared memory corruption suspected.",
                                   ("w", cwit.owner));
                     }
                     auto witness_reward_shares = create_vesting(*witness_account, asset(witness_reward, TOKEN_SYMBOL));

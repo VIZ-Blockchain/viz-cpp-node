@@ -735,6 +735,11 @@ namespace graphene {
 
                         return block_production_condition::produced;
                     }
+                    catch (const graphene::chain::shared_memory_corruption_exception& e) {
+                        elog("Shared memory corruption detected during block generation: ${e}", ("e", e.to_detail_string()));
+                        chain().attempt_auto_recovery();
+                        return block_production_condition::exception_producing_block;
+                    }
                     catch (fc::exception &e) {
                         elog("${e}", ("e", e.to_detail_string()));
                         elog("Clearing pending transactions and attempting again");
