@@ -274,6 +274,7 @@ When block at T=6 is pushed, `update_global_dynamic_data()` counts `missed_block
 | Participation | Network participation ≥ required (pre-HF12 only) | `low_participation` |
 | Lag | `|scheduled_time - now| <= 500ms` | `lag` |
 | Fork collision | No competing block at same height in fork_db | `fork_collision` |
+| Minority fork | Last 21 blocks NOT all from our own witnesses (or `enable-stale-production` or emergency mode) | `minority_fork` |
 
 ---
 

@@ -134,6 +134,35 @@ if (has_hardfork(CHAIN_HARDFORK_12)) {
 
 ---
 
+### Change 2a: Minority Fork Detection & Auto-Resync
+
+**Type**: Non-consensus-breaking (witness + P2P plugin behavior only)
+
+Implemented in `plugins/witness/witness.cpp` and `plugins/p2p/p2p_plugin.cpp` — before producing a block, the witness plugin walks back the last `CHAIN_MAX_WITNESSES` (21) blocks in fork_db and checks if ALL were produced by the node's own configured witnesses. If so, the node is stuck on a minority fork (no external witnesses are participating on this chain).
+
+**Behavior by configuration:**
+
+| Condition | Action |
+|---|---|
+| `enable-stale-production=false` (default) | Trigger recovery: pop blocks to LIB, reset fork_db, re-initiate P2P sync, reconnect seed nodes |
+| `enable-stale-production=true` | Log and continue producing (operator override for bootstrap/testnet/recovery) |
+| Emergency consensus active | Skip detection entirely (emergency mode blocks are all from committee account) |
+
+**Recovery flow (`resync_from_lib()`):**
+
+1. Pop all reversible blocks from head back to LIB via `pop_block()` loop
+2. Clear pending transactions
+3. Reset fork_db and re-seed with LIB block
+4. Call `node->sync_from()` + `node->resync()` to re-initiate P2P sync
+5. Reconnect all configured seed nodes
+6. Set `_production_enabled = false` (node must receive a recent block to re-enable)
+
+This replicates the effect of a manual docker stop/start without node downtime.
+
+**Files modified:** `witness.hpp` (new enum value `minority_fork`), `witness.cpp` (detection logic + switch case), `p2p_plugin.hpp` (new `resync_from_lib()` method), `p2p_plugin.cpp` (implementation)
+
+---
+
 ### Change 3: Production Delay Buffer
 
 **Type**: Consensus-breaking (changes block timing expectations)
@@ -177,6 +206,7 @@ These changes are already implemented and can be deployed immediately:
 | Pre-production fork collision check in witness plugin | `witness.cpp` `maybe_produce_block()` | Done |
 | `fork_collision` block production condition | `witness.hpp` enum, `witness.cpp` handler | Done |
 | NTP re-sync on fork collision detection | `witness.cpp` `block_production_loop()` | Done |
+| Minority fork detection & auto-resync | `witness.cpp`, `p2p_plugin.cpp/.hpp`, `witness.hpp` | Done |
 
 ### Phase 2: Hardfork 12 (Requires Network-Wide Upgrade)
 

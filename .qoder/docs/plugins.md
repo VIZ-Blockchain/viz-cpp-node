@@ -124,6 +124,7 @@ Peer-to-peer networking for block and transaction propagation.
 - Syncs blockchain from the network
 - Broadcasts blocks and transactions
 - Maintains peer database
+- Minority fork auto-recovery (`resync_from_lib()`)
 
 **JSON-RPC:** None (internal only)
 
@@ -132,7 +133,55 @@ Peer-to-peer networking for block and transaction propagation.
 p2p-endpoint = 0.0.0.0:2001
 p2p-seed-node = seed.viz.world:2001
 p2p-max-connections = 200
+p2p-stats-enabled = true
+p2p-stats-interval = 300
+p2p-stale-sync-detection = false
+p2p-stale-sync-timeout-seconds = 120
 ```
+
+**Minority fork auto-recovery:** The P2P plugin exposes `resync_from_lib()` which is called by the witness plugin when a minority fork is detected (last 21 blocks all from our own witnesses). It pops all reversible blocks back to LIB, resets fork_db, re-initiates P2P sync, and reconnects seed nodes. This replicates the effect of a manual node restart. See [fork-collision-hardfork-proposal.md](fork-collision-hardfork-proposal.md) for details.
+
+---
+
+### `witness`
+**Status:** Active
+**Category:** Producer
+**Dependencies:** `chain`, `p2p`
+
+Block production and witness scheduling.
+
+**Purpose:**
+- Produces blocks when scheduled
+- Manages witness signing keys
+- Detects fork collisions and defers production
+- Detects minority fork (last 21 blocks all from own witnesses) and triggers auto-recovery
+- Supports emergency consensus block production
+
+**JSON-RPC:** None (internal only)
+
+**Config options:**
+```ini
+witness = "mywitness"
+private-key = 5K...
+enable-stale-production = false
+required-participation = 3300
+fork-collision-timeout-blocks = 21
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `witness` | (none) | Witness account name(s) to produce blocks for |
+| `private-key` | (none) | WIF private key(s) for block signing |
+| `emergency-private-key` | (none) | WIF key for emergency consensus production |
+| `enable-stale-production` | `false` | Allow production even if chain is stale or on a minority fork |
+| `required-participation` | `3300` (33%) | Minimum witness participation rate (basis points) |
+| `fork-collision-timeout-blocks` | `21` | Deferrals before forcing production past a fork collision |
+
+**Minority fork detection:** Before producing a block, the witness plugin walks the last `CHAIN_MAX_WITNESSES` (21) blocks in fork_db. If ALL were produced by the node's own configured witnesses, the node is stuck on a minority fork. With `enable-stale-production=false` (default), the plugin calls `p2p.resync_from_lib()` to pop back to LIB and resync. With `enable-stale-production=true`, production continues (for bootstrap/testnet scenarios). Detection is skipped during emergency consensus mode.
+
+**Emergency consensus:** When `emergency-private-key` is configured, the committee account is added to the witness set. During emergency consensus mode (`dgp.emergency_consensus_active`), the node produces blocks using the committee account's schedule.
+
+See [block-processing.md](block-processing.md) for production timing details and [fork-collision-hardfork-proposal.md](fork-collision-hardfork-proposal.md) for fork handling.
 
 ---
 

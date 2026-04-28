@@ -385,6 +385,9 @@ namespace graphene {
                         wlog("Deferred block production due to fork collision; will retry next slot");
                         graphene::time::update_ntp_time();  // Force NTP sync on fork issues
                         break;
+                    case block_production_condition::minority_fork:
+                        elog("Not producing block: minority fork detected, resyncing from P2P network");
+                        break;
                 }
 
                 schedule_production_loop();
@@ -495,6 +498,54 @@ namespace graphene {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // === MINORITY FORK DETECTION ===
+                // If the last CHAIN_MAX_WITNESSES (21) blocks in fork_db were ALL
+                // produced by our own configured witnesses, we are likely stuck on
+                // a minority fork where no external witnesses are participating.
+                //
+                // SKIP during emergency consensus: in emergency mode all blocks are
+                // produced by the committee account (which is in _witnesses), so the
+                // check would always falsely trigger and kill recovery.
+                //
+                // With enable-stale-production=true: operator knows what they're doing,
+                //   continue producing (bootstrap / testnet / recovery scenario).
+                // With enable-stale-production=false (default): we're on the wrong fork,
+                //   pop back to LIB and resync from the P2P network.
+                if (!dgp.emergency_consensus_active) {
+                    auto fork_head = db.get_fork_db().head();
+                    if (fork_head) {
+                        bool all_ours = true;
+                        uint32_t blocks_checked = 0;
+                        auto current = fork_head;
+
+                        while (current && blocks_checked < CHAIN_MAX_WITNESSES) {
+                            if (_witnesses.find(current->data.witness) == _witnesses.end()) {
+                                all_ours = false;
+                                break;
+                            }
+                            blocks_checked++;
+                            current = current->prev.lock();
+                        }
+
+                        if (all_ours && blocks_checked >= CHAIN_MAX_WITNESSES) {
+                            if (_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
+                                // enable-stale-production=true: operator override, continue
+                                dlog("Minority fork detected (last ${n} blocks from our witnesses) "
+                                     "but stale production enabled, continuing",
+                                     ("n", blocks_checked));
+                            } else {
+                                // Wrong fork: trigger recovery
+                                elog("MINORITY FORK DETECTED: last ${n} blocks all from our witnesses. "
+                                     "Resetting to LIB and resyncing from P2P network.",
+                                     ("n", blocks_checked));
+                                p2p().resync_from_lib();
+                                _production_enabled = false;
+                                return block_production_condition::minority_fork;
                             }
                         }
                     }

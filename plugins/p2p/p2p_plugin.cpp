@@ -907,6 +907,77 @@ namespace graphene {
                 my->block_producer = producing_blocks;
             }
 
+            void p2p_plugin::resync_from_lib() {
+                try {
+                    auto& db = my->chain.db();
+                    uint32_t head_num = 0;
+                    uint32_t lib_num = 0;
+
+                    db.with_weak_read_lock([&]() {
+                        head_num = db.head_block_num();
+                        lib_num = db.get_dynamic_global_properties().last_irreversible_block_num;
+                    });
+
+                    if (lib_num == 0 || head_num <= lib_num) {
+                        wlog("resync_from_lib: nothing to pop (head=${h}, LIB=${lib})",
+                             ("h", head_num)("lib", lib_num));
+                        return;
+                    }
+
+                    wlog("MINORITY FORK RECOVERY: popping ${n} blocks from head=${h} back to LIB=${lib}",
+                         ("n", head_num - lib_num)("h", head_num)("lib", lib_num));
+
+                    // Pop all reversible blocks back to LIB and reset fork_db.
+                    // This replicates what undo_all() does on node restart.
+                    db.with_strong_write_lock([&]() {
+                        while (db.head_block_num() > lib_num) {
+                            db.pop_block();
+                        }
+                        db.clear_pending();
+                        db.get_fork_db().reset();
+
+                        // Re-seed fork_db with LIB block so P2P sync can link new blocks
+                        auto lib_block = db.fetch_block_by_number(lib_num);
+                        if (lib_block.valid()) {
+                            db.get_fork_db().start_block(*lib_block);
+                        }
+                    });
+
+                    ilog("MINORITY FORK RECOVERY: state rolled back to LIB=${lib}. Re-initiating P2P sync.",
+                         ("lib", lib_num));
+
+                    // Re-trigger P2P sync from LIB
+                    if (my->node) {
+                        block_id_type lib_block_id;
+                        db.with_weak_read_lock([&]() {
+                            lib_block_id = db.head_block_id();
+                        });
+                        my->node->sync_from(item_id(graphene::network::block_message_type, lib_block_id),
+                                            std::vector<uint32_t>());
+                        my->node->resync();
+
+                        // Reconnect seed nodes to ensure we have peers to sync from
+                        for (const auto &seed : my->seeds) {
+                            try {
+                                my->node->add_node(seed);
+                                my->node->connect_to_endpoint(seed);
+                            } catch (const fc::exception &e) {
+                                wlog("Failed to reconnect seed ${s}: ${e}",
+                                     ("s", seed)("e", e.to_detail_string()));
+                            }
+                        }
+                    }
+
+                    // Reset stale sync timer
+                    my->_last_block_received_time = fc::time_point::now();
+
+                } catch (const fc::exception &e) {
+                    elog("resync_from_lib failed: ${e}", ("e", e.to_detail_string()));
+                } catch (...) {
+                    elog("resync_from_lib failed with unknown exception");
+                }
+            }
+
         }
     }
 } // namespace graphene::plugins::p2p

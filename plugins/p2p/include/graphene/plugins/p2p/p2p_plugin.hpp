@@ -47,6 +47,13 @@ namespace graphene {
 
                 void set_block_production(bool producing_blocks);
 
+                /**
+                 * Reset sync from the last irreversible block.
+                 * Pops all reversible blocks back to LIB, resets fork_db,
+                 * and re-initiates P2P sync. Used for minority fork recovery.
+                 */
+                void resync_from_lib();
+
             private:
                 std::unique_ptr<detail::p2p_plugin_impl> my;
             };

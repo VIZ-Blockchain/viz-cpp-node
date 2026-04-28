@@ -28,7 +28,8 @@ namespace graphene {
                     lag = 6,
                     consecutive = 7,
                     exception_producing_block = 8,
-                    fork_collision = 9
+                    fork_collision = 9,
+                    minority_fork = 10
                 };
             }
 
