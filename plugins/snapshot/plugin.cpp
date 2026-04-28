@@ -1184,6 +1184,17 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     // Import objects in dependency order
     std::cerr << "   Importing state into database...\n";
     db.with_strong_write_lock([&]() {
+        // Clear the undo stack FIRST, before any import operations.
+        // During hot-reload (stalled sync detection), the database has
+        // active undo sessions from normal block processing.
+        // If we import objects first and then undo_all(), it reverts
+        // both the old block processing AND our import changes,
+        // leaving the database in the old LIB state instead of the
+        // snapshot state.  By clearing the stack first, all subsequent
+        // import operations are permanent (no undo tracking).
+        // On initial load (fresh DB), the stack is empty and this is a no-op.
+        db.undo_all();
+
         // Clear ALL existing multi-instance objects before importing.
         // This is critical for the hot-reload path (stalled sync detection)
         // where load_snapshot() is called on an already-populated database.
@@ -1415,12 +1426,6 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             auto n = detail::import_simple_objects<change_recovery_account_request_object, change_recovery_account_request_index>(db, state["change_recovery_account_request"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} change recovery account requests" CLOG_RESET, ("n", n));
         }
-
-        // Clear the undo stack before setting revision.
-        // During hot-reload (stalled sync detection), the database has
-        // active undo sessions from normal block processing.
-        // set_revision() requires an empty undo stack.
-        db.undo_all();
 
         // Set the chainbase revision to match the snapshot head block
         db.set_revision(header.snapshot_block_num);

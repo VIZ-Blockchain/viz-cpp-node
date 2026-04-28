@@ -1358,10 +1358,23 @@ namespace graphene { namespace chain {
                     new_block.previous != block_id_type() &&
                     new_block.previous != head_block_id() &&
                     !_fork_db.is_known_block(new_block.previous)) {
-                    // Parent block is completely unknown — block can never link.
-                    dlog("Rejecting unlinkable block ${n} (parent unknown, head=${h})",
-                         ("n", new_block.block_num())("h", head_block_num()));
-                    return false;
+                    // Parent block is not yet known.
+                    // For blocks close to head (small gap), let them through to
+                    // fork_db which stores them in _unlinked_index.  When the
+                    // missing parent arrives, fork_db._push_next() will
+                    // automatically link the whole chain.  This handles the
+                    // common case of a single missed broadcast block.
+                    //
+                    // For blocks far from head (gap > 100), reject immediately
+                    // to avoid memory bloat from dead-fork blocks.
+                    uint32_t gap = new_block.block_num() - head_block_num();
+                    if (gap > 100) {
+                        dlog("Rejecting unlinkable block ${n} (parent unknown, head=${h}, gap=${g})",
+                             ("n", new_block.block_num())("h", head_block_num())("g", gap));
+                        return false;
+                    }
+                    dlog("Deferring unlinkable block ${n} to fork_db unlinked index (parent unknown, head=${h}, gap=${g})",
+                         ("n", new_block.block_num())("h", head_block_num())("g", gap));
                 }
 
 

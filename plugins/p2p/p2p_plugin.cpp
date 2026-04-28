@@ -165,7 +165,7 @@ namespace graphene {
                                                                                        ? database::skip_nothing
                                                                                        : database::skip_transaction_signatures);
 
-                            if (!sync_mode) {
+                            if (!sync_mode && result) {
                                 fc::microseconds latency = fc::time_point::now() - blk_msg.block.timestamp;
                                 ilog(CLOG_WHITE "Got ${t} transactions on block ${b} by ${w} -- latency: ${l} ms" CLOG_RESET,
                                      ("t", blk_msg.block.transactions.size())("b", blk_msg.block.block_num())("w", blk_msg.block.witness)("l", latency.count() / 1000));
