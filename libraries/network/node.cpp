@@ -2911,14 +2911,14 @@ namespace graphene {
                     if (blockchain_item_ids_inventory_message_received.total_remaining_item_count !=
                         0) {
                         // the peer hasn't sent us all the items it knows about.
-                        if (originating_peer->ids_of_items_to_get.size() >
+                        // Always trigger fetch loop to start downloading blocks we already have,
+                        // even while we continue requesting more block IDs from this peer.
+                        trigger_fetch_sync_items_loop();
+                        if (originating_peer->ids_of_items_to_get.size() <=
                             GRAPHENE_NET_MIN_BLOCK_IDS_TO_PREFETCH) {
-                            // we have a good number of item ids from this peer, start fetching blocks from it;
-                            // we'll switch back later to finish the job.
-                            trigger_fetch_sync_items_loop();
-                        } else {
                             // keep fetching the peer's list of sync items until we get enough to switch into block-
-                            // fetchimg mode
+                            // fetching mode (the peer will be busy during this request, but the fetch loop
+                            // can use other peers; once the ID response arrives the peer becomes idle again)
                             fetch_next_batch_of_item_ids_from_peer(originating_peer);
                         }
                     } else {
@@ -3049,8 +3049,9 @@ namespace graphene {
                     if (originating_peer->peer_needs_sync_items_from_us) {
                         // Peer also needs items from us — don't disconnect, just stop
                         // fetching sync blocks from this peer for now.
-                        wlog("Peer ${peer} doesn't have sync block #${num} (${id}) but also needs items from us — "
-                             "inhibiting sync fetch from this peer",
+                        fc_ilog(fc::logger::get("sync"),
+                             "item_not_available: peer ${peer} doesn't have sync block #${num} (${id}) "
+                             "but also needs items from us — inhibiting sync fetch",
                              ("peer", originating_peer->get_remote_endpoint())
                              ("num", block_num)("id", requested_item.item_hash));
                         originating_peer->inhibit_fetching_sync_blocks = true;
@@ -3060,9 +3061,9 @@ namespace graphene {
                         // peer is a DLT (snapshot) node with limited block history.
                         // Instead of disconnecting with a scary "corrupted database" message,
                         // inhibit sync from this peer and try to get the block elsewhere.
-                        wlog("Peer ${peer} can't serve sync block #${num} (${id}) — "
-                             "peer may be a DLT node with limited block history. "
-                             "Inhibiting sync from this peer, will try other peers.",
+                        fc_ilog(fc::logger::get("sync"),
+                             "item_not_available: peer ${peer} can't serve sync block #${num} (${id}) — "
+                             "inhibiting sync from this peer, will try other peers.",
                              ("peer", originating_peer->get_remote_endpoint())
                              ("num", block_num)("id", requested_item.item_hash));
                         originating_peer->inhibit_fetching_sync_blocks = true;
@@ -3513,28 +3514,17 @@ namespace graphene {
                         if (peer->ids_of_items_being_processed.find(block_message_to_send.block_id) !=
                             peer->ids_of_items_being_processed.end()) {
                             if (discontinue_fetching_blocks_from_peer) {
-                                wlog("Soft-banning peer ${endpoint} for ${dur}s: on a fork that's too old",
-                                        ("endpoint", peer->get_remote_endpoint())
-                                        ("dur", get_soft_ban_duration(peer.get())));
-                                ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: sync block on fork too old (block #${num})" CLOG_RESET,
+                                fc_ilog(fc::logger::get("sync"),
+                                     "Soft-banning peer ${endpoint} for ${dur}s: on a fork that's too old (block #${num})",
                                      ("endpoint", peer->get_remote_endpoint())
-                                     ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
-                                     ("num", block_message_to_send.block.block_num())
-                                     ("dur", get_soft_ban_duration(peer.get())));
+                                     ("dur", get_soft_ban_duration(peer.get()))
+                                     ("num", block_message_to_send.block.block_num()));
                                 peer->inhibit_fetching_sync_blocks = true;
                                 peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(peer.get()));
                             } else {
-                                // Soft-ban instead of disconnect. During sync, a rejected
-                                // block usually means the peer is on a stale fork.
-                                // Disconnecting would cause a reconnect loop; soft-ban
-                                // gives the fork time to resolve organically.
-                                wlog("Soft-banning peer ${endpoint} for ${dur}s: rejected sync block #${num}",
-                                        ("endpoint", peer->get_remote_endpoint())
-                                        ("num", block_message_to_send.block.block_num())
-                                        ("dur", get_soft_ban_duration(peer.get())));
-                                ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: rejected sync block #${num}" CLOG_RESET,
+                                fc_ilog(fc::logger::get("sync"),
+                                     "Soft-banning peer ${endpoint} for ${dur}s: rejected sync block #${num}",
                                      ("endpoint", peer->get_remote_endpoint())
-                                     ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
                                      ("num", block_message_to_send.block.block_num())
                                      ("dur", get_soft_ban_duration(peer.get())));
                                 peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(peer.get()));
@@ -3886,14 +3876,10 @@ namespace graphene {
 
                     if (peer_block_num <= our_head) {
                         // Block is at or below our head — peer is on a stale fork. Soft-ban.
-                        wlog("Soft-banning peer ${endpoint} for ${dur}s: "
+                        fc_ilog(fc::logger::get("sync"),
+                             "Soft-banning peer ${endpoint} for ${dur}s: "
                              "unlinkable block #${num} at or below our head #${head}",
                              ("endpoint", originating_peer->get_remote_endpoint())
-                             ("num", peer_block_num)("head", our_head)
-                             ("dur", get_soft_ban_duration(originating_peer)));
-                        ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: unlinkable block #${num} at or below head #${head}" CLOG_RESET,
-                             ("endpoint", originating_peer->get_remote_endpoint())
-                             ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
                              ("num", peer_block_num)("head", our_head)
                              ("dur", get_soft_ban_duration(originating_peer)));
                         originating_peer->fork_rejected_until =
@@ -3907,17 +3893,9 @@ namespace graphene {
                     }
                 }
                 catch (const block_older_than_undo_history &e) {
-                    // Peer sent us a block that is too old for our fork database.
-                    // This typically happens when a peer is stuck on a dead fork and
-                    // keeps broadcasting stale blocks.  Soft-ban them for 1 hour
-                    // instead of restarting sync or disconnecting.
-                    wlog("Soft-banning peer ${endpoint} for ${dur}s: sent block #${num} that is too old for our fork database",
+                    fc_ilog(fc::logger::get("sync"),
+                         "Soft-banning peer ${endpoint} for ${dur}s: block #${num} too old for fork database",
                          ("endpoint", originating_peer->get_remote_endpoint())
-                         ("num", block_message_to_process.block.block_num())
-                         ("dur", get_soft_ban_duration(originating_peer)));
-                    ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: block #${num} too old for fork database" CLOG_RESET,
-                         ("endpoint", originating_peer->get_remote_endpoint())
-                         ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
                          ("num", block_message_to_process.block.block_num())
                          ("dur", get_soft_ban_duration(originating_peer)));
                     originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(originating_peer));
@@ -3925,21 +3903,19 @@ namespace graphene {
                 }
                 catch (const fc::exception &e) {
                     // client rejected the block.  Disconnect the client and any other clients that offered us this block
-                    wlog("Failed to push block ${num} (id:${id}), client rejected block sent by peer",
-                            ("num", block_message_to_process.block.block_num())
-                                    ("id", block_message_to_process.block_id));
+                    fc_ilog(fc::logger::get("sync"),
+                         "Failed to push sync block #${num} (id:${id}): ${what}",
+                         ("num", block_message_to_process.block.block_num())
+                         ("id", block_message_to_process.block_id)
+                         ("what", e.to_detail_string()));
 
                     // HF12: soft-ban peers instead of disconnecting during fork rejection
-                    // This prevents cascading disconnections during emergency consensus
                     if (block_message_to_process.block.block_num() <= _delegate->get_block_number(_delegate->get_head_block_id())) {
-                        wlog("Soft-banning peer ${endpoint} for ${dur}s due to fork rejection",
+                        fc_ilog(fc::logger::get("sync"),
+                             "Soft-banning peer ${endpoint} for ${dur}s: fork rejection on block #${num}",
                              ("endpoint", originating_peer->get_remote_endpoint())
-                             ("dur", get_soft_ban_duration(originating_peer)));
-                        ilog(CLOG_RED "[BAN] Peer ${endpoint} soft-banned at ${time} UTC for ${dur}s. Reason: fork rejection on block #${num}" CLOG_RESET,
-                             ("endpoint", originating_peer->get_remote_endpoint())
-                             ("time", fc::time_point_sec(fc::time_point::now()).to_iso_string())
-                             ("num", block_message_to_process.block.block_num())
-                             ("dur", get_soft_ban_duration(originating_peer)));
+                             ("dur", get_soft_ban_duration(originating_peer))
+                             ("num", block_message_to_process.block.block_num()));
                         originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(originating_peer));
                         originating_peer->inhibit_fetching_sync_blocks = true;
                     } else {
