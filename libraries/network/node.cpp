@@ -3432,11 +3432,11 @@ namespace graphene {
                             "p2p failed to push sync block #${block_num} ${block_hash}: client rejected sync block sent by peer: ${e}",
                             ("block_num", block_message_to_send.block.block_num())
                                     ("block_hash", block_message_to_send.block_id)("e", e));
-                    wlog("Failed to push sync block ${num} (id:${id}): client rejected sync block sent by peer: ${e}",
+                    ilog(CLOG_RED "Sync block #${num} failed: ${what}. Will restart sync to recover." CLOG_RESET,
                             ("num", block_message_to_send.block.block_num())
-                                    ("id", block_message_to_send.block_id)
-                                    ("e", e));
+                            ("what", e.what()));
                     handle_message_exception = e;
+                    deferred_resize = true; // trigger sync restart below
                 }
 
                 // build up lists for any potentially-blocking operations we need to do, then do them
