@@ -4667,21 +4667,18 @@ namespace graphene { namespace chain {
                 }
 
                 // === HARDFORK 12: EMERGENCY CONSENSUS MODE ACTIVATION ===
-                if (has_hardfork(CHAIN_HARDFORK_12) && !_dgp.emergency_consensus_active && _enable_emergency_mode) {
+                if (has_hardfork(CHAIN_HARDFORK_12) && !_dgp.emergency_consensus_active) {
                     // Check if we should enter emergency mode:
                     // More than CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC seconds have elapsed
                     // since the last irreversible block timestamp.
                     //
-                    // DETERMINISTIC SYNC DETECTION: Skip the emergency check
-                    // when the node is catching up (replay, reindex, or live
-                    // sync). During replay/reindex the skip_witness_schedule_check
-                    // flag is set. During live sync the gap between head_block_num
-                    // and last_irreversible_block_num is large (we use
-                    // CHAIN_MAX_WITNESSES * 10 as a threshold — at 3-second
-                    // blocks this is ~10 minutes of blocks, well beyond normal
-                    // operation). Both checks are fully deterministic and
-                    // produce the same result on replay as on original
-                    // application.
+                    // DETERMINISM: This check uses ONLY data embedded in the
+                    // block and chain state:
+                    //   seconds_since_lib = b.timestamp - lib_block.timestamp
+                    // Both values come from signed blocks, so the result is
+                    // identical on every node and during every replay.
+                    // No config flags, wall-clock time, or skip-flags may gate
+                    // this check — any such guard would break replay determinism.
                     //
                     // IMPORTANT: If the LIB block is not available in block_log
                     // (e.g., after snapshot restore when block_log is empty),
@@ -4693,132 +4690,120 @@ namespace graphene { namespace chain {
                     // p2p are rejected, head_block_num never advances,
                     // next_shuffle_block_num never reached).
 
-                    // Deterministic check: skip emergency activation during
-                    // replay/reindex (skip_witness_schedule_check is always set)
-                    // or when the node is far behind LIB (catching up via P2P sync).
-                    bool is_syncing = (skip & skip_witness_schedule_check) != 0;
-                    if (!is_syncing && _dgp.last_irreversible_block_num > 0) {
-                        uint32_t blocks_since_lib = b.block_num() - _dgp.last_irreversible_block_num;
-                        is_syncing = blocks_since_lib > CHAIN_MAX_WITNESSES * 10;
-                    }
-                    if (is_syncing) {
-                        // Node is replaying or catching up — skip emergency check.
-                    } else {
-                        fc::time_point_sec lib_time;
-                        bool lib_time_available = false;
+                    fc::time_point_sec lib_time;
+                    bool lib_time_available = false;
 
-                        if (_dgp.last_irreversible_block_num > 0) {
-                            auto lib_block = fetch_block_by_number(_dgp.last_irreversible_block_num);
-                            if (lib_block.valid()) {
-                                lib_time = lib_block->timestamp;
-                                lib_time_available = true;
-                            }
-                            // If lib_block is NOT valid (block_log empty after
-                            // snapshot restore), lib_time_available stays false.
-                            // We skip the emergency check entirely because we
-                            // cannot determine the real LIB time.
+                    if (_dgp.last_irreversible_block_num > 0) {
+                        auto lib_block = fetch_block_by_number(_dgp.last_irreversible_block_num);
+                        if (lib_block.valid()) {
+                            lib_time = lib_block->timestamp;
+                            lib_time_available = true;
                         }
+                        // If lib_block is NOT valid (block_log empty after
+                        // snapshot restore), lib_time_available stays false.
+                        // We skip the emergency check entirely because we
+                        // cannot determine the real LIB time.
+                    }
 
-                        if (!lib_time_available) {
-                            // Cannot determine LIB time (block_log empty after
-                            // snapshot restore). Skip emergency check to avoid
-                            // false activation that would deadlock the node.
-                        } else {
-                            uint32_t seconds_since_lib = (b.timestamp - lib_time).to_seconds();
+                    if (!lib_time_available) {
+                        // Cannot determine LIB time (block_log empty after
+                        // snapshot restore). Skip emergency check to avoid
+                        // false activation that would deadlock the node.
+                    } else {
+                        uint32_t seconds_since_lib = (b.timestamp - lib_time).to_seconds();
 
-                            if (seconds_since_lib >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC) {
-                                // Enter emergency consensus mode
-                                modify(_dgp, [&](dynamic_global_property_object &dgp) {
-                                    dgp.emergency_consensus_active = true;
-                                    dgp.emergency_consensus_start_block = b.block_num();
+                        if (seconds_since_lib >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC) {
+                            // Enter emergency consensus mode
+                            modify(_dgp, [&](dynamic_global_property_object &dgp) {
+                                dgp.emergency_consensus_active = true;
+                                dgp.emergency_consensus_start_block = b.block_num();
+                            });
+
+                            // Change 5: Ensure emergency witness object exists with correct key
+                            const auto &witness_by_name = get_index<witness_index>().indices().get<by_name>();
+                            auto wit_itr = witness_by_name.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT);
+
+                            if (wit_itr == witness_by_name.end()) {
+                                create<witness_object>([&](witness_object &w) {
+                                    w.owner = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                                    w.signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY;
+                                    w.created = head_block_time();
+                                    w.schedule = witness_object::top;
+                                    // Set running version to match the binary
+                                    w.running_version = CHAIN_VERSION;
+                                    // Vote for the CURRENTLY APPLIED hardfork version, not
+                                    // CHAIN_HARDFORK_VERSION (which may be ahead). This makes
+                                    // committee a neutral voter that reinforces the status quo
+                                    // and does not push for a new hardfork on its own.
+                                    const auto &hfp = get_hardfork_property_object();
+                                    w.hardfork_version_vote = hfp.current_hardfork_version;
+                                    w.hardfork_time_vote = hfp.processed_hardforks[hfp.last_hardfork];
+                                    // Copy the current median chain properties so that the
+                                    // committee witness does not skew the median when it's
+                                    // counted in update_median_witness_props(). With median
+                                    // props, N committee entries are invisible to the median
+                                    // computation (they just reinforce the existing median).
+                                    w.props = get_witness_schedule_object().median_props;
                                 });
-
-                                // Change 5: Ensure emergency witness object exists with correct key
-                                const auto &witness_by_name = get_index<witness_index>().indices().get<by_name>();
-                                auto wit_itr = witness_by_name.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT);
-
-                                if (wit_itr == witness_by_name.end()) {
-                                    create<witness_object>([&](witness_object &w) {
-                                        w.owner = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
-                                        w.signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY;
-                                        w.created = head_block_time();
-                                        w.schedule = witness_object::top;
-                                        // Set running version to match the binary
-                                        w.running_version = CHAIN_VERSION;
-                                        // Vote for the CURRENTLY APPLIED hardfork version, not
-                                        // CHAIN_HARDFORK_VERSION (which may be ahead). This makes
-                                        // committee a neutral voter that reinforces the status quo
-                                        // and does not push for a new hardfork on its own.
-                                        const auto &hfp = get_hardfork_property_object();
-                                        w.hardfork_version_vote = hfp.current_hardfork_version;
-                                        w.hardfork_time_vote = hfp.processed_hardforks[hfp.last_hardfork];
-                                        // Copy the current median chain properties so that the
-                                        // committee witness does not skew the median when it's
-                                        // counted in update_median_witness_props(). With median
-                                        // props, N committee entries are invisible to the median
-                                        // computation (they just reinforce the existing median).
-                                        w.props = get_witness_schedule_object().median_props;
-                                    });
-                                } else {
-                                    modify(*wit_itr, [&](witness_object &w) {
-                                        w.signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY;
-                                        w.schedule = witness_object::top;
-                                        // Update version fields on re-activation too
-                                        w.running_version = CHAIN_VERSION;
-                                        const auto &hfp = get_hardfork_property_object();
-                                        w.hardfork_version_vote = hfp.current_hardfork_version;
-                                        w.hardfork_time_vote = hfp.processed_hardforks[hfp.last_hardfork];
-                                        // Sync chain properties with current median
-                                        w.props = get_witness_schedule_object().median_props;
-                                    });
-                                }
-
-                                // Change 7: Reset all witness penalties and re-enable shut-down witnesses
-                                const auto &witness_idx = get_index<witness_index>().indices().get<by_id>();
-                                for (auto witr = witness_idx.begin(); witr != witness_idx.end(); ++witr) {
-                                    if (witr->owner == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
-                                    modify(*witr, [&](witness_object &w) {
-                                        w.penalty_percent = 0;
-                                        w.counted_votes = w.votes;
-                                        w.current_run = 0;
-                                    });
-                                }
-
-                                // Remove all pending penalty expiration objects
-                                const auto &penalty_idx = get_index<witness_penalty_expire_index>().indices().get<by_id>();
-                                auto pen_itr = penalty_idx.begin();
-                                while (pen_itr != penalty_idx.end()) {
-                                    const auto &current = *pen_itr;
-                                    ++pen_itr;
-                                    remove(current);
-                                }
-
-                                // Override witness schedule: all slots -> emergency witness
-                                // Also update next_shuffle_block_num so the hybrid override
-                                // runs on the next schedule update. Without this, if
-                                // next_shuffle_block_num is still N blocks away, the node
-                                // would run an all-committee schedule until then, rejecting
-                                // blocks from real witnesses during that window.
-                                const witness_schedule_object &wso = get_witness_schedule_object();
-                                modify(wso, [&](witness_schedule_object &_wso) {
-                                    for (int i = 0; i < _wso.num_scheduled_witnesses; i++) {
-                                        _wso.current_shuffled_witnesses[i] = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
-                                    }
-                                    _wso.next_shuffle_block_num = head_block_num() + _wso.num_scheduled_witnesses;
+                            } else {
+                                modify(*wit_itr, [&](witness_object &w) {
+                                    w.signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY;
+                                    w.schedule = witness_object::top;
+                                    // Update version fields on re-activation too
+                                    w.running_version = CHAIN_VERSION;
+                                    const auto &hfp = get_hardfork_property_object();
+                                    w.hardfork_version_vote = hfp.current_hardfork_version;
+                                    w.hardfork_time_vote = hfp.processed_hardforks[hfp.last_hardfork];
+                                    // Sync chain properties with current median
+                                    w.props = get_witness_schedule_object().median_props;
                                 });
+                            }
 
-                                // Notify fork_db about emergency mode
-                                _fork_db.set_emergency_mode(true);
+                            // Change 7: Reset all witness penalties and re-enable shut-down witnesses
+                            const auto &witness_idx = get_index<witness_index>().indices().get<by_id>();
+                            for (auto witr = witness_idx.begin(); witr != witness_idx.end(); ++witr) {
+                                if (witr->owner == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
+                                modify(*witr, [&](witness_object &w) {
+                                    w.penalty_percent = 0;
+                                    w.counted_votes = w.votes;
+                                    w.current_run = 0;
+                                });
+                            }
 
-                                ilog("EMERGENCY CONSENSUS MODE activated at block ${b}. "
-                                    "No blocks for ${sec} seconds since LIB ${lib}. "
-                                    "Emergency witness: ${w}",
-                                    ("b", b.block_num())("sec", seconds_since_lib)
-                                    ("lib", _dgp.last_irreversible_block_num)
-                                    ("w", CHAIN_EMERGENCY_WITNESS_ACCOUNT));
-                            } // end if (seconds_since_lib >= TIMEOUT)
-                        } // end else (lib_time_available)
-                    } // end else (!is_syncing)
+                            // Remove all pending penalty expiration objects
+                            const auto &penalty_idx = get_index<witness_penalty_expire_index>().indices().get<by_id>();
+                            auto pen_itr = penalty_idx.begin();
+                            while (pen_itr != penalty_idx.end()) {
+                                const auto &current = *pen_itr;
+                                ++pen_itr;
+                                remove(current);
+                            }
+
+                            // Override witness schedule: all slots -> emergency witness
+                            // Also update next_shuffle_block_num so the hybrid override
+                            // runs on the next schedule update. Without this, if
+                            // next_shuffle_block_num is still N blocks away, the node
+                            // would run an all-committee schedule until then, rejecting
+                            // blocks from real witnesses during that window.
+                            const witness_schedule_object &wso = get_witness_schedule_object();
+                            modify(wso, [&](witness_schedule_object &_wso) {
+                                for (int i = 0; i < _wso.num_scheduled_witnesses; i++) {
+                                    _wso.current_shuffled_witnesses[i] = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                                }
+                                _wso.next_shuffle_block_num = head_block_num() + _wso.num_scheduled_witnesses;
+                            });
+
+                            // Notify fork_db about emergency mode
+                            _fork_db.set_emergency_mode(true);
+
+                            ilog("EMERGENCY CONSENSUS MODE activated at block ${b}. "
+                                "No blocks for ${sec} seconds since LIB ${lib}. "
+                                "Emergency witness: ${w}",
+                                ("b", b.block_num())("sec", seconds_since_lib)
+                                ("lib", _dgp.last_irreversible_block_num)
+                                ("w", CHAIN_EMERGENCY_WITNESS_ACCOUNT));
+                        } // end if (seconds_since_lib >= TIMEOUT)
+                    } // end else (lib_time_available)
                 } // end if (has_hardfork(HF12) && !emergency_active)
             } FC_CAPTURE_AND_RETHROW()
         }

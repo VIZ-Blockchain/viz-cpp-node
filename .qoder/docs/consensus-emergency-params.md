@@ -10,12 +10,11 @@ When the VIZ network stalls — no blocks are produced because too few witnesses
 
 | Parameter | Normal Value | Emergency Value | Location |
 |---|---|---|---|
-| `enable-emergency-mode` | `false` | `true` | chain plugin |
 | `enable-stale-production` | `false` | `true` | witness plugin |
 | `required-participation` | `3300` (33%) | `0` | witness plugin |
 | `fork_db` `_max_size` | `1024` (dynamic) | `1024` (initial) | chain library |
 
-Starting with Hardfork 12, the primary emergency mechanism is `enable-emergency-mode`, which gates the on-chain automatic emergency consensus activation. When enabled and the network stalls for >1 hour, the node activates emergency consensus mode (committee witness fills empty schedule slots, penalties reset, hybrid schedule). The older `enable-stale-production` and `required-participation` overrides are still available for pre-HF12 scenarios or manual recovery.
+Starting with Hardfork 12, the on-chain **emergency consensus activation** is fully automatic and deterministic. When the network stalls for >1 hour (`b.timestamp - lib_block.timestamp >= 3600`), emergency consensus mode activates on every node — no config flags needed. The activation uses only signed block timestamps from the chain state, ensuring identical results during replay. The older `enable-stale-production` and `required-participation` overrides are still available for pre-HF12 scenarios or manual recovery.
 
 These parameters are essential for chain recovery, but if left in emergency mode after the network stabilizes, they become the **root cause of micro-forks**: isolated delegates continue producing blocks on their own divergent chain during any subsequent network partition.
 
@@ -304,13 +303,11 @@ When the network has stalled and block production must be restarted:
 
 1. **Edit config.ini** (or pass command-line flags):
    ```ini
-   # Hardfork 12+: enable on-chain emergency consensus (recommended)
-   enable-emergency-mode = true
-
-   # Also needed for block production:
+   # Needed for block production on a stale chain:
    enable-stale-production = true
    required-participation = 0
    ```
+   Note: Emergency consensus activation (HF12+) is automatic and deterministic — no config flag is needed. When `b.timestamp - lib_block.timestamp >= 3600`, emergency mode activates on all nodes.
 
 2. **Restart the node**:
    ```bash
@@ -327,7 +324,6 @@ When the network has stalled and block production must be restarted:
 ### Reverting Emergency Mode (Critical Step)
 
 ```ini
-enable-emergency-mode = false
 enable-stale-production = false
 required-participation = 3300
 ```
@@ -338,13 +334,12 @@ Then restart the node. **Do not skip this step.** Leaving emergency settings act
 
 | Step | Action | Verification |
 |------|--------|-------------|
-| 1 | Set `enable-emergency-mode = true` | Node will activate emergency consensus when network stalls |
-| 2 | Set `enable-stale-production = true` | Node produces blocks on stale chain |
-| 3 | Set `required-participation = 0` | Production continues despite low participation |
-| 4 | Monitor participation rate via API | `witness_participation_rate` rises as others rejoin |
-| 5 | **When participation > 50%** | Revert all three settings to normal values |
-| 6 | Restart node with normal config | Confirm production continues with normal checks active |
-| 7 | Verify `low_participation` safeguard works | Node would stop if isolated (test by briefly disconnecting) |
+| 1 | Set `enable-stale-production = true` | Node produces blocks on stale chain |
+| 2 | Set `required-participation = 0` | Production continues despite low participation |
+| 3 | Monitor participation rate via API | `witness_participation_rate` rises as others rejoin |
+| 4 | **When participation > 50%** | Revert both settings to normal values |
+| 5 | Restart node with normal config | Confirm production continues with normal checks active |
+| 6 | Verify `low_participation` safeguard works | Node would stop if isolated (test by briefly disconnecting) |
 
 ### Red Flags: Emergency Settings Still Active
 
@@ -383,7 +378,6 @@ Source: [config_debug.ini:95-99](../../share/vizd/config/config_debug.ini#L95), 
 
 ```ini
 # EMERGENCY ONLY — revert immediately after network recovers!
-enable-emergency-mode = true
 enable-stale-production = true
 required-participation = 0
 ```
@@ -464,9 +458,9 @@ maybe_produce_block()
 
 update_global_dynamic_data() — Emergency activation:
   │
-  ├─ enable-emergency-mode=false? → skip
-  ├─ Is node syncing (replay/reindex or blocks_since_lib > 210)? → skip
+  ├─ HF12 not active or emergency already active? → skip
   ├─ LIB block not available (snapshot restore)? → skip
+  ├─ seconds_since_lib = b.timestamp - lib_block.timestamp
   ├─ seconds_since_lib < 3600? → skip
   └─ Activate emergency consensus mode
 ```

@@ -56,7 +56,6 @@ The fundamental plugin that manages the blockchain database, block validation, a
 shared-file-size = 2G
 shared-file-dir = /path/to/blockchain
 flush-state-interval = 0
-enable-emergency-mode = false
 ```
 
 | Option | Default | Description |
@@ -70,7 +69,6 @@ enable-emergency-mode = false
 | `single-write-thread` | `false` | Push blocks/transactions from one thread |
 | `skip-virtual-ops` | `false` | Skip virtual operations (saves memory) |
 | `enable-plugins-on-push-transaction` | `false` | Notify plugins on push_transaction |
-| `enable-emergency-mode` | `false` | Allow emergency consensus activation when the network stalls (no blocks for >1 hour since LIB). Must be explicitly set to `true` by the operator. |
 | `dlt-block-log-max-blocks` | `100000` | Blocks to keep in the DLT rolling block_log |
 
 ---

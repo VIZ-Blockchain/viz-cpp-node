@@ -8,7 +8,7 @@ Research source: [consensus-emergency-recovery.md](../research/consensus-emergen
 
 ## System Overview
 
-Hardfork 12 adds an on-chain **Emergency Consensus Mode** that activates when the VIZ network stalls for >1 hour (no LIB advancement) **and** the node operator has explicitly enabled it via `enable-emergency-mode = true` in config. A well-known committee key (`VIZ75CRHVHPwYiUESy1bgN3KhVFbZCQQRA9jT6TnpzKAmpxMPD6Xv`) becomes the block producer, keeping the chain alive until real witnesses return.
+Hardfork 12 adds an on-chain **Emergency Consensus Mode** that activates automatically when the VIZ network stalls for >1 hour (no LIB advancement). The activation check is fully deterministic — it uses only block timestamps from the chain state (`b.timestamp - lib_block.timestamp`), ensuring identical results on every node and during every replay. A well-known committee key (`VIZ75CRHVHPwYiUESy1bgN3KhVFbZCQQRA9jT6TnpzKAmpxMPD6Xv`) becomes the block producer, keeping the chain alive until real witnesses return.
 
 The committee witness is a **neutral voter**: it copies the current median chain properties and votes for the currently applied hardfork version (not a future one). This ensures that committee slots in the schedule don't skew governance parameters or push unvoted hardforks.
 
@@ -18,9 +18,7 @@ The committee witness is a **neutral voter**: it copies the current median chain
 |---|---|
 | `libraries/chain/hardfork.d/12.hf` | Hardfork 12 definition |
 | `libraries/protocol/include/graphene/protocol/config.hpp` | Emergency constants, version 3.1.0 |
-| `libraries/chain/include/graphene/chain/database.hpp` | `_enable_emergency_mode` flag, setter |
-| `plugins/chain/plugin.cpp` | `enable-emergency-mode` config option |
-| `libraries/chain/include/graphene/chain/global_property_object.hpp` | DGP fields: `emergency_consensus_active`, `emergency_consensus_start_block` |
+| `libraries/chain/include/graphene/chain/database.hpp` | DGP fields, skip flags |
 | `libraries/chain/database.cpp` | Activation, hybrid schedule, LIB freeze, vote-weighted fork comparison |
 | `libraries/chain/include/graphene/chain/fork_database.hpp` | Emergency mode flag, size increase 1024→2400 |
 | `libraries/chain/fork_database.cpp` | Hash tie-breaking, `set_emergency_mode()` |
@@ -39,18 +37,16 @@ The committee witness is a **neutral voter**: it copies the current median chain
                     │   update_global_dynamic_data  │
                     │   (every block)               │
                     │                               │
-                    │  enable-emergency-mode=true?   │
-                    │       ├── NO ─────────────────│── Skip check (config off)
+                    │  HF12 active?                 │
+                    │  emergency_active == false?    │
+                    │       ├── NO ─────────────────│── Skip check
                     │       └── YES                  │
-                    │  Is node syncing?              │
-                    │  (skip_witness_schedule_check  │
-                    │   or blocks_since_lib > 210)   │
-                    │       ├── YES ─────────────────│── Skip check (catching up)
-                    │       └── NO                   │
                     │  lib_block available?           │
                     │       ├── NO ─────────────────│── Skip check (snapshot restore)
                     │       └── YES                  │
                     │           seconds_since_lib    │
+                    │           = b.timestamp -      │
+                    │             lib_block.timestamp │
                     │           ≥ 3600?              │
                     │           ├── YES ─────────────│── Activate Emergency
                     │           │                   │   • emergency_consensus_active = true
@@ -106,7 +102,7 @@ The committee witness is a **neutral voter**: it copies the current median chain
 
 **When**: A bug or time desync causes `seconds_since_lib >= 3600` while the network is actually healthy.
 
-**Why this is extremely unlikely**: Emergency activation requires `enable-emergency-mode = true` in config (default: `false`). Even with the flag enabled, the check uses `head_block_time() - LIB_block_timestamp`. For a false trigger, LIB must genuinely stall for 1 hour (1200 blocks). Additionally, a deterministic sync detection guard skips the check when the node is catching up (replay/reindex via `skip_witness_schedule_check`, or live sync when `blocks_since_lib > CHAIN_MAX_WITNESSES * 10`).
+**Why this is extremely unlikely**: Emergency activation is fully deterministic: `seconds_since_lib = b.timestamp - lib_block.timestamp`. For a false trigger, LIB must genuinely stall for 1 hour (1200 blocks at 3s intervals). No config flags or skip-flags gate the check — it relies solely on signed block timestamps embedded in the chain, ensuring identical results on every node and during every replay.
 
 **Special case — snapshot restore**: After `open_from_snapshot()`, the block_log is empty, so `fetch_block_by_number(LIB)` returns invalid. If we fell back to `genesis_time`, emergency would activate immediately. This is now prevented: when the LIB block is unavailable, the emergency check is skipped entirely (B7 fix).
 
@@ -334,9 +330,9 @@ In practice: **every public witness node** should have it configured. During eme
 ### Summary
 
 The emergency key is a **public coordination mechanism**, not a secret. Its security model is:
-- **Config gating**: Requires `enable-emergency-mode = true` in chain plugin config (default: `false`)
+- **Deterministic activation**: Uses only signed block timestamps (`b.timestamp - lib_block.timestamp ≥ 3600`), no config flags or wall-clock time — identical results on every node and during every replay
 - **Activation gating**: Only usable when `emergency_consensus_active == true` (requires 1-hour LIB stall)
-- **Sync detection**: Deterministic skip during replay/reindex and P2P catch-up (no wall-clock dependency)
+- **Snapshot safety**: When LIB block is unavailable (post-snapshot restore), emergency check is skipped to prevent false activation
 - **Convergence**: Hash tie-breaking + fork collision → single effective producer
 - **Validation**: Full consensus rules apply to emergency blocks
 - **Deactivation**: Automatic when real witnesses return (LIB advancement)
