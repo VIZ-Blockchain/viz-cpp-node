@@ -23,11 +23,12 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced get_block_ids() method with sophisticated clamping logic to prevent advertising blocks not available in node storage
-- Improved gap detection and automatic recovery mechanisms for DLT mode synchronization
-- Added comprehensive logging for DLT mode block range management and gap handling
-- Enhanced peer interaction handling to avoid item_not_available responses and peer disconnections
-- Updated block serving logic with improved DLT mode awareness and storage boundary detection
+- Enhanced P2P plugin logging with ANSI color codes for improved console readability
+- Added gray ANSI color codes for DLT mode debug messages throughout the plugin
+- Implemented comprehensive logging improvements with CLOG_GRAY, CLOG_CYAN, and CLOG_WHITE color schemes
+- Enhanced DLT mode debug logging with detailed gap detection and block range management information
+- Improved peer statistics logging with colored output for better visual distinction
+- Added ANSI color code definitions and consistent usage across DLT mode operations
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -40,15 +41,18 @@
 8. [Sophisticated Clamping Logic](#sophisticated-clamping-logic)
 9. [Enhanced Peer Interaction Handling](#enhanced-peer-interaction-handling)
 10. [Comprehensive Logging Throughout Sync Process](#comprehensive-logging-throughout-sync-process)
-11. [Graceful Degradation Capabilities](#graceful-degradation-capabilities)
-12. [Minority Fork Recovery](#minority-fork-recovery)
-13. [Enhanced Block Validation](#enhanced-block-validation)
-14. [Concurrent Access Safety](#concurrent-access-safety)
-15. [Logging Level Consistency](#logging-level-consistency)
-16. [Dependency Analysis](#dependency-analysis)
-17. [Performance Considerations](#performance-considerations)
-18. [Troubleshooting Guide](#troubleshooting-guide)
-19. [Conclusion](#conclusion)
+11. [ANSI Color Code Implementation](#ansi-color-code-implementation)
+12. [Enhanced DLT Mode Debug Logging](#enhanced-dlt-mode-debug-logging)
+13. [Improved Console Readability](#improved-console-readability)
+14. [Graceful Degradation Capabilities](#graceful-degradation-capabilities)
+15. [Minority Fork Recovery](#minority-fork-recovery)
+16. [Enhanced Block Validation](#enhanced-block-validation)
+17. [Concurrent Access Safety](#concurrent-access-safety)
+18. [Logging Level Consistency](#logging-level-consistency)
+19. [Dependency Analysis](#dependency-analysis)
+20. [Performance Considerations](#performance-considerations)
+21. [Troubleshooting Guide](#troubleshooting-guide)
+22. [Conclusion](#conclusion)
 
 ## Introduction
 
@@ -56,7 +60,7 @@ The P2P (Peer-to-Peer) Plugin is a critical component of the VIZ blockchain node
 
 The plugin implements a sophisticated networking layer built on top of the Graphene network library, providing features such as automatic peer discovery, blockchain synchronization protocols, transaction broadcasting, and advanced peer management capabilities including soft-ban mechanisms and connection monitoring.
 
-**Updated** The plugin now includes enhanced DLT mode block range management with improved gap detection and automatic recovery mechanisms. The get_block_ids() method now includes sophisticated clamping logic to prevent advertising blocks that aren't available in node storage, avoiding peer disconnections due to item_not_available responses. These enhancements provide better support for snapshot-based nodes and improve overall network reliability.
+**Updated** The plugin now includes enhanced logging capabilities with ANSI color codes for improved console readability. DLT mode debug messages are displayed in gray color, while peer statistics and other informational messages use cyan and white color codes. These enhancements provide better visual distinction between different types of log messages and improve troubleshooting capabilities during network operations.
 
 ## Project Structure
 
@@ -72,6 +76,7 @@ Stats[P2P Stats Task]
 Stale[Stale Sync Detection]
 Resync[resync_from_lib method]
 Guard[operation_guard integration]
+Colors[ANSI Color Codes]
 end
 subgraph "Network Library"
 Node[node.hpp]
@@ -97,6 +102,7 @@ P2P --> Snapshot
 P2P --> Resync
 P2P --> Guard
 P2P --> DLT
+P2P --> Colors
 Node --> PeerConn
 Node --> Messages
 Node --> Config
@@ -156,6 +162,9 @@ class p2p_plugin_impl {
 +p2p_stats_task()
 +stale_sync_check_task()
 +is_included_block(block_id)
++ANSI Color Codes
++DLT Mode Debug Logging
++Enhanced Peer Stats
 -node : node_ptr
 -chain : chain : : plugin&
 -seeds : vector[endpoint]
@@ -283,6 +292,9 @@ Peer->>Node : New block/transaction
 Node->>P2P : handle_block()/handle_transaction()
 P2P->>Chain : Accept/validate block
 P2P->>Node : Broadcast to peers
+Note over P2P : Enhanced logging with ANSI color codes
+P2P->>Node : Log DLT mode operations in gray
+P2P->>Node : Log peer stats in cyan
 ```
 
 **Diagram sources**
@@ -295,11 +307,12 @@ The architecture provides several key capabilities:
 2. **Blockchain Synchronization**: Implements efficient blockchain synchronization using selective block fetching with DLT mode awareness and gap detection
 3. **Transaction Propagation**: Broadcasts transactions to connected peers with intelligent caching
 4. **Peer Management**: Manages peer connections with soft-ban mechanisms and connection limits
-5. **Monitoring and Statistics**: Provides comprehensive peer statistics and network health monitoring
+5. **Monitoring and Statistics**: Provides comprehensive peer statistics and network health monitoring with colored console output
 6. **Minority Fork Recovery**: Specialized recovery mechanism for handling minority fork scenarios
 7. **Concurrent Access Safety**: Enhanced protection against concurrent access conflicts during block processing
 8. **DLT Mode Support**: Intelligent block range management for snapshot-based nodes with sophisticated gap detection
 9. **Graceful Degradation**: Handles peer unavailability with fallback mechanisms and automatic recovery
+10. **Enhanced Logging**: Comprehensive logging system with ANSI color codes for improved console readability
 
 ## Detailed Component Analysis
 
@@ -427,13 +440,13 @@ FoundBlock --> CalcStart["Calculate start_num from last_known_block_id"]
 CalcStart --> CheckDLT{"In DLT mode?"}
 CheckDLT --> |No| BuildRange["Build block range normally"]
 CheckDLT --> |Yes| ClampStart["Clamp start to earliest_available_block_num"]
-ClampStart --> LogClamp["Log DLT mode clamp operation"]
+ClampStart --> LogClamp["Log DLT mode clamp operation<br/>in gray ANSI color"]
 ClampStart --> CheckStorageGaps["Check for storage gaps"]
 CheckStorageGaps --> |Gap Detected| ClampEnd["Clamp end to storage boundary"]
 CheckStorageGaps --> |No Gap| CheckUpperBound["Check upper bound gaps"]
 CheckUpperBound --> |Gap Detected| ClampEnd
 CheckUpperBound --> |No Gap| BuildRange
-ClampEnd --> LogGap["Log gap detection and clamping"]
+ClampEnd --> LogGap["Log gap detection and clamping<br/>in gray ANSI color"]
 LogGap --> BuildRange
 BuildRange --> CheckLimit["Check block limit"]
 CheckLimit --> |Exceeded| ReturnResult["Return partial result"]
@@ -462,8 +475,8 @@ CheckStorageBoundary --> |Gap Found| ClampToBoundary["Clamp to storage boundary"
 CheckStorageBoundary --> |No Gap| CheckForkDBGap["Check fork_db gap"]
 CheckForkDBGap --> |Gap Found| ClampToForkDB["Clamp to fork_db boundary"]
 CheckForkDBGap --> |No Gap| BuildRange
-ClampToEarliest --> LogClamp["Log clamping action"]
-ClampToBoundary --> LogGap["Log gap detection"]
+ClampToEarliest --> LogClamp["Log clamping action<br/>in gray ANSI color"]
+ClampToBoundary --> LogGap["Log gap detection<br/>in gray ANSI color"]
 ClampToForkDB --> LogGap
 LogClamp --> BuildRange
 LogGap --> BuildRange
@@ -491,8 +504,8 @@ CheckDLT --> |No| FetchBlock["Fetch block normally"]
 CheckDLT --> |Yes| CheckAvailability["Check block availability"]
 CheckAvailability --> |Available| FetchBlock
 CheckAvailability --> |Not Available| CheckGap["Check if in DLT gap"]
-CheckGap --> |In Gap| LogGapError["Log DLT gap error:<br/>- Block number<br/>- Available range<br/>- DLT log bounds"]
-CheckGap --> |Not In Gap| LogMissingError["Log missing block error:<br/>- Block not found anywhere"]
+CheckGap --> |In Gap| LogGapError["Log DLT gap error:<br/>- Block number<br/>- Available range<br/>- DLT log bounds<br/>in gray ANSI color"]
+CheckGap --> |Not In Gap| LogMissingError["Log missing block error:<br/>- Block not found anywhere<br/>in gray ANSI color"]
 LogGapError --> ThrowGapException["Throw key_not_found_exception"]
 LogMissingError --> ThrowMissingException["Throw key_not_found_exception"]
 FetchTx --> End([End])
@@ -571,18 +584,20 @@ GetStorageEnd --> CheckBeyondStorage{"start_num > storage_end?"}
 CheckBeyondStorage --> |Yes| CheckForkDB["Check fork_db availability"]
 CheckBeyondStorage --> |No| CheckForkDBGap["Check fork_db gap"]
 CheckForkDB --> |Available| UseForkDB["Use fork_db block"]
-CheckForkDB --> |Not Available| LogGap["Log gap detected"]
+CheckForkDB --> |Not Available| LogGap["Log gap detected<br/>in gray ANSI color"]
 CheckForkDBGap --> |Gap Exists| ClampToForkDB["Clamp to fork_db boundary"]
 CheckForkDBGap --> |No Gap| CheckContiguous["Check contiguity"]
-ClampToEarliest --> LogClamp["Log clamping action"]
-ClampToForkDB --> LogClamp
-UseForkDB --> LogForkDB["Log fork_db usage"]
-LogGap --> LogError["Log gap error"]
+ClampToEarliest --> LogClamp["Log clamping action<br/>in gray ANSI color"]
+ClampToForkDB --> LogGap
+UseForkDB --> LogForkDB["Log fork_db usage<br/>in gray ANSI color"]
 LogClamp --> BuildRange["Build clamped range"]
+LogGap --> BuildRange
 LogForkDB --> BuildRange
-LogError --> BuildEmpty["Build empty range"]
-BuildEmpty --> End([End])
-BuildRange --> End
+BuildRange --> CheckLimit["Check against block limit"]
+CheckLimit --> |Exceeded| ReturnPartial["Return partial range"]
+CheckLimit --> |Within Limit| ReturnFull["Return full range"]
+ReturnPartial --> End([End])
+ReturnFull --> End
 NormalProcessing --> End
 ```
 
@@ -596,10 +611,10 @@ The plugin implements automatic recovery from gap-related synchronization issues
 ```mermaid
 flowchart TD
 Start([Gap Recovery Triggered]) --> DetectGap["Detect gap in block range"]
-DetectGap --> LogGapInfo["Log gap information:<br/>- Gap start/end<br/>- Available ranges<br/>- Storage boundaries"]
+DetectGap --> LogGapInfo["Log gap information:<br/>- Gap start/end<br/>- Available ranges<br/>- Storage boundaries<br/>in gray ANSI color"]
 LogGapInfo --> CheckPeerResponse["Check peer response type"]
-CheckPeerResponse --> |item_not_available| LogPeerIssue["Log peer disconnection issue"]
-CheckPeerResponse --> |other_error| LogOtherError["Log other error"]
+CheckPeerResponse --> |item_not_available| LogPeerIssue["Log peer disconnection issue<br/>in gray ANSI color"]
+CheckPeerResponse --> |other_error| LogOtherError["Log other error<br/>in gray ANSI color"]
 LogPeerIssue --> SoftBanPeer["Soft-ban peer appropriately"]
 LogOtherError --> SoftBanPeer
 SoftBanPeer --> CheckRecoveryOptions["Check recovery options:<br/>- Alternative peers<br/>- Different sync strategy"]
@@ -622,10 +637,10 @@ The gap detection system provides comprehensive logging for troubleshooting:
 ```mermaid
 flowchart TD
 Start([Gap Error]) --> ClassifyError["Classify gap type:<br/>- Below earliest<br/>- Beyond storage<br/>- Fork_db gap<br/>- Missing block"]
-ClassifyError --> LogDetailedInfo["Log detailed gap info:<br/>- Block numbers<br/>- Available ranges<br/>- Storage locations<br/>- Error context"]
+ClassifyError --> LogDetailedInfo["Log detailed gap info:<br/>- Block numbers<br/>- Available ranges<br/>- Storage locations<br/>- Error context<br/>in gray ANSI color"]
 LogDetailedInfo --> DetermineImpact["Determine impact:<br/>- Peer disconnection risk<br/>- Sync delay<br/>- Data availability"]
 DetermineImpact --> ApplyRecovery["Apply recovery:<br/>- Range clamping<br/>- Peer switching<br/>- Parameter adjustment"]
-ApplyRecovery --> LogRecovery["Log recovery actions:<br/>- Actions taken<br/>- Results<br/>- Next steps"]
+ApplyRecovery --> LogRecovery["Log recovery actions:<br/>- Actions taken<br/>- Results<br/>- Next steps<br/>in gray ANSI color"]
 LogRecovery --> ContinueSync["Continue sync process"]
 ContinueSync --> End([End])
 ```
@@ -662,15 +677,15 @@ CheckForkDB --> |Available| UseForkDB["Use fork_db block"]
 CheckForkDB --> |Not Available| CheckForkDBGap
 CheckForkDBGap --> |Gap Exists| ClampToForkDB["Clamp to fork_db boundary"]
 CheckForkDBGap --> |No Gap| CheckContiguous["Check contiguity"]
-ClampToEarliest --> LogClamp["Log clamping to earliest"]
+ClampToEarliest --> LogClamp["Log clamping to earliest<br/>in gray ANSI color"]
 ClampToForkDB --> LogClamp
-UseForkDB --> LogForkDB["Log fork_db usage"]
+UseForkDB --> LogForkDB["Log fork_db usage<br/>in gray ANSI color"]
 LogClamp --> BuildClampedRange["Build clamped range"]
 LogForkDB --> BuildClampedRange
 CheckContiguous --> CheckGap["Check for gap between storage_end+1 and fork_db"]
 CheckGap --> |Gap| ClampToStorageEnd["Clamp to storage_end"]
 CheckGap --> |No Gap| BuildClampedRange
-ClampToStorageEnd --> LogGap["Log gap detection"]
+ClampToStorageEnd --> LogGap["Log gap detection<br/>in gray ANSI color"]
 LogGap --> BuildClampedRange
 BuildNormalRange --> End([End])
 BuildClampedRange --> End
@@ -692,12 +707,12 @@ CalcStorageEnd --> CheckStartBeyond["Check: start_num > storage_end"]
 CheckStartBeyond --> |Yes| CheckForkDBRange["Check fork_db range:<br/>fetch_block_by_number(storage_end+1)"]
 CheckStartBeyond --> |No| CheckForkDBGap["Check fork_db gap:<br/>between storage_end and fork_db"]
 CheckForkDBRange --> |Block Found| UseForkDB["Use fork_db block"]
-CheckForkDBRange --> |No Block| LogNoBlock["Log no block found"]
+CheckForkDBRange --> |No Block| LogNoBlock["Log no block found<br/>in gray ANSI color"]
 CheckForkDBGap --> |Gap Exists| ClampToStorage["Clamp to storage_end"]
 CheckForkDBGap --> |No Gap| CheckContiguity["Check contiguity"]
-UseForkDB --> LogForkDB["Log fork_db usage"]
-LogNoBlock --> LogError["Log error: block not found"]
-ClampToStorage --> LogClamp["Log clamping to storage boundary"]
+UseForkDB --> LogForkDB["Log fork_db usage<br/>in gray ANSI color"]
+LogNoBlock --> LogError["Log error: block not found<br/>in gray ANSI color"]
+ClampToStorage --> LogClamp["Log clamping to storage boundary<br/>in gray ANSI color"]
 LogForkDB --> BuildRange["Build range up to boundary"]
 LogError --> BuildEmpty["Build empty range"]
 LogClamp --> BuildRange
@@ -715,11 +730,11 @@ The clamping logic provides comprehensive logging for troubleshooting and monito
 
 ```mermaid
 flowchart TD
-Start([Clamping Operation]) --> LogClampStart["Log clamping start:<br/>- Original start_num<br/>- Reason for clamping"]
+Start([Clamping Operation]) --> LogClampStart["Log clamping start:<br/>- Original start_num<br/>- Reason for clamping<br/>in gray ANSI color"]
 LogClampStart --> PerformClamp["Perform clamping:<br/>- Clamp to earliest<br/>- Clamp to storage_end<br/>- Clamp to fork_db"]
-PerformClamp --> LogClampResult["Log clamping result:<br/>- New start_num<br/>- Effective head<br/>- Range size"]
-LogClampResult --> LogContext["Log context:<br/>- DLT mode active<br/>- Earliest available<br/>- Storage boundaries"]
-LogContext --> LogDecision["Log decision:<br/>- Why clamping was needed<br/>- Impact on sync<br/>- Peer compatibility"]
+PerformClamp --> LogClampResult["Log clamping result:<br/>- New start_num<br/>- Effective head<br/>- Range size<br/>in gray ANSI color"]
+LogClampResult --> LogContext["Log context:<br/>- DLT mode active<br/>- Earliest available<br/>- Storage boundaries<br/>in gray ANSI color"]
+LogContext --> LogDecision["Log decision:<br/>- Why clamping was needed<br/>- Impact on sync<br/>- Peer compatibility<br/>in gray ANSI color"]
 LogDecision --> End([End])
 ```
 
@@ -741,19 +756,19 @@ The plugin provides detailed peer database logging for troubleshooting with gap 
 ```mermaid
 flowchart TD
 Start([Peer Stats Task]) --> CheckPeers{"Any connected peers?"}
-CheckPeers --> |No| LogNoPeers["Log 'no connected peers'"]
+CheckPeers --> |No| LogNoPeers["Log 'no connected peers'<br/>in cyan ANSI color"]
 CheckPeers --> |Yes| IteratePeers["Iterate connected peers"]
 IteratePeers --> ExtractInfo["Extract peer info:<br/>- IP/port<br/>- Latency<br/>- Bytes received<br/>- Blocked status"]
-ExtractInfo --> LogPeer["Log individual peer stats"]
+ExtractInfo --> LogPeer["Log individual peer stats<br/>in cyan ANSI color"]
 LogPeer --> CheckPotential["Check potential peers"]
 CheckPotential --> IteratePotential["Iterate potential peers"]
 IteratePotential --> CheckStatus{"Failed/rejected status?"}
 CheckStatus --> |No| NextPeer["Next potential peer"]
-CheckStatus --> |Yes| LogPotential["Log failed/rejected peer:<br/>- Endpoint<br/>- Last attempt time<br/>- Failed attempts<br/>- Error details<br/>- Gap-related errors"]
+CheckStatus --> |Yes| LogPotential["Log failed/rejected peer:<br/>- Endpoint<br/>- Last attempt time<br/>- Failed attempts<br/>- Error details<br/>- Gap-related errors<br/>in cyan ANSI color"]
 LogPotential --> NextPeer
 NextPeer --> CheckMore{"More potential peers?"}
 CheckMore --> |Yes| IteratePotential
-CheckMore --> |No| LogSummary["Log summary of failed peers<br/>including gap detection results"]
+CheckMore --> |No| LogSummary["Log summary of failed peers<br/>including gap detection results<br/>in cyan ANSI color"]
 LogSummary --> End([End])
 LogNoPeers --> End
 ```
@@ -769,9 +784,9 @@ The plugin implements graceful degradation when peers cannot serve requested ite
 flowchart TD
 Start([Peer Request Failed]) --> CheckError{"Error type?"}
 CheckError --> |DLT Mode Error| CheckGapError["Check if gap-related error:<br/>- item_not_available<br/>- block not in dlt_block_log<br/>- missing from storage"]
-CheckGapError --> |Gap Error| LogDLTError["Log DLT availability error:<br/>- Block number<br/>- Available range<br/>- DLT log bounds<br/>- Gap detection results"]
-CheckGapError --> |Other Error| LogGenericError["Log generic error:<br/>- Error details<br/>- Peer endpoint<br/>- Error context"]
-CheckError --> |Other Error Type| LogOtherError["Log other error type:<br/>- Error classification<br/>- Peer status<br/>- Recovery actions"]
+CheckGapError --> |Gap Error| LogDLTError["Log DLT availability error:<br/>- Block number<br/>- Available range<br/>- DLT log bounds<br/>- Gap detection results<br/>in gray ANSI color"]
+CheckGapError --> |Other Error| LogGenericError["Log generic error:<br/>- Error details<br/>- Peer endpoint<br/>- Error context<br/>in gray ANSI color"]
+CheckError --> |Other Error Type| LogOtherError["Log other error type:<br/>- Error classification<br/>- Peer status<br/>- Recovery actions<br/>in gray ANSI color"]
 LogDLTError --> CheckRecovery{"Check recovery options:<br/>- Peer switching<br/>- Range adjustment<br/>- Wait and retry"}
 LogGenericError --> CheckRecovery
 LogOtherError --> CheckRecovery
@@ -833,11 +848,11 @@ The plugin provides detailed logging for DLT mode operations with gap detection 
 
 ```mermaid
 flowchart TD
-Start([DLT Mode Operation]) --> LogClamp["Log DLT clamp:<br/>- Old start number<br/>- New start number<br/>- Earliest available<br/>- Head block<br/>- Gap detection results"]
-LogClamp --> LogIDs["Log get_block_ids result:<br/>- Number of IDs<br/>- Start block<br/>- Head block<br/>- Earliest available<br/>- Gap information"]
-LogIDs --> LogSynopsis["Log get_blockchain_synopsis:<br/>- Entry count<br/>- Low/high blocks<br/>- Head/LIB<br/>- Earliest available<br/>- Gap boundaries"]
-LogSynopsis --> LogAvailability["Log DLT availability:<br/>- Block number<br/>- Available range<br/>- DLT log bounds<br/>- Storage boundaries"]
-LogAvailability --> LogGap["Log gap detection:<br/>- Gap location<br/>- Gap size<br/>- Available alternatives<br/>- Recovery actions"]
+Start([DLT Mode Operation]) --> LogClamp["Log DLT clamp:<br/>- Old start number<br/>- New start number<br/>- Earliest available<br/>- Head block<br/>- Gap detection results<br/>in gray ANSI color"]
+LogClamp --> LogIDs["Log get_block_ids result:<br/>- Number of IDs<br/>- Start block<br/>- Head block<br/>- Earliest available<br/>- Gap information<br/>in gray ANSI color"]
+LogIDs --> LogSynopsis["Log get_blockchain_synopsis:<br/>- Entry count<br/>- Low/high blocks<br/>- Head/LIB<br/>- Earliest available<br/>- Gap boundaries<br/>in gray ANSI color"]
+LogSynopsis --> LogAvailability["Log DLT availability:<br/>- Block number<br/>- Available range<br/>- DLT log bounds<br/>- Storage boundaries<br/>in gray ANSI color"]
+LogAvailability --> LogGap["Log gap detection:<br/>- Gap location<br/>- Gap size<br/>- Available alternatives<br/>- Recovery actions<br/>in gray ANSI color"]
 LogGap --> End([End])
 ```
 
@@ -852,15 +867,15 @@ The block processing logging has been enhanced with more context including gap d
 
 ```mermaid
 flowchart TD
-Start([Handle Block]) --> LogGap["Log block gap:<br/>- Block number<br/>- Head block<br/>- Gap size<br/>- Gap detection context"]
+Start([Handle Block]) --> LogGap["Log block gap:<br/>- Block number<br/>- Head block<br/>- Gap size<br/>- Gap detection context<br/>in gray ANSI color"]
 LogGap --> CheckSyncMode{"Sync mode?"}
-CheckSyncMode --> |Yes| LogSync["Log sync block:<br/>- Block number<br/>- Head<br/>- Gap<br/>- Clamping info"]
-CheckSyncMode --> |No| LogNormal["Log normal block:<br/>- Block number<br/>- Transactions<br/>- Witness<br/>- Latency<br/>- Gap context"]
+CheckSyncMode --> |Yes| LogSync["Log sync block:<br/>- Block number<br/>- Head<br/>- Gap<br/>- Clamping info<br/>in gray ANSI color"]
+CheckSyncMode --> |No| LogNormal["Log normal block:<br/>- Block number<br/>- Transactions<br/>- Witness<br/>- Latency<br/>- Gap context<br/>in gray ANSI color"]
 LogSync --> AcceptBlock["Accept block via chain.accept_block()"]
 LogNormal --> AcceptBlock
 AcceptBlock --> HandleErrors{"Error occurred?"}
 HandleErrors --> |No| End([End])
-HandleErrors --> |Yes| LogError["Log detailed error:<br/>- Block number<br/>- Head block<br/>- Error type<br/>- Error details<br/>- Gap detection results"]
+HandleErrors --> |Yes| LogError["Log detailed error:<br/>- Block number<br/>- Head block<br/>- Error type<br/>- Error details<br/>- Gap detection results<br/>in gray ANSI color"]
 LogError --> End
 ```
 
@@ -873,10 +888,10 @@ The plugin provides comprehensive peer interaction logging with gap detection aw
 
 ```mermaid
 flowchart TD
-Start([Peer Interaction]) --> LogPeerStats["Log peer stats:<br/>- IP/port<br/>- Latency<br/>- Bytes received<br/>- Blocked status<br/>- Reason<br/>- Gap-related interactions"]
-LogPeerStats --> LogPotential["Log potential peers:<br/>- Endpoint<br/>- Status<br/>- Last attempt<br/>- Failed attempts<br/>- Error<br/>- Gap detection results"]
-LogPotential --> LogFailed["Log failed peers:<br/>- Count<br/>- Total peers<br/>- Status distribution<br/>- Gap-related failures"]
-LogFailed --> LogRecovery["Log recovery actions:<br/>- Peer switching<br/>- Range adjustments<br/>- Gap handling<br/>- Success rates"]
+Start([Peer Interaction]) --> LogPeerStats["Log peer stats:<br/>- IP/port<br/>- Latency<br/>- Bytes received<br/>- Blocked status<br/>- Reason<br/>- Gap-related interactions<br/>in cyan ANSI color"]
+LogPeerStats --> LogPotential["Log potential peers:<br/>- Endpoint<br/>- Status<br/>- Last attempt<br/>- Failed attempts<br/>- Error<br/>- Gap detection results<br/>in cyan ANSI color"]
+LogPotential --> LogFailed["Log failed peers:<br/>- Count<br/>- Total peers<br/>- Status distribution<br/>- Gap-related failures<br/>in cyan ANSI color"]
+LogFailed --> LogRecovery["Log recovery actions:<br/>- Peer switching<br/>- Range adjustments<br/>- Gap handling<br/>- Success rates<br/>in gray ANSI color"]
 LogRecovery --> End([End])
 ```
 
@@ -889,6 +904,169 @@ LogRecovery --> End([End])
 - [p2p_plugin.cpp:520-528](file://plugins/p2p/p2p_plugin.cpp#L520-L528)
 - [p2p_plugin.cpp:151-208](file://plugins/p2p/p2p_plugin.cpp#L151-L208)
 - [p2p_plugin.cpp:614-650](file://plugins/p2p/p2p_plugin.cpp#L614-L650)
+
+## ANSI Color Code Implementation
+
+**New** The P2P plugin now includes comprehensive ANSI color code implementation for enhanced console readability and visual distinction between different types of log messages.
+
+### ANSI Color Code Definitions
+
+The plugin defines ANSI color codes for consistent color usage throughout the logging system:
+
+```mermaid
+flowchart TD
+ColorCodes["ANSI Color Code Definitions"] --> Gray["CLOG_GRAY<br/>\\033[90m<br/>Gray color for DLT mode debug messages"]
+ColorCodes --> Cyan["CLOG_CYAN<br/>\\033[96m<br/>Cyan color for peer statistics and informational messages"]
+ColorCodes --> White["CLOG_WHITE<br/>\\033[97m<br/>White color for important transaction notifications"]
+ColorCodes --> Reset["CLOG_RESET<br/>\\033[0m<br/>Reset color to default"]
+Gray --> DLTLogging["DLT Mode Debug Logging<br/>in gray color"]
+Cyan --> PeerStats["Peer Statistics Logging<br/>in cyan color"]
+White --> TransactionLogs["Transaction Notifications<br/>in white color"]
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:16-21](file://plugins/p2p/p2p_plugin.cpp#L16-L21)
+
+### Color Code Usage Patterns
+
+The ANSI color codes are applied consistently across different logging scenarios:
+
+1. **DLT Mode Debug Messages**: Gray color for detailed DLT mode operations, gap detection, and block range management
+2. **Peer Statistics**: Cyan color for peer connection statistics, connection status, and peer database information
+3. **Transaction Notifications**: White color for important transaction-related information and block processing notifications
+4. **Error and Warning Messages**: Default color scheme for error conditions and warnings (unchanged)
+
+### Implementation Examples
+
+The color codes are integrated throughout the plugin implementation:
+
+```mermaid
+sequenceDiagram
+participant Logger as Logger
+participant P2P as P2P Plugin
+participant Console as Console Output
+Logger->>P2P : Log message with color code
+P2P->>Console : Output colored text<br/>CLOG_GRAY + message + CLOG_RESET
+Console-->>P2P : Colored output displayed
+Note over P2P,Console : Consistent color coding<br/>throughout all logging operations
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:169-171](file://plugins/p2p/p2p_plugin.cpp#L169-L171)
+- [p2p_plugin.cpp:299-301](file://plugins/p2p/p2p_plugin.cpp#L299-L301)
+- [p2p_plugin.cpp:522-528](file://plugins/p2p/p2p_plugin.cpp#L522-L528)
+
+**Section sources**
+- [p2p_plugin.cpp:16-21](file://plugins/p2p/p2p_plugin.cpp#L16-L21)
+- [p2p_plugin.cpp:169-171](file://plugins/p2p/p2p_plugin.cpp#L169-L171)
+- [p2p_plugin.cpp:299-301](file://plugins/p2p/p2p_plugin.cpp#L299-L301)
+- [p2p_plugin.cpp:522-528](file://plugins/p2p/p2p_plugin.cpp#L522-L528)
+
+## Enhanced DLT Mode Debug Logging
+
+**New** The P2P plugin now includes enhanced DLT (Data Ledger Technology) mode debug logging with comprehensive gap detection and block range management information displayed in gray ANSI color for improved troubleshooting capabilities.
+
+### Comprehensive DLT Mode Logging
+
+The enhanced DLT mode logging provides detailed information about block availability, gap detection, and synchronization operations:
+
+```mermaid
+flowchart TD
+DLTLogging["DLT Mode Debug Logging"] --> ClampStart["Clamp Start Logging<br/>- Original start number<br/>- New clamped start<br/>- Earliest available block<br/>- Head block information<br/>in gray ANSI color"]
+DLTLogging --> GapDetection["Gap Detection Logging<br/>- Gap location identification<br/>- Gap size calculation<br/>- Storage boundary detection<br/>- Fork database gap analysis<br/>in gray ANSI color"]
+DLTLogging --> BlockRange["Block Range Logging<br/>- Number of blocks returned<br/>- Start and end block numbers<br/>- Effective head block<br/>- Earliest available block<br/>- DLT log end position<br/>in gray ANSI color"]
+DLTLogging --> Availability["Availability Logging<br/>- Block number being served<br/>- Available block range<br/>- DLT log bounds<br/>- Storage boundaries<br/>in gray ANSI color"]
+ClampStart --> DLTLogging
+GapDetection --> DLTLogging
+BlockRange --> DLTLogging
+Availability --> DLTLogging
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:299-301](file://plugins/p2p/p2p_plugin.cpp#L299-L301)
+- [p2p_plugin.cpp:321-327](file://plugins/p2p/p2p_plugin.cpp#L321-L327)
+- [p2p_plugin.cpp:336-338](file://plugins/p2p/p2p_plugin.cpp#L336-L338)
+- [p2p_plugin.cpp:357-364](file://plugins/p2p/p2p_plugin.cpp#L357-L364)
+
+### DLT Mode Operation Logging
+
+The plugin provides comprehensive logging for all DLT mode operations:
+
+1. **get_block_ids() Operations**: Detailed logging of block ID generation with gap detection and clamping information
+2. **get_blockchain_synopsis() Operations**: Logging of blockchain synopsis generation with DLT availability context
+3. **get_item() Operations**: Logging of item serving operations with DLT mode error handling
+4. **Gap Detection Operations**: Comprehensive logging of gap detection and recovery mechanisms
+
+### Logging Context Information
+
+Each DLT mode log entry includes comprehensive context information:
+
+- **Block Numbers**: Current block, head block, earliest available block, and DLT log boundaries
+- **Storage Information**: DLT log start and end positions, block log boundaries
+- **Gap Information**: Gap locations, sizes, and detection results
+- **Synchronization Context**: Effective head block, remaining item counts, and synchronization status
+
+**Section sources**
+- [p2p_plugin.cpp:299-301](file://plugins/p2p/p2p_plugin.cpp#L299-L301)
+- [p2p_plugin.cpp:321-327](file://plugins/p2p/p2p_plugin.cpp#L321-L327)
+- [p2p_plugin.cpp:336-338](file://plugins/p2p/p2p_plugin.cpp#L336-L338)
+- [p2p_plugin.cpp:357-364](file://plugins/p2p/p2p_plugin.cpp#L357-L364)
+- [p2p_plugin.cpp:522-528](file://plugins/p2p/p2p_plugin.cpp#L522-L528)
+
+## Improved Console Readability
+
+**New** The P2P plugin now provides significantly improved console readability through the strategic use of ANSI color codes, allowing operators to quickly distinguish between different types of log messages and troubleshoot network operations more effectively.
+
+### Visual Distinction Between Log Types
+
+The color-coded logging system provides clear visual distinction between different categories of log messages:
+
+```mermaid
+graph TB
+subgraph "Console Readability Enhancement"
+GrayLogs["Gray Logs<br/>DLT Mode Debug<br/>Gap Detection<br/>Block Range Info"]
+CyanLogs["Cyan Logs<br/>Peer Statistics<br/>Connection Status<br/>Peer Database Info"]
+WhiteLogs["White Logs<br/>Transaction Notifications<br/>Block Processing<br/>Important Events"]
+DefaultLogs["Default Color<br/>Errors and Warnings<br/>Critical Issues<br/>System Messages"]
+end
+subgraph "Visual Benefits"
+Benefit1["Quick Pattern Recognition"]
+Benefit2["Faster Troubleshooting"]
+Benefit3["Reduced Console Scrolling"]
+Benefit4["Enhanced Multi-Tasking"]
+end
+GrayLogs --> Benefit1
+CyanLogs --> Benefit1
+WhiteLogs --> Benefit1
+DefaultLogs --> Benefit1
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:16-21](file://plugins/p2p/p2p_plugin.cpp#L16-L21)
+
+### Operator Experience Improvements
+
+The enhanced console readability provides several operational benefits:
+
+1. **Quick Pattern Recognition**: Operators can instantly identify DLT mode operations (gray), peer statistics (cyan), and important notifications (white)
+2. **Faster Troubleshooting**: Color coding helps operators quickly locate relevant log entries during debugging sessions
+3. **Reduced Console Scrolling**: Visual distinction makes it easier to scan through large amounts of log output
+4. **Enhanced Multi-Tasking**: Operators can monitor multiple log streams simultaneously with color-based differentiation
+
+### Color Coding Strategy
+
+The color coding strategy is designed for optimal operator experience:
+
+- **Gray**: DLT mode debug information, gap detection details, and block range management
+- **Cyan**: Peer statistics, connection status, and peer database information
+- **White**: Important transaction notifications, block processing information, and significant events
+- **Default**: Error conditions, warnings, and critical system messages (unchanged for emphasis)
+
+**Section sources**
+- [p2p_plugin.cpp:16-21](file://plugins/p2p/p2p_plugin.cpp#L16-L21)
+- [p2p_plugin.cpp:169-171](file://plugins/p2p/p2p_plugin.cpp#L169-L171)
+- [p2p_plugin.cpp:299-301](file://plugins/p2p/p2p_plugin.cpp#L299-L301)
+- [p2p_plugin.cpp:522-528](file://plugins/p2p/p2p_plugin.cpp#L522-L528)
 
 ## Graceful Degradation Capabilities
 
@@ -903,14 +1081,14 @@ flowchart TD
 Start([DLT Block Request]) --> CheckAvailability["Check block availability:<br/>- Block number<br/>- Earliest available<br/>- DLT log range<br/>- Gap detection"]
 CheckAvailability --> |Available| ServeBlock["Serve block normally"]
 CheckAvailability --> |Not Available| CheckGap["Check if gap-related:<br/>- Below earliest<br/>- Beyond storage<br/>- Fork_db gap"]
-CheckGap --> |Gap Error| LogUnavailable["Log gap-related unavailability:<br/>- Block number<br/>- Available range<br/>- DLT bounds<br/>- Gap location"]
-CheckGap --> |Other Error| LogGenericUnavailable["Log generic unavailability:<br/>- Error details<br/>- Peer endpoint<br/>- Context"]
+CheckGap --> |Gap Error| LogUnavailable["Log gap-related unavailability:<br/>- Block number<br/>- Available range<br/>- DLT bounds<br/>- Gap location<br/>in gray ANSI color"]
+CheckGap --> |Other Error| LogGenericUnavailable["Log generic unavailability:<br/>- Error details<br/>- Peer endpoint<br/>- Context<br/>in gray ANSI color"]
 LogUnavailable --> CheckRecovery["Check recovery options:<br/>- Peer switching<br/>- Range adjustment<br/>- Wait and retry"]
 LogGenericUnavailable --> CheckRecovery
 CheckRecovery --> |Peer Switching| SwitchPeer["Switch to alternative peer"]
 CheckRecovery --> |Range Adjustment| AdjustRange["Adjust block range<br/>with gap detection"]
 CheckRecovery --> |Wait and Retry| WaitRetry["Wait and retry later"]
-SwitchPeer --> LogRecovery["Log recovery actions:<br/>- Peer switched<br/>- Reason<br/>- Success"]
+SwitchPeer --> LogRecovery["Log recovery actions:<br/>- Peer switched<br/>- Reason<br/>- Success<br/>in gray ANSI color"]
 AdjustRange --> LogRecovery
 WaitRetry --> LogRecovery
 LogRecovery --> ContinueSync["Continue sync with available peers"]
@@ -931,7 +1109,7 @@ Start([Error Occurred]) --> ClassifyError["Classify error:<br/>- block_too_old_e
 ClassifyError --> HandleBlockTooOld["Handle block too old:<br/>- Log warning<br/>- Convert to network exception<br/>- Soft-ban peer"]
 ClassifyError --> HandleDeferredResize["Handle deferred resize:<br/>- Log info<br/>- Convert to network exception<br/>- No peer penalty"]
 ClassifyError --> HandleUnlinkable["Handle unlinkable block:<br/>- Log warning<br/>- Convert to network exception<br/>- Peer soft-ban or resync"]
-ClassifyError --> HandleGapError["Handle gap error:<br/>- Log gap detection<br/>- Adjust sync parameters<br/>- Peer switching"]
+ClassifyError --> HandleGapError["Handle gap error:<br/>- Log gap detection<br/>- Adjust sync parameters<br/>- Peer switching<br/>in gray ANSI color"]
 HandleBlockTooOld --> ContinueSync["Continue synchronization"]
 HandleDeferredResize --> ContinueSync
 HandleUnlinkable --> ContinueSync
@@ -952,12 +1130,12 @@ flowchart TD
 Start([Peer Action]) --> CheckAction{"Action type?"}
 CheckAction --> |Successful| DecreasePenalty["Decrease peer penalty"]
 CheckAction --> |Minor Error| MaintainPenalty["Maintain current penalty"]
-CheckAction --> |Major Error| IncreasePenalty["Increase penalty:<br/>- Hard fork error<br/>- Gap-related error<br/>- Invalid block"]
+CheckAction --> |Major Error| IncreasePenalty["Increase penalty:<br/>- Hard fork error<br/>- Gap-related error<br/>- Invalid block<br/>in gray ANSI color"]
 CheckAction --> |Peer Disconnect| ResetPenalty["Reset penalty:<br/>- Peer disconnected<br/>- Handshake failed<br/>- Rejected"]
 IncreasePenalty --> CheckThreshold{"Penalty threshold exceeded?"}
 CheckThreshold --> |No| Continue["Continue with current peer"]
-CheckThreshold --> |Yes| RemovePeer["Remove peer:<br/>- Add to banned list<br/>- Clear from potential peers<br/>- Log removal<br/>- Gap detection context"]
-RemovePeer --> FindAlternative["Find alternative peer:<br/>- Check potential peers<br/>- Consider gap compatibility<br/>- Attempt reconnection"]
+CheckThreshold --> |Yes| RemovePeer["Remove peer:<br/>- Add to banned list<br/>- Clear from potential peers<br/>- Log removal<br/>- Gap detection context<br/>in gray ANSI color"]
+RemovePeer --> FindAlternative["Find alternative peer:<br/>- Check potential peers<br/>- Consider gap compatibility<br/>- Attempt reconnection<br/>in gray ANSI color"]
 FindAlternative --> Continue
 DecreasePenalty --> Continue
 MaintainPenalty --> Continue
@@ -984,12 +1162,12 @@ The `resync_from_lib()` method now includes comprehensive logging, improved peer
 ```mermaid
 flowchart TD
 Start([Minority Fork Detected]) --> CheckState{"Check LIB vs Head:<br/>- LIB == 0?<br/>- Head <= LIB?"}
-CheckState --> |LIB == 0 or Head <= LIB| NoAction["No recovery needed:<br/>- Already at/after LIB<br/>- Log info message"]
-CheckState --> |Head > LIB| PopBlocks["Pop reversible blocks:<br/>- While head > LIB<br/>- db.pop_block()<br/>- Clear pending<br/>- Reset fork_db<br/>- Log gap detection context"]
-PopBlocks --> RebuildForkDB["Re-seed fork DB:<br/>- Fetch LIB block<br/>- start_block(LIB_block)<br/>- Log recovery step<br/>- Check gap boundaries"]
-RebuildForkDB --> TriggerSync["Trigger P2P sync:<br/>- sync_from(LIB_block_id)<br/>- resync()<br/>- Log sync initiation<br/>- Include gap detection info"]
-TriggerSync --> ReconnectPeers["Reconnect to seed peers:<br/>- add_node(seed)<br/>- connect_to_endpoint(seed)<br/>- Log peer switching<br/>- Consider gap compatibility"]
-ReconnectPeers --> ResetTimer["Reset stale sync timer:<br/>- _last_block_received_time = now<br/>- Log timer reset<br/>- Gap detection monitoring"]
+CheckState --> |LIB == 0 or Head <= LIB| NoAction["No recovery needed:<br/>- Already at/after LIB<br/>- Log info message<br/>in gray ANSI color"]
+CheckState --> |Head > LIB| PopBlocks["Pop reversible blocks:<br/>- While head > LIB<br/>- db.pop_block()<br/>- Clear pending<br/>- Reset fork_db<br/>- Log gap detection context<br/>in gray ANSI color"]
+PopBlocks --> RebuildForkDB["Re-seed fork DB:<br/>- Fetch LIB block<br/>- start_block(LIB_block)<br/>- Log recovery step<br/>- Check gap boundaries<br/>in gray ANSI color"]
+RebuildForkDB --> TriggerSync["Trigger P2P sync:<br/>- sync_from(LIB_block_id)<br/>- resync()<br/>- Log sync initiation<br/>- Include gap detection info<br/>in gray ANSI color"]
+TriggerSync --> ReconnectPeers["Reconnect to seed peers:<br/>- add_node(seed)<br/>- connect_to_endpoint(seed)<br/>- Log peer switching<br/>- Consider gap compatibility<br/>in gray ANSI color"]
+ReconnectPeers --> ResetTimer["Reset stale sync timer:<br/>- _last_block_received_time = now<br/>- Log timer reset<br/>- Gap detection monitoring<br/>in gray ANSI color"]
 ResetTimer --> Complete([Recovery Complete])
 NoAction --> Complete
 ```
@@ -1023,12 +1201,12 @@ Chain-->>Witness : Block validation results
 Witness->>Witness : Analyze fork scenario<br/>with gap detection
 alt Minority fork detected
 Witness->>P2P : resync_from_lib()
-Note over P2P : Enhanced logging with gap context
+Note over P2P : Enhanced logging with gap context<br/>in gray ANSI color
 P2P->>Chain : Pop blocks to LIB<br/>with gap boundary awareness
 P2P->>Chain : Reset fork database<br/>including gap detection
 P2P->>Network : Trigger sync from LIB<br/>with gap-aware parameters
 P2P->>Network : Reconnect to peers<br/>considering gap compatibility
-Note over P2P : Comprehensive recovery logging<br/>with gap detection results
+Note over P2P : Comprehensive recovery logging<br/>with gap detection results<br/>in gray ANSI color
 end
 ```
 
@@ -1391,6 +1569,15 @@ The P2P plugin supports extensive configuration options:
 4. **Resource Monitoring**: Monitor system resources during high-load periods with gap detection
 5. **Gap Detection Monitoring**: Monitor gap detection operations for performance impact
 
+### ANSI Color Code Troubleshooting
+
+**New** For ANSI color code-related issues:
+
+1. **Console Compatibility**: Verify terminal supports ANSI color codes
+2. **Color Output Testing**: Test color output in different terminal environments
+3. **Log Filtering**: Use log filtering to isolate specific color-coded log categories
+4. **Operator Training**: Train operators to recognize different color-coded log categories
+
 **Section sources**
 - [p2p_plugin.cpp:701-765](file://plugins/p2p/p2p_plugin.cpp#L701-L765)
 - [p2p_plugin.cpp:992-1061](file://plugins/p2p/p2p_plugin.cpp#L992-L1061)
@@ -1414,9 +1601,14 @@ The P2P Plugin represents a sophisticated implementation of blockchain networkin
 10. **Graceful Degradation**: Robust error handling and peer interaction management with gap-aware recovery
 11. **Enhanced Diagnostics**: Comprehensive logging throughout the sync process with gap detection
 12. **Peer Database Analytics**: Detailed peer interaction tracking and troubleshooting with gap awareness
+13. **ANSI Color Code Implementation**: Strategic use of color codes for improved console readability and visual distinction
+14. **Enhanced DLT Mode Debugging**: Comprehensive gray-colored logging for DLT mode operations and gap detection
+15. **Improved Console Experience**: Better visual organization of log messages for faster troubleshooting
 
 The recent additions demonstrate ongoing attention to operational efficiency and user experience. The new DLT mode block range management with sophisticated gap detection provides intelligent support for snapshot-based nodes, while the enhanced peer interaction handling improves network resilience. The comprehensive logging throughout the sync process provides unprecedented visibility into network operations, and the graceful degradation capabilities ensure reliable operation even when peers cannot serve requested items.
 
 The plugin's design demonstrates best practices in distributed systems engineering, balancing security, performance, and maintainability while providing the foundation for scalable blockchain networks. The integration of DLT mode support, graceful degradation mechanisms, enhanced diagnostic capabilities, and sophisticated gap detection positions the P2P plugin to handle increasingly complex blockchain networking requirements with improved reliability and operability.
 
 The enhanced gap detection and automatic recovery mechanisms represent a significant advancement in P2P synchronization reliability, preventing peer disconnections due to item_not_available responses and ensuring continuous network operation even in challenging storage boundary scenarios. These improvements make the P2P plugin more robust and suitable for production environments with diverse node configurations and storage setups.
+
+The implementation of ANSI color codes further enhances the plugin's operational capabilities by providing visual distinction between different types of log messages, enabling operators to quickly identify and respond to different operational scenarios. The strategic use of gray, cyan, and white color codes creates a clear visual hierarchy that improves troubleshooting efficiency and reduces operator workload during complex network operations.
