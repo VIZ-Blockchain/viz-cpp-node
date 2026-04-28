@@ -1,10 +1,42 @@
+# syntax=docker/dockerfile:1.4
 FROM phusion/baseimage:noble-1.0.3 AS builder
 
 ENV LANG=en_US.UTF-8
 ENV APPDIR=/usr/local/src/viz/
 ENV HOME=/var/lib/vizd
 
-RUN \
+# ccache configuration (cache directory is provided as a BuildKit cache mount below).
+# CCACHE_MAXSIZE=2G keeps ccache's contribution to the GHA Actions Cache bounded.
+# With Docker layer cache (~3-4 GB) plus ccache (<=2 GB), total stays comfortably
+# under the 10 GB GHA per-repo cache quota. Do not raise beyond 4G without also
+# verifying the layer cache footprint.
+# CCACHE_COMPRESS=1 is redundant with ccache >=4.0 defaults but kept explicit for
+# older-ccache compatibility (local builds on older distros).
+ENV CCACHE_DIR=/root/.ccache
+ENV CCACHE_MAXSIZE=2G
+ENV CCACHE_COMPRESS=1
+
+# Install build dependencies.
+#
+# IMPORTANT: the `rm -f /etc/apt/apt.conf.d/docker-clean` line is required.
+# Ubuntu/Debian base images ship an apt hook that auto-deletes
+# /var/cache/apt/archives and /var/lib/apt/lists after every apt run, which
+# silently defeats both BuildKit cache mounts below. Do not remove this rm.
+#
+# Equally important: the Keep-Downloaded-Packages line. Even with
+# docker-clean removed, apt's default is to delete .deb archives after
+# install (Binary::apt::APT::Keep-Downloaded-Packages "false"). Without
+# explicitly flipping it to "true", buildkit-cache-dance extracts an
+# empty /var/cache/apt/archives/ from the cache mount.
+#
+# We also intentionally do NOT run `apt-get clean` or `rm -rf /var/lib/apt/lists/*`
+# at the end, because those paths are mounted as BuildKit caches that we want
+# to persist across CI runs. The builder stage is discarded in the final image
+# regardless, so leftover cache contents have no effect on the production image.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' >/etc/apt/apt.conf.d/keep-cache && \
     for i in 1 2 3; do \
         apt-get update && \
         apt-get install -y --no-install-recommends \
@@ -40,9 +72,7 @@ RUN \
             pkg-config \
             zlib1g-dev && \
         break || sleep 10; \
-    done && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    done
 
 # Explicitly copy needed files to avoid re-building when changing other files
 COPY .git $APPDIR/.git
@@ -52,11 +82,18 @@ COPY thirdparty $APPDIR/thirdparty
 COPY plugins $APPDIR/plugins
 COPY libraries $APPDIR/libraries
 
-RUN \
+# Build vizd. The named cache mount `viz-ccache` is shared across all VIZ
+# Dockerfiles so that production and testnet builds in the same workflow
+# benefit from each other's compiled-object cache. `make -j$(nproc) vizd`
+# (instead of unscoped `make`) skips cli_wallet, util programs, and tests
+# that are not installed into the production image. `sharing=locked` is
+# required because ccache is not concurrent-safe; `shared` would risk cache
+# corruption under any future matrix-build setup.
+RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
     cd $APPDIR && \
     git submodule update --init --recursive -f && \
     sed -i '/add_subdirectory(tests)/d' thirdparty/fc/CMakeLists.txt && \
-    mkdir build && \
+    mkdir -p build && \
     cd build && \
     cmake \
         -DCMAKE_BUILD_TYPE=Release \
@@ -66,13 +103,17 @@ RUN \
         -DENABLE_MONGO_PLUGIN=FALSE \
         .. \
     && \
-    make -j$(nproc)
+    make -j$(nproc) vizd && \
+    ccache -s
 
 RUN set -xe ;\
     cd $APPDIR/build ;\
     make install ;\
     rm -rf $APPDIR
 
+# Final cleanup of the builder stage. apt cache mounts above are not affected
+# by these rm/clean calls because cache mounts are unmounted by the time this
+# RUN executes; this only removes anything that landed in real layers.
 RUN \
     apt-get clean && \
     apt-get autoremove -y && \

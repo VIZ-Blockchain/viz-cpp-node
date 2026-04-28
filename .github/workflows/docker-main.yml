@@ -18,31 +18,106 @@ jobs:
         with:
           submodules: recursive
 
+      - uses: docker/setup-buildx-action@v3
+        id: setup-buildx
+
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      # Cache-mount key hashes BOTH Dockerfiles so the testnet and
+      # production jobs (which install identical packages) compute the
+      # same key prefix — letting build_prod restore what build_testnet
+      # just saved.
+      - name: Restore BuildKit cache mounts from Actions Cache
+        uses: actions/cache@v4
+        id: cache-mounts
+        with:
+          path: cache-mount
+          key: viz-cache-mount-${{ runner.os }}-main-${{ hashFiles('share/vizd/docker/Dockerfile-production', 'share/vizd/docker/Dockerfile-testnet') }}-${{ github.sha }}
+          restore-keys: |
+            viz-cache-mount-${{ runner.os }}-main-${{ hashFiles('share/vizd/docker/Dockerfile-production', 'share/vizd/docker/Dockerfile-testnet') }}-
+            viz-cache-mount-${{ runner.os }}-main-
+
+      - name: Inject cache mounts into BuildKit
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          builder: ${{ steps.setup-buildx.outputs.name }}
+          cache-map: |
+            {
+              "cache-mount/var-cache-apt": "/var/cache/apt",
+              "cache-mount/var-lib-apt-lists": "/var/lib/apt/lists",
+              "cache-mount/ccache": {
+                "target": "/root/.ccache",
+                "id": "viz-ccache"
+              }
+            }
+          skip-extraction: ${{ steps.cache-mounts.outputs.cache-hit }}
+
+      # Both jobs share scope=main so build_prod (which runs after
+      # build_testnet via needs:) can reuse the ccache populated by the
+      # testnet build. The two images differ only in CMake flags so most
+      # compiled object files have identical ccache hashes.
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: ./share/vizd/docker/Dockerfile-testnet
           push: true
           tags: vizblockchain/vizd:testnet
+          cache-from: type=gha,scope=main
+          cache-to:   type=gha,scope=main,mode=max
 
   build_prod:
     name: Build production image
     runs-on: ubuntu-latest
+    # needs: build_testnet ensures build_prod runs after build_testnet so
+    # it can pull the warm cache exported by build_testnet's cache-to step.
+    # Side-effect: a build_testnet failure now blocks build_prod, which is
+    # arguably an improvement (don't ship prod if testnet is broken).
+    needs: build_testnet
 
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
+      - uses: docker/setup-buildx-action@v3
+        id: setup-buildx
+
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # Same cache-mount key prefix as build_testnet so this job restores
+      # the cache build_testnet just saved (same SHA, same Dockerfile
+      # hashes). Apt content fully reusable; ccache reuse depends on how
+      # -DBUILD_TESTNET propagates through the build (measured per run).
+      - name: Restore BuildKit cache mounts from Actions Cache
+        uses: actions/cache@v4
+        id: cache-mounts
+        with:
+          path: cache-mount
+          key: viz-cache-mount-${{ runner.os }}-main-${{ hashFiles('share/vizd/docker/Dockerfile-production', 'share/vizd/docker/Dockerfile-testnet') }}-${{ github.sha }}
+          restore-keys: |
+            viz-cache-mount-${{ runner.os }}-main-${{ hashFiles('share/vizd/docker/Dockerfile-production', 'share/vizd/docker/Dockerfile-testnet') }}-
+            viz-cache-mount-${{ runner.os }}-main-
+
+      - name: Inject cache mounts into BuildKit
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          builder: ${{ steps.setup-buildx.outputs.name }}
+          cache-map: |
+            {
+              "cache-mount/var-cache-apt": "/var/cache/apt",
+              "cache-mount/var-lib-apt-lists": "/var/lib/apt/lists",
+              "cache-mount/ccache": {
+                "target": "/root/.ccache",
+                "id": "viz-ccache"
+              }
+            }
+          skip-extraction: ${{ steps.cache-mounts.outputs.cache-hit }}
 
       - uses: docker/build-push-action@v6
         with:
@@ -50,3 +125,5 @@ jobs:
           file: ./share/vizd/docker/Dockerfile-production
           push: true
           tags: vizblockchain/vizd:latest
+          cache-from: type=gha,scope=main
+          cache-to:   type=gha,scope=main,mode=max

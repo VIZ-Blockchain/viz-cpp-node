@@ -50,3 +50,9 @@ documentation/doxygen/latex
 *.pyo
 *.egg-info/
 build
+
+# Local design specs and implementation plans (not part of repo)
+docs/superpowers/
+
+# Claude Code local session/config files
+.claude/
