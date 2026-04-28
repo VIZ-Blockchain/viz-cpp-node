@@ -25,6 +25,18 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      # Docker tags cannot contain '/', but git branch names can (e.g.
+      # 'ci/build-time-reduction'). Sanitize via bash parameter expansion
+      # in an env-var (not direct ${{ }} interpolation) to avoid workflow
+      # injection if a branch name ever contains shell metacharacters.
+      - name: Compute docker tag from branch name
+        id: tag
+        env:
+          BRANCH_NAME: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          echo "value=${BRANCH_NAME//\//-}" >> "$GITHUB_OUTPUT"
+
       # Cache scope is keyed on the PR's base branch so all PRs targeting
       # master share one warm-cache pool, while PRs against release branches
       # cannot poison master's cache. mode=max is required for BuildKit to
@@ -35,6 +47,6 @@ jobs:
           context: .
           file: ./share/vizd/docker/Dockerfile-production
           push: true
-          tags: vizblockchain/vizd:${{ github.head_ref }}
+          tags: vizblockchain/vizd:${{ steps.tag.outputs.value }}
           cache-from: type=gha,scope=pr-${{ github.event.pull_request.base_ref }}
           cache-to:   type=gha,scope=pr-${{ github.event.pull_request.base_ref }},mode=max
