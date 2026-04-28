@@ -3368,6 +3368,16 @@ namespace graphene {
                     _most_recent_blocks_accepted.push_back(block_message_to_send.block_id);
 
                     client_accepted_block = true;
+
+                    // Good sync block — find the peer that sent it and reset
+                    // their strike counter so they recover from past errors.
+                    for (const peer_connection_ptr &peer : _active_connections) {
+                        if (peer->ids_of_items_being_processed.find(block_message_to_send.block_id) !=
+                            peer->ids_of_items_being_processed.end() &&
+                            peer->unlinkable_block_strikes > 0) {
+                            peer->unlinkable_block_strikes = 0;
+                        }
+                    }
                 }
                 catch (const deferred_resize_exception &e) {
                     // Shared memory resize is in progress. Do NOT mark the block as accepted.
@@ -3796,6 +3806,12 @@ namespace graphene {
                                 ("num", block_message_to_process.block.block_num())
                                         ("id", block_message_to_process.block_id));
                         _most_recent_blocks_accepted.push_back(block_message_to_process.block_id);
+
+                        // Good block from this peer — reset strike counter so peers
+                        // recover from occasional stale/unlinkable blocks.
+                        if (originating_peer->unlinkable_block_strikes > 0) {
+                            originating_peer->unlinkable_block_strikes = 0;
+                        }
 
                         bool new_transaction_discovered = false;
                         for (const item_hash_t &transaction_message_hash : contained_transaction_message_ids) {
