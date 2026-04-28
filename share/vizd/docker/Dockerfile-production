@@ -6,6 +6,12 @@ ENV APPDIR=/usr/local/src/viz/
 ENV HOME=/var/lib/vizd
 
 # ccache configuration (cache directory is provided as a BuildKit cache mount below).
+# CCACHE_MAXSIZE=2G keeps ccache's contribution to the GHA Actions Cache bounded.
+# With Docker layer cache (~3-4 GB) plus ccache (<=2 GB), total stays comfortably
+# under the 10 GB GHA per-repo cache quota. Do not raise beyond 4G without also
+# verifying the layer cache footprint.
+# CCACHE_COMPRESS=1 is redundant with ccache >=4.0 defaults but kept explicit for
+# older-ccache compatibility (local builds on older distros).
 ENV CCACHE_DIR=/root/.ccache
 ENV CCACHE_MAXSIZE=2G
 ENV CCACHE_COMPRESS=1
@@ -14,8 +20,8 @@ ENV CCACHE_COMPRESS=1
 #
 # IMPORTANT: the `rm -f /etc/apt/apt.conf.d/docker-clean` line is required.
 # Ubuntu/Debian base images ship an apt hook that auto-deletes
-# /var/cache/apt/archives after every apt run, which silently defeats the
-# BuildKit cache mount on /var/cache/apt. Do not remove this rm.
+# /var/cache/apt/archives and /var/lib/apt/lists after every apt run, which
+# silently defeats both BuildKit cache mounts below. Do not remove this rm.
 #
 # We also intentionally do NOT run `apt-get clean` or `rm -rf /var/lib/apt/lists/*`
 # at the end, because those paths are mounted as BuildKit caches that we want
@@ -73,7 +79,9 @@ COPY libraries $APPDIR/libraries
 # Dockerfiles so that production and testnet builds in the same workflow
 # benefit from each other's compiled-object cache. `make -j$(nproc) vizd`
 # (instead of unscoped `make`) skips cli_wallet, util programs, and tests
-# that are not installed into the production image.
+# that are not installed into the production image. `sharing=locked` is
+# required because ccache is not concurrent-safe; `shared` would risk cache
+# corruption under any future matrix-build setup.
 RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
     cd $APPDIR && \
     git submodule update --init --recursive -f && \
