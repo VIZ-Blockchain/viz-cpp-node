@@ -513,6 +513,7 @@ namespace graphene { namespace chain {
             const block_log &get_block_log() const;
 
             const dlt_block_log &get_dlt_block_log() const { return _dlt_block_log; }
+            dlt_block_log &get_dlt_block_log() { return _dlt_block_log; }
 
             fork_database &get_fork_db() {
                 return _fork_db;
