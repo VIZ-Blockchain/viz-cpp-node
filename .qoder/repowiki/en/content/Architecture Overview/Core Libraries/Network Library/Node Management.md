@@ -22,11 +22,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced peer synchronization logging with comprehensive peer status updates including sync item counts, peer states, and timing information
-- Added detailed logging for peer synchronization progress with block ranges, remaining item counts, and sync status reporting
-- Implemented enhanced peer status reporting with memory usage metrics and peer connection state information
-- Improved error reporting for peer synchronization states with detailed timing and progress information
-- Enhanced sync status monitoring with item count tracking and peer coordination metrics
+- Enhanced peer handling with intelligent soft-ban mechanisms including strike accumulation system
+- Implemented threshold-based soft-ban enforcement with 20-strike maximum
+- Improved unlinkable block processing logic with intelligent peer classification
+- Added trusted peer support with reduced soft-ban duration (5 minutes vs 15 minutes)
+- Enhanced soft-ban expiration handling and automatic flag reset functionality
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -35,16 +35,17 @@
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Enhanced Peer Synchronization Logging](#enhanced-peer-synchronization-logging)
-7. [Comprehensive Peer Status Reporting](#comprehensive-peer-status-reporting)
-8. [Enhanced Error Reporting and Diagnostics](#enhanced-error-reporting-and-diagnostics)
-9. [Peer State Management and Monitoring](#peer-state-management-and-monitoring)
-10. [Dependency Analysis](#dependency-analysis)
-11. [Performance Considerations](#performance-considerations)
-12. [Troubleshooting Guide](#troubleshooting-guide)
-13. [Conclusion](#conclusion)
+7. [Intelligent Soft-Ban Mechanisms](#intelligent-soft-ban-mechanisms)
+8. [Comprehensive Peer Status Reporting](#comprehensive-peer-status-reporting)
+9. [Enhanced Error Reporting and Diagnostics](#enhanced-error-reporting-and-diagnostics)
+10. [Peer State Management and Monitoring](#peer-state-management-and-monitoring)
+11. [Dependency Analysis](#dependency-analysis)
+12. [Performance Considerations](#performance-considerations)
+13. [Troubleshooting Guide](#troubleshooting-guide)
+14. [Conclusion](#conclusion)
 
 ## Introduction
-This document describes the Node Management component responsible for orchestrating network peers, maintaining connectivity, and managing blockchain synchronization in the P2P layer. It covers the node.hpp class interface, the node_delegate integration for blockchain callbacks, configuration and lifecycle APIs, peer management, and network broadcasting with inventory tracking. The documentation now includes comprehensive coverage of enhanced peer synchronization logging, detailed peer status reporting, and improved error diagnostics for better debugging and monitoring capabilities.
+This document describes the Node Management component responsible for orchestrating network peers, maintaining connectivity, and managing blockchain synchronization in the P2P layer. It covers the node.hpp class interface, the node_delegate integration for blockchain callbacks, configuration and lifecycle APIs, peer management, and network broadcasting with inventory tracking. The documentation now includes comprehensive coverage of enhanced peer synchronization logging, intelligent soft-ban mechanisms with strike accumulation, detailed peer status reporting, and improved error diagnostics for better debugging and monitoring capabilities.
 
 ## Project Structure
 The Node Management functionality spans several headers and the implementation source file:
@@ -60,8 +61,8 @@ The Node Management functionality spans several headers and the implementation s
 graph TB
 subgraph "Network Layer"
 N["node.hpp<br/>Public API"]
-NI["node.cpp<br/>Enhanced Implementation<br/>with Logging & Diagnostics"]
-PC["peer_connection.hpp<br/>Peer Abstraction<br/>with Soft-Ban Support"]
+NI["node.cpp<br/>Enhanced Implementation<br/>with Logging & Diagnostics<br/>Soft-Ban Mechanisms"]
+PC["peer_connection.hpp<br/>Peer Abstraction<br/>with Soft-Ban Support<br/>Strike Accumulation"]
 PD["peer_database.hpp<br/>Persistent Peers"]
 MSG["message.hpp<br/>Message Envelope"]
 CM["core_messages.hpp<br/>Core Message Types"]
@@ -113,7 +114,7 @@ NI --> P2P
 ## Core Components
 - node class: Provides P2P orchestration, configuration, peer management, and broadcast APIs with comprehensive logging capabilities.
 - node_delegate interface: Bridges the P2P layer to the blockchain, handling block ingestion, transaction processing, and sync callbacks with enhanced status reporting.
-- peer_connection: Encapsulates a single peer link with state machine, inventory tracking, rate-limited messaging, emergency consensus support, and intelligent soft-ban functionality.
+- peer_connection: Encapsulates a single peer link with state machine, inventory tracking, rate-limited messaging, emergency consensus support, and intelligent soft-ban functionality with strike accumulation.
 - peer_database: Persistent store of potential peers with connection history and disposition.
 - message: Generic envelope for all P2P messages with hashing and typed serialization.
 - fork_database: Manages blockchain forks with emergency consensus mode support and deterministic tie-breaking.
@@ -128,6 +129,7 @@ Key responsibilities:
 - Intelligent peer handling: Differentiating between stale fork peers and legitimate sync candidates to prevent infinite loops.
 - DLT mode support: Enhanced error logging with comprehensive block range information for distributed ledger technology mode.
 - Comprehensive logging: Detailed peer synchronization progress, item counts, block ranges, and timing information for better debugging and monitoring.
+- **Enhanced soft-ban mechanisms**: Intelligent strike accumulation system with 20-strike threshold, trusted peer support, and automatic soft-ban expiration handling.
 
 **Section sources**
 - [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
@@ -207,6 +209,7 @@ class peer_connection {
 +inhibit_fetching_sync_blocks bool
 +soft_ban_expiration_handling()
 +intelligent_peer_classification()
++unlinkable_block_strikes uint32
 }
 class fork_database {
 +set_emergency_mode(active)
@@ -507,6 +510,59 @@ Forcibly disconnecting peer ${peer} who failed to close their connection in a ti
 - [node.cpp:1600-1603](file://libraries/network/node.cpp#L1600-L1603)
 - [node.cpp:1615-1618](file://libraries/network/node.cpp#L1615-L1618)
 
+## Intelligent Soft-Ban Mechanisms
+
+### Strike Accumulation System
+The node now implements an intelligent soft-ban mechanism with strike accumulation to prevent network abuse while tolerating occasional legitimate issues. The system tracks unlinkable blocks at or below the node's head block and accumulates strikes before applying soft-bans.
+
+**Strike Accumulation Features**:
+- **Unlinkable Block Detection**: Monitors blocks that cannot be linked to the current blockchain (at or below head)
+- **Strike Counter**: Tracks unlinkable blocks per peer with automatic increment on violations
+- **Threshold Enforcement**: Soft-bans peers after accumulating 20 strikes
+- **Automatic Reset**: Resets strike counter to zero after successful soft-ban application
+- **Intelligent Tolerance**: Allows occasional stale blocks without immediate punishment
+
+**Soft-Ban Duration Management**:
+- **Default Duration**: 15 minutes (900 seconds) for regular peers
+- **Trusted Peer Duration**: 5 minutes (300 seconds) for trusted peers
+- **Expiration Handling**: Automatic flag reset when soft-ban period expires
+- **Flag Management**: Automatically clears inhibit_fetching_sync_blocks flag on expiration
+
+**Section sources**
+- [node.cpp:3874-3909](file://libraries/network/node.cpp#L3874-L3909)
+- [node.cpp:3883](file://libraries/network/node.cpp#L3883)
+- [node.cpp:3895](file://libraries/network/node.cpp#L3895)
+- [node.cpp:3717-3739](file://libraries/network/node.cpp#L3717-L3739)
+- [node.cpp:595-603](file://libraries/network/node.cpp#L595-L603)
+
+### Trusted Peer Support
+The node implements trusted peer functionality with reduced soft-ban duration for snapshot nodes and other trusted entities. This allows for faster network recovery while maintaining security.
+
+**Trusted Peer Features**:
+- **Configuration Support**: Configurable trusted peer endpoints via trusted-snapshot-peer setting
+- **Reduced Duration**: 5-minute soft-ban period compared to 15-minute default
+- **IP Address Storage**: Stores trusted peer IPs as 32-bit integers for O(1) lookup
+- **Automatic Detection**: Identifies trusted peers during connection establishment
+
+**Section sources**
+- [node.cpp:595-598](file://libraries/network/node.cpp#L595-L598)
+- [node.cpp:5493-5498](file://libraries/network/node.cpp#L5493-L5498)
+- [node.cpp:601-602](file://libraries/network/node.cpp#L601-L602)
+
+### Soft-Ban Expiration and Automatic Recovery
+The node implements comprehensive soft-ban expiration handling with automatic flag reset functionality to ensure network recovery after temporary issues.
+
+**Expiration Handling Features**:
+- **Time-Based Enforcement**: Tracks soft-ban expiration via fork_rejected_until timestamp
+- **Automatic Flag Reset**: Clears inhibit_fetching_sync_blocks when ban expires
+- **Recovery Logging**: Logs automatic flag reset events for monitoring
+- **Continuous Operation**: Ensures peers can resume normal operation after soft-ban period
+
+**Section sources**
+- [node.cpp:3717-3739](file://libraries/network/node.cpp#L3717-L3739)
+- [node.cpp:3523-3533](file://libraries/network/node.cpp#L3523-L3533)
+- [node.cpp:3892-3895](file://libraries/network/node.cpp#L3892-L3895)
+
 ## Comprehensive Peer Status Reporting
 
 ### Enhanced Peer Information Collection
@@ -518,6 +574,7 @@ The node provides comprehensive peer status information through the get_connecte
 - **Peer Classification**: Firewall status, banned status, sync node designation, and platform information
 - **Block Information**: Current head block, block number, block time, and git revision details
 - **Synchronization Status**: Sync inhibition status, blocked reason, and peer synchronization state
+- **Soft-Ban Information**: fork_rejected_until timestamp, unlinkable_block_strikes counter
 
 **Peer Status Data Collection**:
 ```cpp
@@ -535,6 +592,8 @@ peer_details["blocked_reason"] = peer->inhibit_fetching_sync_blocks ? std::strin
 peer_details["current_head_block"] = peer->last_block_delegate_has_seen;
 peer_details["current_head_block_number"] = _delegate->get_block_number(peer->last_block_delegate_has_seen);
 peer_details["current_head_block_time"] = peer->last_block_time_delegate_has_seen;
+peer_details["soft_ban_expiration"] = peer->fork_rejected_until.sec_since_epoch();
+peer_details["unlinkable_block_strikes"] = peer->unlinkable_block_strikes;
 ```
 
 **Section sources**
@@ -607,6 +666,7 @@ Disconnecting peer ${peer} because they didn't respond to my request for item ${
 Disconnecting peer ${peer} because they didn't respond to my request for sync item ids after ${synopsis}
 Disconnecting from peer ${peer} who offered us an implausible number of blocks, their last block would be in the future (${timestamp})
 Peer ${peer} doesn't have the requested item ${item} (block #${num})
+Soft-banning peer ${endpoint} for ${dur}s: ${strikes} unlinkable blocks at or below our head #${head}
 ```
 
 **Section sources**
@@ -614,6 +674,7 @@ Peer ${peer} doesn't have the requested item ${item} (block #${num})
 - [node.cpp:1561-1561](file://libraries/network/node.cpp#L1561-L1561)
 - [node.cpp:2890-2901](file://libraries/network/node.cpp#L2890-L2901)
 - [node.cpp:3034-3038](file://libraries/network/node.cpp#L3034-L3038)
+- [node.cpp:3885-3895](file://libraries/network/node.cpp#L3885-L3895)
 
 ### Item Availability and Not Available Logging
 The node provides detailed logging for item availability issues during synchronization, helping identify peers with limited block history or synchronization problems.
@@ -664,16 +725,19 @@ The node implements intelligent peer state classification with detailed monitori
 - **Connection Health**: Monitoring of peer connection quality, latency, and bandwidth utilization
 - **Resource Utilization**: Tracking of peer-specific resource usage including queue depths and memory allocation
 - **Performance Metrics**: Latency measurements, round-trip delays, and connection timing information
+- **Soft-Ban Status**: Monitoring of fork_rejected_until timestamps and unlinkable_block_strikes counters
 
 **Peer State Monitoring Examples**:
 ```
 peer_is_in_sync_with_us:${in_sync_with_us} we_are_in_sync_with_peer:${in_sync_with_them}
 above peer has ${count} sync items we might need
 we are not fetching sync blocks from the above peer (inhibit_fetching_sync_blocks == true)
+Soft-banning peer ${endpoint} for ${dur}s: ${strikes} unlinkable blocks at or below our head #${head}
 ```
 
 **Section sources**
 - [node.cpp:5119-5127](file://libraries/network/node.cpp#L5119-L5127)
+- [node.cpp:3885-3895](file://libraries/network/node.cpp#L3885-L3895)
 
 ### Connection Limit and Bandwidth Monitoring
 The node provides comprehensive monitoring of connection limits, bandwidth utilization, and peer resource allocation to ensure optimal network performance.
@@ -689,6 +753,7 @@ The node provides comprehensive monitoring of connection limits, bandwidth utili
 number of peers: ${active} active, ${handshaking}, ${closing} closing.  attempting to maintain ${desired} - ${maximum} peers
 node._active_sync_requests size: ${size}
 node._items_to_fetch size: ${size}
+Soft-ban duration: ${duration} seconds for peer ${endpoint}
 ```
 
 **Section sources**
@@ -767,6 +832,8 @@ Impl --> P2P["p2p_plugin.cpp"]
 - Peer status reporting: Comprehensive status updates enable better monitoring and resource management.
 - Comprehensive logging: Detailed peer synchronization progress, item counts, and timing information provide valuable debugging insights without significant performance impact.
 - Memory usage monitoring: Efficient memory tracking helps identify resource bottlenecks and optimize performance.
+- **Intelligent soft-ban mechanisms**: Strike accumulation system prevents abuse while tolerating occasional legitimate issues, with minimal performance overhead.
+- **Automatic recovery**: Soft-ban expiration handling ensures network recovery without manual intervention, maintaining operational efficiency.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -789,6 +856,10 @@ Common issues and resolutions:
 - Request timeouts: Review detailed timeout logs with item types, block numbers, and timing thresholds to identify slow or unresponsive peers.
 - Connection lifecycle: Monitor connection establishment, closure, and termination events to identify connection stability issues.
 - Synchronization progress: Use comprehensive sync status reporting to track synchronization completion and identify bottlenecks.
+- **Soft-ban strike accumulation**: Monitor unlinkable_block_strikes counter to understand peer behavior and identify potential abuse patterns.
+- **Soft-ban duration**: Verify soft-ban duration settings (default 15 minutes, trusted peers 5 minutes) for appropriate network recovery.
+- **Automatic recovery**: Monitor automatic flag reset logs to ensure proper network recovery after soft-ban expiration.
+- **Intelligent peer classification**: Use peer status information to identify trusted peers and understand soft-ban behavior differences.
 
 **Section sources**
 - [node.cpp:2251-2280](file://libraries/network/node.cpp#L2251-L2280)
@@ -797,12 +868,16 @@ Common issues and resolutions:
 - [node.cpp:1326-1398](file://libraries/network/node.cpp#L1326-L1398)
 - [database.cpp:4455-4460](file://libraries/chain/database.cpp#L4455-L4460)
 - [p2p_plugin.cpp:330-360](file://plugins/p2p/p2p_plugin.cpp#L330-L360)
+- [node.cpp:3874-3909](file://libraries/network/node.cpp#L3874-L3909)
+- [node.cpp:3717-3739](file://libraries/network/node.cpp#L3717-L3739)
 
 ## Conclusion
-The Node Management component provides a robust, configurable, and efficient P2P orchestration layer with comprehensive emergency consensus support and enhanced peer handling capabilities. The recent enhancements significantly improve debugging and monitoring capabilities through comprehensive peer synchronization logging, detailed peer status reporting, and enhanced error diagnostics.
+The Node Management component provides a robust, configurable, and efficient P2P orchestration layer with comprehensive emergency consensus support and enhanced peer handling capabilities. The recent enhancements significantly improve debugging and monitoring capabilities through comprehensive peer synchronization logging, intelligent soft-ban mechanisms with strike accumulation, detailed peer status reporting, and enhanced error diagnostics.
 
-The enhanced peer synchronization logging system provides detailed peer status updates including sync item counts, peer states, memory usage metrics, and timing information. The comprehensive logging infrastructure captures peer connection lifecycle events, synchronization progress, error conditions, and resource utilization patterns. These enhancements enable better troubleshooting of peer synchronization issues, improved monitoring of network health, and more effective debugging of synchronization problems.
+The enhanced peer synchronization logging system provides detailed peer status updates including sync item counts, peer states, memory usage metrics, and timing information. The intelligent soft-ban mechanisms implement a sophisticated strike accumulation system with 20-strike threshold enforcement, automatic soft-ban expiration handling, and trusted peer support with reduced 5-minute soft-ban duration. The comprehensive logging infrastructure captures peer connection lifecycle events, synchronization progress, error conditions, and resource utilization patterns. These enhancements enable better troubleshooting of peer synchronization issues, improved monitoring of network health, and more effective debugging of synchronization problems.
 
-The comprehensive peer status reporting system collects detailed metrics for monitoring and debugging, including connection information, network statistics, peer classification, block information, and synchronization status. The enhanced error reporting infrastructure provides actionable insights for debugging peer synchronization issues with detailed context information including peer endpoints, item types, block numbers, and timing information.
+The comprehensive peer status reporting system collects detailed metrics for monitoring and debugging, including connection information, network statistics, peer classification, block information, synchronization status, and soft-ban information. The enhanced error reporting infrastructure provides actionable insights for debugging peer synchronization issues with detailed context information including peer endpoints, item types, block numbers, timing information, and soft-ban status.
 
-These enhancements ensure the network can recover from extended periods without block production while maintaining operational efficiency and preventing cascading failures. The integration of comprehensive logging, peer status reporting, and enhanced error diagnostics creates a powerful toolkit for maintaining network stability under adverse conditions. Proper configuration of limits, bandwidth, peer discovery, emergency consensus parameters, and the enhanced logging mechanisms, combined with monitoring and troubleshooting practices, yields a stable, performant, and resilient network node capable of handling both normal operations and emergency scenarios with comprehensive diagnostic capabilities and detailed peer synchronization insights.
+The intelligent soft-ban mechanisms represent a significant advancement in network resilience, implementing a balanced approach to peer management that prevents abuse while tolerating occasional legitimate issues. The 20-strike threshold provides sufficient tolerance for legitimate stale blocks while effectively preventing malicious behavior. The automatic recovery mechanisms ensure network stability during extended emergency operations without manual intervention requirements.
+
+These enhancements ensure the network can recover from extended periods without block production while maintaining operational efficiency and preventing cascading failures. The integration of comprehensive logging, peer status reporting, intelligent soft-ban mechanisms, and enhanced error diagnostics creates a powerful toolkit for maintaining network stability under adverse conditions. Proper configuration of limits, bandwidth, peer discovery, emergency consensus parameters, trusted peer settings, and the enhanced logging mechanisms, combined with monitoring and troubleshooting practices, yields a stable, performant, and resilient network node capable of handling both normal operations and emergency scenarios with comprehensive diagnostic capabilities and detailed peer synchronization insights.

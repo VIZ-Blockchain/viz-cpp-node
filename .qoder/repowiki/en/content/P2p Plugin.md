@@ -23,12 +23,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced P2P plugin logging with ANSI color codes for improved console readability
-- Added gray ANSI color codes for DLT mode debug messages throughout the plugin
-- Implemented comprehensive logging improvements with CLOG_GRAY, CLOG_CYAN, and CLOG_WHITE color schemes
-- Enhanced DLT mode debug logging with detailed gap detection and block range management information
-- Improved peer statistics logging with colored output for better visual distinction
-- Added ANSI color code definitions and consistent usage across DLT mode operations
+- Enhanced P2P plugin logging with comprehensive ANSI color-coded capabilities (white, cyan, gray, orange, red)
+- Implemented conditional block processing latency logging that only executes on successful processing in non-sync mode
+- Improved block processing visibility with detailed transaction and witness information
+- Added strategic color coding for different operational contexts (DLT mode, peer statistics, transaction notifications)
+- Enhanced logging consistency with reduced verbosity during normal operation while maintaining diagnostic information
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -44,15 +43,16 @@
 11. [ANSI Color Code Implementation](#ansi-color-code-implementation)
 12. [Enhanced DLT Mode Debug Logging](#enhanced-dlt-mode-debug-logging)
 13. [Improved Console Readability](#improved-console-readability)
-14. [Graceful Degradation Capabilities](#graceful-degradation-capabilities)
-15. [Minority Fork Recovery](#minority-fork-recovery)
-16. [Enhanced Block Validation](#enhanced-block-validation)
-17. [Concurrent Access Safety](#concurrent-access-safety)
-18. [Logging Level Consistency](#logging-level-consistency)
-19. [Dependency Analysis](#dependency-analysis)
-20. [Performance Considerations](#performance-considerations)
-21. [Troubleshooting Guide](#troubleshooting-guide)
-22. [Conclusion](#conclusion)
+14. [Conditional Block Processing Latency Logging](#conditional-block-processing-latency-logging)
+15. [Graceful Degradation Capabilities](#graceful-degradation-capabilities)
+16. [Minority Fork Recovery](#minority-fork-recovery)
+17. [Enhanced Block Validation](#enhanced-block-validation)
+18. [Concurrent Access Safety](#concurrent-access-safety)
+19. [Logging Level Consistency](#logging-level-consistency)
+20. [Dependency Analysis](#dependency-analysis)
+21. [Performance Considerations](#performance-considerations)
+22. [Troubleshooting Guide](#troubleshooting-guide)
+23. [Conclusion](#conclusion)
 
 ## Introduction
 
@@ -60,7 +60,7 @@ The P2P (Peer-to-Peer) Plugin is a critical component of the VIZ blockchain node
 
 The plugin implements a sophisticated networking layer built on top of the Graphene network library, providing features such as automatic peer discovery, blockchain synchronization protocols, transaction broadcasting, and advanced peer management capabilities including soft-ban mechanisms and connection monitoring.
 
-**Updated** The plugin now includes enhanced logging capabilities with ANSI color codes for improved console readability. DLT mode debug messages are displayed in gray color, while peer statistics and other informational messages use cyan and white color codes. These enhancements provide better visual distinction between different types of log messages and improve troubleshooting capabilities during network operations.
+**Updated** The plugin now includes enhanced logging capabilities with comprehensive ANSI color codes for improved console readability. DLT mode debug messages are displayed in gray color, while peer statistics and other informational messages use cyan and white color codes. The conditional block processing latency logging ensures that latency information is only displayed for successful block processing in non-sync mode, reducing log volume while maintaining operational visibility. These enhancements provide better visual distinction between different types of log messages and improve troubleshooting capabilities during network operations.
 
 ## Project Structure
 
@@ -77,6 +77,8 @@ Stale[Stale Sync Detection]
 Resync[resync_from_lib method]
 Guard[operation_guard integration]
 Colors[ANSI Color Codes]
+Latency[Conditional Latency Logging]
+Visibility[Enhanced Block Processing Visibility]
 end
 subgraph "Network Library"
 Node[node.hpp]
@@ -103,6 +105,8 @@ P2P --> Resync
 P2P --> Guard
 P2P --> DLT
 P2P --> Colors
+P2P --> Latency
+P2P --> Visibility
 Node --> PeerConn
 Node --> Messages
 Node --> Config
@@ -163,6 +167,8 @@ class p2p_plugin_impl {
 +stale_sync_check_task()
 +is_included_block(block_id)
 +ANSI Color Codes
++Conditional Latency Logging
++Enhanced Block Processing Visibility
 +DLT Mode Debug Logging
 +Enhanced Peer Stats
 -node : node_ptr
@@ -295,6 +301,7 @@ P2P->>Node : Broadcast to peers
 Note over P2P : Enhanced logging with ANSI color codes
 P2P->>Node : Log DLT mode operations in gray
 P2P->>Node : Log peer stats in cyan
+P2P->>Node : Log latency in white only on successful processing
 ```
 
 **Diagram sources**
@@ -312,7 +319,7 @@ The architecture provides several key capabilities:
 7. **Concurrent Access Safety**: Enhanced protection against concurrent access conflicts during block processing
 8. **DLT Mode Support**: Intelligent block range management for snapshot-based nodes with sophisticated gap detection
 9. **Graceful Degradation**: Handles peer unavailability with fallback mechanisms and automatic recovery
-10. **Enhanced Logging**: Comprehensive logging system with ANSI color codes for improved console readability
+10. **Enhanced Logging**: Comprehensive logging system with ANSI color codes for improved console readability and conditional latency reporting
 
 ## Detailed Component Analysis
 
@@ -343,7 +350,7 @@ style BroadcastBlock fill:#ccffcc
 - [p2p_plugin.cpp:216-245](file://plugins/p2p/p2p_plugin.cpp#L216-L245)
 - [p2p_plugin.cpp:855-865](file://plugins/p2p/p2p_plugin.cpp#L855-L865)
 
-**Updated** The block validation protocol now includes enhanced concurrent access safety through operation guard protection:
+**Updated** The block validation protocol now includes enhanced concurrent access safety through operation guard protection and conditional latency logging:
 
 The block validation process incorporates operation guards to prevent concurrent access conflicts during witness key validation and block post-validation processing. This ensures thread-safe access to shared blockchain state during high-load conditions.
 
@@ -355,6 +362,7 @@ The enhanced validation includes:
 4. **Post-Validation Processing**: Applies additional validation steps after initial acceptance
 5. **Concurrent Access Protection**: Uses operation guards to prevent race conditions during validation
 6. **Error Handling**: Comprehensive error handling for various failure scenarios
+7. **Conditional Latency Reporting**: Only displays latency information for successful block processing in non-sync mode
 
 ### Peer Connection Management
 
@@ -863,20 +871,22 @@ LogGap --> End([End])
 
 ### Enhanced Block Processing Logs with Gap Awareness
 
-The block processing logging has been enhanced with more context including gap detection:
+**Updated** The block processing logging has been enhanced with conditional latency reporting and improved visibility:
 
 ```mermaid
 flowchart TD
 Start([Handle Block]) --> LogGap["Log block gap:<br/>- Block number<br/>- Head block<br/>- Gap size<br/>- Gap detection context<br/>in gray ANSI color"]
 LogGap --> CheckSyncMode{"Sync mode?"}
 CheckSyncMode --> |Yes| LogSync["Log sync block:<br/>- Block number<br/>- Head<br/>- Gap<br/>- Clamping info<br/>in gray ANSI color"]
-CheckSyncMode --> |No| LogNormal["Log normal block:<br/>- Block number<br/>- Transactions<br/>- Witness<br/>- Latency<br/>- Gap context<br/>in gray ANSI color"]
+CheckSyncMode --> |No| LogNormal["Log normal block:<br/>- Block number<br/>- Transactions<br/>- Witness<br/>- Gap context<br/>in gray ANSI color"]
 LogSync --> AcceptBlock["Accept block via chain.accept_block()"]
 LogNormal --> AcceptBlock
-AcceptBlock --> HandleErrors{"Error occurred?"}
-HandleErrors --> |No| End([End])
-HandleErrors --> |Yes| LogError["Log detailed error:<br/>- Block number<br/>- Head block<br/>- Error type<br/>- Error details<br/>- Gap detection results<br/>in gray ANSI color"]
-LogError --> End
+AcceptBlock --> CheckResult{"Result successful?"}
+CheckResult --> |No| End([End])
+CheckResult --> |Yes| CheckSyncMode2{"Sync mode?"}
+CheckSyncMode2 --> |Yes| End
+CheckSyncMode2 --> |No| LogLatency["Log latency:<br/>- Transaction count<br/>- Block number<br/>- Witness<br/>- Latency in milliseconds<br/>in white ANSI color"]
+LogLatency --> End([End])
 ```
 
 **Diagram sources**
@@ -917,15 +927,20 @@ The plugin defines ANSI color codes for consistent color usage throughout the lo
 flowchart TD
 ColorCodes["ANSI Color Code Definitions"] --> Gray["CLOG_GRAY<br/>\\033[90m<br/>Gray color for DLT mode debug messages"]
 ColorCodes --> Cyan["CLOG_CYAN<br/>\\033[96m<br/>Cyan color for peer statistics and informational messages"]
-ColorCodes --> White["CLOG_WHITE<br/>\\033[97m<br/>White color for important transaction notifications"]
+ColorCodes --> White["CLOG_WHITE<br/>\\033[97m<br/>White color for important transaction notifications and latency information"]
 ColorCodes --> Reset["CLOG_RESET<br/>\\033[0m<br/>Reset color to default"]
+ColorCodes --> Orange["CLOG_ORANGE<br/>\\033[33m<br/>Orange color for network-related warnings and peer connection status"]
+ColorCodes --> Red["CLOG_RED<br/>\\033[91m<br/>Red color for critical errors and severe warnings"]
 Gray --> DLTLogging["DLT Mode Debug Logging<br/>in gray color"]
 Cyan --> PeerStats["Peer Statistics Logging<br/>in cyan color"]
-White --> TransactionLogs["Transaction Notifications<br/>in white color"]
+White --> TransactionLogs["Transaction Notifications and Latency<br/>in white color"]
+Orange --> NetworkWarnings["Network Warnings and Peer Status<br/>in orange color"]
+Red --> CriticalErrors["Critical Errors<br/>in red color"]
 ```
 
 **Diagram sources**
 - [p2p_plugin.cpp:16-21](file://plugins/p2p/p2p_plugin.cpp#L16-L21)
+- [node.cpp:79-83](file://libraries/network/node.cpp#L79-83)
 
 ### Color Code Usage Patterns
 
@@ -934,7 +949,9 @@ The ANSI color codes are applied consistently across different logging scenarios
 1. **DLT Mode Debug Messages**: Gray color for detailed DLT mode operations, gap detection, and block range management
 2. **Peer Statistics**: Cyan color for peer connection statistics, connection status, and peer database information
 3. **Transaction Notifications**: White color for important transaction-related information and block processing notifications
-4. **Error and Warning Messages**: Default color scheme for error conditions and warnings (unchanged)
+4. **Network Warnings**: Orange color for peer connection warnings, network issues, and peer status changes
+5. **Critical Errors**: Red color for severe errors, critical failures, and system emergencies
+6. **Error and Warning Messages**: Default color scheme for error conditions and warnings (unchanged)
 
 ### Implementation Examples
 
@@ -961,6 +978,7 @@ Note over P2P,Console : Consistent color coding<br/>throughout all logging opera
 - [p2p_plugin.cpp:169-171](file://plugins/p2p/p2p_plugin.cpp#L169-L171)
 - [p2p_plugin.cpp:299-301](file://plugins/p2p/p2p_plugin.cpp#L299-L301)
 - [p2p_plugin.cpp:522-528](file://plugins/p2p/p2p_plugin.cpp#L522-L528)
+- [node.cpp:79-83](file://libraries/network/node.cpp#L79-83)
 
 ## Enhanced DLT Mode Debug Logging
 
@@ -1026,8 +1044,10 @@ graph TB
 subgraph "Console Readability Enhancement"
 GrayLogs["Gray Logs<br/>DLT Mode Debug<br/>Gap Detection<br/>Block Range Info"]
 CyanLogs["Cyan Logs<br/>Peer Statistics<br/>Connection Status<br/>Peer Database Info"]
-WhiteLogs["White Logs<br/>Transaction Notifications<br/>Block Processing<br/>Important Events"]
-DefaultLogs["Default Color<br/>Errors and Warnings<br/>Critical Issues<br/>System Messages"]
+WhiteLogs["White Logs<br/>Transaction Notifications<br/>Block Processing<br/>Latency Information"]
+OrangeLogs["Orange Logs<br/>Network Warnings<br/>Peer Status<br/>Connection Issues"]
+RedLogs["Red Logs<br/>Critical Errors<br/>Severe Warnings<br/>System Failures"]
+DefaultLogs["Default Color<br/>General Information<br/>Debug Messages<br/>Non-Critical Events"]
 end
 subgraph "Visual Benefits"
 Benefit1["Quick Pattern Recognition"]
@@ -1038,17 +1058,20 @@ end
 GrayLogs --> Benefit1
 CyanLogs --> Benefit1
 WhiteLogs --> Benefit1
+OrangeLogs --> Benefit1
+RedLogs --> Benefit1
 DefaultLogs --> Benefit1
 ```
 
 **Diagram sources**
 - [p2p_plugin.cpp:16-21](file://plugins/p2p/p2p_plugin.cpp#L16-L21)
+- [node.cpp:79-83](file://libraries/network/node.cpp#L79-83)
 
 ### Operator Experience Improvements
 
 The enhanced console readability provides several operational benefits:
 
-1. **Quick Pattern Recognition**: Operators can instantly identify DLT mode operations (gray), peer statistics (cyan), and important notifications (white)
+1. **Quick Pattern Recognition**: Operators can instantly identify DLT mode operations (gray), peer statistics (cyan), transaction notifications (white), network warnings (orange), and critical errors (red)
 2. **Faster Troubleshooting**: Color coding helps operators quickly locate relevant log entries during debugging sessions
 3. **Reduced Console Scrolling**: Visual distinction makes it easier to scan through large amounts of log output
 4. **Enhanced Multi-Tasking**: Operators can monitor multiple log streams simultaneously with color-based differentiation
@@ -1059,14 +1082,67 @@ The color coding strategy is designed for optimal operator experience:
 
 - **Gray**: DLT mode debug information, gap detection details, and block range management
 - **Cyan**: Peer statistics, connection status, and peer database information
-- **White**: Important transaction notifications, block processing information, and significant events
-- **Default**: Error conditions, warnings, and critical system messages (unchanged for emphasis)
+- **White**: Important transaction notifications, block processing information, and latency details
+- **Orange**: Network warnings, peer status changes, and connection issues
+- **Red**: Critical errors, severe warnings, and system failures
+- **Default**: General information, debug messages, and non-critical events (unchanged)
 
 **Section sources**
 - [p2p_plugin.cpp:16-21](file://plugins/p2p/p2p_plugin.cpp#L16-L21)
 - [p2p_plugin.cpp:169-171](file://plugins/p2p/p2p_plugin.cpp#L169-L171)
 - [p2p_plugin.cpp:299-301](file://plugins/p2p/p2p_plugin.cpp#L299-L301)
 - [p2p_plugin.cpp:522-528](file://plugins/p2p/p2p_plugin.cpp#L522-L528)
+- [node.cpp:79-83](file://libraries/network/node.cpp#L79-83)
+
+## Conditional Block Processing Latency Logging
+
+**New** The P2P plugin now implements conditional block processing latency logging that only executes when blocks are successfully processed in non-sync mode, significantly reducing log volume while maintaining operational visibility.
+
+### Conditional Latency Logging Implementation
+
+The enhanced block processing includes sophisticated conditional logging logic:
+
+```mermaid
+flowchart TD
+Start([Block Processing]) --> AcceptBlock["chain.accept_block()"]
+AcceptBlock --> CheckResult{"Result successful?"}
+CheckResult --> |No| End([End - No Latency Logging])
+CheckResult --> |Yes| CheckSyncMode{"Sync mode?"}
+CheckSyncMode --> |Yes| End([End - No Latency Logging])
+CheckSyncMode --> |No| CalculateLatency["Calculate latency:<br/>fc::time_point::now() - blk_msg.block.timestamp"]
+CalculateLatency --> LogLatency["Log latency:<br/>- Transaction count<br/>- Block number<br/>- Witness<br/>- Latency in milliseconds<br/>in white ANSI color"]
+LogLatency --> End([End - Latency Logged])
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:159-175](file://plugins/p2p/p2p_plugin.cpp#L159-L175)
+
+### Benefits of Conditional Latency Logging
+
+The conditional approach provides several operational advantages:
+
+1. **Reduced Log Volume**: Latency information is only logged for successful block processing, significantly reducing log output during sync operations
+2. **Maintained Visibility**: Critical latency information for successful normal operations is preserved for troubleshooting and performance monitoring
+3. **Performance Impact**: Minimizes CPU overhead during high-volume sync operations while preserving diagnostic information
+4. **Resource Efficiency**: Reduces I/O overhead and memory usage associated with excessive logging
+5. **Operational Focus**: Ensures logs focus on meaningful operational events rather than routine sync activities
+
+### Implementation Details
+
+The conditional latency logging is implemented in the block processing method:
+
+```cpp
+bool result = chain.accept_block(blk_msg.block, sync_mode, ...);
+
+if (!sync_mode && result) {
+    fc::microseconds latency = fc::time_point::now() - blk_msg.block.timestamp;
+    ilog(CLOG_WHITE "Got ${t} transactions on block ${b} by ${w} -- latency: ${l} ms" CLOG_RESET,
+         ("t", blk_msg.block.transactions.size())("b", blk_msg.block.block_num())("w", blk_msg.block.witness)("l", latency.count() / 1000));
+}
+```
+
+**Section sources**
+- [p2p_plugin.cpp:159-175](file://plugins/p2p/p2p_plugin.cpp#L159-L175)
 
 ## Graceful Degradation Capabilities
 
@@ -1329,7 +1405,7 @@ Enhanced error handling protects against various failure scenarios with gap dete
 
 ### Sync Mode Logging Improvements
 
-The plugin has undergone significant improvements in logging level management, particularly for synchronization operations with gap detection awareness:
+**Updated** The plugin has undergone significant improvements in logging level management, particularly for synchronization operations with gap detection awareness:
 
 - **Sync Mode Downgrade**: Sync mode block processing logs were downgraded from info level to debug level
 - **Normal Mode Preservation**: Normal block processing continues to use info level logging for visibility
@@ -1337,17 +1413,16 @@ The plugin has undergone significant improvements in logging level management, p
 - **Contextual Appropriateness**: Debug level logging is more appropriate for frequent sync operations while preserving info level for exceptional events
 - **Gap Detection Logging**: Enhanced gap detection logs use appropriate levels for troubleshooting
 
-### Logging Implementation Details
+### Conditional Latency Logging Implementation
 
-The logging changes are implemented in the block handling method:
+**New** The conditional latency logging ensures that latency information is only displayed for successful block processing in non-sync mode:
 
 ```cpp
-if (sync_mode)
-    dlog("chain pushing sync block #${block_num} (head: ${head}, gap: ${gap})",
-         ("block_num", blk_msg.block.block_num())("head", head_block_num)("gap", gap));
-else
-    dlog("chain pushing normal block #${block_num} (head: ${head}, gap: ${gap})",
-         ("block_num", blk_msg.block.block_num())("head", head_block_num)("gap", gap));
+if (!sync_mode && result) {
+    fc::microseconds latency = fc::time_point::now() - blk_msg.block.timestamp;
+    ilog(CLOG_WHITE "Got ${t} transactions on block ${b} by ${w} -- latency: ${l} ms" CLOG_RESET,
+         ("t", blk_msg.block.transactions.size())("b", blk_msg.block.block_num())("w", blk_msg.block.witness)("l", latency.count() / 1000));
+}
 ```
 
 **Key Benefits:**
@@ -1368,6 +1443,7 @@ The network layer maintains mixed logging levels for different operational conte
 
 **Section sources**
 - [p2p_plugin.cpp:151-156](file://plugins/p2p/p2p_plugin.cpp#L151-L156)
+- [p2p_plugin.cpp:168-172](file://plugins/p2p/p2p_plugin.cpp#L168-L172)
 
 ## Dependency Analysis
 
@@ -1468,12 +1544,13 @@ The P2P plugin implements several performance optimization strategies with enhan
 - **Gap-Aware Recovery**: Automatic recovery mechanisms minimize performance impact during gap scenarios
 
 ### Logging Performance Impact
-**Updated** The improved logging level consistency provides additional performance benefits:
+**Updated** The improved logging level consistency and conditional latency logging provide additional performance benefits:
 
 - **Reduced I/O Overhead**: Debug level logging produces less output than info level logging
 - **Lower Memory Usage**: Reduced log buffer consumption during sync operations
 - **Improved Throughput**: Less frequent logging reduces CPU overhead during normal operation
 - **Better Resource Utilization**: More efficient use of system resources during routine operations
+- **Conditional Latency Reporting**: Latency logging only occurs for successful operations, reducing unnecessary processing
 - **Gap Detection Efficiency**: Optimized logging for gap detection scenarios
 
 ### Concurrent Access Optimization
@@ -1545,6 +1622,24 @@ The P2P plugin implements several performance optimization strategies with enhan
 3. **Peer Compatibility**: Check peer compatibility with gap detection mechanisms
 4. **Recovery Actions**: Verify automatic recovery actions for gap-related issues
 
+### Conditional Latency Logging Troubleshooting
+
+**New** For conditional latency logging issues:
+
+1. **Latency Not Displayed**: Verify that blocks are being processed successfully in non-sync mode
+2. **Log Volume**: Check that sync mode operations are not generating excessive latency logs
+3. **Performance Impact**: Monitor system performance to ensure conditional logging is not causing overhead
+4. **Color Coding**: Verify that latency logs are displayed in white color with proper ANSI formatting
+
+### ANSI Color Code Troubleshooting
+
+**New** For ANSI color code-related issues:
+
+1. **Console Compatibility**: Verify terminal supports ANSI color codes
+2. **Color Output Testing**: Test color output in different terminal environments
+3. **Log Filtering**: Use log filtering to isolate specific color-coded log categories
+4. **Operator Training**: Train operators to recognize different color-coded log categories
+
 ### Configuration Reference
 
 The P2P plugin supports extensive configuration options:
@@ -1569,15 +1664,6 @@ The P2P plugin supports extensive configuration options:
 4. **Resource Monitoring**: Monitor system resources during high-load periods with gap detection
 5. **Gap Detection Monitoring**: Monitor gap detection operations for performance impact
 
-### ANSI Color Code Troubleshooting
-
-**New** For ANSI color code-related issues:
-
-1. **Console Compatibility**: Verify terminal supports ANSI color codes
-2. **Color Output Testing**: Test color output in different terminal environments
-3. **Log Filtering**: Use log filtering to isolate specific color-coded log categories
-4. **Operator Training**: Train operators to recognize different color-coded log categories
-
 **Section sources**
 - [p2p_plugin.cpp:701-765](file://plugins/p2p/p2p_plugin.cpp#L701-L765)
 - [p2p_plugin.cpp:992-1061](file://plugins/p2p/p2p_plugin.cpp#L992-L1061)
@@ -1593,7 +1679,7 @@ The P2P Plugin represents a sophisticated implementation of blockchain networkin
 2. **Performance Optimization**: Efficient synchronization and connection management with gap-aware optimizations
 3. **Operational Excellence**: Comprehensive monitoring and diagnostic capabilities with gap detection
 4. **Extensibility**: Clean interfaces that support future enhancements with gap detection integration
-5. **Logging Efficiency**: Improved logging level consistency reduces verbosity while maintaining operational visibility
+5. **Enhanced Logging**: Improved logging level consistency with reduced verbosity while maintaining operational visibility
 6. **Minority Fork Recovery**: Specialized recovery mechanism for handling fork scenarios with gap awareness
 7. **Concurrent Access Safety**: Enhanced protection against race conditions and data corruption with gap detection
 8. **Integration Capabilities**: Seamless coordination with witness and snapshot plugins with gap detection
@@ -1601,12 +1687,14 @@ The P2P Plugin represents a sophisticated implementation of blockchain networkin
 10. **Graceful Degradation**: Robust error handling and peer interaction management with gap-aware recovery
 11. **Enhanced Diagnostics**: Comprehensive logging throughout the sync process with gap detection
 12. **Peer Database Analytics**: Detailed peer interaction tracking and troubleshooting with gap awareness
-13. **ANSI Color Code Implementation**: Strategic use of color codes for improved console readability and visual distinction
-14. **Enhanced DLT Mode Debugging**: Comprehensive gray-colored logging for DLT mode operations and gap detection
-15. **Improved Console Experience**: Better visual organization of log messages for faster troubleshooting
+13. **ANSI Color Code Implementation**: Strategic use of color codes (white, cyan, gray, orange, red) for improved console readability and visual distinction
+14. **Conditional Latency Logging**: Smart latency reporting that only displays successful block processing information in non-sync mode
+15. **Enhanced Block Processing Visibility**: Improved visibility into block processing with detailed transaction and witness information
 
 The recent additions demonstrate ongoing attention to operational efficiency and user experience. The new DLT mode block range management with sophisticated gap detection provides intelligent support for snapshot-based nodes, while the enhanced peer interaction handling improves network resilience. The comprehensive logging throughout the sync process provides unprecedented visibility into network operations, and the graceful degradation capabilities ensure reliable operation even when peers cannot serve requested items.
 
 The plugin's design demonstrates best practices in distributed systems engineering, balancing security, performance, and maintainability while providing the foundation for scalable blockchain networks. The integration of DLT mode support, graceful degradation mechanisms, enhanced diagnostic capabilities, and sophisticated gap detection positions the P2P plugin to handle increasingly complex blockchain networking requirements with improved reliability and operability.
 
-The implementation of ANSI color codes further enhances the plugin's operational capabilities by providing visual distinction between different types of log messages, enabling operators to quickly identify and respond to different operational scenarios. The strategic use of gray, cyan, and white color codes creates a clear visual hierarchy that improves troubleshooting efficiency and reduces operator workload during complex network operations.
+The implementation of comprehensive ANSI color codes (white, cyan, gray, orange, red) further enhances the plugin's operational capabilities by providing visual distinction between different types of log messages, enabling operators to quickly identify and respond to different operational scenarios. The strategic use of color codes creates a clear visual hierarchy that improves troubleshooting efficiency and reduces operator workload during complex network operations.
+
+The conditional block processing latency logging ensures that operators receive timely feedback on successful block processing without being overwhelmed by log volume during sync operations. This balanced approach to logging provides the right amount of information at the right time, improving both operational efficiency and system performance.

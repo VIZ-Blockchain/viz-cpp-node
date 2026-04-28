@@ -23,13 +23,16 @@
 - [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
 - [logger_config.cpp](file://thirdparty/fc/src/log/logger_config.cpp)
 - [console_appender.cpp](file://thirdparty/fc/src/log/console_appender.cpp)
+- [chainbase.cpp](file://thirdparty/chainbase/src/chainbase.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced snapshot plugin with comprehensive error handling around snapshot download operations within the check_stalled_sync_loop method, ensuring stalled sync monitoring continues running even when snapshot loading fails
-- Improved undo stack management in load_snapshot method by adding proper undo stack management with db.undo_all() call before set_revision operations
-- Enhanced exception handling for both fc::exception and std::exception types during snapshot download attempts
+- Enhanced snapshot plugin with improved error handling and undo stack management during snapshot loading
+- Implemented db.undo_all() clearing before import operations to address hot-reload scenarios
+- Added comprehensive exception handling for both fc::exception and std::exception types during snapshot download attempts
+- Improved undo stack management in load_snapshot method with proper cleanup before set_revision operations
+- Enhanced stalled sync detection with improved error handling for snapshot download operations
 - Added proper cleanup of database state by ensuring db.undo_all() is called before set_revision operations during snapshot loading
 
 ## Table of Contents
@@ -1348,7 +1351,7 @@ The snapshot plugin implements several performance optimization strategies throu
 ### **Enhanced Logging Performance**
 - **ANSI Color Codes**: Provides visual distinction between log levels without performance overhead
 - **Level-Based Coloring**: Green for success, orange for warnings, yellow for informational messages
-- **Minimal Processing**: Color code injection occurs only when terminal supports color output
+- **Minimal Processing Overhead**: Color code injection occurs only when terminal supports color output
 
 ### **P2P Stale Sync Detection Performance**
 - **Lightweight Monitoring**: Minimal CPU overhead through efficient background task scheduling
@@ -1518,6 +1521,16 @@ The snapshot plugin implements several performance optimization strategies throu
 - **Symptom**: Snapshot download failures not properly handled
 - **Cause**: Missing comprehensive exception handling for both fc::exception and std::exception types
 - **Solution**: Verify enhanced exception handling covers all error scenarios during snapshot download attempts
+
+**Enhanced Hot-Reload Scenario Issues**
+- **Symptom**: Stalled sync detection fails during hot-reload scenarios
+- **Cause**: Undo stack not properly cleared before import operations
+- **Solution**: Verify db.undo_all() is called before import operations during hot-reload scenarios
+
+**Enhanced Database State Cleanup Issues**
+- **Symptom**: Database state inconsistency after snapshot loading
+- **Cause**: Missing proper cleanup of multi-instance objects during hot-reload
+- **Solution**: Verify comprehensive object clearing for hot-reload scenarios before import operations
 
 **Enhanced Diagnostic Tools**
 

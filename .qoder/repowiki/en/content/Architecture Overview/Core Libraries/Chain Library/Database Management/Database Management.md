@@ -25,11 +25,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced database robustness with improved fallback mechanisms for critical block data retrieval
-- Added systematic multi-tiered block retrieval approach: fork database → block log → DLT block log, providing graceful degradation when certain storage layers are unavailable
-- Implemented comprehensive fallback logic for last irreversible block advancement with fork database as backup
-- Enhanced DLT gap logging with automatic state management and warning suppression
-- Updated block fetching methods with hierarchical retrieval strategy for improved fault tolerance
+- Refined database handling for unlinkable blocks with gap-based decision system (≤100 gap deferred to fork_db, >100 gap rejected)
+- Improved fork management logic with enhanced early rejection mechanisms
+- Enhanced early rejection logic for blocks far ahead with unknown parents
+- Updated fork database exception prevention with comprehensive gap-based handling
+- Strengthened P2P synchronization with improved unlinkable block classification
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -46,7 +46,7 @@
 ## Introduction
 This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, and practical examples of database operations and performance optimization.
 
-**Updated** - Enhanced with comprehensive database robustness improvements including systematic fallback mechanisms for critical block data retrieval. The database now implements multi-tiered block retrieval strategies that check fork database when primary block log fails to locate required data, ensuring consistent behavior across different block logging configurations. These enhancements provide improved fault tolerance and data availability during various operational scenarios.
+**Updated** - Enhanced with refined database handling for unlinkable blocks featuring a sophisticated gap-based decision system. The system now implements intelligent early rejection logic that rejects blocks with gaps > 100 immediately while deferring blocks with gaps ≤ 100 to the fork database for automatic chain linking when parent blocks arrive. This improvement prevents memory bloat from dead-fork blocks and eliminates sync restart loops during snapshot imports and normal operation.
 
 ## Project Structure
 The database subsystem is implemented primarily in the chain library with enhanced support for operation guards and concurrent access protection:
@@ -172,7 +172,7 @@ EXC --> NODE
 - **Deferred Shared Memory Resize**: New mechanism that defers memory resize operations until a safe point when no read locks are held, preventing race conditions and stale pointer issues.
 - **Enhanced Error Handling**: Graceful handling of boost::interprocess::bad_alloc exceptions with deferred resize scheduling and peer connectivity preservation.
 - **Enhanced Fork Database Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking.
-- **Early Rejection Logic**: Sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents, preventing fork database exceptions and sync restart loops.
+- **Enhanced Early Rejection Logic**: Sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents, implementing gap-based decision system (≤100 gap deferred to fork_db, >100 gap rejected).
 - **Enhanced Fork Database Exception Prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection.
 - **Operation Guard System**: Comprehensive concurrent access protection using operation_guard RAII pattern, dual operation guard patterns for witness scheduling safety, and resize barrier mechanisms.
 - **Dual Operation Guard Patterns**: Systematic implementation of operation_guard for both lockless reads and write operations to prevent race conditions during shared memory operations.
@@ -201,7 +201,7 @@ Key responsibilities:
 - **Thread-Safe Memory Resizing**: Deferred resize mechanism that acquires exclusive write locks to prevent race conditions and stale pointer issues
 - **Memory Pressure Handling**: Graceful degradation of shared memory exhaustion with peer connectivity preservation
 - **Enhanced Fork Database Handling**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking
-- **Early Rejection Strategy**: Intelligent block rejection for far-ahead blocks with unknown parents to prevent unnecessary fork database operations and sync restart loops
+- **Enhanced Early Rejection Strategy**: Intelligent block rejection for far-ahead blocks with unknown parents using gap-based decision system (≤100 gap deferred to fork_db, >100 gap rejected) to prevent unnecessary fork database operations and sync restart loops
 - **Enhanced Fork Database Exception Prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
 - **Operation Guard Integration**: Systematic implementation of operation_guard RAII pattern for automatic concurrent access protection across all critical sections
 - **Dual Guard Patterns**: Implementation of dual operation guards for witness scheduling to ensure thread safety during complex calculations
@@ -240,7 +240,7 @@ The database composes four primary subsystems with enhanced DLT mode support, em
 - **Deferred Memory Resize**: Thread-safe memory resize mechanism that defers operations until safe points to prevent race conditions
 - **Enhanced Error Handling**: Graceful exception handling for shared memory exhaustion with peer connectivity preservation
 - **Enhanced Fork Database**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching
-- **Early Rejection Logic**: Sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents
+- **Enhanced Early Rejection Logic**: Sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents using gap-based decision system (≤100 gap deferred to fork_db, >100 gap rejected)
 - **Enhanced Fork Database Exception Prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
 - **Operation Guard System**: Comprehensive concurrent access protection using operation_guard RAII pattern, dual operation guard patterns for witness scheduling safety, and resize barrier mechanisms
 - **Dual Operation Guard Patterns**: Systematic implementation of operation_guard for both lockless reads and write operations to prevent race conditions during shared memory operations
@@ -284,7 +284,7 @@ class database {
 +_pending_resize_target : size_t
 +push_block(block, skip) : enhanced error handling
 +apply_pending_resize() : thread-safe memory management
-+early_rejection_logic : intelligent block rejection
++enhanced_early_rejection_logic : gap-based decision system
 +enhanced_fork_exception_prevention : comprehensive exception prevention
 +make_operation_guard() : concurrent access protection
 +begin_resize_barrier() : resize safety
@@ -356,8 +356,10 @@ class unlinkable_block_exception {
 +inherits from chain_exception
 +thrown for dead fork detection
 }
-class early_rejection_logic {
-+reject_far_ahead_unknown_parents(block)
+class enhanced_early_rejection_logic {
++gap_based_decision_system(gap)
++defer_small_gaps_to_fork_db(gap)
++reject_large_gaps_immediately(gap)
 +prevent_fork_db_exceptions(block)
 +avoid_sync_restart_loops(block)
 }
@@ -373,7 +375,7 @@ database --> signal_guard : "enhanced restart handling"
 database --> pending_transactions_restorer : "manages postponed tx"
 database --> chainbase : "enhanced memory management with operation guards"
 database --> unlinkable_block_exception : "enhanced fork handling"
-database --> early_rejection_logic : "prevents unnecessary operations"
+database --> enhanced_early_rejection_logic : "gap-based decision system"
 database --> enhanced_fork_exception_prevention : "comprehensive exception prevention"
 chainbase --> operation_guard : "RAII concurrent access protection"
 ```
@@ -1017,9 +1019,11 @@ UpdateHead --> End
 ### Enhanced Early Rejection Logic for Blocks Far Ahead with Unknown Parents
 **New** - The database now includes sophisticated early rejection logic that prevents fork database exceptions and sync restart loops during snapshot imports:
 
-- **Early Rejection Strategy**: The `_push_block()` method includes comprehensive early rejection checks that prevent unnecessary fork database operations for blocks that are far ahead with unknown parents.
-- **Prevent Fork Database Exceptions**: Blocks that are at or before the head but on different forks with unknown parents are rejected before attempting fork database operations, preventing unlinkable_block_exception.
-- **Avoid Sync Restart Loops**: Far-ahead blocks with unknown parents are silently rejected to prevent P2P sync restart loops that would stall synchronization.
+- **Gap-Based Decision System**: The `_push_block()` method implements a gap-based decision system that rejects blocks based on the gap between block number and head block number.
+- **Small Gap Deferral**: Blocks with gaps ≤ 100 are deferred to fork_db unlinked index for automatic chain linking when parent blocks arrive.
+- **Large Gap Rejection**: Blocks with gaps > 100 are immediately rejected to prevent memory bloat from dead-fork blocks.
+- **Prevent Fork Database Exceptions**: Eliminates unnecessary fork database operations for blocks that would cause unlinkable_block_exception.
+- **Avoid Sync Restart Loops**: Prevents P2P sync restart loops that would stall synchronization during snapshot imports.
 - **Intelligent Parent Validation**: The system checks if the block's parent is known in the fork database before attempting fork database operations.
 - **Safe First Block Acceptance**: The system always allows blocks whose previous equals the head block ID to ensure sync progress continues.
 
@@ -1032,27 +1036,32 @@ CheckExisting --> |No| CheckParent{"new_block.previous != block_id_type() && !_f
 CheckParent --> |Yes| RejectDeadFork["Reject dead fork block"]
 CheckParent --> |No| FallThrough["Fall through to normal logic"]
 CheckAtOrBelow --> |No| CheckFarAhead{"new_block.block_num() > head_block_num() && new_block.previous != head_block_id() && !_fork_db.is_known_block(new_block.previous)?"}
-CheckFarAhead --> |Yes| RejectFarAhead["Reject far-ahead unknown parent"]
+CheckFarAhead --> |Yes| CheckGap{"gap = new_block.block_num() - head_block_num()"}
+CheckGap --> |gap > 100| RejectLargeGap["Reject large gap (>100) immediately"]
+CheckGap --> |gap <= 100| DeferSmallGap["Defer small gap (<=100) to fork_db"]
 CheckFarAhead --> |No| CheckForkDB["Proceed to fork_db.push_block()"]
 IgnoreBlock --> ReturnFalse["return false"]
 RejectDeadFork --> ThrowException["Throw unlinkable_block_exception"]
 FallThrough --> CheckForkDB
-RejectFarAhead --> ReturnFalse
+RejectLargeGap --> ReturnFalse
+DeferSmallGap --> LogDefer["Log deferral to fork_db unlinked index"]
 CheckForkDB --> ForkDBPush["fork_db.push_block(new_block)"]
 ForkDBPush --> ReturnResult["return result"]
 ```
 
 **Diagram sources**
 - [database.cpp:1216-1286](file://libraries/chain/database.cpp#L1216-L1286)
+- [database.cpp:1360-1380](file://libraries/chain/database.cpp#L1360-L1380)
 
 **Section sources**
 - [database.cpp:1216-1286](file://libraries/chain/database.cpp#L1216-L1286)
+- [database.cpp:1360-1380](file://libraries/chain/database.cpp#L1360-L1380)
 
 ### Enhanced Fork Database Exception Prevention Mechanisms
 **New** - The database now includes comprehensive mechanisms to prevent fork database exceptions through intelligent early rejection and proper dead fork detection:
 
 - **Dead Fork Detection at or Below Head**: Blocks at or below the head but on different forks whose parents are not in the fork database are immediately rejected with unlinkable_block_exception, enabling P2P layer to soft-ban the offending peer.
-- **Far-Ahead Block Rejection**: Blocks far ahead of the head with completely unknown parents are silently rejected to prevent fork database operations and sync restart loops.
+- **Gap-Based Large Gap Rejection**: Blocks far ahead of the head with gaps > 100 are silently rejected to prevent fork database operations and sync restart loops.
 - **Proper Exception Classification**: The system distinguishes between dead fork blocks (at/below head) and far-ahead blocks that slipped past early rejection for proper P2P handling.
 - **Enhanced Error Propagation**: Proper unlinkable_block_exception throwing ensures downstream components can classify and handle different types of unlinkable blocks appropriately.
 
@@ -1063,10 +1072,13 @@ CheckDeadFork --> |Yes| CheckParentKnown{"Parent in fork_db?"}
 CheckParentKnown --> |No| ThrowDeadFork["Throw unlinkable_block_exception (dead fork)"]
 CheckParentKnown --> |Yes| NormalLogic["Fall through to normal logic"]
 CheckDeadFork --> |No| CheckFarAhead{"Block far ahead with unknown parent?"}
-CheckFarAhead --> |Yes| SilentReject["Silently reject (prevent fork DB ops)"]
+CheckFarAhead --> |Yes| CheckGap{"gap > 100?"}
+CheckGap --> |Yes| RejectLargeGap["Reject large gap immediately"]
+CheckGap --> |No| DeferSmallGap["Defer small gap to fork_db"]
 CheckFarAhead --> |No| CheckForkDB["Proceed to fork_db.push_block()"]
 ThrowDeadFork --> Classify["P2P soft-bans peer (dead fork)"]
-SilentReject --> PreventLoop["Prevent sync restart loops"]
+RejectLargeGap --> PreventLoop["Prevent sync restart loops"]
+DeferSmallGap --> LogDefer["Log deferral to fork_db"]
 NormalLogic --> CheckForkDB
 CheckForkDB --> ForkDBOps["Fork DB operations"]
 ForkDBOps --> EnhancedHandling["Enhanced error handling"]
@@ -1286,7 +1298,7 @@ These signals are used by plugins to react to blockchain events without tight co
 - Open database and initialize: open(data_dir, shared_mem_dir, initial_supply, shared_file_size, chainbase_flags)
 - **Open from snapshot**: open_from_snapshot(data_dir, shared_mem_dir, initial_supply, shared_file_size, chainbase_flags) - **Enhanced**
 - Rebuild state from history: reindex(data_dir, shared_mem_dir, from_block_num, shared_file_size) - **Enhanced with signal handling**
-- Push a block: push_block(signed_block, skip_flags) - **Enhanced with shared memory error handling, early rejection logic, and operation guard protection**
+- Push a block: push_block(signed_block, skip_flags) - **Enhanced with shared memory error handling, gap-based early rejection logic, and operation guard protection**
 - Push a transaction: push_transaction(signed_transaction, skip_flags)
 - Validate a block: validate_block(signed_block, skip_flags)
 - Validate a transaction: validate_transaction(signed_transaction, skip_flags)
@@ -1300,7 +1312,7 @@ These signals are used by plugins to react to blockchain events without tight co
 - **Deferred Memory Resize**: Thread-safe memory resize mechanism that applies operations at safe points to prevent race conditions
 - **Enhanced Error Handling**: Graceful handling of shared memory exhaustion with peer connectivity preservation
 - **Enhanced Fork Database**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking
-- **Early Rejection Logic**: Intelligent block rejection for far-ahead blocks with unknown parents to prevent unnecessary fork database operations and sync restart loops
+- **Enhanced Early Rejection Logic**: Gap-based decision system (≤100 gap deferred to fork_db, >100 gap rejected) for intelligent block rejection of far-ahead blocks with unknown parents to prevent unnecessary fork database operations and sync restart loops
 - **Enhanced Fork Database Exception Prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
 - **Operation Guard Integration**: Systematic implementation of operation_guard RAII pattern for automatic concurrent access protection across all critical sections
 - **Dual Guard Patterns**: Implementation of dual operation guards for witness scheduling to ensure thread safety during complex calculations
@@ -1534,7 +1546,7 @@ The database depends on:
 - **Deferred memory resize mechanism**: Thread-safe memory management with proper lock handling and race condition prevention
 - **Enhanced error handling**: Graceful exception handling for shared memory exhaustion with peer connectivity preservation
 - **Enhanced fork database**: Proper unlinkable_block_exception handling for dead fork detection and improved fork switching logic with deterministic tie-breaking
-- **Early rejection logic**: Sophisticated block validation with intelligent rejection strategies for blocks far ahead with unknown parents
+- **Enhanced early rejection logic**: Gap-based decision system (≤100 gap deferred to fork_db, >100 gap rejected) for intelligent block validation with early rejection strategies for blocks far ahead with unknown parents
 - **Enhanced fork database exception prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
 - **Operation guard system**: Comprehensive concurrent access protection using operation_guard RAII pattern, dual operation guard patterns for witness scheduling safety, and resize barrier mechanisms
 - **Dual operation guard patterns**: Systematic implementation of operation_guard for both lockless reads and write operations to prevent race conditions during shared memory operations
@@ -1567,7 +1579,7 @@ DB --> DEFER["deferred memory resize mechanism"]
 DB --> ERROR["enhanced error handling"]
 DB --> NETWORK["network layer integration"]
 DB --> UNLINK["unlinkable_block_exception"]
-DB --> EARLY["early rejection logic"]
+DB --> EARLY["enhanced early rejection logic"]
 DB --> EXCEP["enhanced fork exception prevention"]
 DB --> OPGUARD["operation guard system"]
 DB --> DUALGUARD["dual operation guard patterns"]
@@ -1621,7 +1633,7 @@ DB --> DLTGAP["comprehensive DLT gap management"]
 - **Enhanced Error Handling**: Graceful handling of shared memory exhaustion prevents peer disconnections and maintains network connectivity during memory pressure situations.
 - **Enhanced Fork Database Performance**: Proper unlinkable_block_exception handling reduces processing overhead by eliminating dead fork blocks from consideration.
 - **Improved Fork Switching**: Enhanced fork switching logic with proper dead fork detection and deterministic tie-breaking prevents unnecessary processing and improves fork resolution performance.
-- **Early Rejection Efficiency**: The new early rejection logic eliminates unnecessary fork database operations for far-ahead blocks with unknown parents, significantly reducing processing overhead and preventing sync restart loops.
+- **Enhanced Early Rejection Efficiency**: The new gap-based early rejection logic eliminates unnecessary fork database operations for far-ahead blocks with unknown parents, significantly reducing processing overhead and preventing sync restart loops.
 - **Enhanced Fork Database Exception Prevention**: Comprehensive early rejection mechanisms prevent fork database exceptions before they occur, eliminating the need for exception handling and improving overall system efficiency.
 - **Operation Guard Performance**: The operation guard RAII pattern provides automatic concurrent access protection with minimal overhead, ensuring thread safety without significant performance impact.
 - **Dual Guard Patterns**: Systematic implementation of dual operation guards in witness scheduling provides comprehensive thread safety with optimized performance characteristics.
@@ -1668,8 +1680,8 @@ Common issues and remedies:
 - **Fork Switching Problems**: Verify that fork switching logic properly handles unlinkable_block_exception and prevents processing of invalid forks.
 - **Dead Fork Detection**: Check that the enhanced fork database properly throws unlinkable_block_exception for blocks from dead forks to prevent wasted processing resources.
 - **Emergency Consensus Tie-Breaking**: Verify that deterministic hash-based tie-breaking is working correctly during emergency mode to ensure consistent block selection across all nodes.
-- **Early Rejection Logic Issues**: Monitor the new early rejection logic to ensure it's properly rejecting far-ahead blocks with unknown parents and preventing unnecessary fork database operations.
-- **P2P Sync Restart Loops**: Verify that the early rejection logic is working correctly to prevent sync restart loops during snapshot imports and normal operation.
+- **Enhanced Early Rejection Logic Issues**: Monitor the new gap-based early rejection logic to ensure it's properly rejecting far-ahead blocks with gaps > 100 and preventing unnecessary fork database operations.
+- **P2P Sync Restart Loops**: Verify that the enhanced early rejection logic is working correctly to prevent sync restart loops during snapshot imports and normal operation.
 - **Enhanced Fork Database Exception Prevention**: Monitor the comprehensive exception prevention mechanisms to ensure they're properly classifying and handling different types of unlinkable blocks.
 - **Unlinkable Block Exception Handling**: Check that the P2P layer properly classifies and handles different types of unlinkable blocks (dead fork vs. far-ahead) to prevent soft-banning or unnecessary sync restarts.
 - **Operation Guard Issues**: Monitor operation guard functionality to ensure concurrent access protection is working correctly during high-load scenarios.
@@ -1680,6 +1692,7 @@ Common issues and remedies:
 - **Enhanced Multi-Layered Block Retrieval Issues**: Monitor the new fallback mechanisms to ensure they're properly checking fork database when primary block log fails to locate required data.
 - **Last Irreversible Block Advancement Problems**: Verify that the enhanced fallback logic is working correctly when block log lacks required data.
 - **DLT Gap Management Issues**: Check that the comprehensive DLT gap management system is properly suppressing warnings and managing gap states.
+- **Gap-Based Early Rejection Problems**: Monitor the new gap-based decision system to ensure blocks with gaps ≤ 100 are properly deferred to fork_db while blocks with gaps > 100 are rejected immediately.
 
 **Section sources**
 - [database.cpp:789-827](file://libraries/chain/database.cpp#L789-L827)
@@ -1703,15 +1716,11 @@ Common issues and remedies:
 ## Conclusion
 The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support, emergency consensus implementation, operation guard integration, and improved error handling. It integrates chainbase for persistent storage with comprehensive concurrent access protection, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, and the systematic implementation of resize barrier mechanisms, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals.
 
-**Updated** - The system now includes comprehensive database robustness improvements including systematic fallback mechanisms for critical block data retrieval. The enhanced multi-layered block retrieval system implements hierarchical fallback strategies that check fork database when primary block log fails to locate required data, ensuring consistent behavior across different block logging configurations. These enhancements provide improved fault tolerance and data availability during various operational scenarios, making the system more resilient to storage layer failures and network interruptions.
-
-The enhanced last irreversible block advancement logic further strengthens the system's reliability by implementing comprehensive fallback mechanisms that use fork database when block log lacks required data. This ensures that LIB advancement continues smoothly even when storage layers are temporarily unavailable or inconsistent.
-
-The new gap suppression mechanism provides intelligent warning management that prevents log spam during normal DLT operations while maintaining comprehensive diagnostic capability for troubleshooting. The automatic state management of the `_dlt_gap_logged` flag ensures optimal logging behavior without manual intervention, making the system more maintainable and operable in production environments.
+**Updated** - The system now includes comprehensive database robustness improvements including refined gap-based decision system for unlinkable blocks. The enhanced early rejection logic implements a sophisticated gap-based decision system that rejects blocks with gaps > 100 immediately while deferring blocks with gaps ≤ 100 to the fork database for automatic chain linking when parent blocks arrive. This improvement prevents memory bloat from dead-fork blocks and eliminates sync restart loops during snapshot imports and normal operation. The enhanced fork management logic with improved early rejection mechanisms provides better handling of blocks far ahead with unknown parents, significantly improving the efficiency of the synchronization process and reducing the likelihood of encountering unlinkable blocks that would require peer soft-banning or sync restarts.
 
 The enhanced multi-layered block retrieval system represents a significant advancement in database reliability and fault tolerance. By implementing systematic fallback mechanisms across multiple storage layers, the database can handle various failure scenarios gracefully while maintaining data consistency and availability. This approach eliminates single points of failure and provides improved resilience against storage layer issues, network interruptions, and other operational challenges.
 
-The improved last irreversible block advancement logic demonstrates the system's commitment to data consistency and availability. The fallback mechanisms ensure that critical blockchain state information remains accessible even when primary storage layers are compromised, preventing system stalls and maintaining network integrity.
+The improved last irreversible block advancement logic demonstrates the system's commitment to data consistency and availability. The comprehensive fallback mechanisms ensure that critical blockchain state information remains accessible even when primary storage layers are compromised, preventing system stalls and maintaining network integrity.
 
 **Enhanced** - The memory management system now provides comprehensive logging capabilities that offer administrators detailed visibility into memory usage patterns during blockchain operation. The new deferred shared memory resize mechanism significantly improves efficiency during high-load scenarios by preventing race conditions and stale pointer issues through proper thread synchronization and lock management. The enhanced `_resize` function logs detailed information about free memory, maximum memory, and reserved memory states before and after resizing operations, enabling proactive capacity planning and performance optimization. The improved error detection capabilities in shared memory allocation provides administrators with crucial information about memory usage patterns, helping prevent memory-related issues before they impact system performance. The comprehensive emergency consensus logging system ensures that operators have complete visibility into critical error conditions and recovery procedures. These enhancements make the database management system more transparent, manageable, and suitable for production environments where memory resource optimization and comprehensive error diagnostics are critical.
 
@@ -1719,11 +1728,9 @@ The deferred memory resize mechanism represents a major improvement in thread sa
 
 **Enhanced Error Handling** - The most significant improvement is the enhanced error handling for shared memory exhaustion. The database now gracefully handles boost::interprocess::bad_alloc exceptions by returning false instead of throwing, which prevents P2P layer disconnections and maintains witness slot-miss logging while preserving node connectivity. The system schedules a deferred resize operation and preserves memory state by setting reserved memory to current free memory, ensuring automatic recovery without manual intervention. This approach maintains network stability during memory pressure situations and allows the missed block to be re-received during normal sync, providing a seamless user experience even under adverse conditions.
 
-**Enhanced Fork Database Handling** - The fork database now includes proper unlinkable_block_exception throwing for dead fork detection, significantly improving the system's ability to identify and reject blocks from invalid forks. This enhancement prevents wasted processing resources on dead forks and improves overall network efficiency. The improved fork switching logic with proper dead fork detection ensures that only valid, linked forks are considered for switching, reducing the risk of processing invalid chain states and improving the reliability of fork resolution operations. The addition of deterministic hash-based tie-breaking during emergency consensus mode ensures consistent block selection across all nodes, preventing split-brain scenarios and maintaining network convergence even under extreme conditions.
+**Enhanced Early Rejection Logic** - The new gap-based decision system represents a significant improvement in synchronization reliability and performance. By intelligently rejecting blocks with gaps > 100 immediately while deferring blocks with gaps ≤ 100 to the fork database, the system prevents unnecessary processing overhead and eliminates the possibility of fork database exceptions that could trigger sync restart loops. This enhancement is particularly beneficial during snapshot imports where the fork database may only contain the head block, preventing the common scenario where P2P peers send blocks that are far ahead and would otherwise cause continuous sync restarts. The early rejection strategy ensures that only blocks with known parents are processed through the fork database, significantly improving the efficiency of the synchronization process and reducing the likelihood of encountering unlinkable blocks that would require peer soft-banning or sync restarts.
 
-**Enhanced Early Rejection Logic** - The new early rejection logic represents a significant improvement in synchronization reliability and performance. By intelligently rejecting blocks far ahead with unknown parents before attempting fork database operations, the system prevents unnecessary processing overhead and eliminates the possibility of fork database exceptions that could trigger sync restart loops. This enhancement is particularly beneficial during snapshot imports where the fork database may only contain the head block, preventing the common scenario where P2P peers send blocks that are far ahead and would otherwise cause continuous sync restarts. The early rejection strategy ensures that only blocks with known parents are processed through the fork database, significantly improving the efficiency of the synchronization process and reducing the likelihood of encountering unlinkable blocks that would require peer soft-banning or sync restarts.
-
-**Enhanced Fork Database Exception Prevention** - The comprehensive exception prevention mechanisms represent a major advancement in fork database reliability. The system now includes multiple layers of protection against fork database exceptions, starting with intelligent early rejection of blocks with unknown parents and extending to proper classification and handling of different types of unlinkable blocks. The dead fork detection at or below head ensures that stale fork blocks are properly identified and rejected, while the far-ahead block rejection prevents unnecessary fork database operations that could trigger sync restart loops. This multi-layered approach to exception prevention significantly improves the robustness of the fork database and reduces the likelihood of synchronization issues caused by malformed or malicious blocks. The enhanced error propagation and classification mechanisms ensure that downstream components can properly handle different types of unlinkable blocks, leading to more efficient and reliable network synchronization.
+**Enhanced Fork Database Exception Prevention** - The comprehensive exception prevention mechanisms represent a major advancement in fork database reliability. The system now includes multiple layers of protection against fork database exceptions, starting with the intelligent gap-based early rejection of blocks with unknown parents and extending to proper classification and handling of different types of unlinkable blocks. The dead fork detection at or below head ensures that stale fork blocks are properly identified and rejected, while the gap-based large gap rejection prevents unnecessary fork database operations that could trigger sync restart loops. This multi-layered approach to exception prevention significantly improves the robustness of the fork database and reduces the likelihood of synchronization issues caused by malformed or malicious blocks. The enhanced error propagation and classification mechanisms ensure that downstream components can properly handle different types of unlinkable blocks, leading to more efficient and reliable network synchronization.
 
 **Enhanced Operation Guard Implementation** - The comprehensive operation guard system represents a fundamental improvement in concurrent access protection throughout the database management system. The systematic implementation of operation_guard RAII pattern provides automatic concurrent access protection across all critical sections, while the dual operation guard patterns in witness scheduling calculations ensure thread safety during complex slot determination operations. The integration of operation guards in P2P plugin block validation protects witness key retrieval operations from concurrent memory modifications, and the comprehensive resize barrier mechanisms prevent data corruption during memory resizing operations. These enhancements ensure that the database management system can handle high-load scenarios safely and reliably while maintaining data consistency and preventing race conditions that could lead to system instability or data corruption.
 
