@@ -413,6 +413,9 @@ namespace graphene {
                             // HEALTHY NETWORK: enforce safe defaults automatically.
                             // Even if operator has enable-stale-production=true in config,
                             // it's overridden because the network doesn't need it.
+                            // Clear the stale-production skip flag so that minority fork
+                            // detection is re-enabled now that the network is healthy.
+                            _production_skip_flags &= ~graphene::chain::database::skip_undo_history_check;
                             if (!_production_enabled) {
                                 if (db.get_slot_time(1) >= now) {
                                     _production_enabled = true;
