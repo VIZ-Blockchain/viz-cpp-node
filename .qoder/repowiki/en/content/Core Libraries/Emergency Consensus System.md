@@ -68,7 +68,7 @@ EW[Emergency Witness]
 FD[Fork Database]
 WC[Witness Plugin]
 OG[Operation Guards]
-end
+END
 subgraph "Network Layer"
 P2P[P2P Network]
 BP[Block Production]

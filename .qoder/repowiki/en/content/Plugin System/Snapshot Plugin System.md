@@ -26,10 +26,15 @@
 
 ## Update Summary
 **Changes Made**
-- Updated anti-spam configuration documentation to reflect increased maximum sessions per IP from 2 to 3 and maximum connections per hour from 6 to 10
-- Enhanced access control and security mechanisms documentation with new configuration values
-- Updated troubleshooting guide to include new anti-spam limits and their implications
-- Revised configuration reference to show updated anti-spam parameters
+- Added comprehensive automatic snapshot discovery (--snapshot-auto-latest) functionality
+- Implemented integrated recovery workflow (--replay-from-snapshot) with DLT block log replay
+- Enhanced watchdog monitoring system for server reliability
+- Added enhanced P2P integration with trusted peer support and dual-tier soft-ban system
+- Implemented asynchronous snapshot creation capabilities with dedicated thread management
+- Improved error handling for unlinkable_block_exception scenarios
+- Enhanced anti-spam protection with increased limits (3 sessions/IP, 10 connections/hour)
+- Added P2P stale sync detection for automatic recovery from network stalls
+- Enhanced logging system with ANSI color codes for improved visibility
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -807,8 +812,6 @@ The enhanced P2P integration implements a comprehensive dual-tier soft-ban syste
 - **Dynamic Updates**: Supports runtime updates to trusted peer lists
 
 #### Enhanced P2P Integration Features
-
-The enhanced P2P integration includes several key improvements:
 
 #### Automatic Registration Process
 - **Plugin Discovery**: P2P plugin automatically discovers snapshot plugin

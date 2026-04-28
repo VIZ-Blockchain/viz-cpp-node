@@ -10,18 +10,15 @@
 - [snapshot_plugin.cpp](file://plugins/snapshot/plugin.cpp)
 - [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
 - [fork_database.cpp](file://libraries/chain/fork_database.cpp)
+- [database.hpp](file://libraries/chain/include/graphene/chain/database.hpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced DLT block log with comprehensive recovery system support through new reindex_from_dlt method
-- Implemented atomic file operations with .bak backup restoration for crash recovery
-- Added improved crash recovery mechanisms with automatic .bak file restoration
-- Enhanced error handling and validation throughout the DLT block log implementation
-- Strengthened memory safety with std::memcpy operations replacing unsafe pointer casts
-- Improved gap handling during synchronization between fork database and DLT block log
-- Enhanced stalled sync detection for DLT nodes with automatic recovery mechanisms
-- Added comprehensive logging and progress tracking for DLT recovery operations
+- Enhanced DLT block log accessibility with mutable accessor methods for runtime property modification
+- Added non-const getter method for _dlt_block_log member variable, enabling external components to modify DLT block log properties during runtime operations while maintaining read-only access for general use
+- Updated database.hpp to provide both const and non-const accessors for DLT block log functionality
+- Enhanced external component integration capabilities for DLT mode operations
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -42,11 +39,12 @@
 16. [Enhanced Block Availability Checking](#enhanced-block-availability-checking)
 17. [Stalled Sync Detection for DLT Nodes](#stalled-sync-detection-for-dlt-nodes)
 18. [Enhanced Gap Handling During Synchronization](#enhanced-gap-handling-during-synchronization)
-19. [Troubleshooting Guide](#troubleshooting-guide)
-20. [Conclusion](#conclusion)
+19. [DLT Block Log Accessibility Enhancement](#dlt-block-log-accessibility-enhancement)
+20. [Troubleshooting Guide](#troubleshooting-guide)
+21. [Conclusion](#conclusion)
 
 ## Introduction
-This document explains the comprehensive DLT (Data Ledger Technology) Rolling Block Log implementation used by VIZ blockchain nodes to maintain a sliding window of recent irreversible blocks with selective retention policies and automatic pruning capabilities. The DLT mode provides advanced support for snapshot-based nodes, enabling efficient serving of recent blocks to P2P peers while maintaining configurable retention windows and automated cleanup mechanisms. Recent enhancements include critical memory safety improvements replacing unsafe pointer casts with std::memcpy operations, comprehensive crash recovery mechanisms with .bak file restoration, enhanced cross-platform compatibility, and strengthened validation logic throughout the implementation.
+This document explains the comprehensive DLT (Data Ledger Technology) Rolling Block Log implementation used by VIZ blockchain nodes to maintain a sliding window of recent irreversible blocks with selective retention policies and automatic pruning capabilities. The DLT mode provides advanced support for snapshot-based nodes, enabling efficient serving of recent blocks to P2P peers while maintaining configurable retention windows and automated cleanup mechanisms. Recent enhancements include critical memory safety improvements replacing unsafe pointer casts with std::memcpy operations, comprehensive crash recovery mechanisms with .bak file restoration, enhanced cross-platform compatibility, and strengthened validation logic throughout the implementation. The latest enhancement introduces improved DLT block log accessibility with mutable accessor methods, enabling external components to modify DLT block log properties during runtime operations while maintaining read-only access for general use.
 
 ## Project Structure
 The DLT rolling block log is implemented as a standalone component with comprehensive integration into the main database system. It operates alongside the traditional block log while providing specialized functionality for snapshot-based ("DLT") nodes with selective retention and automatic pruning capabilities.
@@ -58,14 +56,12 @@ DLT["dlt_block_log.hpp/.cpp"]
 BL["block_log.cpp"]
 DB["database.cpp"]
 FD["fork_database.cpp"]
+DH["database.hpp"]
 END
 subgraph "Plugins"
 CP["plugins/chain/plugin.cpp"]
 SP["plugins/snapshot/plugin.cpp"]
 PP["plugins/p2p/p2p_plugin.cpp"]
-END
-subgraph "Config"
-DH["database.hpp"]
 END
 CP --> DB
 SP --> DB
@@ -89,6 +85,7 @@ PP --> DH
 - [plugin.cpp:320-330](file://plugins/chain/plugin.cpp#L320-L330)
 - [snapshot_plugin.cpp:1960-2039](file://plugins/snapshot/plugin.cpp#L1960-L2039)
 - [p2p_plugin.cpp:255-286](file://plugins/p2p/p2p_plugin.cpp#L255-L286)
+- [database.hpp:515-516](file://libraries/chain/include/graphene/chain/database.hpp#L515-L516)
 
 **Section sources**
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
@@ -99,6 +96,7 @@ PP --> DH
 - [plugin.cpp:320-330](file://plugins/chain/plugin.cpp#L320-L330)
 - [snapshot_plugin.cpp:1960-2039](file://plugins/snapshot/plugin.cpp#L1960-L2039)
 - [p2p_plugin.cpp:255-286](file://plugins/p2p/p2p_plugin.cpp#L255-L286)
+- [database.hpp:515-516](file://libraries/chain/include/graphene/chain/database.hpp#L515-L516)
 
 ## Core Components
 - **DLT Rolling Block Log API**: Provides comprehensive methods for opening/closing, appending blocks, selective reading by block number, querying head/start/end indices, and intelligent truncation with retention policies.
@@ -111,6 +109,7 @@ PP --> DH
 - **Stalled Sync Detection**: Implements automatic detection and recovery from stalled P2P sync for DLT nodes, with configurable timeout settings and automatic snapshot reload capabilities.
 - **Enhanced Gap Handling**: Provides sophisticated gap management during synchronization between fork database and DLT block log, with automatic seeding and logging capabilities.
 - **Enhanced Blockchain Recovery System**: Implements comprehensive recovery mechanisms including DLT block log replay functionality, crash recovery with atomic file operations, and enhanced error handling for corrupted states.
+- **Enhanced DLT Block Log Accessibility**: Provides both const and non-const accessors for DLT block log functionality, enabling external components to modify DLT block log properties during runtime operations while maintaining read-only access for general use.
 
 **Enhanced Key Capabilities**:
 - Offset-aware index layout supporting arbitrary start block numbers with intelligent retention policies
@@ -130,6 +129,7 @@ PP --> DH
 - **Stalled Sync Detection**: Automatic detection and recovery from stalled P2P sync with configurable timeouts and snapshot reload capabilities
 - **Enhanced Gap Management**: Sophisticated gap handling during synchronization with automatic seeding and logging capabilities
 - **Enhanced Blockchain Recovery System**: New reindex_from_dlt method provides core functionality for rebuilding blockchain state from DLT rolling block log after snapshot import
+- **Enhanced DLT Block Log Accessibility**: Both const and non-const accessors enable external components to modify DLT block log properties during runtime while maintaining read-only access for general use
 
 **Section sources**
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
@@ -141,9 +141,10 @@ PP --> DH
 - [p2p_plugin.cpp:265-272](file://plugins/p2p/p2p_plugin.cpp#L265-L272)
 - [snapshot_plugin.cpp:1414-1500](file://plugins/snapshot/plugin.cpp#L1414-L1500)
 - [database.cpp:438-544](file://libraries/chain/database.cpp#L438-L544)
+- [database.hpp:515-516](file://libraries/chain/include/graphene/chain/database.hpp#L515-L516)
 
 ## Architecture Overview
-The DLT rolling block log operates in conjunction with the primary block log, providing comprehensive support for snapshot-based nodes with selective retention policies and automatic pruning. During normal operation, the database opens both logs and validates them. In DLT mode (after snapshot import), the primary block log remains empty while the database holds state; the DLT rolling block log serves as a fallback with intelligent retention management and enhanced block verification. The P2P layer now includes improved error handling with graceful fallback mechanisms and detailed logging for DLT mode scenarios.
+The DLT rolling block log operates in conjunction with the primary block log, providing comprehensive support for snapshot-based nodes with selective retention policies and automatic pruning. During normal operation, the database opens both logs and validates them. In DLT mode (after snapshot import), the primary block log remains empty while the database holds state; the DLT rolling block log serves as a fallback with intelligent retention management and enhanced block verification. The P2P layer now includes improved error handling with graceful fallback mechanisms and detailed logging for DLT mode scenarios. The enhanced accessibility model allows external components to modify DLT block log properties during runtime operations while maintaining read-only access for general use.
 
 ```mermaid
 sequenceDiagram
@@ -166,6 +167,10 @@ DB->>DB : set_dlt_mode=true
 DB->>DB : skip block log validation
 DB->>FD : seed from dlt_block_log head
 end
+App->>DB : get_dlt_block_log() (non-const)
+DB->>DLT : modify properties during runtime
+App->>DB : get_dlt_block_log() (const)
+DB->>DLT : read-only access for general use
 App->>DB : fetch_block_by_number(n)
 DB->>BL : read_block_by_num(n)
 alt Found in primary log
@@ -195,6 +200,7 @@ DB-->>App : block
 - [snapshot_plugin.cpp:1968-1970](file://plugins/snapshot/plugin.cpp#L1968-L1970)
 - [p2p_plugin.cpp:259-286](file://plugins/p2p/p2p_plugin.cpp#L259-L286)
 - [fork_database.cpp:24-28](file://libraries/chain/fork_database.cpp#L24-L28)
+- [database.hpp:515-516](file://libraries/chain/include/graphene/chain/database.hpp#L515-L516)
 
 ## Detailed Component Analysis
 
@@ -586,6 +592,7 @@ The DLT rolling block log implementation provides optimized performance characte
 - **Improved Reliability**: Crash recovery mechanisms eliminate data corruption risks
 - **Enhanced Recovery Performance**: DLT block log replay provides faster recovery than full blockchain reindex
 - **Optimized Recovery Operations**: Progress tracking and memory management improve recovery performance
+- **Enhanced Runtime Access**: Non-const accessor methods enable efficient runtime property modifications
 
 ## Enhanced Error Handling and Fallback Mechanisms
 
@@ -899,8 +906,50 @@ The gap handling system provides comprehensive logging and monitoring capabiliti
 **Section sources**
 - [database.cpp:4581-4608](file://libraries/chain/database.cpp#L4581-L4608)
 
+## DLT Block Log Accessibility Enhancement
+
+### Enhanced DLT Block Log Accessor Methods
+The DLT block log accessibility has been significantly enhanced with the introduction of both const and non-const accessor methods. This enhancement enables external components to modify DLT block log properties during runtime operations while maintaining read-only access for general use.
+
+**Enhanced Accessor Methods**:
+- `const dlt_block_log &get_dlt_block_log() const` - Provides read-only access for general use
+- `dlt_block_log &get_dlt_block_log()` - Provides mutable access for external components to modify DLT block log properties during runtime operations
+
+**Runtime Property Modification Capabilities**:
+- External components can modify DLT block log properties during runtime operations
+- Maintains thread safety through proper locking mechanisms
+- Enables dynamic configuration of DLT block log behavior based on operational requirements
+- Supports runtime adjustments to retention policies and pruning thresholds
+- Allows external components to optimize DLT block log performance based on current workload
+
+**Integration with External Components**:
+- Chain plugin can modify DLT block log properties during recovery operations
+- Snapshot plugin can adjust DLT block log behavior during snapshot import
+- P2P plugin can optimize DLT block log access patterns for peer synchronization
+- Database layer can dynamically adjust DLT block log configuration based on memory usage
+
+**Section sources**
+- [database.hpp:515-516](file://libraries/chain/include/graphene/chain/database.hpp#L515-L516)
+- [plugin.cpp:627-627](file://plugins/chain/plugin.cpp#L627-L627)
+- [snapshot_plugin.cpp:1473-1476](file://plugins/snapshot/plugin.cpp#L1473-L1476)
+
+### Enhanced External Component Integration
+The enhanced accessibility model provides comprehensive integration capabilities for external components that need to interact with the DLT block log during runtime operations.
+
+**External Component Integration Features**:
+- Chain plugin can access DLT block log for recovery operations with mutable access
+- Snapshot plugin can modify DLT block log properties during snapshot import
+- P2P plugin can optimize DLT block log access patterns for peer synchronization
+- Database layer can dynamically adjust DLT block log configuration based on operational requirements
+- Enhanced error handling and validation for external component modifications
+- Thread-safe access patterns that prevent race conditions during runtime modifications
+
+**Section sources**
+- [plugin.cpp:626-632](file://plugins/chain/plugin.cpp#L626-L632)
+- [snapshot_plugin.cpp:1472-1477](file://plugins/snapshot/plugin.cpp#L1472-L1477)
+
 ## Troubleshooting Guide
-Comprehensive troubleshooting guidance for DLT-specific scenarios, retention policy issues, automatic pruning failures, enhanced blockchain recovery problems, and configuration issues with systematic diagnostic approaches and enhanced error reporting.
+Comprehensive troubleshooting guidance for DLT-specific scenarios, retention policy issues, automatic pruning failures, enhanced blockchain recovery problems, configuration issues, and the new DLT block log accessibility enhancement with systematic diagnostic approaches and enhanced error reporting.
 
 **Common DLT Mode Issues**:
 - Index mismatch detection and automatic reconstruction with selective retention enforcement
@@ -924,6 +973,8 @@ Comprehensive troubleshooting guidance for DLT-specific scenarios, retention pol
 - **Gap Handling Problems**: Issues with DLT mode gap management and synchronization
 - **Enhanced Blockchain Recovery Issues**: DLT block log replay failures and recovery mechanism problems
 - **Recovery Progress Tracking**: Missing progress indicators and percentage completion reporting
+- **DLT Block Log Accessibility Issues**: Problems with const/non-const accessor method usage
+- **Runtime Property Modification Failures**: Issues with external components modifying DLT block log properties
 
 **Section sources**
 - [dlt_block_log.cpp:161-209](file://libraries/chain/dlt_block_log.cpp#L161-L209)
@@ -934,18 +985,15 @@ Comprehensive troubleshooting guidance for DLT-specific scenarios, retention pol
 - [database.cpp:560-595](file://libraries/chain/database.cpp#L560-L595)
 - [snapshot_plugin.cpp:1435-1500](file://plugins/snapshot/plugin.cpp#L1435-L1500)
 - [database.cpp:438-544](file://libraries/chain/database.cpp#L438-L544)
+- [database.hpp:515-516](file://libraries/chain/include/graphene/chain/database.hpp#L515-L516)
 
 ## Conclusion
-The DLT Rolling Block Log provides a comprehensive, offset-aware append-only storage mechanism specifically designed for snapshot-based nodes with advanced selective retention policies and automatic pruning capabilities. Recent enhancements include critical memory safety improvements replacing unsafe pointer casts with std::memcpy operations throughout the implementation, comprehensive crash recovery mechanisms with .bak file restoration for atomic file operations, enhanced cross-platform compatibility through standardized file operations, and strengthened validation logic with comprehensive error reporting. The enhanced P2P fallback mechanisms now provide graceful handling of DLT mode scenarios where block data may not be available for certain ranges, with detailed logging and appropriate error responses including specific messages like "Block ${id} not available in DLT mode (no block data for this range)". 
+The DLT Rolling Block Log provides a comprehensive, offset-aware append-only storage mechanism specifically designed for snapshot-based nodes with advanced selective retention policies and automatic pruning capabilities. Recent enhancements include critical memory safety improvements replacing unsafe pointer casts with std::memcpy operations throughout the implementation, comprehensive crash recovery mechanisms with .bak file restoration for atomic file operations, enhanced cross-platform compatibility through standardized file operations, and strengthened validation logic with comprehensive error reporting. The most significant enhancement is the improved DLT block log accessibility with both const and non-const accessor methods, enabling external components to modify DLT block log properties during runtime operations while maintaining read-only access for general use.
 
-The most significant enhancement is the automatic DLT mode fork database seeding functionality that automatically seeds the fork database from the DLT block log when the chain starts from a fresh snapshot import. This enhancement ensures that P2P synchronization works immediately by providing the necessary fork database state even when the DLT block log doesn't cover the head block yet. The system includes intelligent validation to ensure that the DLT block log head matches the current chain state before seeding, and falls back to creating minimal fork database entries when the DLT block log is incomplete.
+The enhanced accessibility model provides comprehensive integration capabilities for external components that need to interact with the DLT block log during runtime operations. The chain plugin can now modify DLT block log properties during recovery operations, the snapshot plugin can adjust DLT block log behavior during snapshot import, and the P2P plugin can optimize DLT block log access patterns for peer synchronization. This enhancement maintains thread safety through proper locking mechanisms while enabling dynamic configuration of DLT block log behavior based on operational requirements.
 
-Additionally, the enhanced block availability checking logic provides improved DLT mode support with better block existence verification and preferred chain validation. The system now uses block_summary objects as hints and verifies block availability against the preferred chain, with special handling for DLT mode scenarios where block data may not be available for certain ranges.
-
-The addition of stalled sync detection for DLT nodes provides automatic monitoring and recovery from stalled P2P sync scenarios, with configurable timeout settings and automatic snapshot reload capabilities. This feature enhances the reliability and uptime of DLT nodes by automatically detecting and recovering from network connectivity issues.
-
-The most notable recent enhancement is the sophisticated gap handling during synchronization between fork database and DLT block log. This system automatically manages the critical period when the DLT block log is catching up to the fork database, with intelligent logging, automatic seeding, and graceful handling of missing blocks. The gap handling system prevents repeated logging for the same gap status and provides detailed progress notifications, ensuring smooth operation during the synchronization process.
+The enhanced P2P fallback mechanisms now provide graceful handling of DLT mode scenarios where block data may not be available for certain ranges, with detailed logging and appropriate error responses including specific messages like "Block ${id} not available in DLT mode (no block data for this range)". The most notable recent enhancement is the sophisticated gap handling during synchronization between fork database and DLT block log. This system automatically manages the critical period when the DLT block log is catching up to the fork database, with intelligent logging, automatic seeding, and graceful handling of missing blocks. The gap handling system prevents repeated logging for the same gap status and provides detailed progress notifications, ensuring smooth operation during the synchronization process.
 
 The new enhanced blockchain recovery system represents a major advancement in DLT node reliability and operational efficiency. The reindex_from_dlt method provides core functionality for rebuilding blockchain state from DLT rolling block log after snapshot import, with comprehensive error handling, progress tracking, enhanced fork database seeding, and detailed logging capabilities. This system enables rapid recovery from corrupted states while maintaining data integrity and operational continuity, with enhanced progress reporting and memory management optimization.
 
-Its sophisticated integration with the database ensures seamless fallback when the primary block log is empty, while configurable limits, intelligent retention enforcement, and automatic cleanup mechanisms help manage disk usage efficiently. The implementation leverages advanced memory-mapped files, strict position validation using std::memcpy operations, and comprehensive error handling to deliver reliable performance and data integrity for modern blockchain operations. The improved error handling and fallback mechanisms ensure that DLT mode operations are robust, well-documented, and provide excellent user experience for both operators and P2P peers with comprehensive logging and graceful degradation capabilities. The critical memory safety improvements eliminate undefined behavior risks, while the crash recovery mechanisms ensure data integrity even during unexpected system failures. The enhanced fork database seeding and block availability checking logic provide comprehensive support for DLT mode operations, making the system more reliable and user-friendly for snapshot-based node operations. The stalled sync detection feature further enhances the system's resilience and operational efficiency by automatically handling network connectivity issues without manual intervention. The enhanced gap handling capabilities and new blockchain recovery system represent significant improvements in DLT mode synchronization reliability, user experience, and operational efficiency.
+Its sophisticated integration with the database ensures seamless fallback when the primary block log is empty, while configurable limits, intelligent retention enforcement, and automatic cleanup mechanisms help manage disk usage efficiently. The implementation leverages advanced memory-mapped files, strict position validation using std::memcpy operations, and comprehensive error handling to deliver reliable performance and data integrity for modern blockchain operations. The improved error handling and fallback mechanisms ensure that DLT mode operations are robust, well-documented, and provide excellent user experience for both operators and P2P peers with comprehensive logging and graceful degradation capabilities. The critical memory safety improvements eliminate undefined behavior risks, while the crash recovery mechanisms ensure data integrity even during unexpected system failures. The enhanced fork database seeding and block availability checking logic provide comprehensive support for DLT mode operations, making the system more reliable and user-friendly for snapshot-based node operations. The stalled sync detection feature further enhances the system's resilience and operational efficiency by automatically handling network connectivity issues without manual intervention. The enhanced gap handling capabilities and new blockchain recovery system represent significant improvements in DLT mode synchronization reliability, user experience, and operational efficiency. The latest accessibility enhancement completes the comprehensive DLT block log functionality by enabling external components to modify DLT block log properties during runtime operations while maintaining read-only access for general use, providing a robust foundation for advanced DLT node operations.

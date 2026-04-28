@@ -25,11 +25,12 @@
 
 ## Update Summary
 **Changes Made**
-- Comprehensive operation_guard system implementation for concurrent access protection across chainbase components
-- Dual operation guard patterns in witness scheduling for thread safety during complex calculations
-- Enhanced memory management with deferred resize operations using resize barriers
-- Improved error handling for shared memory exhaustion with deferred resize scheduling
-- Enhanced P2P plugin block validation with operation guard protection for concurrent resize safety
+- Enhanced database robustness with improved fallback mechanisms for critical block data retrieval
+- Added systematic approaches to handle missing irreversible blocks by checking fork database when primary block log fails to locate required data
+- Implemented comprehensive multi-layered block retrieval with DLT fallback support
+- Enhanced last irreversible block advancement logic with fallback to fork database
+- Improved DLT gap logging with automatic state management and warning suppression
+- Updated block fetching methods with hierarchical retrieval strategy
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -46,7 +47,7 @@
 ## Introduction
 This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for suppressing repeated warnings, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, and practical examples of database operations and performance optimization.
 
-**Updated** - Enhanced with comprehensive operation guard implementation that systematically protects concurrent access to shared memory operations. The database now features dual operation guard patterns in witness scheduling calculations, enhanced P2P plugin block validation with operation guard protection, and comprehensive concurrency safety improvements throughout critical sections using resize barrier mechanisms. These enhancements ensure thread safety during high-load scenarios and prevent race conditions that could lead to stale pointer issues or data corruption.
+**Updated** - Enhanced with comprehensive database robustness improvements including systematic fallback mechanisms for critical block data retrieval. The database now implements multi-layered block retrieval strategies that check fork database when primary block log fails to locate required data, ensuring consistent behavior across different block logging configurations. These enhancements provide improved fault tolerance and data availability during various operational scenarios.
 
 ## Project Structure
 The database subsystem is implemented primarily in the chain library with enhanced support for operation guards and concurrent access protection:
@@ -114,16 +115,16 @@ EXC --> NODE
 ```
 
 **Diagram sources**
-- [database.hpp:1-642](file://libraries/chain/include/graphene/chain/database.hpp#L1-L642)
-- [database.cpp:1-6506](file://libraries/chain/database.cpp#L1-L6506)
+- [database.hpp:1-655](file://libraries/chain/include/graphene/chain/database.hpp#L1-L655)
+- [database.cpp:1-6539](file://libraries/chain/database.cpp#L1-L6539)
 - [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 - [chainbase.cpp:1-200](file://thirdparty/chainbase/src/chainbase.cpp#L1-L200)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
 - [dlt_block_log.cpp:1-414](file://libraries/chain/dlt_block_log.cpp#L1-L414)
-- [fork_database.hpp:1-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L138)
-- [fork_database.cpp:1-271](file://libraries/chain/fork_database.cpp#L1-L271)
+- [fork_database.hpp:1-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L144)
+- [fork_database.cpp:1-278](file://libraries/chain/fork_database.cpp#L1-L278)
 - [database_exceptions.hpp:1-136](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L1-L136)
 - [db_with.hpp:1-154](file://libraries/chain/include/graphene/chain/db_with.hpp#L1-L154)
 - [plugin.cpp:1180-1379](file://plugins/snapshot/plugin.cpp#L1180-L1379)
@@ -135,16 +136,16 @@ EXC --> NODE
 - [p2p_plugin.cpp:225-424](file://plugins/p2p/p2p_plugin.cpp#L225-L424)
 
 **Section sources**
-- [database.hpp:1-642](file://libraries/chain/include/graphene/chain/database.hpp#L1-L642)
-- [database.cpp:1-6506](file://libraries/chain/database.cpp#L1-L6506)
+- [database.hpp:1-655](file://libraries/chain/include/graphene/chain/database.hpp#L1-L655)
+- [database.cpp:1-6539](file://libraries/chain/database.cpp#L1-L6539)
 - [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 - [chainbase.cpp:1-200](file://thirdparty/chainbase/src/chainbase.cpp#L1-L200)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
 - [block_log.cpp:1-302](file://libraries/chain/block_log.cpp#L1-L302)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
 - [dlt_block_log.cpp:1-414](file://libraries/chain/dlt_block_log.cpp#L1-L414)
-- [fork_database.hpp:1-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L138)
-- [fork_database.cpp:1-271](file://libraries/chain/fork_database.cpp#L1-L271)
+- [fork_database.hpp:1-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L144)
+- [fork_database.cpp:1-278](file://libraries/chain/fork_database.cpp#L1-L278)
 - [database_exceptions.hpp:1-136](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L1-L136)
 - [db_with.hpp:1-154](file://libraries/chain/include/graphene/chain/db_with.hpp#L1-L154)
 - [plugin.cpp:1180-1379](file://plugins/snapshot/plugin.cpp#L1180-L1379)
@@ -179,6 +180,9 @@ EXC --> NODE
 - **Concurrent Resize Safety**: Enhanced resize barrier mechanisms that pause all database operations during memory resizing to prevent stale pointer issues.
 - **P2P Plugin Protection**: Operation guard integration in P2P plugin for safe concurrent access during block validation and witness key retrieval.
 - **Witness Scheduling Safety**: Dual operation guard patterns in witness scheduling calculations to ensure thread safety during slot determination and witness validation.
+- **Enhanced Multi-Layered Block Retrieval**: Systematic fallback mechanisms that check fork database when primary block log fails to locate required data, ensuring consistent behavior across different block logging configurations.
+- **Improved Last Irreversible Block Advancement**: Enhanced logic that falls back to fork database when block log lacks required data, maintaining data consistency and availability.
+- **Comprehensive DLT Gap Management**: Intelligent warning suppression and automatic state management for DLT block gaps during normal operations.
 
 Key responsibilities:
 - Lifecycle: open(), open_from_snapshot(), reindex(), close(), wipe() with improved error handling
@@ -187,7 +191,7 @@ Key responsibilities:
 - DLT Mode: Conditional block log operations, rolling window management, snapshot-aware initialization
 - Observers: signals for pre/post operation, applied block, pending/applied transactions
 - Persistence: integrates with block_log and dlt_block_log for different operational modes
-- Enhanced Block Fetching: DLT mode-aware block retrieval with proper validation logic
+- Enhanced Block Fetching: DLT mode-aware block retrieval with proper validation logic and fallback mechanisms
 - **Gap Suppression**: Intelligent warning suppression mechanism that prevents log spam during normal DLT operations while maintaining diagnostic capability
 - **Rate-limited Logging**: Sophisticated collision detection with time-based suppression to prevent log flooding
 - **Smart Transaction Processing**: Automatic transaction queuing and delayed execution based on processing time limits
@@ -211,7 +215,7 @@ Key responsibilities:
 - [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 - [block_log.hpp:38-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L38-L75)
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
-- [fork_database.hpp:53-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L138)
+- [fork_database.hpp:53-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L144)
 - [database.cpp:929-984](file://libraries/chain/database.cpp#L929-L984)
 - [db_with.hpp:33-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L33-L100)
 - [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
@@ -241,6 +245,9 @@ The database composes four primary subsystems with enhanced DLT mode support, em
 - **Concurrent Resize Safety**: Enhanced resize barrier mechanisms that pause all database operations during memory resizing to prevent stale pointer issues
 - **P2P Plugin Protection**: Operation guard integration in P2P plugin for safe concurrent access during block validation and witness key retrieval
 - **Witness Scheduling Safety**: Dual operation guard patterns in witness scheduling calculations to ensure thread safety during slot determination and witness validation
+- **Enhanced Multi-Layered Block Retrieval**: Systematic fallback mechanisms that check fork database when primary block log fails to locate required data, ensuring consistent behavior across different block logging configurations
+- **Improved Last Irreversible Block Advancement**: Enhanced logic that falls back to fork database when block log lacks required data, maintaining data consistency and availability
+- **Comprehensive DLT Gap Management**: Intelligent warning suppression and automatic state management for DLT block gaps during normal operations
 
 ```mermaid
 classDiagram
@@ -280,6 +287,10 @@ class database {
 +make_operation_guard() : concurrent access protection
 +begin_resize_barrier() : resize safety
 +end_resize_barrier() : resize safety
++find_block_id_for_num(block_num) : enhanced multi-layered retrieval
++fetch_block_by_id(id) : enhanced multi-layered retrieval
++fetch_block_by_number(num) : enhanced multi-layered retrieval
++update_last_irreversible_block(skip) : enhanced fallback logic
 }
 class chainbase {
 +free_memory() : size_t
@@ -323,6 +334,7 @@ class fork_database {
 +set_emergency_mode(active)
 +is_known_block(id)
 +fetch_block_by_number(num)
++fetch_block_on_main_branch_by_number(num)
 +is_emergency_mode() : emergency consensus mode flag
 }
 class signal_guard {
@@ -370,7 +382,7 @@ chainbase --> operation_guard : "RAII concurrent access protection"
 - [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 - [block_log.hpp:38-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L38-L75)
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
-- [fork_database.hpp:53-138](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L138)
+- [fork_database.hpp:53-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L144)
 - [database.cpp:94-184](file://libraries/chain/database.cpp#L94-L184)
 - [db_with.hpp:33-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L33-L100)
 - [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
@@ -576,11 +588,93 @@ CheckWrote --> |No| Continue
 ```
 
 **Diagram sources**
-- [database.cpp:4460-4490](file://libraries/chain/database.cpp#L4460-L4490)
+- [database.cpp:5399-5417](file://libraries/chain/database.cpp#L5399-L5417)
 
 **Section sources**
 - [database.hpp:75-77](file://libraries/chain/include/graphene/chain/database.hpp#L75-L77)
-- [database.cpp:4460-4490](file://libraries/chain/database.cpp#L4460-L4490)
+- [database.cpp:5399-5417](file://libraries/chain/database.cpp#L5399-L5417)
+
+### Enhanced Multi-Layered Block Retrieval System
+**New** - The database now implements comprehensive multi-layered block retrieval with systematic fallback mechanisms:
+
+- **Hierarchical Retrieval Strategy**: The `find_block_id_for_num()`, `fetch_block_by_id()`, and `fetch_block_by_number()` methods implement a three-tiered retrieval system:
+  1. Primary: Check fork database for current/main branch blocks
+  2. Secondary: Check block log for irreversible blocks
+  3. Tertiary: Check DLT block log as fallback in DLT mode
+  4. Final: Query fork database for any available blocks
+
+- **DLT Mode Awareness**: In DLT mode, the system prioritizes DLT block log as secondary storage while maintaining fallback to block log and fork database.
+- **Consistent Behavior**: This ensures that block retrieval works consistently regardless of which storage layer contains the requested data.
+- **Enhanced Fault Tolerance**: Multiple fallback points prevent single points of failure and improve system reliability.
+
+```mermaid
+flowchart TD
+Start(["Block Retrieval Request"]) --> CheckForkDB["Check fork database (primary)"]
+CheckForkDB --> FoundFork{"Found in fork_db?"}
+FoundFork --> |Yes| ReturnFork["Return from fork_db"]
+FoundFork --> |No| CheckBlockLog["Check block_log (secondary)"]
+CheckBlockLog --> FoundBlockLog{"Found in block_log?"}
+FoundBlockLog --> |Yes| ReturnBlockLog["Return from block_log"]
+FoundBlockLog --> |No| CheckDLT{"DLT mode enabled?"}
+CheckDLT --> |Yes| CheckDLTLog["Check dlt_block_log (fallback)"]
+CheckDLTLog --> FoundDLT{"Found in dlt_block_log?"}
+FoundDLT --> |Yes| ReturnDLT["Return from dlt_block_log"]
+FoundDLT --> |No| CheckFinalFork["Check fork_db for any blocks"]
+CheckFinalFork --> FoundAny{"Found in fork_db?"}
+FoundAny --> |Yes| ReturnAny["Return from fork_db"]
+FoundAny --> |No| ReturnNull["Return null"]
+```
+
+**Diagram sources**
+- [database.cpp:805-824](file://libraries/chain/database.cpp#L805-L824)
+- [database.cpp:835-856](file://libraries/chain/database.cpp#L835-L856)
+- [database.cpp:859-875](file://libraries/chain/database.cpp#L859-L875)
+
+**Section sources**
+- [database.cpp:805-824](file://libraries/chain/database.cpp#L805-L824)
+- [database.cpp:835-856](file://libraries/chain/database.cpp#L835-L856)
+- [database.cpp:859-875](file://libraries/chain/database.cpp#L859-L875)
+
+### Enhanced Last Irreversible Block Advancement Logic
+**New** - The `update_last_irreversible_block()` method now includes comprehensive fallback mechanisms:
+
+- **Primary Block Log Check**: First attempts to retrieve the irreversible block from the primary block log
+- **Fork Database Fallback**: If block log retrieval fails, checks the fork database for the same block number
+- **Consistent ID Assignment**: Uses the fork database block data when available to maintain consistency
+- **Enhanced Error Handling**: Prevents crashes when blocks are missing from block log while ensuring proper LIB advancement
+
+```mermaid
+flowchart TD
+Start(["update_last_irreversible_block()"]) --> CheckMode{"Normal mode or DLT mode?"}
+CheckMode --> |Normal Mode| CheckBlockLog["Read LIB from block_log"]
+CheckBlockLog --> CheckValid{"Block valid?"}
+CheckValid --> |Yes| SetLIB["Set LIB ID from block_log"]
+CheckValid --> |No| CheckForkDB["Check fork_db for LIB block"]
+CheckForkDB --> CheckForkValid{"Fork block valid?"}
+CheckForkValid --> |Yes| SetLIBFork["Set LIB ID from fork_db"]
+CheckForkValid --> |No| ClearLIB["Clear LIB fields"]
+CheckMode --> |DLT Mode| CheckDLTLog["Read LIB from dlt_block_log"]
+CheckDLTLog --> CheckDLTValid{"DLT block valid?"}
+CheckDLTValid --> |Yes| SetLIBDLT["Set LIB ID from dlt_block_log"]
+CheckDLTValid --> |No| CheckForkDBDLT["Check fork_db for LIB block"]
+CheckForkDBDLT --> CheckForkValidDLT{"Fork block valid?"}
+CheckForkValidDLT --> |Yes| SetLIBForkDLT["Set LIB ID from fork_db"]
+CheckForkValidDLT --> |No| ClearLIB
+SetLIB --> UpdateFields["Update LIB reference fields"]
+SetLIBFork --> UpdateFields
+SetLIBDLT --> UpdateFields
+SetLIBForkDLT --> UpdateFields
+ClearLIB --> End(["Complete"])
+UpdateFields --> End
+```
+
+**Diagram sources**
+- [database.cpp:5080-5105](file://libraries/chain/database.cpp#L5080-L5105)
+- [database.cpp:5442-5456](file://libraries/chain/database.cpp#L5442-L5456)
+
+**Section sources**
+- [database.cpp:5080-5105](file://libraries/chain/database.cpp#L5080-L5105)
+- [database.cpp:5442-5456](file://libraries/chain/database.cpp#L5442-L5456)
 
 ### Enhanced Block Number Collision Detection and Logging
 **New** - The database now features sophisticated collision detection with rate-limiting and scenario differentiation:
@@ -1196,6 +1290,8 @@ These signals are used by plugins to react to blockchain events without tight co
 - Validate a transaction: validate_transaction(signed_transaction, skip_flags)
 - **Set DLT mode**: set_dlt_mode(true/false) - **Enhanced with proper setter implementation**
 - **DLT Gap Suppression**: The database now automatically manages gap warnings to prevent log spam during normal operations with intelligent state management
+- **Enhanced Multi-Layered Block Retrieval**: Hierarchical block fetching with systematic fallback mechanisms that check fork database when primary block log fails to locate required data
+- **Enhanced Last Irreversible Block Advancement**: Improved logic that falls back to fork database when block log lacks required data, maintaining data consistency
 - **Enhanced Collision Detection**: Sophisticated logging for block number collisions with scenario differentiation and rate-limiting
 - **Postponed Transaction Processing**: Automatic transaction queuing with time-based execution limits and smart recovery
 - **Enhanced Memory Management**: Comprehensive logging of memory states before and after resizing operations for administrator visibility
@@ -1443,6 +1539,9 @@ The database depends on:
 - **Concurrent resize safety**: Enhanced resize barrier mechanisms that pause all database operations during memory resizing to prevent stale pointer issues
 - **P2P plugin protection**: Operation guard integration in P2P plugin for safe concurrent access during block validation and witness key retrieval
 - **Witness scheduling safety**: Dual operation guard patterns in witness scheduling calculations to ensure thread safety during slot determination and witness validation
+- **Enhanced multi-layered block retrieval**: Systematic fallback mechanisms for critical block data retrieval across multiple storage layers
+- **Improved last irreversible block advancement**: Enhanced fallback logic for LIB advancement when primary storage fails
+- **Comprehensive DLT gap management**: Intelligent warning suppression and automatic state management for DLT block gaps
 
 ```mermaid
 graph LR
@@ -1473,6 +1572,9 @@ DB --> DUALGUARD["dual operation guard patterns"]
 DB --> RESIZEBARRIER["resize barrier safety"]
 DB --> P2PSECURE["P2P plugin protection"]
 DB --> WITNESSSEC["witness scheduling safety"]
+DB --> MULTILAYER["enhanced multi-layered block retrieval"]
+DB --> LIBADVANCE["improved last irreversible block advancement"]
+DB --> DLTGAP["comprehensive DLT gap management"]
 ```
 
 **Diagram sources**
@@ -1523,6 +1625,9 @@ DB --> WITNESSSEC["witness scheduling safety"]
 - **Dual Guard Patterns**: Systematic implementation of dual operation guards in witness scheduling provides comprehensive thread safety with optimized performance characteristics.
 - **P2P Concurrent Safety**: Operation guard protection in P2P plugin ensures safe concurrent access during block validation with minimal performance overhead.
 - **Resize Barrier Efficiency**: Enhanced resize barrier mechanisms provide comprehensive concurrent access protection during memory resizing with optimized performance characteristics.
+- **Enhanced Multi-Layered Block Retrieval**: Systematic fallback mechanisms eliminate single points of failure and improve system reliability without significant performance impact.
+- **Improved Last Irreversible Block Advancement**: Enhanced fallback logic maintains data consistency and availability without affecting block processing performance.
+- **Comprehensive DLT Gap Management**: Intelligent warning suppression and automatic state management provide optimal logging behavior with minimal overhead.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -1570,6 +1675,9 @@ Common issues and remedies:
 - **P2P Concurrent Access Issues**: Check that operation guard protection is working correctly in P2P plugin for safe concurrent access during block validation.
 - **Resize Barrier Failures**: Monitor resize barrier mechanisms to ensure they're properly pausing all database operations during memory resizing.
 - **Concurrent Resize Safety**: Verify that resize barrier mechanisms are preventing stale pointer issues and data corruption during memory operations.
+- **Enhanced Multi-Layered Block Retrieval Issues**: Monitor the new fallback mechanisms to ensure they're properly checking fork database when primary block log fails to locate required data.
+- **Last Irreversible Block Advancement Problems**: Verify that the enhanced fallback logic is working correctly when block log lacks required data.
+- **DLT Gap Management Issues**: Check that the comprehensive DLT gap management system is properly suppressing warnings and managing gap states.
 
 **Section sources**
 - [database.cpp:800-830](file://libraries/chain/database.cpp#L800-L830)
@@ -1593,11 +1701,15 @@ Common issues and remedies:
 ## Conclusion
 The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support, emergency consensus implementation, operation guard integration, and improved error handling. It integrates chainbase for persistent storage with comprehensive concurrent access protection, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, and the systematic implementation of resize barrier mechanisms, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals.
 
-**Updated** - The system now includes comprehensive operation guard implementation that systematically protects concurrent access to shared memory operations. The database features dual operation guard patterns in witness scheduling calculations, enhanced P2P plugin block validation with operation guard protection, and comprehensive concurrency safety improvements throughout critical sections using resize barrier mechanisms. These enhancements ensure thread safety during high-load scenarios and prevent race conditions that could lead to stale pointer issues or data corruption. The systematic implementation of operation_guard RAII pattern provides automatic concurrent access protection across all critical sections, while the dual operation guard patterns in witness scheduling calculations ensure thread safety during complex slot determination operations. The enhanced P2P plugin protection with operation guard integration ensures safe concurrent access during block validation and witness key operations, and the comprehensive resize barrier mechanisms prevent data corruption during memory resizing operations.
+**Updated** - The system now includes comprehensive database robustness improvements including systematic fallback mechanisms for critical block data retrieval. The enhanced multi-layered block retrieval system implements hierarchical fallback strategies that check fork database when primary block log fails to locate required data, ensuring consistent behavior across different block logging configurations. These enhancements provide improved fault tolerance and data availability during various operational scenarios, making the system more resilient to storage layer failures and network interruptions.
 
-The enhanced DLT mode detection and block availability checking logic ensures accurate P2P synchronization and prevents false positives in block availability reporting. The new gap suppression mechanism provides intelligent warning management that prevents log spam during normal DLT operations while maintaining comprehensive diagnostic capability for troubleshooting. The automatic state management of the `_dlt_gap_logged` flag ensures optimal logging behavior without manual intervention, making the system more maintainable and operable in production environments. The sophisticated block collision detection system with rate-limiting and scenario differentiation provides enhanced diagnostic capabilities for network health monitoring. The intelligent postponed transaction processing system ensures stable operation under high load conditions with automatic queue management and time-based execution limits.
+The enhanced last irreversible block advancement logic further strengthens the system's reliability by implementing comprehensive fallback mechanisms that use fork database when block log lacks required data. This ensures that LIB advancement continues smoothly even when storage layers are temporarily unavailable or inconsistent.
 
-The emergency consensus implementation represents a significant advancement in blockchain resilience, providing automatic network recovery mechanisms that maintain system integrity during extended downtime while preventing potential deadlocks and false activations. The hybrid witness scheduling system ensures continuous operation by dynamically adapting to witness availability, while comprehensive safety checks protect against network instability and malicious behavior. The enhanced error logging system provides comprehensive visibility into emergency consensus operations, enabling effective troubleshooting and maintenance. This implementation makes the VIZ blockchain more robust, fault-tolerant, and suitable for enterprise-grade deployments requiring high availability and automatic recovery capabilities.
+The new gap suppression mechanism provides intelligent warning management that prevents log spam during normal DLT operations while maintaining comprehensive diagnostic capability for troubleshooting. The automatic state management of the `_dlt_gap_logged` flag ensures optimal logging behavior without manual intervention, making the system more maintainable and operable in production environments.
+
+The enhanced multi-layered block retrieval system represents a significant advancement in database reliability and fault tolerance. By implementing systematic fallback mechanisms across multiple storage layers, the database can handle various failure scenarios gracefully while maintaining data consistency and availability. This approach eliminates single points of failure and provides improved resilience against storage layer issues, network interruptions, and other operational challenges.
+
+The improved last irreversible block advancement logic demonstrates the system's commitment to data consistency and availability. The fallback mechanisms ensure that critical blockchain state information remains accessible even when primary storage layers are compromised, preventing system stalls and maintaining network integrity.
 
 **Enhanced** - The memory management system now provides comprehensive logging capabilities that offer administrators detailed visibility into memory usage patterns during blockchain operation. The new deferred shared memory resize mechanism significantly improves efficiency during high-load scenarios by preventing race conditions and stale pointer issues through proper thread synchronization and lock management. The enhanced `_resize` function logs detailed information about free memory, maximum memory, and reserved memory states before and after resizing operations, enabling proactive capacity planning and performance optimization. The improved error detection capabilities in shared memory allocation provides administrators with crucial information about memory usage patterns, helping prevent memory-related issues before they impact system performance. The comprehensive emergency consensus logging system ensures that operators have complete visibility into critical error conditions and recovery procedures. These enhancements make the database management system more transparent, manageable, and suitable for production environments where memory resource optimization and comprehensive error diagnostics are critical.
 
@@ -1612,3 +1724,9 @@ The deferred memory resize mechanism represents a major improvement in thread sa
 **Enhanced Fork Database Exception Prevention** - The comprehensive exception prevention mechanisms represent a major advancement in fork database reliability. The system now includes multiple layers of protection against fork database exceptions, starting with intelligent early rejection of blocks with unknown parents and extending to proper classification and handling of different types of unlinkable blocks. The dead fork detection at or below head ensures that stale fork blocks are properly identified and rejected, while the far-ahead block rejection prevents unnecessary fork database operations that could trigger sync restart loops. This multi-layered approach to exception prevention significantly improves the robustness of the fork database and reduces the likelihood of synchronization issues caused by malformed or malicious blocks. The enhanced error propagation and classification mechanisms ensure that downstream components can properly handle different types of unlinkable blocks, leading to more efficient and reliable network synchronization.
 
 **Enhanced Operation Guard Implementation** - The comprehensive operation guard system represents a fundamental improvement in concurrent access protection throughout the database management system. The systematic implementation of operation_guard RAII pattern provides automatic concurrent access protection across all critical sections, while the dual operation guard patterns in witness scheduling calculations ensure thread safety during complex slot determination operations. The integration of operation guards in P2P plugin block validation protects witness key retrieval operations from concurrent memory modifications, and the comprehensive resize barrier mechanisms prevent data corruption during memory resizing operations. These enhancements ensure that the database management system can handle high-load scenarios safely and reliably while maintaining data consistency and preventing race conditions that could lead to system instability or data corruption.
+
+**Enhanced Multi-Layered Block Retrieval System** - The new multi-layered block retrieval system represents a significant advancement in database reliability and fault tolerance. By implementing systematic fallback mechanisms that check fork database when primary block log fails to locate required data, the database ensures consistent behavior across different block logging configurations. This approach eliminates single points of failure and provides improved resilience against storage layer issues, network interruptions, and other operational challenges. The hierarchical retrieval strategy prioritizes current/main branch blocks in the fork database, then checks the primary block log for irreversible blocks, and finally uses the DLT block log as a fallback in DLT mode. This ensures that block retrieval works reliably regardless of which storage layer contains the requested data, providing improved fault tolerance and system reliability.
+
+**Enhanced Last Irreversible Block Advancement Logic** - The improved LIB advancement logic demonstrates the system's commitment to data consistency and availability. The comprehensive fallback mechanisms ensure that critical blockchain state information remains accessible even when primary storage layers are compromised, preventing system stalls and maintaining network integrity. The systematic approach to LIB advancement maintains consistency between different storage layers while ensuring that the system can continue operating even when individual storage components are temporarily unavailable or inconsistent.
+
+**Enhanced DLT Gap Management** - The comprehensive DLT gap management system provides intelligent warning suppression and automatic state management for DLT block gaps during normal operations. The `_dlt_gap_logged` flag mechanism prevents log spam while maintaining diagnostic capability, and the automatic state management ensures optimal logging behavior without manual intervention. This system provides operators with the right amount of diagnostic information at the right time, improving system observability without overwhelming log volumes.
