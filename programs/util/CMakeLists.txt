@@ -43,18 +43,6 @@ install(TARGETS
         ARCHIVE DESTINATION lib
         )
 
-#add_executable( schema_test schema_test.cpp )
-#target_link_libraries( schema_test
-#                       PRIVATE graphene_chain fc ${CMAKE_DL_LIBS} ${PLATFORM_SPECIFIC_LIBS} )
-#
-#install( TARGETS
-#   schema_test
-#
-#   RUNTIME DESTINATION bin
-#   LIBRARY DESTINATION lib
-#   ARCHIVE DESTINATION lib
-#)
-
 add_executable(test_block_log test_block_log.cpp)
 target_link_libraries(test_block_log
         PRIVATE graphene_chain graphene_protocol fc ${CMAKE_DL_LIB} ${PLATFORM_SPECIFIC_LIBS})

@@ -23,13 +23,6 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS "ON")
 
-#set (ENABLE_INSTALLER 1)
-#set (USE_PCH 1)
-
-if(USE_PCH)
-    include(cotire)
-endif(USE_PCH)
-
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/fc/CMakeModules")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/fc/GitVersionGen")
 include(GetGitRevisionDescription)
@@ -207,55 +200,6 @@ add_subdirectory(thirdparty)
 add_subdirectory(libraries)
 add_subdirectory(plugins)
 add_subdirectory(programs)
-
-if(ENABLE_INSTALLER)
-
-    set(VERSION_MAJOR 0)
-    set(VERSION_MINOR 1)
-    set(VERSION_PATCH 0)
-
-
-    include(InstallRequiredSystemLibraries)
-
-    set(CPACK_OUTPUT_FILE_PREFIX ${CMAKE_BINARY_DIR}/packages)
-    set(CMAKE_INSTALL_PREFIX ${CMAKE_BINARY_DIR}/install)
-
-    set(CPACK_PACKAGE_DIRECTORY "${CMAKE_INSTALL_PREFIX}")
-    set(CPACK_PACKAGE_NAME "viz")
-    set(CPACK_PACKAGE_VENDOR "VIZ-Blockchain")
-    set(CPACK_PACKAGE_VERSION_MAJOR "${VERSION_MAJOR}")
-    set(CPACK_PACKAGE_VERSION_MINOR "${VERSION_MINOR}")
-    set(CPACK_PACKAGE_VERSION_PATCH "${VERSION_PATCH}")
-    set(CPACK_PACKAGE_VERSION "${CPACK_PACKAGE_VERSION_MAJOR}.${CPACK_PACKAGE_VERSION_MINOR}.${CPACK_PACKAGE_VERSION_PATCH}")
-    set(CPACK_PACKAGE_DESCRIPTION "A client for the VIZ network")
-    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "A client for the VIZ network")
-    set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE.md")
-    set(CPACK_PACKAGE_INSTALL_DIRECTORY "VIZ ${CPACK_PACKAGE_VERSION}")
-
-    if(WIN32)
-        set(CPACK_GENERATOR "ZIP;NSIS")
-        set(CPACK_PACKAGE_NAME "VIZ") # override above
-        set(CPACK_NSIS_EXECUTABLES_DIRECTORY .)
-        set(CPACK_NSIS_PACKAGE_NAME "VIZ v${CPACK_PACKAGE_VERSION}")
-        set(CPACK_NSIS_DISPLAY_NAME "${CPACK_NSIS_PACKAGE_NAME}")
-        set(CPACK_NSIS_DEFINES "  !define MUI_STARTMENUPAGE_DEFAULTFOLDER \\\"VIZ\\\"")
-        # it seems like windows zip files usually don't have a single directory inside them, unix tgz frequently do
-        set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY 0)
-
-    endif(WIN32)
-
-    if(APPLE)
-        set(CPACK_GENERATOR "DragNDrop")
-    endif()
-
-    if(LINUX)
-        # Linux gets a .tgz
-        set(CPACK_GENERATOR "TGZ")
-        set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY 1)
-    endif(LINUX)
-
-    include(CPack)
-endif(ENABLE_INSTALLER)
 
 if(BUILD_TESTNET)
     message(STATUS "\n\n             CONFIGURED FOR TEST NETWORK             \n\n")

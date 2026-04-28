@@ -47,11 +47,6 @@ if(MSVC)
     set_source_files_properties(node.cpp PROPERTIES COMPILE_FLAGS "/bigobj")
 endif(MSVC)
 
-if(USE_PCH)
-    set_target_properties(graphene_${CURRENT_TARGET} PROPERTIES COTIRE_ADD_UNITY_BUILD FALSE)
-    cotire(graphene::network)
-endif(USE_PCH)
-
 install(TARGETS
         graphene_${CURRENT_TARGET}
 
