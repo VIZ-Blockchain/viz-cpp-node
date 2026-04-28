@@ -1419,15 +1419,30 @@ namespace graphene { namespace chain {
                             }
                             auto branches = _fork_db.fetch_branch_from(new_head->data.id(), head_block_id());
 
-                            ilog("Fork switch: new_head=#${nh}, db_head=#${dh}, branches.first=${f}, branches.second=${s}",
-                                 ("nh", new_head->data.block_num())("dh", head_block_num())
-                                 ("f", branches.first.size())("s", branches.second.size()));
+                            // fetch_branch_from() always appends the common ancestor
+                            // to BOTH branches.  For a linear extension (no actual
+                            // fork), the common ancestor IS the current database head:
+                            //   branches.first  = [new_tip, ..., HEAD]
+                            //   branches.second = [HEAD]
+                            // We must NOT pop the common ancestor in this case — in
+                            // DLT mode the undo stack is empty (committed) so undo()
+                            // is a no-op, causing an infinite pop loop and crash.
+                            bool is_linear_extension =
+                                (!branches.second.empty() &&
+                                 branches.second.size() == 1 &&
+                                 branches.second.back()->data.id() == head_block_id());
 
-                            // pop blocks until we hit the forked block.
-                            // branches.second is empty when the new chain extends
-                            // directly from the current head (e.g. unlinked blocks
-                            // auto-linked via _push_next after a missed block arrived).
-                            if (!branches.second.empty()) {
+                            ilog("Fork switch: new_head=#${nh}, db_head=#${dh}, branches.first=${f}, branches.second=${s}, linear=${lin}",
+                                 ("nh", new_head->data.block_num())("dh", head_block_num())
+                                 ("f", branches.first.size())("s", branches.second.size())
+                                 ("lin", is_linear_extension));
+
+                            // Pop blocks from the old fork back to the common ancestor.
+                            // For a linear extension the common ancestor IS the head —
+                            // nothing to pop.  For an actual fork, pop all old-fork
+                            // blocks AND the common ancestor (it will be re-applied
+                            // from branches.first).
+                            if (!is_linear_extension && !branches.second.empty()) {
                                 while (head_block_id() !=
                                        branches.second.back()->data.previous) {
                                     ilog("FORK-SWITCH-POP: popping head #${h} (target=${t}, branches.second.back=#${b})",
@@ -1438,10 +1453,19 @@ namespace graphene { namespace chain {
                                 }
                             }
 
-                            // push all blocks on the new fork
+                            // Apply blocks from the new fork.
+                            // For a linear extension, skip the common ancestor (last
+                            // element in branches.first) — it is already applied.
+                            auto common_ancestor_id = branches.second.empty()
+                                ? block_id_type()
+                                : branches.second.back()->data.id();
+
                             for (auto ritr = branches.first.rbegin();
                                  ritr != branches.first.rend(); ++ritr) {
-                                // ilog( "pushing blocks from fork ${n} ${id}", ("n",(*ritr)->data.block_num())("id",(*ritr)->data.id()) );
+                                if (is_linear_extension &&
+                                    (*ritr)->data.id() == common_ancestor_id) {
+                                    continue;  // already applied
+                                }
                                 optional<fc::exception> except;
                                 try {
                                     auto session = start_undo_session();
@@ -1454,13 +1478,25 @@ namespace graphene { namespace chain {
                                 if (except) {
                                     wlog("Exception during fork switch at block #${n}: ${e}",
                                          ("n", (*ritr)->data.block_num())("e", except->to_detail_string()));
-                                    // remove the rest of branches.first from the fork_db, those blocks are invalid
+                                    // remove the rest of branches.first from the fork_db
                                     while (ritr != branches.first.rend()) {
                                         _fork_db.remove((*ritr)->data.id());
                                         ++ritr;
                                     }
 
-                                    if (!branches.second.empty()) {
+                                    if (is_linear_extension) {
+                                        // Linear extension error: pop any new blocks
+                                        // that were applied after the common ancestor,
+                                        // restoring the database to the original head.
+                                        while (head_block_id() != common_ancestor_id) {
+                                            ilog("FORK-RECOVER-POP: popping head #${h} (restoring to common ancestor)",
+                                                 ("h", head_block_num()));
+                                            pop_block();
+                                        }
+                                        _fork_db.set_head(branches.second.back());
+                                        wlog("Linear extension failed. Restored head to #${h}.",
+                                             ("h", head_block_num()));
+                                    } else if (!branches.second.empty()) {
                                         // Actual fork: pop applied blocks from new fork,
                                         // restore original fork blocks.
                                         while (head_block_id() !=
@@ -1479,17 +1515,14 @@ namespace graphene { namespace chain {
 
                                         _fork_db.set_head(branches.second.front());
                                     } else {
-                                        // Linear extension (no fork): some blocks from
-                                        // branches.first were already applied before the
-                                        // failure.  There is nothing to pop or restore.
-                                        // Reset fork_db to match the current database head
-                                        // so subsequent blocks can link cleanly.
+                                        // branches.second empty — should not happen
+                                        // after fetch_branch_from, but keep as safety.
                                         auto head_blk = fetch_block_by_number(head_block_num());
                                         if (head_blk) {
                                             _fork_db.reset();
                                             _fork_db.start_block(*head_blk);
                                         }
-                                        wlog("Linear extension failed. DB head=#${h}, fork_db reset.",
+                                        wlog("Fork switch failed with empty branches. DB head=#${h}, fork_db reset.",
                                              ("h", head_block_num()));
                                     }
 

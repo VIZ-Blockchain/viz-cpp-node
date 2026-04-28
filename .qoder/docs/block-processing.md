@@ -126,18 +126,20 @@ When a node switches to a different fork:
 
 When `fork_db._push_next()` auto-links orphan blocks from the unlinked index, the fork_db head can jump multiple blocks ahead of the database head in a single `push_block()` call. This triggers the fork switch code path (`new_head->data.previous != head_block_id()`), but there is no actual fork — the new chain extends directly from the current head.
 
-`fetch_branch_from(new_head, head_block_id)` returns:
-- `branches.first` = `[new_head, ..., head+1]` (blocks to apply)
-- `branches.second` = `[]` (empty — no blocks to undo)
+`fetch_branch_from(new_head, head_block_id)` always appends the common ancestor to **both** branches. For a linear extension, the common ancestor IS the current head:
+- `branches.first` = `[new_tip, ..., HEAD]` (blocks to apply + common ancestor)
+- `branches.second` = `[HEAD]` (just the common ancestor)
 
-**Guard:** All `pop_block()` calls in the fork switch are wrapped in `if (!branches.second.empty())` to prevent undefined behavior (calling `.back()` on an empty vector).
+**Detection:** `is_linear_extension = branches.second.size() == 1 && branches.second.back()->id == head_block_id()`.
 
-**Error recovery:** If `apply_block()` fails during a linear extension:
-- Remaining blocks are removed from fork_db
-- `fork_db.reset()` + `start_block(current_head)` resets fork_db to match the database
-- The exception is re-thrown
+**Behavior when linear:**
+- Skip the pop loop entirely (the common ancestor is already applied, no blocks to undo)
+- Skip the common ancestor when applying `branches.first` (avoid re-applying HEAD)
+- On error: pop any newly applied blocks back to the common ancestor, set fork_db head to it
 
-This replaces the original code which called `branches.second.front()` unconditionally — undefined behavior when `branches.second` is empty, corrupting `fork_db._head` and causing cascading `pop_block()` crashes.
+**Why this matters in DLT mode:** In DLT mode, LIB = head, so undo sessions are committed (not just pushed). `pop_block()` → `undo()` has no effect — `head_block_id()` never changes. The pop loop becomes infinite, eventually emptying the fork_db and crashing with "popping head block would leave fork DB empty".
+
+For **actual forks** (`branches.second.size() > 1` or common ancestor != head), the original behavior is preserved: pop old-fork blocks including the common ancestor, then re-apply the common ancestor and new-fork blocks from `branches.first`.
 
 ### Debug Logging
 
