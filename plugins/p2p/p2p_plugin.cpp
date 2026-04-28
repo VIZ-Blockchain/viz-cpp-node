@@ -63,7 +63,7 @@ namespace graphene {
                     // node_delegate interface
                     virtual bool has_item(const item_id &) override;
 
-                    virtual bool handle_block(const block_message &, bool, std::vector<fc::uint160_t> &) override;
+                    virtual bool handle_block(const block_message &, bool, std::vector<fc::uint160_t> &, fc::optional<fc::ip::endpoint> = fc::optional<fc::ip::endpoint>()) override;
 
                     virtual void handle_transaction(const trx_message &) override;
 
@@ -139,7 +139,7 @@ namespace graphene {
                     });
                 }
 
-                bool p2p_plugin_impl::handle_block(const block_message &blk_msg, bool sync_mode, std::vector<fc::uint160_t> &) {
+                bool p2p_plugin_impl::handle_block(const block_message &blk_msg, bool sync_mode, std::vector<fc::uint160_t> &, fc::optional<fc::ip::endpoint> originating_peer_endpoint) {
                     try {
                         // Track last block received time for stale sync detection
                         _last_block_received_time = fc::time_point::now();
@@ -167,8 +167,9 @@ namespace graphene {
 
                             if (!sync_mode) {
                                 fc::microseconds latency = fc::time_point::now() - blk_msg.block.timestamp;
-                                ilog(CLOG_WHITE "Got ${t} transactions on block ${b} by ${w} - latency: ${l} ms" CLOG_RESET,
-                                     ("t", blk_msg.block.transactions.size())("b", blk_msg.block.block_num())("w", blk_msg.block.witness)("l", latency.count() / 1000));
+                                std::string peer_str = originating_peer_endpoint ? (std::string)*originating_peer_endpoint : "unknown";
+                                ilog(CLOG_WHITE "Got ${t} transactions on block ${b} by ${w} - latency: ${l} ms - from ${p}" CLOG_RESET,
+                                     ("t", blk_msg.block.transactions.size())("b", blk_msg.block.block_num())("w", blk_msg.block.witness)("l", latency.count() / 1000)("p", peer_str));
                             }
 
                             return result;

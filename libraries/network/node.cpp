@@ -395,7 +395,8 @@ namespace graphene {
 
                 void handle_message(const message &) override;
 
-                bool handle_block(const graphene::network::block_message &block_message, bool sync_mode, std::vector<fc::uint160_t> &contained_transaction_message_ids) override;
+                bool handle_block(const graphene::network::block_message &block_message, bool sync_mode, std::vector<fc::uint160_t> &contained_transaction_message_ids,
+                        fc::optional<fc::ip::endpoint> originating_peer_endpoint = fc::optional<fc::ip::endpoint>()) override;
 
                 void handle_transaction(const graphene::network::trx_message &transaction_message) override;
 
@@ -3350,7 +3351,7 @@ namespace graphene {
                             "p2p pushing sync block #${block_num} ${block_hash}",
                             ("block_num", block_message_to_send.block.block_num())
                                     ("block_hash", block_message_to_send.block_id));
-                    bool accepted = _delegate->handle_block(block_message_to_send, true, contained_transaction_message_ids);
+                    bool accepted = _delegate->handle_block(block_message_to_send, true, contained_transaction_message_ids, fc::optional<fc::ip::endpoint>());
                     if (accepted) {
                         ilog("Successfully pushed sync block ${num} (id:${id})",
                                 ("num", block_message_to_send.block.block_num())
@@ -3786,7 +3787,7 @@ namespace graphene {
                                 ("block_num", block_message_to_process.block.block_num())
                                         ("block_hash", block_message_to_process.block_id)
                                         ("peer", originating_peer->get_remote_endpoint())("id", message_hash));
-                        bool accepted = _delegate->handle_block(block_message_to_process, false, contained_transaction_message_ids);
+                        bool accepted = _delegate->handle_block(block_message_to_process, false, contained_transaction_message_ids, originating_peer->get_remote_endpoint());
                         _message_ids_currently_being_processed.erase(message_hash);
                         if (!accepted) {
                             // The chain returned false — block was not applied.  This can
@@ -5783,7 +5784,7 @@ namespace graphene {
                     } else if (message_to_deliver.msg_type ==
                                block_message_type) {
                         std::vector<fc::uint160_t> contained_transaction_message_ids;
-                        destination_node->delegate->handle_block(message_to_deliver.as<block_message>(), false, contained_transaction_message_ids);
+                        destination_node->delegate->handle_block(message_to_deliver.as<block_message>(), false, contained_transaction_message_ids, fc::optional<fc::ip::endpoint>());
                     } else {
                         destination_node->delegate->handle_message(message_to_deliver);
                     }
@@ -5919,8 +5920,9 @@ namespace graphene {
                 INVOKE_AND_COLLECT_STATISTICS(handle_message, message_to_handle);
             }
 
-            bool statistics_gathering_node_delegate_wrapper::handle_block(const graphene::network::block_message &block_message, bool sync_mode, std::vector<fc::uint160_t> &contained_transaction_message_ids) {
-                INVOKE_AND_COLLECT_STATISTICS(handle_block, block_message, sync_mode, contained_transaction_message_ids);
+            bool statistics_gathering_node_delegate_wrapper::handle_block(const graphene::network::block_message &block_message, bool sync_mode, std::vector<fc::uint160_t> &contained_transaction_message_ids,
+                    fc::optional<fc::ip::endpoint> originating_peer_endpoint) {
+                INVOKE_AND_COLLECT_STATISTICS(handle_block, block_message, sync_mode, contained_transaction_message_ids, originating_peer_endpoint);
             }
 
             void statistics_gathering_node_delegate_wrapper::handle_transaction(const graphene::network::trx_message &transaction_message) {

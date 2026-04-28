@@ -77,7 +77,8 @@ namespace graphene {
              *          safe to broadcast on.
              */
             virtual bool handle_block(const graphene::network::block_message &blk_msg, bool sync_mode,
-                    std::vector<fc::uint160_t> &contained_transaction_message_ids) = 0;
+                    std::vector<fc::uint160_t> &contained_transaction_message_ids,
+                    fc::optional<fc::ip::endpoint> originating_peer_endpoint = fc::optional<fc::ip::endpoint>()) = 0;
 
             /**
              *  @brief Called when a new transaction comes in from the network
