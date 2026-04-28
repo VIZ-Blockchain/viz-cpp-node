@@ -645,10 +645,6 @@ namespace graphene { namespace chain {
             bool _skip_virtual_ops = false;
             bool _enable_plugins_on_push_transaction = false;
 
-            /// Wall-clock time when the database was opened (node startup).
-            /// Used to delay emergency consensus activation until the node
-            /// has had time to sync with peers.
-            fc::time_point _node_startup_time;
 
             flat_map<std::string, std::shared_ptr<custom_operation_interpreter>> _custom_operation_interpreters;
             std::string _json_schema;

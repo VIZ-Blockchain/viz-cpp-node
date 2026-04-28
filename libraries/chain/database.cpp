@@ -205,7 +205,6 @@ namespace graphene { namespace chain {
 
         void database::open(const fc::path &data_dir, const fc::path &shared_mem_dir, uint64_t initial_supply, uint64_t shared_file_size, uint32_t chainbase_flags) {
             try {
-                _node_startup_time = fc::time_point::now();
                 auto start = fc::time_point::now();
                 wlog("Start opening database. Please wait, don't break application...");
 
@@ -313,7 +312,6 @@ namespace graphene { namespace chain {
             uint32_t chainbase_flags
         ) {
             try {
-                _node_startup_time = fc::time_point::now();
                 auto start = fc::time_point::now();
                 wlog("Opening database for snapshot import. Please wait...");
 
@@ -626,29 +624,35 @@ namespace graphene { namespace chain {
             ilog("Resize barrier: pausing all database operations...");
             begin_resize_barrier();
 
-            size_t target = _pending_resize_target;
-            _pending_resize = false;
-            _pending_resize_target = 0;
+            try {
+                size_t target = _pending_resize_target;
+                _pending_resize = false;
+                _pending_resize_target = 0;
 
-            uint64_t max_mem_before = max_memory();
-            uint64_t free_mem_before = free_memory();
-            uint64_t used_mem_before = max_mem_before - free_mem_before;
+                uint64_t max_mem_before = max_memory();
+                uint64_t free_mem_before = free_memory();
+                uint64_t used_mem_before = max_mem_before - free_mem_before;
 
-            ilog("\033[33mApplying deferred shared memory resize: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
-                 ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem_before / (1024 * 1024))
-                 ("mem", target / (1024 * 1024)));
-            resize(target);
+                ilog("\033[33mApplying deferred shared memory resize: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
+                     ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem_before / (1024 * 1024))
+                     ("mem", target / (1024 * 1024)));
+                resize(target);
 
-            uint64_t free_mem = free_memory();
-            uint64_t reserved_mem = reserved_memory();
-            uint64_t used_mem_after = target - free_mem;
-            if (free_mem > reserved_mem) {
-                free_mem -= reserved_mem;
+                uint64_t free_mem = free_memory();
+                uint64_t reserved_mem = reserved_memory();
+                uint64_t used_mem_after = target - free_mem;
+                if (free_mem > reserved_mem) {
+                    free_mem -= reserved_mem;
+                }
+                uint32_t free_mb = uint32_t(free_mem / (1024 * 1024));
+                ilog("\033[33mDeferred shared memory grow complete: actual data ${used_after}M / new ${max_after}M (free ${free}M)\033[0m",
+                     ("used_after", used_mem_after / (1024 * 1024))("max_after", target / (1024 * 1024))("free", free_mb));
+                _last_free_gb_printed = free_mb / 1024;
+            } catch (...) {
+                end_resize_barrier();
+                ilog("Resize barrier: all database operations resumed (after resize failure).");
+                throw;
             }
-            uint32_t free_mb = uint32_t(free_mem / (1024 * 1024));
-            ilog("\033[33mDeferred shared memory grow complete: actual data ${used_after}M / new ${max_after}M (free ${free}M)\033[0m",
-                 ("used_after", used_mem_after / (1024 * 1024))("max_after", target / (1024 * 1024))("free", free_mb));
-            _last_free_gb_printed = free_mb / 1024;
 
             end_resize_barrier();
             ilog("Resize barrier: all database operations resumed.");
@@ -4668,12 +4672,16 @@ namespace graphene { namespace chain {
                     // More than CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC seconds have elapsed
                     // since the last irreversible block timestamp.
                     //
-                    // STARTUP DELAY: We also require that at least
-                    // CHAIN_EMERGENCY_STARTUP_DELAY_SEC seconds have passed since
-                    // the node was started. When a node is restarted after being
-                    // offline for hours, it must sync first — the old LIB timestamp
-                    // is stale and would immediately trigger emergency mode,
-                    // preventing the node from syncing with peers.
+                    // DETERMINISTIC SYNC DETECTION: Skip the emergency check
+                    // when the node is catching up (replay, reindex, or live
+                    // sync). During replay/reindex the skip_witness_schedule_check
+                    // flag is set. During live sync the gap between head_block_num
+                    // and last_irreversible_block_num is large (we use
+                    // CHAIN_MAX_WITNESSES * 10 as a threshold — at 3-second
+                    // blocks this is ~10 minutes of blocks, well beyond normal
+                    // operation). Both checks are fully deterministic and
+                    // produce the same result on replay as on original
+                    // application.
                     //
                     // IMPORTANT: If the LIB block is not available in block_log
                     // (e.g., after snapshot restore when block_log is empty),
@@ -4685,12 +4693,16 @@ namespace graphene { namespace chain {
                     // p2p are rejected, head_block_num never advances,
                     // next_shuffle_block_num never reached).
 
-                    // Check startup delay first (uses wall-clock time)
-                    fc::time_point now_wall = fc::time_point::now();
-                    int64_t seconds_since_startup = (now_wall - _node_startup_time).count() / 1000000;
-                    if (seconds_since_startup < CHAIN_EMERGENCY_STARTUP_DELAY_SEC) {
-                        // Node just started — skip emergency check to allow
-                        // time for P2P sync.
+                    // Deterministic check: skip emergency activation during
+                    // replay/reindex (skip_witness_schedule_check is always set)
+                    // or when the node is far behind LIB (catching up via P2P sync).
+                    bool is_syncing = (skip & skip_witness_schedule_check) != 0;
+                    if (!is_syncing && _dgp.last_irreversible_block_num > 0) {
+                        uint32_t blocks_since_lib = b.block_num() - _dgp.last_irreversible_block_num;
+                        is_syncing = blocks_since_lib > CHAIN_MAX_WITNESSES * 10;
+                    }
+                    if (is_syncing) {
+                        // Node is replaying or catching up — skip emergency check.
                     } else {
                         fc::time_point_sec lib_time;
                         bool lib_time_available = false;
@@ -4806,7 +4818,7 @@ namespace graphene { namespace chain {
                                     ("w", CHAIN_EMERGENCY_WITNESS_ACCOUNT));
                             } // end if (seconds_since_lib >= TIMEOUT)
                         } // end else (lib_time_available)
-                    } // end else (seconds_since_startup >= STARTUP_DELAY)
+                    } // end else (!is_syncing)
                 } // end if (has_hardfork(HF12) && !emergency_active)
             } FC_CAPTURE_AND_RETHROW()
         }
