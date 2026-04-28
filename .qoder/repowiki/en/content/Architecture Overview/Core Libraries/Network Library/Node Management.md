@@ -18,15 +18,17 @@
 - [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
 - [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
 - [dlt_block_log.cpp](file://libraries/chain/dlt_block_log.cpp)
+- [config.ini](file://share/vizd/config/config.ini)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced peer handling with intelligent soft-ban mechanisms including strike accumulation system
-- Implemented threshold-based soft-ban enforcement with 20-strike maximum
-- Improved unlinkable block processing logic with intelligent peer classification
-- Added trusted peer support with reduced soft-ban duration (5 minutes vs 15 minutes)
-- Enhanced soft-ban expiration handling and automatic flag reset functionality
+- Enhanced peer synchronization logging with comprehensive status reporting and detailed peer state information
+- Implemented intelligent soft-ban mechanisms with 20-strike accumulation system and threshold-based enforcement
+- Added trusted peer support with reduced 5-minute soft-ban duration (vs 15-minute default)
+- Improved error diagnostics with enhanced logging for peer synchronization issues and soft-ban events
+- Enhanced peer status monitoring with comprehensive peer information collection and memory usage tracking
+- Added automatic soft-ban expiration handling and flag reset functionality
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -466,8 +468,7 @@ node._message_cache size: ${size}
 ```
 
 **Section sources**
-- [node.cpp:5113-5150](file://libraries/network/node.cpp#L5113-L5150)
-- [node.cpp:5152-5207](file://libraries/network/node.cpp#L5152-L5207)
+- [node.cpp:5160-5196](file://libraries/network/node.cpp#L5160-L5196)
 
 ### Detailed Synchronization Progress Tracking
 The node implements comprehensive logging for peer synchronization progress with detailed item count tracking and block range information.
@@ -529,11 +530,9 @@ The node now implements an intelligent soft-ban mechanism with strike accumulati
 - **Flag Management**: Automatically clears inhibit_fetching_sync_blocks flag on expiration
 
 **Section sources**
-- [node.cpp:3874-3909](file://libraries/network/node.cpp#L3874-L3909)
-- [node.cpp:3883](file://libraries/network/node.cpp#L3883)
-- [node.cpp:3895](file://libraries/network/node.cpp#L3895)
-- [node.cpp:3717-3739](file://libraries/network/node.cpp#L3717-L3739)
-- [node.cpp:595-603](file://libraries/network/node.cpp#L595-L603)
+- [node.cpp:3540-3562](file://libraries/network/node.cpp#L3540-L3562)
+- [node.cpp:3920-3940](file://libraries/network/node.cpp#L3920-L3940)
+- [node.cpp:5501-5534](file://libraries/network/node.cpp#L5501-L5534)
 
 ### Trusted Peer Support
 The node implements trusted peer functionality with reduced soft-ban duration for snapshot nodes and other trusted entities. This allows for faster network recovery while maintaining security.
@@ -545,9 +544,8 @@ The node implements trusted peer functionality with reduced soft-ban duration fo
 - **Automatic Detection**: Identifies trusted peers during connection establishment
 
 **Section sources**
-- [node.cpp:595-598](file://libraries/network/node.cpp#L595-L598)
-- [node.cpp:5493-5498](file://libraries/network/node.cpp#L5493-L5498)
-- [node.cpp:601-602](file://libraries/network/node.cpp#L601-L602)
+- [config.ini:103-108](file://share/vizd/config/config.ini#L103-L108)
+- [node.cpp:5501-5534](file://libraries/network/node.cpp#L5501-L5534)
 
 ### Soft-Ban Expiration and Automatic Recovery
 The node implements comprehensive soft-ban expiration handling with automatic flag reset functionality to ensure network recovery after temporary issues.
@@ -559,9 +557,9 @@ The node implements comprehensive soft-ban expiration handling with automatic fl
 - **Continuous Operation**: Ensures peers can resume normal operation after soft-ban period
 
 **Section sources**
-- [node.cpp:3717-3739](file://libraries/network/node.cpp#L3717-L3739)
-- [node.cpp:3523-3533](file://libraries/network/node.cpp#L3523-L3533)
-- [node.cpp:3892-3895](file://libraries/network/node.cpp#L3892-L3895)
+- [node.cpp:3540-3562](file://libraries/network/node.cpp#L3540-L3562)
+- [node.cpp:3920-3940](file://libraries/network/node.cpp#L3920-L3940)
+- [peer_connection.hpp:276-283](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L283)
 
 ## Comprehensive Peer Status Reporting
 
@@ -597,7 +595,7 @@ peer_details["unlinkable_block_strikes"] = peer->unlinkable_block_strikes;
 ```
 
 **Section sources**
-- [node.cpp:5234-5312](file://libraries/network/node.cpp#L5234-L5312)
+- [node.cpp:5281-5359](file://libraries/network/node.cpp#L5281-L5359)
 
 ### Memory Usage and Resource Monitoring
 The node implements comprehensive memory usage monitoring for both node-level and peer-level resource tracking, providing insights into synchronization performance and resource utilization.
@@ -627,7 +625,7 @@ node._message_cache size: ${size}
 ```
 
 **Section sources**
-- [node.cpp:5134-5150](file://libraries/network/node.cpp#L5134-L5150)
+- [node.cpp:5181-5196](file://libraries/network/node.cpp#L5181-L5196)
 
 ### Connection State and Lifecycle Logging
 The node provides detailed logging for peer connection lifecycle events including connection establishment, closure, and termination with comprehensive status information.
@@ -647,7 +645,7 @@ Peer connection terminating (${peer}), now ${count} active peers
 ```
 
 **Section sources**
-- [node.cpp:5073-5111](file://libraries/network/node.cpp#L5073-L5111)
+- [node.cpp:5139-5158](file://libraries/network/node.cpp#L5139-L5158)
 
 ## Enhanced Error Reporting and Diagnostics
 
@@ -674,7 +672,7 @@ Soft-banning peer ${endpoint} for ${dur}s: ${strikes} unlinkable blocks at or be
 - [node.cpp:1561-1561](file://libraries/network/node.cpp#L1561-L1561)
 - [node.cpp:2890-2901](file://libraries/network/node.cpp#L2890-L2901)
 - [node.cpp:3034-3038](file://libraries/network/node.cpp#L3034-L3038)
-- [node.cpp:3885-3895](file://libraries/network/node.cpp#L3885-L3895)
+- [node.cpp:3540-3562](file://libraries/network/node.cpp#L3540-L3562)
 
 ### Item Availability and Not Available Logging
 The node provides detailed logging for item availability issues during synchronization, helping identify peers with limited block history or synchronization problems.
@@ -736,8 +734,8 @@ Soft-banning peer ${endpoint} for ${dur}s: ${strikes} unlinkable blocks at or be
 ```
 
 **Section sources**
-- [node.cpp:5119-5127](file://libraries/network/node.cpp#L5119-L5127)
-- [node.cpp:3885-3895](file://libraries/network/node.cpp#L3885-L3895)
+- [node.cpp:5166-5174](file://libraries/network/node.cpp#L5166-L5174)
+- [node.cpp:3540-3562](file://libraries/network/node.cpp#L3540-L3562)
 
 ### Connection Limit and Bandwidth Monitoring
 The node provides comprehensive monitoring of connection limits, bandwidth utilization, and peer resource allocation to ensure optimal network performance.
@@ -757,8 +755,8 @@ Soft-ban duration: ${duration} seconds for peer ${endpoint}
 ```
 
 **Section sources**
-- [node.cpp:5116-5118](file://libraries/network/node.cpp#L5116-L5118)
-- [node.cpp:5135-5139](file://libraries/network/node.cpp#L5135-L5139)
+- [node.cpp:5163-5165](file://libraries/network/node.cpp#L5163-L5165)
+- [node.cpp:5182-5187](file://libraries/network/node.cpp#L5182-L5187)
 
 ### Peer Discovery and Potential Peer Management
 The node implements comprehensive peer discovery and management with detailed logging of potential peer database operations and peer relationship tracking.
@@ -867,9 +865,10 @@ Common issues and resolutions:
 - [node.cpp:1686-1713](file://libraries/network/node.cpp#L1686-L1713)
 - [node.cpp:1326-1398](file://libraries/network/node.cpp#L1326-L1398)
 - [database.cpp:4455-4460](file://libraries/chain/database.cpp#L4455-L4460)
-- [p2p_plugin.cpp:330-360](file://plugins/p2p/p2p_plugin.cpp#L330-L360)
-- [node.cpp:3874-3909](file://libraries/network/node.cpp#L3874-L3909)
-- [node.cpp:3717-3739](file://libraries/network/node.cpp#L3717-L3739)
+- [p2p_plugin.cpp:633-689](file://plugins/p2p/p2p_plugin.cpp#L633-L689)
+- [node.cpp:3540-3562](file://libraries/network/node.cpp#L3540-L3562)
+- [node.cpp:3920-3940](file://libraries/network/node.cpp#L3920-L3940)
+- [config.ini:103-108](file://share/vizd/config/config.ini#L103-L108)
 
 ## Conclusion
 The Node Management component provides a robust, configurable, and efficient P2P orchestration layer with comprehensive emergency consensus support and enhanced peer handling capabilities. The recent enhancements significantly improve debugging and monitoring capabilities through comprehensive peer synchronization logging, intelligent soft-ban mechanisms with strike accumulation, detailed peer status reporting, and enhanced error diagnostics.

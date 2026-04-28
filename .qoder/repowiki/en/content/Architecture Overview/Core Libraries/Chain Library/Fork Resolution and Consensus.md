@@ -17,11 +17,12 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced fork database management with improved fork switch handling and separate processing paths for linear extensions vs actual fork switches
-- Implemented comprehensive gap-based early rejection logic with 100-block threshold to prevent memory bloat from dead-fork blocks
-- Added detailed debug logging prefixes (FORK-SWITCH-POP, FORK-RECOVER-POP) for better traceability and debugging
-- Strengthened duplicate detection and prevention mechanisms throughout the system
-- Improved automatic stale fork pruning system with enhanced pruning logic
+- Enhanced fork detection logic with sophisticated early rejection mechanisms and comprehensive duplicate prevention
+- Implemented advanced linear extension handling with separate processing paths for actual fork switches vs linear extensions
+- Added comprehensive gap-based early rejection logic with 100-block threshold to prevent memory bloat from dead-fork blocks
+- Introduced detailed debug logging with FORK-SWITCH-POP and FORK-RECOVER-POP prefixes for improved traceability
+- Strengthened exception handling throughout the fork resolution pipeline with enhanced error recovery
+- Improved automatic stale fork pruning system with enhanced pruning logic and remove_blocks_by_number() function
 - Enhanced early rejection logic to handle unlinkable blocks more efficiently with separate handling paths
 
 ## Table of Contents
