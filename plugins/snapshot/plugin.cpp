@@ -1694,7 +1694,14 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                 } catch (const fc::exception& e) {
                     std::cerr << "   Failed to download newer snapshot: " << e.what() << "\n";
                     elog("Failed to download newer snapshot: ${e}", ("e", e.to_detail_string()));
+                    // Ensure check stays running even if load_snapshot() failed
+                    stalled_sync_check_running.store(true);
                     // Reset timer to avoid immediate retry
+                    last_block_received_time = fc::time_point::now();
+                } catch (const std::exception& e) {
+                    std::cerr << "   Failed to download newer snapshot: " << e.what() << "\n";
+                    elog("Failed to download newer snapshot (std): ${e}", ("e", e.what()));
+                    stalled_sync_check_running.store(true);
                     last_block_received_time = fc::time_point::now();
                 }
             }
@@ -1702,6 +1709,8 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
             break;
         } catch (const std::exception& e) {
             elog("Error in stalled sync check: ${e}", ("e", e.what()));
+            // Reset timer to avoid immediate retry on unexpected errors
+            last_block_received_time = fc::time_point::now();
             fc::usleep(fc::seconds(5));
         }
     }
