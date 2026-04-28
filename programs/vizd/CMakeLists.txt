@@ -31,7 +31,6 @@ target_link_libraries(
         graphene::account_by_key
         graphene::account_history
         graphene::private_message
-        graphene::auth_util
         graphene::debug_node
         graphene::raw_block
         graphene::block_info
