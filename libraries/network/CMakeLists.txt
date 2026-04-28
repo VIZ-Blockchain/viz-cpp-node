@@ -40,7 +40,6 @@ target_link_libraries(graphene_${CURRENT_TARGET} PUBLIC fc graphene_protocol)
 target_include_directories(graphene_${CURRENT_TARGET}
         PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../protocol/include"
-        #PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../version/include"
         )
 
 if(MSVC)

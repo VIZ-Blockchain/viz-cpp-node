@@ -46,6 +46,3 @@ install(TARGETS
         )
 
 install(FILES ${HEADERS} DESTINATION "include/graphene/test_api_plugin")
-
-
-#target_link_libraries( test_api_plugin plugin appbase fc )
