@@ -2,8 +2,6 @@
 
 #include <graphene/chain/witness_objects.hpp>
 
-#include <fc/io/buffered_iostream.hpp>
-#include <fc/io/fstream.hpp>
 #include <fc/io/json.hpp>
 
 #include <fc/time.hpp>
@@ -72,19 +70,6 @@ public:
     void apply_debug_updates();
     void on_applied_block( const protocol::signed_block & b );
 
-
-    // void save_debug_updates( fc::mutable_variant_object& target );
-    // void load_debug_updates( const fc::variant_object& target );
-    std::map<protocol::public_key_type, fc::ecc::private_key> _private_keys;
-
-
-    // boost::signals2::scoped_connection _applied_block_conn;
-    // boost::signals2::scoped_connection _changed_objects_conn;
-    // boost::signals2::scoped_connection _removed_objects_conn;
-
-    std::vector< std::string > _edit_scripts;
-    //std::map< protocol::block_id_type, std::vector< fc::variant_object > > _debug_updates;
-
     bool logging = true;
 
     boost::signals2::connection applied_block_connection;
@@ -101,31 +86,8 @@ plugin::~plugin() {
 
 }
 
-void plugin::set_program_options (
-   boost::program_options::options_description &cli,
-   boost::program_options::options_description &cfg
-) {
-   cli.add_options()
-      ("debug-node-edit-script,e",
-         boost::program_options::value< std::vector< std::string > >()->composing(),
-         "Database edits to apply on startup (may specify multiple times)")
-      ("edit-script", boost::program_options::value< std::vector< std::string > >()->composing(),
-         "Database edits to apply on startup (may specify multiple times). Deprecated in favor of debug-node-edit-script.")
-   ;
-}
-
 void plugin::plugin_initialize( const boost::program_options::variables_map& options ) {
     my.reset(new plugin_impl);
-
-    if( options.count( "debug-node-edit-script" ) > 0 ) {
-        my->_edit_scripts = options.at( "debug-node-edit-script" ).as< std::vector< std::string > >();
-    }
-
-    if( options.count("edit-script") > 0 ) {
-        wlog( "edit-scripts is deprecated in favor of debug-node-edit-script" );
-        auto scripts = options.at( "edit-script" ).as< std::vector< std::string > >();
-        my->_edit_scripts.insert(my->_edit_scripts.end(), scripts.begin(), scripts.end() );
-    }
 
     // connect needed signals
     my->applied_block_connection = my->database().applied_block.connect( [this](const graphene::chain::signed_block& b){
@@ -136,23 +98,10 @@ void plugin::plugin_initialize( const boost::program_options::variables_map& opt
 }
 
 void plugin::plugin_startup() {
-   /*for( const std::string& fn : _edit_scripts )
-   {
-      std::shared_ptr< fc::ifstream > stream = std::make_shared< fc::ifstream >( fc::path(fn) );
-      fc::buffered_istream bstream(stream);
-      fc::variant v = fc::json::from_stream( bstream, fc::json::strict_parser );
-      load_debug_updates( v.get_object() );
-   }*/
 }
 
 void plugin::plugin_shutdown() {
    my->_debug_updates.clear();
-   /*if( _json_object_stream )
-   {
-      _json_object_stream->close();
-      _json_object_stream.reset();
-   }*/
-   return;
 }
 void plugin::debug_update (
         std::function< void( graphene::chain::database& ) > callback,
@@ -202,8 +151,6 @@ void plugin::plugin_impl::apply_debug_updates() {
     if( it == _debug_updates.end() ) {
         return;
     }
-    //for( const fc::variant_object& update : it->second )
-    //   debug_apply_update( db, update, logging );
     for( auto& update : it->second ) {
         update( db );
     }
