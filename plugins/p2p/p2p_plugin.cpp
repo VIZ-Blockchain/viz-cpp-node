@@ -16,6 +16,7 @@
 // ANSI color codes for P2P stats console log messages
 #define CLOG_CYAN  "\033[96m"
 #define CLOG_WHITE "\033[97m"
+#define CLOG_GRAY  "\033[90m"
 #define CLOG_RESET "\033[0m"
 
 using std::string;
@@ -295,8 +296,8 @@ namespace graphene {
                             if (chain.db()._dlt_mode) {
                                 uint32_t earliest = chain.db().earliest_available_block_num();
                                 if (start_num < earliest) {
-                                    ilog("DLT mode: get_block_ids() clamping start from ${old} to ${new} "
-                                         "(earliest available block), head=${head}",
+                                    dlog(CLOG_GRAY "DLT mode: get_block_ids() clamping start from ${old} to ${new} "
+                                         "(earliest available block), head=${head}" CLOG_RESET,
                                          ("old", start_num)("new", earliest)("head", chain.db().head_block_num()));
                                     start_num = earliest;
                                 }
@@ -317,9 +318,9 @@ namespace graphene {
                                     // start_num is beyond all log storage — check if it's in fork_db
                                     auto test_block = chain.db().fetch_block_by_number(start_num);
                                     if (!test_block) {
-                                        ilog("DLT mode: get_block_ids() cannot serve blocks from #${num} "
+                                        dlog(CLOG_GRAY "DLT mode: get_block_ids() cannot serve blocks from #${num} "
                                              "(not in dlt_block_log [${dlt_start}-${dlt_end}], block_log, or fork_db). "
-                                             "Returning empty.",
+                                             "Returning empty." CLOG_RESET,
                                              ("num", start_num)
                                              ("dlt_start", chain.db().get_dlt_block_log().start_block_num())
                                              ("dlt_end", dlt_end));
@@ -332,8 +333,8 @@ namespace graphene {
                                     if (!gap_block) {
                                         // Gap exists — only serve up to storage_end
                                         effective_head = storage_end;
-                                        ilog("DLT mode: get_block_ids() clamping end to #${end} "
-                                             "(gap between storage and fork_db), head=${head}",
+                                        dlog(CLOG_GRAY "DLT mode: get_block_ids() clamping end to #${end} "
+                                             "(gap between storage and fork_db), head=${head}" CLOG_RESET,
                                              ("end", effective_head)("head", chain.db().head_block_num()));
                                     }
                                 }
@@ -353,9 +354,9 @@ namespace graphene {
                             }
 
                             if (chain.db()._dlt_mode) {
-                                dlog("DLT mode: get_block_ids() returning ${n} block IDs "
+                                dlog(CLOG_GRAY "DLT mode: get_block_ids() returning ${n} block IDs "
                                      "(start=${start}, effective_head=${ehead}, head=${head}, "
-                                     "earliest_available=${earliest}, dlt_end=${dlt_end})",
+                                     "earliest_available=${earliest}, dlt_end=${dlt_end})" CLOG_RESET,
                                      ("n", result.size())("start", start_num)
                                      ("ehead", effective_head)
                                      ("head", chain.db().head_block_num())
@@ -518,9 +519,9 @@ namespace graphene {
 
                             //idump((synopsis));
                             if (chain.db()._dlt_mode) {
-                                dlog("DLT mode: get_blockchain_synopsis() returning ${n} entries, "
+                                dlog(CLOG_GRAY "DLT mode: get_blockchain_synopsis() returning ${n} entries, "
                                      "low=${low}, high=${high}, head=${head}, LIB=${lib}, "
-                                     "earliest_available=${earliest}",
+                                     "earliest_available=${earliest}" CLOG_RESET,
                                      ("n", synopsis.size())("low", chain.db().last_non_undoable_block_num())
                                      ("high", high_block_num)("head", chain.db().head_block_num())
                                      ("lib", chain.db().last_non_undoable_block_num())
