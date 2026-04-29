@@ -1888,7 +1888,9 @@ namespace graphene { namespace chain {
 
             op_guard2.release();  // release before push_block(), which has its own guards
 
+            ilog("DEBUG_CRASH: push_block start for block by ${w}", ("w", witness_owner));
             push_block(pending_block, skip);
+            ilog("DEBUG_CRASH: push_block done");
 
             return pending_block;
         }
@@ -2277,6 +2279,8 @@ namespace graphene { namespace chain {
         void database::update_witness_schedule() {
             if ((head_block_num() % ( CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT ) ) != 0) return;
 
+            ilog("DEBUG_CRASH: update_witness_schedule ENTER at block ${b}", ("b", head_block_num()));
+
             if(has_hardfork(CHAIN_HARDFORK_6)){//remove expired witness penalty
                 const auto &idx = get_index<witness_penalty_expire_index>().indices().get<by_expiration>();
                 auto itr = idx.begin();
@@ -2460,6 +2464,9 @@ namespace graphene { namespace chain {
                 });
             }
 
+            ilog("DEBUG_CRASH: schedule normal build: active=${a} support=${s}",
+                 ("a", active_witnesses.size())("s", support_witnesses.size()));
+
             modify(wso, [&](witness_schedule_object &_wso) {
                 // active witnesses has exactly CHAIN_MAX_WITNESSES elements, asserted above
                 size_t j = 0;
@@ -2517,6 +2524,9 @@ namespace graphene { namespace chain {
                 _wso.majority_version = majority_version;
             });
 
+            ilog("DEBUG_CRASH: schedule normal build done, num_scheduled=${n}",
+                 ("n", wso.num_scheduled_witnesses));
+
             // === HARDFORK 12: EMERGENCY HYBRID SCHEDULE ===
             // Must run BEFORE update_median_witness_props() because the normal
             // schedule above may have zeroed all slots (no witnesses have valid keys
@@ -2524,6 +2534,7 @@ namespace graphene { namespace chain {
             const dynamic_global_property_object &emergency_dgp = get_dynamic_global_properties();
 
             if (has_hardfork(CHAIN_HARDFORK_12) && emergency_dgp.emergency_consensus_active) {
+                ilog("DEBUG_CRASH: hybrid override ENTER");
                 const witness_schedule_object &emergency_wso = get_witness_schedule_object();
                 uint32_t real_witness_slots = 0;
                 uint32_t committee_slots = 0;
@@ -2578,6 +2589,9 @@ namespace graphene { namespace chain {
                          ("r", real_witness_slots)
                          ("c", committee_slots));
                 });
+
+                ilog("DEBUG_CRASH: hybrid override done, real=${r} committee=${c} num_scheduled=${n}",
+                     ("r", real_witness_slots)("c", committee_slots)("n", emergency_wso.num_scheduled_witnesses));
 
                 // Sync committee witness props/hardfork-vote with the latest median
                 // and current hardfork state. This runs every schedule update so that
@@ -4520,12 +4534,15 @@ namespace graphene { namespace chain {
                 }
                 update_bandwidth_reserve_candidates();
                 update_witness_schedule();
+                ilog("DEBUG_CRASH: update_witness_schedule done");
 
+                ilog("DEBUG_CRASH: process_funds start");
                 if(has_hardfork(CHAIN_HARDFORK_4)){
                     process_inflation_recalc();
                     expire_award_shares_processing();
                 }
                 process_funds();
+                ilog("DEBUG_CRASH: process_funds done");
                 process_content_cashout();
                 process_vesting_withdrawals();
 
@@ -4548,9 +4565,13 @@ namespace graphene { namespace chain {
                 create_block_post_validation(next_block_num,next_block_id,next_block.witness);
 
                 // notify observers that the block has been applied
+                ilog("DEBUG_CRASH: notify_applied_block start");
                 notify_applied_block(next_block);
+                ilog("DEBUG_CRASH: notify_applied_block done");
 
+                ilog("DEBUG_CRASH: notify_changed_objects start");
                 notify_changed_objects();
+                ilog("DEBUG_CRASH: _apply_block EXIT");
             } FC_CAPTURE_LOG_AND_RETHROW((next_block.block_num()))
         }
 
@@ -5504,6 +5525,9 @@ namespace graphene { namespace chain {
                         : 0;
                 }
 
+                ilog("DEBUG_CRASH: update_last_irreversible_block: new_lib=${lib} old_lib=${old} head=${h}",
+                     ("lib", new_last_irreversible_block_num)("old", dpo.last_irreversible_block_num)("h", dpo.head_block_number));
+
                 if (new_last_irreversible_block_num >
                     dpo.last_irreversible_block_num) {
                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
@@ -5514,6 +5538,7 @@ namespace graphene { namespace chain {
                     });
                 }
 
+                ilog("DEBUG_CRASH: committing LIB=${lib}", ("lib", dpo.last_irreversible_block_num));
                 commit(dpo.last_irreversible_block_num);
 
                 if (!(skip & skip_block_log) && !_dlt_mode) {
@@ -5620,8 +5645,10 @@ namespace graphene { namespace chain {
                     });
                 }
 
+                ilog("DEBUG_CRASH: fork_db set_max_size=${s}", ("s", dpo.head_block_number - dpo.last_irreversible_block_num + 1));
                 _fork_db.set_max_size(dpo.head_block_number -
                                       dpo.last_irreversible_block_num + 1);
+                ilog("DEBUG_CRASH: update_last_irreversible_block done");
             } FC_CAPTURE_AND_RETHROW()
         }
 

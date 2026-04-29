@@ -327,6 +327,7 @@ namespace graphene {
             block_production_condition::block_production_condition_enum witness_plugin::impl::block_production_loop() {
                 block_production_condition::block_production_condition_enum result;
                 fc::mutable_variant_object capture;
+                ilog("DEBUG_CRASH: block_production_loop ENTER");
                 try {
                     result = maybe_produce_block(capture);
                 }
@@ -344,6 +345,7 @@ namespace graphene {
                     result = block_production_condition::exception_producing_block;
                 }
 
+                ilog("DEBUG_CRASH: maybe_produce_block returned ${r}", ("r", (int)result));
                 switch (result) {
                     case block_production_condition::produced:
                         ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w}\033[0m", (capture));
@@ -390,17 +392,22 @@ namespace graphene {
                         break;
                 }
 
+                ilog("DEBUG_CRASH: scheduling next production loop");
                 schedule_production_loop();
+                ilog("DEBUG_CRASH: block_production_loop EXIT");
                 return result;
             }
 
             block_production_condition::block_production_condition_enum witness_plugin::impl::maybe_produce_block(fc::mutable_variant_object &capture) {
+                ilog("DEBUG_CRASH: maybe_produce_block ENTER");
                 auto &db = database();
                 fc::time_point now_fine = graphene::time::now();
                 fc::time_point_sec now = now_fine + fc::microseconds( 250000 );
 
                 // === HARDFORK 12: THREE-STATE SAFETY ENFORCEMENT ===
+                ilog("DEBUG_CRASH: getting dgp");
                 const auto &dgp = db.get_dynamic_global_properties();
+                ilog("DEBUG_CRASH: dgp ok, head=${h} emergency=${e}", ("h", dgp.head_block_number)("e", dgp.emergency_consensus_active));
 
                 if (db.has_hardfork(CHAIN_HARDFORK_12)) {
                     if (dgp.emergency_consensus_active) {
@@ -567,10 +574,14 @@ namespace graphene {
                 // This prevents a concurrent shared memory resize from invalidating
                 // pointers while we read witness schedule, slot time, etc.
                 // The guard is released before generate_block() which has its own.
+                ilog("DEBUG_CRASH: creating op_guard");
                 auto op_guard = db.make_operation_guard();
+                ilog("DEBUG_CRASH: op_guard ok");
 
                 // is anyone scheduled to produce now or one second in the future?
+                ilog("DEBUG_CRASH: get_slot_at_time");
                 uint32_t slot = db.get_slot_at_time(now);
+                ilog("DEBUG_CRASH: slot=${s}", ("s", slot));
                 if (slot == 0) {
                     capture("next_time", db.get_slot_time(1));
                     return block_production_condition::not_time_yet;
@@ -586,18 +597,23 @@ namespace graphene {
                 //
                 assert(now > db.head_block_time());
 
+                ilog("DEBUG_CRASH: get_scheduled_witness(${s})", ("s", slot));
                 string scheduled_witness = db.get_scheduled_witness(slot);
+                ilog("DEBUG_CRASH: scheduled_witness=${w}", ("w", scheduled_witness));
                 // we must control the witness scheduled to produce the next block.
                 if (_witnesses.find(scheduled_witness) == _witnesses.end()) {
                     capture("scheduled_witness", scheduled_witness);
                     return block_production_condition::not_my_turn;
                 }
 
+                ilog("DEBUG_CRASH: looking up witness in index");
                 const auto &witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
                 auto itr = witness_by_name.find(scheduled_witness);
+                ilog("DEBUG_CRASH: witness found=${f}", ("f", itr != witness_by_name.end()));
 
                 fc::time_point_sec scheduled_time = db.get_slot_time(slot);
                 graphene::protocol::public_key_type scheduled_key = itr->signing_key;
+                ilog("DEBUG_CRASH: scheduled_key=${k}", ("k", scheduled_key));
 
                 // Check if witness has zero/null signing key (intentionally disabled for block production)
                 if (scheduled_key == graphene::protocol::public_key_type()) {
@@ -734,6 +750,7 @@ namespace graphene {
                 // and with_strong_write_lock().
                 op_guard.release();
 
+                ilog("DEBUG_CRASH: calling generate_block for ${w}", ("w", scheduled_witness));
                 int retry = 0;
                 do {
                     try {
