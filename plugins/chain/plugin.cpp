@@ -729,7 +729,12 @@ namespace chain {
             ilog("Started on blockchain with ${n} blocks (from snapshot)", ("n", my->db.head_block_num()));
         }
 
-        on_sync();
+        // During auto-recovery, on_sync() must NOT fire again —
+        // webserver/P2P plugins are already running and calling
+        // start_webserver() twice destroys joinable threads (std::terminate).
+        if (!is_recovery) {
+            on_sync();
+        }
     }
 
     void plugin::trigger_snapshot_load() {

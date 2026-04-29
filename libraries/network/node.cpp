@@ -3436,6 +3436,29 @@ namespace graphene {
                             ("num", block_message_to_send.block.block_num())
                             ("what", e.what()));
                     handle_message_exception = e;
+                    // Increment strike counter for the peer that sent this block,
+                    // THEN trigger sync restart.  Without the strike, a peer on a
+                    // dead/corrupt fork would loop forever: sync -> fail -> restart
+                    // -> same bad blocks, with no ban ever applied.
+                    for (const peer_connection_ptr &peer : _active_connections) {
+                        ASSERT_TASK_NOT_PREEMPTED();
+                        if (peer->ids_of_items_being_processed.find(block_message_to_send.block_id) !=
+                            peer->ids_of_items_being_processed.end()) {
+                            ++peer->unlinkable_block_strikes;
+                            static constexpr uint32_t SYNC_REJECT_STRIKE_THRESHOLD = 20;
+                            if (peer->unlinkable_block_strikes >= SYNC_REJECT_STRIKE_THRESHOLD) {
+                                fc_ilog(fc::logger::get("sync"),
+                                     "Soft-banning peer ${endpoint} for ${dur}s: ${strikes} rejected sync blocks (last: #${num})",
+                                     ("endpoint", peer->get_remote_endpoint())
+                                     ("num", block_message_to_send.block.block_num())
+                                     ("strikes", peer->unlinkable_block_strikes)
+                                     ("dur", get_soft_ban_duration(peer.get())));
+                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(peer.get()));
+                                peer->inhibit_fetching_sync_blocks = true;
+                                peer->unlinkable_block_strikes = 0;
+                            }
+                        }
+                    }
                     deferred_resize = true; // trigger sync restart below
                 }
 
