@@ -693,6 +693,46 @@ namespace graphene {
                             dlog(CLOG_CYAN "P2P peer_db: ${n} peers with failed/rejected status (of ${total} total)" CLOG_RESET,
                                 ("n", failed_count)("total", potential_peers.size()));
                         }
+
+                        // Block storage diagnostics: show what ranges are available for serving peers
+                        chain.db().with_weak_read_lock([&]() {
+                            uint32_t head = chain.db().head_block_num();
+                            uint32_t lib = chain.db().get_dynamic_global_properties().last_irreversible_block_num;
+                            uint32_t earliest = chain.db().earliest_available_block_num();
+
+                            // DLT block log range
+                            uint32_t dlt_start = chain.db().get_dlt_block_log().start_block_num();
+                            uint32_t dlt_end = chain.db().get_dlt_block_log().head_block_num();
+
+                            // Regular block log
+                            uint32_t blog_end = 0;
+                            auto blog_head = chain.db().get_block_log().head();
+                            if (blog_head) {
+                                blog_end = blog_head->block_num();
+                            }
+
+                            // Fork database
+                            const auto& fork_db = chain.db().get_fork_db();
+                            uint32_t fork_head = fork_db.head() ? fork_db.head()->num : 0;
+                            size_t fork_linked = fork_db.linked_size();
+                            size_t fork_unlinked = fork_db.unlinked_size();
+                            uint32_t fork_linked_min = fork_db.linked_min_block_num();
+                            uint32_t fork_linked_max = fork_db.linked_max_block_num();
+                            uint32_t fork_unlinked_min = fork_db.unlinked_min_block_num();
+                            uint32_t fork_unlinked_max = fork_db.unlinked_max_block_num();
+
+                            ilog(CLOG_CYAN "Block storage | head: ${head} | LIB: ${lib} | earliest: ${earliest} | "
+                                 "dlt_log: [${dlt_s}..${dlt_e}] | block_log_end: ${blog} | "
+                                 "fork_db: head=${fh}, linked=${fl} [${fl_min}..${fl_max}], "
+                                 "unlinked=${fu} [${fu_min}..${fu_max}] | "
+                                 "dlt_mode: ${dlt}" CLOG_RESET,
+                                 ("head", head)("lib", lib)("earliest", earliest)
+                                 ("dlt_s", dlt_start)("dlt_e", dlt_end)("blog", blog_end)
+                                 ("fh", fork_head)
+                                 ("fl", fork_linked)("fl_min", fork_linked_min)("fl_max", fork_linked_max)
+                                 ("fu", fork_unlinked)("fu_min", fork_unlinked_min)("fu_max", fork_unlinked_max)
+                                 ("dlt", chain.db()._dlt_mode));
+                        });
                     } catch (const fc::exception &e) {
                         wlog("Exception in P2P stats task: ${e}", ("e", e.to_detail_string()));
                     } catch (...) {
