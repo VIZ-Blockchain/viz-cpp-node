@@ -23,12 +23,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced peer synchronization logging with comprehensive status reporting and detailed peer state information
-- Implemented intelligent soft-ban mechanisms with 20-strike accumulation system and threshold-based enforcement
-- Added trusted peer support with reduced 5-minute soft-ban duration (vs 15-minute default)
-- Improved error diagnostics with enhanced logging for peer synchronization issues and soft-ban events
-- Enhanced peer status monitoring with comprehensive peer information collection and memory usage tracking
-- Added automatic soft-ban expiration handling and flag reset functionality
+- Enhanced peer management with intelligent strike counting for unlinkable blocks during synchronization
+- Implemented automatic soft-banning system with 20-strike threshold and configurable durations (15 minutes default, 5 minutes for trusted peers)
+- Added comprehensive peer status reporting with unlinkable_block_strikes counter
+- Enhanced error logging for peer synchronization issues with detailed strike information
+- Integrated trusted peer support with reduced soft-ban duration for snapshot nodes
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -132,6 +131,7 @@ Key responsibilities:
 - DLT mode support: Enhanced error logging with comprehensive block range information for distributed ledger technology mode.
 - Comprehensive logging: Detailed peer synchronization progress, item counts, block ranges, and timing information for better debugging and monitoring.
 - **Enhanced soft-ban mechanisms**: Intelligent strike accumulation system with 20-strike threshold, trusted peer support, and automatic soft-ban expiration handling.
+- **Intelligent strike counting**: Unlinkable block detection with automatic strike accumulation for tolerant peer management during synchronization.
 
 **Section sources**
 - [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
@@ -832,6 +832,7 @@ Impl --> P2P["p2p_plugin.cpp"]
 - Memory usage monitoring: Efficient memory tracking helps identify resource bottlenecks and optimize performance.
 - **Intelligent soft-ban mechanisms**: Strike accumulation system prevents abuse while tolerating occasional legitimate issues, with minimal performance overhead.
 - **Automatic recovery**: Soft-ban expiration handling ensures network recovery without manual intervention, maintaining operational efficiency.
+- **Intelligent strike counting**: Unlinkable block detection with automatic strike accumulation provides tolerant peer management during synchronization without impacting performance.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -858,6 +859,7 @@ Common issues and resolutions:
 - **Soft-ban duration**: Verify soft-ban duration settings (default 15 minutes, trusted peers 5 minutes) for appropriate network recovery.
 - **Automatic recovery**: Monitor automatic flag reset logs to ensure proper network recovery after soft-ban expiration.
 - **Intelligent peer classification**: Use peer status information to identify trusted peers and understand soft-ban behavior differences.
+- **Strike threshold monitoring**: Track 20-strike threshold for sync reject strikes to identify problematic peers during synchronization.
 
 **Section sources**
 - [node.cpp:2251-2280](file://libraries/network/node.cpp#L2251-L2280)

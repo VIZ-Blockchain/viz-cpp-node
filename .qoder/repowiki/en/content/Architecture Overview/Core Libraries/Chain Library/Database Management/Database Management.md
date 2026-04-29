@@ -28,13 +28,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced exception handling in chain database to preserve derived exception types during rethrow operations
-- Improved fork database management with comprehensive diagnostic capabilities and enhanced logging for fork recovery operations
-- Added sophisticated early rejection logic for blocks far ahead with unknown parents
-- Enhanced fork database exception prevention mechanisms with proper unlinkable block exception handling
-- Improved fork switching logic with deterministic tie-breaking and comprehensive error recovery
-- Enhanced memory management with deferred resize operations and comprehensive logging
-- Strengthened P2P synchronization with improved unlinkable block classification and sync restart prevention
+- Introduced new shared_memory_corruption_exception type for structured error handling
+- Enhanced witness account validation with graceful error handling during block acceptance and generation
+- Integrated automatic recovery system in witness plugin for shared memory corruption detection
+- Updated database.cpp to replace direct assertion failures with structured exception handling
+- Enhanced plugin.cpp with comprehensive auto-recovery from snapshot for corruption scenarios
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -194,6 +192,8 @@ EXC --> NODE
 - **Enhanced Multi-Layered Block Retrieval**: Systematic fallback mechanisms that check fork database when primary block log fails to locate required data, ensuring consistent behavior across different block logging configurations.
 - **Enhanced Last Irreversible Block Advancement**: Enhanced logic that falls back to fork database when block log lacks required data, maintaining data consistency and availability.
 - **Enhanced Emergency Consensus**: Automatic recovery system with comprehensive logging and safety checks for network stall detection and recovery.
+- **Enhanced Shared Memory Corruption Detection**: New shared_memory_corruption_exception type for structured error handling during witness account validation and block processing.
+- **Enhanced Auto-Recovery System**: Integrated automatic recovery from snapshot for shared memory corruption scenarios with comprehensive error handling and node restart procedures.
 
 Key responsibilities:
 - Lifecycle: open(), open_from_snapshot(), reindex(), close(), wipe() with improved error handling
@@ -210,6 +210,8 @@ Key responsibilities:
 - Enhanced Memory Management: Detailed logging of memory states before and after resizing operations for administrator visibility
 - Enhanced P2P Protection: Operation guard integration in P2P plugin for safe concurrent access during block validation and witness key retrieval
 - Enhanced Witness Scheduling Safety: Dual operation guard patterns in witness scheduling calculations to ensure thread safety during slot determination and witness validation
+- Enhanced Shared Memory Validation: Graceful error handling for witness account validation with structured exception reporting
+- Enhanced Auto-Recovery Integration: Seamless integration with witness plugin for automatic recovery from shared memory corruption
 
 **Section sources**
 - [database.hpp:61-115](file://libraries/chain/include/graphene/chain/database.hpp#L61-L115)
@@ -243,6 +245,8 @@ The database composes four primary subsystems with enhanced DLT mode support, em
 - **Enhanced Multi-Layered Block Retrieval**: Systematic fallback mechanisms that check fork database when primary block log fails to locate required data, ensuring consistent behavior across different block logging configurations
 - **Enhanced Last Irreversible Block Advancement**: Enhanced logic that falls back to fork database when block log lacks required data, maintaining data consistency and availability
 - **Enhanced Emergency Consensus**: Automatic recovery system with comprehensive logging and safety checks for network stall detection and recovery
+- **Enhanced Shared Memory Corruption Detection**: New shared_memory_corruption_exception type for structured error reporting during critical validation failures
+- **Enhanced Auto-Recovery Integration**: Seamless integration with witness plugin for automatic recovery from shared memory corruption scenarios
 
 ```mermaid
 classDiagram
@@ -287,6 +291,8 @@ class database {
 +fetch_block_by_number(num) : enhanced multi-layered retrieval
 +update_last_irreversible_block(skip) : enhanced fallback logic
 +dynamic_rethrow_exception() : enhanced exception preservation
++shared_memory_corruption_detection : structured error handling
++auto_recovery_integration : seamless recovery procedures
 }
 class chainbase {
 +free_memory() : size_t
@@ -353,6 +359,12 @@ class unlinkable_block_exception {
 +thrown for dead fork detection
 +enhanced logging for fork recovery
 }
+class shared_memory_corruption_exception {
++inherits from chain_exception
++thrown for critical validation failures
++triggers automatic recovery procedures
++structured error reporting
+}
 class enhanced_early_rejection_logic {
 +gap_based_decision_system(gap)
 +defer_small_gaps_to_fork_db(gap)
@@ -376,6 +388,7 @@ database --> signal_guard : "enhanced restart handling"
 database --> pending_transactions_restorer : "manages postponed tx"
 database --> chainbase : "enhanced memory management with operation guards"
 database --> unlinkable_block_exception : "enhanced fork handling"
+database --> shared_memory_corruption_exception : "structured corruption detection"
 database --> enhanced_early_rejection_logic : "gap-based decision system"
 database --> enhanced_fork_exception_prevention : "comprehensive exception prevention"
 database --> exception_factory : "enhanced exception preservation"
@@ -393,6 +406,7 @@ chainbase --> operation_guard : "RAII concurrent access protection"
 - [db_with.hpp:33-100](file://libraries/chain/include/graphene/chain/db_with.hpp#L33-L100)
 - [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
 - [database_exceptions.hpp:83](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L83)
+- [database_exceptions.hpp:122](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L122)
 - [exception.hpp:177-215](file://thirdparty/fc/include/fc/exception/exception.hpp#L177-L215)
 
 ## Detailed Component Analysis
@@ -459,6 +473,7 @@ DB->>DLT : start_block(head)
 - **Protocol Exception Integration**: Protocol exceptions include dynamic_rethrow_exception() implementations that check code() values before rethrowing to ensure proper type restoration.
 - **Enhanced Exception Propagation**: The database uses FC_LOG_AND_RETHROW macros that preserve exception types during logging and rethrow operations.
 - **Unlinkable Block Exception Enhancement**: The unlinkable_block_exception now includes comprehensive logging for fork recovery operations with detailed block information and head block context.
+- **Shared Memory Corruption Exception**: New shared_memory_corruption_exception type provides structured error handling for critical validation failures with detailed logging and automatic recovery integration.
 
 ```mermaid
 flowchart TD
@@ -767,7 +782,7 @@ These fields enable the deferred resize mechanism to work seamlessly with the ex
 
 - **push_block()**: Calls `apply_pending_resize()` at the beginning of block processing, before acquiring the main write lock, ensuring memory operations don't interfere with concurrent read operations.
 - **generate_block()**: Calls `apply_pending_resize()` before lockless reads, preventing stale pointer issues when memory is resized during block generation.
-- **Exception Handling**: When memory exhaustion occurs, the system schedules a deferred resize and lets the exception propagate, allowing the next block processing call to apply the resize safely.
+- **Exception Handling**: When memory exhaustion occurs, the system schedules a deferred resize and lets the exception propagate, preserving peer connectivity and logging witness slot-misses.
 
 **Updated** - Enhanced error handling for shared memory exhaustion:
 
@@ -1189,6 +1204,8 @@ These signals are used by plugins to react to blockchain events without tight co
 - **Enhanced Collision Detection**: Sophisticated logging for block number collisions with scenario differentiation and rate-limiting
 - **Postponed Transaction Processing**: Automatic transaction queuing with time-based execution limits and smart recovery
 - **Enhanced Emergency Consensus**: Automatic recovery system with comprehensive logging and safety checks for network stall detection and recovery
+- **Enhanced Shared Memory Corruption Detection**: New shared_memory_corruption_exception type for structured error reporting during critical validation failures
+- **Enhanced Auto-Recovery Integration**: Seamless integration with witness plugin for automatic recovery from shared memory corruption scenarios
 
 **Section sources**
 - [database.hpp:93-141](file://libraries/chain/include/graphene/chain/database.hpp#L93-L141)
@@ -1366,9 +1383,6 @@ The emergency consensus system includes comprehensive LIB monitoring:
 - **Genesis Time Protection**: Avoids false activations by falling back to genesis_time considerations
 - **Network Recovery Detection**: Monitors LIB advancement to determine when emergency mode should end
 
-**Section sources**
-- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
-
 ### Enhanced Error Logging Throughout Consensus Process
 **New** - The emergency consensus implementation includes comprehensive error logging and critical error handling:
 
@@ -1382,12 +1396,42 @@ The emergency consensus system includes comprehensive LIB monitoring:
 
 The enhanced error logging system ensures that operators have comprehensive visibility into emergency consensus operations and can effectively troubleshoot any issues that arise during emergency mode activation or deactivation.
 
+### Enhanced Shared Memory Corruption Detection and Auto-Recovery
+**New** - The database now includes comprehensive shared memory corruption detection and automatic recovery mechanisms:
+
+- **Structured Exception Handling**: New shared_memory_corruption_exception type replaces direct assertion failures with structured exception handling for critical validation failures.
+- **Enhanced Witness Validation**: Graceful error handling for witness account validation with detailed logging and structured exception reporting when witness accounts are missing from database.
+- **Auto-Recovery Integration**: Seamless integration with witness plugin for automatic recovery from shared memory corruption scenarios.
+- **Plugin-Level Recovery**: Comprehensive auto-recovery system in plugin.cpp that can automatically recover from snapshots when corruption is detected.
+- **Structured Error Reporting**: Detailed logging of corruption detection events with comprehensive context including witness information, signing keys, and memory state.
+
+```mermaid
+flowchart TD
+Start(["Shared Memory Corruption Detection"]) --> DetectCorruption["Detect Missing Witness Account"]
+DetectCorruption --> LogCritical["Log Critical Error Details"]
+LogCritical --> ThrowException["Throw shared_memory_corruption_exception"]
+ThrowException --> CatchInWitness["Catch in witness plugin"]
+CatchInWitness --> AttemptRecovery["Attempt Auto-Recovery"]
+AttemptRecovery --> FindSnapshot["Find Latest Snapshot"]
+FindSnapshot --> CloseDatabase["Close Corrupted Database"]
+CloseDatabase --> LoadSnapshot["Load Snapshot State"]
+LoadSnapshot --> ResumeOperation["Resume Node Operation"]
+ResumeOperation --> End(["Complete"])
+```
+
+**Diagram sources**
+- [database.cpp:1680-1693](file://libraries/chain/database.cpp#L1680-L1693)
+- [database.cpp:3224-3236](file://libraries/chain/database.cpp#L3224-L3236)
+- [database.cpp:3272-3284](file://libraries/chain/database.cpp#L3272-L3284)
+- [witness.cpp:738-742](file://plugins/witness/witness.cpp#L738-L742)
+- [plugin.cpp:760-770](file://plugins/chain/plugin.cpp#L760-L770)
+
 **Section sources**
-- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
-- [database.cpp:4517-4620](file://libraries/chain/database.cpp#L4517-L4620)
-- [database.cpp:2125-2142](file://libraries/chain/database.cpp#L2125-L2142)
-- [database.cpp:4378-4416](file://libraries/chain/database.cpp#L4378-L4416)
-- [database.cpp:2047-2144](file://libraries/chain/database.cpp#L2047-L2144)
+- [database.cpp:1680-1693](file://libraries/chain/database.cpp#L1680-L1693)
+- [database.cpp:3224-3236](file://libraries/chain/database.cpp#L3224-L3236)
+- [database.cpp:3272-3284](file://libraries/chain/database.cpp#L3272-L3284)
+- [witness.cpp:738-742](file://plugins/witness/witness.cpp#L738-L742)
+- [plugin.cpp:760-770](file://plugins/chain/plugin.cpp#L760-L770)
 
 ## Dependency Analysis
 The database depends on:
@@ -1408,6 +1452,8 @@ The database depends on:
 - **Enhanced Multi-Layered Block Retrieval**: Systematic fallback mechanisms for critical block data retrieval across multiple storage layers
 - **Enhanced Last Irreversible Block Advancement**: Enhanced fallback logic for LIB advancement when primary storage fails
 - **Enhanced Emergency Consensus**: Automatic recovery system with comprehensive logging and safety checks for network stall detection and recovery
+- **Enhanced Shared Memory Corruption Detection**: New shared_memory_corruption_exception type for structured error handling and automatic recovery integration
+- **Enhanced Auto-Recovery System**: Comprehensive auto-recovery from snapshot for shared memory corruption scenarios with seamless plugin integration
 
 ```mermaid
 graph LR
@@ -1428,6 +1474,8 @@ DB --> OPGUARD["enhanced operation guard system"]
 DB --> MULTILAYER["enhanced multi-layered block retrieval"]
 DB --> LIBADVANCE["enhanced last irreversible block advancement"]
 DB --> EMER["enhanced emergency consensus"]
+DB --> CORRUPTION["enhanced shared memory corruption detection"]
+DB --> AUTORECOVERY["enhanced auto-recovery system"]
 ```
 
 **Diagram sources**
@@ -1436,6 +1484,7 @@ DB --> EMER["enhanced emergency consensus"]
 - [database.cpp:94-184](file://libraries/chain/database.cpp#L94-L184)
 - [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
 - [database_exceptions.hpp:83](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L83)
+- [database_exceptions.hpp:122](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L122)
 - [exception.hpp:177-215](file://thirdparty/fc/include/fc/exception/exception.hpp#L177-L215)
 - [exception.cpp:166-186](file://thirdparty/fc/src/exception.cpp#L166-L186)
 
@@ -1445,6 +1494,7 @@ DB --> EMER["enhanced emergency consensus"]
 - [database.cpp:94-184](file://libraries/chain/database.cpp#L94-L184)
 - [chainbase.cpp:225-279](file://thirdparty/chainbase/src/chainbase.cpp#L225-L279)
 - [database_exceptions.hpp:83](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L83)
+- [database_exceptions.hpp:122](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L122)
 - [exception.hpp:177-215](file://thirdparty/fc/include/fc/exception/exception.hpp#L177-L215)
 - [exception.cpp:166-186](file://thirdparty/fc/src/exception.cpp#L166-L186)
 
@@ -1456,7 +1506,7 @@ DB --> EMER["enhanced emergency consensus"]
 - Tune flush intervals to balance durability and throughput.
 - **DLT Mode Optimization**: Use rolling window DLT block log to reduce storage requirements for snapshot-based nodes.
 - **Conditional Operations**: Leverage DLT mode to skip unnecessary block log operations while maintaining required functionality.
-- **Enhanced Exception Handling**: Graceful fallback mechanisms prevent performance degradation during restart sequences.
+- **Enhanced Exception Type Preservation**: Graceful fallback mechanisms prevent performance degradation during restart sequences.
 - **Multi-layered Fetching**: Hierarchical block retrieval minimizes lookup overhead and improves response times.
 - **Enhanced Early Rejection Efficiency**: The new gap-based early rejection logic eliminates unnecessary fork database operations for far-ahead blocks with unknown parents, significantly reducing processing overhead and preventing sync restart loops.
 - **Enhanced Fork Database Exception Prevention**: Comprehensive early rejection mechanisms prevent fork database exceptions before they occur, eliminating the need for exception handling and improving overall system efficiency.
@@ -1475,6 +1525,8 @@ DB --> EMER["enhanced emergency consensus"]
 - **Enhanced Deferred Memory Resize Efficiency**: The new deferred resize mechanism prevents race conditions and stale pointer issues during high-load scenarios, improving overall system reliability and performance.
 - **Enhanced Thread-Safe Memory Operations**: Proper lock management during memory resize operations ensures data consistency and prevents performance degradation from thread contention.
 - **Enhanced P2P Sync Restart Prevention**: The enhanced early rejection logic prevents sync restart loops during snapshot imports, improving synchronization performance and reducing network overhead.
+- **Enhanced Shared Memory Corruption Detection**: Structured exception handling provides detailed error context without significant performance impact during critical validation failures.
+- **Enhanced Auto-Recovery Performance**: Seamless integration with witness plugin enables rapid recovery from shared memory corruption without significant downtime.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -1511,6 +1563,9 @@ Common issues and remedies:
 - **Enhanced Hybrid Schedule Issues**: Verify that emergency witness is properly replacing unavailable witnesses during network recovery.
 - **Enhanced Emergency Mode Deactivation**: Check that LIB advancement is properly detected to trigger emergency mode termination.
 - **Enhanced Witness Penalty Problems**: During emergency mode, verify that offline witness penalties are properly bypassed to prevent network recovery issues.
+- **Enhanced Shared Memory Corruption Detection**: Monitor shared_memory_corruption_exception logging to ensure critical validation failures are properly reported.
+- **Enhanced Auto-Recovery Integration**: Verify that witness plugin auto-recovery is properly integrated with plugin-level recovery system for seamless corruption handling.
+- **Enhanced Auto-Recovery Performance**: Monitor auto-recovery performance to ensure rapid recovery from shared memory corruption without significant downtime.
 
 **Section sources**
 - [database.cpp:789-827](file://libraries/chain/database.cpp#L789-L827)
@@ -1557,3 +1612,7 @@ The enhanced exception handling infrastructure represents a fundamental improvem
 **Enhanced Last Irreversible Block Advancement Logic** - The improved LIB advancement logic demonstrates the system's commitment to data consistency and availability. The comprehensive fallback mechanisms ensure that critical blockchain state information remains accessible even when primary storage layers are compromised, preventing system stalls and maintaining network integrity. The systematic approach to LIB advancement maintains consistency between different storage layers while ensuring that the system can continue operating even when individual storage components are temporarily unavailable or inconsistent.
 
 **Enhanced Emergency Consensus** - The enhanced emergency consensus implementation provides comprehensive logging and safety checks for network stall detection and recovery. The automatic recovery system with detailed logging and safety mechanisms ensures that operators have complete visibility into emergency operations without impacting performance. The enhanced safety check optimization prevents false activations while ensuring network stability, making the system more reliable and suitable for production environments where network reliability is critical.
+
+**Enhanced Shared Memory Corruption Detection** - The introduction of the new shared_memory_corruption_exception type represents a significant advancement in error handling robustness. This structured exception handling approach replaces direct assertion failures with comprehensive error reporting, enabling better debugging and troubleshooting capabilities. The enhanced witness account validation with graceful error handling during block acceptance and generation processes ensures that critical validation failures are properly detected and reported with detailed context information.
+
+**Enhanced Auto-Recovery Integration** - The seamless integration with witness plugin for automatic recovery from shared memory corruption scenarios represents a major improvement in system reliability and uptime. The comprehensive auto-recovery system in plugin.cpp provides rapid recovery from corruption scenarios with minimal downtime, while the structured error reporting ensures that operators have complete visibility into recovery operations. This integration makes the database management system more resilient to critical hardware and software failures, improving overall system reliability and operator confidence.
