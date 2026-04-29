@@ -57,6 +57,7 @@ namespace graphene { namespace chain {
             // DLT mode: node was loaded from a snapshot, block_log is empty/partial.
             // When true, block_log append operations are skipped.
             bool _dlt_mode = false;
+            bool _debug_block_production = false;
 
             /// Set DLT mode flag. Should be called before loading snapshot data
             /// so that all subsequent code sees a consistent state.

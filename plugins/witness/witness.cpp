@@ -156,6 +156,8 @@ namespace graphene {
                         ("fork-collision-timeout-blocks", bpo::value<uint32_t>()->default_value(21),
                          "Number of consecutive fork-collision deferrals (block slots) before forcing production. "
                          "One full witness schedule round is 21 blocks (63 seconds). Default: 21.")
+                        ("debug-block-production", bpo::value<bool>()->default_value(false),
+                         "Enable verbose debug logging for block production and chain internals. Default: false.")
                         ;
 
                 config_file_options.add(command_line_options);
@@ -221,6 +223,13 @@ namespace graphene {
 
                     if (options.count("fork-collision-timeout-blocks")) {
                         pimpl->_fork_collision_timeout_blocks = options["fork-collision-timeout-blocks"].as<uint32_t>();
+                    }
+
+                    if (options.count("debug-block-production")) {
+                        pimpl->chain().db()._debug_block_production = options["debug-block-production"].as<bool>();
+                        if (pimpl->chain().db()._debug_block_production) {
+                            ilog("Debug block production logging ENABLED");
+                        }
                     }
 
                     ilog("witness plugin:  plugin_initialize() end");
@@ -327,7 +336,7 @@ namespace graphene {
             block_production_condition::block_production_condition_enum witness_plugin::impl::block_production_loop() {
                 block_production_condition::block_production_condition_enum result;
                 fc::mutable_variant_object capture;
-                ilog("DEBUG_CRASH: block_production_loop ENTER");
+                if (database()._debug_block_production) ilog("DEBUG_CRASH: block_production_loop ENTER");
                 try {
                     result = maybe_produce_block(capture);
                 }
@@ -345,7 +354,7 @@ namespace graphene {
                     result = block_production_condition::exception_producing_block;
                 }
 
-                ilog("DEBUG_CRASH: maybe_produce_block returned ${r}", ("r", (int)result));
+                if (database()._debug_block_production) ilog("DEBUG_CRASH: maybe_produce_block returned ${r}", ("r", (int)result));
                 switch (result) {
                     case block_production_condition::produced:
                         ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w}\033[0m", (capture));
@@ -392,24 +401,24 @@ namespace graphene {
                         break;
                 }
 
-                ilog("DEBUG_CRASH: scheduling next production loop");
+                if (database()._debug_block_production) ilog("DEBUG_CRASH: scheduling next production loop");
                 schedule_production_loop();
-                ilog("DEBUG_CRASH: block_production_loop EXIT");
+                if (database()._debug_block_production) ilog("DEBUG_CRASH: block_production_loop EXIT");
                 return result;
             }
 
             block_production_condition::block_production_condition_enum witness_plugin::impl::maybe_produce_block(fc::mutable_variant_object &capture) {
-                ilog("DEBUG_CRASH: maybe_produce_block ENTER");
                 auto &db = database();
+                if (db._debug_block_production) ilog("DEBUG_CRASH: maybe_produce_block ENTER");
                 fc::time_point now_fine = graphene::time::now();
                 fc::time_point_sec now = now_fine + fc::microseconds( 250000 );
 
                 // === HARDFORK 12: THREE-STATE SAFETY ENFORCEMENT ===
-                ilog("DEBUG_CRASH: getting dgp");
+                if (db._debug_block_production) ilog("DEBUG_CRASH: getting dgp");
                 const auto &dgp = db.get_dynamic_global_properties();
-                ilog("DEBUG_CRASH: dgp ok, head=${h} emergency=${e}", ("h", dgp.head_block_number)("e", dgp.emergency_consensus_active));
+                if (db._debug_block_production) ilog("DEBUG_CRASH: dgp ok, head=${h} emergency=${e}", ("h", dgp.head_block_number)("e", dgp.emergency_consensus_active));
 
-                ilog("DEBUG_CRASH: checking hardfork12 and emergency path");
+                if (db._debug_block_production) ilog("DEBUG_CRASH: checking hardfork12 and emergency path");
                 if (db.has_hardfork(CHAIN_HARDFORK_12)) {
                     if (dgp.emergency_consensus_active) {
                         // EMERGENCY MODE: auto-bypass both stale and participation checks.
@@ -475,17 +484,17 @@ namespace graphene {
                 //try get block post validation list for each witness
                 //if witness can validate it, sign chain_id and block_id for message
                 //broadcast validation message by p2p plugin
-                ilog("DEBUG_CRASH: emergency/participation check done, entering block_post_validation");
+                if (db._debug_block_production) ilog("DEBUG_CRASH: emergency/participation check done, entering block_post_validation");
                 if(last_block_post_validation_time < now_fine ){
                     last_block_post_validation_time = now;
-                    ilog("DEBUG_CRASH: block_post_validation tick, iterating ${n} witnesses", ("n", _witnesses.size()));
+                    if (db._debug_block_production) ilog("DEBUG_CRASH: block_post_validation tick, iterating ${n} witnesses", ("n", _witnesses.size()));
                     //ilog("! tick last_block_post_validation_time");
                     //get block post validation for each witness we have
                     for (auto &witness_account : _witnesses) {
                         bool ignore_witness = false;
-                        ilog("DEBUG_CRASH: get_block_post_validations for ${w}", ("w", witness_account));
+                        if (db._debug_block_production) ilog("DEBUG_CRASH: get_block_post_validations for ${w}", ("w", witness_account));
                         auto block_post_validations = db.get_block_post_validations(witness_account);
-                        ilog("DEBUG_CRASH: got ${n} post_validations for ${w}", ("n", block_post_validations.size())("w", witness_account));
+                        if (db._debug_block_production) ilog("DEBUG_CRASH: got ${n} post_validations for ${w}", ("n", block_post_validations.size())("w", witness_account));
                         if (block_post_validations.size() > 0) {
                             const auto &witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
                             auto w_itr = witness_by_name.find(witness_account);
@@ -507,7 +516,7 @@ namespace graphene {
                                 ignore_witness = true;
                             }
                             if(!ignore_witness){
-                                ilog("DEBUG_CRASH: signing post_validations for ${w}", ("w", witness_account));
+                                if (db._debug_block_production) ilog("DEBUG_CRASH: signing post_validations for ${w}", ("w", witness_account));
                                 graphene::protocol::private_key_type witness_priv_key = private_key_itr->second;
                                 //we have block post validations for this witness
                                 //check if we have a block
@@ -528,7 +537,7 @@ namespace graphene {
                     }
                 }
 
-                ilog("DEBUG_CRASH: block_post_validation done, entering minority fork detection");
+                if (db._debug_block_production) ilog("DEBUG_CRASH: block_post_validation done, entering minority fork detection");
                 // === MINORITY FORK DETECTION ===
                 // If the last CHAIN_MAX_WITNESSES (21) blocks in fork_db were ALL
                 // produced by our own configured witnesses, we are likely stuck on
@@ -581,14 +590,14 @@ namespace graphene {
                 // This prevents a concurrent shared memory resize from invalidating
                 // pointers while we read witness schedule, slot time, etc.
                 // The guard is released before generate_block() which has its own.
-                ilog("DEBUG_CRASH: creating op_guard");
+                if (db._debug_block_production) ilog("DEBUG_CRASH: creating op_guard");
                 auto op_guard = db.make_operation_guard();
-                ilog("DEBUG_CRASH: op_guard ok");
+                if (db._debug_block_production) ilog("DEBUG_CRASH: op_guard ok");
 
                 // is anyone scheduled to produce now or one second in the future?
-                ilog("DEBUG_CRASH: get_slot_at_time");
+                if (db._debug_block_production) ilog("DEBUG_CRASH: get_slot_at_time");
                 uint32_t slot = db.get_slot_at_time(now);
-                ilog("DEBUG_CRASH: slot=${s}", ("s", slot));
+                if (db._debug_block_production) ilog("DEBUG_CRASH: slot=${s}", ("s", slot));
                 if (slot == 0) {
                     capture("next_time", db.get_slot_time(1));
                     return block_production_condition::not_time_yet;
@@ -604,23 +613,23 @@ namespace graphene {
                 //
                 assert(now > db.head_block_time());
 
-                ilog("DEBUG_CRASH: get_scheduled_witness(${s})", ("s", slot));
+                if (db._debug_block_production) ilog("DEBUG_CRASH: get_scheduled_witness(${s})", ("s", slot));
                 string scheduled_witness = db.get_scheduled_witness(slot);
-                ilog("DEBUG_CRASH: scheduled_witness=${w}", ("w", scheduled_witness));
+                if (db._debug_block_production) ilog("DEBUG_CRASH: scheduled_witness=${w}", ("w", scheduled_witness));
                 // we must control the witness scheduled to produce the next block.
                 if (_witnesses.find(scheduled_witness) == _witnesses.end()) {
                     capture("scheduled_witness", scheduled_witness);
                     return block_production_condition::not_my_turn;
                 }
 
-                ilog("DEBUG_CRASH: looking up witness in index");
+                if (db._debug_block_production) ilog("DEBUG_CRASH: looking up witness in index");
                 const auto &witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
                 auto itr = witness_by_name.find(scheduled_witness);
-                ilog("DEBUG_CRASH: witness found=${f}", ("f", itr != witness_by_name.end()));
+                if (db._debug_block_production) ilog("DEBUG_CRASH: witness found=${f}", ("f", itr != witness_by_name.end()));
 
                 fc::time_point_sec scheduled_time = db.get_slot_time(slot);
                 graphene::protocol::public_key_type scheduled_key = itr->signing_key;
-                ilog("DEBUG_CRASH: scheduled_key=${k}", ("k", scheduled_key));
+                if (db._debug_block_production) ilog("DEBUG_CRASH: scheduled_key=${k}", ("k", scheduled_key));
 
                 // Check if witness has zero/null signing key (intentionally disabled for block production)
                 if (scheduled_key == graphene::protocol::public_key_type()) {
@@ -757,7 +766,7 @@ namespace graphene {
                 // and with_strong_write_lock().
                 op_guard.release();
 
-                ilog("DEBUG_CRASH: calling generate_block for ${w}", ("w", scheduled_witness));
+                if (db._debug_block_production) ilog("DEBUG_CRASH: calling generate_block for ${w}", ("w", scheduled_witness));
                 int retry = 0;
                 do {
                     try {
