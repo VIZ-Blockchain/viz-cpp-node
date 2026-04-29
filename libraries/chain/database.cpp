@@ -300,6 +300,62 @@ namespace graphene { namespace chain {
                     init_hardforks(); // Writes to local state, but reads from db
                 });
 
+                // === HARDFORK 12: EMERGENCY SCHEDULE RECOVERY ===
+                // If the node shut down (or crashed) during emergency mode while
+                // update_witness_schedule() had zeroed the schedule but before the
+                // hybrid override could fill it with committee, the schedule may
+                // contain empty (null) witness names.  Since commit(LIB) may have
+                // already made these changes permanent, the normal undo rollback
+                // cannot fix this.  Detect and repair it here on startup.
+                if (head_block_num() > 0) {
+                    const dynamic_global_property_object &startup_dgp = get_dynamic_global_properties();
+                    const witness_schedule_object &startup_wso = get_witness_schedule_object();
+
+                    bool schedule_broken = false;
+                    for (int i = 0; i < startup_wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                        if (startup_wso.current_shuffled_witnesses[i] == account_name_type()) {
+                            schedule_broken = true;
+                            break;
+                        }
+                    }
+
+                    if (schedule_broken) {
+                        wlog("EMERGENCY SCHEDULE RECOVERY: detected empty witness slots "
+                             "in schedule at startup (head=${h}, emergency=${e}). "
+                             "Filling all slots with committee witness.",
+                             ("h", head_block_num())("e", startup_dgp.emergency_consensus_active));
+
+                        with_strong_write_lock([&]() {
+                            // Ensure emergency mode is active
+                            if (!startup_dgp.emergency_consensus_active) {
+                                modify(startup_dgp, [&](dynamic_global_property_object &_dgp) {
+                                    _dgp.emergency_consensus_active = true;
+                                    _dgp.emergency_consensus_start_block = head_block_num();
+                                });
+                                _fork_db.set_emergency_mode(true);
+                                wlog("EMERGENCY SCHEDULE RECOVERY: re-activated emergency consensus mode");
+                            }
+
+                            // Fill all schedule slots with committee
+                            modify(startup_wso, [&](witness_schedule_object &_wso) {
+                                for (int i = 0; i < CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT; i++) {
+                                    _wso.current_shuffled_witnesses[i] = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                                }
+                                _wso.num_scheduled_witnesses = CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT;
+                                _wso.next_shuffle_block_num = head_block_num() + _wso.num_scheduled_witnesses;
+                            });
+
+                            wlog("EMERGENCY SCHEDULE RECOVERY: schedule repaired, all ${n} slots set to committee",
+                                 ("n", CHAIN_MAX_WITNESSES));
+                        });
+                    } else if (startup_dgp.emergency_consensus_active) {
+                        // Schedule is valid but emergency mode is active — restore fork_db flag
+                        _fork_db.set_emergency_mode(true);
+                        ilog("Emergency consensus mode is active at startup (head=${h})",
+                             ("h", head_block_num()));
+                    }
+                }
+
             }
             FC_CAPTURE_LOG_AND_RETHROW((data_dir)(shared_mem_dir)(shared_file_size))
         }
@@ -5399,7 +5455,8 @@ namespace graphene { namespace chain {
                 // During emergency mode, LIB advances normally using all witnesses
                 // in the schedule (including committee). Committee produces every
                 // block, so after current_run >= CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN
-                // (3 blocks), LIB advances every block. This keeps the gap between
+                // (3 blocks), LIB advances every block (capped at HEAD-1 to preserve
+                // undo protection — see cap below). This keeps the gap between
                 // LIB and head small, preventing fork_db overflow on long emergencies.
                 // When operators re-enable real witnesses and emergency exits,
                 // normal LIB computation continues seamlessly.
@@ -5430,6 +5487,22 @@ namespace graphene { namespace chain {
                         });
 
                 uint32_t new_last_irreversible_block_num = wit_objs[offset]->last_supported_block_num;
+
+                // === HARDFORK 12: EMERGENCY LIB CAP ===
+                // During emergency, all schedule slots point to the same committee
+                // witness, so nth_element yields last_supported_block_num == HEAD.
+                // If we commit(HEAD), the undo session for the CURRENT block is
+                // destroyed. Any subsequent modify() in _apply_block (e.g.
+                // update_witness_schedule) becomes permanent with NO rollback.
+                // A crash after commit but before _apply_block finishes leaves
+                // permanently corrupted state (e.g. zeroed schedule).
+                // Cap LIB to HEAD-1 so the current block always has undo protection.
+                if (has_hardfork(CHAIN_HARDFORK_12) && dpo.emergency_consensus_active &&
+                    new_last_irreversible_block_num >= dpo.head_block_number) {
+                    new_last_irreversible_block_num = dpo.head_block_number > 0
+                        ? dpo.head_block_number - 1
+                        : 0;
+                }
 
                 if (new_last_irreversible_block_num >
                     dpo.last_irreversible_block_num) {
