@@ -4874,11 +4874,14 @@ namespace graphene { namespace chain {
                                 });
                             }
 
-                            // Change 7: Reset all witness penalties and re-enable shut-down witnesses
+                            // Change 7: Disable all real witnesses and reset penalties.
+                            // On emergency start, zero signing_key so ONLY committee produces.
+                            // Operators must manually re-enable witnesses via update_witness tx.
                             const auto &witness_idx = get_index<witness_index>().indices().get<by_id>();
                             for (auto witr = witness_idx.begin(); witr != witness_idx.end(); ++witr) {
                                 if (witr->owner == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
                                 modify(*witr, [&](witness_object &w) {
+                                    w.signing_key = public_key_type();
                                     w.penalty_percent = 0;
                                     w.counted_votes = w.votes;
                                     w.current_run = 0;
