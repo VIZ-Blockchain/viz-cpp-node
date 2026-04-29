@@ -501,7 +501,7 @@ namespace graphene { namespace chain {
 
                 auto start = fc::time_point::now();
 
-                const auto& dlt_head = _dlt_block_log.head();
+                auto dlt_head = _dlt_block_log.head();
                 CHAIN_ASSERT(dlt_head, block_log_exception,
                     "No blocks in dlt_block_log. Cannot reindex from empty DLT log.");
 

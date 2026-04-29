@@ -50,7 +50,7 @@ namespace graphene {
 
             optional<signed_block> read_block_by_num(uint32_t block_num) const;
 
-            const optional<signed_block>& head() const;
+            optional<signed_block> head() const;
 
             /// First block number stored in the log (0 if empty).
             uint32_t start_block_num() const;
@@ -68,6 +68,15 @@ namespace graphene {
             /// Reset the log: close, delete files, reopen empty.
             /// The next append() will start a fresh log from whatever block is written.
             void reset();
+
+            /// Check mapping consistency and self-heal if stale.
+            /// Returns true if a stale mapping was detected and healed.
+            /// Call this periodically (e.g. from stats task) to detect
+            /// Windows mapped_file.size() drift after many resize() cycles.
+            bool verify_mapping();
+
+            /// Number of resize() calls since open (for diagnostics).
+            uint64_t resize_count() const;
 
             static const uint64_t npos = std::numeric_limits<uint64_t>::max();
 

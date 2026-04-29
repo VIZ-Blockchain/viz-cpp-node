@@ -748,14 +748,21 @@ namespace graphene {
                                  "dlt_log: [${dlt_s}..${dlt_e}] | block_log_end: ${blog} | "
                                  "fork_db: head=${fh}, linked=${fl} [${fl_min}..${fl_max}], "
                                  "unlinked=${fu} [${fu_min}..${fu_max}] | "
-                                 "dlt_mode: ${dlt}" CLOG_RESET,
+                                 "dlt_mode: ${dlt} | dlt_resizes: ${resizes}" CLOG_RESET,
                                  ("head", head)("lib", lib)("earliest", earliest)
                                  ("dlt_s", dlt_start)("dlt_e", dlt_end)("blog", blog_end)
                                  ("fh", fork_head)
                                  ("fl", fork_linked)("fl_min", fork_linked_min)("fl_max", fork_linked_max)
                                  ("fu", fork_unlinked)("fu_min", fork_unlinked_min)("fu_max", fork_unlinked_max)
-                                 ("dlt", chain.db()._dlt_mode));
+                                 ("dlt", chain.db()._dlt_mode)
+                                 ("resizes", chain.db().get_dlt_block_log().resize_count()));
                         });
+
+                        // Periodically verify dlt_block_log mapping consistency.
+                        // Detects & heals stale mapped_file.size() on Windows.
+                        if (chain.db()._dlt_mode) {
+                            chain.db().get_dlt_block_log().verify_mapping();
+                        }
                     } catch (const fc::exception &e) {
                         wlog("Exception in P2P stats task: ${e}", ("e", e.to_detail_string()));
                     } catch (...) {
