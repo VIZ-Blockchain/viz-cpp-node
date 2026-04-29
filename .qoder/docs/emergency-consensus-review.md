@@ -1,6 +1,6 @@
 # Emergency Consensus Recovery — Implementation Review
 
-## Status: Implemented (Hardfork 12, version 3.1.0) — Bugs Found and Fixed (B1–B12)
+## Status: Implemented (Hardfork 12, version 3.1.0) — Bugs Found and Fixed (B1–B15)
 
 Research source: [consensus-emergency-recovery.md](../research/consensus-emergency-recovery.md)
 
@@ -25,8 +25,8 @@ The committee witness is a **neutral voter**: it copies the current median chain
 | `libraries/chain/include/graphene/chain/fork_database.hpp` | Emergency mode flag, size increase 1024→2400 |
 | `libraries/chain/fork_database.cpp` | Hash tie-breaking, `set_emergency_mode()` |
 | `plugins/witness/witness.cpp` | Three-state safety, emergency key config, fork collision |
-| `libraries/network/include/graphene/network/peer_connection.hpp` | `fork_rejected_until` soft-ban field |
-| `libraries/network/node.cpp` | P2P anti-spam (soft-ban vs disconnect) |
+| `libraries/network/include/graphene/network/peer_connection.hpp` | `fork_rejected_until` soft-ban field, `sync_spam_strikes` counter |
+| `libraries/network/node.cpp` | P2P anti-spam (soft-ban vs disconnect), sync ping-pong loop fix, sync spam soft-ban |
 | `plugins/snapshot/plugin.cpp` | Forward-compatible DGP import |
 | `share/vizd/config/config_witness.ini` | `emergency-private-key` option |
 
@@ -296,6 +296,30 @@ Since `commit(HEAD)` already consumed the undo session, the zeroed schedule from
 2. **Schedule override execution order** (B11 fix): Hybrid override runs before `update_median_witness_props()`, preventing the crash entirely.
 3. **Startup schedule recovery**: In `database::open()`, after `init_hardforks()`, the schedule is scanned for empty slots. If found: all 21 slots are filled with committee, `emergency_consensus_active` is set to `true`, and `fork_db.set_emergency_mode(true)` is called. If the schedule is OK but emergency is active, the fork_db flag is restored (it's in-memory only and lost on restart).
 
+### B13 (Critical): Stack Buffer Overflow in `get_block_post_validations()`
+
+**Problem**: During emergency mode, the committee account fills 18 of 21 schedule slots. `get_block_post_validations()` iterates all `block_post_validation_object` entries and matches each against the schedule. For each match, it writes an entry to a fixed-size array of `CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT = 20`. With the committee occupying 18 slots, each validation object generates up to 18 matches — a single object with its matching witnesses could write up to 18 entries per iteration. With 20 objects, this produced up to 360 writes into a 20-element array, causing a stack buffer overflow and silent segfault.
+
+**Fix** (two-part):
+1. **Bounds check**: Break the inner loop when the result array reaches `CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT`.
+2. **One match per object**: Once a `block_post_validation_object` matches any schedule slot, skip remaining slots for that object. Each validation object contributes at most one entry.
+
+### B14 (High): P2P Sync Ping-Pong Loop in Emergency Mode
+
+**Problem**: In `on_fetch_blockchain_item_ids_message()` (`node.cpp`), when node A responds to node B's sync request, it checks whether it has B's last block. During emergency mode, competing forks produce different blocks at the same height — so A doesn't have B's block (and vice versa). Both nodes then call `start_synchronizing_with_peer()` for each other, which resets all tracking state and sends a new request, creating an infinite ping-pong loop. This generated hundreds of `get_block_ids()` calls per second, flooding logs and wasting CPU.
+
+**Fix**: Before calling `start_synchronizing_with_peer()`, compare the peer's block number (extracted via `block_header::num_from_id()`) against our head block number. Only restart sync if `peer_block_num > our_head_num` (peer is genuinely ahead). When `peer_block_num <= our_head_num`, the peer is on a competing fork at the same height — skip the restart.
+
+### B15 (Medium): Sync Spam Soft-Ban for Old Peers
+
+**Problem**: After the B14 fix, the local node no longer amplifies the sync loop. However, old peers (without the B14 fix) continue flooding the node with `fetch_blockchain_item_ids_message` requests from their own unpatched ping-pong loops. Each request triggers `get_block_ids()` on the server side — harmless but wasteful (CPU, log noise).
+
+**Fix**: Added sync spam detection with soft-ban in `on_fetch_blockchain_item_ids_message()`:
+1. At the top of the handler, check `fork_rejected_until` — silently discard requests from already-banned peers (skips `get_block_ids()` entirely).
+2. In both competing-fork branches (where `peer_block_num <= our_head_num`), increment a per-peer `sync_spam_strikes` counter.
+3. After 50 strikes, set `fork_rejected_until = now + 300s` (5 minute soft-ban). Reset strikes on legitimate sync (peer genuinely ahead).
+4. At the observed spam rate (~23 requests per 4ms burst), the threshold is hit in under 1 second.
+
 ### Committee Neutral Voter Design
 
 After all fixes, the committee witness has these properties:
@@ -349,7 +373,7 @@ In practice: **every public witness node** should have it configured. During eme
 | Attacker produces emergency blocks during normal operation | **None.** Emergency mode only activates when `seconds_since_lib >= 3600`. During normal operation, the schedule does not contain `committee`, so the attacker's blocks are invalid (wrong scheduled witness). | Consensus-level gating |
 | Attacker produces blocks during real emergency | Blocks are valid but **compete equally** with other emergency producers. Hash tie-breaking resolves conflicts deterministically. The attacker cannot produce *more* blocks than any other node with the key. | Hash tie-breaking + fork collision check |
 | Attacker produces blocks with invalid transactions | **Rejected.** Full consensus validation still applies to emergency blocks. Invalid operations, double-spends, etc. are caught by `apply_block()`. | Standard block validation |
-| Attacker floods P2P with emergency blocks | **Mitigated.** P2P anti-spam (`fork_rejected_until`) soft-bans peers sending blocks on rejected forks for 1 hour. Fork collision check limits production to 1 block per slot. After soft-ban expires, `inhibit_fetching_sync_blocks` is automatically reset (B8 fix) so the peer remains available for sync. | P2P soft-ban + fork collision + auto-reset |
+| Attacker floods P2P with emergency blocks | **Mitigated.** P2P anti-spam (`fork_rejected_until`) soft-bans peers sending blocks on rejected forks for 15 minutes (5 minutes for trusted peers). Sync request spam is detected separately: 50 repeated competing-fork sync requests trigger a 5-minute soft-ban, silently discarding further requests. Fork collision check limits production to 1 block per slot. After soft-ban expires, `inhibit_fetching_sync_blocks` is automatically reset (B8 fix) so the peer remains available for sync. | P2P soft-ban + sync spam ban + fork collision + auto-reset |
 
 ### Key Rotation
 
@@ -544,3 +568,30 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 | **Action** | Restart the node. |
 | **Expected** | `database::open()` sees schedule is OK but `emergency_consensus_active == true` in DGP. Calls `fork_db.set_emergency_mode(true)` to restore the in-memory flag. Node continues in emergency mode without interruption. |
 | **Components** | Startup recovery (fork_db flag), DGP state persistence |
+
+### T19: Block Post-Validation During Emergency (B13 Fix)
+
+| | |
+|---|---|
+| **Precondition** | Emergency active. Committee fills 18/21 schedule slots. Multiple `block_post_validation_object` entries exist. |
+| **Action** | Call `get_block_post_validations()` (triggered by P2P block validation). |
+| **Expected** | Result array stays within `CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT = 20` bounds. Each validation object produces at most one entry (no duplicate committee matches). No stack overflow, no segfault. |
+| **Components** | B13 fix (bounds check + one-match-per-object), `get_block_post_validations()` |
+
+### T20: P2P Sync Ping-Pong Loop Prevention (B14 Fix)
+
+| | |
+|---|---|
+| **Precondition** | Emergency active. Two nodes (A, B) with competing forks at the same height. Both have the B14 fix. |
+| **Action** | A sends sync request to B. B responds. Observe whether `start_synchronizing_with_peer()` is called. |
+| **Expected** | B sees A's last block is at the same height as B's head (`peer_block_num == our_head_num`). B does NOT call `start_synchronizing_with_peer()`. No ping-pong loop. `get_block_ids()` is called once per request, not hundreds of times per second. |
+| **Components** | B14 fix (block-number comparison guard), `on_fetch_blockchain_item_ids_message()` |
+
+### T21: Sync Spam Soft-Ban (B15 Fix)
+
+| | |
+|---|---|
+| **Precondition** | Emergency active. Node has B14+B15 fixes. Connected to old peers without B14 fix. |
+| **Action** | Old peers flood the node with `fetch_blockchain_item_ids_message` requests (competing fork at same height). |
+| **Expected** | First 50 requests are processed normally (each incrementing `sync_spam_strikes`). At strike 50, peer is soft-banned for 5 minutes (`fork_rejected_until` set). Subsequent requests are silently discarded at the top of `on_fetch_blockchain_item_ids_message()` — no `get_block_ids()` calls. After 5 minutes, ban expires and strikes reset if peer sends legitimate sync requests. |
+| **Components** | B15 fix (sync spam strikes + soft-ban), `fork_rejected_until` reuse, `on_fetch_blockchain_item_ids_message()` |
