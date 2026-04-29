@@ -2431,6 +2431,16 @@ namespace graphene {
             void node_impl::on_fetch_blockchain_item_ids_message(peer_connection *originating_peer,
                     const fetch_blockchain_item_ids_message &fetch_blockchain_item_ids_message_received) {
                 VERIFY_CORRECT_THREAD();
+
+                // Sync spam protection: silently discard sync requests from soft-banned peers.
+                // This prevents old peers (without the block-number guard) from flooding us
+                // with hundreds of get_block_ids() calls per second during emergency mode.
+                if (originating_peer->fork_rejected_until > fc::time_point::now()) {
+                    dlog("sync: discarding fetch_blockchain_item_ids from soft-banned peer ${peer}",
+                         ("peer", originating_peer->get_remote_endpoint()));
+                    return;
+                }
+
                 item_id peers_last_item_seen = item_id(fetch_blockchain_item_ids_message_received.item_type, item_hash_t());
                 if (fetch_blockchain_item_ids_message_received.blockchain_synopsis.empty()) {
                     dlog("sync: received a request for item ids starting at the beginning of the chain from peer ${peer_endpoint} (full request: ${synopsis})",
@@ -2499,11 +2509,28 @@ namespace graphene {
                             ilog("sync: restarting sync with peer ${peer} — peer has block #${peer_num} ahead of our head #${our_head}",
                                  ("peer", originating_peer->get_remote_endpoint())
                                  ("peer_num", peer_block_num)("our_head", our_head_num));
+                            originating_peer->sync_spam_strikes = 0;
                             start_synchronizing_with_peer(originating_peer->shared_from_this());
                         } else {
-                            dlog("sync: not restarting sync with peer ${peer} — peer block #${peer_num} <= our head #${our_head} (competing fork)",
-                                 ("peer", originating_peer->get_remote_endpoint())
-                                 ("peer_num", peer_block_num)("our_head", our_head_num));
+                            // Peer is at the same height or behind — competing fork, not useful sync.
+                            // Count as a sync spam strike; soft-ban after threshold.
+                            static constexpr uint32_t SYNC_SPAM_STRIKE_THRESHOLD = 50;
+                            static constexpr uint32_t SYNC_SPAM_BAN_DURATION_SEC = 300; // 5 minutes
+                            ++originating_peer->sync_spam_strikes;
+                            if (originating_peer->sync_spam_strikes >= SYNC_SPAM_STRIKE_THRESHOLD) {
+                                ilog("sync: soft-banning peer ${peer} for ${dur}s — ${strikes} repeated sync requests for competing fork (peer block #${peer_num} <= our head #${our_head})",
+                                     ("peer", originating_peer->get_remote_endpoint())
+                                     ("dur", SYNC_SPAM_BAN_DURATION_SEC)
+                                     ("strikes", originating_peer->sync_spam_strikes)
+                                     ("peer_num", peer_block_num)("our_head", our_head_num));
+                                originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(SYNC_SPAM_BAN_DURATION_SEC);
+                                originating_peer->sync_spam_strikes = 0;
+                            } else {
+                                dlog("sync: not restarting sync with peer ${peer} — peer block #${peer_num} <= our head #${our_head} (strike ${s}/${max})",
+                                     ("peer", originating_peer->get_remote_endpoint())
+                                     ("peer_num", peer_block_num)("our_head", our_head_num)
+                                     ("s", originating_peer->sync_spam_strikes)("max", SYNC_SPAM_STRIKE_THRESHOLD));
+                            }
                         }
                     }
                 } else {
@@ -2514,18 +2541,33 @@ namespace graphene {
                     if (!originating_peer->we_need_sync_items_from_peer &&
                         !fetch_blockchain_item_ids_message_received.blockchain_synopsis.empty() &&
                         !_delegate->has_item(peers_last_item_seen)) {
-                        // Same block-number guard as above
+                        // Same block-number guard and strike counting as above
                         uint32_t peer_block_num = _delegate->get_block_number(peers_last_item_seen.item_hash);
                         uint32_t our_head_num = _delegate->get_block_number(_delegate->get_head_block_id());
                         if (peer_block_num > our_head_num) {
                             ilog("sync: restarting sync with peer ${peer} — peer has block #${peer_num} ahead of our head #${our_head}",
                                  ("peer", originating_peer->get_remote_endpoint())
                                  ("peer_num", peer_block_num)("our_head", our_head_num));
+                            originating_peer->sync_spam_strikes = 0;
                             start_synchronizing_with_peer(originating_peer->shared_from_this());
                         } else {
-                            dlog("sync: not restarting sync with peer ${peer} — peer block #${peer_num} <= our head #${our_head} (competing fork)",
-                                 ("peer", originating_peer->get_remote_endpoint())
-                                 ("peer_num", peer_block_num)("our_head", our_head_num));
+                            static constexpr uint32_t SYNC_SPAM_STRIKE_THRESHOLD = 50;
+                            static constexpr uint32_t SYNC_SPAM_BAN_DURATION_SEC = 300;
+                            ++originating_peer->sync_spam_strikes;
+                            if (originating_peer->sync_spam_strikes >= SYNC_SPAM_STRIKE_THRESHOLD) {
+                                ilog("sync: soft-banning peer ${peer} for ${dur}s — ${strikes} repeated sync requests for competing fork (peer block #${peer_num} <= our head #${our_head})",
+                                     ("peer", originating_peer->get_remote_endpoint())
+                                     ("dur", SYNC_SPAM_BAN_DURATION_SEC)
+                                     ("strikes", originating_peer->sync_spam_strikes)
+                                     ("peer_num", peer_block_num)("our_head", our_head_num));
+                                originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(SYNC_SPAM_BAN_DURATION_SEC);
+                                originating_peer->sync_spam_strikes = 0;
+                            } else {
+                                dlog("sync: not restarting sync with peer ${peer} — peer block #${peer_num} <= our head #${our_head} (strike ${s}/${max})",
+                                     ("peer", originating_peer->get_remote_endpoint())
+                                     ("peer_num", peer_block_num)("our_head", our_head_num)
+                                     ("s", originating_peer->sync_spam_strikes)("max", SYNC_SPAM_STRIKE_THRESHOLD));
+                            }
                         }
                     }
                 }

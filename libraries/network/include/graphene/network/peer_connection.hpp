@@ -282,6 +282,12 @@ namespace graphene {
             // snapshot reload or brief micro-forks).
             uint32_t unlinkable_block_strikes = 0;
 
+            // Strike counter for sync request spam.  Incremented when a peer
+            // sends us fetch_blockchain_item_ids_message but their last block
+            // is at or below our head (competing fork, not actually ahead).
+            // After threshold, the peer is soft-banned to stop the flood.
+            uint32_t sync_spam_strikes = 0;
+
             // Reason for disconnect (set before move_peer_to_closing_list)
             std::string closing_reason;
 
