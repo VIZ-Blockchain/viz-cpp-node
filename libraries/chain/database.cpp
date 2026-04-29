@@ -2461,11 +2461,10 @@ namespace graphene { namespace chain {
                 _wso.majority_version = majority_version;
             });
 
-            update_median_witness_props();
-
             // === HARDFORK 12: EMERGENCY HYBRID SCHEDULE ===
-            // After normal schedule update, apply hybrid schedule during emergency mode.
-            // Real witnesses keep their slots; committee fills gaps for offline witnesses.
+            // Must run BEFORE update_median_witness_props() because the normal
+            // schedule above may have zeroed all slots (no witnesses have valid keys
+            // during emergency). The hybrid override fills empty slots with committee.
             const dynamic_global_property_object &emergency_dgp = get_dynamic_global_properties();
 
             if (has_hardfork(CHAIN_HARDFORK_12) && emergency_dgp.emergency_consensus_active) {
@@ -2561,6 +2560,8 @@ namespace graphene { namespace chain {
                          ("t", exit_threshold));
                 }
             }
+
+            update_median_witness_props();
         }
 
         void database::update_median_witness_props() {
