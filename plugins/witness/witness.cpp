@@ -439,8 +439,17 @@ namespace graphene {
                                 }
                             }
                             if (prate < _required_witness_participation) {
-                                capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
-                                return block_production_condition::low_participation;
+                                if (_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
+                                    // enable-stale-production=true: operator override, produce anyway
+                                    // to bootstrap/recover a fully stalled network where all nodes
+                                    // see low participation and would otherwise deadlock.
+                                    dlog("Witness participation is ${p}% but stale-production is enabled, "
+                                         "producing anyway to recover stalled network",
+                                         ("p", uint32_t(prate / CHAIN_1_PERCENT)));
+                                } else {
+                                    capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
+                                    return block_production_condition::low_participation;
+                                }
                             }
                         }
                     }
@@ -608,8 +617,14 @@ namespace graphene {
                 if (!db.has_hardfork(CHAIN_HARDFORK_12)) {
                     uint32_t prate = db.witness_participation_rate();
                     if (prate < _required_witness_participation) {
-                        capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
-                        return block_production_condition::low_participation;
+                        if (_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
+                            dlog("Witness participation is ${p}% but stale-production is enabled, "
+                                 "producing anyway to recover stalled network",
+                                 ("p", uint32_t(prate / CHAIN_1_PERCENT)));
+                        } else {
+                            capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
+                            return block_production_condition::low_participation;
+                        }
                     }
                 }
 
