@@ -409,6 +409,7 @@ namespace graphene {
                 const auto &dgp = db.get_dynamic_global_properties();
                 ilog("DEBUG_CRASH: dgp ok, head=${h} emergency=${e}", ("h", dgp.head_block_number)("e", dgp.emergency_consensus_active));
 
+                ilog("DEBUG_CRASH: checking hardfork12 and emergency path");
                 if (db.has_hardfork(CHAIN_HARDFORK_12)) {
                     if (dgp.emergency_consensus_active) {
                         // EMERGENCY MODE: auto-bypass both stale and participation checks.
@@ -474,13 +475,17 @@ namespace graphene {
                 //try get block post validation list for each witness
                 //if witness can validate it, sign chain_id and block_id for message
                 //broadcast validation message by p2p plugin
+                ilog("DEBUG_CRASH: emergency/participation check done, entering block_post_validation");
                 if(last_block_post_validation_time < now_fine ){
                     last_block_post_validation_time = now;
+                    ilog("DEBUG_CRASH: block_post_validation tick, iterating ${n} witnesses", ("n", _witnesses.size()));
                     //ilog("! tick last_block_post_validation_time");
                     //get block post validation for each witness we have
                     for (auto &witness_account : _witnesses) {
                         bool ignore_witness = false;
+                        ilog("DEBUG_CRASH: get_block_post_validations for ${w}", ("w", witness_account));
                         auto block_post_validations = db.get_block_post_validations(witness_account);
+                        ilog("DEBUG_CRASH: got ${n} post_validations for ${w}", ("n", block_post_validations.size())("w", witness_account));
                         if (block_post_validations.size() > 0) {
                             const auto &witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
                             auto w_itr = witness_by_name.find(witness_account);
@@ -502,6 +507,7 @@ namespace graphene {
                                 ignore_witness = true;
                             }
                             if(!ignore_witness){
+                                ilog("DEBUG_CRASH: signing post_validations for ${w}", ("w", witness_account));
                                 graphene::protocol::private_key_type witness_priv_key = private_key_itr->second;
                                 //we have block post validations for this witness
                                 //check if we have a block
@@ -522,6 +528,7 @@ namespace graphene {
                     }
                 }
 
+                ilog("DEBUG_CRASH: block_post_validation done, entering minority fork detection");
                 // === MINORITY FORK DETECTION ===
                 // If the last CHAIN_MAX_WITNESSES (21) blocks in fork_db were ALL
                 // produced by our own configured witnesses, we are likely stuck on
