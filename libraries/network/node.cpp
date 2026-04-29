@@ -2463,10 +2463,26 @@ namespace graphene {
                             reply_message.total_remaining_item_count);
                 }
                 catch (const peer_is_on_an_unreachable_fork &) {
-                    dlog("Peer is on a fork and there's no set of blocks we can provide to switch them to our fork");
+                    wlog("sync: peer ${peer} is on an unreachable fork (synopsis has ${n} entries, last=${last})",
+                         ("peer", originating_peer->get_remote_endpoint())
+                         ("n", fetch_blockchain_item_ids_message_received.blockchain_synopsis.size())
+                         ("last", fetch_blockchain_item_ids_message_received.blockchain_synopsis.empty()
+                             ? item_hash_t()
+                             : fetch_blockchain_item_ids_message_received.blockchain_synopsis.back()));
                     // we reply with an empty list as if we had an empty blockchain;
                     // we don't want to disconnect because they may be able to provide
                     // us with blocks on their chain
+                }
+                catch (const fc::exception &e) {
+                    wlog("sync: unexpected exception in get_block_ids() for peer ${peer}: ${e}",
+                         ("peer", originating_peer->get_remote_endpoint())
+                         ("e", e.to_detail_string()));
+                    // Send empty reply so the peer gets a response rather than timing out
+                }
+                catch (...) {
+                    wlog("sync: unknown exception in get_block_ids() for peer ${peer}",
+                         ("peer", originating_peer->get_remote_endpoint()));
+                    // Send empty reply so the peer gets a response rather than timing out
                 }
 
                 bool disconnect_from_inhibited_peer = false;

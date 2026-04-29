@@ -273,17 +273,40 @@ namespace graphene {
 
                                 for (const item_hash_t &block_id_in_synopsis : boost::adaptors::reverse(
                                         blockchain_synopsis)) {
-                                    if (block_id_in_synopsis == block_id_type() ||
-                                        (chain.db().is_known_block(block_id_in_synopsis) &&
-                                         is_included_block(block_id_in_synopsis))) {
+                                    if (block_id_in_synopsis == block_id_type()) {
                                         last_known_block_id = block_id_in_synopsis;
                                         found_a_block_in_synopsis = true;
                                         break;
                                     }
+                                    bool known = chain.db().is_known_block(block_id_in_synopsis);
+                                    bool included = known ? is_included_block(block_id_in_synopsis) : false;
+                                    if (known && included) {
+                                        last_known_block_id = block_id_in_synopsis;
+                                        found_a_block_in_synopsis = true;
+                                        break;
+                                    }
+                                    if (chain.db()._dlt_mode) {
+                                        uint32_t syn_num = block_header::num_from_id(block_id_in_synopsis);
+                                        block_id_type our_id = chain.db().find_block_id_for_num(syn_num);
+                                        wlog("DLT mode: get_block_ids() synopsis block #${num} (${id}): "
+                                             "is_known=${known}, is_included=${included}, "
+                                             "our_id_for_num=${our_id}, match=${match}, "
+                                             "head=${head}, dlt_range=[${dlt_s}..${dlt_e}]",
+                                             ("num", syn_num)("id", block_id_in_synopsis)
+                                             ("known", known)("included", included)
+                                             ("our_id", our_id)("match", our_id == block_id_in_synopsis)
+                                             ("head", chain.db().head_block_num())
+                                             ("dlt_s", chain.db().get_dlt_block_log().start_block_num())
+                                             ("dlt_e", chain.db().get_dlt_block_log().head_block_num()));
+                                    }
                                 }
 
-                                if (!found_a_block_in_synopsis)
+                                if (!found_a_block_in_synopsis) {
+                                    wlog("DLT mode: peer_is_on_an_unreachable_fork — could not match any of "
+                                         "${n} synopsis entries. Synopsis: ${syn}",
+                                         ("n", blockchain_synopsis.size())("syn", blockchain_synopsis));
                                     FC_THROW_EXCEPTION(graphene::network::peer_is_on_an_unreachable_fork, "Unable to provide a list of blocks starting at any of the blocks in peer's synopsis");
+                                }
                             }
 
                             // Determine the starting block number for the response.
