@@ -1683,6 +1683,26 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                         db.set_dlt_mode(true);
                         db.initialize_hardforks();
 
+                        // Replay blocks from dlt_block_log that are beyond the
+                        // snapshot head.  The dlt_block_log may contain blocks
+                        // from the previous session that are newer than the
+                        // snapshot.  Replaying them here avoids depending on P2P
+                        // sync for blocks we already have locally.
+                        uint32_t snapshot_head = db.head_block_num();
+                        auto dlt_head = db.get_dlt_block_log().head();
+                        if (dlt_head && dlt_head->block_num() > snapshot_head) {
+                            ilog(CLOG_YELLOW "Replaying dlt_block_log from block ${from} to ${to}..." CLOG_RESET,
+                                 ("from", snapshot_head + 1)("to", dlt_head->block_num()));
+                            std::cerr << "   Replaying dlt_block_log blocks "
+                                      << (snapshot_head + 1) << ".." << dlt_head->block_num() << "...\n";
+                            try {
+                                db.reindex_from_dlt(snapshot_head + 1);
+                            } catch (const fc::exception& e) {
+                                elog("Failed to replay dlt_block_log: ${e}", ("e", e.to_detail_string()));
+                                std::cerr << "   dlt_block_log replay failed, will rely on P2P sync.\n";
+                            }
+                        }
+
                         last_block_received_time = fc::time_point::now();
 
                         std::cerr << "   === Snapshot reload complete (block " << db.head_block_num() << ") ===\n";
