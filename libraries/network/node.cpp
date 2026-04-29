@@ -2947,10 +2947,27 @@ namespace graphene {
                             // that we should try to fetch.  Kick off the fetch loop.
                             trigger_fetch_sync_items_loop();
                         } else {
-                            // If we get here, the peer has sent us a non-empty list of items, but we have already
-                            // received all of the items from other peers.  Send a new request to the peer to
-                            // see if we're really in sync
-                            fetch_next_batch_of_item_ids_from_peer(originating_peer);
+                            // All items from the peer's response were already known
+                            // (consumed by the dedup loop) and remaining is 0.
+                            // We are fully in sync with this peer — mark it so.
+                            //
+                            // Previously this path would call fetch_next_batch_of_item_ids_from_peer()
+                            // to "double-check", but when a DLT node can only serve a limited trailing
+                            // window of blocks, the peer returns the same blocks we already have,
+                            // dedup consumes them all, we re-request, and the cycle repeats — an
+                            // infinite sync loop producing thousands of redundant get_block_ids calls.
+                            fc_ilog(fc::logger::get("sync"),
+                                 "sync: peer ${peer} is up-to-date (all ${n} offered items already known, remaining=0)",
+                                 ("peer", originating_peer->get_remote_endpoint())
+                                 ("n", blockchain_item_ids_inventory_message_received.item_hashes_available.size()));
+                            dlog("sync: peer said we're up-to-date (all items already known), entering normal operation with this peer");
+                            originating_peer->we_need_sync_items_from_peer = false;
+
+                            uint32_t new_number_of_unfetched_items = calculate_unsynced_block_count_from_all_peers();
+                            _total_number_of_unfetched_items = new_number_of_unfetched_items;
+                            if (new_number_of_unfetched_items == 0) {
+                                _delegate->sync_status(blockchain_item_ids_inventory_message_received.item_type, 0);
+                            }
                         }
                     }
                 } else {
