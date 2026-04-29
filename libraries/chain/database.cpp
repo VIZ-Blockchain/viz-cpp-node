@@ -2470,10 +2470,10 @@ namespace graphene { namespace chain {
 
             if (has_hardfork(CHAIN_HARDFORK_12) && emergency_dgp.emergency_consensus_active) {
                 const witness_schedule_object &emergency_wso = get_witness_schedule_object();
+                uint32_t real_witness_slots = 0;
+                uint32_t committee_slots = 0;
 
                 modify(emergency_wso, [&](witness_schedule_object &_wso) {
-                    uint32_t real_witness_slots = 0;
-                    uint32_t committee_slots = 0;
 
                     // First pass: replace unavailable/empty slots with committee
                     // Iterate the FULL schedule (CHAIN_MAX_WITNESSES), not just
@@ -2542,10 +2542,11 @@ namespace graphene { namespace chain {
                     });
                 }
 
-                // EXIT CONDITION: LIB has advanced past emergency_consensus_start_block.
-                // This means 75% of real witnesses are producing consistently.
-                uint32_t current_lib = emergency_dgp.last_irreversible_block_num;
-                if (current_lib > emergency_dgp.emergency_consensus_start_block) {
+                // EXIT CONDITION: enough real witnesses have re-enabled.
+                // When >= 75% of schedule slots are real witnesses (not committee),
+                // the network has recovered and can sustain normal consensus.
+                uint32_t exit_threshold = (CHAIN_MAX_WITNESSES * CHAIN_IRREVERSIBLE_THRESHOLD) / CHAIN_100_PERCENT;
+                if (real_witness_slots >= exit_threshold) {
                     modify(emergency_dgp, [&](dynamic_global_property_object &_dgp) {
                         _dgp.emergency_consensus_active = false;
                     });
@@ -2554,10 +2555,10 @@ namespace graphene { namespace chain {
                     _fork_db.set_emergency_mode(false);
 
                     ilog("EMERGENCY CONSENSUS MODE deactivated at block ${b}. "
-                         "LIB has advanced to ${lib}, past emergency start ${start}.",
+                         "${r} real witnesses active (threshold: ${t}).",
                          ("b", head_block_num())
-                         ("lib", current_lib)
-                         ("start", emergency_dgp.emergency_consensus_start_block));
+                         ("r", real_witness_slots)
+                         ("t", exit_threshold));
                 }
             }
         }
@@ -5393,102 +5394,14 @@ namespace graphene { namespace chain {
                 const dynamic_global_property_object &dpo = get_dynamic_global_properties();
                 const witness_schedule_object &wso = get_witness_schedule_object();
 
-                // === HARDFORK 12: EMERGENCY LIB COMPUTATION ===
-                // During emergency mode, compute LIB using ONLY real witnesses
-                // (exclude committee). This ensures:
-                // 1. PARTITION SAFETY: committee-only chains keep LIB frozen
-                // 2. GRADUAL RECOVERY: real witnesses returning via hybrid schedule
-                //    advance LIB naturally -> emergency exits
-                if (has_hardfork(CHAIN_HARDFORK_12) && dpo.emergency_consensus_active) {
-                    // Collect ONLY real (non-committee) witnesses from schedule
-                    vector<const witness_object *> real_wit_objs;
-                    for (int i = 0; i < wso.num_scheduled_witnesses;
-                         i += CHAIN_BLOCK_WITNESS_REPEAT) {
-                        const auto &wname = wso.current_shuffled_witnesses[i];
-                        if (wname != CHAIN_EMERGENCY_WITNESS_ACCOUNT &&
-                            wname != account_name_type()) {
-                            real_wit_objs.push_back(
-                                &get_witness(wname));
-                        }
-                    }
-
-                    if (real_wit_objs.empty()) {
-                        // All committee -- LIB stays frozen
-                        // Expand fork_db to accommodate emergency blocks
-                        uint32_t emergency_fork_db_size = std::min(
-                            dpo.head_block_number -
-                                dpo.last_irreversible_block_num + 1,
-                            uint32_t(CHAIN_MAX_UNDO_HISTORY));
-                        _fork_db.set_max_size(emergency_fork_db_size);
-                        return;
-                    }
-
-                    // Compute LIB using real witnesses only.
-                    // Threshold: 75% of REAL witnesses (not total schedule).
-                    size_t offset =
-                        ((CHAIN_100_PERCENT - CHAIN_IRREVERSIBLE_THRESHOLD) *
-                         real_wit_objs.size() / CHAIN_100_PERCENT);
-
-                    std::nth_element(
-                        real_wit_objs.begin(),
-                        real_wit_objs.begin() + offset,
-                        real_wit_objs.end(),
-                        [](const witness_object *a, const witness_object *b) {
-                            return a->last_supported_block_num <
-                                   b->last_supported_block_num;
-                        });
-
-                    uint32_t new_lib =
-                        real_wit_objs[offset]->last_supported_block_num;
-
-                    if (new_lib > dpo.last_irreversible_block_num) {
-                        // Real witnesses have advanced LIB!
-                        ilog("Emergency LIB advance: ${old} -> ${new} "
-                             "(${n} real witnesses producing)",
-                             ("old", dpo.last_irreversible_block_num)
-                             ("new", new_lib)
-                             ("n", real_wit_objs.size()));
-
-                        modify(dpo, [&](dynamic_global_property_object &_dpo) {
-                            _dpo.last_irreversible_block_num = new_lib;
-                            _dpo.last_irreversible_block_id = block_id_type();
-                            _dpo.last_irreversible_block_ref_num = 0;
-                            _dpo.last_irreversible_block_ref_prefix = 0;
-                        });
-
-                        commit(dpo.last_irreversible_block_num);
-
-                        if (!(skip & skip_block_log) && !_dlt_mode) {
-                            const auto &tmp_head = _block_log.head();
-                            uint64_t log_head_num = 0;
-                            if (tmp_head) {
-                                log_head_num = tmp_head->block_num();
-                            }
-                            if (log_head_num < dpo.last_irreversible_block_num) {
-                                while (log_head_num < dpo.last_irreversible_block_num) {
-                                    std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
-                                            log_head_num + 1);
-                                    FC_ASSERT(block, "Current fork in the fork database does not contain the last_irreversible_block");
-                                    _block_log.append(block->data);
-                                    log_head_num++;
-                                }
-                                _block_log.flush();
-                            }
-                        }
-
-                        _fork_db.set_max_size(dpo.head_block_number -
-                                              dpo.last_irreversible_block_num + 1);
-                        return;
-                    } else {
-                        // Not enough real witnesses yet -- keep LIB frozen
-                        uint32_t emergency_fork_db_size = std::min(
-                            dpo.head_block_number -
-                                dpo.last_irreversible_block_num + 1,
-                            uint32_t(CHAIN_MAX_UNDO_HISTORY));
-                        _fork_db.set_max_size(emergency_fork_db_size);
-                        return;
-                    }
-                }
+                // === HARDFORK 12: EMERGENCY LIB ===
+                // During emergency mode, LIB advances normally using all witnesses
+                // in the schedule (including committee). Committee produces every
+                // block, so after current_run >= CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN
+                // (3 blocks), LIB advances every block. This keeps the gap between
+                // LIB and head small, preventing fork_db overflow on long emergencies.
+                // When operators re-enable real witnesses and emergency exits,
+                // normal LIB computation continues seamlessly.
                 // === END HARDFORK 12 EMERGENCY LIB ===
 
                 vector<const witness_object *> wit_objs;
