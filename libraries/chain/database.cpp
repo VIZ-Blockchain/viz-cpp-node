@@ -5378,16 +5378,19 @@ namespace graphene { namespace chain {
             const auto& validation_list = get_index<block_post_validation_index>().indices().get<by_id>();
             auto itr = validation_list.begin();
             size_t i = 0;
-            while(itr != validation_list.end())
+            while(itr != validation_list.end() && i < CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT)
             {
                 const auto& current = *itr;
                 ++itr;
                 //if witness is in the list add it to result
-                for (size_t j = 0; j< CHAIN_MAX_WITNESSES; j++) {
+                //only count the first match per validation object (committee can occupy multiple slots)
+                bool matched = false;
+                for (size_t j = 0; j < CHAIN_MAX_WITNESSES && !matched; j++) {
                     if(current.current_shuffled_witnesses[j] == witness_account){
                         if(current.current_shuffled_witnesses_validations[j] == false){//need validate
                             result[i] = block_post_validation_object(current);
                             ++i;
+                            matched = true;
                         }
                     }
                 }
