@@ -153,6 +153,12 @@ p2p-stale-sync-detection = false
 p2p-stale-sync-timeout-seconds = 120
 ```
 
+**P2P stats task:** When `p2p-stats-enabled = true`, every `p2p-stats-interval` seconds the plugin logs:
+- Per-peer stats (IP, port, latency, bytes received, blocked status)
+- Failed/rejected peers from the peer database
+- **Block storage diagnostics:** head, LIB, earliest available block, DLT block log range, regular block log end, fork_db linked/unlinked counts and ranges, DLT mode flag, and total `resize()` count
+- In DLT mode, also runs `dlt_block_log::verify_mapping()` to detect and self-heal stale memory-mapped file state
+
 **Minority fork auto-recovery:** The P2P plugin exposes `resync_from_lib()` which is called by the witness plugin when a minority fork is detected (last 21 blocks all from our own witnesses). It pops all reversible blocks back to LIB, resets fork_db, re-initiates P2P sync, and reconnects seed nodes. This replicates the effect of a manual node restart. See [fork-collision-hardfork-proposal.md](fork-collision-hardfork-proposal.md) for details.
 
 ---

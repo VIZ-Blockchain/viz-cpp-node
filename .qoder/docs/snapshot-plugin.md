@@ -369,6 +369,19 @@ dlt-block-log-max-blocks = 100000
 - When the DLT block log is empty (fresh snapshot import), the node skips ahead to the last irreversible block number, since snapshot state is already trusted.
 - If a block is not found in the fork database during DLT block log writes (normal after restart), the gap is logged via `wlog` and fills naturally as LIB advances past the post-restart head.
 
+### Mapped file integrity
+
+The DLT block log uses `boost::iostreams::mapped_file` for both data and index files. Each `append()` calls `resize()` which internally does close→truncate→remap. After thousands of resize cycles during long-running block production, `mapped_file.size()` can return **stale values** (reflecting an older, smaller size), causing `get_block_pos()` to reject valid block numbers and break P2P sync (the node claims to have blocks but fails to look them up).
+
+**Fix:** The implementation tracks **logical file sizes** (`_logical_block_size`, `_logical_index_size`) independently of `mapped_file.size()`. These are updated after every `resize()` in `append()` and re-synced from the actual mapping on `open()`. All range checks in `get_block_pos()` and `read_block()` use the tracked logical sizes.
+
+**Self-healing:** A `verify_mapping()` method compares `mapped_file.size()` against the tracked logical size. If a discrepancy is detected, the mapping is closed and reopened (healing the stale state). This is called automatically every 5 minutes by the P2P stats task.
+
+**Diagnostics:** The P2P stats task (every 5 minutes) logs a `Block storage` line showing:
+- `dlt_log: [start..end]` — current DLT block log range
+- `dlt_resizes` — total `resize()` calls since open (useful for correlating with staleness)
+- `fork_db` — linked/unlinked block counts and ranges
+
 ### P2P block serving path
 
 When a peer requests a block:
