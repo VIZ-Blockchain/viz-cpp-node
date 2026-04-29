@@ -1554,7 +1554,13 @@ namespace graphene {
                                         ("peer", active_peer->get_remote_endpoint())("count", active_peer->sync_items_requested_from_peer.size()));
                                 wlog("Disconnecting peer ${peer} because they haven't made any progress on my remaining ${count} sync item requests",
                                         ("peer", active_peer->get_remote_endpoint())("count", active_peer->sync_items_requested_from_peer.size()));
-                                disconnect_due_to_request_timeout = true;
+                                // Must push to disconnect list BEFORE break,
+                                // otherwise the break exits the for-loop and
+                                // the push_back at the bottom of the loop body
+                                // is never reached — the peer stays in
+                                // _active_connections and this log repeats
+                                // every second without ever disconnecting.
+                                peers_to_disconnect_forcibly.push_back(active_peer);
                                 break;
                             }
                             if (!disconnect_due_to_request_timeout &&
