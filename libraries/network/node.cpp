@@ -2489,9 +2489,22 @@ namespace graphene {
                     if (!originating_peer->we_need_sync_items_from_peer &&
                         !fetch_blockchain_item_ids_message_received.blockchain_synopsis.empty() &&
                         !_delegate->has_item(peers_last_item_seen)) {
-                        ilog("sync: restarting sync with peer ${peer} because we don't have their last item (peer is in sync with us)",
-                             ("peer", originating_peer->get_remote_endpoint()));
-                        start_synchronizing_with_peer(originating_peer->shared_from_this());
+                        // Only restart sync if the peer's last block is AHEAD of our head.
+                        // In emergency mode, competing forks produce different blocks at the
+                        // same height.  Without this check, both nodes see each other's block
+                        // as unknown and endlessly restart sync (ping-pong loop).
+                        uint32_t peer_block_num = _delegate->get_block_number(peers_last_item_seen.item_hash);
+                        uint32_t our_head_num = _delegate->get_block_number(_delegate->get_head_block_id());
+                        if (peer_block_num > our_head_num) {
+                            ilog("sync: restarting sync with peer ${peer} — peer has block #${peer_num} ahead of our head #${our_head}",
+                                 ("peer", originating_peer->get_remote_endpoint())
+                                 ("peer_num", peer_block_num)("our_head", our_head_num));
+                            start_synchronizing_with_peer(originating_peer->shared_from_this());
+                        } else {
+                            dlog("sync: not restarting sync with peer ${peer} — peer block #${peer_num} <= our head #${our_head} (competing fork)",
+                                 ("peer", originating_peer->get_remote_endpoint())
+                                 ("peer_num", peer_block_num)("our_head", our_head_num));
+                        }
                     }
                 } else {
                     dlog("sync: peer is out of sync, sending peer ${count} items ids: first: ${first_item_id}, last: ${last_item_id}",
@@ -2501,9 +2514,19 @@ namespace graphene {
                     if (!originating_peer->we_need_sync_items_from_peer &&
                         !fetch_blockchain_item_ids_message_received.blockchain_synopsis.empty() &&
                         !_delegate->has_item(peers_last_item_seen)) {
-                        ilog("sync: restarting sync with peer ${peer} because we don't have their last item (peer is out of sync with us)",
-                             ("peer", originating_peer->get_remote_endpoint()));
-                        start_synchronizing_with_peer(originating_peer->shared_from_this());
+                        // Same block-number guard as above
+                        uint32_t peer_block_num = _delegate->get_block_number(peers_last_item_seen.item_hash);
+                        uint32_t our_head_num = _delegate->get_block_number(_delegate->get_head_block_id());
+                        if (peer_block_num > our_head_num) {
+                            ilog("sync: restarting sync with peer ${peer} — peer has block #${peer_num} ahead of our head #${our_head}",
+                                 ("peer", originating_peer->get_remote_endpoint())
+                                 ("peer_num", peer_block_num)("our_head", our_head_num));
+                            start_synchronizing_with_peer(originating_peer->shared_from_this());
+                        } else {
+                            dlog("sync: not restarting sync with peer ${peer} — peer block #${peer_num} <= our head #${our_head} (competing fork)",
+                                 ("peer", originating_peer->get_remote_endpoint())
+                                 ("peer_num", peer_block_num)("our_head", our_head_num));
+                        }
                     }
                 }
                 originating_peer->send_message(reply_message);
@@ -4466,6 +4489,7 @@ namespace graphene {
                 peer->last_block_delegate_has_seen = item_hash_t();
                 peer->last_block_time_delegate_has_seen = _delegate->get_block_time(item_hash_t());
                 peer->inhibit_fetching_sync_blocks = false;
+                peer->last_sync_restart_time = fc::time_point::now();
                 fetch_next_batch_of_item_ids_from_peer(peer.get());
             }
 

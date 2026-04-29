@@ -285,6 +285,11 @@ namespace graphene {
             // Reason for disconnect (set before move_peer_to_closing_list)
             std::string closing_reason;
 
+            // Cooldown: last time we called start_synchronizing_with_peer() for this peer.
+            // Prevents sync ping-pong loops in emergency mode where competing forks
+            // at the same height cause both nodes to endlessly restart sync.
+            fc::time_point last_sync_restart_time;
+
             fc::future<void> accept_or_connect_task_done;
 
             firewall_check_state_data *firewall_check_state;
