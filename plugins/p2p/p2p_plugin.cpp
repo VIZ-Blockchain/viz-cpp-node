@@ -348,10 +348,18 @@ namespace graphene {
                                 }
                             }
 
+                            // Use effective_head (not head_block_num) for the
+                            // remaining-item count.  In DLT mode, effective_head
+                            // may be clamped to storage_end when there is a gap
+                            // between the block log and fork_db.  Advertising
+                            // blocks beyond effective_head causes an infinite
+                            // sync loop: the peer keeps asking for more IDs, we
+                            // return only the anchor block the peer already has,
+                            // remaining>0, peer re-requests, etc.
                             if (!result.empty() &&
-                                block_header::num_from_id(result.back()) < chain.db().head_block_num()) {
+                                block_header::num_from_id(result.back()) < effective_head) {
                                 remaining_item_count =
-                                        chain.db().head_block_num() - block_header::num_from_id(result.back());
+                                        effective_head - block_header::num_from_id(result.back());
                             }
 
                             if (chain.db()._dlt_mode) {
