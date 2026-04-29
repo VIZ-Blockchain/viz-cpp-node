@@ -2816,9 +2816,20 @@ namespace graphene {
                         dlog("is_first_item_for_other_peer: ${is_first}.  item_hashes_received.size() = ${size}",
                                 ("is_first", is_first_item_for_other_peer)("size", item_hashes_received.size()));
                         if (!is_first_item_for_other_peer) {
+                            // Pop items from the front that we've already applied to
+                            // our chain.  IMPORTANT: only skip blocks at or below our
+                            // head block number.  Blocks ABOVE head that happen to be
+                            // "known" (sitting in fork_db's unlinked index from
+                            // broadcast) must NOT be skipped — the sync protocol
+                            // needs to deliver the full sequential chain so orphans
+                            // can link.  Without this check, after a snapshot reload
+                            // broadcast orphans cause the dedup loop to skip the
+                            // first N sync blocks, creating a gap and stalling sync.
+                            uint32_t our_head_num = _delegate->get_block_number(_delegate->get_head_block_id());
                             while (!item_hashes_received.empty() &&
                                    _delegate->has_item(item_id(blockchain_item_ids_inventory_message_received.item_type,
-                                           item_hashes_received.front()))) {
+                                           item_hashes_received.front())) &&
+                                   _delegate->get_block_number(item_hashes_received.front()) <= our_head_num) {
                                 assert(item_hashes_received.front() !=
                                        item_hash_t());
                                 originating_peer->last_block_delegate_has_seen = item_hashes_received.front();
