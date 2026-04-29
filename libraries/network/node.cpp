@@ -2935,10 +2935,32 @@ namespace graphene {
                         trigger_fetch_sync_items_loop();
                         if (originating_peer->ids_of_items_to_get.size() <=
                             GRAPHENE_NET_MIN_BLOCK_IDS_TO_PREFETCH) {
-                            // keep fetching the peer's list of sync items until we get enough to switch into block-
-                            // fetching mode (the peer will be busy during this request, but the fetch loop
-                            // can use other peers; once the ID response arrives the peer becomes idle again)
-                            fetch_next_batch_of_item_ids_from_peer(originating_peer);
+                            if (originating_peer->ids_of_items_to_get.empty() &&
+                                !blockchain_item_ids_inventory_message_received.item_hashes_available.empty()) {
+                                // The peer claims to have more blocks (remaining > 0) but
+                                // returned only blocks we already have (all consumed by dedup).
+                                // Our synopsis won't change, so re-requesting would return the
+                                // exact same response — an infinite loop.  This typically happens
+                                // when a DLT peer has a storage gap: it can serve the anchor
+                                // block but not the blocks after it.  Inhibit sync from this
+                                // peer and let other peers provide the missing blocks.
+                                fc_ilog(fc::logger::get("sync"),
+                                     "sync: peer ${peer} returned ${n} block IDs we already have "
+                                     "with remaining=${r} — inhibiting sync (possible DLT storage gap)",
+                                     ("peer", originating_peer->get_remote_endpoint())
+                                     ("n", blockchain_item_ids_inventory_message_received.item_hashes_available.size())
+                                     ("r", blockchain_item_ids_inventory_message_received.total_remaining_item_count));
+                                wlog("sync: peer ${peer} can't advance our sync (returned only known blocks, "
+                                     "remaining=${r}). Inhibiting sync from this peer.",
+                                     ("peer", originating_peer->get_remote_endpoint())
+                                     ("r", blockchain_item_ids_inventory_message_received.total_remaining_item_count));
+                                originating_peer->inhibit_fetching_sync_blocks = true;
+                            } else {
+                                // keep fetching the peer's list of sync items until we get enough to switch into block-
+                                // fetching mode (the peer will be busy during this request, but the fetch loop
+                                // can use other peers; once the ID response arrives the peer becomes idle again)
+                                fetch_next_batch_of_item_ids_from_peer(originating_peer);
+                            }
                         }
                     } else {
                         // the peer has told us about all of the items it knows
