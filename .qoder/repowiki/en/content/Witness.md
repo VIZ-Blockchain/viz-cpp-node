@@ -25,12 +25,10 @@
 
 ## Update Summary
 **Changes Made**
-- Added new minority fork detection capabilities with automatic recovery mechanisms
-- Enhanced block production logic to handle minority fork scenarios with skip_undo_history_check flag
-- Added new minority_fork enumeration value (10) to block_production_condition_enum
-- Implemented automatic recovery through resync_from_lib() method when minority fork is detected
-- Enhanced emergency consensus mode integration with minority fork detection
-- Updated configuration parameter processing with improved type safety and scaling
+- Added debug-block-production configuration option enabling verbose logging for block production and chain internals
+- Enhanced logging with granular visibility into witness participation checks, emergency mode enforcement, block post-validation processes, and minority fork detection
+- Integrated comprehensive timestamped logging throughout the block production pipeline
+- Added contextual information logging for better debugging and troubleshooting capabilities
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -47,7 +45,7 @@
 ## Introduction
 This document explains the Witness subsystem of the VIZ node implementation. It covers how witnesses are scheduled, how blocks are produced, how witness participation is monitored, and how the witness-related APIs expose information to clients. The focus is on the witness plugin (block production), the witness API plugin (read-only queries), and the underlying chain database that maintains witness state and schedules.
 
-**Updated** Enhanced with improved witness block production timing featuring 250ms interval optimization, deterministic slot time alignment, comprehensive fork collision detection, crash-safe NTP synchronization, strengthened witness reward creation validation with find_account() checks, new fork collision timeout configuration, two-level fork resolution system, enhanced fork database integration with compare_fork_branches() function, automatic stale fork pruning capabilities, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: enhanced emergency consensus mode integration, **NEW**: skip_undo_history_check flag for controlled production during recovery scenarios.
+**Updated** Enhanced with improved witness block production timing featuring 250ms interval optimization, deterministic slot time alignment, comprehensive fork collision detection, crash-safe NTP synchronization, strengthened witness reward creation validation with find_account() checks, new fork collision timeout configuration, two-level fork resolution system, enhanced fork database integration with compare_fork_branches() function, automatic stale fork pruning capabilities, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: enhanced emergency consensus mode integration, **NEW**: skip_undo_history_check flag for controlled production during recovery scenarios, **NEW**: debug-block-production configuration option enabling verbose logging for block production and chain internals with detailed traces and granular visibility.
 
 ## Project Structure
 The Witness functionality spans three primary areas:
@@ -61,14 +59,14 @@ subgraph "Node Binary"
 VIZD["vizd main<br/>registers plugins"]
 end
 subgraph "Plugins"
-WITNESS["Witness Plugin<br/>optimized block production<br/>fork collision timeout: 21 blocks<br/>minority fork detection"]
+WITNESS["Witness Plugin<br/>optimized block production<br/>fork collision timeout: 21 blocks<br/>minority fork detection<br/>DEBUG logging: enabled"]
 WAPI["Witness API Plugin<br/>JSON-RPC queries"]
 SNAPSHOT["Snapshot Plugin<br/>coordinated operations"]
 P2P["P2P Plugin<br/>broadcast<br/>resync_from_lib()"]
 CHAIN["Chain Plugin<br/>database access"]
 end
 subgraph "Chain Database"
-DB["database.hpp/.cpp<br/>compare_fork_branches()"]
+DB["database.hpp/.cpp<br/>compare_fork_branches()<br/>DEBUG logging: enabled"]
 WITNESS_OBJ["witness_objects.hpp"]
 BPV_OBJ["chain_objects.hpp<br/>block_post_validation_object"]
 FORK_DB["fork_database.hpp/.cpp<br/>enhanced fork collision detection<br/>automatic stale pruning"]
@@ -120,6 +118,7 @@ SNAPSHOT --> WITNESS
   - **Enhanced**: **NEW**: Implements comprehensive minority fork detection system to identify when all recent blocks were produced by local witnesses only.
   - **Enhanced**: **NEW**: Provides automatic recovery through resync_from_lib() when minority fork is detected.
   - **Enhanced**: **NEW**: Integrates with skip_undo_history_check flag to control production during recovery scenarios.
+  - **Enhanced**: **NEW**: Implements comprehensive debug logging with verbose traces for block production and chain internals.
   - **New**: Provides `is_witness_scheduled_soon()` method to check if any locally-controlled witnesses are scheduled to produce blocks in the upcoming 4 slots.
   - **New**: Implements two-level fork collision resolution system with configurable timeout blocks parameter (--fork-collision-timeout-blocks).
   - **New**: Integrates with enhanced fork database for automatic stale fork pruning after successful block application.
@@ -132,10 +131,11 @@ SNAPSHOT --> WITNESS
   - **Enhanced**: Provides enhanced fork database access with comprehensive querying capabilities for fork collision detection.
   - **Enhanced**: Implements comprehensive witness reward creation with find_account() validation to prevent crashes from missing account objects.
   - **Enhanced**: **NEW**: Integrates with skip_undo_history_check flag for controlled production during recovery scenarios.
+  - **Enhanced**: **NEW**: Implements comprehensive debug logging with verbose traces for chain internals and block processing.
   - **New**: Implements compare_fork_branches() function for intelligent fork weight comparison with +10% longer-chain bonus.
   - **New**: Provides automatic stale fork pruning mechanism to remove competing blocks from dead forks.
 
-**Updated** Added comprehensive error handling and validation for witness reward creation, including find_account() checks before creating vesting rewards, crash prevention mechanisms, clear recovery procedures for database corruption scenarios, new fork collision timeout configuration, two-level fork resolution system with vote-weighted comparison and stuck-head timeout, enhanced fork database querying capabilities, automatic stale fork pruning after successful block application, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: enhanced emergency consensus mode integration, **NEW**: skip_undo_history_check flag for controlled production during recovery scenarios.
+**Updated** Added comprehensive error handling and validation for witness reward creation, including find_account() checks before creating vesting rewards, crash prevention mechanisms, clear recovery procedures for database corruption scenarios, new fork collision timeout configuration, two-level fork resolution system with vote-weighted comparison and stuck-head timeout, enhanced fork database querying capabilities, automatic stale fork pruning after successful block application, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: enhanced emergency consensus mode integration, **NEW**: skip_undo_history_check flag for controlled production during recovery scenarios, **NEW**: debug-block-production configuration option enabling verbose logging for block production and chain internals with detailed traces and granular visibility.
 
 **Section sources**
 - [witness.hpp:34-68](file://plugins/witness/include/graphene/plugins/witness/witness.hpp#L34-L68)
@@ -148,13 +148,13 @@ SNAPSHOT --> WITNESS
 ## Architecture Overview
 The Witness subsystem integrates tightly with the chain database and P2P layer. The witness plugin periodically evaluates conditions to produce a block using optimized 250ms interval scheduling, consults the database for witness scheduling and participation, and broadcasts the resulting block. The witness API plugin reads from the database to serve JSON-RPC queries. **New**: Other plugins can now coordinate with witness scheduling using the `is_witness_scheduled_soon()` method to avoid conflicts during critical operations.
 
-**Enhanced** The architecture now includes robust NTP time synchronization with automatic fallback mechanisms, crash-safe shutdown procedures, plugin coordination capabilities through the new scheduling method, comprehensive fork collision detection system with two-level resolution, enhanced fork database querying capabilities, automatic stale fork pruning, enhanced witness reward creation with comprehensive validation and error handling, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: enhanced emergency consensus mode integration, **NEW**: skip_undo_history_check flag for controlled production during recovery scenarios.
+**Enhanced** The architecture now includes robust NTP time synchronization with automatic fallback mechanisms, crash-safe shutdown procedures, plugin coordination capabilities through the new scheduling method, comprehensive fork collision detection system with two-level resolution, enhanced fork database querying capabilities, automatic stale fork pruning, enhanced witness reward creation with comprehensive validation and error handling, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: enhanced emergency consensus mode integration, **NEW**: skip_undo_history_check flag for controlled production during recovery scenarios, **NEW**: comprehensive debug logging system enabling verbose traces for block production and chain internals with detailed visibility.
 
 ```mermaid
 sequenceDiagram
 participant Timer as "Witness Impl<br/>schedule_production_loop (250ms ticks)"
 participant NTP as "NTP Service<br/>time synchronization"
-participant DB as "Chain Database"
+participant DB as "Chain Database<br/>DEBUG logging : enabled"
 participant ForkDB as "Fork Database<br/>collision detection<br/>stale pruning"
 participant P2P as "P2P Plugin"
 participant Net as "Network"
@@ -180,7 +180,7 @@ alt competing blocks exist
 alt LEVEL 1 : Vote-weighted comparison
 Timer->>DB : compare_fork_branches(competing_id, head_id)
 DB-->>Timer : weight comparison result
-alt weight comparison possible
+alt comparison possible
 alt competing fork heavier
 Timer->>NTP : force_sync() on fork collision
 Timer->>Timer : log fork collision and defer
@@ -248,7 +248,7 @@ Timer-->>Snapshot : true/false
 - [time.cpp:74-76](file://libraries/time/time.cpp#L74-L76)
 - [snapshot_plugin.cpp:1267-1276](file://plugins/snapshot/plugin.cpp#L1267-1276)
 - [database.cpp:2824-2839](file://libraries/chain/database.cpp#L2824-L2839)
-- [database.cpp:2871-2886](file://libraries/chain/database.cpp#L2871-L2886)
+- [database.cpp:2871-2886](file://libraries/chain/database.cpp#L2871-2886)
 - [database.cpp:1223-1267](file://libraries/chain/database.cpp#L1223-L1267)
 - [p2p_plugin.hpp:50-55](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L50-L55)
 
@@ -280,6 +280,13 @@ The witness plugin configuration parameters have been updated with improved type
   - Command line: `--fork-collision-timeout-blocks`
   - Config file: `fork-collision-timeout-blocks`
 
+- **debug-block-production**: **NEW** Boolean parameter enabling verbose debug logging for block production and chain internals
+  - Type: `bool`
+  - Default: `false`
+  - Purpose: Enables comprehensive logging with detailed traces of witness participation checks, emergency mode enforcement, block post-validation processes, and minority fork detection
+  - Command line: `--debug-block-production`
+  - Config file: `debug-block-production`
+
 ### Configuration Defaults
 
 **Updated** The default values have been corrected for production stability:
@@ -287,6 +294,7 @@ The witness plugin configuration parameters have been updated with improved type
 - **enable-stale-production**: Now defaults to `false` to improve network stability and prevent minority fork propagation
 - **required-participation**: Defaults to 33% participation threshold for balanced security/performance
 - **fork-collision-timeout-blocks**: Defaults to 21 blocks to match one full witness schedule round
+- **debug-block-production**: Defaults to `false` to maintain production performance while providing debugging capability when needed
 
 ### Configuration Processing
 
@@ -299,9 +307,11 @@ Parser --> TypeCheck{"Type Validation"}
 TypeCheck --> |enable-stale-production| BoolConvert["Convert to bool<br/>Default: false"]
 TypeCheck --> |required-participation| IntConvert["Convert to uint32_t<br/>Scale by CHAIN_1_PERCENT"]
 TypeCheck --> |fork-collision-timeout-blocks| TimeoutConvert["Convert to uint32_t<br/>Default: 21 blocks"]
+TypeCheck --> |debug-block-production| DebugConvert["Convert to bool<br/>Default: false"]
 BoolConvert --> Storage["Store in plugin state"]
 IntConvert --> Storage
 TimeoutConvert --> Storage
+DebugConvert --> Storage
 Storage --> Runtime["Runtime Usage"]
 ```
 
@@ -309,12 +319,14 @@ Storage --> Runtime["Runtime Usage"]
 - [witness.cpp:125-133](file://plugins/witness/witness.cpp#L125-L133)
 - [witness.cpp:149-155](file://plugins/witness/witness.cpp#L149-L155)
 - [witness.cpp:222-224](file://plugins/witness/witness.cpp#L222-L224)
+- [witness.cpp:228-233](file://plugins/witness/witness.cpp#L228-L233)
 - [config.hpp:57-58](file://libraries/protocol/include/graphene/protocol/config.hpp#L57-L58)
 
 **Section sources**
 - [witness.cpp:125-133](file://plugins/witness/witness.cpp#L125-L133)
 - [witness.cpp:149-155](file://plugins/witness/witness.cpp#L149-L155)
 - [witness.cpp:222-224](file://plugins/witness/witness.cpp#L222-L224)
+- [witness.cpp:228-233](file://plugins/witness/witness.cpp#L228-L233)
 - [config.hpp:57-58](file://libraries/protocol/include/graphene/protocol/config.hpp#L57-L58)
 - [config.ini:99-103](file://share/vizd/config/config.ini#L99-L103)
 - [config_witness.ini:76-80](file://share/vizd/config/config_witness.ini#L76-L80)
@@ -332,6 +344,7 @@ Responsibilities:
   - **Enhanced**: **NEW**: Implements comprehensive minority fork detection to identify when all recent blocks were produced by local witnesses only.
   - **Enhanced**: **NEW**: Provides automatic recovery through resync_from_lib() when minority fork is detected.
   - **Enhanced**: **NEW**: Integrates with skip_undo_history_check flag for controlled production during recovery scenarios.
+  - **Enhanced**: **NEW**: Implements comprehensive debug logging with verbose traces for block production and chain internals.
   - **New**: Implements two-level fork collision resolution system with configurable timeout.
   - Generates and broadcasts blocks when eligible.
   - Signs and broadcasts block post validations when available.
@@ -347,6 +360,7 @@ Key behaviors:
 - **Enhanced**: **NEW**: Minority fork detection identifies when all recent blocks were produced by local witnesses only.
 - **Enhanced**: **NEW**: Automatic recovery through P2P resynchronization when minority fork is detected.
 - **Enhanced**: **NEW**: Controlled production during recovery scenarios using skip_undo_history_check flag.
+- **Enhanced**: **NEW**: Comprehensive debug logging system with verbose traces for detailed visibility into block production pipeline.
 - **New**: Efficient slot checking across 4 upcoming slots to detect witness scheduling conflicts.
 - **New**: Two-level fork collision resolution with vote-weighted comparison and stuck-head timeout mechanism.
 - **New**: Configurable fork collision timeout blocks parameter for fine-tuning fork resolution behavior.
@@ -357,7 +371,8 @@ Start(["Startup"]) --> InitKeys["Load witness names and private keys"]
 InitKeys --> InitNTP["Initialize NTP time service with 250ms ticks"]
 InitNTP --> InitTimeout["Initialize fork-collision-timeout-blocks (21)"]
 InitTimeout --> InitSkipFlag["Initialize skip_undo_history_check (false)"]
-InitSkipFlag --> SyncCheck["Wait until synchronized to 250ms boundary"]
+InitSkipFlag --> InitDebug["Initialize debug-block-production (false)"]
+InitDebug --> SyncCheck["Wait until synchronized to 250ms boundary"]
 SyncCheck --> SlotCheck{"Slot available?"}
 SlotCheck --> |No| WaitNext["Sleep until next 250ms tick"] --> SyncCheck
 SlotCheck --> |Yes| Scheduled["Get scheduled witness and slot time"]
@@ -592,6 +607,34 @@ LegacyGetAccount --> LegacyCreateVesting["create_vesting(account, reward)"]
 - [database.cpp:2897-2914](file://libraries/chain/database.cpp#L2897-L2914)
 - [database.cpp:1294-1311](file://libraries/chain/database.cpp#L1294-L1311)
 
+### New: Comprehensive Debug Logging System
+The witness plugin now implements a comprehensive debug logging system that provides verbose traces for block production and chain internals with detailed visibility into the entire block production pipeline.
+
+**Debug Logging Features**:
+- **Block Production Loop**: Comprehensive logging of block_production_loop() entry and exit points
+- **Maybe Produce Block**: Detailed tracing of maybe_produce_block() execution flow
+- **Condition Tracking**: Timestamped logging of block production condition results
+- **Emergency Mode**: Enhanced logging for emergency consensus mode enforcement
+- **Minority Fork Detection**: Granular visibility into minority fork detection process
+- **Fork Collision Resolution**: Detailed traces of fork collision detection and resolution
+- **Contextual Information**: Rich contextual data including timestamps, block numbers, and witness information
+
+**Logging Implementation**:
+- Uses `database()._debug_block_production` flag to control debug logging
+- Implements comprehensive `ilog()` statements throughout the block production pipeline
+- Provides detailed traces for witness participation checks, emergency mode enforcement, block post-validation processes, and minority fork detection
+- Includes timestamps and contextual information for better debugging and troubleshooting
+- Supports granular visibility into all aspects of block production with minimal performance impact
+
+**Section sources**
+- [witness.cpp:228-233](file://plugins/witness/witness.cpp#L228-L233)
+- [witness.cpp:338-407](file://plugins/witness/witness.cpp#L338-L407)
+- [witness.cpp:411-419](file://plugins/witness/witness.cpp#L411-L419)
+- [database.hpp:60](file://libraries/chain/include/graphene/chain/database.hpp#L60)
+- [database.cpp:1890-1892](file://libraries/chain/database.cpp#L1890-L1892)
+- [database.cpp:4536-4573](file://libraries/chain/database.cpp#L4536-L4573)
+- [database.cpp:5530-5655](file://libraries/chain/database.cpp#L5530-L5655)
+
 ### Witness API Plugin
 Responsibilities:
 - Expose JSON-RPC endpoints for:
@@ -650,6 +693,7 @@ The database maintains:
 - **Enhanced**: Direct fork database access through `get_fork_db()` method for comprehensive fork collision detection.
 - **Enhanced**: Comprehensive witness reward creation with find_account() validation to prevent crashes from missing account objects.
 - **Enhanced**: **NEW**: Integration with skip_undo_history_check flag for controlled production during recovery scenarios.
+- **Enhanced**: **NEW**: Comprehensive debug logging system enabling verbose traces for chain internals and block processing.
 - **New**: Enhanced fork database with automatic stale fork pruning after successful block application.
 - **New**: Sophisticated compare_fork_branches() function for intelligent fork weight comparison.
 
@@ -778,6 +822,7 @@ Key behaviors:
   - **Enhanced**: NTP time service for precise 250ms slot alignment and timing validation.
   - **Enhanced**: Fork database for comprehensive fork collision detection and stale pruning.
   - **Enhanced**: **NEW**: P2P resync_from_lib() method for automatic recovery from minority forks.
+  - **Enhanced**: **NEW**: Comprehensive debug logging system for verbose traces of block production and chain internals.
   - **New**: External plugins can depend on the `is_witness_scheduled_soon()` method for coordination.
   - **New**: Enhanced fork database with compare_fork_branches() function for intelligent fork switching.
 - The witness API plugin depends on:
@@ -789,6 +834,7 @@ Key behaviors:
   - **Enhanced**: Fork database for tracking competing blocks and fork resolution.
   - **Enhanced**: Comprehensive validation for witness reward creation with find_account() checks.
   - **Enhanced**: **NEW**: skip_undo_history_check flag for controlled production during recovery scenarios.
+  - **Enhanced**: **NEW**: Comprehensive debug logging system enabling verbose traces for chain internals.
   - **New**: Automatic stale fork pruning mechanism for database efficiency.
   - **New**: Enhanced fork comparison functions for intelligent chain selection.
 
@@ -798,6 +844,7 @@ WITNESS["Witness Plugin"] --> CHAIN["Chain Plugin"]
 WITNESS --> P2P["P2P Plugin<br/>resync_from_lib()"]
 WITNESS --> TIME["Time Service"]
 WITNESS --> FORK_DB["Fork Database<br/>enhanced with stale pruning"]
+WITNESS --> DEBUG_LOG["Debug Logging<br/>verbose traces"]
 WAPI["Witness API Plugin"] --> CHAIN
 SNAPSHOT["Snapshot Plugin"] --> WITNESS
 CHAIN --> DB["database.hpp/.cpp<br/>compare_fork_branches()"]
@@ -837,6 +884,7 @@ TIME --> NTP["NTP Service"]
 - **Enhanced**: Comprehensive fork collision detection adds minimal overhead while preventing costly fork resolution failures.
 - **Enhanced**: **NEW**: Minority fork detection adds minimal overhead while preventing network fragmentation and minority fork propagation.
 - **Enhanced**: **NEW**: Automatic recovery through P2P resynchronization is efficient and prevents prolonged network instability.
+- **Enhanced**: **NEW**: Comprehensive debug logging system provides detailed visibility with minimal performance impact through selective logging.
 - **New**: Efficient slot checking in `is_witness_scheduled_soon()` method performs minimal database operations across 4 slots to detect scheduling conflicts quickly.
 - **Updated**: Improved configuration parameter processing with type safety and proper scaling for better performance and reliability.
 - **Enhanced**: Fork database querying uses efficient multi-index containers for fast block lookup and competition detection.
@@ -849,8 +897,9 @@ TIME --> NTP["NTP Service"]
 - **New**: Enhanced compare_fork_branches() function provides intelligent fork weight comparison with +10% longer-chain bonus.
 - **New**: Configurable fork collision timeout blocks parameter allows fine-tuning of fork resolution behavior for different network conditions.
 - **New**: skip_undo_history_check flag provides controlled production during recovery scenarios without disrupting normal operations.
+- **Enhanced**: **NEW**: debug-block-production configuration option enables verbose logging for block production and chain internals with detailed traces and granular visibility.
 
-**Updated** Added performance considerations for the corrected configuration parameter types, fork collision detection system, enhanced fork database querying capabilities, comprehensive witness reward creation validation, 250ms interval optimization, deterministic slot time alignment, new fork collision timeout configuration, two-level fork resolution system with intelligent decision-making, automatic stale fork pruning, enhanced fork comparison functions, configurable timeout parameters for optimal network performance, **NEW**: minority fork detection system with minimal overhead, **NEW**: automatic recovery mechanisms through P2P resynchronization, **NEW**: skip_undo_history_check flag for controlled production during recovery scenarios.
+**Updated** Added performance considerations for the corrected configuration parameter types, fork collision detection system, enhanced fork database querying capabilities, comprehensive witness reward creation validation, 250ms interval optimization, deterministic slot time alignment, new fork collision timeout configuration, two-level fork resolution system with intelligent decision-making, automatic stale fork pruning, enhanced fork comparison functions, configurable timeout parameters for optimal network performance, **NEW**: minority fork detection system with minimal overhead, **NEW**: automatic recovery mechanisms through P2P resynchronization, **NEW**: skip_undo_history_check flag for controlled production during recovery scenarios, **NEW**: comprehensive debug logging system enabling verbose traces for block production and chain internals with detailed visibility.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -865,7 +914,7 @@ Common issues and resolutions:
   - Resolution: Verify private key is provided in the correct WIF format and matches the witness signing key.
 - Timing lag
   - Symptom: Blocks not produced due to waking up outside the 500ms window.
-  - Resolution: Improve system clock accuracy and reduce latency; consider enabling stale production only during initial sync.
+  - Resolution: Improve system clock accuracy and reduce latency; consider enabling stale production only as a temporary workaround.
   - **Enhanced**: System automatically forces NTP synchronization when timing issues are detected.
 - Consecutive block production disabled
   - Symptom: Blocks not produced because the last block was generated by the same witness.
@@ -896,6 +945,7 @@ Common issues and resolutions:
     - `enable-stale-production`: boolean value (`true`/`false`)
     - `required-participation`: integer value scaled by `CHAIN_1_PERCENT` (e.g., 33 for 33%)
     - `fork-collision-timeout-blocks`: integer value (default: 21 blocks)
+    - `debug-block-production`: boolean value (`true`/`false`) - **NEW**
     - Check configuration files for proper syntax and values
 - **Enhanced**: Fork collision detection logging
   - Symptom: Frequent fork collision warnings with "Collision parents at block" messages.
@@ -930,8 +980,14 @@ Common issues and resolutions:
 - **New**: skip_undo_history_check flag problems
   - Symptom: Production not behaving as expected during recovery scenarios.
   - Resolution: Verify flag state during recovery; check enable-stale-production configuration; ensure proper flag management during minority fork detection and recovery.
+- **New**: Debug logging configuration issues
+  - Symptom: Debug logging not providing expected verbose traces or performance impact concerns.
+  - Resolution: Verify debug-block-production configuration is set to `true`; check log level settings; ensure proper log file configuration; monitor performance impact; adjust debug logging scope as needed.
+- **New**: Comprehensive debug trace analysis
+  - Symptom: Difficulty interpreting debug log output or missing expected trace information.
+  - Resolution: Review debug log entries for timestamped traces; verify debug-block-production is enabled; check for granular visibility into witness participation checks, emergency mode enforcement, block post-validation processes, and minority fork detection; ensure proper log rotation and retention policies.
 
-**Updated** Added troubleshooting information for fork collision detection, witness scheduling conflicts, the new coordination mechanisms, configuration parameter type issues, comprehensive witness reward creation validation, database corruption scenarios with clear recovery procedures, 250ms interval timing optimization issues, new fork collision timeout configuration, two-level fork resolution system, automatic stale fork pruning, enhanced fork comparison functions, configurable timeout parameters for optimal network behavior, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: recovery mechanism issues through P2P resynchronization, **NEW**: skip_undo_history_check flag management during recovery scenarios.
+**Updated** Added troubleshooting information for fork collision detection, witness scheduling conflicts, the new coordination mechanisms, configuration parameter type issues, comprehensive witness reward creation validation, database corruption scenarios with clear recovery procedures, 250ms interval timing optimization issues, new fork collision timeout configuration, two-level fork resolution system, automatic stale fork pruning, enhanced fork comparison functions, configurable timeout parameters for optimal network behavior, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: recovery mechanism issues through P2P resynchronization, **NEW**: skip_undo_history_check flag management during recovery scenarios, **NEW**: comprehensive debug logging system enabling verbose traces for block production and chain internals with detailed visibility, **NEW**: debug logging configuration issues and comprehensive debug trace analysis.
 
 **Section sources**
 - [witness.cpp:171-192](file://plugins/witness/witness.cpp#L171-L192)
@@ -952,6 +1008,4 @@ Common issues and resolutions:
 ## Conclusion
 The Witness subsystem integrates tightly with the chain database and P2P layer to ensure timely, secure, and fair block production. The witness plugin manages production loops, participation thresholds, and broadcasting, while the witness API plugin exposes essential read-only data to clients.
 
-**Enhanced** The system now includes robust NTP time synchronization with automatic fallback mechanisms, crash-safe shutdown procedures, strengthened timing-related production failure prevention, comprehensive fork collision detection system with two-level resolution, and enhanced fork database querying capabilities. **New** The addition of the `is_witness_scheduled_soon()` method enables sophisticated plugin coordination, allowing other plugins to avoid conflicts during critical operations like snapshot creation. **Updated** The configuration parameter system has been improved with corrected defaults and proper type handling for better reliability and performance. **Enhanced** The witness reward creation process has been significantly strengthened with comprehensive error handling, find_account() validation, crash prevention mechanisms, and clear recovery procedures for database corruption scenarios. **New** The 250ms interval optimization provides precise timing alignment for deterministic consensus maintenance, while the enhanced performance characteristics ensure better system responsiveness and consensus stability. **New** The two-level fork collision resolution system with configurable timeout provides intelligent fork switching decisions, automatic stale fork pruning maintains database efficiency, enhanced fork comparison functions enable sophisticated chain selection, and configurable timeout parameters allow fine-tuning for different network conditions. **NEW** The comprehensive minority fork detection system with automatic recovery mechanisms prevents network fragmentation and ensures proper consensus maintenance, while the enhanced emergency consensus mode integration provides seamless operation during network distress scenarios. **NEW** The skip_undo_history_check flag provides controlled production during recovery scenarios, and the P2P resynchronization mechanism ensures efficient network recovery without disrupting normal operations. This enhancement makes the witness system more resilient to various operational challenges while providing better integration points for the broader VIZ ecosystem, comprehensive protection against shared memory corruption, robust validation mechanisms for witness reward distribution across all hardfork versions, optimized timing for improved consensus maintenance, intelligent fork resolution with configurable behavior, automatic database maintenance for optimal performance, **NEW**: comprehensive minority fork detection and recovery mechanisms for network stability, **NEW**: enhanced emergency consensus mode integration for seamless operation during network distress, **NEW**: controlled production during recovery scenarios through skip_undo_history_check flag management, and **NEW**: efficient automatic recovery through P2P resynchronization for rapid network stabilization.
-
-Together, they form a robust foundation for witness operations in the VIZ node, with improved time synchronization, crash handling capabilities, enhanced plugin coordination features, comprehensive fork collision detection, reliable configuration parameter processing, strengthened fork database querying for detecting competing blocks at the same height, comprehensive witness reward creation validation with crash prevention and recovery procedures, 250ms interval optimization for deterministic slot time alignment, enhanced performance characteristics for better consensus maintenance, intelligent fork resolution system, automatic stale fork pruning, configurable timeout parameters for optimal network behavior, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: enhanced emergency consensus mode integration, **NEW**: controlled production during recovery scenarios, and **NEW**: efficient automatic recovery through P2P resynchronization for network stability.
+**Enhanced** The system now includes robust NTP time synchronization with automatic fallback mechanisms, crash-safe shutdown procedures, strengthened timing-related production failure prevention, comprehensive fork collision detection system with two-level resolution, and enhanced fork database querying capabilities. **New** The addition of the `is_witness_scheduled_soon()` method enables sophisticated plugin coordination, allowing other plugins to avoid conflicts during critical operations like snapshot creation. **Updated** The configuration parameter system has been improved with corrected defaults and proper type handling for better reliability and performance. **Enhanced** The witness reward creation process has been significantly strengthened with comprehensive error handling, find_account() validation, crash prevention mechanisms, and clear recovery procedures for database corruption scenarios. **New** The 250ms interval optimization provides precise timing alignment for deterministic consensus maintenance, while the enhanced performance characteristics ensure better system responsiveness and consensus stability. **New** The two-level fork collision resolution system with configurable timeout provides intelligent fork switching decisions, automatic stale fork pruning maintains database efficiency, enhanced fork comparison functions enable sophisticated chain selection, and configurable timeout parameters allow fine-tuning for different network conditions. **NEW** The comprehensive minority fork detection system with automatic recovery mechanisms prevents network fragmentation and ensures proper consensus maintenance, while the enhanced emergency consensus mode integration provides seamless operation during network distress scenarios. **NEW** The skip_undo_history_check flag provides controlled production during recovery scenarios, and the P2P resynchronization mechanism ensures efficient network recovery without disrupting normal operations. **NEW** The comprehensive debug logging system enables verbose traces for block production and chain internals with detailed visibility into witness participation checks, emergency mode enforcement, block post-validation processes, and minority fork detection. This enhancement makes the witness system more resilient to various operational challenges while providing better integration points for the broader VIZ ecosystem, comprehensive protection against shared memory corruption, robust validation mechanisms for witness reward distribution across all hardfork versions, optimized timing for improved consensus maintenance, intelligent fork resolution with configurable behavior, automatic database maintenance for optimal performance, **NEW**: comprehensive minority fork detection and recovery mechanisms for network stability, **NEW**: enhanced emergency consensus mode integration for seamless operation during network distress, **NEW**: controlled production during recovery scenarios through skip_undo_history_check flag management, **NEW**: efficient automatic recovery through P2P resynchronization for rapid network stabilization, and **NEW**: comprehensive debug logging system enabling verbose traces for block production and chain internals with detailed visibility. Together, they form a robust foundation for witness operations in the VIZ node, with improved time synchronization, crash handling capabilities, enhanced plugin coordination features, comprehensive fork collision detection, reliable configuration parameter processing, strengthened fork database querying for detecting competing blocks at the same height, comprehensive witness reward creation validation with crash prevention and recovery procedures, 250ms interval optimization for deterministic slot time alignment, enhanced performance characteristics for better consensus maintenance, intelligent fork resolution system, automatic stale fork pruning, configurable timeout parameters for optimal network behavior, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: enhanced emergency consensus mode integration, **NEW**: controlled production during recovery scenarios, **NEW**: efficient automatic recovery through P2P resynchronization for network stability, and **NEW**: comprehensive debug logging system enabling verbose traces for block production and chain internals with detailed visibility.

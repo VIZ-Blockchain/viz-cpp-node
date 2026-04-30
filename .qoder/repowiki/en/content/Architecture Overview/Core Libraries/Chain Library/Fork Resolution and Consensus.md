@@ -17,13 +17,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced fork detection logic with sophisticated early rejection mechanisms and comprehensive duplicate prevention
-- Implemented advanced linear extension handling with separate processing paths for actual fork switches vs linear extensions
-- Added comprehensive gap-based early rejection logic with 100-block threshold to prevent memory bloat from dead-fork blocks
-- Introduced detailed debug logging with FORK-SWITCH-POP and FORK-RECOVER-POP prefixes for improved traceability
-- Strengthened exception handling throughout the fork resolution pipeline with enhanced error recovery
-- Improved automatic stale fork pruning system with enhanced pruning logic and remove_blocks_by_number() function
-- Enhanced early rejection logic to handle unlinkable blocks more efficiently with separate handling paths
+- Enhanced fork database with new diagnostic accessors for monitoring block storage statistics
+- Added comprehensive storage health metrics including linked/unlinked index sizes and block number ranges
+- Integrated diagnostic accessors into P2P monitoring system for real-time block storage analytics
+- Improved fork database monitoring capabilities with min/max block number tracking
+- Enhanced storage health metrics for better system observability and troubleshooting
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -35,22 +33,25 @@
 7. [Two-Level Fork Collision Resolution](#two-level-fork-collision-resolution)
 8. [Vote-Weighted Fork Comparison Algorithm](#vote-weighted-fork-comparison-algorithm)
 9. [Automatic Stale Fork Pruning System](#automatic-stale-fork-pruning-system)
-10. [Dependency Analysis](#dependency-analysis)
-11. [Performance Considerations](#performance-considerations)
-12. [Troubleshooting Guide](#troubleshooting-guide)
-13. [Conclusion](#conclusion)
-14. [Appendices](#appendices)
+10. [Enhanced Fork Database Diagnostic Accessors](#enhanced-fork-database-diagnostic-accessors)
+11. [Storage Health Monitoring and Analytics](#storage-health-monitoring-and-analytics)
+12. [Dependency Analysis](#dependency-analysis)
+13. [Performance Considerations](#performance-considerations)
+14. [Troubleshooting Guide](#troubleshooting-guide)
+15. [Conclusion](#conclusion)
+16. [Appendices](#appendices)
 
 ## Introduction
-This document explains the Fork Resolution and Consensus system that maintains blockchain integrity and handles network partitions. The system has been significantly enhanced with sophisticated gap-based early rejection logic, comprehensive duplicate detection, improved block validation mechanisms, and enhanced error handling that prevents infinite synchronization loops. The fork_database implementation now supports intelligent block rejection, comprehensive duplicate prevention, sophisticated tie-breaking mechanisms for emergency consensus scenarios, and advanced fork collision resolution with HF12 logic.
+This document explains the Fork Resolution and Consensus system that maintains blockchain integrity and handles network partitions. The system has been significantly enhanced with sophisticated gap-based early rejection logic, comprehensive duplicate detection, improved block validation mechanisms, enhanced error handling that prevents infinite synchronization loops, and **NEW**: comprehensive diagnostic accessors for monitoring fork database storage statistics. The fork_database implementation now supports intelligent block rejection, comprehensive duplicate prevention, sophisticated tie-breaking mechanisms for emergency consensus scenarios, advanced fork collision resolution with HF12 logic, and **NEW**: real-time monitoring of linked/unlinked index sizes, minimum/maximum block numbers, and comprehensive storage health metrics.
 
 ## Project Structure
-The fork resolution and consensus logic spans several core files with enhanced early rejection and validation:
-- fork_database.hpp/cpp: In-memory fork chain storage, branch selection, common ancestor detection, duplicate detection, emergency mode tie-breaking, automatic stale fork pruning, and gap-based early rejection
-- database.hpp/cpp: Blockchain database integration, block pushing with early rejection logic, chain reorganization, DLT mode management, sophisticated block validation, and vote-weighted fork comparison
+The fork resolution and consensus logic spans several core files with enhanced early rejection, validation, **NEW**: diagnostic monitoring capabilities, and comprehensive storage health metrics:
+- fork_database.hpp/cpp: In-memory fork chain storage, branch selection, common ancestor detection, duplicate detection, emergency mode tie-breaking, automatic stale fork pruning, gap-based early rejection, and **NEW**: diagnostic accessors for storage statistics
+- database.hpp/cpp: Blockchain database integration, block pushing with early rejection logic, chain reorganization, DLT mode management, sophisticated block validation, vote-weighted fork comparison, and **NEW**: fork database access for diagnostic monitoring
 - block_log.hpp: Append-only persistence of blocks for recovery and irreversible state
 - dlt_block_log.hpp/cpp: Separate rolling block log for DLT nodes to serve recent irreversible blocks to P2P peers
 - witness.cpp: Witness scheduling integration with emergency mode awareness, fork collision handling, two-level fork collision resolution, stuck-head timeout mechanism, and automatic chain linking
+- p2p_plugin.cpp: **NEW**: Real-time monitoring of fork database storage statistics with comprehensive analytics
 - config.hpp: Emergency consensus configuration constants including timeout settings and emergency witness parameters
 - 12.hf: Hardfork configuration defining HF12 parameters and activation time
 
@@ -62,6 +63,8 @@ DBH["database.hpp"]
 DBC["database.cpp"]
 BLH["block_log.hpp"]
 DLTH["dlt_block_log.hpp/.cpp"]
+DIAG["Diagnostic Accessors"]
+PMON["P2P Monitoring"]
 END["Gap-Based Early Rejection"]
 END2["Duplicate Detection"]
 END3["Block Validation"]
@@ -76,6 +79,8 @@ DBH --> DBC
 BLH --> DBC
 DLTH --> DBC
 DBC --> FD
+DBC --> DIAG
+DBC --> PMON
 DBC --> END
 DBC --> END2
 DBC --> END3
@@ -84,36 +89,41 @@ DBC --> END5
 DBC --> END6
 DBC --> END7
 DBC --> END8
+FD --> DIAG
 FD --> END4
 FD --> END5
 FD --> END6
 FD --> END7
 FD --> END8
+PMON --> DIAG
 ```
 
 **Diagram sources**
-- [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
+- [fork_database.hpp:128-150](file://libraries/chain/include/graphene/chain/fork_database.hpp#L128-L150)
 - [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
 - [database.cpp:1204-1270](file://libraries/chain/database.cpp#L1204-L1270)
+- [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)
 - [witness.cpp:521-544](file://plugins/witness/witness.cpp#L521-L544)
 
 **Section sources**
-- [fork_database.hpp:1-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L144)
+- [fork_database.hpp:1-168](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L168)
 - [fork_database.cpp:1-278](file://libraries/chain/fork_database.cpp#L1-L278)
 - [database.hpp:1-200](file://libraries/chain/include/graphene/chain/database.hpp#L1-L200)
 - [database.cpp:1-6669](file://libraries/chain/database.cpp#L1-L6669)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
 - [dlt_block_log.cpp:1-454](file://libraries/chain/dlt_block_log.cpp#L1-L454)
 - [witness.cpp:1-697](file://plugins/witness/witness.cpp#L1-L697)
+- [p2p_plugin.cpp:735-771](file://plugins/p2p/p2p_plugin.cpp#L735-L771)
 - [config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [12.hf:1-7](file://libraries/chain/hardfork.d/12.hf#L1-L7)
 
 ## Core Components
-- fork_database: Maintains a multi-indexed collection of fork items with enhanced out-of-order block caching, comprehensive duplicate detection, sophisticated tie-breaking mechanisms, emergency mode integration, automatic stale fork pruning capabilities, and gap-based early rejection logic
-- database: Integrates fork resolution into block application with sophisticated early rejection logic, comprehensive block validation, performs chain reorganization when a better fork emerges, manages DLT mode for snapshot-based nodes, implements emergency consensus mode activation/deactivation, and provides vote-weighted fork comparison for HF12
+- fork_database: Maintains a multi-indexed collection of fork items with enhanced out-of-order block caching, comprehensive duplicate detection, sophisticated tie-breaking mechanisms, emergency mode integration, automatic stale fork pruning capabilities, gap-based early rejection logic, and **NEW**: comprehensive diagnostic accessors for storage statistics monitoring
+- database: Integrates fork resolution into block application with sophisticated early rejection logic, comprehensive block validation, performs chain reorganization when a better fork emerges, manages DLT mode for snapshot-based nodes, implements emergency consensus mode activation/deactivation, provides vote-weighted fork comparison for HF12, and **NEW**: exposes fork database access for diagnostic monitoring
 - block_log: Provides persistent storage for blocks, enabling recovery and serving as the source of irreversible blocks
 - dlt_block_log: Separate rolling block log for DLT nodes that maintains a sliding window of recent irreversible blocks for P2P synchronization
 - witness: Integrates witness scheduling with emergency mode awareness, handles fork collisions through two-level resolution system, manages stuck-head timeout mechanism, implements HF12 fork collision resolution, and provides automatic chain linking when parent blocks arrive
+- **NEW**: P2P monitoring system: Real-time monitoring of fork database storage statistics including linked/unlinked index sizes, minimum/maximum block numbers, and comprehensive storage health metrics
 - emergency consensus: Implements timeout-based emergency mode activation, hybrid witness scheduling, and deterministic tie-breaking mechanisms
 - compare_fork_branches: New HF12 function that performs vote-weighted fork comparison with +10% bonus for longer chains
 - remove_blocks_by_number: New function that removes all blocks at a specific height to prevent memory bloat from dead-fork blocks
@@ -130,24 +140,23 @@ Key responsibilities:
 - Serve recent blocks to P2P peers through dlt_block_log for faster synchronization
 - Handle emergency witness account creation and key management for consensus recovery
 - Distinguish between different types of invalid blocks and handle them appropriately to prevent system degradation
-- **New**: Perform vote-weighted fork comparisons using witness vote weights with +10% bonus for longer chains
-- **New**: Implement two-level fork collision resolution with stuck-head timeout mechanism
-- **New**: Automatically prune stale competing blocks from dead forks using remove_blocks_by_number()
-- **New**: Implement gap-based early rejection logic with 100-block threshold to prevent memory bloat
+- **New**: Provide comprehensive diagnostic accessors for monitoring fork database storage statistics including linked/unlinked index sizes and block number ranges
+- **New**: Integrate diagnostic accessors into P2P monitoring system for real-time storage analytics
 - **New**: Enable automatic chain linking when parent blocks arrive via _push_next() mechanism
 - **New**: Enhance duplicate detection and prevention throughout the system
 - **New**: Implement separate handling paths for linear extensions vs actual fork switches during chain reorganization
 - **New**: Add detailed debug logging prefixes (FORK-SWITCH-POP, FORK-RECOVER-POP) for better traceability
 
 **Section sources**
-- [fork_database.hpp:53-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L144)
+- [fork_database.hpp:53-168](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L168)
 - [fork_database.cpp:33-92](file://libraries/chain/fork_database.cpp#L33-L92)
 - [database.cpp:1223-1267](file://libraries/chain/database.cpp#L1223-L1267)
 - [dlt_block_log.hpp:13-33](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L13-L33)
 - [witness.cpp:521-544](file://plugins/witness/witness.cpp#L521-L544)
+- [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)
 
 ## Architecture Overview
-The fork resolution pipeline integrates with block application and persistence with enhanced early rejection, sophisticated block validation, DLT mode support, automatic seeding mechanisms, emergency consensus recovery, advanced fork collision resolution, and automatic chain linking:
+The fork resolution pipeline integrates with block application and persistence with enhanced early rejection, sophisticated block validation, DLT mode support, automatic seeding mechanisms, emergency consensus recovery, advanced fork collision resolution, automatic chain linking, and **NEW**: comprehensive diagnostic monitoring:
 
 ```mermaid
 sequenceDiagram
@@ -157,6 +166,7 @@ participant FDB as "fork_database.cpp"
 participant WIT as "witness.cpp"
 participant BL as "block_log.hpp"
 participant DLTL as "dlt_block_log.cpp"
+participant MON as "P2P Monitoring"
 Net->>DB : "push_block(new_block)"
 DB->>DB : "Early rejection checks"
 DB->>DB : "Validate block types and conditions"
@@ -184,6 +194,8 @@ end
 end
 DB->>BL : "persist irreversible blocks"
 DB->>DLTL : "append to dlt_block_log (if enabled)"
+DB->>MON : "collect diagnostic metrics"
+MON->>MON : "analyze fork storage statistics"
 ```
 
 **Diagram sources**
@@ -191,6 +203,7 @@ DB->>DLTL : "append to dlt_block_log (if enabled)"
 - [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
 - [witness.cpp:521-544](file://plugins/witness/witness.cpp#L521-L544)
 - [dlt_block_log.cpp:336-340](file://libraries/chain/dlt_block_log.cpp#L336-L340)
+- [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)
 
 ## Detailed Component Analysis
 
@@ -272,7 +285,7 @@ UpdateHead --> End
 - [fork_database.cpp:48-55](file://libraries/chain/fork_database.cpp#L48-L55)
 
 ### Enhanced Fork Database with Improved Error Handling
-**Updated** The fork database now includes comprehensive error handling, sophisticated tie-breaking mechanisms for emergency consensus scenarios, automatic stale fork pruning capabilities, and enhanced gap-based early rejection logic.
+**Updated** The fork database now includes comprehensive error handling, sophisticated tie-breaking mechanisms for emergency consensus scenarios, automatic stale fork pruning capabilities, enhanced gap-based early rejection logic, and **NEW**: comprehensive diagnostic accessors for storage statistics monitoring.
 
 The fork database supports:
 - Pushing a block and linking it to the previous block with duplicate prevention
@@ -287,6 +300,7 @@ The fork database supports:
 - **New**: Automatic stale fork pruning through `remove_blocks_by_number()` function
 - **New**: Enhanced pruning system with `set_max_size()` that cleans both linked and unlinked indices
 - **New**: Gap-based early rejection logic integrated with automatic chain linking
+- **New**: Diagnostic accessors for monitoring storage statistics including linked/unlinked sizes and block number ranges
 
 ```mermaid
 classDiagram
@@ -308,6 +322,12 @@ class fork_database {
 +remove_blocks_by_number(num)
 +set_emergency_mode(active)
 +is_emergency_mode()
++linked_size() size_t
++unlinked_size() size_t
++linked_min_block_num() uint32_t
++linked_max_block_num() uint32_t
++unlinked_min_block_num() uint32_t
++unlinked_max_block_num() uint32_t
 -_push_block(item)
 -_push_next(new_item)
 -_emergency_consensus_active
@@ -328,7 +348,7 @@ fork_database --> fork_item : "stores"
 ```
 
 **Diagram sources**
-- [fork_database.hpp:20-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L20-L144)
+- [fork_database.hpp:20-168](file://libraries/chain/include/graphene/chain/fork_database.hpp#L20-L168)
 - [fork_database.cpp:33-278](file://libraries/chain/fork_database.cpp#L33-L278)
 
 Implementation highlights:
@@ -343,9 +363,10 @@ Implementation highlights:
 - **Automatic stale fork pruning**: New `remove_blocks_by_number()` function clears stale competing blocks from dead forks
 - **Enhanced pruning system**: `set_max_size()` now cleans both `_index` and `_unlinked_index` for optimal memory management
 - **Gap-based early rejection**: Integrated with automatic chain linking to prevent memory bloat while maintaining network efficiency
+- **NEW**: **Diagnostic accessors**: Comprehensive monitoring capabilities for fork database storage statistics
 
 **Section sources**
-- [fork_database.hpp:111-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L144)
+- [fork_database.hpp:111-168](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L168)
 - [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
 - [fork_database.cpp:269-274](file://libraries/chain/fork_database.cpp#L269-L274)
 
@@ -369,7 +390,7 @@ DoneCommon --> Return(["Return branches"])
 - [fork_database.cpp:189-231](file://libraries/chain/fork_database.cpp#L189-L231)
 
 ### Enhanced Chain Reorganization Process
-**Updated** The chain reorganization process now includes improved early rejection logic, better error handling, DLT mode awareness, emergency consensus integration, HF12 fork comparison capabilities, and automatic chain linking for enhanced P2P synchronization reliability.
+**Updated** The chain reorganization process now includes improved early rejection logic, better error handling, DLT mode awareness, emergency consensus integration, HF12 fork comparison capabilities, automatic chain linking for enhanced P2P synchronization reliability, and **NEW**: comprehensive diagnostic monitoring for storage statistics.
 
 When a new head is higher and does not build off the current head, the database:
 - Performs sophisticated early rejection checks to prevent unnecessary fork switches
@@ -386,6 +407,7 @@ When a new head is higher and does not build off the current head, the database:
 - **New**: Integrates automatic chain linking via _push_next() when parent blocks arrive
 - **New**: Implements separate handling paths for linear extensions vs actual fork switches
 - **New**: Adds detailed debug logging prefixes (FORK-SWITCH-POP, FORK-RECOVER-POP) for better traceability
+- **New**: Monitors storage statistics during chain reorganization for performance optimization
 
 ```mermaid
 sequenceDiagram
@@ -497,16 +519,17 @@ WaitFirstBlock --> End
 - [database.hpp:57-78](file://libraries/chain/include/graphene/chain/database.hpp#L57-L78)
 
 ### Enhanced Irreversible Block Determination and Persistence
-**Updated** Irreversible blocks are determined by consensus thresholds and persisted to both block_log and dlt_block_log with enhanced reliability, DLT mode awareness, and emergency consensus integration.
+**Updated** Irreversible blocks are determined by consensus thresholds and persisted to both block_log and dlt_block_log with enhanced reliability, DLT mode awareness, emergency consensus integration, and **NEW**: comprehensive diagnostic monitoring for storage statistics.
 
 The database updates last irreversible block (LIB) and writes blocks to logs when they become irreversible:
 - **DLT mode awareness**: Skips block_log writes in DLT mode while still maintaining dlt_block_log
 - **Dual persistence**: Writes to both block_log and dlt_block_log for comprehensive coverage
 - **Gap logging**: Suppresses repeated warnings about missing blocks in fork database during initial synchronization
 - **Rolling window management**: Automatically truncates DLT block log when it exceeds configured limits
-- **Emergency mode integration**: Skips LIB advancement during emergency consensus mode to prevent premature irreversibility
+- **Emergency mode integration**: Skips LIB advancement during emergency mode to prevent premature irreversibility
 - **Enhanced validation**: Sophisticated block validation prevents invalid blocks from becoming irreversible
 - **Stale fork pruning**: Automatically prunes stale competing blocks from dead forks at each height
+- **Storage monitoring**: Collects and reports fork database storage statistics for performance optimization
 
 ```mermaid
 flowchart TD
@@ -524,7 +547,8 @@ CheckDLTWindow --> Truncate{"Exceeds limit?"}
 Truncate --> |Yes| TruncateDLT["Truncate DLT block log"]
 Truncate --> |No| PruneStale["Prune stale competing blocks"]
 TruncateDLT --> PruneStale
-PruneStale --> End(["Ready for recovery"])
+PruneStale --> CollectStats["Collect fork storage statistics"]
+CollectStats --> End(["Ready for recovery"])
 SkipLIB --> End
 ```
 
@@ -537,7 +561,7 @@ SkipLIB --> End
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
 
 ### Enhanced P2P Fallback Mechanisms
-**New Section** The P2P system now includes strengthened fallback mechanisms to handle network partitions and improve synchronization reliability.
+**New Section** The P2P system now includes strengthened fallback mechanisms to handle network partitions and improve synchronization reliability, with **NEW**: comprehensive diagnostic monitoring for storage statistics.
 
 P2P fallback features:
 - **Enhanced error handling**: Better propagation of unlinkable block exceptions to network layer
@@ -546,6 +570,7 @@ P2P fallback features:
 - **Better network partition handling**: Enhanced mechanisms to recover from network splits
 - **Intelligent block rejection**: Prevents infinite sync restart loops through early rejection logic
 - **Gap-based protection**: 100-block threshold prevents memory bloat from dead-fork chains
+- **Storage monitoring**: Real-time monitoring of fork database storage statistics for performance optimization
 
 ```mermaid
 sequenceDiagram
@@ -562,6 +587,7 @@ DB-->>P2P : "unlinkable_block_exception"
 P2P-->>Peer : "propagate exception"
 P2P->>P2P : "enhanced error handling"
 P2P-->>Peer : "fallback to alternative sync"
+P2P->>P2P : "collect fork storage metrics"
 end
 ```
 
@@ -572,7 +598,7 @@ end
 - [p2p_plugin.cpp:118-164](file://plugins/p2p/p2p_plugin.cpp#L118-L164)
 
 ### Enhanced API Methods for Fork Detection, Chain Validation, and Recovery
-**Updated** Enhanced with improved duplicate detection, DLT mode support, automatic seeding capabilities, emergency mode integration, sophisticated block validation, HF12 fork comparison capabilities, gap-based early rejection, and automatic stale fork pruning.
+**Updated** Enhanced with improved duplicate detection, DLT mode support, automatic seeding capabilities, emergency mode integration, sophisticated block validation, HF12 fork comparison capabilities, gap-based early rejection, automatic stale fork pruning, **NEW**: comprehensive diagnostic accessors, and automatic chain linking.
 
 - Fork detection and branch retrieval:
   - get_block_ids_on_fork(head_of_fork): Returns ordered list of block IDs from the fork head back to the common ancestor
@@ -604,6 +630,13 @@ end
 - **New**: Separate handling paths:
   - Linear extension vs actual fork switch processing for improved efficiency
   - Detailed debug logging with FORK-SWITCH-POP and FORK-RECOVER-POP prefixes
+- **New**: Comprehensive diagnostic accessors:
+  - linked_size(): Returns number of blocks in linked index
+  - unlinked_size(): Returns number of blocks in unlinked index
+  - linked_min_block_num(): Returns minimum block number in linked index
+  - linked_max_block_num(): Returns maximum block number in linked index
+  - unlinked_min_block_num(): Returns minimum block number in unlinked index
+  - unlinked_max_block_num(): Returns maximum block number in unlinked index
 
 **Section sources**
 - [database.hpp:115-128](file://libraries/chain/include/graphene/chain/database.hpp#L115-L128)
@@ -611,11 +644,11 @@ end
 - [database.cpp:738-792](file://libraries/chain/database.cpp#L738-L792)
 - [database.cpp:206-230](file://libraries/chain/database.cpp#L206-L230)
 - [database.cpp:476-515](file://libraries/chain/database.cpp#L476-L515)
-- [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
+- [fork_database.hpp:111-168](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L168)
 - [fork_database.cpp:269-274](file://libraries/chain/fork_database.cpp#L269-L274)
 
 ### Examples of Enhanced Fork Scenarios and Resolution Processes
-**Updated** Enhanced with improved out-of-order block handling, duplicate detection, DLT mode integration, automatic seeding capabilities, emergency consensus recovery, sophisticated early rejection logic, advanced fork collision resolution, automatic chain linking, stale fork pruning, separate handling paths, and detailed debug logging.
+**Updated** Enhanced with improved out-of-order block handling, duplicate detection, DLT mode integration, automatic seeding capabilities, emergency consensus recovery, sophisticated early rejection logic, advanced fork collision resolution, automatic chain linking, stale fork pruning, separate handling paths, detailed debug logging, and **NEW**: comprehensive diagnostic monitoring.
 
 - Scenario A: Out-of-order arrival of blocks with improved caching and automatic linking
   - Behavior: New blocks are inserted into the unlinked cache and later inserted when their parent appears via `_push_next`, which automatically links the entire chain
@@ -665,6 +698,12 @@ end
 - **New Scenario P**: Detailed debug logging with prefixes
   - Behavior: Database logs detailed information about fork resolution operations with FORK-SWITCH-POP and FORK-RECOVER-POP prefixes
   - Mechanism: Enhanced logging helps developers trace fork resolution steps and identify issues more quickly
+- **New Scenario Q**: Comprehensive diagnostic monitoring in action
+  - Behavior: P2P monitoring system collects and analyzes fork database storage statistics in real-time
+  - Mechanism: linked_size(), unlinked_size(), and block number range metrics provide insights into fork database health and performance
+- **New Scenario R**: Storage health optimization
+  - Behavior: Database uses diagnostic metrics to optimize fork database performance and prevent memory bloat
+  - Mechanism: Storage statistics inform pruning decisions and capacity planning for optimal system performance
 
 **Section sources**
 - [fork_database.cpp:92-103](file://libraries/chain/fork_database.cpp#L92-L103)
@@ -676,6 +715,7 @@ end
 - [database.cpp:1223-1267](file://libraries/chain/database.cpp#L1223-L1267)
 - [witness.cpp:597-612](file://plugins/witness/witness.cpp#L597-L612)
 - [fork_database.cpp:269-274](file://libraries/chain/fork_database.cpp#L269-L274)
+- [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)
 
 ## Emergency Consensus Recovery System
 
@@ -932,11 +972,155 @@ CleanUp --> End
 - [fork_database.cpp:269-274](file://libraries/chain/fork_database.cpp#L269-L274)
 - [fork_database.cpp:114-146](file://libraries/chain/fork_database.cpp#L114-L146)
 
+## Enhanced Fork Database Diagnostic Accessors
+
+### Overview
+The fork database now includes comprehensive diagnostic accessors that provide real-time monitoring of storage statistics and health metrics. These accessors enable operators to track fork database performance, identify potential issues, and optimize system resources.
+
+### Diagnostic Accessor Functions
+
+#### Storage Size Metrics
+- **linked_size()**: Returns the number of blocks currently stored in the linked index
+- **unlinked_size()**: Returns the number of blocks currently stored in the unlinked index
+
+#### Block Number Range Metrics
+- **linked_min_block_num()**: Returns the minimum block number in the linked index (0 if empty)
+- **linked_max_block_num()**: Returns the maximum block number in the linked index (0 if empty)
+- **unlinked_min_block_num()**: Returns the minimum block number in the unlinked index (0 if empty)
+- **unlinked_max_block_num()**: Returns the maximum block number in the unlinked index (0 if empty)
+
+### Implementation Details
+The diagnostic accessors provide O(1) access to fork database statistics by leveraging the underlying multi-index container structure:
+
+```mermaid
+classDiagram
+class fork_database {
++linked_size() size_t
++unlinked_size() size_t
++linked_min_block_num() uint32_t
++linked_max_block_num() uint32_t
++unlinked_min_block_num() uint32_t
++unlinked_max_block_num() uint32_t
+-private _index : fork_multi_index_type
+-private _unlinked_index : fork_multi_index_type
+}
+```
+
+**Diagram sources**
+- [fork_database.hpp:128-150](file://libraries/chain/include/graphene/chain/fork_database.hpp#L128-L150)
+
+### Usage in P2P Monitoring
+The diagnostic accessors are integrated into the P2P monitoring system for comprehensive storage analytics:
+
+```mermaid
+sequenceDiagram
+participant P2P as "P2P Plugin"
+participant DB as "Database"
+participant FDB as "Fork Database"
+P2P->>DB : "get_fork_db()"
+DB-->>P2P : "fork_database reference"
+P2P->>FDB : "linked_size()"
+FDB-->>P2P : "size_t count"
+P2P->>FDB : "unlinked_size()"
+FDB-->>P2P : "size_t count"
+P2P->>FDB : "linked_min_block_num()"
+FDB-->>P2P : "uint32_t min"
+P2P->>FDB : "linked_max_block_num()"
+FDB-->>P2P : "uint32_t max"
+P2P->>FDB : "unlinked_min_block_num()"
+FDB-->>P2P : "uint32_t min"
+P2P->>FDB : "unlinked_max_block_num()"
+FDB-->>P2P : "uint32_t max"
+P2P->>P2P : "analyze storage metrics"
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)
+
+### Storage Statistics Collection
+The P2P monitoring system collects comprehensive storage statistics for real-time analysis:
+
+- **Fork Database Head**: Current head block number
+- **Last Irreversible Block (LIB)**: Most recent irreversible block number
+- **Earliest Available Block**: Minimum block number available for P2P serving
+- **DLT Block Log Range**: [start..end] range of blocks in DLT log
+- **Block Log End**: End position of regular block log
+- **Linked Index Statistics**: Size and [min..max] block number range
+- **Unlinked Index Statistics**: Size and [min..max] block number range
+- **DLT Mode Status**: Current DLT mode activation state
+- **DLT Resize Count**: Number of DLT log resizes
+
+**Section sources**
+- [fork_database.hpp:128-150](file://libraries/chain/include/graphene/chain/fork_database.hpp#L128-L150)
+- [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)
+
+## Storage Health Monitoring and Analytics
+
+### Real-Time Monitoring System
+The P2P plugin implements a comprehensive monitoring system that collects and analyzes fork database storage statistics in real-time:
+
+#### Monitoring Components
+- **Block Storage Metrics**: Linked and unlinked index sizes, block number ranges
+- **DLT Coverage Analysis**: Gap detection between DLT block log and fork database
+- **Performance Indicators**: DLT mode status, resize counts, and synchronization health
+- **Alert Generation**: Automatic detection of potential storage issues
+
+#### Gap Detection and Analysis
+The system monitors gaps between DLT block log and fork database to ensure complete P2P serving capability:
+
+```mermaid
+flowchart TD
+Start(["Storage Analysis"]) --> CheckDLT{"DLT Mode Enabled?"}
+CheckDLT --> |Yes| CheckRanges["Check DLT and Fork Ranges"]
+CheckDLT --> |No| BasicAnalysis["Basic Storage Analysis"]
+CheckRanges --> GapDetection["Detect Coverage Gaps"]
+GapDetection --> GapExists{"Gap Detected?"}
+GapExists --> |Yes| Alert["Generate Gap Alert"]
+GapExists --> |No| Normal["Normal Operation"]
+Alert --> LogGap["Log DLT Coverage Gap"]
+LogGap --> End(["Complete"])
+Normal --> End
+BasicAnalysis --> End
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:762-770](file://plugins/p2p/p2p_plugin.cpp#L762-L770)
+
+#### Storage Health Indicators
+The monitoring system tracks key indicators of fork database health:
+
+- **Linked Index Utilization**: Percentage of blocks successfully linked to main chain
+- **Unlinked Index Growth**: Rate of unlinked block accumulation indicating network issues
+- **Block Number Distribution**: Evenness of block number distribution across indices
+- **DLT Coverage Completeness**: Percentage of blocks available for P2P serving
+- **Storage Capacity Planning**: Predictive analysis of storage requirements
+
+### Performance Optimization Opportunities
+The diagnostic accessors enable several optimization opportunities:
+
+#### Memory Management
+- **Dynamic Capacity Adjustment**: Use linked/unlinked size ratios to adjust fork database capacity
+- **Early Warning Systems**: Monitor storage metrics to prevent memory exhaustion
+- **Resource Allocation**: Optimize shared memory allocation based on storage patterns
+
+#### Network Synchronization
+- **Out-of-Order Block Handling**: Analyze unlinked index growth to optimize synchronization
+- **Peer Selection**: Use storage metrics to select optimal synchronization peers
+- **Bandwidth Optimization**: Adjust P2P bandwidth based on storage utilization patterns
+
+#### Operational Insights
+- **Capacity Planning**: Use historical storage metrics for infrastructure planning
+- **Performance Tuning**: Adjust fork database parameters based on observed patterns
+- **Issue Detection**: Identify potential problems before they impact system performance
+
+**Section sources**
+- [p2p_plugin.cpp:739-771](file://plugins/p2p/p2p_plugin.cpp#L739-L771)
+
 ## Dependency Analysis
-**Updated** The fork resolution system now includes DLT mode dependencies, automatic seeding capabilities, comprehensive emergency consensus integration, sophisticated early rejection logic, HF12 fork comparison capabilities, advanced fork collision resolution systems, gap-based early rejection protection, automatic chain linking features, separate handling paths, and detailed debug logging.
+**Updated** The fork resolution system now includes DLT mode dependencies, automatic seeding capabilities, comprehensive emergency consensus integration, sophisticated early rejection logic, HF12 fork comparison capabilities, advanced fork collision resolution systems, gap-based early rejection protection, automatic chain linking features, separate handling paths, detailed debug logging, and **NEW**: comprehensive diagnostic monitoring system.
 
 The fork resolution system depends on:
-- fork_database for in-memory fork chain management with enhanced caching, duplicate detection, emergency mode tie-breaking, comprehensive error handling, automatic stale fork pruning, HF12 fork comparison, and gap-based early rejection
+- fork_database for in-memory fork chain management with enhanced caching, duplicate detection, emergency mode tie-breaking, comprehensive error handling, automatic stale fork pruning, HF12 fork comparison, gap-based early rejection, and **NEW**: diagnostic accessors for storage statistics
 - database for integrating fork resolution into block application, DLT mode management, automatic seeding, emergency consensus mode activation/deactivation with sophisticated early rejection logic, block validation, and HF12 vote-weighted fork comparison
 - block_log for persistence of irreversible blocks in normal mode
 - **New**: dlt_block_log for DLT mode persistence and P2P synchronization support
@@ -949,6 +1133,7 @@ The fork resolution system depends on:
 - **New**: Automatic chain linking system via _push_next() for efficient out-of-order block processing
 - **New**: Separate handling paths for linear extensions vs actual fork switches during chain reorganization
 - **New**: Detailed debug logging prefixes (FORK-SWITCH-POP, FORK-RECOVER-POP) for better traceability
+- **New**: Comprehensive diagnostic monitoring system with real-time storage analytics
 
 ```mermaid
 graph LR
@@ -967,6 +1152,8 @@ GAP["Gap-Based Rejection"] --> DBCPP
 LINK["Automatic Chain Linking"] --> FDB
 SEPARATE["Separate Handling Paths"] --> DBCPP
 DEBUG["Debug Logging Prefixes"] --> DBCPP
+DIAG["Diagnostic Accessors"] --> FDB
+MON["P2P Monitoring"] --> DIAG
 ```
 
 **Diagram sources**
@@ -986,7 +1173,7 @@ DEBUG["Debug Logging Prefixes"] --> DBCPP
 - [12.hf:1-7](file://libraries/chain/hardfork.d/12.hf#L1-L7)
 
 ## Performance Considerations
-**Updated** Enhanced with improved caching, duplicate detection, DLT mode integration, automatic seeding mechanisms, emergency consensus recovery optimizations, sophisticated early rejection logic, HF12 fork comparison capabilities, advanced fork collision resolution systems, gap-based early rejection protection, automatic chain linking features, separate handling paths, and detailed debug logging.
+**Updated** Enhanced with improved caching, duplicate detection, DLT mode integration, automatic seeding mechanisms, emergency consensus recovery optimizations, sophisticated early rejection logic, HF12 fork comparison capabilities, advanced fork collision resolution systems, gap-based early rejection protection, automatic chain linking features, separate handling paths, detailed debug logging, and **NEW**: comprehensive diagnostic monitoring system.
 
 - Maximum fork depth: The fork database limits the maximum number of blocks that may be skipped in an out-of-order push, preventing excessive memory usage with enhanced cleanup
 - Multi-index containers: Efficient lookups by block ID and previous ID minimize traversal costs with improved indexing
@@ -1011,9 +1198,11 @@ DEBUG["Debug Logging Prefixes"] --> DBCPP
 - **Automatic chain linking**: _push_next() mechanism prevents memory bloat and maintains optimal performance under out-of-order block conditions
 - **Separate handling paths**: Linear extension vs fork switch processing improves efficiency by avoiding unnecessary operations
 - **Debug logging overhead**: Detailed debug logging prefixes add minimal overhead while providing significant debugging benefits
+- **Diagnostic monitoring overhead**: Real-time storage analytics add minimal overhead while providing significant operational insights
+- **Storage optimization**: Diagnostic metrics enable proactive optimization of fork database performance and resource utilization
 
 ## Troubleshooting Guide
-**Updated** Enhanced with improved error handling, duplicate detection, DLT mode support, automatic seeding capabilities, comprehensive emergency consensus troubleshooting, sophisticated early rejection logic, HF12 fork comparison troubleshooting, advanced fork collision resolution guidance, gap-based early rejection troubleshooting, automatic chain linking guidance, separate handling paths, and detailed debug logging.
+**Updated** Enhanced with improved error handling, duplicate detection, DLT mode support, automatic seeding capabilities, comprehensive emergency consensus troubleshooting, sophisticated early rejection logic, HF12 fork comparison troubleshooting, advanced fork collision resolution guidance, gap-based early rejection troubleshooting, automatic chain linking guidance, separate handling paths, detailed debug logging, and **NEW**: comprehensive diagnostic monitoring troubleshooting.
 
 Common issues and remedies:
 - **Unlinkable block errors**: Occur when a block does not link to a known chain; the fork DB logs and caches the block for later insertion when its parent arrives with enhanced logging and processing via _push_next()
@@ -1041,6 +1230,10 @@ Common issues and remedies:
 - **Automatic chain linking failures**: Check _push_next() mechanism and ensure cached unlinked blocks are being processed correctly when parents arrive
 - **Linear extension vs fork switch confusion**: Monitor FORK-SWITCH-POP and FORK-RECOVER-POP debug logs to distinguish between different types of fork resolution operations
 - **Debug logging issues**: Verify that debug logging prefixes are appearing correctly and check log level configuration for proper visibility
+- **Diagnostic monitoring failures**: Verify diagnostic accessors are returning accurate storage statistics and check P2P monitoring system integration
+- **Storage health issues**: Monitor fork database storage metrics to identify potential memory exhaustion or performance degradation
+- **DLT coverage gaps**: Use diagnostic metrics to identify and resolve gaps between DLT block log and fork database ranges
+- **Performance optimization**: Use diagnostic data to optimize fork database capacity and improve synchronization efficiency
 
 **Section sources**
 - [fork_database.cpp:34-46](file://libraries/chain/fork_database.cpp#L34-L46)
@@ -1051,14 +1244,15 @@ Common issues and remedies:
 - [database.cpp:2125-2142](file://libraries/chain/database.cpp#L2125-L2142)
 - [witness.cpp:597-612](file://plugins/witness/witness.cpp#L597-L612)
 - [fork_database.cpp:269-274](file://libraries/chain/fork_database.cpp#L269-L274)
+- [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)
 
 ## Conclusion
-**Updated** The fork resolution and consensus system combines an efficient in-memory fork database with robust chain reorganization, irreversible block persistence, comprehensive DLT mode support, and advanced emergency consensus recovery mechanisms. The system has been significantly enhanced with sophisticated gap-based early rejection logic, comprehensive duplicate detection, DLT mode integration, automatic seeding capabilities, comprehensive emergency consensus implementation, HF12 vote-weighted fork comparison, two-level fork collision resolution, automatic stale fork pruning, and automatic chain linking. The enhanced fork database now supports snapshot-based nodes with immediate P2P synchronization, while the DLT block log provides efficient serving of recent irreversible blocks to peers. The emergency consensus recovery system ensures blockchain continuity through timeout-based activation, hybrid witness scheduling, and deterministic tie-breaking mechanisms. The HF12 fork comparison system provides more robust consensus decisions by weighting chains based on witness vote support with +10% bonus for longer chains. The two-level fork collision resolution system combines immediate vote-weighted comparison with stuck-head timeout to ensure network progress while maintaining consensus integrity. The automatic stale fork pruning system prevents memory bloat and maintains optimal performance under fork collision conditions. The gap-based early rejection logic with 100-block threshold prevents memory bloat from dead-fork chains while maintaining network efficiency. The automatic chain linking system via _push_next() ensures efficient processing of out-of-order blocks. The system integrates tightly with witness scheduling to ensure timely and valid block production, with emergency mode awareness enabling seamless transition between normal and emergency operations. The enhanced APIs enable reliable fork detection, chain validation, and recovery with DLT mode, emergency consensus, HF12 fork comparison, gap-based protection, and automatic chain linking awareness. Performance controls keep resource usage manageable while improving synchronization reliability, network health, and consensus stability during emergency conditions. The sophisticated early rejection logic and block validation mechanisms prevent infinite synchronization loops and system degradation, ensuring robust operation under various network conditions. The separate handling paths for linear extensions vs actual fork switches improve efficiency by avoiding unnecessary operations. The detailed debug logging with FORK-SWITCH-POP and FORK-RECOVER-POP prefixes provides excellent traceability for troubleshooting and monitoring fork resolution operations.
+**Updated** The fork resolution and consensus system combines an efficient in-memory fork database with robust chain reorganization, irreversible block persistence, comprehensive DLT mode support, and advanced emergency consensus recovery mechanisms. The system has been significantly enhanced with sophisticated gap-based early rejection logic, comprehensive duplicate detection, DLT mode integration, automatic seeding capabilities, comprehensive emergency consensus implementation, HF12 vote-weighted fork comparison, two-level fork collision resolution, automatic stale fork pruning, and automatic chain linking. The enhanced fork database now supports snapshot-based nodes with immediate P2P synchronization, while the DLT block log provides efficient serving of recent irreversible blocks to peers. The emergency consensus recovery system ensures blockchain continuity through timeout-based activation, hybrid witness scheduling, and deterministic tie-breaking mechanisms. The HF12 fork comparison system provides more robust consensus decisions by weighting chains based on witness vote support with +10% bonus for longer chains. The two-level fork collision resolution system combines immediate vote-weighted comparison with stuck-head timeout to ensure network progress while maintaining consensus integrity. The automatic stale fork pruning system prevents memory bloat and maintains optimal performance under fork collision conditions. The gap-based early rejection logic with 100-block threshold prevents memory bloat from dead-fork chains while maintaining network efficiency. The automatic chain linking system via _push_next() ensures efficient processing of out-of-order blocks. The system integrates tightly with witness scheduling to ensure timely and valid block production, with emergency mode awareness enabling seamless transition between normal and emergency operations. The enhanced APIs enable reliable fork detection, chain validation, and recovery with DLT mode, emergency consensus, HF12 fork comparison, gap-based protection, and automatic chain linking awareness. Performance controls keep resource usage manageable while improving synchronization reliability, network health, and consensus stability during emergency conditions. The sophisticated early rejection logic and block validation mechanisms prevent infinite synchronization loops and system degradation, ensuring robust operation under various network conditions. The separate handling paths for linear extensions vs actual fork switches improve efficiency by avoiding unnecessary operations. The detailed debug logging with FORK-SWITCH-POP and FORK-RECOVER-POP prefixes provides excellent traceability for troubleshooting and monitoring fork resolution operations. **NEW**: The comprehensive diagnostic monitoring system provides real-time insights into fork database storage statistics, enabling proactive optimization and issue detection. The diagnostic accessors offer O(1) access to critical storage metrics including linked/unlinked index sizes and block number ranges, facilitating informed capacity planning and performance tuning. The P2P monitoring integration delivers comprehensive analytics for storage health, DLT coverage gaps, and synchronization performance, ensuring optimal system operation under varying network conditions.
 
 ## Appendices
 
 ### Appendix A: Enhanced Key Data Structures and Complexity
-**Updated** Enhanced with improved duplicate detection, caching mechanisms, DLT mode support, automatic seeding capabilities, emergency consensus integration, sophisticated early rejection logic, HF12 fork comparison capabilities, advanced fork collision resolution systems, gap-based early rejection protection, automatic chain linking features, separate handling paths, and detailed debug logging.
+**Updated** Enhanced with improved duplicate detection, caching mechanisms, DLT mode support, automatic seeding capabilities, emergency consensus integration, sophisticated early rejection logic, HF12 fork comparison capabilities, advanced fork collision resolution systems, gap-based early rejection protection, automatic chain linking features, separate handling paths, detailed debug logging, and **NEW**: comprehensive diagnostic monitoring system.
 
 - fork_item: Stores block data, previous link, and invalid flag
 - fork_database:
@@ -1075,6 +1269,7 @@ Common issues and remedies:
   - **New**: Gap-based early rejection: O(1) gap calculation and threshold checking
   - **New**: Separate handling paths: O(1) branching between linear extension and fork switch operations
   - **New**: Debug logging: Minimal overhead with detailed prefix-based logging for traceability
+  - **New**: Diagnostic accessors: O(1) access to storage statistics with comprehensive metrics
 - **New**: database compare_fork_branches():
   - O(B) where B = number of blocks in longer branch
   - Calculates vote weights for each unique witness
@@ -1126,9 +1321,15 @@ Common issues and remedies:
   - Minimal overhead with prefix-based categorization
   - FORK-SWITCH-POP: O(1) logging for fork switching operations
   - FORK-RECOVER-POP: O(1) logging for fork recovery operations
+- **New**: Diagnostic monitoring system:
+  - linked_size(): O(1) access to linked index size
+  - unlinked_size(): O(1) access to unlinked index size
+  - Block number range queries: O(1) access to min/max block numbers
+  - Real-time analytics: O(1) collection of comprehensive storage metrics
+  - P2P integration: O(1) metrics delivery for monitoring system
 
 **Section sources**
-- [fork_database.hpp:20-144](file://libraries/chain/include/graphene/chain/fork_database.hpp#L20-L144)
+- [fork_database.hpp:20-168](file://libraries/chain/include/graphene/chain/fork_database.hpp#L20-L168)
 - [fork_database.cpp:48-103](file://libraries/chain/fork_database.cpp#L48-L103)
 - [database.cpp:1300-1399](file://libraries/chain/database.cpp#L1300-L1399)
 - [database.cpp:1254-1298](file://libraries/chain/database.cpp#L1254-L1298)
@@ -1138,6 +1339,7 @@ Common issues and remedies:
 - [database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
 - [database.cpp:2125-2142](file://libraries/chain/database.cpp#L2125-L2142)
 - [witness.cpp:597-612](file://plugins/witness/witness.cpp#L597-L612)
+- [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)
 
 ### Appendix B: Emergency Consensus Configuration Parameters
 **New Section** Comprehensive configuration parameters for emergency consensus mode activation and operation.
@@ -1173,6 +1375,8 @@ Exception categories and handling:
 - **gap_based_rejection**: Prevented through 100-block threshold logic that protects against memory bloat
 - **linear_extension_exception**: Prevented through separate handling path that avoids unnecessary operations
 - **fork_switch_exception**: Handled through detailed debug logging with FORK-SWITCH-POP prefix for troubleshooting
+- **diagnostic_access_exception**: Prevented through comprehensive error handling in diagnostic accessors
+- **storage_monitoring_exception**: Handled through graceful degradation in P2P monitoring system
 
 Exception handling strategies:
 - **Early rejection**: Prevents unnecessary processing of invalid blocks
@@ -1185,6 +1389,7 @@ Exception handling strategies:
 - **Gap-based protection**: 100-block threshold prevents accumulation of stale blocks
 - **Separate handling paths**: Linear extension vs fork switch processing improves efficiency
 - **Debug logging**: FORK-SWITCH-POP and FORK-RECOVER-POP prefixes provide excellent traceability
+- **Diagnostic monitoring**: Real-time storage analytics provide early warning of potential issues
 
 **Section sources**
 - [fork_database.cpp:38-46](file://libraries/chain/fork_database.cpp#L38-L46)
@@ -1192,3 +1397,86 @@ Exception handling strategies:
 - [database.cpp:1300-1399](file://libraries/chain/database.cpp#L1300-L1399)
 - [database.cpp:1390-1465](file://libraries/chain/database.cpp#L1390-L1465)
 - [witness.cpp:614-646](file://plugins/witness/witness.cpp#L614-L646)
+
+### Appendix D: Diagnostic Accessors Usage Examples
+**New Section** Practical examples of using diagnostic accessors for monitoring and troubleshooting fork database storage statistics.
+
+#### Basic Storage Metrics Collection
+```cpp
+// Example: Collect basic fork database storage metrics
+const auto& fork_db = db.get_fork_db();
+size_t linked_count = fork_db.linked_size();
+size_t unlinked_count = fork_db.unlinked_size();
+uint32_t linked_min = fork_db.linked_min_block_num();
+uint32_t linked_max = fork_db.linked_max_block_num();
+uint32_t unlinked_min = fork_db.unlinked_min_block_num();
+uint32_t unlinked_max = fork_db.unlinked_max_block_num();
+
+// Example: Analyze storage utilization
+double linked_ratio = (double)linked_count / (linked_count + unlinked_count);
+double linked_coverage = (double)(linked_max - linked_min + 1) / linked_count;
+double unlinked_growth_rate = (double)unlinked_count / (linked_count + 1);
+```
+
+#### Storage Health Analysis
+```cpp
+// Example: Analyze fork database health
+if (unlinked_count > linked_count * 0.1) {
+    // High proportion of unlinked blocks indicates network issues
+    wlog("High unlinked block ratio: {}%", unlinked_count * 100.0 / (linked_count + unlinked_count));
+}
+
+if (unlinked_growth_rate > 0.05) {
+    // Rapid growth in unlinked blocks suggests synchronization problems
+    wlog("Rapid unlinked block growth detected");
+}
+
+if (linked_coverage < 0.8) {
+    // Low coverage indicates potential gaps in fork database
+    wlog("Low fork database coverage: {}%", linked_coverage * 100);
+}
+```
+
+#### Performance Optimization Based on Diagnostics
+```cpp
+// Example: Optimize fork database capacity based on storage patterns
+if (linked_count > fork_db.max_size() * 0.8) {
+    // Increase fork database capacity to prevent pruning
+    db.set_max_size(fork_db.max_size() * 1.2);
+    wlog("Increased fork database capacity to {} blocks", fork_db.max_size());
+}
+
+if (unlinked_count < fork_db.max_size() * 0.05) {
+    // Decrease capacity to save memory
+    db.set_max_size(fork_db.max_size() * 0.8);
+    wlog("Decreased fork database capacity to {} blocks", fork_db.max_size());
+}
+```
+
+#### Integration with P2P Monitoring
+```cpp
+// Example: Integrate diagnostic metrics with P2P monitoring
+void collect_fork_storage_metrics() {
+    const auto& fork_db = db.get_fork_db();
+    
+    // Collect metrics
+    auto metrics = std::make_shared<fork_storage_metrics>(
+        fork_db.linked_size(),
+        fork_db.unlinked_size(),
+        fork_db.linked_min_block_num(),
+        fork_db.linked_max_block_num(),
+        fork_db.unlinked_min_block_num(),
+        fork_db.unlinked_max_block_num()
+    );
+    
+    // Store metrics for analysis
+    _storage_metrics_history.push_back(metrics);
+    
+    // Generate alerts based on thresholds
+    check_storage_alerts(metrics);
+}
+```
+
+**Section sources**
+- [fork_database.hpp:128-150](file://libraries/chain/include/graphene/chain/fork_database.hpp#L128-L150)
+- [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)

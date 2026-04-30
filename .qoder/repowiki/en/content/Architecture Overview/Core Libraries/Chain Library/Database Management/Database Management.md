@@ -24,15 +24,17 @@
 - [exception.hpp](file://thirdparty/fc/include/fc/exception/exception.hpp)
 - [exception.cpp](file://thirdparty/fc/src/exception.cpp)
 - [exceptions.hpp](file://libraries/protocol/include/graphene/protocol/exceptions.hpp)
+- [stacktrace.cpp](file://thirdparty/fc/src/stacktrace.cpp)
+- [config.ini](file://share/vizd/config/config.ini)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Introduced new shared_memory_corruption_exception type for structured error handling
-- Enhanced witness account validation with graceful error handling during block acceptance and generation
-- Integrated automatic recovery system in witness plugin for shared memory corruption detection
-- Updated database.cpp to replace direct assertion failures with structured exception handling
-- Enhanced plugin.cpp with comprehensive auto-recovery from snapshot for corruption scenarios
+- Enhanced DLT block log gap detection and recovery with automatic gap recovery mechanisms
+- Improved error reporting throughout gap detection and recovery workflow with intelligent warning suppression
+- Added _dlt_gap_logged flag mechanism for intelligent warning suppression during gap recovery
+- Enhanced logging throughout DLT block log operations for better diagnostics and troubleshooting
+- Improved gap recovery logic with better error handling and recovery strategies
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -49,12 +51,12 @@
 ## Introduction
 This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, and practical examples of database operations and performance optimization.
 
-**Updated** - Enhanced with sophisticated exception handling mechanisms that preserve derived exception types during rethrow operations, comprehensive fork database management with improved diagnostic capabilities, and enhanced early rejection logic for blocks far ahead with unknown parents. The system now includes sophisticated fork recovery logging, improved fork switching logic with deterministic tie-breaking, and enhanced memory management with deferred resize operations.
+**Updated** - Enhanced with sophisticated exception handling mechanisms that preserve derived exception types during rethrow operations, comprehensive fork database management with improved diagnostic capabilities, and enhanced early rejection logic for blocks far ahead with unknown parents. The system now includes comprehensive database crash debugging capabilities with debug_crash logging throughout critical code paths, debug-block-production configuration option for detailed block production logging, and enhanced diagnostic visibility into database operations. The system also features stacktrace crash handlers for improved crash diagnostics and extensive debug logging markers (DEBUG_CRASH) throughout database and witness production code.
 
 ## Project Structure
-The database subsystem is implemented primarily in the chain library with enhanced support for operation guards and concurrent access protection:
+The database subsystem is implemented primarily in the chain library with enhanced support for operation guards, concurrent access protection, and comprehensive crash debugging:
 - Core database interface and declarations: libraries/chain/include/graphene/chain/database.hpp
-- Implementation of database operations with enhanced DLT mode support, emergency consensus, operation guards, and concurrent access protection: libraries/chain/database.cpp
+- Implementation of database operations with enhanced DLT mode support, emergency consensus, operation guards, concurrent access protection, and comprehensive debug logging: libraries/chain/database.cpp
 - Chainbase integration with operation_guard RAII pattern and resize barrier mechanisms: thirdparty/chainbase/include/chainbase/chainbase.hpp and thirdparty/chainbase/src/chainbase.cpp
 - Block log abstraction: libraries/chain/include/graphene/chain/block_log.hpp and libraries/chain/block_log.cpp
 - DLT block log for rolling window storage: libraries/chain/include/graphene/chain/dlt_block_log.hpp and libraries/chain/dlt_block_log.cpp
@@ -62,12 +64,13 @@ The database subsystem is implemented primarily in the chain library with enhanc
 - Database exceptions including unlinkable_block_exception: libraries/chain/include/graphene/chain/database_exceptions.hpp
 - Snapshot plugin integration: plugins/snapshot/plugin.cpp for DLT mode initialization
 - Postponed transaction processing: libraries/chain/include/graphene/chain/db_with.hpp for transaction queue management
-- Witness plugin integration with dual operation guard patterns: plugins/witness/witness.cpp and plugins/witness/include/graphene/plugins/witness/witness.hpp
+- Witness plugin integration with dual operation guard patterns and debug logging: plugins/witness/witness.cpp and plugins/witness/include/graphene/plugins/witness/witness.hpp
 - Protocol configuration: libraries/protocol/include/graphene/protocol/config.hpp for emergency consensus constants
 - Network layer integration: libraries/network/node.cpp for peer connectivity management
 - P2P plugin integration with operation guard protection: plugins/p2p/p2p_plugin.cpp for enhanced exception handling and concurrent access safety
 - Enhanced exception handling infrastructure: thirdparty/fc/include/fc/exception/exception.hpp and thirdparty/fc/src/exception.cpp
 - Protocol exceptions with dynamic rethrow support: libraries/protocol/include/graphene/protocol/exceptions.hpp
+- Stacktrace crash handlers for improved diagnostics: thirdparty/fc/src/stacktrace.cpp
 
 ```mermaid
 graph TB
@@ -84,6 +87,7 @@ DEH["database_exceptions.hpp"]
 DBWH["db_with.hpp"]
 ENDH["emergency_consensus_constants"]
 ENDH2["exception handling infrastructure"]
+STH["stacktrace crash handlers"]
 end
 subgraph "Chainbase Integration"
 CBH["chainbase.hpp"]
@@ -119,6 +123,7 @@ DBCPP --> CBCPP
 DBCPP --> EXCEPTIONH
 DBCPP --> EXCEPTIONCPP
 DBCPP --> PROTOEX
+DBCPP --> STH
 SNAPH --> DBH
 WITNESS --> DBH
 WITNESSH --> WITNESS
@@ -129,7 +134,7 @@ EXC --> NODE
 
 **Diagram sources**
 - [database.hpp:1-670](file://libraries/chain/include/graphene/chain/database.hpp#L1-L670)
-- [database.cpp:1-6643](file://libraries/chain/database.cpp#L1-L6643)
+- [database.cpp:1-6760](file://libraries/chain/database.cpp#L1-L6760)
 - [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 - [chainbase.cpp:1-200](file://thirdparty/chainbase/src/chainbase.cpp#L1-L200)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
@@ -150,10 +155,11 @@ EXC --> NODE
 - [exception.hpp:177-215](file://thirdparty/fc/include/fc/exception/exception.hpp#L177-L215)
 - [exception.cpp:166-186](file://thirdparty/fc/src/exception.cpp#L166-L186)
 - [exceptions.hpp:21-46](file://libraries/protocol/include/graphene/protocol/exceptions.hpp#L21-L46)
+- [stacktrace.cpp:1-78](file://thirdparty/fc/src/stacktrace.cpp#L1-L78)
 
 **Section sources**
 - [database.hpp:1-670](file://libraries/chain/include/graphene/chain/database.hpp#L1-L670)
-- [database.cpp:1-6643](file://libraries/chain/database.cpp#L1-L6643)
+- [database.cpp:1-6760](file://libraries/chain/database.cpp#L1-L6760)
 - [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 - [chainbase.cpp:1-200](file://thirdparty/chainbase/src/chainbase.cpp#L1-L200)
 - [block_log.hpp:1-75](file://libraries/chain/include/graphene/chain/block_log.hpp#L1-L75)
@@ -174,9 +180,10 @@ EXC --> NODE
 - [exception.hpp:177-215](file://thirdparty/fc/include/fc/exception/exception.hpp#L177-L215)
 - [exception.cpp:166-186](file://thirdparty/fc/src/exception.cpp#L166-L186)
 - [exceptions.hpp:21-46](file://libraries/protocol/include/graphene/protocol/exceptions.hpp#L21-L46)
+- [stacktrace.cpp:1-78](file://thirdparty/fc/src/stacktrace.cpp#L1-L78)
 
 ## Core Components
-- database class: Public interface for blockchain state management, block and transaction processing, checkpoints, and event notifications with enhanced DLT mode support, emergency consensus implementation, operation guard integration, and improved error handling.
+- database class: Public interface for blockchain state management, block and transaction processing, checkpoints, and event notifications with enhanced DLT mode support, emergency consensus implementation, operation guard integration, improved error handling, and comprehensive debug logging capabilities.
 - chainbase integration: Provides persistent object storage and undo sessions with enhanced memory management, operation_guard RAII pattern, and resize barrier mechanisms for concurrent access protection.
 - block_log: Append-only block storage with random-access indexing.
 - dlt_block_log: Rolling window block storage specifically designed for DLT (snapshot-based) nodes.
@@ -194,6 +201,10 @@ EXC --> NODE
 - **Enhanced Emergency Consensus**: Automatic recovery system with comprehensive logging and safety checks for network stall detection and recovery.
 - **Enhanced Shared Memory Corruption Detection**: New shared_memory_corruption_exception type for structured error handling during witness account validation and block processing.
 - **Enhanced Auto-Recovery System**: Integrated automatic recovery from snapshot for shared memory corruption scenarios with comprehensive error handling and node restart procedures.
+- **Enhanced Crash Debugging Capabilities**: Comprehensive debug_crash logging throughout critical code paths for improved crash diagnostics and troubleshooting.
+- **Enhanced Block Production Debugging**: debug-block-production configuration option for detailed block production logging and monitoring.
+- **Enhanced Stacktrace Crash Handlers**: Improved crash diagnostics with stacktrace generation and signal handling for fatal errors.
+- **Enhanced DLT Gap Recovery**: Intelligent gap detection and recovery mechanisms with automatic gap recovery and warning suppression using _dlt_gap_logged flag.
 
 Key responsibilities:
 - Lifecycle: open(), open_from_snapshot(), reindex(), close(), wipe() with improved error handling
@@ -212,6 +223,11 @@ Key responsibilities:
 - Enhanced Witness Scheduling Safety: Dual operation guard patterns in witness scheduling calculations to ensure thread safety during slot determination and witness validation
 - Enhanced Shared Memory Validation: Graceful error handling for witness account validation with structured exception reporting
 - Enhanced Auto-Recovery Integration: Seamless integration with witness plugin for automatic recovery from shared memory corruption
+- **Enhanced Crash Debugging**: Comprehensive debug_crash logging markers throughout database operations for improved troubleshooting
+- **Enhanced Block Production Monitoring**: debug-block-production configuration option for detailed block production logging and monitoring
+- **Enhanced Stacktrace Generation**: Automatic stacktrace generation for crash diagnostics and improved debugging experience
+- **Enhanced DLT Gap Detection**: Intelligent gap detection in DLT block log with automatic recovery and warning suppression
+- **Enhanced Gap Recovery Logging**: Comprehensive logging throughout gap detection and recovery workflow for better diagnostics
 
 **Section sources**
 - [database.hpp:61-115](file://libraries/chain/include/graphene/chain/database.hpp#L61-L115)
@@ -227,9 +243,10 @@ Key responsibilities:
 - [exception.hpp:177-215](file://thirdparty/fc/include/fc/exception/exception.hpp#L177-L215)
 - [exception.cpp:166-186](file://thirdparty/fc/src/exception.cpp#L166-L186)
 - [exceptions.hpp:21-46](file://libraries/protocol/include/graphene/protocol/exceptions.hpp#L21-L46)
+- [stacktrace.cpp:72-78](file://thirdparty/fc/src/stacktrace.cpp#L72-L78)
 
 ## Architecture Overview
-The database composes four primary subsystems with enhanced DLT mode support, emergency consensus implementation, operation guard integration, and improved error handling:
+The database composes four primary subsystems with enhanced DLT mode support, emergency consensus implementation, operation guard integration, improved error handling, and comprehensive crash debugging capabilities:
 - Chainbase: Persistent object database with undo/redo capabilities, operation_guard RAII pattern, and resize barrier mechanisms for concurrent access protection
 - Fork database: Holds recent blocks for fork resolution with emergency mode support and enhanced unlinkable block detection
 - Block log: Immutable, append-only block storage with index
@@ -247,6 +264,10 @@ The database composes four primary subsystems with enhanced DLT mode support, em
 - **Enhanced Emergency Consensus**: Automatic recovery system with comprehensive logging and safety checks for network stall detection and recovery
 - **Enhanced Shared Memory Corruption Detection**: New shared_memory_corruption_exception type for structured error reporting during critical validation failures
 - **Enhanced Auto-Recovery Integration**: Seamless integration with witness plugin for automatic recovery from shared memory corruption scenarios
+- **Enhanced Crash Debugging System**: Comprehensive debug_crash logging throughout critical code paths for improved crash diagnostics and troubleshooting
+- **Enhanced Block Production Monitoring**: debug-block-production configuration option for detailed block production logging and monitoring
+- **Enhanced Stacktrace Crash Handlers**: Automatic stacktrace generation for crash diagnostics and improved debugging experience
+- **Enhanced DLT Gap Recovery System**: Intelligent gap detection and automatic recovery mechanisms with warning suppression for improved diagnostics
 
 ```mermaid
 classDiagram
@@ -266,6 +287,7 @@ class database {
 +_dlt_mode : bool
 +_dlt_block_log_max_blocks : uint32_t
 +_dlt_gap_logged : bool
++_debug_block_production : bool
 +signal_guard : enhanced error handling
 +_maybe_warn_multiple_production(height)
 +CHIAN_PENDING_TRANSACTION_EXECUTION_LIMIT : time limit constant
@@ -293,6 +315,8 @@ class database {
 +dynamic_rethrow_exception() : enhanced exception preservation
 +shared_memory_corruption_detection : structured error handling
 +auto_recovery_integration : seamless recovery procedures
++install_stacktrace_crash_handler() : crash diagnostics
++enhanced_dlt_gap_recovery : automatic gap recovery with warning suppression
 }
 class chainbase {
 +free_memory() : size_t
@@ -381,6 +405,18 @@ class exception_factory {
 +rethrow(exception) : preserves derived types
 +register_exception<T>() : registers exception builders
 }
+class crash_debug_system {
++debug_crash_logging : comprehensive debug markers
++debug_block_production : detailed production logging
++stacktrace_crash_handlers : crash diagnostics
+}
+class dlt_gap_recovery_system {
++_dlt_gap_logged : bool flag for warning suppression
++detect_gap_in_dlt_log() : intelligent gap detection
++automatic_gap_recovery() : automatic recovery mechanisms
++suppress_repeated_warnings() : warning suppression logic
++enhanced_logging_for_recovery() : comprehensive recovery logging
+}
 database --> block_log : "uses (normal mode)"
 database --> dlt_block_log : "uses (DLT mode)"
 database --> fork_database : "uses with enhanced error handling"
@@ -392,6 +428,8 @@ database --> shared_memory_corruption_exception : "structured corruption detecti
 database --> enhanced_early_rejection_logic : "gap-based decision system"
 database --> enhanced_fork_exception_prevention : "comprehensive exception prevention"
 database --> exception_factory : "enhanced exception preservation"
+database --> crash_debug_system : "comprehensive crash debugging"
+database --> dlt_gap_recovery_system : "automatic gap recovery with warning suppression"
 chainbase --> operation_guard : "RAII concurrent access protection"
 ```
 
@@ -408,6 +446,7 @@ chainbase --> operation_guard : "RAII concurrent access protection"
 - [database_exceptions.hpp:83](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L83)
 - [database_exceptions.hpp:122](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L122)
 - [exception.hpp:177-215](file://thirdparty/fc/include/fc/exception/exception.hpp#L177-L215)
+- [stacktrace.cpp:72-78](file://thirdparty/fc/src/stacktrace.cpp#L72-L78)
 
 ## Detailed Component Analysis
 
@@ -1183,11 +1222,109 @@ These signals are used by plugins to react to blockchain events without tight co
 - [database.cpp:1158-1198](file://libraries/chain/database.cpp#L1158-L1198)
 - [database.cpp:3652-3655](file://libraries/chain/database.cpp#L3652-L3655)
 
+### Enhanced Crash Debugging Capabilities
+**New** - The database now includes comprehensive crash debugging capabilities with debug_crash logging throughout critical code paths:
+
+- **Comprehensive Debug Logging**: Extensive debug_crash logging markers (DEBUG_CRASH) throughout database operations including push_block, update_witness_schedule, schedule normal build, hybrid override, process_funds, notify_applied_block, and notify_changed_objects.
+- **Block Production Monitoring**: The debug-block-production configuration option enables detailed block production logging and monitoring for troubleshooting production issues.
+- **Stacktrace Crash Handlers**: Enhanced stacktrace crash handlers provide automatic stacktrace generation for crash diagnostics, improving debugging experience for fatal errors.
+- **Enhanced Diagnostic Visibility**: Debug logging throughout critical code paths provides comprehensive visibility into database operations for improved troubleshooting and performance analysis.
+
+The debug_crash logging system includes markers for:
+- push_block operations with witness information
+- witness schedule updates and emergency consensus handling
+- block production scheduling and execution
+- fund processing and block notification cycles
+- LIB advancement and fork database operations
+
+**Section sources**
+- [database.cpp:1890-1892](file://libraries/chain/database.cpp#L1890-L1892)
+- [database.cpp:2281-2283](file://libraries/chain/database.cpp#L2281-L2283)
+- [database.cpp:2466-2467](file://libraries/chain/database.cpp#L2466-L2467)
+- [database.cpp:2526-2527](file://libraries/chain/database.cpp#L2526-L2527)
+- [database.cpp:2536-2537](file://libraries/chain/database.cpp#L2536-L2537)
+- [database.cpp:4536-4537](file://libraries/chain/database.cpp#L4536-L4537)
+- [database.cpp:4538-4539](file://libraries/chain/database.cpp#L4538-L4539)
+- [database.cpp:4544-4545](file://libraries/chain/database.cpp#L4544-L4545)
+- [database.cpp:4567-4568](file://libraries/chain/database.cpp#L4567-L4568)
+- [database.cpp:4569-4570](file://libraries/chain/database.cpp#L4569-L4570)
+- [database.cpp:4571-4572](file://libraries/chain/database.cpp#L4571-L4572)
+- [database.cpp:4573-4574](file://libraries/chain/database.cpp#L4573-L4574)
+- [database.cpp:5530-5531](file://libraries/chain/database.cpp#L5530-L5531)
+- [database.cpp:5543-5544](file://libraries/chain/database.cpp#L5543-L5544)
+- [database.cpp:5677-5678](file://libraries/chain/database.cpp#L5677-L5678)
+- [database.cpp:5680-5681](file://libraries/chain/database.cpp#L5680-L5681)
+
+### Enhanced Block Production Debugging
+**New** - The debug-block-production configuration option provides detailed block production logging and monitoring:
+
+- **Configuration Option**: The debug-block-production option is available in the witness plugin configuration with default value false.
+- **Runtime Control**: The option can be enabled/disabled at runtime through command-line configuration.
+- **Production Loop Monitoring**: Comprehensive logging for block production loop including entry/exit points, maybe_produce_block results, and scheduling operations.
+- **Witness Production Tracking**: Detailed logging for witness production scheduling, slot determination, and block generation processes.
+- **Emergency Consensus Monitoring**: Enhanced logging for emergency consensus mode operations including witness schedule overrides and hybrid production scenarios.
+
+**Section sources**
+- [witness.cpp:159-160](file://plugins/witness/witness.cpp#L159-L160)
+- [witness.cpp:228-233](file://plugins/witness/witness.cpp#L228-L233)
+- [witness.cpp:338-340](file://plugins/witness/witness.cpp#L338-L340)
+- [witness.cpp:356-357](file://plugins/witness/witness.cpp#L356-L357)
+- [witness.cpp:403-405](file://plugins/witness/witness.cpp#L403-L405)
+- [witness.cpp:411-412](file://plugins/witness/witness.cpp#L411-L412)
+- [witness.cpp:416-417](file://plugins/witness/witness.cpp#L416-L417)
+- [witness.cpp:418-419](file://plugins/witness/witness.cpp#L418-L419)
+
+### Enhanced Stacktrace Crash Handlers
+**New** - The stacktrace crash handlers provide improved crash diagnostics and debugging experience:
+
+- **Signal Handler Integration**: Enhanced stacktrace crash handlers integrate with standard signal handlers for SIGSEGV, SIGABRT, SIGFPE, and SIGILL.
+- **Automatic Stacktrace Generation**: On fatal errors, the system generates detailed stacktrace information including demangled function names and line numbers.
+- **Crash Diagnostics**: Comprehensive logging of fatal error signals with stacktrace information for improved debugging and troubleshooting.
+- **Integration with Crash Debugging**: Works in conjunction with debug_crash logging to provide complete crash diagnostics and troubleshooting information.
+
+**Section sources**
+- [stacktrace.cpp:48-78](file://thirdparty/fc/src/stacktrace.cpp#L48-L78)
+
+### Enhanced DLT Gap Recovery System
+**New** - The database now includes comprehensive DLT gap recovery mechanisms with intelligent warning suppression:
+
+- **Gap Detection**: The system intelligently detects gaps between DLT block log end and fork database start during LIB advancement and block processing.
+- **Automatic Gap Recovery**: When gaps are detected, the system automatically resets the DLT block log and rebuilds it from the fork database to ensure continuity.
+- **Warning Suppression**: The `_dlt_gap_logged` flag mechanism prevents repeated warnings during gap recovery by suppressing repeated "block not in fork_db" messages until the gap is filled.
+- **Enhanced Logging**: Comprehensive logging throughout the gap detection and recovery workflow provides detailed diagnostics for troubleshooting.
+- **Gap Recovery Completion**: When gaps are filled, the system resets the `_dlt_gap_logged` flag to allow future warnings if gaps reoccur.
+
+```mermaid
+flowchart TD
+Start(["DLT Gap Detection"]) --> CheckGap{"Gap detected in DLT log?"}
+CheckGap --> |No| NormalOperation["Normal operation"]
+CheckGap --> |Yes| CheckRecoverable{"Recoverable gap?"}
+CheckRecoverable --> |Yes| ResetDLT["Reset DLT block log from fork_db"]
+ResetDLT --> RebuildDLT["Rebuild DLT log from fork_db start"]
+RebuildDLT --> SuppressWarning["Set _dlt_gap_logged = true"]
+SuppressWarning --> LogRecovery["Log gap recovery"]
+LogRecovery --> FlushDLT["Flush DLT block log"]
+FlushDLT --> ClearFlag["Clear _dlt_gap_logged on completion"]
+ClearFlag --> NormalOperation
+CheckRecoverable --> |No| LogNoRecover["Log no recoverable range found"]
+LogNoRecover --> SuppressWarning
+```
+
+**Diagram sources**
+- [database.cpp:5092-5105](file://libraries/chain/database.cpp#L5092-L5105)
+- [database.cpp:5283-5297](file://libraries/chain/database.cpp#L5283-L5297)
+- [database.cpp:5616-5635](file://libraries/chain/database.cpp#L5616-L5635)
+
+**Section sources**
+- [database.cpp:5092-5105](file://libraries/chain/database.cpp#L5092-L5105)
+- [database.cpp:5283-5297](file://libraries/chain/database.cpp#L5283-L5297)
+- [database.cpp:5616-5635](file://libraries/chain/database.cpp#L5616-L5635)
+
 ### Examples of Database Operations and Queries
 - Open database and initialize: open(data_dir, shared_mem_dir, initial_supply, shared_file_size, chainbase_flags)
 - **Open from snapshot**: open_from_snapshot(data_dir, shared_mem_dir, initial_supply, shared_file_size, chainbase_flags) - **Enhanced**
 - Rebuild state from history: reindex(data_dir, shared_mem_dir, from_block_num, shared_file_size) - **Enhanced with signal handling**
-- Push a block: push_block(signed_block, skip_flags) - **Enhanced with shared memory error handling, gap-based early rejection logic, and operation guard protection**
+- Push a block: push_block(signed_block, skip_flags) - **Enhanced with shared memory error handling, gap-based early rejection logic, operation guard protection, and comprehensive debug logging**
 - Push a transaction: push_transaction(signed_transaction, skip_flags)
 - Validate a block: validate_block(signed_block, skip_flags)
 - Validate a transaction: validate_transaction(signed_transaction, skip_flags)
@@ -1206,6 +1343,10 @@ These signals are used by plugins to react to blockchain events without tight co
 - **Enhanced Emergency Consensus**: Automatic recovery system with comprehensive logging and safety checks for network stall detection and recovery
 - **Enhanced Shared Memory Corruption Detection**: New shared_memory_corruption_exception type for structured error reporting during critical validation failures
 - **Enhanced Auto-Recovery Integration**: Seamless integration with witness plugin for automatic recovery from shared memory corruption scenarios
+- **Enhanced Crash Debugging**: Comprehensive debug_crash logging throughout critical code paths for improved crash diagnostics and troubleshooting
+- **Enhanced Block Production Monitoring**: debug-block-production configuration option for detailed block production logging and monitoring
+- **Enhanced Stacktrace Crash Handlers**: Automatic stacktrace generation for crash diagnostics and improved debugging experience
+- **Enhanced DLT Gap Recovery**: Intelligent gap detection and automatic recovery with warning suppression using _dlt_gap_logged flag for improved diagnostics and reduced log noise
 
 **Section sources**
 - [database.hpp:93-141](file://libraries/chain/include/graphene/chain/database.hpp#L93-L141)
@@ -1454,6 +1595,10 @@ The database depends on:
 - **Enhanced Emergency Consensus**: Automatic recovery system with comprehensive logging and safety checks for network stall detection and recovery
 - **Enhanced Shared Memory Corruption Detection**: New shared_memory_corruption_exception type for structured error handling and automatic recovery integration
 - **Enhanced Auto-Recovery System**: Comprehensive auto-recovery from snapshot for shared memory corruption scenarios with seamless plugin integration
+- **Enhanced Crash Debugging System**: Comprehensive debug_crash logging throughout critical code paths for improved crash diagnostics and troubleshooting
+- **Enhanced Block Production Monitoring**: debug-block-production configuration option for detailed block production logging and monitoring
+- **Enhanced Stacktrace Crash Handlers**: Automatic stacktrace generation for crash diagnostics and improved debugging experience
+- **Enhanced DLT Gap Recovery System**: Intelligent gap detection and automatic recovery mechanisms with warning suppression using _dlt_gap_logged flag
 
 ```mermaid
 graph LR
@@ -1476,6 +1621,10 @@ DB --> LIBADVANCE["enhanced last irreversible block advancement"]
 DB --> EMER["enhanced emergency consensus"]
 DB --> CORRUPTION["enhanced shared memory corruption detection"]
 DB --> AUTORECOVERY["enhanced auto-recovery system"]
+DB --> CRASHDEBUG["enhanced crash debugging system"]
+DB --> BLOCKPROD["enhanced block production monitoring"]
+DB --> STACKTRACE["enhanced stacktrace crash handlers"]
+DB --> DLTGAP["enhanced DLT gap recovery system"]
 ```
 
 **Diagram sources**
@@ -1527,6 +1676,10 @@ DB --> AUTORECOVERY["enhanced auto-recovery system"]
 - **Enhanced P2P Sync Restart Prevention**: The enhanced early rejection logic prevents sync restart loops during snapshot imports, improving synchronization performance and reducing network overhead.
 - **Enhanced Shared Memory Corruption Detection**: Structured exception handling provides detailed error context without significant performance impact during critical validation failures.
 - **Enhanced Auto-Recovery Performance**: Seamless integration with witness plugin enables rapid recovery from shared memory corruption without significant downtime.
+- **Enhanced Crash Debugging Overhead**: The debug_crash logging system adds minimal overhead during normal operation while providing comprehensive debugging capabilities when enabled.
+- **Enhanced Block Production Monitoring**: The debug-block-production option provides detailed monitoring capabilities with minimal performance impact.
+- **Enhanced Stacktrace Performance**: Stacktrace crash handlers add minimal overhead and provide significant debugging benefits for crash diagnostics.
+- **Enhanced DLT Gap Recovery Performance**: Intelligent gap detection and automatic recovery mechanisms provide improved diagnostics with minimal performance impact during DLT mode operations.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -1566,6 +1719,11 @@ Common issues and remedies:
 - **Enhanced Shared Memory Corruption Detection**: Monitor shared_memory_corruption_exception logging to ensure critical validation failures are properly reported.
 - **Enhanced Auto-Recovery Integration**: Verify that witness plugin auto-recovery is properly integrated with plugin-level recovery system for seamless corruption handling.
 - **Enhanced Auto-Recovery Performance**: Monitor auto-recovery performance to ensure rapid recovery from shared memory corruption without significant downtime.
+- **Enhanced Crash Debugging Issues**: Verify that debug_crash logging is working correctly and providing comprehensive debugging information when enabled.
+- **Enhanced Block Production Monitoring Problems**: Check that debug-block-production option is properly configured and providing detailed block production logging.
+- **Enhanced Stacktrace Crash Handler Issues**: Verify that stacktrace crash handlers are properly installed and generating stacktrace information for crash diagnostics.
+- **Enhanced DLT Gap Recovery Issues**: Monitor the new _dlt_gap_logged flag mechanism to ensure gap detection and recovery is working correctly and warning suppression is preventing log spam.
+- **Enhanced Gap Recovery Logging**: Verify that comprehensive logging throughout the gap detection and recovery workflow is providing adequate diagnostics for troubleshooting.
 
 **Section sources**
 - [database.cpp:789-827](file://libraries/chain/database.cpp#L789-L827)
@@ -1587,9 +1745,13 @@ Common issues and remedies:
 - [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 - [exception.cpp:166-186](file://thirdparty/fc/src/exception.cpp#L166-L186)
 - [exception.hpp:177-215](file://thirdparty/fc/include/fc/exception/exception.hpp#L177-L215)
+- [stacktrace.cpp:72-78](file://thirdparty/fc/src/stacktrace.cpp#L72-L78)
+- [database.cpp:5092-5105](file://libraries/chain/database.cpp#L5092-L5105)
+- [database.cpp:5283-5297](file://libraries/chain/database.cpp#L5283-L5297)
+- [database.cpp:5616-5635](file://libraries/chain/database.cpp#L5616-L5635)
 
 ## Conclusion
-The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support, emergency consensus implementation, operation guard integration, and improved error handling. It integrates chainbase for persistent storage with comprehensive concurrent access protection, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, and the systematic implementation of resize barrier mechanisms, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals.
+The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support, emergency consensus implementation, operation guard integration, improved error handling, and comprehensive crash debugging capabilities. It integrates chainbase for persistent storage with comprehensive concurrent access protection, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, systematic implementation of resize barrier mechanisms, comprehensive debug_crash logging throughout critical code paths, debug-block-production configuration option for detailed block production monitoring, and enhanced stacktrace crash handlers for improved crash diagnostics, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals.
 
 **Updated** - The system now includes comprehensive database robustness improvements including refined gap-based decision system for unlinkable blocks, enhanced exception handling infrastructure that preserves derived exception types during rethrow operations, comprehensive fork database management with improved diagnostic capabilities and enhanced logging for fork recovery operations, and sophisticated early rejection logic for blocks far ahead with unknown parents. The enhanced fork management logic with improved early rejection mechanisms provides better handling of blocks far ahead with unknown parents, significantly improving the efficiency of the synchronization process and reducing the likelihood of encountering unlinkable blocks that would require peer soft-banning or sync restarts. The enhanced multi-layered block retrieval system represents a significant advancement in database reliability and fault tolerance. The improved last irreversible block advancement logic demonstrates the system's commitment to data consistency and availability. The enhanced exception handling infrastructure ensures that derived exception types are properly preserved during rethrow operations, improving debugging and troubleshooting capabilities. The enhanced memory management system provides comprehensive logging capabilities that offer administrators detailed visibility into memory usage patterns during blockchain operation, while the deferred shared memory resize mechanism significantly improves efficiency during high-load scenarios by preventing race conditions and stale pointer issues through proper thread synchronization and lock management.
 
@@ -1616,3 +1778,11 @@ The enhanced exception handling infrastructure represents a fundamental improvem
 **Enhanced Shared Memory Corruption Detection** - The introduction of the new shared_memory_corruption_exception type represents a significant advancement in error handling robustness. This structured exception handling approach replaces direct assertion failures with comprehensive error reporting, enabling better debugging and troubleshooting capabilities. The enhanced witness account validation with graceful error handling during block acceptance and generation processes ensures that critical validation failures are properly detected and reported with detailed context information.
 
 **Enhanced Auto-Recovery Integration** - The seamless integration with witness plugin for automatic recovery from shared memory corruption scenarios represents a major improvement in system reliability and uptime. The comprehensive auto-recovery system in plugin.cpp provides rapid recovery from corruption scenarios with minimal downtime, while the structured error reporting ensures that operators have complete visibility into recovery operations. This integration makes the database management system more resilient to critical hardware and software failures, improving overall system reliability and operator confidence.
+
+**Enhanced Crash Debugging Capabilities** - The comprehensive crash debugging system with debug_crash logging throughout critical code paths represents a significant advancement in troubleshooting and diagnostics capabilities. The extensive debug markers (DEBUG_CRASH) provide detailed visibility into database operations, while the debug-block-production configuration option enables comprehensive monitoring of block production processes. The enhanced stacktrace crash handlers provide automatic crash diagnostics with detailed stacktrace information, significantly improving the debugging experience and reducing troubleshooting time for critical system issues.
+
+**Enhanced Block Production Monitoring** - The debug-block-production configuration option provides operators with detailed visibility into block production processes, enabling comprehensive monitoring and troubleshooting of production-related issues. The integration with witness plugin ensures that block production logging is comprehensive and actionable, while the detailed logging markers throughout the production pipeline provides granular visibility into production scheduling, slot determination, and block generation processes.
+
+**Enhanced Stacktrace Crash Handlers** - The enhanced stacktrace crash handlers provide automatic crash diagnostics with detailed stacktrace information, significantly improving the debugging experience for fatal errors. The integration with the crash debugging system ensures that operators have complete visibility into system crashes and can quickly identify and resolve critical issues through comprehensive stacktrace analysis and crash diagnostics.
+
+**Enhanced DLT Gap Recovery System** - The new DLT gap recovery system represents a significant advancement in DLT mode reliability and diagnostics. The intelligent gap detection and automatic recovery mechanisms with warning suppression using the `_dlt_gap_logged` flag provide improved diagnostics with minimal performance impact during DLT mode operations. The comprehensive logging throughout the gap detection and recovery workflow ensures that operators have complete visibility into DLT block log operations and can effectively troubleshoot gap-related issues without log spam or performance degradation.
