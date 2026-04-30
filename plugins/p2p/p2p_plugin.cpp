@@ -1018,6 +1018,79 @@ namespace graphene {
                         }
                     }
 
+                    // === Startup block storage diagnostics (before sync) ===
+                    my->chain.db().with_weak_read_lock([&]() {
+                        auto& db = my->chain.db();
+                        uint32_t head = db.head_block_num();
+                        uint32_t lib = db.get_dynamic_global_properties().last_irreversible_block_num;
+                        uint32_t earliest = db.earliest_available_block_num();
+
+                        uint32_t dlt_start = db.get_dlt_block_log().start_block_num();
+                        uint32_t dlt_end = db.get_dlt_block_log().head_block_num();
+
+                        uint32_t blog_end = 0;
+                        auto blog_head = db.get_block_log().head();
+                        if (blog_head) {
+                            blog_end = blog_head->block_num();
+                        }
+
+                        const auto& fork_db = db.get_fork_db();
+                        uint32_t fork_head = fork_db.head() ? fork_db.head()->num : 0;
+                        size_t fork_linked = fork_db.linked_size();
+                        uint32_t fork_linked_min = fork_db.linked_min_block_num();
+                        uint32_t fork_linked_max = fork_db.linked_max_block_num();
+                        size_t fork_unlinked = fork_db.unlinked_size();
+                        uint32_t fork_unlinked_min = fork_db.unlinked_min_block_num();
+                        uint32_t fork_unlinked_max = fork_db.unlinked_max_block_num();
+
+                        ilog(CLOG_CYAN "=== STARTUP block storage state (before sync) ===" CLOG_RESET);
+                        ilog(CLOG_CYAN "  head: ${head} | LIB: ${lib} | earliest: ${earliest}" CLOG_RESET,
+                             ("head", head)("lib", lib)("earliest", earliest));
+                        ilog(CLOG_CYAN "  dlt_block_log: [${s}..${e}] (${n} blocks) | block_log_end: ${blog}" CLOG_RESET,
+                             ("s", dlt_start)("e", dlt_end)
+                             ("n", db.get_dlt_block_log().num_blocks())("blog", blog_end));
+                        ilog(CLOG_CYAN "  fork_db: head=${fh}, linked=${fl} [${fl_min}..${fl_max}], "
+                             "unlinked=${fu} [${fu_min}..${fu_max}]" CLOG_RESET,
+                             ("fh", fork_head)
+                             ("fl", fork_linked)("fl_min", fork_linked_min)("fl_max", fork_linked_max)
+                             ("fu", fork_unlinked)("fu_min", fork_unlinked_min)("fu_max", fork_unlinked_max));
+                        ilog(CLOG_CYAN "  dlt_mode: ${dlt} | dlt_resizes: ${r}" CLOG_RESET,
+                             ("dlt", db._dlt_mode)("r", db.get_dlt_block_log().resize_count()));
+
+                        // Detect gap between dlt_block_log and fork_db at startup
+                        if (db._dlt_mode && dlt_end > 0 && fork_linked_min > 0
+                            && fork_linked_min > dlt_end + 1) {
+                            ilog(CLOG_ORANGE "  STARTUP GAP: dlt_block_log ends at #${dlt_end}, "
+                                 "fork_db starts at #${fork_min}. "
+                                 "Blocks ${gap_s}..${gap_e} are missing!" CLOG_RESET,
+                                 ("dlt_end", dlt_end)("fork_min", fork_linked_min)
+                                 ("gap_s", dlt_end + 1)("gap_e", fork_linked_min - 1));
+                        }
+
+                        // Full integrity scan at startup
+                        if (db._dlt_mode && dlt_end > 0) {
+                            auto gaps = db.get_dlt_block_log().verify_continuity();
+                            if (!gaps.empty()) {
+                                std::string gap_str;
+                                size_t shown = 0;
+                                for (auto g : gaps) {
+                                    if (shown > 0) gap_str += ", ";
+                                    gap_str += std::to_string(g);
+                                    if (++shown >= 20) {
+                                        gap_str += "... (" + std::to_string(gaps.size()) + " total)";
+                                        break;
+                                    }
+                                }
+                                ilog(CLOG_ORANGE "  STARTUP INTEGRITY: ${count} gaps in dlt_block_log! "
+                                     "Missing: ${gaps}" CLOG_RESET,
+                                     ("count", gaps.size())("gaps", gap_str));
+                            } else {
+                                ilog(CLOG_CYAN "  dlt_block_log integrity: OK (all blocks readable)" CLOG_RESET);
+                            }
+                        }
+                        ilog(CLOG_CYAN "=== END startup diagnostics ===" CLOG_RESET);
+                    });
+
                     block_id_type block_id;
                     my->chain.db().with_weak_read_lock([&]() {
                         block_id = my->chain.db().head_block_id();
