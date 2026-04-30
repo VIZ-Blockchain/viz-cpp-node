@@ -218,6 +218,7 @@ Snapshot creation, loading, and P2P sync for fast node bootstrap and crash recov
 - Serve snapshots to other nodes over TCP
 - Download snapshots from trusted peers
 - Crash recovery via snapshot + dlt_block_log replay
+- Detect stale snapshots at startup (snapshot block < DLT start block) and create urgent fresh snapshots
 
 **JSON-RPC:** None
 

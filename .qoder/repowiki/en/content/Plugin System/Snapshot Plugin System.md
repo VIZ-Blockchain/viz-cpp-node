@@ -52,7 +52,8 @@
 14. [Enhanced P2P Integration with Trusted Peers](#enhanced-p2p-integration-with-trusted-peers)
 15. [Watchdog and Stalled Sync Detection](#watchdog-and-stalled-sync-detection)
 16. [P2P Stale Sync Detection](#p2p-stale-sync-detection)
-17. [Emergency Consensus Handling](#emergency-consensus-handling)
+17. [Stale Snapshot Detection](#stale-snapshot-detection)
+18. [Emergency Consensus Handling](#emergency-consensus-handling)
 18. [Enhanced Anti-Spam Protection](#enhanced-anti-spam-protection)
 19. [Access Control and Security Mechanisms](#access-control-and-security-mechanisms)
 20. [Integration with Chain Plugin](#integration-with-chain-plugin)
@@ -65,7 +66,7 @@
 
 The Snapshot Plugin System is a comprehensive solution for VIZ blockchain nodes that enables efficient state synchronization through distributed ledger technology (DLT). This system provides mechanisms for creating, loading, serving, and downloading blockchain state snapshots, significantly reducing bootstrap times and enabling rapid node initialization.
 
-**Updated** The system has been enhanced with comprehensive snapshot plugin configuration supporting multiple trusted snapshot peers, snapshot scheduling parameters, serving options, watchdog monitoring, automatic snapshot discovery, integrated recovery workflow, enhanced anti-spam protection, **signal-based DLT block log reset handling**, **enhanced P2P integration with trusted peers**, **enhanced error handling for snapshot download operations**, and **improved undo stack management during snapshot loading**. These enhancements provide robust error handling for recovery scenarios, automatic peer-to-peer snapshot synchronization for empty state nodes, **automatic registration of trusted peer endpoints with the P2P layer**, **advanced watchdog mechanisms for DLT mode operation**, and **automatic snapshot creation during DLT block log reset scenarios**.
+**Updated** The system has been enhanced with comprehensive snapshot plugin configuration supporting multiple trusted snapshot peers, snapshot scheduling parameters, serving options, watchdog monitoring, automatic snapshot discovery, integrated recovery workflow, enhanced anti-spam protection, **signal-based DLT block log reset handling**, **enhanced P2P integration with trusted peers**, **enhanced error handling for snapshot download operations**, **improved undo stack management during snapshot loading**, and **stale snapshot detection at startup**. These enhancements provide robust error handling for recovery scenarios, automatic peer-to-peer snapshot synchronization for empty state nodes, **automatic registration of trusted peer endpoints with the P2P layer**, **advanced watchdog mechanisms for DLT mode operation**, **automatic snapshot creation during DLT block log reset scenarios**, and **automatic detection and replacement of stale snapshots that would cause unsyncable gaps for downloading nodes**.
 
 The plugin addresses the fundamental challenge of blockchain bootstrapping by allowing nodes to jump directly to a recent state rather than replaying thousands of blocks. This is particularly crucial for VIZ's social media and content platform characteristics, where rapid deployment and scaling are essential.
 
@@ -166,6 +167,9 @@ Deep integration with the VIZ blockchain database ensures seamless state transit
 
 #### **Enhanced Exception Handling**
 **New** Enhanced exception handling for both fc::exception and std::exception types during snapshot download attempts, providing robust error recovery mechanisms.
+
+#### **Stale Snapshot Detection Layer**
+**New** At startup, detects when the latest snapshot is older than the DLT block log's start block, which would cause an unsyncable gap for downloading nodes. Automatically creates an urgent fresh snapshot on the first fully-synced block to replace the stale one.
 
 **Updated** The modular architecture provides enhanced extensibility and maintainability through clear separation of concerns between interface, serialization, network, database, recovery, asynchronous execution, watchdog, **signal-based DLT block log reset handling**, **enhanced P2P integration**, **enhanced error handling**, and **improved undo stack management** components. The recent additions include asynchronous snapshot creation, witness-aware deferral, watchdog mechanisms, automatic snapshot discovery, integrated recovery workflow, comprehensive error handling, **signal-based DLT block log reset handling**, **enhanced P2P integration with trusted peer support**, **dedicated threading for stalled sync detection**, **P2P stale sync detection**, **automatic gap detection for DLT block log initialization**, **enhanced error handling for snapshot download operations**, **improved undo stack management**, and **enhanced exception handling**.
 
@@ -1070,6 +1074,44 @@ Both can be enabled independently. For DLT nodes, the snapshot detection provide
 - [p2p_plugin.cpp:585-649](file://plugins/p2p/p2p_plugin.cpp#L585-L649)
 - [p2p_plugin.cpp:673-677](file://plugins/p2p/p2p_plugin.cpp#L673-L677)
 - [p2p_plugin.cpp:744-755](file://plugins/p2p/p2p_plugin.cpp#L744-L755)
+
+## Stale Snapshot Detection
+
+**New** In DLT mode, the `dlt_block_log` is a rolling window that prunes old blocks. If the node's latest snapshot is older than the DLT block log's start block, downloading nodes face an **unsyncable gap**: the snapshot restores state at block N, but the DLT block log starts at block M > N, leaving blocks N+1..M-1 unavailable for P2P sync.
+
+### Detection Logic
+
+During `plugin_startup()`, after the snapshot TCP server starts, the plugin performs a stale snapshot check:
+
+1. **Preconditions**: DLT mode active, `snapshot-dir` configured, and either `allow-snapshot-serving` or `snapshot-every-n-blocks` is enabled.
+2. **DLT start block**: Reads `dlt_block_log.start_block_num()` — the first block available in the rolling window.
+3. **Latest snapshot**: Calls `find_latest_snapshot()` and parses the block number from the filename (`snapshot-block-NNNNN.vizjson`).
+4. **Comparison**: If `snap_block < dlt_start`, the snapshot is stale — sets `needs_fresh_snapshot = true`.
+
+If no snapshot file exists at all, `snap_block = 0`, which is always less than any positive DLT start block.
+
+### Urgent Fresh Snapshot Creation
+
+The `needs_fresh_snapshot` flag is checked in `on_applied_block()` on every block. When the node is fully synced (not catching up from P2P):
+
+1. Clears the flag immediately (one-shot).
+2. Determines the output path: `snapshot-dir/snapshot-block-<BLOCK_NUM>.vizjson`.
+3. If the witness is scheduled to produce soon → defers (sets `snapshot_pending`).
+4. Otherwise → calls `schedule_async_snapshot()` to create the snapshot on the dedicated background thread.
+
+The `applied_block` signal connection condition includes `needs_fresh_snapshot` to ensure the callback is registered even when no other periodic/at-block triggers are configured.
+
+### Implementation Details
+
+Key code locations in [plugin.cpp](file://plugins/snapshot/plugin.cpp):
+- `plugin_impl::needs_fresh_snapshot` — boolean flag in the implementation struct
+- Stale detection in `plugin_startup()` — after server start, before signal connection
+- Urgent creation in `on_applied_block()` — checked before periodic snapshot logic
+- Signal connection condition — `|| my->needs_fresh_snapshot` added to the `applied_block` connection guard
+
+**Section sources**
+- [plugin.cpp](file://plugins/snapshot/plugin.cpp) — stale detection in `plugin_startup()`, urgent creation in `on_applied_block()`
+- [snapshot-plugin.md](file://documentation/snapshot-plugin.md) — user-facing documentation
 
 ## Emergency Consensus Handling
 

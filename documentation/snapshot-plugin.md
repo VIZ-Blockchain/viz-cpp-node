@@ -302,6 +302,49 @@ Test complete. Exiting.
 - The speed probe downloads one 1 MB chunk. Actual full-download speed may differ slightly.
 - The test runs before the snapshot TCP server starts, so it does not affect other connected clients.
 
+## Stale Snapshot Detection (DLT Mode)
+
+In DLT mode, the `dlt_block_log` is a rolling window — old blocks are pruned as new ones arrive. If the node's latest snapshot is older than the DLT block log's start block, downloading nodes would face an **unsyncable gap**: the snapshot restores state at block N, but the DLT block log starts at block M > N, leaving blocks N+1..M-1 unavailable.
+
+### How It Works
+
+At startup, the snapshot plugin checks:
+1. Is the node in DLT mode?
+2. Is snapshot serving or periodic creation enabled?
+3. Is the latest snapshot's block number **less than** `dlt_block_log.start_block_num()`?
+
+If all conditions are true, the plugin logs a **STALE SNAPSHOT DETECTED** warning and sets an internal flag. On the first fully-synced block (not during P2P catch-up), the plugin creates an **urgent fresh snapshot** immediately — either asynchronously or deferred if the witness is about to produce.
+
+### Example Scenario
+
+```
+Latest snapshot:     snapshot-block-900.vizjson   (block 900)
+DLT block log:       blocks 1000..2000
+Gap:                 blocks 901..999 are missing
+```
+
+A downloading node would restore state at block 900 but the serving node can only provide blocks from 1000 onward — P2P sync fails. The stale detection creates a fresh snapshot at the current head (e.g., block 2000), eliminating the gap.
+
+### Log Output
+
+```
+STALE SNAPSHOT DETECTED: latest snapshot at block 900 is older than DLT block log start at block 1000.
+Downloading nodes would have a sync gap (blocks 900..1000 missing).
+A fresh snapshot will be created on the first synced block.
+```
+
+When the fresh snapshot is created:
+```
+Creating urgent fresh snapshot (stale snapshot detected at startup): /data/snapshots/snapshot-block-2000.vizjson
+```
+
+### Notes
+
+- The check only runs when `allow-snapshot-serving = true` or `snapshot-every-n-blocks > 0`.
+- The urgent snapshot follows the same witness-aware deferral and async creation as periodic snapshots.
+- After the fresh snapshot is created, normal periodic snapshot scheduling resumes.
+- If no snapshot exists at all (`snap_block = 0`), it is also considered stale (0 < any DLT start block).
+
 ## Stalled Sync Detection (DLT Mode)
 
 For DLT mode nodes that may fall behind the network, automatic stalled sync detection can re-download a newer snapshot when P2P sync is no longer possible (peers have pruned old blocks).
