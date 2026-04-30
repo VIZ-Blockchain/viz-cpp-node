@@ -56,3 +56,6 @@ docs/superpowers/
 
 # Claude Code local session/config files
 .claude/
+
+# Qoder AI dev-tool local artifacts
+.qoder/
