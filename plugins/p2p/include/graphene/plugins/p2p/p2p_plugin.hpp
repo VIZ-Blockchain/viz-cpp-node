@@ -54,6 +54,14 @@ namespace graphene {
                  */
                 void resync_from_lib();
 
+                /**
+                 * Re-initiate P2P sync from the current head block.
+                 * Does NOT pop any blocks — just tells the P2P layer that
+                 * our chain state has changed and peers should be re-synced.
+                 * Used after snapshot hot-reload to resume block fetching.
+                 */
+                void trigger_resync();
+
             private:
                 std::unique_ptr<detail::p2p_plugin_impl> my;
             };

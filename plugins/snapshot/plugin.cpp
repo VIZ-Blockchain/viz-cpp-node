@@ -2,6 +2,7 @@
 #include <graphene/plugins/snapshot/snapshot_types.hpp>
 #include <graphene/plugins/snapshot/snapshot_serializer.hpp>
 #include <graphene/plugins/witness/witness.hpp>
+#include <graphene/plugins/p2p/p2p_plugin.hpp>
 
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/global_property_object.hpp>
@@ -1729,6 +1730,24 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
 
                         std::cerr << "   === Snapshot reload complete (block " << db.head_block_num() << ") ===\n";
                         ilog(CLOG_YELLOW "Snapshot reload complete at block ${n}" CLOG_RESET, ("n", db.head_block_num()));
+
+                        // Re-initiate P2P sync from the new head block.
+                        // Without this, the P2P layer still has stale sync
+                        // state from before the snapshot reload and will
+                        // never request new blocks from peers.
+                        try {
+                            auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+                            if (p2p_plug != nullptr && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                                p2p_plug->trigger_resync();
+                                ilog(CLOG_YELLOW "P2P resync triggered after snapshot reload" CLOG_RESET);
+                            } else {
+                                wlog("P2P plugin not available, cannot trigger resync after snapshot reload");
+                            }
+                        } catch (const fc::exception& e) {
+                            elog("Failed to trigger P2P resync after snapshot reload: ${e}", ("e", e.to_detail_string()));
+                        } catch (...) {
+                            elog("Failed to trigger P2P resync after snapshot reload: unknown exception");
+                        }
 
                         // Restart the check
                         stalled_sync_check_running.store(true);

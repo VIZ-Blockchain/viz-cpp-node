@@ -1336,5 +1336,39 @@ namespace graphene {
             }
 
         }
+
+            void p2p_plugin::trigger_resync() {
+                try {
+                    auto& db = my->chain.db();
+                    uint32_t head_num = 0;
+                    block_id_type head_id;
+
+                    db.with_weak_read_lock([&]() {
+                        head_num = db.head_block_num();
+                        head_id = db.head_block_id();
+                    });
+
+                    ilog("trigger_resync: re-initiating P2P sync from head block #${h}", ("h", head_num));
+
+                    if (my->node && head_num > 0) {
+                        my->node->sync_from(item_id(graphene::network::block_message_type, head_id),
+                                            std::vector<uint32_t>());
+                        my->node->resync();
+                        ilog("trigger_resync: P2P sync re-initiated from head #${h}", ("h", head_num));
+                    } else {
+                        wlog("trigger_resync: no P2P node or head is 0, skipping");
+                    }
+
+                    // Reset stale sync timer so the P2P stale-sync detector
+                    // doesn't immediately fire after snapshot reload
+                    my->_last_block_received_time = fc::time_point::now();
+
+                } catch (const fc::exception &e) {
+                    elog("trigger_resync failed: ${e}", ("e", e.to_detail_string()));
+                } catch (...) {
+                    elog("trigger_resync failed with unknown exception");
+                }
+            }
+
     }
 } // namespace graphene::plugins::p2p
