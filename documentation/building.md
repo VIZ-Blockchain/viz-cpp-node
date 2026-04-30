@@ -371,7 +371,6 @@ Run `./build-mac.sh -h` for full usage information.
 Also, some useful build targets for `make` are:
 
     vizd
-    chain_test
     cli_wallet
 
 e.g.:

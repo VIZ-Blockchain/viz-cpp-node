@@ -11,9 +11,9 @@ def print_usage(program_name):
 def generate_concatenated_outfile(input_dir, suffix_filter="hf"):
     def predicate(path):
         if not path.is_file():
-            return false
+            return False
         if suffix_filter == "":
-            return true
+            return True
         else:
             return path.suffix == ("." + suffix_filter)
 
