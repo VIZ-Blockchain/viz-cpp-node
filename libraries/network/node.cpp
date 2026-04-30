@@ -2531,19 +2531,22 @@ namespace graphene {
                     if (originating_peer->inhibit_fetching_sync_blocks) {
                         disconnect_from_inhibited_peer = true;
                     } // delay disconnecting until after we send our reply to this fetch_blockchain_item_ids_message
-                } else if (reply_message.total_remaining_item_count == 0) {
-                    // We've listed ALL our blocks in this reply — peer is very close
-                    // to our head (just a few blocks behind).  Clear the flag so
-                    // inventory advertisements begin immediately.  The peer will
-                    // fetch and process the sync blocks we just listed, and by the
-                    // time it finishes, inventory mode seamlessly delivers any new
-                    // blocks produced in the meantime.
+                } else if (reply_message.total_remaining_item_count == 0 &&
+                           !fetch_blockchain_item_ids_message_received.blockchain_synopsis.empty() &&
+                           _delegate->has_item(peers_last_item_seen)) {
+                    // We've listed ALL our blocks in this reply AND the peer's head
+                    // is a block we recognize (same chain, just behind).  Clear the
+                    // flag so inventory advertisements begin immediately.  The peer
+                    // will fetch and process the sync blocks we just listed, and by
+                    // the time it finishes, inventory mode seamlessly delivers any
+                    // new blocks produced in the meantime.
                     //
-                    // Without this, the peer would have to do another full sync
-                    // round-trip (send synopsis → get reply), but because the master
-                    // keeps producing blocks, the reply always has >1 item, the flag
-                    // stays true, and the chase loop repeats — potentially forever
-                    // on a live chain with DLT resizes slowing the peer down.
+                    // We explicitly check has_item(peers_last_item_seen) to avoid
+                    // applying this optimization when the peer is on a DIFFERENT FORK.
+                    // A forked peer's synopsis blocks have different IDs at the same
+                    // heights — setting false for them triggers an infinite loop:
+                    // peer receives our blocks → can't link (wrong fork) → restarts
+                    // sync → we respond again → loop repeats every ~1ms.
                     originating_peer->peer_needs_sync_items_from_us = false;
                     fc_ilog(fc::logger::get("sync"),
                          "sync: peer ${peer} nearly caught up (sent ${count} items, remaining=0) — "
