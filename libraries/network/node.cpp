@@ -1403,13 +1403,6 @@ namespace graphene {
 
                     for (const peer_connection_ptr &peer : _active_connections) {
                         // only advertise to peers who are in sync with us
-                        if (peer->peer_needs_sync_items_from_us && !inventory_to_advertise.empty()) {
-                            fc_dlog(fc::logger::get("sync"),
-                                 "advertise_inventory: skipping peer ${peer} (peer_needs_sync_items_from_us=true, "
-                                 "${count} items to advertise)",
-                                 ("peer", peer->get_remote_endpoint())
-                                 ("count", inventory_to_advertise.size()));
-                        }
                         if (!peer->peer_needs_sync_items_from_us) {
                             std::map<uint32_t, std::vector<item_hash_t>> items_to_advertise_by_type;
                             // don't send the peer anything we've already advertised to it
@@ -1543,6 +1536,25 @@ namespace graphene {
                             fc::time_point::now() -
                             active_ignored_request_timeout;
                     for (const peer_connection_ptr &active_peer : _active_connections) {
+                        // Auto-clear stuck peer_needs_sync_items_from_us flag.
+                        // On a live chain, a race between sync completion and new block
+                        // production can leave this flag permanently true: the peer
+                        // finishes downloading blocks and stops sending
+                        // fetch_blockchain_item_ids, but the master never sets the flag
+                        // to false because the final reply always had >1 item.
+                        // Without clearing, inventory advertisements are never sent
+                        // and the peer starves.
+                        if (active_peer->peer_needs_sync_items_from_us &&
+                            active_peer->last_peer_sync_request_time != fc::time_point() &&
+                            active_peer->last_peer_sync_request_time < fc::time_point::now() - fc::seconds(30)) {
+                            fc_ilog(fc::logger::get("sync"),
+                                 "auto-clearing stuck peer_needs_sync_items_from_us for peer ${peer} "
+                                 "(no sync request for ${sec}s)",
+                                 ("peer", active_peer->get_remote_endpoint())
+                                 ("sec", (fc::time_point::now() - active_peer->last_peer_sync_request_time).count() / 1000000));
+                            active_peer->peer_needs_sync_items_from_us = false;
+                        }
+
                         if (active_peer->connection_initiation_time <
                             active_disconnect_threshold &&
                             active_peer->get_last_message_received_time() <
@@ -2440,6 +2452,9 @@ namespace graphene {
             void node_impl::on_fetch_blockchain_item_ids_message(peer_connection *originating_peer,
                     const fetch_blockchain_item_ids_message &fetch_blockchain_item_ids_message_received) {
                 VERIFY_CORRECT_THREAD();
+
+                // Track when peer last requested sync items (for stuck-flag detection)
+                originating_peer->last_peer_sync_request_time = fc::time_point::now();
 
                 // Sync spam protection: silently discard sync requests from soft-banned peers.
                 // This prevents old peers (without the block-number guard) from flooding us

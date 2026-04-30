@@ -233,6 +233,7 @@ namespace graphene {
             uint32_t number_of_unfetched_item_ids; /// number of items in the blockchain that follow ids_of_items_to_get but the peer hasn't yet told us their ids
             bool peer_needs_sync_items_from_us;
             bool we_need_sync_items_from_peer;
+            fc::time_point last_peer_sync_request_time; /// when peer last sent us fetch_blockchain_item_ids (for stuck-flag detection)
             fc::optional<boost::tuple<std::vector<item_hash_t>, fc::time_point>> item_ids_requested_from_peer; /// we check this to detect a timed-out request and in busy()
             fc::time_point last_sync_item_received_time; /// the time we received the last sync item or the time we sent the last batch of sync item requests to this peer
             std::set<item_hash_t> sync_items_requested_from_peer; /// ids of blocks we've requested from this peer during sync.  fetch from another peer if this peer disconnects
