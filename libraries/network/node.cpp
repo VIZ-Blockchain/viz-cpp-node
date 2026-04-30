@@ -2531,6 +2531,28 @@ namespace graphene {
                     if (originating_peer->inhibit_fetching_sync_blocks) {
                         disconnect_from_inhibited_peer = true;
                     } // delay disconnecting until after we send our reply to this fetch_blockchain_item_ids_message
+                } else if (reply_message.total_remaining_item_count == 0) {
+                    // We've listed ALL our blocks in this reply — peer is very close
+                    // to our head (just a few blocks behind).  Clear the flag so
+                    // inventory advertisements begin immediately.  The peer will
+                    // fetch and process the sync blocks we just listed, and by the
+                    // time it finishes, inventory mode seamlessly delivers any new
+                    // blocks produced in the meantime.
+                    //
+                    // Without this, the peer would have to do another full sync
+                    // round-trip (send synopsis → get reply), but because the master
+                    // keeps producing blocks, the reply always has >1 item, the flag
+                    // stays true, and the chase loop repeats — potentially forever
+                    // on a live chain with DLT resizes slowing the peer down.
+                    originating_peer->peer_needs_sync_items_from_us = false;
+                    fc_ilog(fc::logger::get("sync"),
+                         "sync: peer ${peer} nearly caught up (sent ${count} items, remaining=0) — "
+                         "enabling inventory mode (peer_needs_sync=false)",
+                         ("peer", originating_peer->get_remote_endpoint())
+                         ("count", reply_message.item_hashes_available.size()));
+                    if (originating_peer->inhibit_fetching_sync_blocks) {
+                        disconnect_from_inhibited_peer = true;
+                    }
                 } else {
                     originating_peer->peer_needs_sync_items_from_us = true;
                     fc_dlog(fc::logger::get("sync"),
@@ -3556,6 +3578,9 @@ namespace graphene {
                     // The block was not applied (bad_alloc prevented it). Do NOT soft-ban the
                     // peer — this is a local condition, not a peer error.  We must restart
                     // sync so the missed block is re-fetched after resize completes.
+                    fc_ilog(fc::logger::get("sync"),
+                         "DEFERRED_RESIZE: sync block #${num} deferred due to shared memory resize, will restart sync",
+                         ("num", block_message_to_send.block.block_num()));
                     wlog("Sync block #${num} deferred due to shared memory resize, will restart sync to re-fetch",
                          ("num", block_message_to_send.block.block_num()));
                     deferred_resize = true;
@@ -3761,6 +3786,9 @@ namespace graphene {
                 // to link because N+1 was never applied, and subsequent blocks would all
                 // be silently rejected by the early-rejection check, stalling sync.
                 if (deferred_resize) {
+                    fc_ilog(fc::logger::get("sync"),
+                         "DEFERRED_RESIZE: restarting sync with all peers to re-fetch block #${num}",
+                         ("num", block_message_to_send.block.block_num()));
                     wlog("Restarting sync with all peers to re-fetch block #${num} after deferred resize",
                          ("num", block_message_to_send.block.block_num()));
                     for (const peer_connection_ptr &peer : _active_connections) {
@@ -3781,6 +3809,9 @@ namespace graphene {
                     disconnect_from_peer(peer.get(), reason_string, true, reason_exception);
                 }
                 for (const peer_connection_ptr &peer : peers_with_newly_empty_item_lists) {
+                    fc_ilog(fc::logger::get("sync"),
+                         "sync: peer ${peer} lists now empty — sending final synopsis to check completion",
+                         ("peer", peer->get_remote_endpoint()));
                     fetch_next_batch_of_item_ids_from_peer(peer.get());
                 }
 
