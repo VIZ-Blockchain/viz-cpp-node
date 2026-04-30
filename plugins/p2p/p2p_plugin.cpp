@@ -304,7 +304,28 @@ namespace graphene {
                                 }
 
                                 if (!found_a_block_in_synopsis) {
-                                    wlog("DLT mode: peer_is_on_an_unreachable_fork — could not match any of "
+                                    if (chain.db()._dlt_mode) {
+                                        // In DLT mode, check if the peer is simply ahead of us
+                                        // (all synopsis entries above our head).  This is NOT a
+                                        // fork — we just have nothing to send them.
+                                        uint32_t our_head = chain.db().head_block_num();
+                                        bool all_above_head = true;
+                                        for (const auto& bid : blockchain_synopsis) {
+                                            if (bid == block_id_type()) continue;
+                                            if (block_header::num_from_id(bid) <= our_head) {
+                                                all_above_head = false;
+                                                break;
+                                            }
+                                        }
+                                        if (all_above_head) {
+                                            wlog(CLOG_ORANGE "DLT mode: get_block_ids() peer is ahead of us "
+                                                 "(all ${n} synopsis entries above our head=${head}). "
+                                                 "Returning empty — nothing to serve." CLOG_RESET,
+                                                 ("n", blockchain_synopsis.size())("head", our_head));
+                                            return result;  // empty — peer is ahead, not on a fork
+                                        }
+                                    }
+                                    wlog("peer_is_on_an_unreachable_fork — could not match any of "
                                          "${n} synopsis entries. Synopsis: ${syn}",
                                          ("n", blockchain_synopsis.size())("syn", blockchain_synopsis));
                                     FC_THROW_EXCEPTION(graphene::network::peer_is_on_an_unreachable_fork, "Unable to provide a list of blocks starting at any of the blocks in peer's synopsis");
