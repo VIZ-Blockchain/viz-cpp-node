@@ -40,17 +40,11 @@ target_link_libraries(graphene_${CURRENT_TARGET} PUBLIC fc graphene_protocol)
 target_include_directories(graphene_${CURRENT_TARGET}
         PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../protocol/include"
-        #PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../version/include"
         )
 
 if(MSVC)
     set_source_files_properties(node.cpp PROPERTIES COMPILE_FLAGS "/bigobj")
 endif(MSVC)
-
-if(USE_PCH)
-    set_target_properties(graphene_${CURRENT_TARGET} PROPERTIES COTIRE_ADD_UNITY_BUILD FALSE)
-    cotire(graphene::network)
-endif(USE_PCH)
 
 install(TARGETS
         graphene_${CURRENT_TARGET}

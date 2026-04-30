@@ -50,10 +50,8 @@ public:
 
     ~plugin();
 
-    void set_program_options (
-        boost::program_options::options_description &cli,
-        boost::program_options::options_description &cfg
-    ) override ;
+    void set_program_options(boost::program_options::options_description &cli, boost::program_options::options_description &cfg) override {
+    }
 
     virtual void plugin_initialize( const boost::program_options::variables_map& options ) override;
     virtual void plugin_startup() override;

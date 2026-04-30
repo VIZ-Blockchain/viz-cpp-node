@@ -1055,30 +1055,7 @@ namespace graphene {
 
                         // if we broke out of the while loop, that means either we have connected to enough nodes, or
                         // we don't have any good candidates to connect to right now.
-#if 0
-                                                                                                                                                try
-          {
-            _retrigger_connect_loop_promise = fc::promise<void>::ptr( new fc::promise<void>("graphene::network::retrigger_connect_loop") );
-            if( is_wanting_new_connections() || !_add_once_node_list.empty() )
-            {
-              if( is_wanting_new_connections() )
-                dlog( "Still want to connect to more nodes, but I don't have any good candidates.  Trying again in 15 seconds" );
-              else
-                dlog( "I still have some \"add once\" nodes to connect to.  Trying again in 15 seconds" );
-              _retrigger_connect_loop_promise->wait_until( fc::time_point::now() + fc::seconds(GRAPHENE_PEER_DATABASE_RETRY_DELAY ) );
-            }
-            else
-            {
-              dlog( "I don't need any more connections, waiting forever until something changes" );
-              _retrigger_connect_loop_promise->wait();
-            }
-          }
-          catch ( fc::timeout_exception& ) //intentionally not logged
-          {
-          }  // catch
-#else
                         fc::usleep(fc::seconds(10));
-#endif
                     }
                     catch (const fc::canceled_exception &) {
                         throw;
@@ -2528,19 +2505,6 @@ namespace graphene {
                 uint32_t number_of_blocks_after_reference_point = original_ids_of_items_to_get.size();
 
                 std::vector<item_hash_t> synopsis = _delegate->get_blockchain_synopsis(reference_point, number_of_blocks_after_reference_point);
-
-#if 0
-                                                                                                                                        // just for debugging, enable this and set a breakpoint to step through
-      if (synopsis.empty())
-        synopsis = _delegate->get_blockchain_synopsis(reference_point, number_of_blocks_after_reference_point);
-
-      // TODO: it's possible that the returned synopsis is empty if the blockchain is empty (that's fine)
-      // or if the reference point is now past our undo history (that's not).
-      // in the second case, we should mark this peer as one we're unable to sync with and
-      // disconnect them.
-      if (reference_point != item_hash_t() && synopsis.empty())
-        FC_THROW_EXCEPTION(block_older_than_undo_history, "You are on a fork I'm unable to switch to");
-#endif
 
                 if (number_of_blocks_after_reference_point) {
                     // then the synopsis is incomplete, add the missing elements from ids_of_items_to_get

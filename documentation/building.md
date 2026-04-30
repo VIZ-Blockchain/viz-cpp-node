@@ -256,7 +256,6 @@ Run `./build-linux.sh -h` for full usage information.
 
     # Optional packages (not required, but will make a nicer experience)
     sudo apt-get install -y \
-        doxygen \
         libncurses5-dev \
         libreadline-dev \
         perl
@@ -372,7 +371,6 @@ Run `./build-mac.sh -h` for full usage information.
 Also, some useful build targets for `make` are:
 
     vizd
-    chain_test
     cli_wallet
 
 e.g.:

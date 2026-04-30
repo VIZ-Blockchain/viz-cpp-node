@@ -61,7 +61,7 @@ RUN \
 
 # Explicitly copy needed files to avoid re-building when changing other files
 COPY .git $APPDIR/.git
-COPY .gitignore .gitmodules CMakeLists.txt Doxyfile $APPDIR/
+COPY .gitignore .gitmodules CMakeLists.txt $APPDIR/
 COPY programs $APPDIR/programs
 COPY thirdparty $APPDIR/thirdparty
 COPY plugins $APPDIR/plugins

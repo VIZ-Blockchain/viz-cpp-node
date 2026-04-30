@@ -236,18 +236,6 @@ namespace graphene {
 
             void message_oriented_connection_impl::send_message(const message &message_to_send) {
                 VERIFY_CORRECT_THREAD();
-#if 0 // this gets too verbose
-#ifndef NDEBUG
-                fc::optional<fc::ip::endpoint> remote_endpoint;
-                if (_sock.get_socket().is_open())
-                  remote_endpoint = _sock.get_socket().remote_endpoint();
-                struct scope_logger {
-                  const fc::optional<fc::ip::endpoint>& endpoint;
-                  scope_logger(const fc::optional<fc::ip::endpoint>& endpoint) : endpoint(endpoint) { dlog("entering message_oriented_connection::send_message() for peer ${endpoint}", ("endpoint", endpoint)); }
-                  ~scope_logger() { dlog("leaving message_oriented_connection::send_message() for peer ${endpoint}", ("endpoint", endpoint)); }
-                } send_message_scope_logger(remote_endpoint);
-#endif
-#endif
                 struct verify_no_send_in_progress {
                     bool &var;
 
