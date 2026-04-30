@@ -12,6 +12,7 @@
 #include <boost/range/adaptor/reversed.hpp>
 
 #include <map>
+#include <set>
 
 // ANSI color codes for P2P stats console log messages
 #define CLOG_CYAN   "\033[96m"
@@ -656,6 +657,7 @@ namespace graphene {
                     try {
                         auto peers = node->get_connected_peers();
                         std::map<std::string, uint64_t> new_bytes_map;
+                        std::set<std::string> connected_ips;  // track connected peer IPs for cross-ref with peer_db
                         if (peers.empty()) {
                             ilog(CLOG_CYAN "P2P stats: no connected peers" CLOG_RESET);
                         } else {
@@ -669,11 +671,22 @@ namespace graphene {
                                 } catch (...) {
                                     ip = "(unknown)";
                                 }
+                                connected_ips.insert(ip);
 
                                 int64_t latency_ms = -1;
                                 uint64_t bytes_recv = 0;
+                                uint64_t bytes_sent = 0;
                                 bool is_blocked = false;
                                 std::string blocked_reason;
+                                bool is_inbound = false;
+                                std::string user_agent;
+                                std::string fc_rev;
+                                uint32_t head_block_num = 0;
+                                std::string head_block_time;
+                                std::string firewall_status;
+                                uint64_t conn_time = 0;
+                                uint64_t last_recv = 0;
+                                uint64_t last_send = 0;
 
                                 auto it_lat = peer_info.info.find("latency_ms");
                                 if (it_lat != peer_info.info.end()) {
@@ -683,6 +696,10 @@ namespace graphene {
                                 if (it_byt != peer_info.info.end()) {
                                     bytes_recv = it_byt->value().as_uint64();
                                 }
+                                auto it_bsent = peer_info.info.find("bytessent");
+                                if (it_bsent != peer_info.info.end()) {
+                                    bytes_sent = it_bsent->value().as_uint64();
+                                }
                                 auto it_blk = peer_info.info.find("is_blocked");
                                 if (it_blk != peer_info.info.end()) {
                                     is_blocked = it_blk->value().as_bool();
@@ -690,6 +707,42 @@ namespace graphene {
                                 auto it_rsn = peer_info.info.find("blocked_reason");
                                 if (it_rsn != peer_info.info.end()) {
                                     blocked_reason = it_rsn->value().as_string();
+                                }
+                                auto it_inb = peer_info.info.find("inbound");
+                                if (it_inb != peer_info.info.end()) {
+                                    is_inbound = it_inb->value().as_bool();
+                                }
+                                auto it_sub = peer_info.info.find("subver");
+                                if (it_sub != peer_info.info.end()) {
+                                    user_agent = it_sub->value().as_string();
+                                }
+                                auto it_fcrev = peer_info.info.find("fc_git_revision_sha");
+                                if (it_fcrev != peer_info.info.end()) {
+                                    fc_rev = it_fcrev->value().as_string();
+                                }
+                                auto it_hbn = peer_info.info.find("current_head_block_number");
+                                if (it_hbn != peer_info.info.end()) {
+                                    head_block_num = it_hbn->value().as_uint64();
+                                }
+                                auto it_hbt = peer_info.info.find("current_head_block_time");
+                                if (it_hbt != peer_info.info.end()) {
+                                    head_block_time = it_hbt->value().as_string();
+                                }
+                                auto it_fw = peer_info.info.find("firewall_status");
+                                if (it_fw != peer_info.info.end()) {
+                                    firewall_status = it_fw->value().as_string();
+                                }
+                                auto it_ct = peer_info.info.find("conntime");
+                                if (it_ct != peer_info.info.end()) {
+                                    conn_time = it_ct->value().as_uint64();
+                                }
+                                auto it_lr = peer_info.info.find("lastrecv");
+                                if (it_lr != peer_info.info.end()) {
+                                    last_recv = it_lr->value().as_uint64();
+                                }
+                                auto it_ls = peer_info.info.find("lastsend");
+                                if (it_ls != peer_info.info.end()) {
+                                    last_send = it_ls->value().as_uint64();
                                 }
 
                                 std::string addr_key = ip + ":" + std::to_string(port);
@@ -702,8 +755,17 @@ namespace graphene {
                                 }
                                 new_bytes_map[addr_key] = bytes_recv;
 
-                                ilog(CLOG_CYAN "P2P peer | ip: ${ip} | port: ${port} | latency: ${lat}ms | bytes_in: ${bin} | blocked: ${bl} | reason: ${r}" CLOG_RESET,
-                                    ("ip", ip)("port", (int)port)("lat", latency_ms)("bin", bytes_delta)("bl", is_blocked)("r", blocked_reason));
+                                std::string dir_str = is_inbound ? "in" : "out";
+
+                                ilog(CLOG_CYAN "P2P peer | ${ip}:${port} | ${dir} | latency: ${lat}ms | "
+                                    "recv: ${bin} | sent: ${bout} | head: #${hbn} (${hbt}) | "
+                                    "agent: ${ua} | fc_rev: ${rev} | fw: ${fw} | "
+                                    "blocked: ${bl} ${r}" CLOG_RESET,
+                                    ("ip", ip)("port", (int)port)("dir", dir_str)
+                                    ("lat", latency_ms)("bin", bytes_delta)("bout", bytes_sent)
+                                    ("hbn", head_block_num)("hbt", head_block_time)
+                                    ("ua", user_agent)("rev", fc_rev)("fw", firewall_status)
+                                    ("bl", is_blocked)("r", blocked_reason));
                             }
                         }
                         _stats_bytes_received_last = std::move(new_bytes_map);
@@ -728,11 +790,20 @@ namespace graphene {
                                 if (pp.last_error) {
                                     error_str = pp.last_error->to_string();
                                 }
-                                dlog(CLOG_CYAN "P2P peer_db | ${ep} | status: ${disp} | last_attempt: ${time} | fails: ${f} | error: ${err}" CLOG_RESET,
+
+                                // Cross-reference: check if this "failed" peer is actually connected right now
+                                std::string ep_ip;
+                                try {
+                                    ep_ip = static_cast<std::string>(pp.endpoint.get_address());
+                                } catch (...) {}
+                                bool currently_connected = !ep_ip.empty() && connected_ips.count(ep_ip) > 0;
+                                std::string connected_note = currently_connected ? " [CURRENTLY CONNECTED]" : "";
+
+                                dlog(CLOG_CYAN "P2P peer_db | ${ep} | status: ${disp} | last_attempt: ${time} | fails: ${f} | error: ${err}${note}" CLOG_RESET,
                                     ("ep", pp.endpoint)("disp", disposition)
                                     ("time", pp.last_connection_attempt_time.to_iso_string())
                                     ("f", pp.number_of_failed_connection_attempts)
-                                    ("err", error_str));
+                                    ("err", error_str)("note", connected_note));
                             }
                         }
                         if (failed_count > 0) {
