@@ -4758,7 +4758,20 @@ namespace graphene { namespace chain {
                         modify(witness_missed, [&](witness_object &w) {
                             w.current_run = 0;
                             if(is_emergency_offline_witness) {
-                                // Only reset current_run; skip all penalties and shutdown
+                                // Skip vote penalties and total_missed, but still
+                                // blank the signing key if the witness has missed
+                                // too many consecutive blocks. This removes forked
+                                // witnesses from the schedule so committee can take
+                                // their slot and the network recovers faster.
+                                if (head_block_num() -
+                                    w.last_confirmed_block_num >
+                                    CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS) {
+                                    elog("Emergency: Witness ${w} missed ${missed} blocks since last confirmed ${lc}, blanking signing_key (was ${k})",
+                                         ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
+                                         ("lc", w.last_confirmed_block_num)("k", w.signing_key));
+                                    w.signing_key = public_key_type();
+                                    push_virtual_operation(shutdown_witness_operation(w.owner));
+                                }
                             } else if(witness_missed.owner != b.witness){
                                 // total_missed does not increment when witness_missed.owner == b.witness
                                 // because a low total_missed is a "prestige" item and a witness that

@@ -30,6 +30,7 @@
 #define CHAIN_BLOCKS_PER_DAY                  (24*60*60/CHAIN_BLOCK_INTERVAL)
 #define CHAIN_BLOCKS_PER_HOUR                 (60*60/CHAIN_BLOCK_INTERVAL)
 #define CHAIN_MAX_WITNESS_MISSED_BLOCKS       200 // ~10 min after first missed block for top witness
+#define CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS (5 * CHAIN_MAX_WITNESSES) // in emergency mode, blank key after 5 full rounds of missed scheduled slots (~5 min)
 
 #define CHAIN_INITIATOR_NAME                 "viz"
 // Private key: 5JabcrvaLnBTCkCVFX5r4rmeGGfuJuVp4NAKRNLTey6pxhRQmf4
