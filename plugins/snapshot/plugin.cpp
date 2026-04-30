@@ -3340,9 +3340,10 @@ void snapshot_plugin::plugin_startup() {
 
     // Stale snapshot detection: if we're in DLT mode with snapshot serving or
     // periodic snapshots enabled, check that the latest snapshot covers the
-    // DLT block log start. If the snapshot is older than the log's first block,
-    // downloading nodes would have a gap (snapshot_block < dlt_start_block)
-    // and fail to sync. Schedule a fresh snapshot on the first synced block.
+    // DLT block log start. If the snapshot is older than the log's first block
+    // by more than one (snap_block + 1 < dlt_start_block), downloading nodes
+    // would have a gap and fail to sync. When snap_block + 1 == dlt_start,
+    // the snapshot and DLT log are contiguous (no gap).
     if (my->db._dlt_mode && !my->snapshot_dir.empty() &&
         (my->allow_snapshot_serving || my->snapshot_every_n_blocks > 0)) {
         uint32_t dlt_start = my->db.get_dlt_block_log().start_block_num();
@@ -3363,14 +3364,15 @@ void snapshot_plugin::plugin_startup() {
                 }
             }
 
-            if (snap_block < dlt_start) {
+            if (snap_block + 1 < dlt_start) {
                 wlog(CLOG_RED "STALE SNAPSHOT DETECTED: latest snapshot at block ${snap} "
                      "is older than DLT block log start at block ${dlt}. "
-                     "Downloading nodes would have a sync gap (blocks ${snap}..${dlt} missing). "
+                     "Downloading nodes would have a sync gap (blocks ${gap_start}..${gap_end} missing). "
                      "A fresh snapshot will be created on the first synced block." CLOG_RESET,
-                     ("snap", snap_block)("dlt", dlt_start));
+                     ("snap", snap_block)("dlt", dlt_start)
+                     ("gap_start", snap_block + 1)("gap_end", dlt_start - 1));
                 std::cerr << "   WARNING: Stale snapshot (block " << snap_block
-                          << ") < DLT start (block " << dlt_start
+                          << ") < DLT start - 1 (block " << dlt_start - 1
                           << "). Fresh snapshot will be created.\n";
                 my->needs_fresh_snapshot = true;
             }
