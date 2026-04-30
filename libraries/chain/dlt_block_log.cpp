@@ -573,6 +573,34 @@ namespace graphene { namespace chain {
         return was_stale;
     }
 
+    std::vector<uint32_t> dlt_block_log::verify_continuity() const {
+        detail::read_lock lock(my->mutex);
+        std::vector<uint32_t> gaps;
+
+        if (!my->head.valid() || my->_start_block_num == 0) {
+            return gaps;
+        }
+
+        uint32_t head_num = protocol::block_header::num_from_id(my->head_id);
+        for (uint32_t n = my->_start_block_num; n <= head_num; ++n) {
+            uint64_t pos = my->get_block_pos(n);
+            if (pos == npos) {
+                gaps.push_back(n);
+                continue;
+            }
+            try {
+                signed_block blk;
+                my->read_block(pos, blk);
+                if (blk.block_num() != n) {
+                    gaps.push_back(n);
+                }
+            } catch (...) {
+                gaps.push_back(n);
+            }
+        }
+        return gaps;
+    }
+
     uint64_t dlt_block_log::resize_count() const {
         detail::read_lock lock(my->mutex);
         return my->_resize_count;

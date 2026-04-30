@@ -5585,16 +5585,43 @@ namespace graphene { namespace chain {
                             std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
                                     dlt_head_num + 1);
                             if (!block) {
-                                // Block not in fork database — normal after restart when fork_db
-                                // hasn't accumulated blocks back to LIB yet. Will catch up once
-                                // LIB advances past the post-restart head.
-                                if (!_dlt_gap_logged) {
-                                    _dlt_gap_logged = true;
-                                    ilog("DLT block log: block ${n} not in fork_db, skipping "
-                                         "(dlt_head=${h}, LIB=${lib}). Gap will fill as new blocks arrive.",
-                                         ("n", dlt_head_num + 1)
-                                         ("h", _dlt_block_log.head_block_num())
+                                // Block not in fork database — gap between dlt_block_log
+                                // and fork_db.  Search for the earliest available block
+                                // and reset dlt_block_log to start from there.
+                                uint32_t fork_start = 0;
+                                for (uint32_t n = dlt_head_num + 2; n <= dpo.last_irreversible_block_num; ++n) {
+                                    if (_fork_db.fetch_block_on_main_branch_by_number(n)) {
+                                        fork_start = n;
+                                        break;
+                                    }
+                                }
+                                if (fork_start > 0) {
+                                    ilog("DLT block log (update_lib): gap detected between "
+                                         "dlt_end=${dlt_end} and fork_db_start=${fork_start} "
+                                         "(LIB=${lib}). Resetting dlt_block_log to start from fork_db.",
+                                         ("dlt_end", dlt_head_num)
+                                         ("fork_start", fork_start)
                                          ("lib", dpo.last_irreversible_block_num));
+                                    _dlt_block_log.reset();
+                                    for (uint32_t n = fork_start; n <= dpo.last_irreversible_block_num; ++n) {
+                                        auto fb = _fork_db.fetch_block_on_main_branch_by_number(n);
+                                        if (fb) {
+                                            _dlt_block_log.append(fb->data);
+                                            wrote_any = true;
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                    try { dlt_block_log_was_reset(); } catch (...) {}
+                                } else {
+                                    if (!_dlt_gap_logged) {
+                                        _dlt_gap_logged = true;
+                                        ilog("DLT block log (update_lib): block ${n} not in fork_db, "
+                                             "no recoverable range found (dlt_head=${h}, LIB=${lib}).",
+                                             ("n", dlt_head_num + 1)
+                                             ("h", _dlt_block_log.head_block_num())
+                                             ("lib", dpo.last_irreversible_block_num));
+                                    }
                                 }
                                 break;
                             }
@@ -5604,7 +5631,7 @@ namespace graphene { namespace chain {
                         }
 
                         if (wrote_any) {
-                            _dlt_gap_logged = false;  // Gap is filling, re-enable logging if it reappears
+                            _dlt_gap_logged = false;
                             _dlt_block_log.flush();
                         }
                     }

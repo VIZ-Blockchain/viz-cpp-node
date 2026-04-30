@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vector>
 #include <fc/filesystem.hpp>
 #include <graphene/protocol/block.hpp>
 
@@ -72,8 +73,13 @@ namespace graphene {
             /// Check mapping consistency and self-heal if stale.
             /// Returns true if a stale mapping was detected and healed.
             /// Call this periodically (e.g. from stats task) to detect
-            /// Windows mapped_file.size() drift after many resize() cycles.
+            /// mapped_file.size() drift after many resize() cycles.
             bool verify_mapping();
+
+            /// Walk the entire block range and verify each block can be read.
+            /// Returns a vector of block numbers that are missing or unreadable.
+            /// This is O(N) where N = num_blocks, use sparingly (e.g. stats task).
+            std::vector<uint32_t> verify_continuity() const;
 
             /// Number of resize() calls since open (for diagnostics).
             uint64_t resize_count() const;

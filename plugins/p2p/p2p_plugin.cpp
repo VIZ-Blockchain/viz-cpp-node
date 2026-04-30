@@ -14,10 +14,12 @@
 #include <map>
 
 // ANSI color codes for P2P stats console log messages
-#define CLOG_CYAN  "\033[96m"
-#define CLOG_WHITE "\033[97m"
-#define CLOG_GRAY  "\033[90m"
-#define CLOG_RESET "\033[0m"
+#define CLOG_CYAN   "\033[96m"
+#define CLOG_WHITE  "\033[97m"
+#define CLOG_GRAY   "\033[90m"
+#define CLOG_ORANGE "\033[33m"
+#define CLOG_RED    "\033[91m"
+#define CLOG_RESET  "\033[0m"
 
 using std::string;
 using std::vector;
@@ -756,12 +758,40 @@ namespace graphene {
                                  ("fu", fork_unlinked)("fu_min", fork_unlinked_min)("fu_max", fork_unlinked_max)
                                  ("dlt", chain.db()._dlt_mode)
                                  ("resizes", chain.db().get_dlt_block_log().resize_count()));
+
+                            // Detect gap between dlt_block_log end and fork_db start
+                            if (chain.db()._dlt_mode && dlt_end > 0 && fork_linked_min > 0
+                                && fork_linked_min > dlt_end + 1) {
+                                ilog(CLOG_ORANGE "DLT COVERAGE GAP: dlt_block_log ends at #${dlt_end}, "
+                                     "fork_db starts at #${fork_min}. Blocks ${gap_start}..${gap_end} "
+                                     "are NOT available for P2P serving!" CLOG_RESET,
+                                     ("dlt_end", dlt_end)("fork_min", fork_linked_min)
+                                     ("gap_start", dlt_end + 1)("gap_end", fork_linked_min - 1));
+                            }
                         });
 
                         // Periodically verify dlt_block_log mapping consistency.
-                        // Detects & heals stale mapped_file.size() on Windows.
+                        // Detects & heals stale mapped_file.size().
                         if (chain.db()._dlt_mode) {
                             chain.db().get_dlt_block_log().verify_mapping();
+
+                            // Full integrity scan: walk all blocks, report gaps
+                            auto gaps = chain.db().get_dlt_block_log().verify_continuity();
+                            if (!gaps.empty()) {
+                                std::string gap_str;
+                                size_t shown = 0;
+                                for (auto g : gaps) {
+                                    if (shown > 0) gap_str += ", ";
+                                    gap_str += std::to_string(g);
+                                    if (++shown >= 20) {
+                                        gap_str += "... (" + std::to_string(gaps.size()) + " total)";
+                                        break;
+                                    }
+                                }
+                                ilog(CLOG_ORANGE "DLT INTEGRITY WARNING: ${count} gaps found in dlt_block_log! "
+                                     "Missing blocks: ${gaps}" CLOG_RESET,
+                                     ("count", gaps.size())("gaps", gap_str));
+                            }
                         }
                     } catch (const fc::exception &e) {
                         wlog("Exception in P2P stats task: ${e}", ("e", e.to_detail_string()));
