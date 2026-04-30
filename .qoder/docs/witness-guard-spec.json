@@ -37,6 +37,12 @@
         "type": "uint32",
         "default": 20,
         "description": "Frequency of periodic checks measured in blocks (20 blocks ≈ 60 seconds)"
+      },
+      {
+        "name": "witness-guard-disable",
+        "type": "uint32",
+        "default": 5,
+        "description": "Number of consecutive blocks produced by the same monitored witness before automatically disabling that witness (setting signing key to null). Set to 0 to disable this feature."
       }
     ],
     "external_options_read": [
@@ -58,7 +64,8 @@
         { "step": 3, "action": "Long fork safety: if Last Irreversible Block is older than 200 seconds, skip restoration" },
         { "step": 4, "action": "Expire stale pending-confirmation trackers (failed broadcasts) to allow retries" },
         { "step": 5, "action": "For each configured witness: look up witness object by name in witness_index" },
-        { "step": 6, "condition": "signing_key is NOT null", "action": "Clear any pending restore state for this witness" },
+        { "step": 6, "condition": "signing_key is NOT null", "action": "Clear any pending restore state and auto-disabled flag for this witness" },
+        { "step": 6.5, "condition": "signing_key IS null AND witness is in _auto_disabled_witnesses", "action": "Skip auto-restore — the witness was disabled by the consecutive-block guard; operator must manually intervene" },
         { "step": 7, "condition": "signing_key IS null AND no in-flight restore (or previous restore expired)", "action": "Invoke send_witness_update" }
       ],
       "returns": "true if node was in sync and full check was performed, false otherwise"
@@ -78,9 +85,21 @@
     "applied_block_handler": {
       "description": "Signal handler connected to database.applied_block, runs on every new block",
       "steps": [
+        { "step": 0, "action": "Consecutive-block auto-disable: if _disable_threshold > 0 and block was produced by a monitored witness, increment its consecutive counter. If counter >= threshold and witness not already auto-disabled, broadcast send_witness_disable. If block was by a different witness, reset all counters to 0." },
         { "step": 1, "action": "Scan the block's transactions for any pending confirmation IDs; on match, mark witness restore as confirmed and clear tracking state" },
         { "step": 2, "action": "Look-ahead: if any monitored witness is scheduled in the next 3 slots, trigger an immediate check" },
         { "step": 3, "action": "Otherwise: if initial sync not yet done, probe every 10 blocks; else run periodic check every _check_interval blocks" }
+      ]
+    },
+
+    "send_witness_disable": {
+      "description": "Constructs, signs, and broadcasts a witness_update_operation with null signing key to disable block production",
+      "steps": [
+        { "step": 1, "action": "Build witness_update_operation: preserve current URL, set block_signing_key to null" },
+        { "step": 2, "action": "Create signed_transaction with 30-second expiration and head block reference" },
+        { "step": 3, "action": "Sign the transaction with the configured active private key" },
+        { "step": 4, "action": "Broadcast via P2P plugin" },
+        { "step": 5, "action": "Add the witness to _auto_disabled_witnesses set to prevent auto-restore" }
       ]
     },
 
@@ -116,6 +135,19 @@
       "type": "bool",
       "default": false,
       "description": "Set to true once the node is confirmed in sync at startup. Until then, the plugin probes every 10 blocks instead of using the configured interval."
+    },
+    "_disable_threshold": {
+      "type": "uint32_t",
+      "default": 5,
+      "description": "Number of consecutive blocks by the same monitored witness before auto-disabling it. Mirrors witness-guard-disable config option. 0 = feature disabled."
+    },
+    "_consecutive_blocks": {
+      "type": "std::map<string, uint32_t>",
+      "description": "Per-witness counter of consecutive blocks produced. Reset to 0 for all witnesses when a block from a non-monitored (or different) witness is seen."
+    },
+    "_auto_disabled_witnesses": {
+      "type": "std::set<string>",
+      "description": "Witnesses that have been auto-disabled by the consecutive-block guard. Auto-restore is suppressed for these witnesses. Cleared when the on-chain key is manually restored (non-null key detected)."
     }
   },
 
@@ -124,6 +156,7 @@
     "emergency_mode": "During emergency consensus (dgp.emergency_consensus_active), the stale production guard is bypassed — key restoration may still be needed for recovery.",
     "sync_check": "Restoration only runs when head_block_time is within 2 * CHAIN_BLOCK_INTERVAL of wall clock time.",
     "long_fork_detection": "If the Last Irreversible Block is older than 200 seconds, restoration is skipped to avoid acting on a stale fork.",
-    "authority_validation": "At startup, the plugin verifies the configured active key has authority on-chain; warns or removes witnesses that would fail."
+    "authority_validation": "At startup, the plugin verifies the configured active key has authority on-chain; warns or removes witnesses that would fail.",
+    "consecutive_block_auto_disable": "When a monitored witness produces witness-guard-disable consecutive blocks, the plugin auto-disables it by broadcasting a null signing key. Auto-restore is suppressed for that witness until the operator manually restores the key."
   }
 }
