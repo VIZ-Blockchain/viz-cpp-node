@@ -23,16 +23,14 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced monitoring capabilities with comprehensive ANSI color-coded logging (orange for warnings, red for critical alerts)
-- Comprehensive gap detection reporting with detailed DLT coverage gap monitoring
-- Periodic DLT block log integrity scans with continuity verification
-- Enhanced peer statistics logging with improved visibility into failed/rejected connections
-- Strategic ANSI color coding (white, cyan, gray, orange, red) for improved console readability
-- Conditional block processing latency logging only for successful non-sync operations
-- Enhanced DLT mode debug logging with gap detection awareness
-- Improved console readability with visual distinction between different log message types
+- Enhanced peer ahead-of-us detection mechanism with sophisticated DLT mode logic
+- Comprehensive startup block storage diagnostics system with gap detection
+- Windows compatibility enhancements for DLT block logs with stale mapping detection
+- Advanced gap detection and automatic recovery mechanisms throughout sync process
+- Enhanced logging with ANSI color codes (white, cyan, gray, orange, red) for improved console readability
+- Comprehensive DLT mode support with integrity verification and coverage gap monitoring
 - Automatic peer soft-banning for sync spam with gap-aware recovery mechanisms
-- Enhanced minority fork recovery with improved peer interaction handling and gap detection
+- Enhanced minority fork recovery with improved peer interaction handling
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -88,6 +86,9 @@ PeerDB[Enhanced Peer Database Logging]
 StorageDiag[Block Storage Diagnostics]
 DLTIntegrity[DLT Integrity Verification]
 GapDetection[Comprehensive Gap Detection]
+AheadOfUs[Enhanced Peer Ahead Detection]
+StartupDiag[Startup Block Storage Diagnostics]
+WindowsCompat[Windows Compatibility Enhancements]
 ```
 
 **Diagram sources**
@@ -154,6 +155,9 @@ class p2p_plugin_impl {
 +DLT Coverage Gap Monitoring
 +Orange Color Coding for Warnings
 +Red Color Coding for Critical Alerts
++Enhanced Peer Ahead-of-Us Detection
++Startup Block Storage Diagnostics
++Windows Compatibility Enhancements
 ```
 
 **Diagram sources**
@@ -274,6 +278,12 @@ P2P->>Node : Log storage diagnostics with gap detection
 P2P->>Node : Log DLT integrity verification
 P2P->>Node : Log DLT coverage gaps in orange
 P2P->>Node : Log critical errors in red
+Note over P2P : Enhanced peer ahead-of-us detection
+P2P->>Node : Detect peers ahead of us in DLT mode
+P2P->>Node : Return empty response for ahead peers
+Note over P2P : Startup block storage diagnostics
+P2P->>Node : Log comprehensive storage diagnostics
+P2P->>Node : Detect gaps and integrity issues
 ```
 
 **Diagram sources**
@@ -297,9 +307,9 @@ The architecture provides several key capabilities:
 13. **Automatic Peer Soft-Banning**: Intelligent peer management with automatic soft-banning for sync spam
 14. **DLT Integrity Verification**: Periodic verification of DLT block log integrity with gap detection and continuity scanning
 15. **Comprehensive Gap Detection**: Advanced gap detection reporting with detailed coverage gap monitoring
-16. **Orange Color Coding**: Strategic use of orange color for network warnings and peer status changes
-17. **Red Color Coding**: Critical error reporting with red color coding for severe issues
-18. **Periodic DLT Integrity Scans**: Automated DLT block log integrity verification with continuity checks
+16. **Enhanced Peer Ahead-of-Us Detection**: Sophisticated detection of peers that are ahead of the local node in DLT mode
+17. **Startup Block Storage Diagnostics**: Comprehensive diagnostics system that runs before synchronization begins
+18. **Windows Compatibility Enhancements**: Enhanced compatibility with Windows operating systems for DLT block log operations
 
 ## Detailed Component Analysis
 
@@ -395,6 +405,8 @@ Chain-->>Local : item data
 Note over Local,Chain : Enhanced DLT Mode with Gap Detection
 Chain->>Local : earliest_available_block_num()
 Local->>Remote : item_message (only available blocks)
+Note over Local,Remote : Enhanced peer ahead-of-us detection
+Local->>Remote : Empty response for peers ahead of us
 Note over Local,Remote : Continue until synchronized with gap awareness
 ```
 
@@ -504,6 +516,63 @@ ReturnBlock --> End
 **Diagram sources**
 - [p2p_plugin.cpp:371-405](file://plugins/p2p/p2p_plugin.cpp#L371-L405)
 
+### Enhanced Peer Ahead-of-Us Detection
+
+**New** The plugin now includes sophisticated peer ahead-of-us detection mechanism that identifies peers who are ahead of the local node in DLT mode:
+
+```mermaid
+flowchart TD
+Start([Peer Synopsis Analysis]) --> CheckDLT{"DLT Mode Active?"}
+CheckDLT --> |No| NormalForkCheck["Normal fork detection"]
+CheckDLT --> |Yes| CheckAllAboveHead["Check if all synopsis entries > head"]
+CheckAllAboveHead --> |All Above| LogAhead["Log peer ahead detection:<br/>- All entries above head<br/>- Peer is ahead, not on fork<br/>in orange ANSI color"]
+CheckAllAboveHead --> |Mixed| NormalForkCheck
+LogAhead --> ReturnEmpty["Return empty block list"]
+NormalForkCheck --> End([End])
+ReturnEmpty --> End
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:307-327](file://plugins/p2p/p2p_plugin.cpp#L307-L327)
+
+### Startup Block Storage Diagnostics
+
+**New** The plugin provides comprehensive startup diagnostics that run before synchronization begins:
+
+```mermaid
+flowchart TD
+Start([Plugin Startup]) --> LogStart["Log startup diagnostics begin"]
+LogStart --> GatherInfo["Gather storage information:<br/>- Head block<br/>- LIB<br/>- Earliest available<br/>- DLT log range<br/>- Block log end<br/>- Fork DB stats"]
+GatherInfo --> CheckGaps["Check for gaps:<br/>- DLT coverage gaps<br/>- Integrity issues"]
+CheckGaps --> |Gaps Found| LogGaps["Log gaps:<br/>- Gap locations<br/>- Missing blocks<br/>in orange ANSI color"]
+CheckGaps --> |No Gaps| LogOK["Log integrity OK"]
+LogGaps --> LogEnd["Log startup diagnostics complete"]
+LogOK --> LogEnd
+LogEnd --> End([End])
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:1042-1113](file://plugins/p2p/p2p_plugin.cpp#L1042-L1113)
+
+### Windows Compatibility Enhancements
+
+**New** The plugin includes Windows compatibility enhancements for DLT block log operations:
+
+```mermaid
+flowchart TD
+Start([DLT Block Log Operation]) --> CheckPlatform{"Windows Platform?"}
+CheckPlatform --> |No| NormalOperation["Normal operation"]
+CheckPlatform --> |Yes| CheckMapping["Check mapping consistency"]
+CheckMapping --> |Stale Mapping| HealMapping["Heal stale mapping:<br/>- Close and reopen files<br/>- Sync logical sizes<br/>- Track resize count"]
+CheckMapping --> |Valid Mapping| NormalOperation
+HealMapping --> LogHeal["Log healing action:<br/>- Stale mapping detected<br/>- Healing performed<br/>in gray ANSI color"]
+LogHeal --> NormalOperation
+NormalOperation --> End([End])
+```
+
+**Diagram sources**
+- [dlt_block_log.cpp:545-574](file://libraries/chain/dlt_block_log.cpp#L545-L574)
+
 ### DLT Mode Integration Points
 
 The enhanced DLT mode integration affects multiple plugin methods with sophisticated gap detection:
@@ -513,6 +582,9 @@ The enhanced DLT mode integration affects multiple plugin methods with sophistic
 3. **Synopsis Generation**: `get_blockchain_synopsis()` includes DLT availability context with gap awareness
 4. **Earliest Block Calculation**: Database provides `earliest_available_block_num()` for DLT mode with gap detection
 5. **Storage Boundary Detection**: Enhanced logic to detect gaps between dlt_block_log and fork_db
+6. **Peer Ahead Detection**: Sophisticated detection of peers ahead of the local node in DLT mode
+7. **Startup Diagnostics**: Comprehensive diagnostics system that runs before sync begins
+8. **Windows Compatibility**: Enhanced compatibility with Windows operating systems for DLT operations
 
 ### Database Integration
 
@@ -548,6 +620,8 @@ database --> dlt_block_log : "contains"
 
 **Section sources**
 - [p2p_plugin.cpp:290-405](file://plugins/p2p/p2p_plugin.cpp#L290-L405)
+- [p2p_plugin.cpp:307-327](file://plugins/p2p/p2p_plugin.cpp#L307-L327)
+- [p2p_plugin.cpp:1042-1113](file://plugins/p2p/p2p_plugin.cpp#L1042-L1113)
 - [database.hpp:57-78](file://libraries/chain/include/graphene/chain/database.hpp#L57-L78)
 - [dlt_block_log.hpp:35-72](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L35-L72)
 
@@ -844,13 +918,15 @@ LogClamp --> LogIDs["Log get_block_ids result:<br/>- Number of IDs<br/>- Start b
 LogIDs --> LogSynopsis["Log get_blockchain_synopsis:<br/>- Entry count<br/>- Low/high blocks<br/>- Head/LIB<br/>- Earliest available<br/>- Gap boundaries<br/>in gray ANSI color"]
 LogSynopsis --> LogAvailability["Log DLT availability:<br/>- Block number<br/>- Available range<br/>- DLT log bounds<br/>- Storage boundaries<br/>in gray ANSI color"]
 LogAvailability --> LogGap["Log gap detection:<br/>- Gap location<br/>- Gap size<br/>- Available alternatives<br/>- Recovery actions<br/>in gray ANSI color"]
-LogGap --> End([End])
+LogGap --> LogAhead["Log peer ahead detection:<br/>- All entries above head<br/>- Peer is ahead<br/>- Empty response<br/>in orange ANSI color"]
+LogAhead --> End([End])
 ```
 
 **Diagram sources**
 - [p2p_plugin.cpp:298-302](file://plugins/p2p/p2p_plugin.cpp#L298-L302)
 - [p2p_plugin.cpp:355-364](file://plugins/p2p/p2p_plugin.cpp#L355-L364)
 - [p2p_plugin.cpp:520-528](file://plugins/p2p/p2p_plugin.cpp#L520-L528)
+- [p2p_plugin.cpp:321-327](file://plugins/p2p/p2p_plugin.cpp#L321-L327)
 
 ### Enhanced Block Processing Logs with Gap Awareness
 
@@ -900,11 +976,14 @@ flowchart TD
 Start([Storage Diagnostics]) --> LogStorage["Log block storage:<br/>- Head block<br/>- LIB<br/>- Earliest available<br/>- DLT log range<br/>- Block log end<br/>- Fork DB stats<br/>- DLT mode status<br/>- DLT resize count<br/>in cyan ANSI color"]
 LogStorage --> CheckGap["Check for DLT coverage gap:<br/>- DLT end vs Fork DB start<br/>- Gap detection<br/>- Availability impact<br/>in orange ANSI color"]
 CheckGap --> LogGapWarning["Log DLT coverage gap:<br/>- Gap start/end<br/>- Blocks unavailable<br/>- Impact on serving<br/>in orange ANSI color"]
-LogGapWarning --> End([End])
+LogGapWarning --> LogIntegrity["Log DLT integrity:<br/>- Gap count<br/>- Missing blocks<br/>- Gap locations<br/>in orange ANSI color"]
+LogIntegrity --> End([End])
 ```
 
 **Diagram sources**
 - [p2p_plugin.cpp:722-771](file://plugins/p2p/p2p_plugin.cpp#L722-L771)
+- [p2p_plugin.cpp:783-791](file://plugins/p2p/p2p_plugin.cpp#L783-L791)
+- [p2p_plugin.cpp:812-816](file://plugins/p2p/p2p_plugin.cpp#L812-L816)
 
 ### DLT Integrity Verification with Continuity Scanning
 
@@ -925,6 +1004,24 @@ LogGaps --> End
 **Diagram sources**
 - [p2p_plugin.cpp:773-795](file://plugins/p2p/p2p_plugin.cpp#L773-L795)
 
+### Startup Block Storage Diagnostics
+
+**New** The plugin provides comprehensive startup diagnostics that run before synchronization begins:
+
+```mermaid
+flowchart TD
+Start([Startup Diagnostics]) --> LogStart["Log startup diagnostics begin<br/>in cyan ANSI color"]
+LogStart --> GatherInfo["Gather storage information:<br/>- Head block<br/>- LIB<br/>- Earliest available<br/>- DLT log range<br/>- Block log end<br/>- Fork DB stats<br/>- DLT mode status<br/>- DLT resize count<br/>in cyan ANSI color"]
+GatherInfo --> CheckStartupGaps["Check for startup gaps:<br/>- DLT coverage gaps<br/>- Integrity issues<br/>- Gap locations<br/>in orange ANSI color"]
+CheckStartupGaps --> LogGaps["Log startup gaps:<br/>- Gap start/end<br/>- Missing blocks<br/>- Impact on serving<br/>in orange ANSI color"]
+LogGaps --> LogIntegrity["Log integrity status:<br/>- Gap count<br/>- Missing blocks<br/>- OK status<br/>in cyan ANSI color"]
+LogIntegrity --> LogEnd["Log startup diagnostics complete<br/>in cyan ANSI color"]
+LogEnd --> End([End])
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:1042-1113](file://plugins/p2p/p2p_plugin.cpp#L1042-L1113)
+
 **Section sources**
 - [p2p_plugin.cpp:298-302](file://plugins/p2p/p2p_plugin.cpp#L298-L302)
 - [p2p_plugin.cpp:355-364](file://plugins/p2p/p2p_plugin.cpp#L355-L364)
@@ -933,6 +1030,7 @@ LogGaps --> End
 - [p2p_plugin.cpp:614-650](file://plugins/p2p/p2p_plugin.cpp#L614-L650)
 - [p2p_plugin.cpp:722-771](file://plugins/p2p/p2p_plugin.cpp#L722-L771)
 - [p2p_plugin.cpp:773-795](file://plugins/p2p/p2p_plugin.cpp#L773-L795)
+- [p2p_plugin.cpp:1042-1113](file://plugins/p2p/p2p_plugin.cpp#L1042-L1113)
 
 ## ANSI Color Code Implementation
 
@@ -1013,10 +1111,12 @@ DLTLogging["DLT Mode Debug Logging"] --> ClampStart["Clamp Start Logging<br/>- O
 DLTLogging --> GapDetection["Gap Detection Logging<br/>- Gap location identification<br/>- Gap size calculation<br/>- Storage boundary detection<br/>- Fork database gap analysis<br/>in gray ANSI color"]
 DLTLogging --> BlockRange["Block Range Logging<br/>- Number of blocks returned<br/>- Start and end block numbers<br/>- Effective head block<br/>- Earliest available block<br/>- DLT log end position<br/>in gray ANSI color"]
 DLTLogging --> Availability["Availability Logging<br/>- Block number being served<br/>- Available block range<br/>- DLT log bounds<br/>- Storage boundaries<br/>in gray ANSI color"]
+DLTLogging --> AheadDetection["Peer Ahead Detection Logging<br/>- All synopsis entries above head<br/>- Peer is ahead of us<br/>- Empty response returned<br/>in orange ANSI color"]
 ClampStart --> DLTLogging
 GapDetection --> DLTLogging
 BlockRange --> DLTLogging
 Availability --> DLTLogging
+AheadDetection --> DLTLogging
 ```
 
 **Diagram sources**
@@ -1024,6 +1124,7 @@ Availability --> DLTLogging
 - [p2p_plugin.cpp:321-327](file://plugins/p2p/p2p_plugin.cpp#L321-L327)
 - [p2p_plugin.cpp:336-338](file://plugins/p2p/p2p_plugin.cpp#L336-L338)
 - [p2p_plugin.cpp:357-364](file://plugins/p2p/p2p_plugin.cpp#L357-L364)
+- [p2p_plugin.cpp:321-327](file://plugins/p2p/p2p_plugin.cpp#L321-L327)
 
 ### DLT Mode Operation Logging
 
@@ -1033,6 +1134,9 @@ The plugin provides comprehensive logging for all DLT mode operations:
 2. **get_blockchain_synopsis() Operations**: Logging of blockchain synopsis generation with DLT availability context
 3. **get_item() Operations**: Logging of item serving operations with DLT mode error handling
 4. **Gap Detection Operations**: Comprehensive logging of gap detection and recovery mechanisms
+5. **Peer Ahead Detection**: Sophisticated logging of peer ahead-of-us detection in DLT mode
+6. **Startup Diagnostics**: Comprehensive logging of startup block storage diagnostics
+7. **Windows Compatibility**: Logging of Windows compatibility enhancements for DLT operations
 
 ### Logging Context Information
 
@@ -1042,6 +1146,7 @@ Each DLT mode log entry includes comprehensive context information:
 - **Storage Information**: DLT log start and end positions, block log boundaries
 - **Gap Information**: Gap locations, sizes, and detection results
 - **Synchronization Context**: Effective head block, remaining item counts, and synchronization status
+- **Peer Status**: Information about peers ahead of the local node in DLT mode
 
 **Section sources**
 - [p2p_plugin.cpp:299-301](file://plugins/p2p/p2p_plugin.cpp#L299-L301)
@@ -1061,10 +1166,10 @@ The color-coded logging system provides clear visual distinction between differe
 ```mermaid
 graph TB
 subgraph "Console Readability Enhancement"
-GrayLogs["Gray Logs<br/>DLT Mode Debug<br/>Gap Detection<br/>Block Range Info"]
-CyanLogs["Cyan Logs<br/>Peer Statistics<br/>Connection Status<br/>Peer Database Info"]
+GrayLogs["Gray Logs<br/>DLT Mode Debug<br/>Gap Detection<br/>Block Range Info<br/>Windows Compatibility"]
+CyanLogs["Cyan Logs<br/>Peer Statistics<br/>Connection Status<br/>Peer Database Info<br/>Startup Diagnostics"]
 WhiteLogs["White Logs<br/>Transaction Notifications<br/>Block Processing<br/>Latency Information"]
-OrangeLogs["Orange Logs<br/>Network Warnings<br/>Peer Status<br/>Connection Issues"]
+OrangeLogs["Orange Logs<br/>Network Warnings<br/>Peer Status<br/>Connection Issues<br/>Gap Warnings"]
 RedLogs["Red Logs<br/>Critical Errors<br/>Severe Warnings<br/>System Failures"]
 DefaultLogs["Default Color<br/>General Information<br/>Debug Messages<br/>Non-Critical Events"]
 end
@@ -1099,10 +1204,10 @@ The enhanced console readability provides several operational benefits:
 
 The color coding strategy is designed for optimal operator experience:
 
-- **Gray**: DLT mode debug information, gap detection details, and block range management
-- **Cyan**: Peer statistics, connection status, and peer database information
+- **Gray**: DLT mode debug information, gap detection details, block range management, and Windows compatibility enhancements
+- **Cyan**: Peer statistics, connection status, peer database information, and startup diagnostics
 - **White**: Important transaction notifications, block processing information, and latency details
-- **Orange**: Network warnings, peer status changes, and connection issues
+- **Orange**: Network warnings, peer status changes, connection issues, and gap-related warnings
 - **Red**: Critical errors, severe warnings, and system failures
 - **Default**: General information, debug messages, and non-critical events (unchanged)
 
@@ -1532,6 +1637,7 @@ Key dependency relationships:
 6. **Database Protection**: Leverages chainbase operation guards for concurrent access safety with gap detection
 7. **DLT Mode Support**: Integrates with dlt_block_log for snapshot-based block serving with sophisticated gap detection
 8. **Gap Detection**: Enhanced integration with gap detection mechanisms throughout the plugin stack
+9. **Windows Compatibility**: Integration with DLT block log operations for Windows platform support
 
 **Section sources**
 - [CMakeLists.txt:27-34](file://plugins/p2p/CMakeLists.txt#L27-L34)
@@ -1564,6 +1670,8 @@ The P2P plugin implements several performance optimization strategies with enhan
 - **Optimized Peer Selection**: Better handling of DLT-capable peers with gap compatibility
 - **Reduced Error Handling Overhead**: Graceful degradation minimizes performance impact with gap detection
 - **Gap-Aware Recovery**: Automatic recovery mechanisms minimize performance impact during gap scenarios
+- **Enhanced Peer Ahead Detection**: Sophisticated detection reduces unnecessary sync attempts
+- **Startup Diagnostics Efficiency**: Optimized startup diagnostics minimize performance impact
 
 ### Logging Performance Impact
 **Updated** The improved logging level consistency and conditional latency logging provide additional performance benefits:
@@ -1591,6 +1699,7 @@ The P2P plugin implements several performance optimization strategies with enhan
 - **Efficient Gap Detection**: Optimized algorithms for detecting DLT coverage gaps
 - **Minimal I/O Impact**: Storage diagnostics use efficient queries to minimize disk access
 - **Background Processing**: Diagnostics run in background threads to avoid blocking main operations
+- **Startup Diagnostics Optimization**: Efficient startup diagnostics minimize sync delay
 
 ### DLT Integrity Scanning Performance
 **New** The periodic DLT integrity scanning provides comprehensive monitoring with performance considerations:
@@ -1599,6 +1708,15 @@ The P2P plugin implements several performance optimization strategies with enhan
 - **Efficient Gap Detection**: verify_continuity() algorithm optimized for performance
 - **Limited Scope**: Scans only when gaps are detected, minimizing overhead
 - **Background Execution**: Integrity scans run in background without impacting main operations
+- **Windows Compatibility Optimization**: Enhanced compatibility reduces performance impact
+
+### Windows Compatibility Performance
+**New** The Windows compatibility enhancements provide performance benefits:
+
+- **Stale Mapping Detection**: Efficient detection and healing of stale mappings
+- **Logical Size Tracking**: Optimized tracking of file sizes to avoid performance issues
+- **Memory-Mapped File Optimization**: Efficient handling of memory-mapped files on Windows
+- **Resize Count Monitoring**: Minimal overhead for tracking resize operations
 
 **Section sources**
 - [p2p_plugin.cpp:701-765](file://plugins/p2p/p2p_plugin.cpp#L701-L765)
@@ -1633,6 +1751,8 @@ The P2P plugin implements several performance optimization strategies with enhan
 3. **Recovery Actions**: Monitor graceful degradation logs for peer soft-bans with gap detection
 4. **Sync Performance**: Use DLT-specific logging to identify block range issues with gap information
 5. **Gap Detection**: Monitor gap detection logs for storage boundary issues
+6. **Peer Ahead Detection**: Verify peer ahead detection is working correctly in DLT mode
+7. **Startup Diagnostics**: Review startup diagnostics for gap and integrity issues
 
 ### Minor Fork Recovery Procedures
 
@@ -1660,6 +1780,7 @@ The P2P plugin implements several performance optimization strategies with enhan
 2. **Clamping Operations**: Monitor clamping operations for proper gap handling
 3. **Peer Compatibility**: Check peer compatibility with gap detection mechanisms
 4. **Recovery Actions**: Verify automatic recovery actions for gap-related issues
+5. **Peer Ahead Detection**: Verify peer ahead detection is working correctly
 
 ### Conditional Latency Logging Troubleshooting
 
@@ -1674,7 +1795,7 @@ The P2P plugin implements several performance optimization strategies with enhan
 
 **New** For ANSI color code-related issues:
 
-1. **Console Compatibility**: Verify terminal supports ANSI color codes
+1. **Console Compatibility**: Ensure terminal supports ANSI color codes
 2. **Color Output Testing**: Test color output in different terminal environments
 3. **Log Filtering**: Use log filtering to isolate specific color-coded log categories
 4. **Operator Training**: Train operators to recognize different color-coded log categories
@@ -1687,6 +1808,7 @@ The P2P plugin implements several performance optimization strategies with enhan
 2. **Integrity Verification**: Review DLT integrity warnings and investigate block log continuity
 3. **Mapping Consistency**: Check DLT mapping verification results and address stale mappings
 4. **Storage Performance**: Monitor storage diagnostics for optimal performance tuning
+5. **Startup Diagnostics**: Review startup diagnostics for gap and integrity issues
 
 ### Automatic Peer Soft-Banning Troubleshooting
 
@@ -1696,6 +1818,7 @@ The P2P plugin implements several performance optimization strategies with enhan
 2. **Penalty Threshold**: Check penalty threshold calculations and enforcement
 3. **Peer Recovery**: Monitor peer recovery mechanisms and automatic unbanning
 4. **Sync Spam Detection**: Investigate sync spam detection and peer behavior analysis
+5. **Gap Detection Impact**: Verify gap detection is not affecting soft-ban decisions
 
 ### DLT Integrity Scanning Troubleshooting
 
@@ -1705,6 +1828,34 @@ The P2P plugin implements several performance optimization strategies with enhan
 2. **Mapping Issues**: Investigate stale mapping detection and healing
 3. **Performance Impact**: Monitor integrity scanning performance and adjust frequency
 4. **Gap Reporting**: Verify gap reporting accuracy and completeness
+5. **Windows Compatibility**: Verify Windows compatibility enhancements are working correctly
+
+### Enhanced Peer Ahead Detection Troubleshooting
+
+**New** For peer ahead detection issues:
+
+1. **Detection Accuracy**: Verify peer ahead detection is working correctly in DLT mode
+2. **Empty Response**: Check that empty responses are returned for ahead peers
+3. **Sync Performance**: Monitor sync performance with peer ahead detection enabled
+4. **Logging**: Verify peer ahead detection logging is working correctly
+
+### Startup Diagnostics Troubleshooting
+
+**New** For startup diagnostics issues:
+
+1. **Diagnostics Timing**: Verify startup diagnostics run before synchronization begins
+2. **Gap Detection**: Check startup gap detection and logging
+3. **Integrity Scanning**: Verify startup integrity scanning is working correctly
+4. **Performance Impact**: Monitor startup diagnostics performance impact
+
+### Windows Compatibility Troubleshooting
+
+**New** For Windows compatibility issues:
+
+1. **Stale Mapping Detection**: Verify stale mapping detection and healing are working
+2. **File Operations**: Check Windows-specific file operations are working correctly
+3. **Memory-Mapped Files**: Verify memory-mapped file operations on Windows
+4. **Performance Impact**: Monitor Windows compatibility performance impact
 
 ### Configuration Reference
 
@@ -1769,9 +1920,9 @@ The P2P Plugin represents a sophisticated implementation of blockchain networkin
 17. **Automatic Peer Soft-Banning**: Intelligent peer management with automatic soft-banning for sync spam and improved peer interaction
 18. **DLT Integrity Verification**: Periodic verification of DLT block log integrity with gap detection and continuity scanning
 19. **Comprehensive Gap Detection**: Advanced gap detection reporting with detailed coverage gap monitoring
-20. **Orange Color Coding**: Strategic use of orange color for network warnings and peer status changes
-21. **Red Color Coding**: Critical error reporting with red color coding for severe issues
-22. **Periodic DLT Integrity Scans**: Automated DLT block log integrity verification with continuity checks
+20. **Enhanced Peer Ahead-of-Us Detection**: Sophisticated detection of peers ahead of the local node in DLT mode
+21. **Startup Block Storage Diagnostics**: Comprehensive diagnostics system that runs before synchronization begins
+22. **Windows Compatibility Enhancements**: Enhanced compatibility with Windows operating systems for DLT block log operations
 
 The recent additions demonstrate ongoing attention to operational efficiency and user experience. The new DLT mode block range management with sophisticated gap detection provides intelligent support for snapshot-based nodes, while the enhanced peer interaction handling improves network resilience. The comprehensive logging throughout the sync process provides unprecedented visibility into network operations, and the graceful degradation capabilities ensure reliable operation even when peers cannot serve requested items.
 
@@ -1784,3 +1935,7 @@ The conditional block processing latency logging ensures that operators receive 
 The enhanced peer database logging and DLT storage diagnostics provide unprecedented visibility into peer interactions and storage capabilities, enabling operators to quickly identify and resolve network issues. The automatic peer soft-banning system with gap detection awareness improves network resilience by intelligently managing problematic peers while maintaining service quality for legitimate users.
 
 The DLT integrity verification system provides continuous monitoring of data integrity, ensuring that snapshot-based nodes maintain reliable and consistent block storage. This comprehensive approach to diagnostics and monitoring positions the P2P plugin as a critical component in maintaining the health and reliability of the VIZ blockchain network.
+
+The enhanced peer ahead-of-us detection mechanism provides sophisticated peer management capabilities, preventing unnecessary sync attempts and improving overall network efficiency. The comprehensive startup diagnostics system ensures that potential issues are identified and resolved before synchronization begins, improving the reliability of new node deployments.
+
+The Windows compatibility enhancements ensure that the plugin operates reliably across different platforms, with special attention to DLT block log operations on Windows systems. This cross-platform compatibility is essential for the widespread deployment of VIZ blockchain nodes.

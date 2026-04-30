@@ -15,13 +15,13 @@
 
 ## Update Summary
 **Changes Made**
-- Added new `verify_continuity()` method for DLT block log gap detection and integrity verification
-- Enhanced database update logic with sophisticated gap detection between DLT block log and fork database
-- Implemented automatic recovery mechanisms that reset DLT block log when gaps are detected
-- Integrated P2P plugin with periodic integrity scanning using `verify_continuity()`
-- Enhanced gap handling during synchronization with automatic seeding and intelligent recovery
-- Added comprehensive gap logging and monitoring capabilities with automatic warning suppression
-- Implemented signal-based integration with snapshot plugin for automatic fresh snapshot creation
+- Enhanced Windows compatibility with separate logical file size tracking to address memory-mapped file size drift after thousands of resize operations
+- Implemented sophisticated mapping verification and healing mechanisms through verify_mapping() method
+- Added comprehensive diagnostic capabilities including verify_continuity() and resize_count() methods
+- Enhanced automatic gap recovery system with intelligent gap detection and DLT block log reset functionality
+- Integrated periodic diagnostic monitoring into P2P stats task for DLT mode nodes
+- Added signal-based integration with snapshot plugin for automatic fresh snapshot creation
+- Enhanced gap logging and monitoring with automatic warning suppression through _dlt_gap_logged state management
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -53,7 +53,7 @@
 27. [Conclusion](#conclusion)
 
 ## Introduction
-This document explains the comprehensive DLT (Data Ledger Technology) Rolling Block Log implementation used by VIZ blockchain nodes to maintain a sliding window of recent irreversible blocks with selective retention policies and automatic pruning capabilities. The DLT mode provides advanced support for snapshot-based nodes, enabling efficient serving of recent blocks to P2P peers while maintaining configurable retention windows and automated cleanup mechanisms. Recent enhancements include critical Windows compatibility improvements with separate logical file size tracking, sophisticated mapping verification and healing mechanisms, enhanced diagnostic capabilities, and strengthened validation logic throughout the implementation. The latest architectural improvements introduce comprehensive Windows compatibility fixes, methods to synchronize and verify logical sizes against actual mapped sizes, healing mechanisms for file size mismatches, periodic mapping verification, improved block read/append logic using logical sizes with correctness assertions, and enhanced diagnostic capabilities through `verify_mapping()` and `resize_count()` methods.
+This document explains the comprehensive DLT (Data Ledger Technology) Rolling Block Log implementation used by VIZ blockchain nodes to maintain a sliding window of recent irreversible blocks with selective retention policies and automatic pruning capabilities. The DLT mode provides advanced support for snapshot-based nodes, enabling efficient serving of recent blocks to P2P peers while maintaining configurable retention windows and automated cleanup mechanisms. Recent enhancements include critical Windows compatibility improvements with separate logical file size tracking, sophisticated mapping verification and healing mechanisms, enhanced diagnostic capabilities, and strengthened validation logic throughout the implementation. The latest architectural improvements introduce comprehensive Windows compatibility fixes, methods to synchronize and verify logical sizes against actual mapped sizes, healing mechanisms for file size mismatches, periodic mapping verification, improved block read/append logic using logical sizes with correctness assertions, and enhanced diagnostic capabilities through `verify_mapping()`, `verify_continuity()`, and `resize_count()` methods.
 
 ## Project Structure
 The DLT rolling block log is implemented as a standalone component with comprehensive integration into the main database system. It operates alongside the traditional block log while providing specialized functionality for snapshot-based ("DLT") nodes with selective retention and automatic pruning capabilities.
@@ -154,7 +154,7 @@ PP --> DH
 - **Enhanced P2P Synchronization**: Multi-layered fallback mechanisms with detailed error reporting and logging for DLT mode scenarios
 - **Robust Fallback Chain**: Sophisticated block retrieval chain with fork database, primary block log, and DLT block log fallback layers
 - **Enhanced DLT Block Log Reset**: Safe log clearing and reinitialization through reset() method with comprehensive cleanup of temporary and backup files
-- **Automatic Gap Recovery**: Intelligent gap detection and automatic recovery mechanisms with automatic DLT block log reset and snapshot creation signaling
+- **Automatic Gap Recovery**: Intelligent gap detection and automatic recovery mechanisms with automatic DLT block log reset and signal emission to snapshot plugin
 - **Enhanced Gap Detection**: New verify_continuity() method provides comprehensive gap detection and integrity verification for DLT block log
 - **Automatic Gap Recovery**: Enhanced gap detection and automatic recovery system with automatic DLT block log reset and signal emission to snapshot plugin
 - **Enhanced P2P Integration**: Periodic integrity scanning using verify_continuity() method with comprehensive gap reporting and logging
@@ -235,7 +235,7 @@ DB-->>App : block
 ## Detailed Component Analysis
 
 ### DLT Rolling Block Log API
-The public interface defines comprehensive lifecycle, append, read, and maintenance operations with thread-safe access via read/write locks, supporting selective retention policies and automatic pruning capabilities. The new reset() method provides safe log clearing and reinitialization functionality, while the new verify_mapping() and resize_count() methods provide enhanced diagnostic capabilities.
+The public interface defines comprehensive lifecycle, append, read, and maintenance operations with thread-safe access via read/write locks, supporting selective retention policies and automatic pruning capabilities. The new reset() method provides safe log clearing and reinitialization functionality, while the new verify_mapping(), verify_continuity(), and resize_count() methods provide enhanced diagnostic capabilities.
 
 ```mermaid
 classDiagram
