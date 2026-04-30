@@ -707,6 +707,11 @@ public:
     std::string pending_snapshot_path;    // path for deferred snapshot
     std::atomic<bool> snapshot_in_progress{false}; // async snapshot creation guard
 
+    // Stale snapshot detection: set at startup when the latest snapshot is
+    // older than the DLT block log's start block. A fresh snapshot is created
+    // on the first synced block to prevent serving a broken snapshot.
+    bool needs_fresh_snapshot = false;
+
     // Snapshot P2P sync config
     bool allow_snapshot_serving = false;
     bool allow_snapshot_serving_only_trusted = false;
@@ -1596,6 +1601,23 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         } else {
             ilog(CLOG_GREEN "Reached snapshot-at-block ${b}, creating snapshot: ${p}" CLOG_RESET, ("b", block_num)("p", output.string()));
             schedule_async_snapshot(output, "at-block");
+        }
+    }
+
+    // Urgent fresh snapshot: the latest snapshot is stale relative to the
+    // DLT block log (snapshot_block < dlt_start_block). Create a new snapshot
+    // immediately on the first synced block so downloading nodes can sync.
+    if (needs_fresh_snapshot && !is_syncing) {
+        needs_fresh_snapshot = false;
+        std::string dir = snapshot_dir;
+        fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
+        if (is_witness_producing_soon()) {
+            ilog(CLOG_GREEN "Deferring urgent fresh snapshot at block ${b}: witness scheduled" CLOG_RESET, ("b", block_num));
+            snapshot_pending = true;
+            pending_snapshot_path = output.string();
+        } else {
+            ilog(CLOG_GREEN "Creating urgent fresh snapshot (stale snapshot detected at startup): ${p}" CLOG_RESET, ("p", output.string()));
+            schedule_async_snapshot(output, "urgent-fresh");
         }
     }
 
@@ -3297,9 +3319,48 @@ void snapshot_plugin::plugin_startup() {
         my->start_server();
     }
 
+    // Stale snapshot detection: if we're in DLT mode with snapshot serving or
+    // periodic snapshots enabled, check that the latest snapshot covers the
+    // DLT block log start. If the snapshot is older than the log's first block,
+    // downloading nodes would have a gap (snapshot_block < dlt_start_block)
+    // and fail to sync. Schedule a fresh snapshot on the first synced block.
+    if (my->db._dlt_mode && !my->snapshot_dir.empty() &&
+        (my->allow_snapshot_serving || my->snapshot_every_n_blocks > 0)) {
+        uint32_t dlt_start = my->db.get_dlt_block_log().start_block_num();
+        if (dlt_start > 0) {
+            fc::path latest = my->find_latest_snapshot();
+            uint32_t snap_block = 0;
+            if (!latest.string().empty()) {
+                // Parse block number from filename
+                std::string filename = latest.filename().string();
+                auto pos = filename.find("snapshot-block-");
+                if (pos != std::string::npos) {
+                    try {
+                        std::string num_str = filename.substr(pos + 15);
+                        auto dot_pos = num_str.find('.');
+                        if (dot_pos != std::string::npos) num_str = num_str.substr(0, dot_pos);
+                        snap_block = static_cast<uint32_t>(std::stoul(num_str));
+                    } catch (...) {}
+                }
+            }
+
+            if (snap_block < dlt_start) {
+                wlog(CLOG_RED "STALE SNAPSHOT DETECTED: latest snapshot at block ${snap} "
+                     "is older than DLT block log start at block ${dlt}. "
+                     "Downloading nodes would have a sync gap (blocks ${snap}..${dlt} missing). "
+                     "A fresh snapshot will be created on the first synced block." CLOG_RESET,
+                     ("snap", snap_block)("dlt", dlt_start));
+                std::cerr << "   WARNING: Stale snapshot (block " << snap_block
+                          << ") < DLT start (block " << dlt_start
+                          << "). Fresh snapshot will be created.\n";
+                my->needs_fresh_snapshot = true;
+            }
+        }
+    }
+
     // If --snapshot-at-block or --snapshot-every-n-blocks is set, OR if stalled sync detection is enabled,
     // connect to applied_block signal
-    if (my->snapshot_at_block > 0 || my->snapshot_every_n_blocks > 0 || my->enable_stalled_sync_detection) {
+    if (my->snapshot_at_block > 0 || my->snapshot_every_n_blocks > 0 || my->enable_stalled_sync_detection || my->needs_fresh_snapshot) {
         my->applied_block_conn = my->db.applied_block.connect(
             [this](const graphene::protocol::signed_block& b) {
                 my->on_applied_block(b);
