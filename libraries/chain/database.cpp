@@ -1410,6 +1410,13 @@ namespace graphene { namespace chain {
                 // database::is_known_block) because in DLT mode the full
                 // is_known_block() returns false for blocks whose data isn't on
                 // disk, even though they may exist in fork_db.
+                // Track whether we already know this block's parent is missing.
+                // When true, fork_db.push_block() will throw unlinkable_block_exception
+                // (expected) — we catch it below and return false instead of letting
+                // it propagate to the P2P layer which would trigger a sync restart,
+                // clearing any in-progress sync and preventing forward progress.
+                bool expect_unlinkable = false;
+
                 if (new_block.block_num() > head_block_num() &&
                     new_block.previous != block_id_type() &&
                     new_block.previous != head_block_id() &&
@@ -1431,17 +1438,39 @@ namespace graphene { namespace chain {
                     }
                     dlog("Deferring unlinkable block ${n} to fork_db unlinked index (parent unknown, head=${h}, gap=${g})",
                          ("n", new_block.block_num())("h", head_block_num())("g", gap));
+                    expect_unlinkable = true;
                 }
 
 
                 if (!(skip & skip_fork_db)) {
-                    shared_ptr<fork_item> new_head = _fork_db.push_block(new_block);
+                    shared_ptr<fork_item> new_head;
+                    try {
+                        new_head = _fork_db.push_block(new_block);
+                    } catch (const unlinkable_block_exception& e) {
+                        if (expect_unlinkable) {
+                            // Expected: the block has been stored in fork_db's
+                            // _unlinked_index.  Return false silently so the P2P
+                            // layer does NOT restart sync — the ongoing sync (or
+                            // the next one) will deliver the missing parent, and
+                            // fork_db._push_next() will link this block then.
+                            //
+                            // Previously the exception propagated up to the P2P
+                            // layer which called start_synchronizing_with_peer(),
+                            // resetting the sync queue and killing any in-progress
+                            // fetch.  This caused a loop: broadcast block → exception
+                            // → sync restart → synopsis exchange → peer says
+                            // "up-to-date" → next broadcast block → repeat.
+                            return false;
+                        }
+                        throw;
+                    }
                     _maybe_warn_multiple_production(new_head->num);
                     //If the head block from the longest chain does not build off of the current head, we need to switch forks.
                     if (new_head->data.previous != head_block_id()) {
                         //If the newly pushed block is the same height as head, we get head back in new_head
                         //Only switch forks if new_head is actually higher than head
                         bool should_switch = false;
+                        try {
                         if (has_hardfork(CHAIN_HARDFORK_12)) {
                             // HF12: Vote-weighted chain comparison with +10% longer-chain bonus
                             if (new_head->data.block_num() >= head_block_num() &&
@@ -1459,6 +1488,31 @@ namespace graphene { namespace chain {
                             // Pre-HF12: simple longest-chain rule
                             should_switch = (new_head->data.block_num() > head_block_num());
                         }
+                        } catch (const fc::exception& e) {
+                            // compare_fork_branches -> fetch_branch_from can fail with
+                            // an assertion when the fork_db prev-pointer chain is broken
+                            // (e.g., a previous failed sync cycle removed a block that
+                            // is still referenced by a child's weak_ptr).  Without
+                            // recovery, fork_db._head stays at the stale high block and
+                            // every subsequent sync block triggers the same assertion,
+                            // creating an infinite restart loop.
+                            //
+                            // Recovery: reset fork_db to contain only the current
+                            // database head block, clearing all orphaned / broken chains.
+                            // Then throw unlinkable_block_exception so the P2P layer
+                            // restarts sync cleanly.
+                            wlog("Fork branch comparison failed (broken prev chain in fork_db): ${e}. "
+                                 "Resetting fork_db to database head #${h}.",
+                                 ("e", e.what())("h", head_block_num()));
+                            auto head_blk = fetch_block_by_number(head_block_num());
+                            _fork_db.reset();
+                            if (head_blk) {
+                                _fork_db.start_block(*head_blk);
+                            }
+                            FC_THROW_EXCEPTION(unlinkable_block_exception,
+                                "fork switch failed: broken prev chain in fork_db, reset to head #${h}",
+                                ("h", head_block_num()));
+                        }
                         if (should_switch) {
                             // wlog( "Switching to fork: ${id}", ("id",new_head->data.id()) );
                             // Ensure the current head block exists in the fork DB before attempting fork switch.
@@ -1473,7 +1527,23 @@ namespace graphene { namespace chain {
                                 FC_THROW_EXCEPTION(unlinkable_block_exception,
                                                    "current head block not in fork database, cannot switch forks");
                             }
-                            auto branches = _fork_db.fetch_branch_from(new_head->data.id(), head_block_id());
+                            pair<fork_database::branch_type, fork_database::branch_type> branches;
+                            try {
+                                branches = _fork_db.fetch_branch_from(new_head->data.id(), head_block_id());
+                            } catch (const fc::exception& e) {
+                                // Broken prev-pointer chain — same recovery as above.
+                                wlog("fetch_branch_from failed during fork switch (broken prev chain): ${e}. "
+                                     "Resetting fork_db to database head #${h}.",
+                                     ("e", e.what())("h", head_block_num()));
+                                auto head_blk = fetch_block_by_number(head_block_num());
+                                _fork_db.reset();
+                                if (head_blk) {
+                                    _fork_db.start_block(*head_blk);
+                                }
+                                FC_THROW_EXCEPTION(unlinkable_block_exception,
+                                    "fork switch failed: broken prev chain in fork_db, reset to head #${h}",
+                                    ("h", head_block_num()));
+                            }
 
                             // fetch_branch_from() always appends the common ancestor
                             // to BOTH branches.  For a linear extension (no actual

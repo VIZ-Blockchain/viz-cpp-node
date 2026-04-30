@@ -474,6 +474,20 @@ namespace graphene {
                             uint32_t high_block_num;
                             uint32_t non_fork_high_block_num;
                             uint32_t low_block_num = chain.db().last_non_undoable_block_num();
+
+                            // In DLT mode, extend the synopsis below LIB to cover
+                            // the full range of blocks we know about.  Emergency
+                            // mode can advance LIB on a diverged fork, so synopsis
+                            // entries above LIB may all be from our fork and won't
+                            // match the peer's chain.  Including earlier blocks
+                            // (from dlt_block_log) gives the peer more chances to
+                            // find a common ancestor and begin serving blocks.
+                            if (chain.db()._dlt_mode) {
+                                uint32_t earliest = chain.db().earliest_available_block_num();
+                                if (earliest > 0 && earliest < low_block_num) {
+                                    low_block_num = earliest;
+                                }
+                            }
                             std::vector<block_id_type> fork_history;
 
                             if (reference_point != item_hash_t()) {
@@ -578,7 +592,8 @@ namespace graphene {
                                 dlog(CLOG_GRAY "DLT mode: get_blockchain_synopsis() returning ${n} entries, "
                                      "low=${low}, high=${high}, head=${head}, LIB=${lib}, "
                                      "earliest_available=${earliest}" CLOG_RESET,
-                                     ("n", synopsis.size())("low", chain.db().last_non_undoable_block_num())
+                                     ("n", synopsis.size())
+                                     ("low", synopsis.empty() ? 0 : block_header::num_from_id(synopsis.front()))
                                      ("high", high_block_num)("head", chain.db().head_block_num())
                                      ("lib", chain.db().last_non_undoable_block_num())
                                      ("earliest", chain.db().earliest_available_block_num()));
