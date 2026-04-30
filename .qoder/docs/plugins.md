@@ -161,6 +161,16 @@ p2p-stale-sync-timeout-seconds = 120
 
 **Minority fork auto-recovery:** The P2P plugin exposes `resync_from_lib()` which is called by the witness plugin when a minority fork is detected (last 21 blocks all from our own witnesses). It pops all reversible blocks back to LIB, resets fork_db, re-initiates P2P sync, and reconnects seed nodes. This replicates the effect of a manual node restart. See [fork-collision-hardfork-proposal.md](fork-collision-hardfork-proposal.md) for details.
 
+**Post-snapshot `trigger_resync()`:** The P2P plugin exposes `trigger_resync()` which is called by the snapshot plugin after a hot-reload (snapshot import while the node is running). It re-initiates P2P sync from the new head block so the P2P layer picks up the chain state change. Without this, the P2P layer would continue advertising stale block IDs.
+
+**Sync deadlock prevention:** Two mechanisms prevent the P2P sync from stalling permanently:
+
+1. **Early inventory-mode transition (`remaining == 0`):** When the master responds to a peer's `fetch_blockchain_item_ids` request, it checks `total_remaining_item_count`. If `remaining == 0` (all blocks sent in this reply), the master sets `peer_needs_sync_items_from_us = false` immediately, enabling inventory advertisements. This prevents an infinite chase loop where the peer is almost caught up but the master keeps producing blocks faster than the sync round-trips can converge — especially on live chains with `deferred_resize_exception` slowing the peer.
+
+2. **Auto-clear safety net (30-second timeout):** In `terminate_inactive_connections_loop`, if `peer_needs_sync_items_from_us` has been `true` for >30 seconds without the peer sending any `fetch_blockchain_item_ids` request, the flag is force-cleared. This handles edge cases where the sync state becomes inconsistent (e.g., `deferred_resize_exception` prevents the seed from sending the final synopsis that would normally clear the flag). The `last_peer_sync_request_time` field on `peer_connection` tracks the last request time.
+
+**DEFERRED_RESIZE diagnostic logging:** When `deferred_resize_exception` interrupts sync block processing, diagnostic messages (`DEFERRED_RESIZE:`) are logged via the sync logger, including the deferred block number and the subsequent sync restart. This helps diagnose stalls caused by shared memory resizes during catch-up.
+
 ---
 
 ### `witness`

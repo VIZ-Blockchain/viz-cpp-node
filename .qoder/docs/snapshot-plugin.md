@@ -1124,8 +1124,42 @@ Peer sends item_ids_inventory_message (broadcast transactions)
 | `get_block_ids()` | p2p_plugin.cpp:249 | DLT-aware block ID enumeration with clamping |
 | `on_item_ids_inventory_message()` | node.cpp:3048 | Broadcast inventory suppression |
 | `fetch_sync_items_loop()` | node.cpp | Requests actual block data from peers |
+| `send_sync_block_to_node_delegate()` | node.cpp | Pushes sync blocks to chain; handles `deferred_resize_exception` |
+| `terminate_inactive_connections_loop()` | node.cpp | Auto-clears stuck `peer_needs_sync_items_from_us` (30s timeout) |
+| `trigger_resync()` | p2p_plugin.cpp | Re-initiates P2P sync after snapshot hot-reload |
 | `is_known_block()` | database.cpp:726 | DLT-aware block existence check |
 | `earliest_available_block_num()` | database.cpp | Lowest block the node can actually serve |
+
+### Sync deadlock prevention
+
+On a live chain producing blocks every 3 seconds, a race condition can cause the sync to stall permanently:
+
+1. The seed finishes processing sync blocks and sends a "final synopsis" to the master
+2. The master has already produced new blocks, so the reply has >1 item
+3. `peer_needs_sync_items_from_us` stays `true` on the master → inventory advertisements blocked
+4. The seed fetches the new blocks, sends another synopsis, but the master has more blocks again
+5. This chase loop repeats — especially when `deferred_resize_exception` slows the seed during catch-up
+
+**Fix 1: Early inventory-mode transition (`remaining == 0`)**
+
+In `on_fetch_blockchain_item_ids_message()`, when the master's reply has `total_remaining_item_count == 0` (all blocks sent), the master now sets `peer_needs_sync_items_from_us = false` immediately — even if the reply has multiple items. The peer is close enough that inventory mode can deliver any new blocks produced during the remaining sync processing.
+
+Flag logic (master-side `on_fetch_blockchain_item_ids_message`):
+
+| Condition | `peer_needs_sync_items_from_us` | Meaning |
+|---|---|---|
+| Reply empty | `false` | Our chain is empty |
+| Reply = 1 item in synopsis | `false` | Peer is fully caught up |
+| Reply >1 item, `remaining == 0` | `false` | Peer is nearly caught up — switch to inventory |
+| Reply >1 item, `remaining > 0` | `true` | Peer is far behind, keep sync mode |
+
+**Fix 2: Auto-clear safety net (30-second timeout)**
+
+In `terminate_inactive_connections_loop()`, if `peer_needs_sync_items_from_us` has been `true` for >30 seconds without the peer sending any `fetch_blockchain_item_ids` request, the flag is force-cleared. This catches edge cases where `deferred_resize_exception` prevents the seed from sending the final synopsis (because `peers_with_newly_empty_item_lists` is never populated when the block isn't applied).
+
+**Fix 3: Post-snapshot `trigger_resync()`**
+
+After the snapshot plugin completes a hot-reload (importing a new snapshot while the node is running), it calls `p2p_plugin::trigger_resync()` to re-initiate P2P sync from the new head block. Without this, the P2P layer would continue with stale state and the peer would never receive new blocks.
 
 ### Diagnostic logging
 
@@ -1143,6 +1177,12 @@ Key diagnostic messages:
 - `"on_blockchain_item_ids_inventory: ..."` — peer's response (block range, remaining, sync flags)
 - `"Sync: peer X says we're up-to-date"` — sync complete for this peer
 - `"Sync: received N block IDs from peer ..."` — block ID batch received
+- `"sync: peer X nearly caught up (sent N items, remaining=0)"` — early inventory-mode transition
+- `"sync: peer X is now in sync with us (peer_needs_sync=false)"` — flag cleared (reply=1 known item)
+- `"auto-clearing stuck peer_needs_sync_items_from_us for peer X"` — 30-second safety net fired
+- `"DEFERRED_RESIZE: sync block #N deferred due to shared memory resize"` — resize interrupted sync
+- `"DEFERRED_RESIZE: restarting sync with all peers"` — sync restart after deferred resize
+- `"sync: peer X lists now empty — sending final synopsis"` — all sync blocks processed, checking completion
 
 **Important:** `node.cpp` defines `#define DEFAULT_LOGGER "p2p"` (line 75), so all `ilog()`/`dlog()`/`wlog()` macros in that file go to the "p2p" logger, NOT the default logger. To make messages visible, either configure the "p2p" logger or use `fc_ilog(fc::logger::get("sync"), ...)` explicitly.
 
@@ -1163,4 +1203,5 @@ The snapshot plugin required changes to several core components:
 | `witness_objects.hpp` | Added missing `FC_REFLECT` for `witness_vote_object` |
 | `proposal_object.hpp` | Added missing `FC_REFLECT` for `required_approval_object` |
 | `vizd/main.cpp` | Registered `snapshot_plugin`, linked `graphene::snapshot` |
-| `p2p_plugin` | Added `_dlt_block_log` fallback in `get_item()` for serving blocks to peers in DLT mode |
+| `p2p_plugin` | Added `_dlt_block_log` fallback in `get_item()` for serving blocks to peers in DLT mode; added `trigger_resync()` for post-snapshot-reload P2P re-initiation; added `last_peer_sync_request_time` to `peer_connection` for stuck-flag detection |
+| `node.cpp` (network library) | Added early inventory-mode transition when `remaining == 0`; auto-clear of stuck `peer_needs_sync_items_from_us` (30s timeout); `DEFERRED_RESIZE` diagnostic logging; final synopsis diagnostic logging |
