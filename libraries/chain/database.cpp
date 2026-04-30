@@ -4710,9 +4710,31 @@ namespace graphene { namespace chain {
 
                     string scheduled_witness = get_scheduled_witness(slot_num);
 
-                    FC_ASSERT(witness.owner ==
-                              scheduled_witness, "Witness produced block at wrong time",
-                            ("block witness", next_block.witness)("scheduled", scheduled_witness)("slot_num", slot_num));
+                    // During emergency consensus, the witness schedule can diverge
+                    // between competing forks (different blocks → different shuffle).
+                    // A block from another fork may have a different witness for the
+                    // same slot — that block is still valid, just from a different
+                    // chain view.  Accept it: if a competing block from the
+                    // "correct" witness arrives, fork_db picks the winner via
+                    // vote-weighted comparison.  If no competition arrives, this
+                    // block IS the correct one.
+                    //
+                    // We still validate the signature (the witness must hold the
+                    // correct signing key) and all other block properties — we only
+                    // relax the strict slot-to-witness mapping.
+                    const dynamic_global_property_object &dgp = get_dynamic_global_properties();
+                    if (has_hardfork(CHAIN_HARDFORK_12) && dgp.emergency_consensus_active) {
+                        if (witness.owner != scheduled_witness) {
+                            dlog("Emergency mode: accepting block from ${bw} at slot scheduled for ${sw} "
+                                 "(slot_num=${slot}, block=#${num})",
+                                 ("bw", next_block.witness)("sw", scheduled_witness)
+                                 ("slot", slot_num)("num", next_block.block_num()));
+                        }
+                    } else {
+                        FC_ASSERT(witness.owner ==
+                                  scheduled_witness, "Witness produced block at wrong time",
+                                ("block witness", next_block.witness)("scheduled", scheduled_witness)("slot_num", slot_num));
+                    }
                 }
 
                 return witness;

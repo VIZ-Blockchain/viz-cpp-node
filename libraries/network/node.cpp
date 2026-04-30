@@ -4184,27 +4184,27 @@ namespace graphene {
                          ("id", block_message_to_process.block_id)
                          ("what", e.to_detail_string()));
 
-                    // HF12: soft-ban peers instead of disconnecting during fork rejection
-                    if (block_message_to_process.block.block_num() <= _delegate->get_block_number(_delegate->get_head_block_id())) {
-                        fc_ilog(fc::logger::get("sync"),
-                             "Soft-banning peer ${endpoint} for ${dur}s: fork rejection on block #${num}",
-                             ("endpoint", originating_peer->get_remote_endpoint())
-                             ("dur", get_soft_ban_duration(originating_peer))
-                             ("num", block_message_to_process.block.block_num()));
-                        originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(originating_peer));
-                        originating_peer->inhibit_fetching_sync_blocks = true;
+                    // Block failed validation (e.g. "Witness produced block at
+                    // wrong time").  During emergency consensus, competing forks
+                    // produce different blocks with different witness schedules.
+                    // The block may actually be correct — our node might be on
+                    // the wrong fork.  Don't ban or disconnect the peer; instead,
+                    // restart sync so we can re-evaluate the chain and switch to
+                    // the correct fork if needed.
+                    uint32_t block_num = block_message_to_process.block.block_num();
+                    uint32_t our_head = _delegate->get_block_number(_delegate->get_head_block_id());
+                    if (block_num > our_head) {
+                        ilog("Block #${num} ahead of head #${head} failed validation from peer ${peer}, "
+                             "restarting sync (possible fork switch needed): ${what}",
+                             ("num", block_num)("head", our_head)
+                             ("peer", originating_peer->get_remote_endpoint())
+                             ("what", e.what()));
+                        restart_sync_exception = e;
                     } else {
-                        disconnect_exception = e;
-                        disconnect_reason = "You offered me a block that I have deemed to be invalid";
-
-                        peers_to_disconnect.insert(originating_peer->shared_from_this());
-                        for (const peer_connection_ptr &peer : _active_connections) {
-                            if (!peer->ids_of_items_to_get.empty() &&
-                                peer->ids_of_items_to_get.front() ==
-                                block_message_to_process.block_id) {
-                                peers_to_disconnect.insert(peer);
-                            }
-                        }
+                        dlog("Ignoring invalid block #${num} at/below head #${head} from peer ${peer}: ${what}",
+                             ("num", block_num)("head", our_head)
+                             ("peer", originating_peer->get_remote_endpoint())
+                             ("what", e.what()));
                     }
                 }
 
