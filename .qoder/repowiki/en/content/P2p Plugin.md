@@ -23,13 +23,13 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced peer ahead-of-us detection mechanism with sophisticated DLT mode logic
-- Comprehensive startup block storage diagnostics system with gap detection
-- Windows compatibility enhancements for DLT block logs with stale mapping detection
-- Advanced gap detection and automatic recovery mechanisms throughout sync process
-- Enhanced logging with ANSI color codes (white, cyan, gray, orange, red) for improved console readability
-- Comprehensive DLT mode support with integrity verification and coverage gap monitoring
-- Automatic peer soft-banning for sync spam with gap-aware recovery mechanisms
+- Enhanced peer information logging with comprehensive metrics including bytes sent, connection direction, user agent strings, fork revision information, head block numbers and timestamps, firewall status indicators, and connection timing information
+- Added cross-referencing capabilities with peer database entries to show failed/rejected peers and their current connection status
+- Implemented comprehensive gap detection with automatic peer soft-banning for sync spam
+- Enhanced DLT mode support with integrity verification, coverage gap monitoring, and Windows compatibility enhancements
+- Integrated ANSI color coding system (white, cyan, gray, orange, red) throughout the logging system for improved console readability
+- Added enhanced peer ahead-of-us detection mechanism with sophisticated DLT mode logic
+- Implemented comprehensive startup block storage diagnostics with gap detection
 - Enhanced minority fork recovery with improved peer interaction handling
 
 ## Table of Contents
@@ -38,24 +38,26 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Enhanced DLT Mode Block Range Management](#enhanced-dlt-mode-block-range-management)
-7. [Improved Gap Detection and Recovery](#improved-gap-detection-and-recovery)
-8. [Sophisticated Clamping Logic](#sophisticated-clamping-logic)
-9. [Enhanced Peer Interaction Handling](#enhanced-peer-interaction-handling)
-10. [Comprehensive Logging Throughout Sync Process](#comprehensive-logging-throughout-sync-process)
-11. [ANSI Color Code Implementation](#ansi-color-code-implementation)
-12. [Enhanced DLT Mode Debug Logging](#enhanced-dlt-mode-debug-logging)
-13. [Improved Console Readability](#improved-console-readability)
-14. [Conditional Block Processing Latency Logging](#conditional-block-processing-latency-logging)
-15. [Graceful Degradation Capabilities](#graceful-degradation-capabilities)
-16. [Minority Fork Recovery](#minority-fork-recovery)
-17. [Enhanced Block Validation](#enhanced-block-validation)
-18. [Concurrent Access Safety](#concurrent-access-safety)
-19. [Logging Level Consistency](#logging-level-consistency)
-20. [Dependency Analysis](#dependency-analysis)
-21. [Performance Considerations](#performance-considerations)
-22. [Troubleshooting Guide](#troubleshooting-guide)
-23. [Conclusion](#conclusion)
+6. [Enhanced Peer Information Logging](#enhanced-peer-information-logging)
+7. [Comprehensive Gap Detection System](#comprehensive-gap-detection-system)
+8. [Enhanced DLT Mode Block Range Management](#enhanced-dlt-mode-block-range-management)
+9. [Improved Gap Detection and Recovery](#improved-gap-detection-and-recovery)
+10. [Sophisticated Clamping Logic](#sophisticated-clamping-logic)
+11. [Enhanced Peer Interaction Handling](#enhanced-peer-interaction-handling)
+12. [Comprehensive Logging Throughout Sync Process](#comprehensive-logging-throughout-sync-process)
+13. [ANSI Color Code Implementation](#ansi-color-code-implementation)
+14. [Enhanced DLT Mode Debug Logging](#enhanced-dlt-mode-debug-logging)
+15. [Improved Console Readability](#improved-console-readability)
+16. [Conditional Block Processing Latency Logging](#conditional-block-processing-latency-logging)
+17. [Graceful Degradation Capabilities](#graceful-degradation-capabilities)
+18. [Minority Fork Recovery](#minority-fork-recovery)
+19. [Enhanced Block Validation](#enhanced-block-validation)
+20. [Concurrent Access Safety](#concurrent-access-safety)
+21. [Logging Level Consistency](#logging-level-consistency)
+22. [Dependency Analysis](#dependency-analysis)
+23. [Performance Considerations](#performance-considerations)
+24. [Troubleshooting Guide](#troubleshooting-guide)
+25. [Conclusion](#conclusion)
 
 ## Introduction
 
@@ -419,6 +421,211 @@ Note over Local,Remote : Continue until synchronized with gap awareness
 - [p2p_plugin.cpp:247-301](file://plugins/p2p/p2p_plugin.cpp#L247-L301)
 - [peer_connection.hpp:79-354](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
 
+## Enhanced Peer Information Logging
+
+**New** The P2P plugin now includes comprehensive peer information logging with detailed metrics for enhanced monitoring and troubleshooting capabilities.
+
+### Comprehensive Peer Metrics Collection
+
+The enhanced peer statistics system collects extensive information from connected peers:
+
+```mermaid
+flowchart TD
+PeerStats[Peer Statistics Collection] --> BasicInfo[Basic Connection Info]
+BasicInfo --> IPInfo[IP Address and Port]
+BasicInfo --> Direction[Connection Direction]
+BasicInfo --> Latency[Latency Measurement]
+BasicInfo --> Bytes[Bytes Sent/Received]
+PeerStats --> ExtendedInfo[Extended Peer Info]
+ExtendedInfo --> UA[User Agent String]
+ExtendedInfo --> FW[Firewall Status]
+ExtendedInfo --> HeadBlock[Head Block Info]
+ExtendedInfo --> Timestamps[Timestamps]
+PeerStats --> StatusInfo[Status Information]
+StatusInfo --> Blocked[Blocked Status]
+StatusInfo --> Reason[Block Reason]
+StatusInfo --> ConnTime[Connection Time]
+StatusInfo --> LastActivity[Last Activity Times]
+PeerStats --> DLTInfo[DLT Mode Information]
+DLTInfo --> DLTMode[DLT Mode Status]
+DLTInfo --> DLTRev[DLT Revision Info]
+DLTInfo --> EarliestAvail[Earliest Available Block]
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:653-770](file://plugins/p2p/p2p_plugin.cpp#L653-L770)
+
+### Enhanced Peer Database Cross-Referencing
+
+The plugin provides comprehensive peer database logging with cross-referencing capabilities:
+
+```mermaid
+flowchart TD
+PeerDBDump[Peer Database Dump] --> PotentialPeers[Collect Potential Peers]
+PotentialPeers --> FilterFailed[Filter Failed/Rejected Peers]
+FilterFailed --> ExtractInfo[Extract Peer Info]
+ExtractInfo --> Status[Extract Status]
+ExtractInfo --> Attempts[Extract Attempt Counts]
+ExtractInfo --> Error[Extract Error Info]
+PeerDBDump --> CrossRef[Cross-Reference with Connected Peers]
+CrossRef --> CheckConnected[Check Current Connection Status]
+CheckConnected --> MarkConnected[Mark as Currently Connected]
+CrossRef --> MarkDisconnected[Mark as Disconnected]
+PeerDBDump --> LogResults[Log Results with Color Coding]
+LogResults --> Cyan[Cyan for Peer Info]
+LogResults --> Orange[Orange for Failed Peers]
+LogResults --> Gray[Gray for Peer Database Info]
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:773-813](file://plugins/p2p/p2p_plugin.cpp#L773-L813)
+
+### Detailed Peer Information Logging
+
+The enhanced peer logging system provides comprehensive information for each connected peer:
+
+```mermaid
+sequenceDiagram
+participant Logger as Logger
+participant P2P as P2P Plugin
+participant Peer as Peer Connection
+Logger->>P2P : Collect peer info
+P2P->>Peer : Extract connection metrics
+Peer-->>P2P : Return metrics
+P2P->>P2P : Format peer information
+P2P->>Logger : Log peer stats with color coding
+Note over P2P,Logger : Colored output : <br/>- Cyan : Peer statistics<br/>- Gray : Peer database info<br/>- White : Transaction notifications
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:760-768](file://plugins/p2p/p2p_plugin.cpp#L760-L768)
+
+### Peer Database Analytics
+
+The plugin provides detailed analytics on peer database entries with enhanced visibility:
+
+```mermaid
+flowchart TD
+PeerDBAnalytics[Peer Database Analytics] --> FailedCount[Failed Peer Count]
+FailedCount --> StatusDist[Status Distribution]
+StatusDist --> ErrorAnalysis[Error Pattern Analysis]
+ErrorAnalysis --> RecoveryEffectiveness[Recovery Effectiveness]
+PeerDBAnalytics --> CrossRefAnalysis[Cross-Reference Analysis]
+CrossRefAnalysis --> ConnectedVsFailed[Connected vs Failed Analysis]
+CrossRefAnalysis --> StatusTrends[Status Trends]
+PeerDBAnalytics --> GapImpact[Gap Detection Impact]
+GapImpact --> PeerSelection[Peer Selection Impact]
+GapImpact --> RecoveryStrategies[Recovery Strategy Effectiveness]
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:773-813](file://plugins/p2p/p2p_plugin.cpp#L773-L813)
+
+**Section sources**
+- [p2p_plugin.cpp:653-770](file://plugins/p2p/p2p_plugin.cpp#L653-L770)
+- [p2p_plugin.cpp:773-813](file://plugins/p2p/p2p_plugin.cpp#L773-L813)
+
+## Comprehensive Gap Detection System
+
+**New** The P2P plugin now includes a comprehensive gap detection system that monitors storage boundaries and provides automatic recovery mechanisms to prevent peer disconnections due to unavailable blocks.
+
+### Multi-Layer Gap Detection Architecture
+
+The enhanced gap detection system implements multiple layers of monitoring:
+
+```mermaid
+flowchart TD
+GapDetection[Gap Detection System] --> DLTMode{DLT Mode Active?}
+DLTMode --> |No| NormalProcessing[Normal Processing]
+DLTMode --> |Yes| DLTGapDetection[DLT Gap Detection]
+DLTGapDetection --> StartBoundary[Check Start Boundary]
+StartBoundary --> EarliestCheck{start_num < earliest?}
+EarliestCheck --> |Yes| ClampEarliest[Clamp to Earliest]
+EarliestCheck --> |No| StorageBoundary[Check Storage Boundary]
+StorageBoundary --> StorageEnd[Calculate Storage End]
+StorageEnd --> BeyondStorage{start_num > storage_end?}
+BeyondStorage --> |Yes| ForkDBCheck[Check Fork DB]
+BeyondStorage --> |No| ForkDBGap[Check Fork DB Gap]
+ForkDBCheck --> ForkDBAvailable{Fork DB Available?}
+ForkDBAvailable --> |Yes| UseForkDB[Use Fork DB Block]
+ForkDBAvailable --> |No| GapDetected[Gap Detected]
+ForkDBGap --> GapExists{Gap Exists?}
+GapExists --> |Yes| ClampForkDB[Clamp to Fork DB]
+GapExists --> |No| ContiguityCheck[Check Contiguity]
+ClampEarliest --> LogClamp[Log Clamping]
+ClampForkDB --> LogGap[Log Gap]
+UseForkDB --> LogForkDB[Log Fork DB Usage]
+GapDetected --> LogGap
+LogClamp --> BuildRange[Build Range]
+LogGap --> BuildRange
+LogForkDB --> BuildRange
+NormalProcessing --> End([End])
+BuildRange --> End
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:295-340](file://plugins/p2p/p2p_plugin.cpp#L295-L340)
+
+### Automatic Peer Soft-Banning System
+
+**New** The plugin implements an automatic peer soft-banning system that responds to gap-related errors and sync spam:
+
+```mermaid
+flowchart TD
+PeerSoftBan[Peer Soft-Ban System] --> ErrorDetection[Error Detection]
+ErrorDetection --> GapError{Gap Related Error?}
+GapError --> |Yes| IncreasePenalty[Increase Penalty]
+GapError --> |No| OtherError{Other Error Type?}
+OtherError --> |Sync Spam| IncreasePenalty
+OtherError --> |Linkable Block| ModeratePenalty
+OtherError --> |Other| MaintainPenalty
+IncreasePenalty --> CheckThreshold{Penalty Threshold?}
+CheckThreshold --> |Exceeded| RemovePeer[Remove Peer]
+CheckThreshold --> |Not Exceeded| Continue[Continue]
+ModeratePenalty --> CheckTrusted{Trusted Peer?}
+CheckTrusted --> |Yes| ReducedBan[Reduced Ban Duration]
+CheckTrusted --> |No| Continue
+RemovePeer --> FindAlternative[Find Alternative Peer]
+ReducedBan --> FindAlternative
+Continue --> End([End])
+FindAlternative --> End
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:614-650](file://plugins/p2p/p2p_plugin.cpp#L614-L650)
+
+### Gap Detection Logging and Reporting
+
+The gap detection system provides comprehensive logging for troubleshooting:
+
+```mermaid
+flowchart TD
+GapLogging[Gap Detection Logging] --> GapTypes[Gap Type Classification]
+GapTypes --> BelowEarliest[Below Earliest]
+GapTypes --> BeyondStorage[Beyond Storage]
+GapTypes --> ForkDBGap[Fork DB Gap]
+GapTypes --> MissingBlock[Missing Block]
+GapLogging --> ContextInfo[Context Information]
+ContextInfo --> BlockNumbers[Block Numbers]
+ContextInfo --> StorageBoundaries[Storage Boundaries]
+ContextInfo --> ErrorContext[Error Context]
+GapLogging --> RecoveryActions[Recovery Actions]
+RecoveryActions --> RangeClamping[Range Clamping]
+RecoveryActions --> PeerSwitching[Peer Switching]
+RecoveryActions --> ParameterAdjustment[Parameter Adjustment]
+GapLogging --> ImpactAssessment[Impact Assessment]
+ImpactAssessment --> PeerDisconnectionRisk[Peer Disconnection Risk]
+ImpactAssessment --> SyncDelay[Sync Delay]
+ImpactAssessment --> DataAvailability[Data Availability]
+```
+
+**Diagram sources**
+- [p2p_plugin.cpp:295-340](file://plugins/p2p/p2p_plugin.cpp#L295-L340)
+
+**Section sources**
+- [p2p_plugin.cpp:295-340](file://plugins/p2p/p2p_plugin.cpp#L295-L340)
+- [p2p_plugin.cpp:614-650](file://plugins/p2p/p2p_plugin.cpp#L614-L650)
+
 ## Enhanced DLT Mode Block Range Management
 
 **New** The P2P plugin now includes enhanced DLT (Data Ledger Technology) mode block range management that provides intelligent block serving capabilities for snapshot-based nodes with sophisticated gap detection and automatic recovery mechanisms.
@@ -510,7 +717,7 @@ LogGapError --> ThrowGapException["Throw key_not_found_exception"]
 LogMissingError --> ThrowMissingException["Throw key_not_found_exception"]
 FetchTx --> End([End])
 FetchBlock --> ReturnBlock["Return block_message"]
-ReturnBlock --> End
+ReturnBlock --> End([End])
 ```
 
 **Diagram sources**
@@ -1671,7 +1878,8 @@ The P2P plugin implements several performance optimization strategies with enhan
 - **Reduced Error Handling Overhead**: Graceful degradation minimizes performance impact with gap detection
 - **Gap-Aware Recovery**: Automatic recovery mechanisms minimize performance impact during gap scenarios
 - **Enhanced Peer Ahead Detection**: Sophisticated detection reduces unnecessary sync attempts
-- **Startup Diagnostics Efficiency**: Optimized startup diagnostics minimize performance impact
+- **Startup Diagnostics Efficiency**: Optimized startup diagnostics minimize sync delay
+- **Windows Compatibility Optimization**: Enhanced compatibility reduces performance impact
 
 ### Logging Performance Impact
 **Updated** The improved logging level consistency and conditional latency logging provide additional performance benefits:
@@ -1863,7 +2071,7 @@ The P2P plugin supports extensive configuration options:
 
 | Configuration Option | Description | Default Value |
 |---------------------|-------------|---------------|
-| `p2p-endpoint` | Local IP and port for incoming connections | 127.0.0.1:9876 |
+| `p2p-endpoint` | Local IP address and port for incoming connections | 127.0.0.1:9876 |
 | `p2p-max-connections` | Maximum incoming connections | 0 (unlimited) |
 | `p2p-seed-node` | Seed node endpoints | None |
 | `p2p-stats-enabled` | Enable peer statistics logging | true |

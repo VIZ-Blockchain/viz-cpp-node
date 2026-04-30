@@ -22,6 +22,8 @@
 - Integrated periodic diagnostic monitoring into P2P stats task for DLT mode nodes
 - Added signal-based integration with snapshot plugin for automatic fresh snapshot creation
 - Enhanced gap logging and monitoring with automatic warning suppression through _dlt_gap_logged state management
+- Added new reset() method for safe log clearing and reinitialization
+- Enhanced diagnostic monitoring with comprehensive gap detection and integrity verification
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -393,7 +395,7 @@ The new reset() method provides safe log clearing and reinitialization capabilit
 - Cleanup of .tmp and .bak files that may be left from interrupted operations
 
 **Section sources**
-- [dlt_block_log.cpp:453-473](file://libraries/chain/dlt_block_log.cpp#L453-L473)
+- [dlt_block_log.cpp:523-543](file://libraries/chain/dlt_block_log.cpp#L523-L543)
 
 ### Enhanced Gap Detection and Recovery System
 The new verify_continuity() method provides comprehensive gap detection and integrity verification for the DLT block log. This method walks the entire block range and identifies missing or unreadable blocks, returning a vector of block numbers that need attention. The database now includes sophisticated gap detection between DLT block log and fork database, with automatic recovery mechanisms that reset the DLT block log when gaps are detected.
@@ -412,6 +414,7 @@ The new verify_continuity() method provides comprehensive gap detection and inte
 - Integration with snapshot plugin for automatic fresh snapshot creation
 - Enhanced logging with detailed gap information and recovery actions
 - Prevention of repeated gap recovery operations for the same gap condition
+- **Enhanced State Management**: Automatic suppression of redundant gap warnings through _dlt_gap_logged flag
 
 **Enhanced Gap Recovery Process**:
 - Detection of gap between dlt_end and fork_db_start positions
@@ -420,7 +423,7 @@ The new verify_continuity() method provides comprehensive gap detection and inte
 - Sequential writing of available blocks from fork database
 - Signal emission to snapshot plugin for fresh snapshot creation
 - Continued gap monitoring and recovery as needed
-- Enhanced warning suppression through _dlt_gap_logged state management
+- **Enhanced Warning Suppression**: Automatic logging state management to prevent redundant gap warnings
 
 ```mermaid
 flowchart TD
@@ -1197,7 +1200,7 @@ The new reset() method provides comprehensive safe log clearing and reinitializa
 - Log completion with old range information
 
 **Section sources**
-- [dlt_block_log.cpp:453-473](file://libraries/chain/dlt_block_log.cpp#L453-L473)
+- [dlt_block_log.cpp:523-543](file://libraries/chain/dlt_block_log.cpp#L523-L543)
 
 ### Automatic Gap Recovery Integration
 The reset() method is automatically triggered during gap recovery operations when synchronization gaps are detected between the DLT block log and fork database. This ensures that the DLT block log is properly aligned with the fork database for continued synchronization.
@@ -1558,7 +1561,7 @@ Comprehensive troubleshooting guidance for DLT-specific scenarios, retention pol
 - [database.cpp:438-544](file://libraries/chain/database.cpp#L438-L544)
 - [database.hpp:515-516](file://libraries/chain/include/graphene/chain/database.hpp#L515-L516)
 - [database.cpp:835-858](file://libraries/chain/database.cpp#L835-L858)
-- [dlt_block_log.cpp:453-473](file://libraries/chain/dlt_block_log.cpp#L453-L473)
+- [dlt_block_log.cpp:523-543](file://libraries/chain/dlt_block_log.cpp#L523-L543)
 - [database.cpp:4910-5150](file://libraries/chain/database.cpp#L4910-L5150)
 - [database.cpp:5482-5499](file://libraries/chain/database.cpp#L5482-L5499)
 - [dlt_block_log.cpp:545-579](file://libraries/chain/dlt_block_log.cpp#L545-L579)
