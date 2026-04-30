@@ -2571,13 +2571,12 @@ namespace graphene {
                     // if we thought we had all the items this peer had, but now it turns out that we don't
                     // have the last item it requested to send from,
                     // we need to kick off another round of synchronization
-                    if (!originating_peer->we_need_sync_items_from_peer &&
-                        !fetch_blockchain_item_ids_message_received.blockchain_synopsis.empty() &&
+                    // Detect competing-fork spam: peer's last synopsis block is
+                    // unknown to us AND at/below our head.  Count strikes regardless
+                    // of we_need_sync_items_from_peer — a stale flag from a prior
+                    // sync attempt must not shield a spamming peer from soft-ban.
+                    if (!fetch_blockchain_item_ids_message_received.blockchain_synopsis.empty() &&
                         !_delegate->has_item(peers_last_item_seen)) {
-                        // Only restart sync if the peer's last block is AHEAD of our head.
-                        // In emergency mode, competing forks produce different blocks at the
-                        // same height.  Without this check, both nodes see each other's block
-                        // as unknown and endlessly restart sync (ping-pong loop).
                         uint32_t peer_block_num = _delegate->get_block_number(peers_last_item_seen.item_hash);
                         uint32_t our_head_num = _delegate->get_block_number(_delegate->get_head_block_id());
                         if (peer_block_num > our_head_num) {
@@ -2600,6 +2599,7 @@ namespace graphene {
                                      ("peer_num", peer_block_num)("our_head", our_head_num));
                                 originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(SYNC_SPAM_BAN_DURATION_SEC);
                                 originating_peer->sync_spam_strikes = 0;
+                                originating_peer->we_need_sync_items_from_peer = false;
                             } else {
                                 dlog("sync: not restarting sync with peer ${peer} — peer block #${peer_num} <= our head #${our_head} (strike ${s}/${max})",
                                      ("peer", originating_peer->get_remote_endpoint())
@@ -2613,8 +2613,7 @@ namespace graphene {
                             ("count", reply_message.item_hashes_available.size())
                                     ("first_item_id", reply_message.item_hashes_available.front())
                                     ("last_item_id", reply_message.item_hashes_available.back()));
-                    if (!originating_peer->we_need_sync_items_from_peer &&
-                        !fetch_blockchain_item_ids_message_received.blockchain_synopsis.empty() &&
+                    if (!fetch_blockchain_item_ids_message_received.blockchain_synopsis.empty() &&
                         !_delegate->has_item(peers_last_item_seen)) {
                         // Same block-number guard and strike counting as above
                         uint32_t peer_block_num = _delegate->get_block_number(peers_last_item_seen.item_hash);
@@ -2637,6 +2636,7 @@ namespace graphene {
                                      ("peer_num", peer_block_num)("our_head", our_head_num));
                                 originating_peer->fork_rejected_until = fc::time_point::now() + fc::seconds(SYNC_SPAM_BAN_DURATION_SEC);
                                 originating_peer->sync_spam_strikes = 0;
+                                originating_peer->we_need_sync_items_from_peer = false;
                             } else {
                                 dlog("sync: not restarting sync with peer ${peer} — peer block #${peer_num} <= our head #${our_head} (strike ${s}/${max})",
                                      ("peer", originating_peer->get_remote_endpoint())
@@ -3605,19 +3605,26 @@ namespace graphene {
                 }
                 catch (const unlinkable_block_exception &e) {
                     // Block from a dead fork (parent not in fork_db) or an ahead-of-head
-                    // block that slipped past early rejection.  Distinguish ahead vs. at/below
-                    // head: at/below head → soft-ban (stale fork); ahead → restart sync
-                    // (we may be behind after a resize or fork switch).
+                    // block that slipped past early rejection.
+                    //
+                    // For blocks at or below our head: don't immediate soft-ban.
+                    // Sync blocks can be stale — requested when our head was lower,
+                    // arriving after we've advanced via broadcasts or another peer.
+                    // Immediate soft-banning would penalise peers for delivering blocks
+                    // we asked for.  Instead, let the generic strike counter handle
+                    // repeated dead-fork blocks (consistent with normal-operation path).
+                    //
+                    // For blocks ahead of our head: restart sync so missing parent
+                    // blocks can be fetched sequentially.
                     uint32_t peer_block_num = block_message_to_send.block.block_num();
                     uint32_t our_head = _delegate->get_block_number(_delegate->get_head_block_id());
                     if (peer_block_num <= our_head) {
-                        wlog("Sync block #${num} is from a dead fork (at or below our head #${head}), will soft-ban peer",
+                        wlog("Sync block #${num} is unlinkable at or below our head #${head}, treating as generic rejection",
                                 ("num", peer_block_num)("head", our_head));
                         handle_message_exception = e;
-                        discontinue_fetching_blocks_from_peer = true;
+                        // discontinue_fetching_blocks_from_peer remains false —
+                        // falls through to strike-threshold logic below.
                     } else {
-                        // Block is ahead — we may be behind.  Restart sync instead of
-                        // soft-banning so the missing blocks can be fetched sequentially.
                         wlog("Sync block #${num} is unlinkable and ahead of our head #${head}, restarting sync",
                              ("num", peer_block_num)("head", our_head));
                         deferred_resize = true; // reuse flag to trigger sync restart below
