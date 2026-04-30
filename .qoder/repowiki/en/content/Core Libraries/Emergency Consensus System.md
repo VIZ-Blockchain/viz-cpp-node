@@ -19,12 +19,12 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced emergency consensus mode with automatic schedule recovery on startup for nodes that crashed during emergency mode
-- Implemented emergency hybrid schedule override logic that dynamically adjusts witness assignments during emergency
-- Refined emergency exit conditions with improved real witness recovery validation using 75% threshold
-- Redesigned emergency LIB computation to advance normally using all witnesses including committee during emergency
-- Added comprehensive schedule repair mechanism for broken schedules containing empty witness slots
+- Enhanced emergency recovery mechanisms with new emergency threshold constants and improved network resilience during critical failure scenarios
+- Updated emergency consensus activation with comprehensive LIB availability validation and deterministic synchronization detection
+- Improved emergency exit conditions with refined real witness recovery validation using 75% threshold
 - Enhanced emergency mode flag management across fork database and witness plugin integration
+- Strengthened emergency witness management with comprehensive penalty reset and schedule override logic
+- Added enhanced memory management protection through operation guards during emergency mode operations
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -48,7 +48,7 @@ The Emergency Consensus System is a critical safety mechanism implemented in the
 
 The system operates as a three-state safety enforcement mechanism, providing automatic recovery capabilities that prevent network paralysis during emergencies. It maintains consensus integrity while allowing the network to recover from various failure scenarios including witness failures, network partitions, or other catastrophic events.
 
-**Updated** Enhanced with comprehensive emergency consensus constants and configuration options including CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC, CHAIN_EMERGENCY_WITNESS_ACCOUNT, CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS, and CHAIN_MAX_WITNESSES * 10 threshold that establishes the foundation for emergency consensus mode activation and operation with deterministic synchronization detection during replay, reindex, and live sync scenarios.
+**Updated** Enhanced with comprehensive emergency consensus constants and configuration options including CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC, CHAIN_EMERGENCY_WITNESS_ACCOUNT, CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS, CHAIN_IRREVERSIBLE_THRESHOLD, and CHAIN_MAX_WITNESSES * 10 threshold that establishes the foundation for emergency consensus mode activation and operation with deterministic synchronization detection during replay, reindex, and live sync scenarios.
 
 ## System Architecture
 
@@ -80,6 +80,7 @@ ERR[Error Handler]
 SD[Deterministic Sync Detector]
 SR[Schedule Recovery]
 HO[Hybrid Override]
+IR[Irreversible Threshold]
 END
 DB --> WS
 DB --> DGP
@@ -92,6 +93,7 @@ EC --> TM
 EC --> SD
 EC --> SR
 EC --> HO
+EC --> IR
 EC --> MEM
 EC --> ERR
 WC --> BP
@@ -101,6 +103,7 @@ TM -.-> DB
 SD -.-> DB
 SR -.-> DB
 HO -.-> DB
+IR -.-> DB
 MEM -.-> DB
 ERR -.-> DB
 HC -.-> DB
@@ -119,7 +122,7 @@ The architecture consists of several key layers:
 - **Consensus Layer**: Core blockchain state management and witness scheduling
 - **Emergency Components**: Specialized emergency witness and fork database modifications with operation guards
 - **Network Layer**: Peer-to-peer communication and block propagation
-- **Safety Mechanisms**: Hardfork coordination, timeout monitoring, deterministic synchronization detection, memory management, error handling, automatic schedule recovery, and hybrid schedule override
+- **Safety Mechanisms**: Hardfork coordination, timeout monitoring, deterministic synchronization detection, memory management, error handling, automatic schedule recovery, hybrid schedule override, and irreversible threshold validation
 
 ## Core Components
 
@@ -176,6 +179,7 @@ The emergency witness serves as the automated consensus producer during emergenc
 | Schedule Priority | Top | Takes precedence over all other witnesses |
 | Version Synchronization | Automatic | Matches current binary version |
 | Hardfork Alignment | Current Status | Votes for currently applied hardfork |
+| Penalty Management | Reset | All penalties cleared during emergency |
 
 **Section sources**
 - [config.hpp:114-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L114-L124)
@@ -619,7 +623,7 @@ To troubleshoot emergency consensus issues with enhanced monitoring:
 
 The Emergency Consensus System represents a sophisticated safety mechanism designed to maintain blockchain functionality during critical network failures. By implementing automatic activation, deterministic network behavior, and clear exit conditions, the system provides robust protection against network stalls while maintaining consensus integrity.
 
-**Updated** The enhanced system now features comprehensive emergency consensus constants and configuration options including CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC for timeout threshold control, CHAIN_EMERGENCY_WITNESS_ACCOUNT for emergency producer configuration, CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS for automatic exit conditions, and CHAIN_MAX_WITNESSES * 10 threshold for deterministic synchronization detection. These constants establish the foundation for emergency consensus mode that activates when no blocks have been produced for the specified timeout period while preventing false activations during replay, reindex, and live sync scenarios.
+**Updated** The enhanced system now features comprehensive emergency consensus constants and configuration options including CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC for timeout threshold control, CHAIN_EMERGENCY_WITNESS_ACCOUNT for emergency producer configuration, CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS for automatic exit conditions, CHAIN_IRREVERSIBLE_THRESHOLD for recovery validation, and CHAIN_MAX_WITNESSES * 10 threshold for deterministic synchronization detection. These constants establish the foundation for emergency consensus mode that activates when no blocks have been produced for the specified timeout period while preventing false activations during replay, reindex, and live sync scenarios.
 
 The system's three-state safety enforcement approach ensures that the network can recover from various failure scenarios without requiring manual intervention. Through careful integration with existing consensus mechanisms, network protocols, and comprehensive operation guard protection, the emergency system operates seamlessly with minimal disruption to normal network operations.
 

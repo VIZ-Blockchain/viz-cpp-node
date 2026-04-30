@@ -5,11 +5,11 @@
 - [witness_guard.hpp](file://plugins/witness_guard/include/graphene/plugins/witness_guard/witness_guard.hpp)
 - [witness_guard.cpp](file://plugins/witness_guard/witness_guard.cpp)
 - [CMakeLists.txt](file://plugins/witness_guard/CMakeLists.txt)
-- [witness.hpp](file://plugins/witness/include/graphene/plugins/witness/witness.hpp)
 - [witness_objects.hpp](file://libraries/chain/include/graphene/chain/witness_objects.hpp)
-- [chain_operations.hpp](file://libraries/protocol/include/graphene/protocol/chain_operations.hpp)
-- [chain_properties_evaluators.cpp](file://libraries/chain/chain_properties_evaluators.cpp)
-- [config_witness.ini](file://share/vizd/config/config_witness.ini)
+- [account_object.hpp](file://libraries/chain/include/graphene/chain/account_object.hpp)
+- [database.hpp](file://libraries/chain/include/graphene/chain/database.hpp)
+- [config.ini](file://share/vizd/config/config.ini)
+- [plugin.md](file://documentation/plugin.md)
 </cite>
 
 ## Table of Contents
@@ -25,18 +25,18 @@
 
 ## Introduction
 
-The Witness Guard Plugin is a specialized monitoring and automation component for the VIZ blockchain node that ensures witness signing keys remain properly configured and active. This plugin serves as a critical maintenance tool that automatically detects when a witness's on-chain signing key has been reset to null and initiates corrective action by broadcasting witness_update transactions to restore the proper key configuration.
+The Witness Guard Plugin is a specialized plugin for the VIZ blockchain node that automatically monitors and maintains witness signing keys to prevent downtime in block production. This plugin serves as a critical safety mechanism for witness operators who want to ensure their witnesses remain productive even when encountering issues with their signing keys.
 
-The plugin operates continuously, monitoring configured witnesses and performing periodic checks to ensure block production capabilities are maintained. It integrates seamlessly with the VIZ blockchain's witness system while providing intelligent safeguards against network instability and operational failures.
+The plugin operates by continuously monitoring configured witnesses and automatically restoring their on-chain signing keys when they become null or invalid. It also includes intelligent auto-disable functionality to prevent excessive block production by a single witness, protecting the network from potential centralization risks.
 
 ## Project Structure
 
-The Witness Guard Plugin follows the standard VIZ plugin architecture pattern, implementing the appbase plugin interface with clear separation of concerns between public interfaces and internal implementation details.
+The Witness Guard Plugin follows the standard VIZ plugin architecture pattern with a clear separation between interface and implementation:
 
 ```mermaid
 graph TB
 subgraph "Plugin Structure"
-A[witness_guard.hpp<br/>Public Interface] --> B[witness_guard.cpp<br/>Implementation]
+A[witness_guard.hpp<br/>Header Definition] --> B[witness_guard.cpp<br/>Implementation]
 C[CMakeLists.txt<br/>Build Configuration] --> B
 end
 subgraph "Dependencies"
@@ -45,340 +45,372 @@ E[p2p_plugin] --> B
 F[protocol] --> B
 G[utilities] --> B
 H[time] --> B
+I[appbase] --> B
 end
-subgraph "Blockchain Integration"
-I[witness_objects.hpp<br/>Chain Objects] --> B
-J[chain_operations.hpp<br/>Operations] --> B
-K[chain_properties_evaluators.cpp<br/>Validators] --> B
+subgraph "Chain Objects"
+J[witness_objects.hpp] --> B
+K[account_object.hpp] --> B
+L[database.hpp] --> B
 end
-A --> D
-A --> E
-B --> I
-B --> J
-B --> K
 ```
 
 **Diagram sources**
 - [witness_guard.hpp:1-48](file://plugins/witness_guard/include/graphene/plugins/witness_guard/witness_guard.hpp#L1-L48)
-- [witness_guard.cpp:1-50](file://plugins/witness_guard/witness_guard.cpp#L1-L50)
-- [CMakeLists.txt:26-34](file://plugins/witness_guard/CMakeLists.txt#L26-L34)
+- [witness_guard.cpp:1-559](file://plugins/witness_guard/witness_guard.cpp#L1-L559)
+- [CMakeLists.txt:1-44](file://plugins/witness_guard/CMakeLists.txt#L1-L44)
 
 **Section sources**
 - [witness_guard.hpp:1-48](file://plugins/witness_guard/include/graphene/plugins/witness_guard/witness_guard.hpp#L1-L48)
-- [witness_guard.cpp:1-50](file://plugins/witness_guard/witness_guard.cpp#L1-L50)
+- [witness_guard.cpp:1-559](file://plugins/witness_guard/witness_guard.cpp#L1-L559)
 - [CMakeLists.txt:1-44](file://plugins/witness_guard/CMakeLists.txt#L1-L44)
 
 ## Core Components
 
-The Witness Guard Plugin consists of several key components that work together to provide comprehensive witness key monitoring and restoration capabilities:
+The Witness Guard Plugin consists of several key components that work together to provide comprehensive witness monitoring and protection:
 
-### Plugin Interface Layer
-The public interface defines the standard appbase plugin contract with explicit requirements for chain and p2p plugin dependencies. The plugin exposes three primary lifecycle methods: `set_program_options`, `plugin_initialize`, `plugin_startup`, and `plugin_shutdown`.
+### Main Plugin Class
+The primary plugin class implements the appbase plugin interface and manages the plugin lifecycle. It requires both the chain plugin and p2p plugin to function properly.
 
-### Internal Implementation Structure
-The implementation uses a private `impl` class pattern to encapsulate all plugin logic, maintaining clean separation between interface and implementation. The internal structure manages configuration state, witness monitoring data, and operational metadata.
+### Internal Implementation (impl)
+The internal implementation class contains all the core logic for:
+- Configuration management and validation
+- Periodic monitoring and restoration processes
+- Auto-disable functionality for excessive block production
+- Transaction broadcasting and confirmation tracking
 
-### Configuration Management
-The plugin supports flexible configuration through command-line options and runtime parameters, allowing operators to define which witnesses to monitor, how frequently to check for key validity, and whether automatic restoration should be enabled.
+### Data Structures
+The plugin maintains several critical data structures:
+- **Witness Configuration Map**: Stores witness names with their associated key pairs
+- **Consecutive Block Counters**: Tracks blocks produced by each witness
+- **Pending Restoration Tracking**: Manages in-flight transactions
+- **Auto-Disabled Witnesses**: Prevents automatic restoration of problematic witnesses
 
 **Section sources**
 - [witness_guard.hpp:11-44](file://plugins/witness_guard/include/graphene/plugins/witness_guard/witness_guard.hpp#L11-L44)
-- [witness_guard.cpp:27-67](file://plugins/witness_guard/witness_guard.cpp#L27-L67)
+- [witness_guard.cpp:27-78](file://plugins/witness_guard/witness_guard.cpp#L27-L78)
 
 ## Architecture Overview
 
-The Witness Guard Plugin implements a sophisticated monitoring architecture that integrates with multiple subsystems of the VIZ blockchain node:
+The Witness Guard Plugin integrates deeply with the VIZ blockchain's core infrastructure through a sophisticated event-driven architecture:
 
 ```mermaid
 sequenceDiagram
 participant Node as "VIZ Node"
 participant Chain as "Chain Plugin"
 participant Guard as "Witness Guard Plugin"
-participant P2P as "P2P Plugin"
-participant Network as "Network"
 participant DB as "Database"
-Note over Node : Plugin Initialization
-Node->>Guard : plugin_initialize(options)
-Guard->>Guard : Parse witness configurations
-Guard->>Chain : Verify on-chain authorities
-Guard->>Guard : Setup monitoring state
-Note over Node : Runtime Monitoring
-loop Every Block
-Chain->>Guard : applied_block signal
-Guard->>DB : Check node synchronization
-Guard->>DB : Verify witness signing keys
-alt Key is null
-Guard->>Guard : Build witness_update transaction
-Guard->>P2P : Broadcast transaction
-Guard->>Guard : Track confirmation
-else Key is valid
-Guard->>Guard : Continue monitoring
+participant P2P as "P2P Network"
+participant Witness as "Witness Node"
+Note over Node,Witness : Startup Phase
+Node->>Guard : plugin_initialize()
+Guard->>Guard : Parse Configuration
+Guard->>DB : Verify Authority Keys
+Guard->>Guard : Setup Monitoring
+Note over Node,Witness : Runtime Monitoring
+Chain->>Guard : applied_block Signal
+Guard->>Guard : Check Consecutive Blocks
+Guard->>DB : Query Witness Status
+Guard->>Guard : Auto-Disable Check
+alt Null Signing Key Detected
+Guard->>DB : Fetch Witness Object
+Guard->>Guard : Build Restore Transaction
+Guard->>P2P : Broadcast Transaction
+Guard->>Guard : Track Confirmation
 end
-end
-Note over Node : Network Events
-Network->>Guard : Transaction inclusion
-Guard->>DB : Confirm restoration
-Guard->>Guard : Clean up tracking state
+Note over Node,Witness : Periodic Checks
+Chain->>Guard : Block Applied
+Guard->>Guard : Check Restoration Status
+Guard->>DB : Confirm Transaction Inclusion
 ```
 
 **Diagram sources**
-- [witness_guard.cpp:325-425](file://plugins/witness_guard/witness_guard.cpp#L325-L425)
-- [witness_guard.cpp:72-169](file://plugins/witness_guard/witness_guard.cpp#L72-L169)
+- [witness_guard.cpp:410-548](file://plugins/witness_guard/witness_guard.cpp#L410-L548)
+- [witness_guard.cpp:83-191](file://plugins/witness_guard/witness_guard.cpp#L83-L191)
 
-The architecture demonstrates several key design patterns:
+The architecture follows a reactive pattern where the plugin listens for blockchain events and responds appropriately. The plugin subscribes to the `applied_block` signal from the chain database, enabling it to monitor block production in real-time.
 
-1. **Event-Driven Architecture**: The plugin subscribes to blockchain events and responds to changes in real-time
-2. **State Management**: Maintains persistent state across plugin lifecycle events
-3. **Transaction Broadcasting**: Integrates with the P2P layer for transaction propagation
-4. **Database Integration**: Directly accesses chain state for witness validation
+**Section sources**
+- [witness_guard.cpp:455-544](file://plugins/witness_guard/witness_guard.cpp#L455-L544)
+- [database.hpp:1-200](file://libraries/chain/include/graphene/chain/database.hpp#L1-L200)
 
 ## Detailed Component Analysis
 
-### Witness Monitoring Engine
+### Configuration Management
 
-The core monitoring engine performs comprehensive checks on configured witnesses to ensure their signing keys remain valid and functional:
+The plugin supports extensive configuration options that allow fine-tuned control over its behavior:
+
+#### Core Configuration Options
+- **witness-guard-enabled**: Enables or disables the entire plugin functionality
+- **witness-guard-witness**: Configures individual witnesses with their key pairs
+- **witness-guard-interval**: Sets the frequency of periodic checks in blocks
+- **witness-guard-disable**: Controls auto-disable threshold for excessive block production
+
+#### Witness Configuration Format
+Each witness configuration requires three components:
+1. **Witness Name**: The account name of the witness
+2. **Signing WIF**: Private key for signing blocks
+3. **Active WIF**: Private key for transaction authorization
+
+The plugin validates all configurations during initialization and performs authority verification against the blockchain state.
+
+**Section sources**
+- [witness_guard.cpp:301-408](file://plugins/witness_guard/witness_guard.cpp#L301-L408)
+
+### Monitoring and Restoration Logic
+
+The core monitoring functionality operates through a sophisticated state machine that tracks witness health and automatically restores compromised keys:
 
 ```mermaid
 flowchart TD
-Start([Monitor Cycle Start]) --> CheckStale["Check Stale Production Flag"]
+Start([Block Applied]) --> CheckStale["Check Stale Production Mode"]
 CheckStale --> StaleEnabled{"Stale Production Enabled?"}
-StaleEnabled --> |Yes| CheckHealth["Check Network Health"]
-CheckHealth --> Healthy{"Participation ≥ 33%?"}
+StaleEnabled --> |Yes| CheckHealth["Check Network Health (≥33%)"]
+CheckHealth --> Healthy{"Network Healthy?"}
 Healthy --> |No| SkipRestore["Skip Auto-Restore"]
 Healthy --> |Yes| Proceed["Proceed with Check"]
-StaleEnabled --> |No| CheckSync["Check Node Synchronization"]
-CheckSync --> SyncValid{"Head Block Recent?"}
-SyncValid --> |No| SkipCheck["Skip Check"]
-SyncValid --> |Yes| CheckLIB["Check Last Irreversible Block"]
-CheckLIB --> LIBRecent{"LIB Recent?"}
-LIBRecent --> |No| ForkDetected["Potential Long Fork"]
-LIBRecent --> |Yes| ExpirePending["Expire Stale Pending Confirmations"]
-ForkDetected --> SkipCheck
-SkipRestore --> End([Cycle Complete])
-SkipCheck --> End
-Proceed --> IterateWitnesses["Iterate Monitored Witnesses"]
-ExpirePending --> IterateWitnesses
-IterateWitnesses --> CheckKey["Check On-Chain Signing Key"]
-CheckKey --> KeyNull{"Key is Null?"}
-KeyNull --> |No| NextWitness["Next Witness"]
-KeyNull --> |Yes| CheckPending["Check Pending Restore"]
-CheckPending --> PendingActive{"Restore Pending?"}
-PendingActive --> |Yes| CheckExpiration["Check Expiration"]
-CheckExpiration --> Expired{"Expired?"}
-Expired --> |Yes| RetryRestore["Retry Restore"]
-Expired --> |No| NextWitness
-PendingActive --> |No| InitiateRestore["Initiate Restore"]
+StaleEnabled --> |No| Proceed
+Proceed --> CheckSync["Check Node Sync Status"]
+CheckSync --> SyncOK{"Node in Sync?"}
+SyncOK --> |No| SkipRestore
+SyncOK --> |Yes| CheckLIB["Check LIB Age"]
+CheckLIB --> LIBOK{"LIB Recent?"}
+LIBOK --> |No| SkipRestore
+LIBOK --> |Yes| CheckWitnesses["Iterate Configured Witnesses"]
+CheckWitnesses --> NullKey{"Null Signing Key?"}
+NullKey --> |No| ClearState["Clear Pending State"]
+NullKey --> |Yes| CheckAutoDisabled{"Auto-Disabled?"}
+CheckAutoDisabled --> |Yes| SkipRestore
+CheckAutoDisabled --> |No| CheckPending{"Restore Pending?"}
+CheckPending --> |Yes| CheckExpire{"Expired?"}
+CheckExpire --> |Yes| RetryRestore["Retry Restore"]
+CheckExpire --> |No| SkipRestore
+CheckPending --> |No| InitiateRestore["Initiate Restore"]
 RetryRestore --> InitiateRestore
-InitiateRestore --> BuildTx["Build witness_update Transaction"]
-BuildTx --> SignTx["Sign with Active Key"]
-SignTx --> Broadcast["Broadcast via P2P"]
-Broadcast --> TrackConfirm["Track Confirmation"]
-TrackConfirm --> NextWitness
-NextWitness --> MoreWitnesses{"More Witnesses?"}
-MoreWitnesses --> |Yes| IterateWitnesses
-MoreWitnesses --> |No| CompleteCheck["Complete Full Check"]
-CompleteCheck --> End
+InitiateRestore --> BroadcastTx["Broadcast Restore Transaction"]
+BroadcastTx --> TrackConfirm["Track Confirmation"]
+ClearState --> End([Complete])
+TrackConfirm --> End
+SkipRestore --> End
 ```
 
 **Diagram sources**
-- [witness_guard.cpp:72-169](file://plugins/witness_guard/witness_guard.cpp#L72-L169)
-- [witness_guard.cpp:175-224](file://plugins/witness_guard/witness_guard.cpp#L175-L224)
+- [witness_guard.cpp:83-191](file://plugins/witness_guard/witness_guard.cpp#L83-L191)
 
-### Transaction Construction and Broadcasting
-
-The plugin constructs and broadcasts witness_update transactions with careful attention to security and reliability:
-
-```mermaid
-classDiagram
-class witness_guard_plugin {
-+set_program_options(cli, cfg)
-+plugin_initialize(options)
-+plugin_startup()
-+plugin_shutdown()
--pimpl : impl
-}
-class impl {
-+chain_ : chain_plugin&
-+p2p_ : p2p_plugin&
-+_enabled : bool
-+_check_interval : uint32_t
-+_witness_configs : map[string, witness_info]
-+_restore_pending : map[string, time_point_sec]
-+_pending_confirmations : map[transaction_id, pair<string, time_point_sec>]
-+check_and_restore_internal() bool
-+send_witness_update(name, obj, config) void
-}
-class witness_info {
-+signing_key : private_key
-+active_key : private_key
-}
-class witness_guard_plugin {
-+plugin_initialize(options)
-+plugin_startup()
-+plugin_shutdown()
-}
-witness_guard_plugin --> impl : "owns"
-impl --> witness_info : "manages"
-impl --> chain_plugin : "uses"
-impl --> p2p_plugin : "uses"
-```
-
-**Diagram sources**
-- [witness_guard.hpp:11-44](file://plugins/witness_guard/include/graphene/plugins/witness_guard/witness_guard.hpp#L11-L44)
-- [witness_guard.cpp:27-67](file://plugins/witness_guard/witness_guard.cpp#L27-L67)
-
-### Configuration Management System
-
-The plugin provides flexible configuration options that allow operators to customize monitoring behavior:
-
-| Configuration Option | Type | Default | Description |
-|---------------------|------|---------|-------------|
-| `witness-guard-enabled` | Boolean | `true` | Enables or disables the plugin |
-| `witness-guard-witness` | Array | None | Defines witness monitoring configuration as `[name, signing_wif, active_wif]` triplets |
-| `witness-guard-interval` | Integer | `20` | Blocks between periodic checks |
+The restoration process includes comprehensive error handling and retry mechanisms to ensure reliable key restoration even in challenging network conditions.
 
 **Section sources**
-- [witness_guard.cpp:231-252](file://plugins/witness_guard/witness_guard.cpp#L231-L252)
-- [witness_guard.cpp:254-323](file://plugins/witness_guard/witness_guard.cpp#L254-L323)
+- [witness_guard.cpp:197-246](file://plugins/witness_guard/witness_guard.cpp#L197-L246)
+- [witness_guard.cpp:252-294](file://plugins/witness_guard/witness_guard.cpp#L252-L294)
 
-### Security and Validation Mechanisms
+### Auto-Disable Mechanism
 
-The plugin implements multiple layers of security validation to prevent unauthorized or unsafe operations:
+The plugin includes an intelligent auto-disable feature designed to prevent excessive block production by a single witness:
 
-1. **Authority Verification**: Ensures the configured active key has proper authority on-chain
-2. **Network Health Checks**: Validates node synchronization and network participation rates
-3. **Emergency Consensus Awareness**: Respects emergency consensus mode operations
-4. **Transaction Expiration Management**: Prevents transaction accumulation and ensures timely cleanup
+#### Consecutive Block Detection
+The system tracks blocks produced by each witness and increments counters when the same witness produces consecutive blocks. When the counter reaches the configured threshold, the system automatically disables the witness by broadcasting a transaction that sets the signing key to null.
+
+#### Prevention of Excessive Centralization
+This mechanism serves as a safeguard against:
+- Single-witness dominance in block production
+- Potential malicious behavior by a single witness
+- Network instability caused by excessive block production
+
+#### Operator Intervention Required
+When a witness is auto-disabled, the plugin prevents automatic restoration to ensure operators investigate and address underlying issues. Manual intervention is required to re-enable the witness.
 
 **Section sources**
-- [witness_guard.cpp:334-359](file://plugins/witness_guard/witness_guard.cpp#L334-L359)
-- [witness_guard.cpp:79-96](file://plugins/witness_guard/witness_guard.cpp#L79-L96)
+- [witness_guard.cpp:459-495](file://plugins/witness_guard/witness_guard.cpp#L459-L495)
+- [witness_guard.cpp:467-484](file://plugins/witness_guard/witness_guard.cpp#L467-L484)
+
+### Transaction Broadcasting and Confirmation
+
+The plugin implements robust transaction management for both restoration and disabling operations:
+
+#### Transaction Construction
+Each operation constructs a properly formatted `witness_update` transaction with:
+- Correct witness owner identification
+- Appropriate URL preservation
+- Proper key updates (restore or disable)
+- Transaction expiration handling
+
+#### Broadcasting Strategy
+Transactions are broadcast through the P2P network with careful consideration of:
+- Transaction fee optimization
+- Network congestion handling
+- Confirmation tracking mechanisms
+
+#### Confirmation Tracking
+The plugin maintains detailed tracking of all broadcast transactions:
+- Transaction ID correlation
+- Expiration time management
+- Confirmation verification in subsequent blocks
+- Automatic retry for failed transactions
+
+**Section sources**
+- [witness_guard.cpp:197-246](file://plugins/witness_guard/witness_guard.cpp#L197-L246)
+- [witness_guard.cpp:252-294](file://plugins/witness_guard/witness_guard.cpp#L252-L294)
 
 ## Dependency Analysis
 
-The Witness Guard Plugin maintains minimal but essential dependencies that enable its core functionality:
+The Witness Guard Plugin has carefully managed dependencies that enable it to function effectively within the VIZ ecosystem:
 
 ```mermaid
 graph LR
 subgraph "Plugin Dependencies"
-A[appbase] --> B[witness_guard]
-C[chain_plugin] --> B
-D[p2p_plugin] --> B
-E[protocol] --> B
-F[utilities] --> B
-G[time] --> B
+A[witness_guard_plugin] --> B[chain_plugin]
+A --> C[p2p_plugin]
+A --> D[protocol]
+A --> E[utilities]
+A --> F[time]
+A --> G[appbase]
 end
-subgraph "Blockchain Dependencies"
-H[chain_objects] --> I[witness_objects]
-J[operations] --> K[witness_update_operation]
-L[evaluators] --> M[witness_update_evaluator]
+subgraph "Chain Dependencies"
+B --> H[database]
+H --> I[witness_objects]
+H --> J[account_authority_object]
+H --> K[global_property_object]
 end
-B --> H
-B --> J
-B --> L
-I --> M
-K --> M
+subgraph "External Dependencies"
+L[fc::signals] --> M[Boost Signals]
+N[fc::variant] --> O[JSON Processing]
+P[fc::ecc] --> Q[Crypto Operations]
+end
+A --> L
+A --> N
+A --> P
 ```
 
 **Diagram sources**
 - [CMakeLists.txt:26-34](file://plugins/witness_guard/CMakeLists.txt#L26-L34)
-- [witness_guard.cpp:3-12](file://plugins/witness_guard/witness_guard.cpp#L3-L12)
+- [witness_guard.cpp:3-18](file://plugins/witness_guard/witness_guard.cpp#L3-L18)
 
-The dependency structure reveals several important characteristics:
+### Core Dependencies
 
-1. **Minimal Coupling**: The plugin depends only on essential core components
-2. **Interface-Based Design**: Uses well-defined plugin interfaces rather than internal implementation details
-3. **Protocol Integration**: Leverages blockchain protocol definitions for operation validation
-4. **Utility Integration**: Utilizes cryptographic utilities for key conversion and validation
+#### Chain Plugin Integration
+The plugin requires the chain plugin for:
+- Database access and manipulation
+- Block production scheduling
+- Witness object management
+- Authority verification
+
+#### P2P Plugin Integration
+The plugin requires the p2p plugin for:
+- Transaction broadcasting
+- Network connectivity
+- Peer communication
+- Transaction propagation
+
+#### Protocol Dependencies
+The plugin relies on protocol definitions for:
+- Operation structures
+- Authority formats
+- Transaction construction
+- Cryptographic operations
 
 **Section sources**
 - [CMakeLists.txt:26-34](file://plugins/witness_guard/CMakeLists.txt#L26-L34)
-- [witness_guard.cpp:3-12](file://plugins/witness_guard/witness_guard.cpp#L3-L12)
+- [witness_guard.hpp:3-6](file://plugins/witness_guard/include/graphene/plugins/witness_guard/witness_guard.hpp#L3-L6)
 
 ## Performance Considerations
 
-The Witness Guard Plugin is designed with performance efficiency as a primary consideration:
+The Witness Guard Plugin is designed with performance optimization in mind to minimize impact on node operations:
 
-### Memory Management
-- **Limited State Storage**: Maintains only essential monitoring state in memory
-- **Automatic Cleanup**: Implements expiration-based cleanup for pending transactions
-- **Size Limits**: Enforces limits on tracking collections to prevent memory growth
+### Efficient Monitoring Strategy
+- **Event-Driven Architecture**: Uses blockchain event signals rather than polling
+- **Intelligent Scheduling**: Adjusts check frequency based on network conditions
+- **Selective Processing**: Only processes blocks that affect monitored witnesses
+- **Memory Management**: Implements efficient data structures for tracking state
+
+### Resource Optimization
+- **Minimal Memory Footprint**: Uses compact data structures for tracking
+- **Efficient Key Storage**: Optimizes storage of witness configurations
+- **Connection Management**: Properly manages database connections
+- **Signal Handling**: Efficient signal connection and disconnection
 
 ### Network Efficiency
-- **Selective Broadcasting**: Only broadcasts transactions when key restoration is needed
-- **Event-Driven Updates**: Responds to blockchain events rather than polling continuously
-- **Batch Processing**: Processes multiple witnesses efficiently within single monitoring cycles
-
-### Computational Efficiency
-- **Minimal Database Queries**: Performs necessary database operations during initialization and monitoring
-- **Optimized Key Validation**: Uses efficient key comparison and validation mechanisms
-- **Smart Scheduling**: Adjusts monitoring frequency based on network conditions and witness schedules
-
-**Section sources**
-- [witness_guard.cpp:203-206](file://plugins/witness_guard/witness_guard.cpp#L203-L206)
-- [witness_guard.cpp:410-421](file://plugins/witness_guard/witness_guard.cpp#L410-L421)
+- **Transaction Batching**: Minimizes unnecessary transaction broadcasts
+- **Confirmation Optimization**: Reduces redundant processing of confirmed transactions
+- **Network Awareness**: Adapts behavior based on network conditions
+- **Timeout Management**: Implements appropriate timeouts for various operations
 
 ## Troubleshooting Guide
 
 ### Common Issues and Solutions
 
-#### Plugin Not Activating
-**Symptoms**: Plugin appears disabled or inactive
-**Causes**: 
-- Plugin disabled via configuration (`witness-guard-enabled=false`)
-- No witnesses configured for monitoring
-- Node synchronization issues preventing monitoring
-
-**Solutions**:
-- Verify configuration includes proper witness definitions
-- Check node synchronization status
-- Review plugin logs for initialization errors
-
-#### Witness Key Restoration Failures
-**Symptoms**: Transactions broadcast but not included in blocks
+#### Plugin Not Starting
+**Symptoms**: Plugin fails to initialize or appears disabled
 **Causes**:
-- Insufficient transaction fees
-- Incorrect witness configuration
-- Network congestion or delays
+- Missing configuration options
+- Invalid witness configurations
+- Missing required plugins (chain, p2p)
+- Authority verification failures
 
 **Solutions**:
-- Verify witness configuration includes valid WIF keys
-- Check transaction fee requirements
-- Monitor network transaction pool status
+- Verify all configuration options are properly set
+- Check witness configuration format and validity
+- Ensure required plugins are enabled in config.ini
+- Validate witness authority keys against blockchain state
 
-#### Network Health Detection Issues
-**Symptoms**: Plugin skips restoration during network instability
+#### Witness Restoration Failures
+**Symptoms**: Witness keys not being restored despite null signing keys
 **Causes**:
-- Stale production mode enabled
-- Low network participation rates
-- Emergency consensus active
+- Active authority key mismatch
+- Insufficient network synchronization
+- Stale production mode interference
+- Transaction broadcast failures
 
 **Solutions**:
-- Disable stale production mode when network stabilizes
-- Monitor participation rate improvements
-- Allow emergency consensus to complete
+- Verify active authority key matches on-chain authority
+- Ensure node is fully synchronized with network
+- Check stale production mode configuration
+- Monitor P2P network connectivity and transaction propagation
 
-### Diagnostic Commands and Logs
+#### Auto-Disable Issues
+**Symptoms**: Witnesses being auto-disabled unexpectedly or not being disabled
+**Causes**:
+- Incorrect disable threshold configuration
+- Network timing issues
+- Witness scheduling conflicts
+- Database access problems
 
-The plugin provides comprehensive logging throughout its operation:
+**Solutions**:
+- Review and adjust disable threshold settings
+- Monitor witness production patterns
+- Check network stability and block times
+- Verify database connectivity and performance
 
-- **Initialization Logs**: Configuration parsing and setup completion
-- **Monitoring Logs**: Periodic check results and key validation outcomes
-- **Transaction Logs**: Broadcasting and confirmation tracking
-- **Error Logs**: Exception handling and failure scenarios
+### Configuration Validation
+
+The plugin performs extensive validation during initialization:
+
+#### Configuration Validation Steps
+1. **Option Parsing**: Validates all command-line and config file options
+2. **Witness Entry Validation**: Verifies each witness configuration triplet
+3. **Authority Verification**: Confirms active keys have proper authority
+4. **Network Health Assessment**: Evaluates current network conditions
+5. **Stale Production Detection**: Identifies stale production mode activation
+
+#### Error Handling and Logging
+The plugin implements comprehensive logging for troubleshooting:
+- **Debug Information**: Detailed operational information
+- **Warning Messages**: Potential issues and recommendations
+- **Error Reporting**: Critical failures and resolution steps
+- **Success Confirmations**: Successful operations and outcomes
 
 **Section sources**
-- [witness_guard.cpp:258-323](file://plugins/witness_guard/witness_guard.cpp#L258-L323)
-- [witness_guard.cpp:365-425](file://plugins/witness_guard/witness_guard.cpp#L365-L425)
+- [witness_guard.cpp:330-408](file://plugins/witness_guard/witness_guard.cpp#L330-L408)
+- [witness_guard.cpp:410-548](file://plugins/witness_guard/witness_guard.cpp#L410-L548)
 
 ## Conclusion
 
-The Witness Guard Plugin represents a sophisticated solution for maintaining witness key integrity in the VIZ blockchain ecosystem. Through its comprehensive monitoring capabilities, intelligent safety mechanisms, and efficient resource management, it provides essential infrastructure support for witness operators and network stability.
+The Witness Guard Plugin represents a sophisticated solution for maintaining witness reliability in the VIZ blockchain ecosystem. Its comprehensive monitoring capabilities, intelligent auto-disable mechanisms, and robust restoration processes provide essential protection against witness downtime while preventing excessive centralization risks.
 
-The plugin's design demonstrates several key strengths:
-- **Robust Architecture**: Clean separation of concerns with minimal dependencies
-- **Security Focus**: Multi-layer validation and safety checks
-- **Performance Efficiency**: Optimized resource usage and computational overhead
-- **Operational Reliability**: Comprehensive error handling and recovery mechanisms
+The plugin's architecture demonstrates best practices in blockchain plugin development, including proper separation of concerns, efficient resource management, and comprehensive error handling. Its integration with the VIZ blockchain's event-driven architecture enables real-time monitoring and response to network conditions.
 
-As the VIZ blockchain continues to evolve, the Witness Guard Plugin serves as a foundation for advanced witness management capabilities, providing the reliability and automation necessary for professional witness operations.
+Key benefits of the Witness Guard Plugin include:
+- **Automated Reliability**: Continuous monitoring reduces manual intervention requirements
+- **Network Protection**: Prevents excessive witness dominance and centralization
+- **Operational Efficiency**: Intelligent scheduling minimizes performance impact
+- **Security Enhancement**: Comprehensive validation protects against unauthorized operations
+
+For optimal deployment, operators should carefully configure the plugin according to their specific needs, monitor its performance regularly, and maintain awareness of network conditions that may affect its operation. The plugin's comprehensive logging and error reporting capabilities provide excellent visibility into its operations and help ensure reliable witness protection.
