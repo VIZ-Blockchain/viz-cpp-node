@@ -5460,7 +5460,7 @@ namespace graphene {
                     peer_details["lastrecv"] = peer->get_last_message_received_time().sec_since_epoch();
                     peer_details["bytessent"] = peer->get_total_bytes_sent();
                     peer_details["bytesrecv"] = peer->get_total_bytes_received();
-                    peer_details["conntime"] = peer->get_connection_time();
+                    peer_details["conntime"] = peer->get_connection_time().sec_since_epoch();
                     peer_details["pingtime"] = "";
                     peer_details["pingwait"] = "";
                     peer_details["version"] = "";
