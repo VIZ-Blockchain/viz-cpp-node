@@ -1403,7 +1403,13 @@ namespace graphene {
 
                     for (const peer_connection_ptr &peer : _active_connections) {
                         // only advertise to peers who are in sync with us
-                        //wdump((peer->peer_needs_sync_items_from_us));
+                        if (peer->peer_needs_sync_items_from_us && !inventory_to_advertise.empty()) {
+                            fc_dlog(fc::logger::get("sync"),
+                                 "advertise_inventory: skipping peer ${peer} (peer_needs_sync_items_from_us=true, "
+                                 "${count} items to advertise)",
+                                 ("peer", peer->get_remote_endpoint())
+                                 ("count", inventory_to_advertise.size()));
+                        }
                         if (!peer->peer_needs_sync_items_from_us) {
                             std::map<uint32_t, std::vector<item_hash_t>> items_to_advertise_by_type;
                             // don't send the peer anything we've already advertised to it
@@ -1541,8 +1547,11 @@ namespace graphene {
                             active_disconnect_threshold &&
                             active_peer->get_last_message_received_time() <
                             active_disconnect_threshold) {
-                            wlog("Closing connection with peer ${peer} due to inactivity of at least ${timeout} seconds",
-                                    ("peer", active_peer->get_remote_endpoint())("timeout", active_disconnect_timeout));
+                            wlog("Closing connection with peer ${peer} due to inactivity of at least ${timeout} seconds "
+                                    "(we_need_sync=${we_need}, peer_needs_sync=${peer_needs})",
+                                    ("peer", active_peer->get_remote_endpoint())("timeout", active_disconnect_timeout)
+                                    ("we_need", active_peer->we_need_sync_items_from_peer)
+                                    ("peer_needs", active_peer->peer_needs_sync_items_from_us));
                             peers_to_disconnect_gently.push_back(active_peer);
                         } else {
                             bool disconnect_due_to_request_timeout = false;
@@ -2500,11 +2509,21 @@ namespace graphene {
                         fetch_blockchain_item_ids_message_received.blockchain_synopsis.end()) {
                     /* the last item in the peer's list matches the last item in our list */
                     originating_peer->peer_needs_sync_items_from_us = false;
+                    fc_ilog(fc::logger::get("sync"),
+                         "sync: peer ${peer} is now in sync with us (peer_needs_sync=false), "
+                         "inventory advertisements enabled",
+                         ("peer", originating_peer->get_remote_endpoint()));
                     if (originating_peer->inhibit_fetching_sync_blocks) {
                         disconnect_from_inhibited_peer = true;
                     } // delay disconnecting until after we send our reply to this fetch_blockchain_item_ids_message
                 } else {
                     originating_peer->peer_needs_sync_items_from_us = true;
+                    fc_dlog(fc::logger::get("sync"),
+                         "sync: peer ${peer} still needs sync items from us "
+                         "(reply_items=${count}, remaining=${remaining})",
+                         ("peer", originating_peer->get_remote_endpoint())
+                         ("count", reply_message.item_hashes_available.size())
+                         ("remaining", reply_message.total_remaining_item_count));
                 }
 
                 if (!originating_peer->peer_needs_sync_items_from_us) {
