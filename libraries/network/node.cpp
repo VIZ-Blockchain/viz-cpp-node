@@ -3308,6 +3308,8 @@ namespace graphene {
                              ("peer", originating_peer->get_remote_endpoint())
                              ("num", block_num)("id", requested_item.item_hash));
                         originating_peer->inhibit_fetching_sync_blocks = true;
+                        originating_peer->fork_rejected_until =
+                            fc::time_point::now() + fc::seconds(30);
                     } else {
                         // Peer claimed to have this block (it was in their blockchain_item_ids
                         // response) but can't serve it. This can happen legitimately when the
@@ -3320,6 +3322,8 @@ namespace graphene {
                              ("peer", originating_peer->get_remote_endpoint())
                              ("num", block_num)("id", requested_item.item_hash));
                         originating_peer->inhibit_fetching_sync_blocks = true;
+                        originating_peer->fork_rejected_until =
+                            fc::time_point::now() + fc::seconds(30);
 
                         // Move the unavailable item back to the global sync list
                         // so another peer can provide it
