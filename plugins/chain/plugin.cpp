@@ -9,6 +9,7 @@
 #include <graphene/protocol/protocol.hpp>
 #include <graphene/protocol/types.hpp>
 #include <future>
+#include <atomic>
 
 namespace graphene {
 namespace plugins {
@@ -61,6 +62,8 @@ namespace chain {
 
         bool sync_start_logged = false; // guard to log sync start only once
 
+        std::atomic<bool> currently_syncing{false}; // true while processing P2P sync blocks
+
         bool pending_snapshot_load = false; // set when snapshot args present but callback not yet registered
 
         plugin_impl() {
@@ -103,8 +106,9 @@ namespace chain {
         FC_ASSERT(block.timestamp.sec_since_epoch() <= max_accept_time);
     }
 
-    bool plugin::plugin_impl::accept_block(const protocol::signed_block &block, bool currently_syncing, uint32_t skip) {
-        if (currently_syncing) {
+    bool plugin::plugin_impl::accept_block(const protocol::signed_block &block, bool currently_syncing_flag, uint32_t skip) {
+        currently_syncing.store(currently_syncing_flag, std::memory_order_relaxed);
+        if (currently_syncing_flag) {
             if (!sync_start_logged) {
                 ilog("\033[92m>>> Syncing Blockchain started from block #${n} (head: ${head})\033[0m",
                      ("n", block.block_num())("head", db.head_block_num()));
@@ -238,6 +242,10 @@ namespace chain {
 
     const graphene::chain::database &plugin::db() const {
         return my->db;
+    }
+
+    bool plugin::is_syncing() const {
+        return my->currently_syncing.load(std::memory_order_relaxed);
     }
 
     void plugin::set_program_options(boost::program_options::options_description &cli,

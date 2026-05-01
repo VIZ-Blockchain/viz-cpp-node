@@ -3,6 +3,7 @@
 #include <graphene/plugins/snapshot/snapshot_serializer.hpp>
 #include <graphene/plugins/witness/witness.hpp>
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
+#include <graphene/plugins/chain/plugin.hpp>
 
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/global_property_object.hpp>
@@ -1520,10 +1521,19 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     // Update last block received time for stalled sync detection
     last_block_received_time = fc::time_point::now();
 
-    // Skip snapshot creation while syncing from P2P (block time far behind wall clock).
-    // Only create snapshots when the node is caught up and processing live blocks.
-    auto block_age = fc::time_point::now() - fc::time_point(b.timestamp);
-    bool is_syncing = block_age > fc::seconds(60);
+    // Skip snapshot creation while the node is still catching up via P2P sync.
+    // The old heuristic (block_age > 60s) was unreliable: when catching up recent
+    // blocks the age is < 60s, so snapshots would fire during sync, causing
+    // read-lock timeouts that stall sync entirely.
+    bool is_syncing = false;
+    try {
+        auto& chain_plug = appbase::app().get_plugin<graphene::plugins::chain::plugin>();
+        is_syncing = chain_plug.is_syncing();
+    } catch (...) {
+        // Fallback: if chain plugin not available, use block age heuristic
+        auto block_age = fc::time_point::now() - fc::time_point(b.timestamp);
+        is_syncing = block_age > fc::seconds(60);
+    }
 
     // Helper lambda: check if local witness is scheduled to produce soon
     auto is_witness_producing_soon = [&]() -> bool {

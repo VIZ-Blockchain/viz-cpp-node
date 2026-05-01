@@ -90,6 +90,12 @@ namespace graphene {
 
                 const graphene::chain::database &db() const;
 
+                /// Returns true when the node is processing P2P sync blocks
+                /// (i.e. catching up to the network head).  Plugins that perform
+                /// heavy background work (e.g. periodic snapshots) should defer
+                /// until this returns false.
+                bool is_syncing() const;
+
                 // Emitted when the blockchain is syncing/live.
                 // This is to synchronize plugins that have the chain plugin as an optional dependency.
                 boost::signals2::signal<void()> on_sync;
