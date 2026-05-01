@@ -427,6 +427,69 @@ The stale sync detector acts as a **last-resort safety net**. It complements:
 - **Minority fork detection** (witness plugin) — triggers faster (after 21 own-witness blocks), but only if the node is actively producing. Stale sync covers the case where the node is NOT a witness or production is already disabled.
 - **Low-peer seed reconnection** (witness plugin) — triggers per-block when <2 peers, but only while producing. Stale sync covers periods when production is halted.
 - **Connection loop backoff** (node.cpp) — handles normal reconnection with exponential backoff. Stale sync overrides this by calling `resync()` which does a full peer state reset + `add_node()` on seeds.
+- **Snapshot stalled sync detection** (snapshot plugin) — a separate, heavier mechanism described below.
+
+---
+
+## Snapshot Stalled Sync Detection
+
+A separate stalled sync detector lives in the **snapshot plugin** (`plugins/snapshot/plugin.cpp`). Unlike the P2P-level detector (which resets sync and reconnects seeds), this one downloads a **newer snapshot** from trusted peers — a much heavier recovery action designed for DLT mode nodes that are hopelessly behind.
+
+### Configuration
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enable-stalled-sync-detection` | `false` | Enable/disable snapshot-level stall detection |
+| `stalled-sync-timeout-minutes` | `5` | Minutes without any block before triggering snapshot re-download |
+| `trusted-snapshot-peer` | (none) | Trusted peer endpoints for snapshot download (can specify multiple) |
+
+Requires `trusted-snapshot-peer` to be configured — without trusted peers, the detection won't start even if enabled.
+
+### How It Works
+
+A background thread runs `check_stalled_sync_loop()` (plugin.cpp L1682), checking every **30 seconds**:
+
+1. Computes `elapsed = now - last_block_received_time`
+2. If `elapsed > stalled_sync_timeout_minutes` (default 5 min), uses a two-stage escalation:
+
+```
+Stalled sync detected!
+  │
+  ├── First trigger (P2P recovery):
+  │     ├── p2p_plugin->reconnect_seeds()   ← reset peer flags + reconnect seeds
+  │     ├── Set _p2p_recovery_attempted = true
+  │     └── Delay timer by 1 minute (give P2P recovery time to work)
+  │
+  └── Second trigger (snapshot download):
+        ├── 1. Query trusted peers for a newer snapshot
+        │       download_snapshot_from_peers()
+        │
+        ├── 2a. Newer snapshot found:
+        │     ├── load_snapshot()                   ← replace chain state
+        │     ├── set_dlt_mode(true)
+        │     ├── initialize_hardforks()
+        │     ├── Replay dlt_block_log              ← apply local blocks beyond snapshot
+        │     ├── p2p_plugin->trigger_resync()      ← resync + reconnect seeds
+        │     └── Reset timer + guard, restart loop
+        │
+        └── 2b. No newer snapshot available:
+              └── Reset timer, continue with P2P sync
+```
+
+The `_p2p_recovery_attempted` guard resets to `false` whenever a block is received (`on_applied_block`), so each new stall starts fresh with P2P recovery.
+
+### Difference from P2P Stale Sync Detection
+
+| | P2P Stale Sync (p2p_plugin) | Snapshot Stalled Sync (snapshot plugin) |
+|---|---|---|
+| **Default** | Enabled (`true`) | Disabled (`false`) |
+| **Timeout** | 120 seconds (2 min) | 5 minutes |
+| **Recovery action** | Reset sync to LIB + reconnect seeds | Download entire snapshot from trusted peer |
+| **Requires** | Nothing (works with any peers) | `trusted-snapshot-peer` configured |
+| **Severity** | Lightweight (P2P-level reset) | Heavy (full chain state replacement) |
+| **Use case** | Temporary network issues, soft-bans | Node hopelessly behind, DLT mode bootstrap |
+
+The P2P detector fires first (2 min) and attempts a soft recovery. If that doesn't work and blocks still don't arrive, the snapshot detector fires later (5 min) and does a hard recovery by re-downloading state.
 
 ---
 

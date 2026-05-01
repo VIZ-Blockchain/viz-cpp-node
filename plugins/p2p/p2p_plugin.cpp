@@ -1417,6 +1417,11 @@ namespace graphene {
                         wlog("trigger_resync: no P2P node or head is 0, skipping");
                     }
 
+                    // Reconnect seed nodes to ensure we have peers to sync from.
+                    // Without this, if all peers disconnected during the stall,
+                    // resync() resets flags on zero peers and nothing happens.
+                    reconnect_seeds();
+
                     // Reset stale sync timer so the P2P stale-sync detector
                     // doesn't immediately fire after snapshot reload
                     my->_last_block_received_time = fc::time_point::now();

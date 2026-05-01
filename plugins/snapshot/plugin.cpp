@@ -793,6 +793,7 @@ public:
     std::unique_ptr<fc::thread> stalled_sync_thread;  // dedicated thread (main thread can't run fc fibers)
     fc::future<void> stalled_sync_check_future;
     std::atomic<bool> stalled_sync_check_running{false};
+    bool _p2p_recovery_attempted = false;  // guard: try P2P recovery before snapshot download
 
     void create_snapshot(const fc::path& output_path);
     void load_snapshot(const fc::path& input_path);
@@ -1520,6 +1521,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
 
     // Update last block received time for stalled sync detection
     last_block_received_time = fc::time_point::now();
+    _p2p_recovery_attempted = false;  // reset escalation guard on successful block
 
     // Skip snapshot creation while the node is still catching up via P2P sync.
     // The old heuristic (block_age > 60s) was unreliable: when catching up recent
@@ -1695,13 +1697,43 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
             if (elapsed > timeout) {
                 uint32_t head_block = db.head_block_num();
 
-                std::cerr << "   WARNING: No blocks received for " << (elapsed.count() / 1000000 / 60)
-                          << " minutes (head: " << head_block << "). Checking for newer snapshot...\n";
-                wlog("Stalled sync detected: no blocks for ${e} min, head=${h}",
-                     ("e", elapsed.count() / 1000000 / 60)("h", head_block));
+                // Escalation: try lightweight P2P recovery first before heavy snapshot download.
+                // First trigger  → reconnect seeds + reset peer flags, delay 1 minute.
+                // Second trigger → proceed with snapshot download.
+                if (!_p2p_recovery_attempted) {
+                    std::cerr << "   WARNING: No blocks received for " << (elapsed.count() / 1000000 / 60)
+                              << " minutes (head: " << head_block << "). Trying P2P recovery first...\n";
+                    wlog("Stalled sync detected: no blocks for ${e} min, head=${h}. "
+                         "Attempting P2P recovery before snapshot download.",
+                         ("e", elapsed.count() / 1000000 / 60)("h", head_block));
 
-                // Try to download a newer snapshot
-                try {
+                    try {
+                        auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+                        if (p2p_plug != nullptr && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                            p2p_plug->reconnect_seeds();
+                            ilog("P2P recovery: peer flags reset + seeds reconnected. "
+                                 "Waiting 1 minute before attempting snapshot download.");
+                        } else {
+                            wlog("P2P plugin not available, skipping P2P recovery");
+                        }
+                    } catch (const fc::exception& e) {
+                        wlog("P2P recovery failed: ${e}", ("e", e.to_detail_string()));
+                    }
+
+                    _p2p_recovery_attempted = true;
+                    // Give P2P recovery 1 minute to work before next check
+                    last_block_received_time = fc::time_point::now() - timeout + fc::minutes(1);
+                } else {
+                    // P2P recovery already attempted and didn't help — proceed with snapshot
+                    _p2p_recovery_attempted = false;  // reset guard for next cycle
+
+                    std::cerr << "   WARNING: No blocks received for " << (elapsed.count() / 1000000 / 60)
+                              << " minutes (head: " << head_block << "). P2P recovery didn't help. Checking for newer snapshot...\n";
+                    wlog("Stalled sync detected: no blocks for ${e} min, head=${h}. "
+                         "P2P recovery didn't help, proceeding with snapshot download.",
+                         ("e", elapsed.count() / 1000000 / 60)("h", head_block));
+                    // Try to download a newer snapshot
+                    try {
                     std::cerr << "   Querying trusted peers for newer snapshot...\n";
                     auto snapshot_path = download_snapshot_from_peers();
 
@@ -1780,6 +1812,7 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                     stalled_sync_check_running.store(true);
                     last_block_received_time = fc::time_point::now();
                 }
+                } // else (P2P recovery already attempted)
             }
         } catch (const fc::canceled_exception&) {
             break;
