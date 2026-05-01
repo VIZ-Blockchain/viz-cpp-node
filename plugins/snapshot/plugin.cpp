@@ -866,7 +866,40 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(block_post_validation_index, block_post_validation_object, "block_post_validation")
 
     // IMPORTANT objects
-    EXPORT_INDEX(transaction_index, transaction_object, "transaction")
+    // Export only confirmed (block-applied) transactions, excluding any
+    // pending mempool transactions.  Snapshot creation runs asynchronously
+    // on a background thread, AFTER without_pending_transactions has
+    // re-applied pending transactions.  If we export them, the importing
+    // node's transaction_index will contain unconfirmed transaction IDs.
+    // When the next block arrives via P2P (applied without
+    // skip_transaction_dupe_check), any transaction that was pending at
+    // snapshot time and is included in that block will trigger
+    // "Duplicate transaction check failed".
+    //
+    // The witness node needs this index to avoid producing blocks with
+    // duplicate transactions, so we must export confirmed entries.
+    {
+        fc::flat_set<transaction_id_type> pending_ids;
+        for (const auto& ptx : db._pending_tx) {
+            pending_ids.insert(ptx.id());
+        }
+
+        fc::variants arr;
+        const auto& idx = db.get_index<transaction_index>().indices();
+        for (auto itr = idx.begin(); itr != idx.end(); ++itr) {
+            if (pending_ids.find(itr->trx_id) != pending_ids.end()) {
+                continue;  // skip pending mempool transaction
+            }
+            fc::variant v;
+            fc::to_variant(*itr, v);
+            arr.push_back(std::move(v));
+        }
+        state["transaction"] = std::move(arr);
+
+        auto exported = state["transaction"].get_array().size();
+        ilog(CLOG_GREEN "Exported ${n} transaction objects (skipped ${p} pending)" CLOG_RESET,
+             ("n", exported)("p", pending_ids.size()));
+    }
     EXPORT_INDEX(vesting_delegation_index, vesting_delegation_object, "vesting_delegation")
     EXPORT_INDEX(vesting_delegation_expiration_index, vesting_delegation_expiration_object, "vesting_delegation_expiration")
     EXPORT_INDEX(fix_vesting_delegation_index, fix_vesting_delegation_object, "fix_vesting_delegation")
