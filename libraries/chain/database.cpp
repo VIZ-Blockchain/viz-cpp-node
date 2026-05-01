@@ -512,6 +512,22 @@ namespace graphene { namespace chain {
                     wlog("DLT replay: requested from_block ${from} is before dlt_block_log start ${start}, adjusting",
                          ("from", from_block_num)("start", dlt_start));
                     from_block_num = dlt_start;
+
+                    // Verify the first DLT block actually chains from our current head.
+                    // If there is a gap (snapshot head < dlt_start - 1), the first DLT
+                    // block's "previous" hash won't match head_block_id() and apply_block
+                    // would throw.  Detect this early and bail out gracefully.
+                    auto first_block = _dlt_block_log.read_block_by_num(dlt_start);
+                    if (first_block && first_block->previous != head_block_id()) {
+                        wlog("DLT replay: first available block ${n} does not link to current head "
+                             "(head_id=${hid}, block.previous=${prev}). "
+                             "Gap of ${gap} blocks cannot be filled from dlt_block_log, skipping replay.",
+                             ("n", dlt_start)
+                             ("hid", head_block_id())
+                             ("prev", first_block->previous)
+                             ("gap", dlt_start - head_block_num() - 1));
+                        return;
+                    }
                 }
 
                 if (from_block_num > dlt_last) {
