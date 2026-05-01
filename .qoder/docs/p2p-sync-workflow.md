@@ -265,9 +265,14 @@ In `witness_plugin::impl::maybe_produce_block()` (witness.cpp), if the last 21 b
 7. Block production resumes
 ```
 
-### Full Peer State Reset in `resync()`
+### Full Peer State Reset
 
-The `node_impl::resync()` function (node.cpp) performs a comprehensive reset of ALL per-peer blocking state before restarting synchronization:
+The peer state reset logic lives in `node_impl::reset_active_peer_states()` (node.cpp) and is shared by two callers:
+
+1. **`resync()`** — called during minority fork recovery via `resync_from_lib()`. Resets all peer state, clears `_active_sync_requests`, then calls `start_synchronizing()`.
+2. **`reconnect_seeds()`** — called by the witness plugin when producing a block with <2 peers. Resets all peer state, then force-reconnects seed nodes.
+
+The reset clears:
 
 ```
 For each active peer:
@@ -280,11 +285,46 @@ For each active peer:
   - Clear: ids_of_items_to_get, ids_of_items_being_processed,
            sync_items_requested_from_peer
   - Reset: last_block_delegate_has_seen
-
-Also clears global _active_sync_requests.
 ```
 
-This ensures no stale soft-bans, strike counters, or "already synced" markers prevent the node from re-syncing with available peers after rolling back to LIB.
+This ensures no stale soft-bans, strike counters, or "already synced" markers prevent the node from re-syncing with available peers.
+
+---
+
+## Connection Retry & Seed Reconnection
+
+### Connection Loop
+
+`p2p_network_connect_loop()` (node.cpp) runs continuously, every **10 seconds**. It:
+
+1. Processes `_add_once_node_list` — priority peers (seeds added via `add_node()`) that bypass connection limits
+2. Checks `is_wanting_new_connections()` — true if `active_connections < desired_connections` (default 20)
+3. Iterates `_potential_peer_db` with exponential backoff: `(failed_attempts + 1) * 30s`
+4. Skips peers in disconnect cooldown (30 seconds after disconnect)
+
+### Backoff Cap
+
+`number_of_failed_connection_attempts` is capped at `GRAPHENE_NET_MAX_FAILED_CONNECTION_ATTEMPTS` (5) in `config.hpp`. This limits the maximum retry delay to `(5+1) * 30 = 180 seconds = 3 minutes`.
+
+When a peer reaches the maximum failure count and still fails to connect, an info-level log is emitted:
+```
+P2P seed node <ip:port> not responding (5 consecutive failures), check config and remove if not needed
+```
+
+### Low-Peer Seed Reconnection
+
+The witness plugin checks the connection count after each successfully produced block. If fewer than 2 peers are connected:
+
+```
+1. Witness produces block, broadcasts it
+2. Check: get_connections_count() < 2?
+3. YES → p2p_plugin::reconnect_seeds()
+   ├── node->reset_active_peer_states()  (clear all blocking state)
+   └── For each seed: add_node() + connect_to_endpoint()
+       (bypasses exponential backoff via timer reset)
+```
+
+`add_node()` resets the `last_connection_attempt_time` to allow immediate retry, and adds the peer to `_add_once_node_list` for priority processing in the next connect loop iteration. This means the node retries seeds every block interval (~3 seconds) when isolated, rather than waiting for backoff.
 
 ---
 
@@ -334,3 +374,69 @@ In DLT mode (node loaded from snapshot), several sync behaviors are adjusted:
 2. **Synopsis matching** tolerates gaps between the anchor block and continuation blocks (a DLT node may not have all historical blocks).
 3. **Peer ahead detection**: If all peer synopsis entries are above our head, return empty (peer is ahead, not on a fork).
 4. **Broadcast inventory** is suppressed when head block is >30 seconds behind real time, even if no peer has `we_need_sync_items_from_peer = true`.
+
+---
+
+## Stale Sync Detection
+
+A background safety mechanism that detects when the node has stopped receiving blocks from the network and automatically triggers recovery.
+
+### Configuration
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `p2p-stale-sync-detection` | `false` | Enable/disable the feature |
+| `p2p-stale-sync-timeout-seconds` | `120` | Seconds without any block before triggering recovery |
+
+### How It Works
+
+A scheduled task runs every **30 seconds** (`stale_sync_check_task()` in p2p_plugin.cpp L935):
+
+1. Computes `elapsed = now - _last_block_received_time`
+2. If `elapsed > timeout` (default 120s = 2 minutes):
+
+```
+Stale sync detected!
+  │
+  ├── 1. Get LIB number from database
+  ├── 2. node->sync_from(LIB block ID)     ← reset sync start point
+  ├── 3. node->resync()                    ← full peer state reset + start_synchronizing()
+  ├── 4. For each seed node:
+  │       add_node() + connect_to_endpoint()  ← force reconnect
+  └── 5. Reset _last_block_received_time    ← prevent immediate retry
+```
+
+3. Reschedules itself for another check in 30 seconds
+
+### Timer Reset Points
+
+The `_last_block_received_time` is reset to `now` in these situations:
+
+| Location | When |
+|----------|------|
+| `handle_block()` (L148) | Every time a block is received from any peer |
+| `stale_sync_check_task()` (L984) | After recovery triggers (prevents immediate re-trigger) |
+| `resync_from_lib()` (L1361) | After minority fork recovery |
+| `trigger_resync()` (L1422) | After snapshot hot-reload |
+| Plugin startup (L1236) | Initial value when node starts |
+
+### Interaction with Other Recovery Mechanisms
+
+The stale sync detector acts as a **last-resort safety net**. It complements:
+
+- **Minority fork detection** (witness plugin) — triggers faster (after 21 own-witness blocks), but only if the node is actively producing. Stale sync covers the case where the node is NOT a witness or production is already disabled.
+- **Low-peer seed reconnection** (witness plugin) — triggers per-block when <2 peers, but only while producing. Stale sync covers periods when production is halted.
+- **Connection loop backoff** (node.cpp) — handles normal reconnection with exponential backoff. Stale sync overrides this by calling `resync()` which does a full peer state reset + `add_node()` on seeds.
+
+---
+
+## Key Configuration Constants
+
+| Constant | File | Default | Description |
+|----------|------|---------|-------------|
+| `GRAPHENE_NET_DEFAULT_PEER_CONNECTION_RETRY_TIME` | `config.hpp` | 30s | Base retry interval per failed attempt |
+| `GRAPHENE_NET_MAX_FAILED_CONNECTION_ATTEMPTS` | `config.hpp` | 5 | Cap on failure counter (max backoff = 180s) |
+| `GRAPHENE_NET_DEFAULT_DESIRED_CONNECTIONS` | `config.hpp` | 20 | Target number of active connections |
+| `GRAPHENE_NET_DEFAULT_MAX_CONNECTIONS` | `config.hpp` | 200 | Maximum allowed connections |
+| `DISCONNECT_RECONNECT_COOLDOWN_SEC` | `node.cpp` | 30s | Per-IP cooldown after disconnect |
+| `GRAPHENE_PEER_DATABASE_RETRY_DELAY` | `config.hpp` | 15s | (unused, replaced by 10s sleep) |
