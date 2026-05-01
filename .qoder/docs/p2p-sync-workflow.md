@@ -385,7 +385,7 @@ A background safety mechanism that detects when the node has stopped receiving b
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `p2p-stale-sync-detection` | `false` | Enable/disable the feature |
+| `p2p-stale-sync-detection` | `true` | Enable/disable the feature |
 | `p2p-stale-sync-timeout-seconds` | `120` | Seconds without any block before triggering recovery |
 
 ### How It Works

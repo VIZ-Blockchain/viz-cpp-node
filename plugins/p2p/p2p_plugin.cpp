@@ -115,7 +115,7 @@ namespace graphene {
                     void p2p_stats_task();
 
                     // Stale sync detection
-                    bool _stale_sync_enabled = false;
+                    bool _stale_sync_enabled = true;
                     uint32_t _stale_sync_timeout_seconds = 120;
                     fc::time_point _last_block_received_time;
                     fc::future<void> _stale_sync_task_done;
@@ -1020,9 +1020,9 @@ namespace graphene {
                         "Enable periodic logging of P2P peer statistics (ip, port, latency, bytes in, blocked status).")
                     ("p2p-stats-interval", boost::program_options::value<uint32_t>()->default_value(300),
                         "Interval in seconds between P2P peer statistics dumps (default: 300 = 5 minutes).")
-                    ("p2p-stale-sync-detection", boost::program_options::value<bool>()->default_value(false),
+                    ("p2p-stale-sync-detection", boost::program_options::value<bool>()->default_value(true),
                         "Enable stale sync detection: when no blocks are received for the configured timeout, "
-                        "reset sync from last irreversible block and reconnect seed peers (default: false).")
+                        "reset sync from last irreversible block and reconnect seed peers (default: true).")
                     ("p2p-stale-sync-timeout-seconds", boost::program_options::value<uint32_t>()->default_value(120),
                         "Timeout in seconds after which stale sync detection triggers recovery action (default: 120 = 2 minutes).");
                 cli.add_options()
