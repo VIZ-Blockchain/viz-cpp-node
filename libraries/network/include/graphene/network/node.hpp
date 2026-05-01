@@ -304,6 +304,14 @@ namespace graphene {
              */
             virtual void resync();
 
+            /**
+             *  Reset all per-peer blocking state (soft-bans, strikes, sync flags)
+             *  on currently connected peers without restarting synchronization.
+             *  Used when force-reconnecting seeds to ensure existing peers
+             *  don't remain blocked by stale state.
+             */
+            void reset_active_peer_states();
+
             void set_total_bandwidth_limit(uint32_t upload_bytes_per_second, uint32_t download_bytes_per_second);
 
             fc::variant_object network_get_info() const;

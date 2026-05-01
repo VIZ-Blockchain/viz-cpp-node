@@ -1367,6 +1367,34 @@ namespace graphene {
                 }
             }
 
+            uint32_t p2p_plugin::get_connections_count() const {
+                if (my->node) {
+                    return my->node->get_connection_count();
+                }
+                return 0;
+            }
+
+            void p2p_plugin::reconnect_seeds() {
+                if (!my->node || my->seeds.empty()) {
+                    return;
+                }
+                ilog("Force-reconnecting ${n} seed nodes (resetting peer states)",
+                     ("n", my->seeds.size()));
+
+                // Reset all blocking state on existing peers first
+                my->node->reset_active_peer_states();
+
+                for (const auto &seed : my->seeds) {
+                    try {
+                        my->node->add_node(seed);
+                        my->node->connect_to_endpoint(seed);
+                    } catch (const fc::exception &e) {
+                        wlog("Failed to reconnect seed ${s}: ${e}",
+                             ("s", seed)("e", e.to_detail_string()));
+                    }
+                }
+            }
+
             void p2p_plugin::trigger_resync() {
                 try {
                     auto& db = my->chain.db();

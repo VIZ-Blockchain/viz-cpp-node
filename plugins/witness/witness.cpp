@@ -805,6 +805,15 @@ namespace graphene {
                         capture("n", block.block_num())("t", block.timestamp)("c", now)("w", scheduled_witness);
                         p2p().broadcast_block(block);
 
+                        // If we produced a block but have few/no peers,
+                        // force-reconnect seeds so the block can propagate
+                        auto peer_count = p2p().get_connections_count();
+                        if (peer_count < 2) {
+                            wlog("Produced block #${n} but only ${p} peer(s) connected — force-reconnecting seeds",
+                                 ("n", block.block_num())("p", peer_count));
+                            p2p().reconnect_seeds();
+                        }
+
                         return block_production_condition::produced;
                     }
                     catch (const graphene::chain::shared_memory_corruption_exception& e) {

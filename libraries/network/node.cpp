@@ -845,6 +845,8 @@ namespace graphene {
 
                 void resync();
 
+                void reset_active_peer_states();
+
                 void set_total_bandwidth_limit(uint32_t upload_bytes_per_second, uint32_t download_bytes_per_second);
 
                 void disable_peer_advertising();
@@ -5075,6 +5077,11 @@ namespace graphene {
                     potential_peer_record updated_peer_record = _potential_peer_db.lookup_or_create_entry_for_endpoint(remote_endpoint);
                     updated_peer_record.last_connection_disposition = last_connection_failed;
                     updated_peer_record.number_of_failed_connection_attempts++;
+                    if (updated_peer_record.number_of_failed_connection_attempts > GRAPHENE_NET_MAX_FAILED_CONNECTION_ATTEMPTS) {
+                        updated_peer_record.number_of_failed_connection_attempts = GRAPHENE_NET_MAX_FAILED_CONNECTION_ATTEMPTS;
+                        ilog("P2P seed node ${ep} not responding (${n} consecutive failures), check config and remove if not needed",
+                             ("ep", remote_endpoint)("n", updated_peer_record.number_of_failed_connection_attempts));
+                    }
                     if (new_peer->connection_closed_error) {
                         updated_peer_record.last_error = *new_peer->connection_closed_error;
                     } else {
@@ -5838,11 +5845,20 @@ namespace graphene {
                 ilog("Resync: restarting synchronization with all ${n} connected peers — full peer state reset",
                      ("n", _active_connections.size()));
 
+                reset_active_peer_states();
+
+                // Also reset any active sync request tracking so stale
+                // in-flight requests don't block new fetches.
+                _active_sync_requests.clear();
+
+                start_synchronizing();
+            }
+
+            void node_impl::reset_active_peer_states() {
+                VERIFY_CORRECT_THREAD();
                 // Full reset of ALL per-peer blocking state.
-                // After minority fork recovery the node rolled back to LIB and
-                // needs a clean slate with every peer: soft-bans, strike
-                // counters, inhibit flags, and "already synced" markers must
-                // all be cleared so that sync can actually proceed.
+                // Clears soft-bans, strike counters, inhibit flags, and
+                // "already synced" markers so that sync can actually proceed.
                 for (const peer_connection_ptr &peer : _active_connections) {
                     peer->fork_rejected_until = fc::time_point();      // lift soft-ban
                     peer->unlinkable_block_strikes = 0;
@@ -5856,15 +5872,9 @@ namespace graphene {
                     peer->sync_items_requested_from_peer.clear();
                     peer->last_block_delegate_has_seen = item_hash_t();
                     peer->last_block_time_delegate_has_seen = _delegate->get_block_time(item_hash_t());
-                    ilog("Resync: reset all sync state for peer ${peer}",
+                    dlog("Reset all sync state for peer ${peer}",
                          ("peer", peer->get_remote_endpoint()));
                 }
-
-                // Also reset any active sync request tracking so stale
-                // in-flight requests don't block new fetches.
-                _active_sync_requests.clear();
-
-                start_synchronizing();
             }
 
             void node_impl::set_total_bandwidth_limit(uint32_t upload_bytes_per_second, uint32_t download_bytes_per_second) {
@@ -6054,6 +6064,10 @@ namespace graphene {
 
         void node::resync() {
             INVOKE_IN_IMPL(resync);
+        }
+
+        void node::reset_active_peer_states() {
+            INVOKE_IN_IMPL(reset_active_peer_states);
         }
 
         void node::set_total_bandwidth_limit(uint32_t upload_bytes_per_second,

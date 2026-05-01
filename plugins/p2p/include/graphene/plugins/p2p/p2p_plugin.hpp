@@ -62,6 +62,18 @@ namespace graphene {
                  */
                 void trigger_resync();
 
+                /**
+                 * Get the number of currently active P2P connections.
+                 */
+                uint32_t get_connections_count() const;
+
+                /**
+                 * Force-reconnect all configured seed nodes.
+                 * Bypasses exponential backoff by resetting connection attempt timers.
+                 * Used when the witness plugin detects it has few/no peers after producing a block.
+                 */
+                void reconnect_seeds();
+
             private:
                 std::unique_ptr<detail::p2p_plugin_impl> my;
             };
