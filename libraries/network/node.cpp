@@ -2816,32 +2816,64 @@ namespace graphene {
                     // It should either be an empty list of blocks, or a list of blocks that builds off of one of
                     // the blocks in the synopsis we sent
                     if (!blockchain_item_ids_inventory_message_received.item_hashes_available.empty()) {
-                        // what's more, it should be a sequential list of blocks, verify that first
+                        // Verify sequentiality.  A DLT peer may include its
+                        // matched synopsis entry as element [0] and then jump
+                        // to its earliest_available_block for element [1]+.
+                        // Elements [1..N] must be sequential relative to
+                        // element [1]; we tolerate a gap between [0] and [1].
                         uint32_t first_block_number_in_reponse = _delegate->get_block_number(blockchain_item_ids_inventory_message_received.item_hashes_available.front());
-                        for (unsigned i = 1; i <
-                                             blockchain_item_ids_inventory_message_received.item_hashes_available.size(); ++i) {
-                            uint32_t actual_num = _delegate->get_block_number(blockchain_item_ids_inventory_message_received.item_hashes_available[i]);
-                            uint32_t expected_num =
-                                    first_block_number_in_reponse + i;
-                            if (actual_num != expected_num) {
-                                wlog("Invalid response from peer ${peer_endpoint}.  The list of blocks they provided is not sequential, "
-                                        "the ${position}th block in their reply was block number ${actual_num}, "
-                                        "but it should have been number ${expected_num}",
+                        if (blockchain_item_ids_inventory_message_received.item_hashes_available.size() >= 2) {
+                            uint32_t second_block_number = _delegate->get_block_number(
+                                    blockchain_item_ids_inventory_message_received.item_hashes_available[1]);
+                            if (second_block_number < first_block_number_in_reponse) {
+                                wlog("Invalid response from peer ${peer_endpoint}.  Second block #${second} "
+                                        "is before first block #${first}",
                                         ("peer_endpoint", originating_peer->get_remote_endpoint())
-                                                ("position", i)
-                                                ("actual_num", actual_num)
-                                                ("expected_num", expected_num));
+                                                ("second", second_block_number)
+                                                ("first", first_block_number_in_reponse));
                                 fc::exception error_for_peer(FC_LOG_MESSAGE(error,
-                                        "You gave an invalid response to my request for sync blocks.  The list of blocks you provided is not sequential, "
-                                                "the ${position}th block in their reply was block number ${actual_num}, "
-                                                "but it should have been number ${expected_num}",
-                                        ("position", i)
-                                                ("actual_num", actual_num)
-                                                ("expected_num", expected_num)));
+                                        "You gave an invalid response to my request for sync blocks.  "
+                                        "Second block #${second} is before first block #${first}",
+                                        ("second", second_block_number)("first", first_block_number_in_reponse)));
                                 disconnect_from_peer(originating_peer,
                                         "You gave an invalid response to my request for sync blocks",
                                         true, error_for_peer);
                                 return;
+                            }
+                            if (second_block_number != first_block_number_in_reponse + 1 &&
+                                second_block_number != first_block_number_in_reponse) {
+                                // Gap between anchor and continuation — likely a DLT peer.
+                                // This is acceptable; log it for diagnostics.
+                                wlog("sync: DLT gap detected in response from ${peer}: "
+                                        "anchor=#${anchor}, continuation=#${cont}",
+                                        ("peer", originating_peer->get_remote_endpoint())
+                                                ("anchor", first_block_number_in_reponse)
+                                                ("cont", second_block_number));
+                            }
+                            for (unsigned i = 2; i <
+                                                 blockchain_item_ids_inventory_message_received.item_hashes_available.size(); ++i) {
+                                uint32_t actual_num = _delegate->get_block_number(blockchain_item_ids_inventory_message_received.item_hashes_available[i]);
+                                uint32_t expected_num = second_block_number + (i - 1);
+                                if (actual_num != expected_num) {
+                                    wlog("Invalid response from peer ${peer_endpoint}.  The list of blocks they provided is not sequential, "
+                                            "the ${position}th block in their reply was block number ${actual_num}, "
+                                            "but it should have been number ${expected_num}",
+                                            ("peer_endpoint", originating_peer->get_remote_endpoint())
+                                                    ("position", i)
+                                                    ("actual_num", actual_num)
+                                                    ("expected_num", expected_num));
+                                    fc::exception error_for_peer(FC_LOG_MESSAGE(error,
+                                            "You gave an invalid response to my request for sync blocks.  The list of blocks you provided is not sequential, "
+                                                    "the ${position}th block in their reply was block number ${actual_num}, "
+                                                    "but it should have been number ${expected_num}",
+                                            ("position", i)
+                                                    ("actual_num", actual_num)
+                                                    ("expected_num", expected_num)));
+                                    disconnect_from_peer(originating_peer,
+                                            "You gave an invalid response to my request for sync blocks",
+                                            true, error_for_peer);
+                                    return;
+                                }
                             }
                         }
 
@@ -2868,19 +2900,42 @@ namespace graphene {
                         {
                             if (boost::range::find(synopsis_sent_in_request, first_item_hash) ==
                                 synopsis_sent_in_request.end()) {
-                                wlog("Invalid response from peer ${peer_endpoint}.  We requested a list of sync blocks based on the synopsis ${synopsis}, but they "
-                                        "provided a list of blocks starting with ${first_block}",
-                                        ("peer_endpoint", originating_peer->get_remote_endpoint())
-                                                ("synopsis", synopsis_sent_in_request)
-                                                ("first_block", first_item_hash));
-                                fc::exception error_for_peer(FC_LOG_MESSAGE(error, "You gave an invalid response for my request for sync blocks.  I asked for blocks following something in "
-                                        "${synopsis}, but you returned a list of blocks starting with ${first_block} which wasn't one of your choices",
-                                        ("synopsis", synopsis_sent_in_request)
-                                                ("first_block", first_item_hash)));
-                                disconnect_from_peer(originating_peer,
-                                        "You gave an invalid response to my request for sync blocks",
-                                        true, error_for_peer);
-                                return;
+                                // First item is not in our synopsis.  A DLT peer may
+                                // have clamped its response forward past our synopsis
+                                // entries because it can only serve recent blocks.
+                                // If the first block number in the response is past
+                                // every synopsis entry, accept it — the peer just
+                                // can't go back that far.
+                                uint32_t max_synopsis_num = 0;
+                                for (const auto& syn_id : synopsis_sent_in_request) {
+                                    uint32_t sn = _delegate->get_block_number(syn_id);
+                                    if (sn > max_synopsis_num) {
+                                        max_synopsis_num = sn;
+                                    }
+                                }
+                                if (first_block_number_in_reponse > max_synopsis_num) {
+                                    wlog("sync: peer ${peer} responded with blocks starting at "
+                                            "#${first_num} which is past our max synopsis entry "
+                                            "#${max_syn} — accepting (likely DLT peer with "
+                                            "limited block range)",
+                                            ("peer", originating_peer->get_remote_endpoint())
+                                                    ("first_num", first_block_number_in_reponse)
+                                                    ("max_syn", max_synopsis_num));
+                                } else {
+                                    wlog("Invalid response from peer ${peer_endpoint}.  We requested a list of sync blocks based on the synopsis ${synopsis}, but they "
+                                            "provided a list of blocks starting with ${first_block}",
+                                            ("peer_endpoint", originating_peer->get_remote_endpoint())
+                                                    ("synopsis", synopsis_sent_in_request)
+                                                    ("first_block", first_item_hash));
+                                    fc::exception error_for_peer(FC_LOG_MESSAGE(error, "You gave an invalid response for my request for sync blocks.  I asked for blocks following something in "
+                                            "${synopsis}, but you returned a list of blocks starting with ${first_block} which wasn't one of your choices",
+                                            ("synopsis", synopsis_sent_in_request)
+                                                    ("first_block", first_item_hash)));
+                                    disconnect_from_peer(originating_peer,
+                                            "You gave an invalid response to my request for sync blocks",
+                                            true, error_for_peer);
+                                    return;
+                                }
                             }
                         }
                     }

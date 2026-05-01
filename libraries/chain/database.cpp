@@ -961,10 +961,25 @@ namespace graphene { namespace chain {
                 if (results.size() == 1) {
                     b = results[0]->data;
                 } else {
-                    b = _block_log.read_block_by_num(block_num);
-                    // DLT rolling block_log fallback
+                    // fork_db by-number index returned 0 or >1 results.
+                    // Walk the main branch from fork_db head — this
+                    // handles the case where set_max_size() pruned the
+                    // by-number index (e.g. when fork_db's _head
+                    // advanced past database head via pushed-but-
+                    // unapplied broadcast blocks) but the block is
+                    // still reachable via the prev-pointer chain.
+                    if (_fork_db.head()) {
+                        auto fitem = _fork_db.walk_main_branch_to_num(block_num);
+                        if (fitem) {
+                            b = fitem->data;
+                        }
+                    }
                     if (!b.valid()) {
-                        b = _dlt_block_log.read_block_by_num(block_num);
+                        b = _block_log.read_block_by_num(block_num);
+                        // DLT rolling block_log fallback
+                        if (!b.valid()) {
+                            b = _dlt_block_log.read_block_by_num(block_num);
+                        }
                     }
                 }
 

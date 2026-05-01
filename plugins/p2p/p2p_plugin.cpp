@@ -343,7 +343,24 @@ namespace graphene {
                             uint32_t effective_head = chain.db().head_block_num();
                             if (chain.db()._dlt_mode) {
                                 uint32_t earliest = chain.db().earliest_available_block_num();
-                                if (start_num < earliest) {
+                                if (start_num < earliest && last_known_block_id != block_id_type()) {
+                                    // The matched synopsis entry is below our earliest
+                                    // available block.  Instead of silently clamping
+                                    // (which would make the first response element a
+                                    // block the requester never asked about, causing
+                                    // it to disconnect us), include the matched
+                                    // synopsis entry as the first (anchor) element.
+                                    // The requester already has this block so it won't
+                                    // try to fetch the data from us.
+                                    dlog(CLOG_GRAY "DLT mode: get_block_ids() synopsis matched #${match} "
+                                         "but earliest available is #${earliest}. Including "
+                                         "synopsis anchor and continuing from #${earliest}, "
+                                         "head=${head}" CLOG_RESET,
+                                         ("match", start_num)("earliest", earliest)
+                                         ("head", chain.db().head_block_num()));
+                                    result.push_back(last_known_block_id);
+                                    start_num = earliest;
+                                } else if (start_num < earliest) {
                                     dlog(CLOG_GRAY "DLT mode: get_block_ids() clamping start from ${old} to ${new} "
                                          "(earliest available block), head=${head}" CLOG_RESET,
                                          ("old", start_num)("new", earliest)("head", chain.db().head_block_num()));
