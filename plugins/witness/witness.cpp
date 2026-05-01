@@ -120,6 +120,12 @@ namespace graphene {
                 // Fork collision resolution state
                 uint32_t fork_collision_defer_count_ = 0;
                 uint32_t _fork_collision_timeout_blocks = 21;  // one full witness round (21 blocks = 63s)
+
+                // Minority fork recovery state: tracks when we rolled back to
+                // LIB and are waiting for P2P sync to catch up before
+                // re-enabling block production.
+                bool _minority_fork_recovering = false;
+                fc::time_point _minority_fork_recovery_start;
             };
 
             void witness_plugin::set_program_options(
@@ -359,10 +365,26 @@ namespace graphene {
                     case block_production_condition::produced:
                         ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w}\033[0m", (capture));
                         fork_collision_defer_count_ = 0;
+                        if (_minority_fork_recovering) {
+                            auto elapsed = fc::time_point::now() - _minority_fork_recovery_start;
+                            ilog("MINORITY FORK RECOVERY COMPLETE: production resumed after ${e}s",
+                                 ("e", elapsed.count() / 1000000));
+                            _minority_fork_recovering = false;
+                        }
                         break;
                     case block_production_condition::not_synced:
-                        // This log-record is commented, because it outputs very often
-                        // ilog("Not producing block because production is disabled until we receive a recent block (see: --enable-stale-production)");
+                        if (_minority_fork_recovering) {
+                            auto elapsed = fc::time_point::now() - _minority_fork_recovery_start;
+                            if (elapsed.count() % 5000000 < 300000) { // log every ~5 seconds
+                                auto &rdb = database();
+                                ilog("MINORITY FORK RECOVERY: waiting for P2P sync (head=#${h}, "
+                                     "slot_time=${st}, now=${now}, elapsed=${e}s)",
+                                     ("h", rdb.head_block_num())
+                                     ("st", rdb.get_slot_time(1))
+                                     ("now", graphene::time::now())
+                                     ("e", elapsed.count() / 1000000));
+                            }
+                        }
                         fork_collision_defer_count_ = 0;
                         break;
                     case block_production_condition::not_my_turn:
@@ -580,6 +602,8 @@ namespace graphene {
                                      ("n", blocks_checked));
                                 p2p().resync_from_lib();
                                 _production_enabled = false;
+                                _minority_fork_recovering = true;
+                                _minority_fork_recovery_start = fc::time_point::now();
                                 return block_production_condition::minority_fork;
                             }
                         }

@@ -5835,8 +5835,35 @@ namespace graphene {
 
             void node_impl::resync() {
                 VERIFY_CORRECT_THREAD();
-                ilog("Resync: restarting synchronization with all ${n} connected peers",
+                ilog("Resync: restarting synchronization with all ${n} connected peers — full peer state reset",
                      ("n", _active_connections.size()));
+
+                // Full reset of ALL per-peer blocking state.
+                // After minority fork recovery the node rolled back to LIB and
+                // needs a clean slate with every peer: soft-bans, strike
+                // counters, inhibit flags, and "already synced" markers must
+                // all be cleared so that sync can actually proceed.
+                for (const peer_connection_ptr &peer : _active_connections) {
+                    peer->fork_rejected_until = fc::time_point();      // lift soft-ban
+                    peer->unlinkable_block_strikes = 0;
+                    peer->sync_spam_strikes = 0;
+                    peer->inhibit_fetching_sync_blocks = false;
+                    peer->peer_needs_sync_items_from_us = true;        // re-evaluate
+                    peer->we_need_sync_items_from_peer = true;
+                    peer->ids_of_items_to_get.clear();
+                    peer->ids_of_items_being_processed.clear();
+                    peer->number_of_unfetched_item_ids = 0;
+                    peer->sync_items_requested_from_peer.clear();
+                    peer->last_block_delegate_has_seen = item_hash_t();
+                    peer->last_block_time_delegate_has_seen = _delegate->get_block_time(item_hash_t());
+                    ilog("Resync: reset all sync state for peer ${peer}",
+                         ("peer", peer->get_remote_endpoint()));
+                }
+
+                // Also reset any active sync request tracking so stale
+                // in-flight requests don't block new fetches.
+                _active_sync_requests.clear();
+
                 start_synchronizing();
             }
 
