@@ -796,6 +796,8 @@ public:
     bool _p2p_recovery_attempted = false;  // guard: try P2P recovery before snapshot download
     uint32_t _last_stalled_check_head = 0;  // track head for emergency follower detection
     std::atomic<bool> _snapshot_reloading{false};  // guard: block on_applied_block during snapshot reload
+    fc::time_point sync_ended_at;  // when is_syncing last transitioned to false
+    std::atomic<bool> cancel_snapshot_requested{false};  // cancellation flag for in-progress snapshot
 
     void create_snapshot(const fc::path& output_path);
     void load_snapshot(const fc::path& input_path);
@@ -843,6 +845,10 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     // Helper macro to export an index
     #define EXPORT_INDEX(index_type, obj_type, name) \
     { \
+        if (cancel_snapshot_requested.load(std::memory_order_relaxed)) { \
+            wlog("Snapshot cancelled during serialization (before ${type})", ("type", name)); \
+            return state; \
+        } \
         fc::variants arr; \
         const auto& idx = db.get_index<index_type>().indices(); \
         for (auto itr = idx.begin(); itr != idx.end(); ++itr) { \
@@ -866,6 +872,11 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(content_index, content_object, "content")
     EXPORT_INDEX(content_vote_index, content_vote_object, "content_vote")
     EXPORT_INDEX(block_post_validation_index, block_post_validation_object, "block_post_validation")
+
+    if (cancel_snapshot_requested.load(std::memory_order_relaxed)) {
+        wlog("Snapshot cancelled during serialization (before transaction)");
+        return state;
+    }
 
     // IMPORTANT objects
     // Export only confirmed (block-applied) transactions, excluding any
@@ -907,6 +918,10 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(fix_vesting_delegation_index, fix_vesting_delegation_object, "fix_vesting_delegation")
     EXPORT_INDEX(withdraw_vesting_route_index, withdraw_vesting_route_object, "withdraw_vesting_route")
     EXPORT_INDEX(escrow_index, escrow_object, "escrow")
+    if (cancel_snapshot_requested.load(std::memory_order_relaxed)) {
+        wlog("Snapshot cancelled during serialization (before proposal)");
+        return state;
+    }
     // proposal_object has bip::flat_set with shared allocators — custom export
     {
         fc::variants arr;
@@ -967,6 +982,7 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
 }
 
 void snapshot_plugin::plugin_impl::create_snapshot(const fc::path& output_path) {
+    cancel_snapshot_requested.store(false, std::memory_order_relaxed);
     ilog(CLOG_GREEN "Creating snapshot at ${path}..." CLOG_RESET, ("path", output_path.string()));
 
     // Phase 1: read database state under a read lock.
@@ -1011,6 +1027,12 @@ void snapshot_plugin::plugin_impl::create_snapshot(const fc::path& output_path) 
 
     auto read_elapsed = double((fc::time_point::now() - read_start).count()) / 1000000.0;
     ilog(CLOG_GREEN "Snapshot DB read completed in ${t} sec, lock released" CLOG_RESET, ("t", read_elapsed));
+
+    // Check if snapshot was cancelled during serialization
+    if (cancel_snapshot_requested.load(std::memory_order_relaxed)) {
+        wlog("Snapshot creation cancelled (serialization was interrupted), skipping file write");
+        return;
+    }
 
     // Phase 2: compression + file I/O — no database lock needed.
     write_snapshot_to_file(output_path, std::move(header), std::move(state));
@@ -1580,6 +1602,15 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         return;
     }
 
+    // Cancel any in-progress snapshot when a new block arrives.
+    // This breaks the serialization loop and releases the read lock quickly,
+    // preventing write-lock starvation for push_block().
+    if (snapshot_in_progress.load(std::memory_order_relaxed)) {
+        cancel_snapshot_requested.store(true, std::memory_order_relaxed);
+        dlog("New block #${n} received while snapshot in progress — requesting cancellation",
+             ("n", b.block_num()));
+    }
+
     // Update last block received time for stalled sync detection
     last_block_received_time = fc::time_point::now();
     _p2p_recovery_attempted = false;  // reset escalation guard on successful block
@@ -1596,6 +1627,23 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         // Fallback: if chain plugin not available, use block age heuristic
         auto block_age = fc::time_point::now() - fc::time_point(b.timestamp);
         is_syncing = block_age > fc::seconds(60);
+    }
+
+    // Track sync-to-normal transition for cooldown.
+    // After sync ends, more sync blocks may still be queued in the P2P pipeline.
+    // Creating a snapshot immediately would hold a read lock for minutes, blocking
+    // those queued blocks from acquiring write locks (cascading lock timeout).
+    if (is_syncing) {
+        sync_ended_at = fc::time_point();  // reset while syncing
+    } else if (sync_ended_at == fc::time_point()) {
+        sync_ended_at = fc::time_point::now();  // mark transition
+    }
+
+    bool too_soon_after_sync = (sync_ended_at != fc::time_point() &&
+        fc::time_point::now() - sync_ended_at < fc::seconds(60));
+    if (too_soon_after_sync) {
+        // Defer all snapshot creation until sync pipeline has fully drained
+        return;
     }
 
     // Helper lambda: check if local witness is scheduled to produce soon
@@ -1790,6 +1838,25 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                 // Escalation: try lightweight P2P recovery first before heavy snapshot download.
                 // First trigger  → reconnect seeds + reset peer flags, delay 1 minute.
                 // Second trigger → proceed with snapshot download.
+                // If a snapshot is currently in progress and holding a read lock,
+                // cancel it first — this is likely the cause of the stall.
+                if (snapshot_in_progress.load(std::memory_order_relaxed)) {
+                    wlog("Stalled sync detected while snapshot in progress — cancelling snapshot to release locks");
+                    cancel_snapshot_requested.store(true, std::memory_order_relaxed);
+                    // Wait briefly for snapshot to finish/cancel and release locks
+                    for (int i = 0; i < 10 && snapshot_in_progress.load(std::memory_order_relaxed); ++i) {
+                        fc::usleep(fc::seconds(1));
+                    }
+                    if (!snapshot_in_progress.load(std::memory_order_relaxed)) {
+                        ilog("Snapshot cancelled successfully, locks should be released");
+                        // Reset timer — give P2P a chance to recover now that locks are free
+                        last_block_received_time = fc::time_point::now();
+                        continue;
+                    } else {
+                        wlog("Snapshot still in progress after 10s wait, proceeding with recovery anyway");
+                    }
+                }
+
                 if (!_p2p_recovery_attempted) {
                     std::cerr << "   WARNING: No blocks received for " << (elapsed.count() / 1000000 / 60)
                               << " minutes (head: " << head_block << "). Trying P2P recovery first...\n";

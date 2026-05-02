@@ -1556,20 +1556,30 @@ namespace graphene {
                     uint32_t head_num = 0;
                     graphene::protocol::block_id_type head_id;
 
-                    db.with_weak_read_lock([&]() {
-                        head_num = db.head_block_num();
-                        head_id = db.head_block_id();
-                    });
-
-                    ilog("trigger_resync: re-initiating P2P sync from head block #${h}", ("h", head_num));
+                    // Use try/catch around the read lock — during lock contention
+                    // (e.g. snapshot serialization holding a read lock + pending
+                    // write locks blocking new reads), this may fail.  Fall back
+                    // to just reconnecting seeds, which is the most important
+                    // recovery action.
+                    try {
+                        db.with_weak_read_lock([&]() {
+                            head_num = db.head_block_num();
+                            head_id = db.head_block_id();
+                        });
+                    } catch (const std::exception& e) {
+                        wlog("trigger_resync: could not read head block (lock contention?): ${e}. "
+                             "Will still reconnect seeds.",
+                             ("e", std::string(e.what())));
+                    }
 
                     if (my->node && head_num > 0) {
+                        ilog("trigger_resync: re-initiating P2P sync from head block #${h}", ("h", head_num));
                         my->node->sync_from(graphene::network::item_id(graphene::network::block_message_type, head_id),
                                             std::vector<uint32_t>());
                         my->node->resync();
                         ilog("trigger_resync: P2P sync re-initiated from head #${h}", ("h", head_num));
                     } else {
-                        wlog("trigger_resync: no P2P node or head is 0, skipping");
+                        wlog("trigger_resync: head is 0 or no P2P node — skipping sync_from, will still reconnect seeds");
                     }
 
                     // Reconnect seed nodes to ensure we have peers to sync from.
