@@ -3384,18 +3384,51 @@ namespace graphene {
                 // we_need_sync_items_from_peer=false for all peers (if peers replied
                 // "up to date" before new blocks arrived). During this window, broadcast
                 // inventory would still cause timeouts. Suppress if head block is >30s old.
+                //
+                // However, if no sync is in progress and a peer advertises blocks,
+                // we must proactively trigger sync with that peer.  Otherwise a
+                // deadlock occurs: the inventory gate suppresses all block
+                // advertisements → head never advances → gate stays active forever
+                // → the node is permanently stuck despite being connected to peers
+                // that have the blocks it needs.  Keepalives keep the connection
+                // alive, so no disconnect/reconnect ever happens.
                 {
                     fc::time_point_sec head_time = _delegate->get_block_time(_delegate->get_head_block_id());
                     fc::time_point_sec now = fc::time_point::now();
                     if (head_time != fc::time_point_sec::min() &&
                         now > head_time &&
                         (now.sec_since_epoch() - head_time.sec_since_epoch()) > 30) {
-                        dlog("Skipping broadcast inventory of ${count} items from peer ${peer} — "
-                             "node is behind (head_time=${head}, now=${now}, delta=${delta}s)",
-                             ("count", item_ids_inventory_message_received.item_hashes_available.size())
-                             ("peer", originating_peer->get_remote_endpoint())
-                             ("head", head_time)("now", now)
-                             ("delta", now.sec_since_epoch() - head_time.sec_since_epoch()));
+                        // Check if any sync is already in progress
+                        bool sync_in_progress = false;
+                        for (const peer_connection_ptr &peer : _active_connections) {
+                            if (peer->we_need_sync_items_from_peer) {
+                                sync_in_progress = true;
+                                break;
+                            }
+                        }
+                        // If no sync is running and the peer is advertising blocks,
+                        // trigger sync to break out of the inventory gate deadlock.
+                        // Once sync starts, the global sync check above (L3368)
+                        // suppresses further inventory from other peers, preventing
+                        // redundant sync restarts.
+                        if (!sync_in_progress &&
+                            item_ids_inventory_message_received.item_type == core_message_type_enum::block_message_type &&
+                            !item_ids_inventory_message_received.item_hashes_available.empty() &&
+                            !originating_peer->we_need_sync_items_from_peer) {
+                            wlog("Head is ${delta}s behind real time but no sync in progress — "
+                                 "triggering sync with peer ${peer} who advertised ${count} block(s)",
+                                 ("delta", now.sec_since_epoch() - head_time.sec_since_epoch())
+                                 ("peer", originating_peer->get_remote_endpoint())
+                                 ("count", item_ids_inventory_message_received.item_hashes_available.size()));
+                            start_synchronizing_with_peer(originating_peer->shared_from_this());
+                        } else {
+                            dlog("Skipping broadcast inventory of ${count} items from peer ${peer} — "
+                                 "node is behind (head_time=${head}, now=${now}, delta=${delta}s)",
+                                 ("count", item_ids_inventory_message_received.item_hashes_available.size())
+                                 ("peer", originating_peer->get_remote_endpoint())
+                                 ("head", head_time)("now", now)
+                                 ("delta", now.sec_since_epoch() - head_time.sec_since_epoch()));
+                        }
                         return;
                     }
                 }
