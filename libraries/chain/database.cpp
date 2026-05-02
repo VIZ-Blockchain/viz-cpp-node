@@ -1474,6 +1474,29 @@ namespace graphene { namespace chain {
 
 
                 if (!(skip & skip_fork_db)) {
+                    // Ensure fork_db contains the current database head block
+                    // so the new block can link to it.  After snapshot import,
+                    // stale sync recovery, or fork_db trimming, the head block
+                    // may be absent from fork_db.  Without this seed, any block
+                    // whose previous == head_block_id() would throw
+                    // unlinkable_block_exception inside fork_db::_push_block()
+                    // ("block does not link to known chain"), silently rejecting
+                    // valid next-blocks and preventing head advancement.
+                    // This also fixes witness nodes that generate their own
+                    // blocks: generate_block() sets pending_block.previous =
+                    // head_block_id(), and without the seed the self-generated
+                    // block would fail to push into fork_db.
+                    if (new_block.previous == head_block_id() &&
+                        !_fork_db.is_known_block(head_block_id())) {
+                        auto head_blk = fetch_block_by_id(head_block_id());
+                        if (head_blk) {
+                            wlog("Seeding fork_db with current database head #${h} "
+                                 "(was missing, required for block linkage)",
+                                 ("h", head_block_num()));
+                            _fork_db.start_block(*head_blk);
+                        }
+                    }
+
                     shared_ptr<fork_item> new_head;
                     try {
                         new_head = _fork_db.push_block(new_block);
