@@ -1496,8 +1496,16 @@ namespace graphene { namespace chain {
                         throw;
                     }
                     _maybe_warn_multiple_production(new_head->num);
-                    //If the head block from the longest chain does not build off of the current head, we need to switch forks.
-                    if (new_head->data.previous != head_block_id()) {
+
+                    // If the block we just pushed directly extends our database head,
+                    // it is a simple linear extension regardless of what fork_db thinks
+                    // is the longest chain. This handles the case where fork_db's _head
+                    // points to a stale higher block from previous sync cycles (stale
+                    // sync recovery does not reset fork_db), but the block we're pushing
+                    // is the correct next block after our actual chain head.
+                    if (new_block.previous == head_block_id()) {
+                        // Fall through to apply_block below
+                    } else if (new_head->data.previous != head_block_id()) {
                         //If the newly pushed block is the same height as head, we get head back in new_head
                         //Only switch forks if new_head is actually higher than head
                         bool should_switch = false;
