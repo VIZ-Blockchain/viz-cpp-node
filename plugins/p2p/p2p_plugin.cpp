@@ -971,9 +971,12 @@ namespace graphene {
                             // connect_to_endpoint initiates connection if not already connected)
                             for (const auto &seed : seeds) {
                                 try {
-                                    ilog("Reconnecting seed node ${s}", ("s", seed));
-                                    node->add_node(seed);
+                                    node->add_node(seed);  // reset retry timer
                                     node->connect_to_endpoint(seed);
+                                    ilog("Initiated connection to seed node ${s}", ("s", seed));
+                                } catch (const graphene::network::already_connected_to_requested_peer&) {
+                                    // Already connected — resync() already re-initiated sync with this peer
+                                    ilog("Seed node ${s} already connected, sync already re-initiated", ("s", seed));
                                 } catch (const fc::exception &e) {
                                     wlog("Failed to reconnect seed node ${s}: ${e}",
                                          ("s", seed)("e", e.to_detail_string()));
@@ -1388,6 +1391,9 @@ namespace graphene {
                     try {
                         my->node->add_node(seed);
                         my->node->connect_to_endpoint(seed);
+                    } catch (const graphene::network::already_connected_to_requested_peer&) {
+                        // Already connected — peer state was already reset above
+                        ilog("Seed node ${s} already connected (state already reset)", ("s", seed));
                     } catch (const fc::exception &e) {
                         wlog("Failed to reconnect seed ${s}: ${e}",
                              ("s", seed)("e", e.to_detail_string()));
