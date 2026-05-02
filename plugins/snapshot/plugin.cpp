@@ -794,6 +794,7 @@ public:
     fc::future<void> stalled_sync_check_future;
     std::atomic<bool> stalled_sync_check_running{false};
     bool _p2p_recovery_attempted = false;  // guard: try P2P recovery before snapshot download
+    std::atomic<bool> _snapshot_reloading{false};  // guard: block on_applied_block during snapshot reload
 
     void create_snapshot(const fc::path& output_path);
     void load_snapshot(const fc::path& input_path);
@@ -1174,8 +1175,26 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
               << (json_content.size() / 1048576) << " MB (" << decompress_elapsed << " sec)\n";
 
     // Parse JSON
-    std::cerr << "   Parsing JSON...\n";
-    fc::variant snapshot_var = fc::json::from_string(json_content);
+    std::cerr << "   Parsing JSON (" << (json_content.size() / 1048576) << " MB)...\n";
+    ilog(CLOG_ORANGE "Parsing JSON (${size} bytes)..." CLOG_RESET, ("size", json_content.size()));
+    auto json_parse_start = fc::time_point::now();
+    fc::variant snapshot_var;
+    try {
+        snapshot_var = fc::json::from_string(json_content);
+    } catch (const fc::exception& e) {
+        auto json_parse_elapsed = double((fc::time_point::now() - json_parse_start).count()) / 1000000.0;
+        elog("JSON parsing failed after ${t} sec: ${e}", ("t", json_parse_elapsed)("e", e.to_detail_string()));
+        std::cerr << "   ERROR: JSON parsing failed after " << json_parse_elapsed << " sec: " << e.what() << "\n";
+        throw;
+    } catch (const std::exception& e) {
+        auto json_parse_elapsed = double((fc::time_point::now() - json_parse_start).count()) / 1000000.0;
+        elog("JSON parsing failed after ${t} sec (std): ${e}", ("t", json_parse_elapsed)("e", e.what()));
+        std::cerr << "   ERROR: JSON parsing failed after " << json_parse_elapsed << " sec: " << e.what() << "\n";
+        throw;
+    }
+    auto json_parse_elapsed = double((fc::time_point::now() - json_parse_start).count()) / 1000000.0;
+    ilog(CLOG_ORANGE "JSON parsed successfully in ${t} sec" CLOG_RESET, ("t", json_parse_elapsed));
+    std::cerr << "   JSON parsed in " << json_parse_elapsed << " sec\n";
     FC_ASSERT(snapshot_var.is_object(), "Snapshot file is not a valid JSON object");
 
     // Free decompressed JSON immediately after parsing to reduce peak memory.
@@ -1552,6 +1571,14 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
 void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::signed_block& b) {
     uint32_t block_num = b.block_num();
 
+    // Skip all processing while a snapshot reload is in progress.
+    // During hot-reload, the database is being cleared and re-imported;
+    // any attempt to access objects or schedule snapshots will cause
+    // exceptions or inconsistent state.
+    if (_snapshot_reloading.load(std::memory_order_acquire)) {
+        return;
+    }
+
     // Update last block received time for stalled sync detection
     last_block_received_time = fc::time_point::now();
     _p2p_recovery_attempted = false;  // reset escalation guard on successful block
@@ -1766,6 +1793,10 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                          "P2P recovery didn't help, proceeding with snapshot download.",
                          ("e", elapsed.count() / 1000000 / 60)("h", head_block));
                     // Try to download a newer snapshot
+                    graphene::plugins::p2p::p2p_plugin* p2p_plug = nullptr;
+                    try {
+                        p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+                    } catch (...) {}
                     try {
                     std::cerr << "   Querying trusted peers for newer snapshot...\n";
                     auto snapshot_path = download_snapshot_from_peers();
@@ -1776,6 +1807,20 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
 
                         // Stop the check temporarily during reload
                         stalled_sync_check_running.store(false);
+
+                        // Pause P2P block processing to prevent concurrent database
+                        // modifications during snapshot reload.  Without this, blocks
+                        // arriving while load_snapshot() parses JSON and clears the DB
+                        // cause "Caught unexpected exception in plugin", peer
+                        // disconnections, socket corruption, and 100% CPU hang.
+                        _snapshot_reloading.store(true, std::memory_order_release);
+                        try {
+                            if (p2p_plug != nullptr && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                                p2p_plug->pause_block_processing();
+                            }
+                        } catch (...) {
+                            wlog("Failed to pause block processing before snapshot reload");
+                        }
 
                         load_snapshot(fc::path(snapshot_path));
                         db.set_dlt_mode(true);
@@ -1811,8 +1856,8 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                         // state from before the snapshot reload and will
                         // never request new blocks from peers.
                         try {
-                            auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
                             if (p2p_plug != nullptr && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                                p2p_plug->resume_block_processing();
                                 p2p_plug->trigger_resync();
                                 ilog(CLOG_YELLOW "P2P resync triggered after snapshot reload" CLOG_RESET);
                             } else {
@@ -1823,6 +1868,7 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                         } catch (...) {
                             elog("Failed to trigger P2P resync after snapshot reload: unknown exception");
                         }
+                        _snapshot_reloading.store(false, std::memory_order_release);
 
                         // Restart the check
                         stalled_sync_check_running.store(true);
@@ -1833,15 +1879,28 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                         last_block_received_time = fc::time_point::now();
                     }
                 } catch (const fc::exception& e) {
-                    std::cerr << "   Failed to download newer snapshot: " << e.what() << "\n";
-                    elog("Failed to download newer snapshot: ${e}", ("e", e.to_detail_string()));
+                    std::cerr << "   Failed to reload snapshot: " << e.what() << "\n";
+                    elog("Failed to reload snapshot: ${e}", ("e", e.to_detail_string()));
+                    // Resume P2P and clear reloading flag on failure
+                    _snapshot_reloading.store(false, std::memory_order_release);
+                    try {
+                        if (p2p_plug != nullptr && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                            p2p_plug->resume_block_processing();
+                        }
+                    } catch (...) {}
                     // Ensure check stays running even if load_snapshot() failed
                     stalled_sync_check_running.store(true);
                     // Reset timer to avoid immediate retry
                     last_block_received_time = fc::time_point::now();
                 } catch (const std::exception& e) {
-                    std::cerr << "   Failed to download newer snapshot: " << e.what() << "\n";
-                    elog("Failed to download newer snapshot (std): ${e}", ("e", e.what()));
+                    std::cerr << "   Failed to reload snapshot: " << e.what() << "\n";
+                    elog("Failed to reload snapshot (std): ${e}", ("e", e.what()));
+                    _snapshot_reloading.store(false, std::memory_order_release);
+                    try {
+                        if (p2p_plug != nullptr && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                            p2p_plug->resume_block_processing();
+                        }
+                    } catch (...) {}
                     stalled_sync_check_running.store(true);
                     last_block_received_time = fc::time_point::now();
                 }

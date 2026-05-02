@@ -74,6 +74,19 @@ namespace graphene {
                  */
                 void reconnect_seeds();
 
+                /**
+                 * Pause block processing. While paused, incoming blocks are
+                 * rejected with a transient exception so the P2P layer re-queues
+                 * them without penalising the peer. Used during snapshot hot-reload
+                 * to prevent concurrent database modifications.
+                 */
+                void pause_block_processing();
+
+                /**
+                 * Resume block processing after a pause.
+                 */
+                void resume_block_processing();
+
             private:
                 std::unique_ptr<detail::p2p_plugin_impl> my;
             };

@@ -106,6 +106,7 @@ namespace graphene {
                     uint32_t max_connections = 0;
                     bool force_validate = false;
                     bool block_producer = false;
+                    std::atomic<bool> block_processing_paused{false};
 
                     bool stats_enabled = true;
                     uint32_t stats_interval_seconds = 300;
@@ -145,6 +146,16 @@ namespace graphene {
                 bool p2p_plugin_impl::handle_block(const block_message &blk_msg, bool sync_mode, std::vector<fc::uint160_t> &, fc::optional<fc::ip::endpoint> originating_peer_endpoint) {
                     // Track last block received time for stale sync detection
                     _last_block_received_time = fc::time_point::now();
+
+                    // Reject blocks while snapshot reload is in progress.
+                    // Throw a transient exception so the P2P layer re-queues
+                    // the block without penalising the peer.
+                    if (block_processing_paused.load(std::memory_order_acquire)) {
+                        wlog("Block #${n} rejected: block processing paused (snapshot reload in progress)",
+                             ("n", blk_msg.block.block_num()));
+                        FC_THROW_EXCEPTION(graphene::network::read_lock_timeout_exception,
+                            "Block processing paused during snapshot reload");
+                    }
 
                     uint32_t head_block_num = 0;
                     try {
@@ -1467,6 +1478,16 @@ namespace graphene {
                 } catch (...) {
                     elog("trigger_resync failed with unknown exception");
                 }
+            }
+
+            void p2p_plugin::pause_block_processing() {
+                ilog("Pausing block processing for snapshot reload");
+                my->block_processing_paused.store(true, std::memory_order_release);
+            }
+
+            void p2p_plugin::resume_block_processing() {
+                my->block_processing_paused.store(false, std::memory_order_release);
+                ilog("Block processing resumed after snapshot reload");
             }
 
         }
