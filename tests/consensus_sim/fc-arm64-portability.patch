@@ -1,0 +1,124 @@
+diff --git a/vendor/equihash/include/equihash/blake2-config.h b/vendor/equihash/include/equihash/blake2-config.h
+index 70d61f1..469bde7 100644
+--- a/vendor/equihash/include/equihash/blake2-config.h
++++ b/vendor/equihash/include/equihash/blake2-config.h
+@@ -64,9 +64,8 @@
+ #define HAVE_SSE2
+ #endif
+ 
+-#if !defined(HAVE_SSE2)
+-#error "This code requires at least SSE2."
+-#endif
++/* Non-x86 architectures (e.g. ARM64) fall back to the portable scalar path
++   compiled into blake2b.c when HAVE_SSE2 is not defined. */
+ 
+ #endif
+ 
+diff --git a/vendor/equihash/src/blake2b.c b/vendor/equihash/src/blake2b.c
+index 429dc3a..21498e1 100644
+--- a/vendor/equihash/src/blake2b.c
++++ b/vendor/equihash/src/blake2b.c
+@@ -20,7 +20,7 @@
+ 
+ #include <equihash/blake2-config.h>
+ 
+-
++#if defined(HAVE_SSE2)
+ #include <emmintrin.h>
+ #if defined(HAVE_SSSE3)
+ #include <tmmintrin.h>
+@@ -34,8 +34,8 @@
+ #if defined(HAVE_XOP)
+ #include <x86intrin.h>
+ #endif
+-
+ #include <equihash/blake2b-round.h>
++#endif /* HAVE_SSE2 */
+ 
+ ALIGN( 64 ) static const uint64_t blake2b_IV[8] =
+ {
+@@ -244,6 +244,7 @@ int blake2b_init_key( blake2b_state *S, const uint8_t outlen, const void *key, c
+   return 0;
+ }
+ 
++#if defined(HAVE_SSE2)
+ static inline int blake2b_compress( blake2b_state *S, const uint8_t block[BLAKE2B_BLOCKBYTES] )
+ {
+   __m128i row1l, row1h;
+@@ -313,6 +314,52 @@ static inline int blake2b_compress( blake2b_state *S, const uint8_t block[BLAKE2
+   STOREU( &S->h[6], _mm_xor_si128( LOADU( &S->h[6] ), row2h ) );
+   return 0;
+ }
++#else /* !HAVE_SSE2 — portable scalar fallback for non-x86 (e.g. ARM64) */
++#define ROTR64(x, n) (((x) >> (n)) | ((x) << (64 - (n))))
++#define B2B_G(a, b, c, d, x, y) \
++  v[a] = v[a] + v[b] + (x); \
++  v[d] = ROTR64(v[d] ^ v[a], 32); \
++  v[c] = v[c] + v[d]; \
++  v[b] = ROTR64(v[b] ^ v[c], 24); \
++  v[a] = v[a] + v[b] + (y); \
++  v[d] = ROTR64(v[d] ^ v[a], 16); \
++  v[c] = v[c] + v[d]; \
++  v[b] = ROTR64(v[b] ^ v[c], 63);
++static inline int blake2b_compress( blake2b_state *S, const uint8_t block[BLAKE2B_BLOCKBYTES] )
++{
++  uint64_t m[16];
++  uint64_t v[16];
++  int i;
++  for( i = 0; i < 16; ++i )
++    memcpy( &m[i], block + i * 8, 8 );
++  for( i = 0; i < 8; ++i )
++    v[i] = S->h[i];
++  v[ 8] = blake2b_IV[0];
++  v[ 9] = blake2b_IV[1];
++  v[10] = blake2b_IV[2];
++  v[11] = blake2b_IV[3];
++  v[12] = blake2b_IV[4] ^ S->t[0];
++  v[13] = blake2b_IV[5] ^ S->t[1];
++  v[14] = blake2b_IV[6] ^ S->f[0];
++  v[15] = blake2b_IV[7] ^ S->f[1];
++  /* 12 rounds */
++  { const uint8_t *s = blake2b_sigma[0];  B2B_G(0,4, 8,12,m[s[ 0]],m[s[ 1]]); B2B_G(1,5, 9,13,m[s[ 2]],m[s[ 3]]); B2B_G(2,6,10,14,m[s[ 4]],m[s[ 5]]); B2B_G(3,7,11,15,m[s[ 6]],m[s[ 7]]); B2B_G(0,5,10,15,m[s[ 8]],m[s[ 9]]); B2B_G(1,6,11,12,m[s[10]],m[s[11]]); B2B_G(2,7, 8,13,m[s[12]],m[s[13]]); B2B_G(3,4, 9,14,m[s[14]],m[s[15]]); }
++  { const uint8_t *s = blake2b_sigma[1];  B2B_G(0,4, 8,12,m[s[ 0]],m[s[ 1]]); B2B_G(1,5, 9,13,m[s[ 2]],m[s[ 3]]); B2B_G(2,6,10,14,m[s[ 4]],m[s[ 5]]); B2B_G(3,7,11,15,m[s[ 6]],m[s[ 7]]); B2B_G(0,5,10,15,m[s[ 8]],m[s[ 9]]); B2B_G(1,6,11,12,m[s[10]],m[s[11]]); B2B_G(2,7, 8,13,m[s[12]],m[s[13]]); B2B_G(3,4, 9,14,m[s[14]],m[s[15]]); }
++  { const uint8_t *s = blake2b_sigma[2];  B2B_G(0,4, 8,12,m[s[ 0]],m[s[ 1]]); B2B_G(1,5, 9,13,m[s[ 2]],m[s[ 3]]); B2B_G(2,6,10,14,m[s[ 4]],m[s[ 5]]); B2B_G(3,7,11,15,m[s[ 6]],m[s[ 7]]); B2B_G(0,5,10,15,m[s[ 8]],m[s[ 9]]); B2B_G(1,6,11,12,m[s[10]],m[s[11]]); B2B_G(2,7, 8,13,m[s[12]],m[s[13]]); B2B_G(3,4, 9,14,m[s[14]],m[s[15]]); }
++  { const uint8_t *s = blake2b_sigma[3];  B2B_G(0,4, 8,12,m[s[ 0]],m[s[ 1]]); B2B_G(1,5, 9,13,m[s[ 2]],m[s[ 3]]); B2B_G(2,6,10,14,m[s[ 4]],m[s[ 5]]); B2B_G(3,7,11,15,m[s[ 6]],m[s[ 7]]); B2B_G(0,5,10,15,m[s[ 8]],m[s[ 9]]); B2B_G(1,6,11,12,m[s[10]],m[s[11]]); B2B_G(2,7, 8,13,m[s[12]],m[s[13]]); B2B_G(3,4, 9,14,m[s[14]],m[s[15]]); }
++  { const uint8_t *s = blake2b_sigma[4];  B2B_G(0,4, 8,12,m[s[ 0]],m[s[ 1]]); B2B_G(1,5, 9,13,m[s[ 2]],m[s[ 3]]); B2B_G(2,6,10,14,m[s[ 4]],m[s[ 5]]); B2B_G(3,7,11,15,m[s[ 6]],m[s[ 7]]); B2B_G(0,5,10,15,m[s[ 8]],m[s[ 9]]); B2B_G(1,6,11,12,m[s[10]],m[s[11]]); B2B_G(2,7, 8,13,m[s[12]],m[s[13]]); B2B_G(3,4, 9,14,m[s[14]],m[s[15]]); }
++  { const uint8_t *s = blake2b_sigma[5];  B2B_G(0,4, 8,12,m[s[ 0]],m[s[ 1]]); B2B_G(1,5, 9,13,m[s[ 2]],m[s[ 3]]); B2B_G(2,6,10,14,m[s[ 4]],m[s[ 5]]); B2B_G(3,7,11,15,m[s[ 6]],m[s[ 7]]); B2B_G(0,5,10,15,m[s[ 8]],m[s[ 9]]); B2B_G(1,6,11,12,m[s[10]],m[s[11]]); B2B_G(2,7, 8,13,m[s[12]],m[s[13]]); B2B_G(3,4, 9,14,m[s[14]],m[s[15]]); }
++  { const uint8_t *s = blake2b_sigma[6];  B2B_G(0,4, 8,12,m[s[ 0]],m[s[ 1]]); B2B_G(1,5, 9,13,m[s[ 2]],m[s[ 3]]); B2B_G(2,6,10,14,m[s[ 4]],m[s[ 5]]); B2B_G(3,7,11,15,m[s[ 6]],m[s[ 7]]); B2B_G(0,5,10,15,m[s[ 8]],m[s[ 9]]); B2B_G(1,6,11,12,m[s[10]],m[s[11]]); B2B_G(2,7, 8,13,m[s[12]],m[s[13]]); B2B_G(3,4, 9,14,m[s[14]],m[s[15]]); }
++  { const uint8_t *s = blake2b_sigma[7];  B2B_G(0,4, 8,12,m[s[ 0]],m[s[ 1]]); B2B_G(1,5, 9,13,m[s[ 2]],m[s[ 3]]); B2B_G(2,6,10,14,m[s[ 4]],m[s[ 5]]); B2B_G(3,7,11,15,m[s[ 6]],m[s[ 7]]); B2B_G(0,5,10,15,m[s[ 8]],m[s[ 9]]); B2B_G(1,6,11,12,m[s[10]],m[s[11]]); B2B_G(2,7, 8,13,m[s[12]],m[s[13]]); B2B_G(3,4, 9,14,m[s[14]],m[s[15]]); }
++  { const uint8_t *s = blake2b_sigma[8];  B2B_G(0,4, 8,12,m[s[ 0]],m[s[ 1]]); B2B_G(1,5, 9,13,m[s[ 2]],m[s[ 3]]); B2B_G(2,6,10,14,m[s[ 4]],m[s[ 5]]); B2B_G(3,7,11,15,m[s[ 6]],m[s[ 7]]); B2B_G(0,5,10,15,m[s[ 8]],m[s[ 9]]); B2B_G(1,6,11,12,m[s[10]],m[s[11]]); B2B_G(2,7, 8,13,m[s[12]],m[s[13]]); B2B_G(3,4, 9,14,m[s[14]],m[s[15]]); }
++  { const uint8_t *s = blake2b_sigma[9];  B2B_G(0,4, 8,12,m[s[ 0]],m[s[ 1]]); B2B_G(1,5, 9,13,m[s[ 2]],m[s[ 3]]); B2B_G(2,6,10,14,m[s[ 4]],m[s[ 5]]); B2B_G(3,7,11,15,m[s[ 6]],m[s[ 7]]); B2B_G(0,5,10,15,m[s[ 8]],m[s[ 9]]); B2B_G(1,6,11,12,m[s[10]],m[s[11]]); B2B_G(2,7, 8,13,m[s[12]],m[s[13]]); B2B_G(3,4, 9,14,m[s[14]],m[s[15]]); }
++  { const uint8_t *s = blake2b_sigma[10]; B2B_G(0,4, 8,12,m[s[ 0]],m[s[ 1]]); B2B_G(1,5, 9,13,m[s[ 2]],m[s[ 3]]); B2B_G(2,6,10,14,m[s[ 4]],m[s[ 5]]); B2B_G(3,7,11,15,m[s[ 6]],m[s[ 7]]); B2B_G(0,5,10,15,m[s[ 8]],m[s[ 9]]); B2B_G(1,6,11,12,m[s[10]],m[s[11]]); B2B_G(2,7, 8,13,m[s[12]],m[s[13]]); B2B_G(3,4, 9,14,m[s[14]],m[s[15]]); }
++  { const uint8_t *s = blake2b_sigma[11]; B2B_G(0,4, 8,12,m[s[ 0]],m[s[ 1]]); B2B_G(1,5, 9,13,m[s[ 2]],m[s[ 3]]); B2B_G(2,6,10,14,m[s[ 4]],m[s[ 5]]); B2B_G(3,7,11,15,m[s[ 6]],m[s[ 7]]); B2B_G(0,5,10,15,m[s[ 8]],m[s[ 9]]); B2B_G(1,6,11,12,m[s[10]],m[s[11]]); B2B_G(2,7, 8,13,m[s[12]],m[s[13]]); B2B_G(3,4, 9,14,m[s[14]],m[s[15]]); }
++  for( i = 0; i < 8; ++i )
++    S->h[i] ^= v[i] ^ v[i + 8];
++  return 0;
++}
++#endif /* HAVE_SSE2 */
+ 
+ 
+ int blake2b_update( blake2b_state *S, const uint8_t *in, uint64_t inlen )
+diff --git a/vendor/equihash/src/pow.cpp b/vendor/equihash/src/pow.cpp
+index 95d6bfb..0f1ecc3 100644
+--- a/vendor/equihash/src/pow.cpp
++++ b/vendor/equihash/src/pow.cpp
+@@ -30,8 +30,18 @@ static uint64_t rdtsc(void) {
+     uint64_t rax;
+     __asm__ __volatile__("rdtsc" : "=A"(rax) : : );
+     return rax;
++#elif defined(__aarch64__)
++    /* ARM64: read virtual counter — used only for timing/profiling in equihash,
++       not part of any consensus-critical computation. */
++    uint64_t val;
++    __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(val));
++    return val;
+ #else
+-#error "Not implemented!"
++    /* Generic fallback: use a simple incrementing counter.
++       This value is only used for internal timing in the equihash solver,
++       not for any hash output or consensus state. */
++    static uint64_t counter = 0;
++    return ++counter;
+ #endif
+ #endif
+ }

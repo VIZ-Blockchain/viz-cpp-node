@@ -79,6 +79,9 @@ if(CHAINBASE_CHECK_LOCKING)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DCHAINBASE_CHECK_LOCKING")
 endif()
 
+option(BUILD_CONSENSUS_TESTS "Build consensus simulation test harness" OFF)
+option(WITH_COVERAGE "Enable gcov coverage instrumentation for consensus tests" OFF)
+
 if(WIN32)
     set(BOOST_ROOT $ENV{BOOST_ROOT})
     set(Boost_USE_MULTITHREADED ON)
@@ -199,6 +202,11 @@ add_subdirectory(thirdparty)
 add_subdirectory(libraries)
 add_subdirectory(plugins)
 add_subdirectory(programs)
+
+if(BUILD_CONSENSUS_TESTS)
+    enable_testing()
+    add_subdirectory(tests/consensus_sim)
+endif()
 
 if(ENABLE_INSTALLER)
 
