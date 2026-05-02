@@ -1743,8 +1743,8 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                     try {
                         auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
                         if (p2p_plug != nullptr && p2p_plug->get_state() == appbase::abstract_plugin::started) {
-                            p2p_plug->reconnect_seeds();
-                            ilog("P2P recovery: peer flags reset + seeds reconnected. "
+                            p2p_plug->trigger_resync();
+                            ilog("P2P recovery: resync triggered + seeds reconnected. "
                                  "Waiting 1 minute before attempting snapshot download.");
                         } else {
                             wlog("P2P plugin not available, skipping P2P recovery");

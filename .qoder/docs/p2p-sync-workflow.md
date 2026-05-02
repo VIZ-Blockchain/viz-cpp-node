@@ -456,7 +456,7 @@ A background thread runs `check_stalled_sync_loop()` (plugin.cpp L1682), checkin
 Stalled sync detected!
   │
   ├── First trigger (P2P recovery):
-  │     ├── p2p_plugin->reconnect_seeds()   ← reset peer flags + reconnect seeds
+  │     ├── p2p_plugin->trigger_resync()   ← resync + reconnect seeds
   │     ├── Set _p2p_recovery_attempted = true
   │     └── Delay timer by 1 minute (give P2P recovery time to work)
   │
