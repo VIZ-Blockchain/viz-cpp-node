@@ -450,6 +450,21 @@ namespace graphene {
                 fc::time_point now_fine = graphene::time::now();
                 fc::time_point_sec now = now_fine + fc::microseconds( 250000 );
 
+                // === DLT MODE: DEFER PRODUCTION DURING ACTIVE SYNC ===
+                // In DLT mode, the witness must not produce blocks while the
+                // chain is actively receiving sync blocks from P2P.  Producing
+                // during sync creates blocks on a stale head that conflict
+                // with incoming blocks, causing "failed to link" errors and
+                // re-triggering sync — the oscillation bug described in
+                // problem6.log.
+                //
+                // Outside DLT mode this check is NOT applied because normal
+                // witnesses must produce on the canonical chain head even
+                // while the network is catching up.
+                if (db._dlt_mode && chain().is_syncing()) {
+                    return block_production_condition::not_synced;
+                }
+
                 // === HARDFORK 12: THREE-STATE SAFETY ENFORCEMENT ===
                 if (db._debug_block_production) ilog("DEBUG_CRASH: getting dgp");
                 const auto &dgp = db.get_dynamic_global_properties();
@@ -608,6 +623,10 @@ namespace graphene {
                 // produced by the committee account (which is in _witnesses), so the
                 // check would always falsely trigger and kill recovery.
                 //
+                // EXCEPTION: In DLT mode, even during emergency consensus, we apply
+                // a higher-threshold minority fork check.  See the DLT-specific block
+                // below.
+                //
                 // With enable-stale-production=true: operator knows what they're doing,
                 //   continue producing (bootstrap / testnet / recovery scenario).
                 // With enable-stale-production=false (default): we're on the wrong fork,
@@ -645,6 +664,56 @@ namespace graphene {
                                 _minority_fork_recovery_start = fc::time_point::now();
                                 return block_production_condition::minority_fork;
                             }
+                        }
+                    }
+                }
+
+                // === DLT-SPECIFIC MINORITY FORK DETECTION IN EMERGENCY MODE ===
+                // In emergency + DLT mode, the standard minority fork check above is
+                // skipped because committee blocks are produced by an account that
+                // may be in _witnesses.  However, a DLT emergency witness that has
+                // lost its P2P connection to the master will produce blocks for its
+                // own witness slots AND the committee slots (because the emergency
+                // key covers committee).  After a few rounds with NO external blocks
+                // at all, the node is on a minority fork.
+                //
+                // Detect this by checking whether the last 2 full rounds (42 blocks)
+                // in fork_db contain ONLY blocks from our witnesses.  In a healthy
+                // emergency hybrid schedule, committee slots are filled by the master
+                // node's blocks — so we should see non-our-witness blocks regularly.
+                // If we don't, we're isolated.
+                //
+                // We use 2 rounds (42 blocks) instead of 1 because in emergency mode
+                // our witnesses legitimately produce blocks for their own slots, and
+                // one round of 21 blocks might have only our witnesses if the
+                // committee slots happened to be at the end of the round.
+                if (dgp.emergency_consensus_active && db._dlt_mode) {
+                    auto fork_head = db.get_fork_db().head();
+                    if (fork_head) {
+                        const uint32_t dlt_minority_threshold = CHAIN_MAX_WITNESSES * 2; // 42 blocks = 2 full rounds
+                        bool all_ours = true;
+                        uint32_t blocks_checked = 0;
+                        auto current = fork_head;
+
+                        while (current && blocks_checked < dlt_minority_threshold) {
+                            if (_witnesses.find(current->data.witness) == _witnesses.end()) {
+                                all_ours = false;
+                                break;
+                            }
+                            blocks_checked++;
+                            current = current->prev.lock();
+                        }
+
+                        if (all_ours && blocks_checked >= dlt_minority_threshold) {
+                            elog("DLT EMERGENCY MINORITY FORK DETECTED: last ${n} blocks all from our "
+                                 "witnesses (2+ full rounds). Node is isolated from master. "
+                                 "Resetting to LIB and resyncing from P2P network.",
+                                 ("n", blocks_checked));
+                            p2p().resync_from_lib();
+                            _production_enabled = false;
+                            _minority_fork_recovering = true;
+                            _minority_fork_recovery_start = fc::time_point::now();
+                            return block_production_condition::minority_fork;
                         }
                     }
                 }

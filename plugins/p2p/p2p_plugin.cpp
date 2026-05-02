@@ -198,19 +198,27 @@ namespace graphene {
                             dlog("Chain pushing normal block #${block_num} (head: ${head}, gap: ${gap})",
                                  ("block_num", blk_msg.block.block_num())("head", head_block_num)("gap", gap));
 
-                        // DLT mode: treat contiguous sync blocks (gap == 0) with recent
+                        // DLT mode: treat near-caught-up sync blocks with recent
                         // timestamps as normal blocks.  This prevents unnecessary
-                        // "Syncing Blockchain started" triggers when we're only 1-2 blocks
-                        // behind, which is critical for emergency-mode witnesses that must
-                        // continue producing blocks.  During a long sync (blocks far in the
-                        // past), timestamps fail the recency check so full sync mode is
-                        // preserved.
-                        if (sync_mode && gap == 0 && chain.db()._dlt_mode) {
+                        // "Syncing Blockchain started" triggers when we're only a few
+                        // blocks behind, which is critical for emergency-mode witnesses
+                        // that must continue producing blocks.  During a long sync
+                        // (blocks far in the past), timestamps fail the recency check
+                        // so full sync mode is preserved.
+                        //
+                        // gap == 0: contiguous block, always treat as normal if recent.
+                        // gap 1-2: small gap (1-2 missing blocks), treat as normal if
+                        //   recent.  The missing blocks will be fetched by the P2P
+                        //   sync mechanism, but the node should not enter full sync
+                        //   mode which would set currently_syncing=true and disrupt
+                        //   the witness block production loop.
+                        if (sync_mode && gap >= 0 && gap <= 2 && chain.db()._dlt_mode) {
                             fc::microseconds block_age = fc::time_point::now() - blk_msg.block.timestamp;
                             if (block_age < fc::seconds(30)) {
                                 ilog("DLT mode: treating near-caught-up sync block #${n} as normal "
-                                     "block (gap=0, age=${age}s)",
+                                     "block (gap=${gap}, age=${age}s)",
                                      ("n", blk_msg.block.block_num())
+                                     ("gap", gap)
                                      ("age", block_age.count() / 1000000));
                                 sync_mode = false;
                             }
