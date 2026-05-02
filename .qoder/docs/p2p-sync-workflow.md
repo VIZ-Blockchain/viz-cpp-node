@@ -229,7 +229,22 @@ if (!peer->inhibit_fetching_sync_blocks) {
 
 Runs every 1 second. If `peer_needs_sync_items_from_us = true` but the peer hasn't sent a sync request in 30+ seconds, auto-clears the flag to `false`. This prevents inventory starvation when a race condition leaves the flag stuck.
 
-**Important:** There is NO equivalent auto-clear for `we_need_sync_items_from_peer`. If this flag gets stuck at `false` or the node needs to re-enter sync mode, only `start_synchronizing_with_peer()` or `resync()` can set it back to `true`.
+**Important:** A matching auto-clear for `we_need_sync_items_from_peer` was added as a safety net — see "Stuck `we_need_sync_items_from_peer` Auto-Clear" below.
+
+### Stuck `we_need_sync_items_from_peer` Auto-Clear
+
+**Location:** `terminate_inactive_connections_loop()` (node.cpp L1624-1638)
+
+If a peer has `we_need_sync_items_from_peer = true` but ALL sync-related lists are empty:
+- `ids_of_items_to_get` empty
+- `ids_of_items_being_processed` empty
+- `sync_items_requested_from_peer` empty
+- `number_of_unfetched_item_ids == 0`
+- No pending `item_ids_requested_from_peer`
+
+AND this state has persisted for **30+ seconds** (measured via `last_sync_item_received_time`), the flag is auto-cleared to `false`. This is a safety net for edge cases where sync completes but the flag isn't properly reset (e.g., fork-switch race conditions — see "Gap/Fork Block Sync Stall Recovery" below).
+
+**Important:** This does NOT touch `sync_items_requested_from_peer` — clearing in-flight requests would cause arriving responses to be treated as "unsolicited block" and disconnect the peer.
 
 ---
 
@@ -490,6 +505,84 @@ The `_p2p_recovery_attempted` guard resets to `false` whenever a block is receiv
 | **Use case** | Temporary network issues, soft-bans | Node hopelessly behind, DLT mode bootstrap |
 
 The P2P detector fires first (2 min) and attempts a soft recovery. If that doesn't work and blocks still don't arrive, the snapshot detector fires later (5 min) and does a hard recovery by re-downloading state.
+
+---
+
+## Gap/Fork Block Sync Stall Recovery
+
+A three-layer defense against a sync stall that occurs when a broadcast block with a missing parent triggers sync, and the fork switch during sync applies both the gap-filling block AND the deferred broadcast block to the chain.
+
+### Problem Scenario
+
+```
+1. Block #N+2 arrives via broadcast, deferred to fork_db (parent #N+1 missing).
+   Added to _most_recent_blocks_accepted.
+2. Sync starts with peer. ids_of_items_to_get = [#N+1, #N+2].
+3. Block #N+1 arrives via sync, fork switch applies both #N+1 and #N+2.
+4. send_sync_block_to_node_delegate for #N+1 cleans its own
+   ids_of_items_being_processed, but NOT #N+2's entry in ids_of_items_to_get.
+5. fetch_sync_items_loop re-requests #N+2 from peer. Peer becomes NOT IDLE.
+6. When #N+2 arrives again, process_backlog_of_sync_blocks finds it in
+   _most_recent_blocks_accepted — originally just logged and broke WITHOUT
+   cleaning ids_of_items_being_processed.
+7. Orphaned ids_of_items_being_processed entry prevents sync completion.
+   we_need_sync_items_from_peer stays permanently true.
+8. All broadcast inventory from the peer is silently suppressed.
+9. Peer eventually disconnects on inactivity timeout.
+```
+
+### Layer 1: Stale `ids_of_items_to_get` Cleanup (Defensive)
+
+**Location:** `fetch_sync_items_loop()` (node.cpp L1154-1196)
+
+At the start of each loop iteration, before requesting blocks from peers, scan each syncing peer's `ids_of_items_to_get` and remove blocks that are already on the chain (`_delegate->has_item()` returns true AND block number <= head). This catches blocks applied via fork switch that the sync layer never "received".
+
+Peers whose lists become fully empty (all four sync lists empty) are collected. After the `ASSERT_TASK_NOT_PREEMPTED` block, `fetch_next_batch_of_item_ids_from_peer()` is called for each to confirm sync completion (L1251-1257). This call yields, so it must be outside the non-preemptable section.
+
+**Does NOT** clean `sync_items_requested_from_peer` — those are in-flight requests. Task 2 handles them when the response arrives.
+
+### Layer 2: Proper `_most_recent_blocks_accepted` Handling (Primary Fix)
+
+**Location:** `process_backlog_of_sync_blocks()` (node.cpp L4173-4201)
+
+When a sync block is found in `_most_recent_blocks_accepted` (already applied via broadcast + fork switch), the block has already been moved from `ids_of_items_to_get` into `ids_of_items_being_processed` (at L4130-4136). The fix properly cleans up:
+
+1. Erases the block from `_received_sync_items` (fixes memory leak)
+2. Decrements `_total_number_of_unfetched_items`
+3. For each peer: erases the block from `ids_of_items_being_processed`, updates `last_block_delegate_has_seen`
+4. If peer's sync lists are now all empty, adds to `peers_with_newly_empty_item_lists`
+5. Sets `block_processed_this_iteration = true` so the do-while loop continues
+
+After the do-while loop (L4228-4234), `fetch_next_batch_of_item_ids_from_peer()` is called for peers in `peers_with_newly_empty_item_lists`. The response handler at `on_blockchain_item_ids_inventory` (L2953) clears `we_need_sync_items_from_peer` when the peer reports `remaining = 0` with all items known.
+
+### Layer 3: Stuck Flag Safety Net
+
+**Location:** `terminate_inactive_connections_loop()` (node.cpp L1624-1638)
+
+Described above in "Stuck `we_need_sync_items_from_peer` Auto-Clear". Acts as a 30-second last-resort timeout if Layers 1 and 2 both miss the cleanup.
+
+### Other Related Fixes
+
+#### Gap Block Sync Trigger
+
+**Location:** `process_block_during_normal_operation()` (node.cpp L4316-4331)
+
+When a broadcast block's number is ahead of head+1 (parent missing) and `handle_block()` returns false, the block is stored in fork_db's unlinked index. If no sync is in progress (`!we_need_sync_items_from_peer`), sync is restarted with the originating peer to fetch the missing parent blocks. Without this, the node would stall permanently after receiving a gap block in broadcast mode.
+
+#### Inventory Gate Deadlock Breaker
+
+**Location:** `on_item_ids_inventory_message()` (node.cpp L3480-3513)
+
+When head is >30 seconds behind real time, broadcast inventory is normally suppressed. But if NO sync is in progress with ANY peer, the node is stuck — it ignores inventory AND doesn't sync. The fix detects this state and triggers `start_synchronizing_with_peer()` with the first peer that advertises blocks, breaking the deadlock.
+
+#### Emergency Consensus Head-Advancement Checks
+
+Both stale sync detectors skip recovery during emergency consensus if head is still advancing:
+
+- **P2P stale sync** (`p2p_plugin.cpp` L1021-1038): Compares `current_head > _last_stale_check_head`. If advancing, resets timer and skips recovery.
+- **Snapshot stalled sync** (`plugin.cpp` L1772-1786): Same logic with `_last_stalled_check_head`. If advancing, resets timer and continues loop.
+
+This prevents false recovery triggers when the node is receiving emergency blocks from a master but not through the normal P2P sync path.
 
 ---
 
