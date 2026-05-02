@@ -147,10 +147,23 @@ namespace graphene {
                         // Track last block received time for stale sync detection
                         _last_block_received_time = fc::time_point::now();
 
-                        uint32_t head_block_num;
-                        chain.db().with_weak_read_lock([&]() {
-                            head_block_num = chain.db().head_block_num();
-                        });
+                        uint32_t head_block_num = 0;
+                        try {
+                            chain.db().with_weak_read_lock([&]() {
+                                head_block_num = chain.db().head_block_num();
+                            });
+                        } catch (const std::runtime_error& e) {
+                            // READ lock timeout — transient condition during concurrent
+                            // write operations (e.g. large fork switch).  The head_block_num
+                            // is only used for diagnostic logging; skip the log and proceed
+                            // with accept_block, which uses strong locks that will wait
+                            // properly.  Prevents the READ lock timeout from reaching
+                            // send_sync_block_to_node_delegate where it would be treated as
+                            // a generic block failure, triggering DEFERRED_RESIZE and an
+                            // infinite sync-restart loop.
+                            dlog("Skipping head_block_num read for block #${n}: ${e}",
+                                 ("n", blk_msg.block.block_num())("e", std::string(e.what())));
+                        }
                         int32_t gap = (int32_t)blk_msg.block.block_num() - (int32_t)head_block_num - 1;
                         if (sync_mode)
                             dlog("Chain pushing sync block #${block_num} (head: ${head}, gap: ${gap})",
@@ -209,6 +222,20 @@ namespace graphene {
                         }
 
                         return false;
+                    } catch (const std::runtime_error& e) {
+                        // Lock timeout ("Unable to acquire READ lock" / "Unable to acquire
+                        // WRITE lock") is a transient local condition — heavy fork switch,
+                        // concurrent snapshot serialization, or resize in progress.  Convert
+                        // to deferred_resize_exception so the P2P layer retries without
+                        // incrementing the peer strike counter or soft-banning.
+                        std::string msg = e.what();
+                        if (msg.find("Unable to acquire") != std::string::npos) {
+                            wlog("Lock timeout during block #${n} (head=${head}): ${e}",
+                                 ("n", blk_msg.block.block_num())("head", head_block_num)("e", msg));
+                            FC_THROW_EXCEPTION(graphene::network::deferred_resize_exception,
+                                "Lock timeout (transient): ${e}", ("e", msg));
+                        }
+                        throw;
                     } FC_CAPTURE_AND_RETHROW((blk_msg)(sync_mode))
                 }
 

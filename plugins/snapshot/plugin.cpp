@@ -3476,9 +3476,28 @@ void snapshot_plugin::plugin_startup() {
     }
 
     // Listen for dlt_block_log reset events — create a fresh snapshot so other
-    // DLT nodes can bootstrap from us (ignores snapshot-every-n-blocks, is_syncing, etc.)
+    // DLT nodes can bootstrap from us (ignores snapshot-every-n-blocks, etc.)
     if (my->db._dlt_mode && !my->snapshot_dir.empty()) {
         my->dlt_reset_conn = my->db.dlt_block_log_was_reset.connect([this]() {
+            // If the node is currently syncing (e.g. processing a large fork
+            // switch), defer the snapshot to avoid lock contention.  The async
+            // snapshot's Phase 1 read-lock would block concurrent push_block
+            // write-locks, causing "Unable to acquire READ lock" timeouts on
+            // the P2P thread and triggering infinite sync-restart loops.
+            // Setting needs_fresh_snapshot lets on_applied_block() schedule
+            // the snapshot once sync completes.
+            bool is_syncing = false;
+            try {
+                auto& chain_plug = appbase::app().get_plugin<graphene::plugins::chain::plugin>();
+                is_syncing = chain_plug.is_syncing();
+            } catch (...) {}
+
+            if (is_syncing) {
+                ilog(CLOG_GREEN "dlt_block_log was reset during sync — deferring snapshot until sync completes" CLOG_RESET);
+                my->needs_fresh_snapshot = true;
+                return;
+            }
+
             std::string dir = my->snapshot_dir;
             uint32_t head = my->db.head_block_num();
             fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(head) + ".vizjson");

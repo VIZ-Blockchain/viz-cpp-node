@@ -3694,39 +3694,91 @@ namespace graphene {
                 catch (const fc::canceled_exception &) {
                     throw;
                 }
-                catch (const fc::exception &e) {
-                    fc_wlog(fc::logger::get("sync"),
-                            "p2p failed to push sync block #${block_num} ${block_hash}: client rejected sync block sent by peer: ${e}",
-                            ("block_num", block_message_to_send.block.block_num())
-                                    ("block_hash", block_message_to_send.block_id)("e", e));
-                    ilog(CLOG_RED "Sync block #${num} failed: ${what}. Will restart sync to recover." CLOG_RESET,
-                            ("num", block_message_to_send.block.block_num())
-                            ("what", e.what()));
-                    handle_message_exception = e;
-                    // Increment strike counter for the peer that sent this block,
-                    // THEN trigger sync restart.  Without the strike, a peer on a
-                    // dead/corrupt fork would loop forever: sync -> fail -> restart
-                    // -> same bad blocks, with no ban ever applied.
+                catch (const read_lock_timeout_exception &e) {
+                    // Transient lock contention — local condition, NOT a peer error.
+                    // Re-queue the block for later processing without penalising
+                    // the peer or restarting sync (which would make contention worse).
+                    fc_ilog(fc::logger::get("sync"),
+                         "p2p deferred sync block #${block_num} ${block_hash}: transient lock contention (not a peer error), will retry naturally",
+                         ("block_num", block_message_to_send.block.block_num())
+                                 ("block_hash", block_message_to_send.block_id));
                     for (const peer_connection_ptr &peer : _active_connections) {
                         ASSERT_TASK_NOT_PREEMPTED();
                         if (peer->ids_of_items_being_processed.find(block_message_to_send.block_id) !=
                             peer->ids_of_items_being_processed.end()) {
-                            ++peer->unlinkable_block_strikes;
-                            static constexpr uint32_t SYNC_REJECT_STRIKE_THRESHOLD = 20;
-                            if (peer->unlinkable_block_strikes >= SYNC_REJECT_STRIKE_THRESHOLD) {
-                                fc_ilog(fc::logger::get("sync"),
-                                     "Soft-banning peer ${endpoint} for ${dur}s: ${strikes} rejected sync blocks (last: #${num})",
-                                     ("endpoint", peer->get_remote_endpoint())
-                                     ("num", block_message_to_send.block.block_num())
-                                     ("strikes", peer->unlinkable_block_strikes)
-                                     ("dur", get_soft_ban_duration(peer.get())));
-                                peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(peer.get()));
-                                peer->inhibit_fetching_sync_blocks = true;
-                                peer->unlinkable_block_strikes = 0;
-                            }
+                            peer->ids_of_items_being_processed.erase(block_message_to_send.block_id);
+                            peer->ids_of_items_to_get.push_front(block_message_to_send.block_id);
                         }
                     }
-                    deferred_resize = true; // trigger sync restart below
+                    _new_received_sync_items.push_front(block_message_to_send);
+                    // Do NOT set deferred_resize — no sync restart.
+                    // Do NOT increment strike counters — not a peer error.
+                }
+                catch (const fc::exception &e) {
+                    // Detect transient lock contention (READ or WRITE lock timeout).
+                    // This is a local condition — the peer is NOT at fault.  We must
+                    // NOT penalise the peer (no strikes, no soft-ban) and NOT restart
+                    // sync (restarting generates more concurrent block pushes, making
+                    // the lock contention worse and creating an infinite restart loop).
+                    // Instead, just log and let the block be re-processed naturally
+                    // when the current write operation completes.
+                    std::string what = e.what();
+                    bool is_lock_timeout = what.find("Unable to acquire READ lock") != std::string::npos ||
+                                          what.find("Unable to acquire WRITE lock") != std::string::npos;
+                    if (is_lock_timeout) {
+                        fc_ilog(fc::logger::get("sync"),
+                             "p2p deferred sync block #${block_num} ${block_hash}: transient lock contention (not a peer error), will retry naturally",
+                             ("block_num", block_message_to_send.block.block_num())
+                                     ("block_hash", block_message_to_send.block_id));
+                        // Put the block back for re-processing.  The block is still
+                        // in the peer's ids_of_items_being_processed, so we must move
+                        // it back to ids_of_items_to_get so process_backlog_of_sync_blocks
+                        // will re-dispatch it as a potential_first_block.
+                        for (const peer_connection_ptr &peer : _active_connections) {
+                            ASSERT_TASK_NOT_PREEMPTED();
+                            if (peer->ids_of_items_being_processed.find(block_message_to_send.block_id) !=
+                                peer->ids_of_items_being_processed.end()) {
+                                peer->ids_of_items_being_processed.erase(block_message_to_send.block_id);
+                                peer->ids_of_items_to_get.push_front(block_message_to_send.block_id);
+                            }
+                        }
+                        _new_received_sync_items.push_front(block_message_to_send);
+                        // Do NOT set deferred_resize — no sync restart.
+                        // Do NOT increment strike counters — not a peer error.
+                    } else {
+                        fc_wlog(fc::logger::get("sync"),
+                                "p2p failed to push sync block #${block_num} ${block_hash}: client rejected sync block sent by peer: ${e}",
+                                ("block_num", block_message_to_send.block.block_num())
+                                        ("block_hash", block_message_to_send.block_id)("e", e));
+                        ilog(CLOG_RED "Sync block #${num} failed: ${what}. Will restart sync to recover." CLOG_RESET,
+                                ("num", block_message_to_send.block.block_num())
+                                ("what", e.what()));
+                        handle_message_exception = e;
+                        // Increment strike counter for the peer that sent this block,
+                        // THEN trigger sync restart.  Without the strike, a peer on a
+                        // dead/corrupt fork would loop forever: sync -> fail -> restart
+                        // -> same bad blocks, with no ban ever applied.
+                        for (const peer_connection_ptr &peer : _active_connections) {
+                            ASSERT_TASK_NOT_PREEMPTED();
+                            if (peer->ids_of_items_being_processed.find(block_message_to_send.block_id) !=
+                                peer->ids_of_items_being_processed.end()) {
+                                ++peer->unlinkable_block_strikes;
+                                static constexpr uint32_t SYNC_REJECT_STRIKE_THRESHOLD = 20;
+                                if (peer->unlinkable_block_strikes >= SYNC_REJECT_STRIKE_THRESHOLD) {
+                                    fc_ilog(fc::logger::get("sync"),
+                                         "Soft-banning peer ${endpoint} for ${dur}s: ${strikes} rejected sync blocks (last: #${num})",
+                                         ("endpoint", peer->get_remote_endpoint())
+                                         ("num", block_message_to_send.block.block_num())
+                                         ("strikes", peer->unlinkable_block_strikes)
+                                         ("dur", get_soft_ban_duration(peer.get())));
+                                    peer->fork_rejected_until = fc::time_point::now() + fc::seconds(get_soft_ban_duration(peer.get()));
+                                    peer->inhibit_fetching_sync_blocks = true;
+                                    peer->unlinkable_block_strikes = 0;
+                                }
+                            }
+                        }
+                        deferred_resize = true; // trigger sync restart below
+                    }
                 }
 
                 // build up lists for any potentially-blocking operations we need to do, then do them
@@ -3862,6 +3914,14 @@ namespace graphene {
                          ("num", block_message_to_send.block.block_num()));
                     wlog("Restarting sync with all peers to re-fetch block #${num} after deferred resize",
                          ("num", block_message_to_send.block.block_num()));
+
+                    // Brief pause to let the transient condition resolve (shared-memory
+                    // resize, large fork switch, or concurrent snapshot serialization)
+                    // before re-fetching the same block.  Without this, the tight
+                    // retry loop hammers the same lock contention and quickly
+                    // accumulates peer strikes from the generic-exception path.
+                    fc::usleep(fc::seconds(2));
+
                     for (const peer_connection_ptr &peer : _active_connections) {
                         ASSERT_TASK_NOT_PREEMPTED();
                         if (peer->we_need_sync_items_from_peer) {
@@ -4197,6 +4257,12 @@ namespace graphene {
                     // Shared memory resize is in progress. Do NOT mark the block as accepted
                     // and do NOT soft-ban the peer. The block will be re-received after resize.
                     wlog("Block #${num} deferred due to shared memory resize, will retry on next block",
+                         ("num", block_message_to_process.block.block_num()));
+                }
+                catch (const read_lock_timeout_exception &e) {
+                    // Transient lock contention — local condition, NOT a peer error.
+                    // Don't penalise the peer or restart sync.
+                    ilog("Block #${num} deferred due to transient lock contention (not a peer error), will retry naturally",
                          ("num", block_message_to_process.block.block_num()));
                 }
                 catch (const unlinkable_block_exception &e) {
