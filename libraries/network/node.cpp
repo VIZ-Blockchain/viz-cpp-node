@@ -3699,9 +3699,17 @@ namespace graphene {
                     // Re-queue the block for later processing without penalising
                     // the peer or restarting sync (which would make contention worse).
                     fc_ilog(fc::logger::get("sync"),
-                         "p2p deferred sync block #${block_num} ${block_hash}: transient lock contention (not a peer error), will retry naturally",
+                         "p2p deferred sync block #${block_num} ${block_hash}: transient lock contention (not a peer error), will retry after brief pause",
                          ("block_num", block_message_to_send.block.block_num())
                                  ("block_hash", block_message_to_send.block_id));
+
+                    // Brief pause to let the current write operation (fork switch,
+                    // snapshot serialization, block production) complete before
+                    // re-queuing.  Without this, process_backlog_of_sync_blocks
+                    // immediately retries the block, creating a tight CPU-burning
+                    // loop that makes the contention worse.
+                    fc::usleep(fc::seconds(2));
+
                     for (const peer_connection_ptr &peer : _active_connections) {
                         ASSERT_TASK_NOT_PREEMPTED();
                         if (peer->ids_of_items_being_processed.find(block_message_to_send.block_id) !=
@@ -3727,9 +3735,13 @@ namespace graphene {
                                           what.find("Unable to acquire WRITE lock") != std::string::npos;
                     if (is_lock_timeout) {
                         fc_ilog(fc::logger::get("sync"),
-                             "p2p deferred sync block #${block_num} ${block_hash}: transient lock contention (not a peer error), will retry naturally",
+                             "p2p deferred sync block #${block_num} ${block_hash}: transient lock contention (not a peer error), will retry after brief pause",
                              ("block_num", block_message_to_send.block.block_num())
                                      ("block_hash", block_message_to_send.block_id));
+
+                        // Brief pause (same rationale as read_lock_timeout_exception above).
+                        fc::usleep(fc::seconds(2));
+
                         // Put the block back for re-processing.  The block is still
                         // in the peer's ids_of_items_being_processed, so we must move
                         // it back to ids_of_items_to_get so process_backlog_of_sync_blocks

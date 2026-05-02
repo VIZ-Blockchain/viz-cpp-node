@@ -226,13 +226,16 @@ namespace graphene {
                         // Lock timeout ("Unable to acquire READ lock" / "Unable to acquire
                         // WRITE lock") is a transient local condition — heavy fork switch,
                         // concurrent snapshot serialization, or resize in progress.  Convert
-                        // to deferred_resize_exception so the P2P layer retries without
-                        // incrementing the peer strike counter or soft-banning.
+                        // to read_lock_timeout_exception so the P2P layer re-queues the
+                        // block without restarting sync or incrementing the peer strike
+                        // counter.  Unlike shared-memory resize (deferred_resize_exception),
+                        // a lock timeout does NOT lose the block data — the block just needs
+                        // to wait for the current write to complete.
                         std::string msg = e.what();
                         if (msg.find("Unable to acquire") != std::string::npos) {
                             wlog("Lock timeout during block #${n} (head=${head}): ${e}",
                                  ("n", blk_msg.block.block_num())("head", head_block_num)("e", msg));
-                            FC_THROW_EXCEPTION(graphene::network::deferred_resize_exception,
+                            FC_THROW_EXCEPTION(graphene::network::read_lock_timeout_exception,
                                 "Lock timeout (transient): ${e}", ("e", msg));
                         }
                         throw;
