@@ -1755,6 +1755,24 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
             auto timeout = fc::minutes(stalled_sync_timeout_minutes);
 
             if (elapsed > timeout) {
+                // During emergency consensus, the node produces blocks solo and
+                // no external blocks arrive.  While on_applied_block resets
+                // last_block_received_time for own-produced blocks, guard against
+                // edge cases (e.g. production hasn't started yet).  Triggering
+                // resync or snapshot download would replace the emergency fork
+                // state, which is catastrophic.
+                bool emergency = false;
+                try {
+                    db.with_weak_read_lock([&]() {
+                        emergency = db.get_dynamic_global_properties().emergency_consensus_active;
+                    });
+                } catch (...) {}
+                if (emergency) {
+                    dlog("Stalled sync timeout reached but emergency consensus is active — skipping");
+                    last_block_received_time = fc::time_point::now();
+                    continue;  // next loop iteration
+                }
+
                 uint32_t head_block = db.head_block_num();
 
                 // Escalation: try lightweight P2P recovery first before heavy snapshot download.

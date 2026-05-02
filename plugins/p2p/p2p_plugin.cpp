@@ -175,6 +175,20 @@ namespace graphene {
                             dlog("Skipping head_block_num read for block #${n}: ${e}",
                                  ("n", blk_msg.block.block_num())("e", std::string(e.what())));
                         }
+                        // In DLT mode, skip sync blocks that are far behind our head.
+                        // After restart, peers may send blocks from before our head
+                        // (dead-fork blocks whose parent is not in fork_db).  Processing
+                        // each one acquires chain locks and throws unlinkable_block_exception,
+                        // wasting CPU and creating lock contention.  Skip them early.
+                        if (sync_mode && chain.db()._dlt_mode && head_block_num > 0) {
+                            int32_t behind = (int32_t)head_block_num - (int32_t)blk_msg.block.block_num();
+                            if (behind > 100) {
+                                dlog("Skipping dead-fork sync block #${n} (${gap} blocks behind head ${h} in DLT mode)",
+                                     ("n", blk_msg.block.block_num())("gap", behind)("h", head_block_num));
+                                return false;
+                            }
+                        }
+
                         int32_t gap = (int32_t)blk_msg.block.block_num() - (int32_t)head_block_num - 1;
                         if (sync_mode)
                             dlog("Chain pushing sync block #${block_num} (head: ${head}, gap: ${gap})",
@@ -983,6 +997,25 @@ namespace graphene {
                         auto timeout = fc::seconds(_stale_sync_timeout_seconds);
 
                         if (elapsed > timeout) {
+                            // Check if emergency consensus is active. During emergency mode,
+                            // the node produces blocks solo and no external blocks arrive,
+                            // so the stale sync timeout firing is expected and normal.
+                            // Triggering recovery would cause a dangerous cascade:
+                            //   resync() → peers send dead-fork blocks → possible fork switch
+                            //   → pop_block() below committed LIB → infinite loop or abort().
+                            bool emergency = false;
+                            try {
+                                chain.db().with_weak_read_lock([&]() {
+                                    emergency = chain.db().get_dynamic_global_properties().emergency_consensus_active;
+                                });
+                            } catch (...) {}
+                            if (emergency) {
+                                dlog("Stale sync timeout reached but emergency consensus is active — "
+                                     "skipping recovery (node is intentionally producing on emergency fork)");
+                                _last_block_received_time = fc::time_point::now();
+                                // Fall through to reschedule below
+                            } else {
+
                             uint32_t head_block = 0;
                             uint32_t lib_num = 0;
                             chain.db().with_weak_read_lock([&]() {
@@ -1026,6 +1059,8 @@ namespace graphene {
 
                             // Reset timer to avoid immediate retry
                             _last_block_received_time = fc::time_point::now();
+
+                            } // end !emergency
                         }
                     } catch (const fc::exception &e) {
                         wlog("Exception in stale sync check task: ${e}", ("e", e.to_detail_string()));
@@ -1316,6 +1351,12 @@ namespace graphene {
 
             void p2p_plugin::broadcast_block(const protocol::signed_block &block) {
                 ulog("Broadcasting block #${n}", ("n", block.block_num()));
+                // Reset stale sync timer on own block production.
+                // Without this, the timer only resets on external blocks (handle_block),
+                // so during emergency mode (solo production, no external blocks) the
+                // 120s stale sync timeout fires inevitably, triggering a dangerous
+                // resync cascade.  Now it tracks "last time chain advanced".
+                my->_last_block_received_time = fc::time_point::now();
                 my->node->broadcast(block_message(block));
             }
 
@@ -1350,6 +1391,24 @@ namespace graphene {
                         head_num = db.head_block_num();
                         lib_num = db.get_dynamic_global_properties().last_irreversible_block_num;
                     });
+
+                    // During emergency consensus, popping blocks and resetting fork_db
+                    // is dangerous: LIB is close to HEAD (only 1-2 undo sessions may
+                    // exist), and after fork_db reset, peer blocks from the real network
+                    // may link to the re-seeded LIB block, triggering a fork switch that
+                    // attempts to pop below committed LIB — infinite loop or crash.
+                    {
+                        bool emergency = false;
+                        db.with_weak_read_lock([&]() {
+                            emergency = db.get_dynamic_global_properties().emergency_consensus_active;
+                        });
+                        if (emergency) {
+                            wlog("resync_from_lib: SKIPPING during emergency consensus mode "
+                                 "(head=${h}, LIB=${lib}). Emergency fork must not be unwound.",
+                                 ("h", head_num)("lib", lib_num));
+                            return;
+                        }
+                    }
 
                     if (lib_num == 0 || head_num <= lib_num) {
                         wlog("resync_from_lib: nothing to pop (head=${h}, LIB=${lib})",

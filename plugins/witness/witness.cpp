@@ -252,6 +252,18 @@ namespace graphene {
                     //Start NTP time client
                     graphene::time::now();
 
+                    // Force NTP sync before first production tick to minimize the
+                    // window where get_slot_at_time() returns 0 due to unsynchronized
+                    // NTP on restart.
+                    graphene::time::update_ntp_time();
+
+                    // Log witness configuration for post-crash diagnostics
+                    ilog("Witness config: ${n} witnesses, ${k} private keys",
+                         ("n", pimpl->_witnesses.size())("k", pimpl->_private_keys.size()));
+                    for (const auto& w : pimpl->_witnesses) {
+                        ilog("  configured witness: ${w}", ("w", w));
+                    }
+
                     if (!pimpl->_witnesses.empty()) {
                         ilog("Launching block production for ${n} witnesses.", ("n", pimpl->_witnesses.size()));
                         pimpl->p2p().set_block_production(true);
@@ -449,6 +461,10 @@ namespace graphene {
                         // EMERGENCY MODE: auto-bypass both stale and participation checks.
                         // The consensus layer has determined emergency mode is needed.
                         _production_enabled = true;
+                        if (_witnesses.empty()) {
+                            elog("EMERGENCY MODE ACTIVE but no witnesses configured! "
+                                 "Block production impossible. Add --emergency-private-key to config.");
+                        }
                     } else {
                         uint32_t prate = db.witness_participation_rate();
                         if (prate >= 33 * CHAIN_1_PERCENT) {

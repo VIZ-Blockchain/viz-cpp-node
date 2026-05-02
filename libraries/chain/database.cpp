@@ -1608,8 +1608,23 @@ namespace graphene { namespace chain {
                             // blocks AND the common ancestor (it will be re-applied
                             // from branches.first).
                             if (!is_linear_extension && !branches.second.empty()) {
+                                // Guard: in DLT mode, committed undo sessions make
+                                // pop_block() a no-op (undo() has nothing to undo for
+                                // committed blocks).  head_block_id() never changes,
+                                // causing an infinite loop or hitting fork_db's
+                                // FC_ASSERT("popping head block would leave fork DB empty").
+                                // Abort the fork switch if we'd pop below LIB.
+                                auto lib_num = get_dynamic_global_properties().last_irreversible_block_num;
                                 while (head_block_id() !=
                                        branches.second.back()->data.previous) {
+                                    if (head_block_num() <= lib_num) {
+                                        wlog("Fork switch requires popping below committed LIB=${lib} in DLT mode. "
+                                             "Aborting fork switch to prevent crash.",
+                                             ("lib", lib_num));
+                                        _fork_db.remove(new_head->data.id());
+                                        FC_THROW_EXCEPTION(unlinkable_block_exception,
+                                            "fork switch would pop below committed LIB");
+                                    }
                                     ilog("FORK-SWITCH-POP: popping head #${h} (target=${t}, branches.second.back=#${b})",
                                          ("h", head_block_num())
                                          ("t", branches.second.back()->data.previous)
@@ -1653,7 +1668,13 @@ namespace graphene { namespace chain {
                                         // Linear extension error: pop any new blocks
                                         // that were applied after the common ancestor,
                                         // restoring the database to the original head.
+                                        auto lib_num_recover = get_dynamic_global_properties().last_irreversible_block_num;
                                         while (head_block_id() != common_ancestor_id) {
+                                            if (head_block_num() <= lib_num_recover) {
+                                                wlog("Linear extension recovery: would pop below committed LIB=${lib}. Aborting.",
+                                                     ("lib", lib_num_recover));
+                                                break;
+                                            }
                                             ilog("FORK-RECOVER-POP: popping head #${h} (restoring to common ancestor)",
                                                  ("h", head_block_num()));
                                             pop_block();
@@ -1664,8 +1685,14 @@ namespace graphene { namespace chain {
                                     } else if (!branches.second.empty()) {
                                         // Actual fork: pop applied blocks from new fork,
                                         // restore original fork blocks.
+                                        auto lib_num_recover = get_dynamic_global_properties().last_irreversible_block_num;
                                         while (head_block_id() !=
                                                branches.second.back()->data.previous) {
+                                            if (head_block_num() <= lib_num_recover) {
+                                                wlog("Fork recovery: would pop below committed LIB=${lib}. Aborting.",
+                                                     ("lib", lib_num_recover));
+                                                break;
+                                            }
                                             ilog("FORK-RECOVER-POP: popping head #${h} (target=${t})",
                                                  ("h", head_block_num())("t", branches.second.back()->data.previous));
                                             pop_block();
