@@ -821,6 +821,17 @@ namespace graphene {
                         chain().attempt_auto_recovery();
                         return block_production_condition::exception_producing_block;
                     }
+                    catch (const graphene::chain::unlinkable_block_exception& e) {
+                        // Fork DB broken prev chain — retrying won't help.
+                        // Roll back to LIB and resync from P2P network.
+                        elog("unlinkable_block_exception during block generation: fork_db broken. "
+                             "Rolling back to LIB and resyncing from P2P network.");
+                        p2p().resync_from_lib();
+                        _production_enabled = false;
+                        _minority_fork_recovering = true;
+                        _minority_fork_recovery_start = fc::time_point::now();
+                        return block_production_condition::minority_fork;
+                    }
                     catch (fc::exception &e) {
                         elog("${e}", ("e", e.to_detail_string()));
                         elog("Clearing pending transactions and attempting again");

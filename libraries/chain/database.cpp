@@ -1535,7 +1535,7 @@ namespace graphene { namespace chain {
                             wlog("Fork branch comparison failed (broken prev chain in fork_db): ${e}. "
                                  "Resetting fork_db to database head #${h}.",
                                  ("e", e.what())("h", head_block_num()));
-                            auto head_blk = fetch_block_by_number(head_block_num());
+                            auto head_blk = fetch_block_by_id(head_block_id());
                             _fork_db.reset();
                             if (head_blk) {
                                 _fork_db.start_block(*head_blk);
@@ -1566,7 +1566,7 @@ namespace graphene { namespace chain {
                                 wlog("fetch_branch_from failed during fork switch (broken prev chain): ${e}. "
                                      "Resetting fork_db to database head #${h}.",
                                      ("e", e.what())("h", head_block_num()));
-                                auto head_blk = fetch_block_by_number(head_block_num());
+                                auto head_blk = fetch_block_by_id(head_block_id());
                                 _fork_db.reset();
                                 if (head_blk) {
                                     _fork_db.start_block(*head_blk);
@@ -1682,7 +1682,7 @@ namespace graphene { namespace chain {
                                     } else {
                                         // branches.second empty — should not happen
                                         // after fetch_branch_from, but keep as safety.
-                                        auto head_blk = fetch_block_by_number(head_block_num());
+                                        auto head_blk = fetch_block_by_id(head_block_id());
                                         if (head_blk) {
                                             _fork_db.reset();
                                             _fork_db.start_block(*head_blk);
