@@ -510,9 +510,29 @@ namespace graphene {
                 if(last_block_post_validation_time < now_fine ){
                     last_block_post_validation_time = now;
                     if (db._debug_block_production) ilog("DEBUG_CRASH: block_post_validation tick, iterating ${n} witnesses", ("n", _witnesses.size()));
-                    //ilog("! tick last_block_post_validation_time");
+
+                    // Pre-compute the current scheduled witnesses set so we can skip
+                    // configured witnesses that are not actually scheduled.  A witness
+                    // that is not in the current schedule cannot contribute to LIB
+                    // advancement and broadcasting their post-validation is wasted
+                    // bandwidth and CPU.
+                    const witness_schedule_object &wso = db.get_witness_schedule_object();
+                    std::set<string> scheduled_witnesses_set;
+                    for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                        if (wso.current_shuffled_witnesses[i] != account_name_type()) {
+                            scheduled_witnesses_set.insert(wso.current_shuffled_witnesses[i]);
+                        }
+                    }
+
                     //get block post validation for each witness we have
                     for (auto &witness_account : _witnesses) {
+                        // Skip witnesses not in the current schedule — they cannot
+                        // contribute to block post validation and broadcasting their
+                        // signatures is pointless network spam.
+                        if (scheduled_witnesses_set.find(witness_account) == scheduled_witnesses_set.end()) {
+                            continue;
+                        }
+
                         bool ignore_witness = false;
                         if (db._debug_block_production) ilog("DEBUG_CRASH: get_block_post_validations for ${w}", ("w", witness_account));
                         auto block_post_validations = db.get_block_post_validations(witness_account);

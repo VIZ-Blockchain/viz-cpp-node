@@ -5330,6 +5330,22 @@ namespace graphene { namespace chain {
                     return;
                 }
 
+                // Reject post-validations from witnesses not in the current schedule.
+                // Only scheduled witnesses can contribute to LIB advancement; accepting
+                // validations from non-scheduled witnesses is pointless and could be
+                // exploited for spam.
+                const witness_schedule_object &wso = get_witness_schedule_object();
+                bool is_scheduled = false;
+                for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                    if (wso.current_shuffled_witnesses[i] == witness_account) {
+                        is_scheduled = true;
+                        break;
+                    }
+                }
+                if (!is_scheduled) {
+                    return;
+                }
+
                 const auto& validation_list = get_index<block_post_validation_index>().indices().get<by_id>();
                 if(!validation_list.empty()){
                     auto itr = validation_list.begin();
