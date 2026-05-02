@@ -182,6 +182,10 @@ Early-rejection checks in `_push_block` prevent sync disruption:
 
 4. **Immediate successor always allowed**: Blocks whose `previous == head_block_id()` always pass — this is the critical sync case where the next sequential block must be accepted, even when `fork_db` is empty after a restart.
 
+5. **Fork DB head-seeding**: Before pushing to `fork_db`, if `new_block.previous == head_block_id()` and the head block is NOT in `fork_db`, the head block is fetched from the block log and seeded into `fork_db` via `start_block()`. This ensures the incoming block can link to the chain even after snapshot import, stale sync recovery, or `fork_db` trimming where the head was absent. Without this, `fork_db::_push_block()` would throw `unlinkable_block_exception` ("block does not link to known chain"), silently rejecting valid next-blocks. This also fixes witness nodes generating their own blocks (where `generate_block()` sets `pending_block.previous = head_block_id()`).
+
+6. **Direct-extension bypass**: After pushing to `fork_db`, if `new_block.previous == head_block_id()`, the fork switch logic is bypassed entirely and the block falls through to `apply_block()`. This handles the case where `fork_db._head` points to a stale higher block accumulated from previous failed sync cycles (stale sync recovery does not reset `fork_db`), preventing valid next-blocks from being silently rejected by the fork switch comparison.
+
 ### Deferred Resize and Sync Recovery
 
 When shared memory is exhausted during block processing, the node schedules a deferred resize and throws `deferred_resize_exception`. The P2P layer handles this as a transient local condition:

@@ -584,6 +584,25 @@ Both stale sync detectors skip recovery during emergency consensus if head is st
 
 This prevents false recovery triggers when the node is receiving emergency blocks from a master but not through the normal P2P sync path.
 
+### Fork DB State After Stale Sync Recovery
+
+Stale sync recovery (`resync()`) resets peer state and sync queues but does **not** reset `fork_db`. This means `fork_db._head` can point to a stale higher block accumulated from previous failed sync cycles.
+
+Without mitigation, this causes a permanent sync stall:
+
+1. `fork_db._head` points to block #N+5 from a previous cycle
+2. Database head is at block #N (the actual applied chain tip)
+3. Block #N+1 arrives from peer — its `previous` (#N) may not be in `fork_db`
+4. If #N is missing from `fork_db`: `unlinkable_block_exception` → block silently rejected
+5. If #N+1 is a duplicate in `fork_db`: returns stale `_head` (#N+5) → fork switch logic rejects
+6. Head never advances → node re-enters sync → peer says "up-to-date" → repeat
+
+**Mitigation in `_push_block()`:**
+- **Fork DB head-seeding:** Before pushing to `fork_db`, if the incoming block extends `head_block_id()` and the head is not in `fork_db`, the head block is seeded via `fork_db.start_block()`. This ensures the block can link.
+- **Direct-extension bypass:** After pushing to `fork_db`, if `new_block.previous == head_block_id()`, the fork switch logic is bypassed entirely and the block is applied directly. This handles the stale `_head` pointing to a higher block.
+
+See [block-processing.md](block-processing.md) for details.
+
 ---
 
 ## Key Configuration Constants

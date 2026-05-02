@@ -107,6 +107,49 @@ Source: [database.cpp:1125-1160](../../libraries/chain/database.cpp#L1125)
 
 ---
 
+## Fork DB Head-Seeding
+
+Source: [database.cpp `_push_block`](../../libraries/chain/database.cpp)
+
+Before pushing a block to `fork_db`, `_push_block()` ensures the current database head block is present in `fork_db`. After snapshot import, stale sync recovery, or fork_db trimming, the head block may be absent from `fork_db`'s `_index`.
+
+Without this seed, any block whose `previous == head_block_id()` would throw `unlinkable_block_exception` inside `fork_database::_push_block()` ("block does not link to known chain"), silently rejecting valid next-blocks and preventing head advancement.
+
+```
+if new_block.previous == head_block_id()
+   AND head_block_id() NOT in fork_db:
+     fetch head block from block log
+     fork_db.start_block(head_block)   ← seeds fork_db with the head
+```
+
+This also fixes **witness nodes that generate their own blocks**: `generate_block()` sets `pending_block.previous = head_block_id()`, and without the seed the self-generated block would fail to push into `fork_db`.
+
+---
+
+## Direct-Extension Bypass
+
+Source: [database.cpp `_push_block`](../../libraries/chain/database.cpp)
+
+After pushing a block to `fork_db`, `_push_block()` checks whether the block directly extends the database head (`new_block.previous == head_block_id()`). If so, the fork switch logic is bypassed entirely and the block falls through to `apply_block()`.
+
+This handles the case where `fork_db._head` points to a stale higher block accumulated from previous failed sync cycles (stale sync recovery does not reset `fork_db`). Without this bypass:
+
+1. `fork_db.push_block()` returns the stale `_head` (e.g., block #79609893)
+2. `new_head->data.previous != head_block_id()` evaluates to TRUE
+3. The fork switch logic either rejects the block (head not in fork_db) or can't compare branches
+4. The valid next-block is silently dropped, head never advances
+
+```
+if new_block.previous == head_block_id():
+    → skip fork switch, fall through to apply_block
+else if new_head->data.previous != head_block_id():
+    → existing fork switch logic (unchanged)
+```
+
+Together with fork_db head-seeding, this ensures blocks that correctly link to the database head are always applied, regardless of `fork_db`'s internal `_head` state.
+
+---
+
 ## Fork Switch Flow
 
 When a node switches to a different fork:
