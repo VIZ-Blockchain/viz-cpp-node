@@ -1145,10 +1145,55 @@ namespace graphene {
 
                     if (!_suspend_fetching_sync_blocks) {
                         std::map<peer_connection_ptr, std::vector<item_hash_t>> sync_item_requests_to_send;
+                        std::set<peer_connection_ptr> peers_with_completed_sync;
 
                         {
                             ASSERT_TASK_NOT_PREEMPTED();
                             std::set<item_hash_t> sync_items_to_request;
+
+                            // Defensive cleanup: remove blocks from ids_of_items_to_get
+                            // that are already on the chain (e.g. applied via fork switch
+                            // during a previous sync block push).  Without this, stale
+                            // entries cause unnecessary re-requests and can leave
+                            // we_need_sync_items_from_peer permanently true.
+                            uint32_t current_head = _delegate->get_block_number(_delegate->get_head_block_id());
+                            for (const peer_connection_ptr &peer : _active_connections) {
+                                if (!peer->we_need_sync_items_from_peer ||
+                                    peer->ids_of_items_to_get.empty())
+                                    continue;
+                                bool removed_any = false;
+                                auto &q = peer->ids_of_items_to_get;
+                                for (auto it = q.begin(); it != q.end(); ) {
+                                    uint32_t blk_num = _delegate->get_block_number(*it);
+                                    if (blk_num != 0 && blk_num <= current_head &&
+                                        _delegate->has_item(item_id(_sync_item_type, *it))) {
+                                        peer->last_block_delegate_has_seen = *it;
+                                        it = q.erase(it);
+                                        removed_any = true;
+                                    } else {
+                                        ++it;
+                                    }
+                                }
+                                if (removed_any) {
+                                    fc_ilog(fc::logger::get("sync"),
+                                         "fetch_sync_items_loop: cleaned stale ids_of_items_to_get "
+                                         "for peer ${peer} (${remaining} remaining, head=#${head})",
+                                         ("peer", peer->get_remote_endpoint())
+                                         ("remaining", q.size())
+                                         ("head", current_head));
+                                    // Check if ALL sync lists are now empty — if so,
+                                    // we need to send a final synopsis to confirm sync
+                                    // completion.  Do NOT clear we_need_sync_items_from_peer
+                                    // directly — the response handler at
+                                    // on_blockchain_item_ids_inventory will do it.
+                                    if (q.empty() &&
+                                        peer->ids_of_items_being_processed.empty() &&
+                                        peer->sync_items_requested_from_peer.empty() &&
+                                        peer->number_of_unfetched_item_ids == 0) {
+                                        peers_with_completed_sync.insert(peer);
+                                    }
+                                }
+                            }
 
                             // for each idle peer that we're syncing with
                             for (const peer_connection_ptr &peer : _active_connections) {
@@ -1198,6 +1243,18 @@ namespace graphene {
                                 }
                             }
                         } // end non-preemptable section
+
+                        // Send final synopsis to peers whose sync lists are now
+                        // fully empty after stale-item cleanup.  This must be
+                        // outside the ASSERT_TASK_NOT_PREEMPTED block because
+                        // send_message yields.
+                        for (const peer_connection_ptr &peer : peers_with_completed_sync) {
+                            fc_ilog(fc::logger::get("sync"),
+                                 "fetch_sync_items_loop: peer ${peer} sync lists all empty "
+                                 "after stale cleanup — sending final synopsis",
+                                 ("peer", peer->get_remote_endpoint()));
+                            fetch_next_batch_of_item_ids_from_peer(peer.get());
+                        }
 
                         if (!sync_item_requests_to_send.empty()) {
                             fc_dlog(fc::logger::get("sync"),
@@ -1555,6 +1612,29 @@ namespace graphene {
                                  ("peer", active_peer->get_remote_endpoint())
                                  ("sec", (fc::time_point::now() - active_peer->last_peer_sync_request_time).count() / 1000000));
                             active_peer->peer_needs_sync_items_from_us = false;
+                        }
+
+                        // Safety net: detect stuck we_need_sync_items_from_peer.
+                        // After a fork switch applies blocks that were also in the
+                        // sync queue, all sync lists may end up empty but the flag
+                        // stays true because no code path cleared it.  Task 1 and
+                        // Task 2 (fetch_sync_items_loop / process_backlog) should
+                        // handle this, but if they both miss it (e.g. race or edge
+                        // case), this 30-second safety net clears the flag directly.
+                        if (active_peer->we_need_sync_items_from_peer &&
+                            active_peer->ids_of_items_to_get.empty() &&
+                            active_peer->ids_of_items_being_processed.empty() &&
+                            active_peer->sync_items_requested_from_peer.empty() &&
+                            active_peer->number_of_unfetched_item_ids == 0 &&
+                            !active_peer->item_ids_requested_from_peer &&
+                            active_peer->last_sync_item_received_time != fc::time_point() &&
+                            active_peer->last_sync_item_received_time < fc::time_point::now() - fc::seconds(30)) {
+                            fc_wlog(fc::logger::get("sync"),
+                                 "auto-clearing stuck we_need_sync_items_from_peer for peer ${peer} "
+                                 "(all sync lists empty for ${sec}s)",
+                                 ("peer", active_peer->get_remote_endpoint())
+                                 ("sec", (fc::time_point::now() - active_peer->last_sync_item_received_time).count() / 1000000));
+                            active_peer->we_need_sync_items_from_peer = false;
                         }
 
                         if (active_peer->connection_initiation_time <
@@ -4090,8 +4170,35 @@ namespace graphene {
                                 }, "send_sync_block_to_node_delegate"));
                                 ++blocks_processed;
                                 block_processed_this_iteration = true;
-                            } else
-                                dlog("Already received and accepted this block (presumably through normal inventory mechanism), treating it as accepted");
+                            } else {
+                                // Block was already applied (e.g. via broadcast + fork
+                                // switch).  Clean up ids_of_items_being_processed —
+                                // without this, the orphaned entry prevents sync
+                                // completion, leaving we_need_sync_items_from_peer
+                                // permanently true and blocking broadcast inventory.
+                                item_hash_t accepted_block_id = received_block_iter->block_id;
+                                _received_sync_items.erase(received_block_iter);
+                                if (_total_number_of_unfetched_items > 0)
+                                    --_total_number_of_unfetched_items;
+                                for (const peer_connection_ptr &peer : _active_connections) {
+                                    ASSERT_TASK_NOT_PREEMPTED();
+                                    auto it = peer->ids_of_items_being_processed.find(accepted_block_id);
+                                    if (it != peer->ids_of_items_being_processed.end()) {
+                                        peer->last_block_delegate_has_seen = accepted_block_id;
+                                        peer->ids_of_items_being_processed.erase(it);
+                                        if (peer->ids_of_items_to_get.empty() &&
+                                            peer->number_of_unfetched_item_ids == 0 &&
+                                            peer->ids_of_items_being_processed.empty()) {
+                                            peers_with_newly_empty_item_lists.insert(peer);
+                                        }
+                                    }
+                                }
+                                dlog("Already received and accepted this block "
+                                     "(presumably through normal inventory mechanism), "
+                                     "cleaned up ids_of_items_being_processed");
+                                ++blocks_processed;
+                                block_processed_this_iteration = true;
+                            }
 
                             break; // start iterating _received_sync_items from the beginning
                         } // end if potential_first_block
@@ -4112,6 +4219,19 @@ namespace graphene {
                 } while (block_processed_this_iteration);
 
                 dlog("leaving process_backlog_of_sync_blocks, ${count} processed", ("count", blocks_processed));
+
+                // Send final synopsis to peers whose sync item lists became
+                // empty because their blocks were already accepted (e.g. via
+                // broadcast + fork switch).  fetch_next_batch_of_item_ids_from_peer
+                // yields (sends a network message), so it must be after the
+                // do-while loop, not inside the ASSERT_TASK_NOT_PREEMPTED block.
+                for (const peer_connection_ptr &peer : peers_with_newly_empty_item_lists) {
+                    fc_ilog(fc::logger::get("sync"),
+                         "sync: peer ${peer} lists now empty (already-accepted block) "
+                         "— sending final synopsis to check completion",
+                         ("peer", peer->get_remote_endpoint()));
+                    fetch_next_batch_of_item_ids_from_peer(peer.get());
+                }
 
                 if (!_suspend_fetching_sync_blocks) {
                     trigger_fetch_sync_items_loop();
