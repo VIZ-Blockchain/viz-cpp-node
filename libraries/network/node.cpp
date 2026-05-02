@@ -4074,7 +4074,18 @@ namespace graphene {
                 }
 
                 for (const peer_connection_ptr &peer : peers_we_need_to_sync_to) {
-                    start_synchronizing_with_peer(peer);
+                    // These peers are already in sync (we_need=false, peer_needs=false)
+                    // and just need to be notified about the new block.  Use
+                    // fetch_next_batch_of_item_ids_from_peer() directly instead of
+                    // start_synchronizing_with_peer() to avoid setting
+                    // we_need_sync_items_from_peer=true, which would suppress
+                    // broadcast inventory for ALL peers and cause the node to
+                    // miss blocks — critical for DLT/emergency-mode witnesses.
+                    fc_ilog(fc::logger::get("sync"),
+                         "sync: notifying in-sync peer ${peer} about new block "
+                         "(lightweight synopsis, not full sync restart)",
+                         ("peer", peer->get_remote_endpoint()));
+                    fetch_next_batch_of_item_ids_from_peer(peer.get());
                 }
 
                 dlog("Leaving send_sync_block_to_node_delegate");
