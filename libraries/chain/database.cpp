@@ -1765,7 +1765,7 @@ namespace graphene { namespace chain {
                     }
                 }
 
-                return false;
+                return true;
             } FC_CAPTURE_AND_RETHROW()
         }
 

@@ -3736,7 +3736,9 @@ namespace graphene {
                         ilog("Sync block #${num} not applied (already on chain, micro-fork, or parent unknown ahead)",
                              ("num", block_message_to_send.block.block_num()));
                     }
-                    _most_recent_blocks_accepted.push_back(block_message_to_send.block_id);
+                    if (accepted) {
+                        _most_recent_blocks_accepted.push_back(block_message_to_send.block_id);
+                    }
 
                     client_accepted_block = true;
 
@@ -4298,6 +4300,7 @@ namespace graphene {
                     // we don't know they're the same (for the peer in normal operation, it has only told us the
                     // message id, for the peer in the sync case we only known the block_id).
                     fc::time_point message_validated_time;
+                    bool block_was_accepted = false;
                     if (std::find(_most_recent_blocks_accepted.begin(), _most_recent_blocks_accepted.end(),
                             block_message_to_process.block_id) ==
                         _most_recent_blocks_accepted.end()) {
@@ -4310,6 +4313,7 @@ namespace graphene {
                                         ("peer", originating_peer->get_remote_endpoint())("id", message_hash));
                         bool accepted = _delegate->handle_block(block_message_to_process, false, contained_transaction_message_ids, originating_peer->get_remote_endpoint());
                         _message_ids_currently_being_processed.erase(message_hash);
+                        block_was_accepted = accepted;
                         if (!accepted) {
                             uint32_t head_num = _delegate->get_block_number(_delegate->get_head_block_id());
                             uint32_t block_num = block_message_to_process.block.block_num();
@@ -4337,33 +4341,35 @@ namespace graphene {
                             }
                         }
                         message_validated_time = fc::time_point::now();
-                        ilog("Successfully pushed block ${num} (id:${id})",
-                                ("num", block_message_to_process.block.block_num())
-                                        ("id", block_message_to_process.block_id));
-                        _most_recent_blocks_accepted.push_back(block_message_to_process.block_id);
+                        if (accepted) {
+                            ilog("Successfully pushed block ${num} (id:${id})",
+                                    ("num", block_message_to_process.block.block_num())
+                                            ("id", block_message_to_process.block_id));
+                            _most_recent_blocks_accepted.push_back(block_message_to_process.block_id);
 
-                        // Good block from this peer — reset strike counter so peers
-                        // recover from occasional stale/unlinkable blocks.
-                        if (originating_peer->unlinkable_block_strikes > 0) {
-                            originating_peer->unlinkable_block_strikes = 0;
-                        }
+                            // Good block from this peer — reset strike counter so peers
+                            // recover from occasional stale/unlinkable blocks.
+                            if (originating_peer->unlinkable_block_strikes > 0) {
+                                originating_peer->unlinkable_block_strikes = 0;
+                            }
 
-                        bool new_transaction_discovered = false;
-                        for (const item_hash_t &transaction_message_hash : contained_transaction_message_ids) {
-                            _items_to_fetch.get<item_id_index>().erase(item_id(trx_message_type, transaction_message_hash));
-                            // there are two ways we could behave here: we could either act as if we received
-                            // the transaction outside the block and offer it to our peers, or we could just
-                            // forget about it (we would still advertise this block to our peers so they should
-                            // get the transaction through that mechanism).
-                            // We take the second approach, bring in the next if block to try the first approach
-                            //if (items_erased)
-                            //{
-                            //  new_transaction_discovered = true;
-                            //  _new_inventory.insert(item_id(trx_message_type, transaction_message_hash));
-                            //}
-                        }
-                        if (new_transaction_discovered) {
-                            trigger_advertise_inventory_loop();
+                            bool new_transaction_discovered = false;
+                            for (const item_hash_t &transaction_message_hash : contained_transaction_message_ids) {
+                                _items_to_fetch.get<item_id_index>().erase(item_id(trx_message_type, transaction_message_hash));
+                                // there are two ways we could behave here: we could either act as if we received
+                                // the transaction outside the block and offer it to our peers, or we could just
+                                // forget about it (we would still advertise this block to our peers so they should
+                                // get the transaction through that mechanism).
+                                // We take the second approach, bring in the next if block to try the first approach
+                                //if (items_erased)
+                                //{
+                                //  new_transaction_discovered = true;
+                                //  _new_inventory.insert(item_id(trx_message_type, transaction_message_hash));
+                                //}
+                            }
+                            if (new_transaction_discovered) {
+                                trigger_advertise_inventory_loop();
+                            }
                         }
                     } else {
                         fc_ilog(fc::logger::get("sync"),
@@ -4372,61 +4378,64 @@ namespace graphene {
                                         ("block_hash", block_message_to_process.block_id)
                                         ("peer", originating_peer->get_remote_endpoint())("id", message_hash));
                         dlog("Already received and accepted this block (presumably through sync mechanism), treating it as accepted");
+                        block_was_accepted = true;
                     }
 
-                    dlog("client validated the block, advertising it to other peers");
+                    if (block_was_accepted) {
+                        dlog("client validated the block, advertising it to other peers");
 
-                    item_id block_message_item_id(core_message_type_enum::block_message_type, message_hash);
-                    uint32_t block_number = block_message_to_process.block.block_num();
-                    fc::time_point_sec block_time = block_message_to_process.block.timestamp;
+                        item_id block_message_item_id(core_message_type_enum::block_message_type, message_hash);
+                        uint32_t block_number = block_message_to_process.block.block_num();
+                        fc::time_point_sec block_time = block_message_to_process.block.timestamp;
 
-                    for (const peer_connection_ptr &peer : _active_connections) {
-                        ASSERT_TASK_NOT_PREEMPTED(); // don't yield while iterating over _active_connections
-
-                        auto iter = peer->inventory_peer_advertised_to_us.find(block_message_item_id);
-                        if (iter !=
-                            peer->inventory_peer_advertised_to_us.end()) {
-                            // this peer offered us the item.  It will eventually expire from the peer's
-                            // inventory_peer_advertised_to_us list after some time has passed (currently 2 minutes).
-                            // For now, it will remain there, which will prevent us from offering the peer this
-                            // block back when we rebroadcast the block below
-                            peer->last_block_delegate_has_seen = block_message_to_process.block_id;
-                            peer->last_block_time_delegate_has_seen = block_time;
-                        }
-                        peer->clear_old_inventory();
-                    }
-                    message_propagation_data propagation_data{
-                            message_receive_time, message_validated_time,
-                            originating_peer->node_id
-                    };
-                    broadcast(block_message_to_process, propagation_data);
-                    _message_cache.block_accepted();
-
-                    if (is_hard_fork_block(block_number)) {
-                        // we just pushed a hard fork block.  Find out if any of our peers are running clients
-                        // that will be unable to process future blocks
                         for (const peer_connection_ptr &peer : _active_connections) {
-                            if (peer->last_known_fork_block_number != 0) {
-                                uint32_t next_fork_block_number = get_next_known_hard_fork_block_number(peer->last_known_fork_block_number);
-                                if (next_fork_block_number != 0 &&
-                                    next_fork_block_number <= block_number) {
-                                    peers_to_disconnect.insert(peer);
+                            ASSERT_TASK_NOT_PREEMPTED(); // don't yield while iterating over _active_connections
+
+                            auto iter = peer->inventory_peer_advertised_to_us.find(block_message_item_id);
+                            if (iter !=
+                                peer->inventory_peer_advertised_to_us.end()) {
+                                // this peer offered us the item.  It will eventually expire from the peer's
+                                // inventory_peer_advertised_to_us list after some time has passed (currently 2 minutes).
+                                // For now, it will remain there, which will prevent us from offering the peer this
+                                // block back when we rebroadcast the block below
+                                peer->last_block_delegate_has_seen = block_message_to_process.block_id;
+                                peer->last_block_time_delegate_has_seen = block_time;
+                            }
+                            peer->clear_old_inventory();
+                        }
+                        message_propagation_data propagation_data{
+                                message_receive_time, message_validated_time,
+                                originating_peer->node_id
+                        };
+                        broadcast(block_message_to_process, propagation_data);
+                        _message_cache.block_accepted();
+
+                        if (is_hard_fork_block(block_number)) {
+                            // we just pushed a hard fork block.  Find out if any of our peers are running clients
+                            // that will be unable to process future blocks
+                            for (const peer_connection_ptr &peer : _active_connections) {
+                                if (peer->last_known_fork_block_number != 0) {
+                                    uint32_t next_fork_block_number = get_next_known_hard_fork_block_number(peer->last_known_fork_block_number);
+                                    if (next_fork_block_number != 0 &&
+                                        next_fork_block_number <= block_number) {
+                                        peers_to_disconnect.insert(peer);
 #ifdef ENABLE_DEBUG_ULOGS
-                                    ulog("Disconnecting from peer because their version is too old.  Their version date: ${date}", ("date", peer->graphene_git_revision_unix_timestamp));
+                                        ulog("Disconnecting from peer because their version is too old.  Their version date: ${date}", ("date", peer->graphene_git_revision_unix_timestamp));
 #endif
+                                    }
                                 }
                             }
+                            if (!peers_to_disconnect.empty()) {
+                                std::ostringstream disconnect_reason_stream;
+                                disconnect_reason_stream
+                                        << "You need to upgrade your client due to hard fork at block "
+                                        << block_number;
+                                disconnect_reason = disconnect_reason_stream.str();
+                                disconnect_exception = fc::exception(FC_LOG_MESSAGE(error, "You need to upgrade your client due to hard fork at block ${block_number}",
+                                        ("block_number", block_number)));
+                            }
                         }
-                        if (!peers_to_disconnect.empty()) {
-                            std::ostringstream disconnect_reason_stream;
-                            disconnect_reason_stream
-                                    << "You need to upgrade your client due to hard fork at block "
-                                    << block_number;
-                            disconnect_reason = disconnect_reason_stream.str();
-                            disconnect_exception = fc::exception(FC_LOG_MESSAGE(error, "You need to upgrade your client due to hard fork at block ${block_number}",
-                                    ("block_number", block_number)));
-                        }
-                    }
+                    } // if (block_was_accepted)
                 }
                 catch (const fc::canceled_exception &) {
                     throw;
