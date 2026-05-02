@@ -4158,17 +4158,30 @@ namespace graphene {
                         bool accepted = _delegate->handle_block(block_message_to_process, false, contained_transaction_message_ids, originating_peer->get_remote_endpoint());
                         _message_ids_currently_being_processed.erase(message_hash);
                         if (!accepted) {
-                            // The chain returned false — block was not applied.  This can
-                            // happen for normal reasons (block already on chain, or micro-fork
-                            // block added to fork_db without triggering a fork switch).
-                            // Dead-fork blocks (parent not in fork_db, at/below head) throw
-                            // unlinkable_block_exception from _push_block, so they are
-                            // handled by the unlinkable_block_exception catcher below.
-                            // For normal false returns, we still track the block as accepted
-                            // for P2P inventory purposes since the block IS valid — it just
-                            // didn't become the new head.
-                            ilog("Block #${num} returned false (already on chain or micro-fork)",
-                                 ("num", block_message_to_process.block.block_num()));
+                            uint32_t head_num = _delegate->get_block_number(_delegate->get_head_block_id());
+                            uint32_t block_num = block_message_to_process.block.block_num();
+                            if (block_num > head_num + 1 &&
+                                !originating_peer->we_need_sync_items_from_peer) {
+                                // Block is ahead of head but couldn't be applied — its parent
+                                // is missing.  It was stored in fork_db's unlinked index by
+                                // _push_block() which caught the unlinkable_block_exception
+                                // silently (to avoid killing in-progress sync).  In broadcast
+                                // mode we must explicitly restart sync to fetch the missing
+                                // parent blocks; without this the node stalls permanently.
+                                wlog("Broadcast block #${num} is ahead of head #${head} but "
+                                     "couldn't be applied (parent missing) — restarting sync "
+                                     "with peer ${peer} to fetch gap blocks",
+                                     ("num", block_num)("head", head_num)
+                                     ("peer", originating_peer->get_remote_endpoint()));
+                                restart_sync_exception = fc::exception(
+                                    FC_LOG_MESSAGE(warn, "Gap block in broadcast mode"));
+                            } else {
+                                // The chain returned false — block was not applied.  This can
+                                // happen for normal reasons (block already on chain, or micro-fork
+                                // block added to fork_db without triggering a fork switch).
+                                ilog("Block #${num} returned false (already on chain or micro-fork)",
+                                     ("num", block_num));
+                            }
                         }
                         message_validated_time = fc::time_point::now();
                         ilog("Successfully pushed block ${num} (id:${id})",

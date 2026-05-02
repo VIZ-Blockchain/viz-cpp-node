@@ -794,6 +794,7 @@ public:
     fc::future<void> stalled_sync_check_future;
     std::atomic<bool> stalled_sync_check_running{false};
     bool _p2p_recovery_attempted = false;  // guard: try P2P recovery before snapshot download
+    uint32_t _last_stalled_check_head = 0;  // track head for emergency follower detection
     std::atomic<bool> _snapshot_reloading{false};  // guard: block on_applied_block during snapshot reload
 
     void create_snapshot(const fc::path& output_path);
@@ -1755,12 +1756,6 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
             auto timeout = fc::minutes(stalled_sync_timeout_minutes);
 
             if (elapsed > timeout) {
-                // During emergency consensus, the node produces blocks solo and
-                // no external blocks arrive.  While on_applied_block resets
-                // last_block_received_time for own-produced blocks, guard against
-                // edge cases (e.g. production hasn't started yet).  Triggering
-                // resync or snapshot download would replace the emergency fork
-                // state, which is catastrophic.
                 bool emergency = false;
                 try {
                     db.with_weak_read_lock([&]() {
@@ -1768,9 +1763,26 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                     });
                 } catch (...) {}
                 if (emergency) {
-                    dlog("Stalled sync timeout reached but emergency consensus is active — skipping");
-                    last_block_received_time = fc::time_point::now();
-                    continue;  // next loop iteration
+                    uint32_t current_head = 0;
+                    try {
+                        db.with_weak_read_lock([&]() {
+                            current_head = db.head_block_num();
+                        });
+                    } catch (...) {}
+                    if (current_head > _last_stalled_check_head) {
+                        dlog("Stalled sync timeout reached but emergency consensus is active "
+                             "and head is advancing (${h} > ${prev}) \u2014 skipping",
+                             ("h", current_head)("prev", _last_stalled_check_head));
+                        _last_stalled_check_head = current_head;
+                        last_block_received_time = fc::time_point::now();
+                        continue;
+                    }
+                    // Head is stuck \u2014 this is a follower node. Allow recovery.
+                    wlog("Stalled sync timeout during emergency consensus but head is stuck "
+                         "at #${h} \u2014 allowing recovery for follower node",
+                         ("h", current_head));
+                    _last_stalled_check_head = current_head;
+                    // Fall through to existing P2P recovery / snapshot download logic
                 }
 
                 uint32_t head_block = db.head_block_num();

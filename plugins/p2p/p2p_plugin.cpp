@@ -119,6 +119,7 @@ namespace graphene {
                     bool _stale_sync_enabled = true;
                     uint32_t _stale_sync_timeout_seconds = 120;
                     fc::time_point _last_block_received_time;
+                    uint32_t _last_stale_check_head = 0;  // track head for emergency follower detection
                     fc::future<void> _stale_sync_task_done;
 
                     void stale_sync_check_task();
@@ -1009,12 +1010,34 @@ namespace graphene {
                                     emergency = chain.db().get_dynamic_global_properties().emergency_consensus_active;
                                 });
                             } catch (...) {}
+                            bool skip_recovery = false;
                             if (emergency) {
-                                dlog("Stale sync timeout reached but emergency consensus is active — "
-                                     "skipping recovery (node is intentionally producing on emergency fork)");
-                                _last_block_received_time = fc::time_point::now();
-                                // Fall through to reschedule below
-                            } else {
+                                uint32_t current_head = 0;
+                                try {
+                                    chain.db().with_weak_read_lock([&]() {
+                                        current_head = chain.db().head_block_num();
+                                    });
+                                } catch (...) {}
+                                if (current_head > _last_stale_check_head) {
+                                    // Head is advancing — node is producing emergency blocks
+                                    // or still receiving them. Skip recovery.
+                                    dlog("Stale sync timeout reached but emergency consensus is active "
+                                         "and head is advancing (${h} > ${prev}) — skipping recovery",
+                                         ("h", current_head)("prev", _last_stale_check_head));
+                                    _last_stale_check_head = current_head;
+                                    _last_block_received_time = fc::time_point::now();
+                                    skip_recovery = true;
+                                } else {
+                                    // Head is NOT advancing despite emergency consensus being active.
+                                    // This node is a follower that lost sync with the master.
+                                    // Allow recovery to proceed.
+                                    wlog("Stale sync timeout during emergency consensus but head is stuck "
+                                         "at #${h} — triggering recovery for follower node",
+                                         ("h", current_head));
+                                    _last_stale_check_head = current_head;
+                                }
+                            }
+                            if (!skip_recovery) {
 
                             uint32_t head_block = 0;
                             uint32_t lib_num = 0;
@@ -1060,7 +1083,7 @@ namespace graphene {
                             // Reset timer to avoid immediate retry
                             _last_block_received_time = fc::time_point::now();
 
-                            } // end !emergency
+                            } // end !skip_recovery
                         }
                     } catch (const fc::exception &e) {
                         wlog("Exception in stale sync check task: ${e}", ("e", e.to_detail_string()));
