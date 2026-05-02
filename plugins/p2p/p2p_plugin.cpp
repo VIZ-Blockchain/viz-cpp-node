@@ -143,11 +143,11 @@ namespace graphene {
                 }
 
                 bool p2p_plugin_impl::handle_block(const block_message &blk_msg, bool sync_mode, std::vector<fc::uint160_t> &, fc::optional<fc::ip::endpoint> originating_peer_endpoint) {
-                    try {
-                        // Track last block received time for stale sync detection
-                        _last_block_received_time = fc::time_point::now();
+                    // Track last block received time for stale sync detection
+                    _last_block_received_time = fc::time_point::now();
 
-                        uint32_t head_block_num = 0;
+                    uint32_t head_block_num = 0;
+                    try {
                         try {
                             chain.db().with_weak_read_lock([&]() {
                                 head_block_num = chain.db().head_block_num();
