@@ -22,6 +22,9 @@
 using std::string;
 using std::vector;
 
+using namespace graphene::chain;
+using namespace graphene::protocol;
+
 namespace bpo = boost::program_options;
 
 void new_chain_banner(const graphene::chain::database &db) {
@@ -516,10 +519,10 @@ namespace graphene {
                     // that is not in the current schedule cannot contribute to LIB
                     // advancement and broadcasting their post-validation is wasted
                     // bandwidth and CPU.
-                    const graphene::chain::witness_schedule_object &wso = db.get_witness_schedule_object();
+                    const witness_schedule_object &wso = db.get_witness_schedule_object();
                     std::set<string> scheduled_witnesses_set;
                     for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
-                        if (wso.current_shuffled_witnesses[i] != graphene::protocol::account_name_type()) {
+                        if (wso.current_shuffled_witnesses[i] != account_name_type()) {
                             scheduled_witnesses_set.insert(wso.current_shuffled_witnesses[i]);
                         }
                     }
