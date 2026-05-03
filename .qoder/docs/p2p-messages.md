@@ -50,7 +50,8 @@ enum core_message_type_enum {
     check_firewall_reply_message_type      = 5015,
     get_current_connections_request_message_type = 5016,
     get_current_connections_reply_message_type   = 5017,
-    core_message_type_last                 = 5099,
+    chain_status_announcement_message_type = 5018,
+    core_message_type_last                 = 5018,
 
     block_post_validation_message_type     = 6009,
 };
@@ -268,6 +269,10 @@ struct hello_message {
 | `last_known_block_time` | time_point_sec | Head block timestamp |
 | `last_known_fork_block_number` | uint32 | Latest hardfork block known to this node |
 | `chain_id` | chain_id_type | Blockchain chain ID |
+| `dlt_mode` | bool | Node is in DLT (rolling block log) mode |
+| `dlt_earliest_block` | uint32 | Earliest available block in DLT window (only present if dlt_mode=true) |
+| `emergency_consensus_active` | bool | Emergency consensus is active on this node |
+| `has_emergency_key` | bool | Node holds the emergency committee private key (block_producer heuristic) |
 
 **Validation checks performed on hello:**
 1. ECDH signature validation (line 2338)
@@ -408,6 +413,35 @@ struct block_post_validation_message {
 **Validation:** Recovers the public key from the signature, compares against the witness's on-chain `signing_key`. If matched, calls `apply_block_post_validation()`.
 
 **Broadcast:** Sent by witnesses after producing a block. Also emitted via [p2p_plugin.cpp](file:///d:/Work/viz-cpp-node/plugins/p2p/p2p_plugin.cpp) `broadcast_block_post_validation()` (line 1470).
+
+---
+
+### 5018 — chain_status_announcement_message
+
+**Purpose:** Announces a node's chain state — head block, irreversible block, DLT mode window, and emergency consensus status — to all connected peers. Sent automatically when a new peer joins (via `connection_count_changed`) and can also be broadcast manually via `p2p_plugin::broadcast_chain_status()`.
+
+This message complements the hello handshake (5006): the hello provides a **snapshot** of chain state at connection time, while chain_status_announcement provides **live updates** when DLT window shifts or emergency consensus activates/deactivates during an ongoing connection.
+
+**Structure:**
+```cpp
+struct chain_status_announcement_message {
+    static const core_message_type_enum type;   // = 5018
+
+    block_id_type  head_block_id;                // hash of our head block
+    uint32_t       head_block_num;               // height of our head block
+    uint32_t       last_irreversible_block_num;  // LIB height
+    bool           dlt_mode;                     // true if rolling block log mode
+    uint32_t       dlt_earliest_block;           // lowest block number we can serve
+    bool           emergency_consensus_active;   // true if emergency consensus is on
+    bool           has_emergency_key;            // true if we hold committee private key
+};
+```
+
+**Handler:** [p2p_plugin.cpp](file:///d:/Work/viz-cpp-node/plugins/p2p/p2p_plugin.cpp) `handle_message()` (line 326) — logs the received chain state at debug level. The peer's prior hello `user_data` already stores this info; this message serves as a refresh.
+
+**Broadcast trigger:** [p2p_plugin.cpp](file:///d:/Work/viz-cpp-node/plugins/p2p/p2p_plugin.cpp) `connection_count_changed()` (line 793) — when the connection count increases (new peer joined), a `chain_status_announcement_message` is built from the chain database and broadcast to all peers.
+
+**Manual call site:** `p2p_plugin::broadcast_chain_status()` — can be called from any plugin (e.g., witness or snapshot) when chain state materially changes.
 
 ---
 
@@ -640,6 +674,9 @@ message received
      +-- get_current_connections_req (5016) → send reply
      +-- get_current_connections_reply (5017) → diagnostics
      |
+     +-- chain_status_announcement (5018) → handle_message()
+     |     → log DLT/emergency state from peer
+     |
      +-- hello_message (5006) → on_hello_message()
      |     → validate, accept or reject
      |
@@ -691,6 +728,88 @@ When a DLT node (rolling window of blocks) receives a `fetch_blockchain_item_ids
 ### Near-Caught-Up Sync Blocks
 
 [p2p_plugin.cpp](file:///d:/Work/viz-cpp-node/plugins/p2p/p2p_plugin.cpp#L202-L226): When a sync block arrives with `gap <= 2 && dlt_mode && block_age < 30s`, it's treated as a normal (non-sync) block. This prevents "Syncing Blockchain started" from firing when the node is only 1-2 blocks behind, which would set `currently_syncing=true` and disrupt witness block production.
+
+---
+
+## How `chain_status_announcement_message` (5018) Makes DLT Mode Safer
+
+### Problem: The Hello Handshake Alone Is Not Enough
+
+The hello message (5006) sends chain state **once** at connection time. In DLT mode with emergency consensus, the chain state can change dramatically *during* an active connection:
+
+- **DLT window slides forward** every block (the rolling window of ~350 blocks advances by 1 each time).
+- **Emergency consensus can activate or deactivate** at any time (1-hour timeout triggers; exit after 21 normal blocks).
+- **The emergency master can change** (blank key after 5 missed rounds).
+
+Without live updates, peers make decisions based on **stale connection-time data**, leading to:
+
+1. **False `peer_is_on_an_unreachable_fork`**: A peer sends a synopsis with entries from block numbers we *used* to have but which have now aged out of our DLT window. Without knowing our DLT `earliest_available_block_num()`, the peer can't adjust its synopsis to use entries inside our window. Result: we throw the fork exception, disconnect the peer, and create a sync oscillation.
+
+2. **Sync ping-pong in emergency mode**: During emergency consensus, competing forks at the same height cause both nodes to restart sync. Without knowing the peer is also in emergency mode, a node treats the peer's blocks as "normal" fork blocks and triggers full sync restarts instead of recognizing the emergency situation and treating it as a committee-led recovery.
+
+3. **Inventory flooding during DLT window mismatch**: A peer in broadcast mode may advertise block IDs that are below our DLT window. We can't serve them, but we don't know the peer has stale information. This generates spurious `fetch_items` → `item_not_available` cycles that increment the peer's strike counter and lead to soft-bans.
+
+### Solution: The Chain Status Announcement
+
+The `chain_status_announcement_message` (5018) solves these problems by providing:
+
+#### 1. Live DLT Window Information (`dlt_mode`, `dlt_earliest_block`)
+
+When a peer receives a `chain_status_announcement` showing the sender is in DLT mode with `dlt_earliest_block = 79632101`, it knows:
+
+- **Don't use block numbers below 79632101 in synopses** sent to this peer — those blocks are no longer in their rolling window.
+- **Don't request blocks below 79632101** — they'll get `item_not_available` responses and risk soft-ban strikes.
+- **Expected result**: Eliminates the entire class of `peer_is_on_an_unreachable_fork` errors caused by below-DLT-range synopses.
+
+#### 2. Live Emergency Consensus Status (`emergency_consensus_active`, `has_emergency_key`)
+
+When a peer receives a `chain_status_announcement` with `emergency_consensus_active = true`:
+
+- **Don't treat competing blocks at the same height as forks** — they may be emergency committee blocks from a legitimate committee recovery.
+- **If `has_emergency_key = true`**: This peer is the emergency master — prioritize syncing from it.
+- **If `has_emergency_key = false`**: This peer is an emergency follower — don't soft-ban it for producing blocks we disagree with (the committee decides).
+- **Expected result**: Eliminates sync ping-pong loops and false fork detections during emergency consensus recovery.
+
+#### 3. Continuous Refresh on New Connections
+
+The message is automatically broadcast via `connection_count_changed()` whenever a new peer joins. This means:
+
+- **Every new peer immediately learns** our current DLT window and emergency status, even if we connected hours ago.
+- **No polling needed** — push-based, not pull-based.
+- **Zero protocol breakage** — old peers simply ignore message type 5018 (it goes to `handle_message()` which, pre-5018, would throw `Invalid Message Type`, but since old peers never send this message to begin with, the throw never fires).
+
+### Error Classes Eliminated
+
+| Error Class | Root Cause | Fixed By |
+|---|---|---|
+| `peer_is_on_an_unreachable_fork` (below-range) | Peer synopsis entries below our DLT `earliest_available_block_num()` | Peer sees `dlt_earliest_block` and adjusts synopsis |
+| Sync restart oscillation | Both nodes think the other is on a fork in emergency mode | Both see `emergency_consensus_active=true` and relax fork detection |
+| `item_not_available` soft-bans | Peer requests blocks we can't serve (below window) | Peer skips below-DLT block requests |
+| `unlinkable_block_exception` spamming | Dead-fork sync blocks from before our head | Peer sees `dlt_mode` and avoids sending ancient blocks |
+| Emergency follower disconnection | Master treats follower blocks as invalid fork blocks | `has_emergency_key` flag identifies master vs follower roles |
+
+### Integration with Existing Protections
+
+The `chain_status_announcement` works **alongside** (not instead of) the existing server-side protections:
+
+| Protection | Side | When It Helps |
+|---|---|---|
+| `chain_status_announcement` info | Client (peer) | **Before** sending — avoids problematic requests entirely |
+| `get_block_ids()` below-range check | Server | **During** synopsis processing — catches what the client missed |
+| `get_block_ids()` above-head check | Server | **During** synopsis processing — handles ahead-of-us peers |
+| DLT near-caught-up logic | Server | **During** block receiving — prevents sync mode disruption |
+| Soft-ban strike counters | Server | **After** repeated errors — last-resort penalty |
+
+**Key insight**: The server-side protections handle errors reactively (strikes, disconnection), while `chain_status_announcement` prevents errors proactively (peers know what not to do before they do it). Both layers together create defense-in-depth.
+
+### Backward Compatibility
+
+| Peer Combination | Behavior |
+|---|---|
+| Old ↔ Old | No change. Works as before. |
+| New ↔ New | Both exchange DLT/emergency info via hello user_data AND chain_status_announcement (5018). Full benefits. |
+| New → Old | New peer sends hello with DLT fields (old peer ignores unknown keys). New peer may send 5018 (old peer's handle_message throws `Invalid Message Type`). This is a one-time benign throw since old peers don't understand the type. The new peer's code handles this gracefully. |
+| Old → New | Old peer sends hello without DLT fields. New peer defaults `peer_dlt_mode=false`, `peer_emergency_active=false` — assumes the old peer operates in normal (non-DLT, non-emergency) mode. The new peer does NOT send 5018 to the old peer because `connection_count_changed` broadcasts to ALL peers, which includes the old one. This is a known limitation — old peers will see one `Invalid Message Type` throw per new-peer connection. To mitigate, future work could add per-peer capability tracking based on hello user_data fields. |
 
 ---
 
