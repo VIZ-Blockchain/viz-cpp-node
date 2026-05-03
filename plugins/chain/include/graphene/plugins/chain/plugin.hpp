@@ -96,6 +96,12 @@ namespace graphene {
                 /// until this returns false.
                 bool is_syncing() const;
 
+                /// Explicitly clear the syncing flag.  Called by the P2P
+                /// layer when sync completes (all peers report zero
+                /// unfetched items) so that the witness plugin can resume
+                /// block production.
+                void clear_syncing();
+
                 // Emitted when the blockchain is syncing/live.
                 // This is to synchronize plugins that have the chain plugin as an optional dependency.
                 boost::signals2::signal<void()> on_sync;

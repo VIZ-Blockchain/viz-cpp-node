@@ -705,7 +705,16 @@ namespace graphene {
                 }
 
                 void p2p_plugin_impl::sync_status(uint32_t item_type, uint32_t item_count) {
-                    // any status reports to GUI go here
+                    // When item_count drops to 0, all peers report zero unfetched
+                    // items — sync is complete.  Clear the currently_syncing flag
+                    // so the witness plugin's DLT sync guard in maybe_produce_block()
+                    // stops returning not_synced.  Without this, the flag stays true
+                    // from the last sync block and creates a deadlock in DLT
+                    // emergency mode: the node can't produce because it thinks
+                    // it's syncing, and no normal blocks arrive to reset the flag.
+                    if (item_count == 0) {
+                        chain.clear_syncing();
+                    }
                 }
 
                 void p2p_plugin_impl::connection_count_changed(uint32_t c) {

@@ -248,6 +248,13 @@ namespace chain {
         return my->currently_syncing.load(std::memory_order_relaxed);
     }
 
+    void plugin::clear_syncing() {
+        if (my->currently_syncing.exchange(false, std::memory_order_relaxed)) {
+            ilog("Sync complete: cleared currently_syncing flag (witness block production may resume)");
+            my->sync_start_logged = false;
+        }
+    }
+
     void plugin::set_program_options(boost::program_options::options_description &cli,
                                      boost::program_options::options_description &cfg) {
         cfg.add_options()
