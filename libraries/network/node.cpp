@@ -472,6 +472,9 @@ namespace graphene {
                 active_sync_requests_map _active_sync_requests; /// list of sync blocks we've asked for from peers but have not yet received
                 std::list<graphene::network::block_message> _new_received_sync_items; /// list of sync blocks we've just received but haven't yet tried to process
                 std::list<graphene::network::block_message> _received_sync_items; /// list of sync blocks we've received, but can't yet process because we are still missing blocks that come earlier in the chain
+
+                fc::time_point _last_deferred_resize_time;  /// global cooldown to prevent thundering herd of sync restarts
+                uint32_t _consecutive_deferred_resize_count = 0;  /// progressive backoff counter for repeated sync restarts
                 // @}
 
                 fc::future<void> _process_backlog_of_sync_blocks_done;
@@ -3847,6 +3850,10 @@ namespace graphene {
                             peer->unlinkable_block_strikes = 0;
                         }
                     }
+
+                    // Successful sync block \u2014 reset the progressive backoff
+                    // counter so the next failure starts with minimum cooldown.
+                    _consecutive_deferred_resize_count = 0;
                 }
                 catch (const deferred_resize_exception &e) {
                     // Shared memory resize is in progress. Do NOT mark the block as accepted.
@@ -4138,19 +4145,29 @@ namespace graphene {
                     wlog("Restarting sync with all peers to re-fetch block #${num} after deferred resize",
                          ("num", block_message_to_send.block.block_num()));
 
-                    // Brief pause to let the transient condition resolve (shared-memory
-                    // resize, large fork switch, or concurrent snapshot serialization)
-                    // before re-fetching the same block.  Without this, the tight
-                    // retry loop hammers the same lock contention and quickly
-                    // accumulates peer strikes from the generic-exception path.
+                    // Progressive cooldown: prevent thundering herd when multiple concurrent
+                    // sync block tasks fail simultaneously (common in DLT mode when a
+                    // follower reconnects to a master on a diverged fork). The cooldown
+                    // increases with repeated failures: 5s, 7s, 9s, up to 10s max.
+                    // Only the first failure triggers a full resync within each window.
+                    fc::time_point now = fc::time_point::now();
+                    uint32_t cooldown_sec = std::min(5u + _consecutive_deferred_resize_count * 2u, 10u);
+                    if (now - _last_deferred_resize_time < fc::seconds(cooldown_sec)) {
+                        fc_ilog(fc::logger::get("sync"),
+                             "DEFERRED_RESIZE: sync restart already triggered recently (cooldown=${cd}s, attempts=${count}), skipping duplicate",
+                             ("cd", cooldown_sec)("count", _consecutive_deferred_resize_count));
+                        return;
+                    }
+                    _last_deferred_resize_time = now;
+                    ++_consecutive_deferred_resize_count;
+
+                    // Brief pause to let in-flight messages arrive before the reset.
                     fc::usleep(fc::seconds(2));
 
-                    for (const peer_connection_ptr &peer : _active_connections) {
-                        ASSERT_TASK_NOT_PREEMPTED();
-                        if (peer->we_need_sync_items_from_peer) {
-                            start_synchronizing_with_peer(peer);
-                        }
-                    }
+                    // Full resync instead of per-peer light restart: clears all peer
+                    // state, active requests, and accumulated stale blocks so missing
+                    // parent blocks can be re-fetched from scratch.
+                    resync();
                 }
 
                 for (auto &peer_to_disconnect : peers_to_disconnect) {
@@ -6202,7 +6219,7 @@ namespace graphene {
 
             void node_impl::resync() {
                 VERIFY_CORRECT_THREAD();
-                ilog("Resync: restarting synchronization with all ${n} connected peers — full peer state reset",
+                ilog("Resync: restarting synchronization with all ${n} connected peers \u2014 full peer state reset",
                      ("n", _active_connections.size()));
 
                 reset_active_peer_states();
@@ -6210,6 +6227,20 @@ namespace graphene {
                 // Also reset any active sync request tracking so stale
                 // in-flight requests don't block new fetches.
                 _active_sync_requests.clear();
+
+                // Discard accumulated sync blocks from previous sync attempts.
+                // Without this, have_already_received_sync_item() would skip
+                // re-requesting blocks that arrived but failed to link, leaving
+                // permanent gaps (especially critical in DLT emergency mode).
+                _received_sync_items.clear();
+                _new_received_sync_items.clear();
+
+                // Reset the "already accepted" list to just the current head.
+                // Blocks that were accepted before a gap formed but aren't on
+                // the current chain should not suppress re-requesting gap blocks.
+                // This mirrors what sync_from() does at startup.
+                _most_recent_blocks_accepted.clear();
+                _most_recent_blocks_accepted.push_back(_delegate->get_head_block_id());
 
                 start_synchronizing();
             }
