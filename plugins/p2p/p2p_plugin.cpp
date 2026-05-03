@@ -38,6 +38,7 @@ namespace graphene {
             using graphene::network::block_message;
             using graphene::network::block_post_validation_message;
             using graphene::network::trx_message;
+            using graphene::network::chain_status_announcement_message;
 
             using graphene::protocol::block_header;
             using graphene::protocol::signed_block_header;
@@ -95,6 +96,14 @@ namespace graphene {
 
                     virtual void error_encountered(const std::string &message, const fc::oexception &error) override;
 
+                    virtual bool is_dlt_mode() const override;
+
+                    virtual uint32_t get_dlt_earliest_block_num() const override;
+
+                    virtual bool is_emergency_consensus_active() const override;
+
+                    virtual bool has_emergency_private_key() const override;
+
                     //virtual uint8_t get_current_block_interval_in_seconds() const override {
                     //    return CHAIN_BLOCK_INTERVAL;
                     //}
@@ -123,6 +132,9 @@ namespace graphene {
                     fc::future<void> _stale_sync_task_done;
 
                     void stale_sync_check_task();
+
+                    // Track previous connection count to detect new peer joins
+                    uint32_t _last_connection_count = 0;
 
                     std::unique_ptr<graphene::network::node> node;
 
@@ -303,7 +315,19 @@ namespace graphene {
 
                 void p2p_plugin_impl::handle_message(const message &message_to_process) {
                     // not a transaction, not a block
-                    //ilog("handle_message ${m}", ("m", message_to_process));
+                    if(message_to_process.msg_type == core_message_type_enum::chain_status_announcement_message_type){
+                        chain_status_announcement_message csam =
+                            message_to_process.as<chain_status_announcement_message>();
+                        dlog("Received chain_status_announcement from peer: "
+                             "head=#${hn} (${hid}), lib=#${lib}, "
+                             "dlt_mode=${dlt}, dlt_earliest=#${de}, "
+                             "emergency=${emerg}, has_emergency_key=${key}",
+                             ("hn", csam.head_block_num)("hid", csam.head_block_id)
+                             ("lib", csam.last_irreversible_block_num)
+                             ("dlt", csam.dlt_mode)("de", csam.dlt_earliest_block)
+                             ("emerg", csam.emergency_consensus_active)("key", csam.has_emergency_key));
+                        return;
+                    }
                     if(message_to_process.msg_type == core_message_type_enum::block_post_validation_message_type){
                         //get message_to_process as block_post_validation_message type
                         block_post_validation_message bpvl=block_post_validation_message(message_to_process.as<block_post_validation_message>());
@@ -767,7 +791,33 @@ namespace graphene {
                 }
 
                 void p2p_plugin_impl::connection_count_changed(uint32_t c) {
-                    // any status reports to GUI go here
+                    // Broadcast chain status to newly connected peers so they
+                    // immediately learn our DLT/emergency state without waiting
+                    // for the next poll cycle.
+                    if (c > _last_connection_count && node) {
+                        try {
+                            auto& db = chain.db();
+                            chain_status_announcement_message msg;
+                            db.with_weak_read_lock([&]() {
+                                msg.head_block_id = db.head_block_id();
+                                msg.head_block_num = db.head_block_num();
+                                msg.last_irreversible_block_num =
+                                    db.get_dynamic_global_properties().last_irreversible_block_num;
+                                msg.dlt_mode = db._dlt_mode;
+                                msg.dlt_earliest_block = db.earliest_available_block_num();
+                                msg.emergency_consensus_active =
+                                    db.get_dynamic_global_properties().emergency_consensus_active;
+                                msg.has_emergency_key = has_emergency_private_key();
+                            });
+                            node->broadcast(msg);
+                            dlog("Connection count changed (${old}→${new}): broadcast chain_status "
+                                 "(head=#${hn}, dlt=${dlt}, emergency=${emerg})",
+                                 ("old", _last_connection_count)("new", c)
+                                 ("hn", msg.head_block_num)("dlt", msg.dlt_mode)
+                                 ("emerg", msg.emergency_consensus_active));
+                        } FC_CAPTURE_LOG_AND_RETHROW()
+                    }
+                    _last_connection_count = c;
                 }
 
                 uint32_t p2p_plugin_impl::get_block_number(const item_hash_t &block_id) {
@@ -807,6 +857,43 @@ namespace graphene {
                 fc::time_point_sec p2p_plugin_impl::get_blockchain_now() {
                     try {
                         return fc::time_point::now();
+                    } FC_CAPTURE_AND_RETHROW()
+                }
+
+                bool p2p_plugin_impl::is_dlt_mode() const {
+                    try {
+                        return chain.db().with_weak_read_lock([&]() {
+                            return chain.db()._dlt_mode;
+                        });
+                    } FC_CAPTURE_AND_RETHROW()
+                }
+
+                uint32_t p2p_plugin_impl::get_dlt_earliest_block_num() const {
+                    try {
+                        return chain.db().with_weak_read_lock([&]() {
+                            return chain.db().earliest_available_block_num();
+                        });
+                    } FC_CAPTURE_AND_RETHROW()
+                }
+
+                bool p2p_plugin_impl::is_emergency_consensus_active() const {
+                    try {
+                        return chain.db().with_weak_read_lock([&]() {
+                            return chain.db().get_dynamic_global_properties().emergency_consensus_active;
+                        });
+                    } FC_CAPTURE_AND_RETHROW()
+                }
+
+                bool p2p_plugin_impl::has_emergency_private_key() const {
+                    // p2p_plugin does not have direct access to the witness plugin's
+                    // private key map.  Use block_producer flag as a heuristic: in
+                    // emergency consensus mode, a block_producer node must hold the
+                    // committee private key to sign blocks.
+                    try {
+                        if (!block_producer) return false;
+                        return chain.db().with_weak_read_lock([&]() {
+                            return chain.db().get_dynamic_global_properties().emergency_consensus_active;
+                        });
                     } FC_CAPTURE_AND_RETHROW()
                 }
 
@@ -1486,6 +1573,31 @@ namespace graphene {
 
             void p2p_plugin::set_block_production(bool producing_blocks) {
                 my->block_producer = producing_blocks;
+            }
+
+            void p2p_plugin::broadcast_chain_status() {
+                if (!my->node) return;
+                try {
+                    auto& db = my->chain.db();
+                    chain_status_announcement_message msg;
+                    db.with_weak_read_lock([&]() {
+                        msg.head_block_id = db.head_block_id();
+                        msg.head_block_num = db.head_block_num();
+                        msg.last_irreversible_block_num =
+                            db.get_dynamic_global_properties().last_irreversible_block_num;
+                        msg.dlt_mode = db._dlt_mode;
+                        msg.dlt_earliest_block = db.earliest_available_block_num();
+                        msg.emergency_consensus_active =
+                            db.get_dynamic_global_properties().emergency_consensus_active;
+                        msg.has_emergency_key = my->has_emergency_private_key();
+                    });
+                    my->node->broadcast(msg);
+                    dlog("Broadcast chain_status_announcement: head=#${hn}, lib=#${lib}, "
+                         "dlt_mode=${dlt}, dlt_earliest=#${de}, emergency=${emerg}, key=${key}",
+                         ("hn", msg.head_block_num)("lib", msg.last_irreversible_block_num)
+                         ("dlt", msg.dlt_mode)("de", msg.dlt_earliest_block)
+                         ("emerg", msg.emergency_consensus_active)("key", msg.has_emergency_key));
+                } FC_CAPTURE_LOG_AND_RETHROW()
             }
 
             void p2p_plugin::resync_from_lib() {

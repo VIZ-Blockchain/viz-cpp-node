@@ -90,7 +90,8 @@ namespace graphene {
             check_firewall_reply_message_type = 5015,
             get_current_connections_request_message_type = 5016,
             get_current_connections_reply_message_type = 5017,
-            core_message_type_last = 5099,
+            chain_status_announcement_message_type = 5018,
+            core_message_type_last = 5018,
             block_post_validation_message_type = 6009,//just pass to process_ordinary_message
         };
 
@@ -447,6 +448,44 @@ namespace graphene {
             std::vector<current_connection_data> current_connections;
         };
 
+        /**
+         *  @brief Sent when a peer's chain status changes (DLT mode, emergency consensus) or
+         *         on connection establishment.
+         *
+         *  Allows peers to understand each other's DLT window and emergency consensus state
+         *  without relying solely on the hello handshake (which only carries snapshot info).
+         *  Type: 5018
+         */
+        struct chain_status_announcement_message {
+            static const core_message_type_enum type;
+
+            chain_status_announcement_message() {}
+
+            chain_status_announcement_message(
+                    block_id_type head_block_id,
+                    uint32_t head_block_num,
+                    uint32_t last_irreversible_block_num,
+                    bool dlt_mode,
+                    uint32_t dlt_earliest_block,
+                    bool emergency_consensus_active,
+                    bool has_emergency_key)
+                : head_block_id(head_block_id),
+                  head_block_num(head_block_num),
+                  last_irreversible_block_num(last_irreversible_block_num),
+                  dlt_mode(dlt_mode),
+                  dlt_earliest_block(dlt_earliest_block),
+                  emergency_consensus_active(emergency_consensus_active),
+                  has_emergency_key(has_emergency_key) {}
+
+            block_id_type head_block_id;
+            uint32_t head_block_num = 0;
+            uint32_t last_irreversible_block_num = 0;
+            bool dlt_mode = false;
+            uint32_t dlt_earliest_block = 0;
+            bool emergency_consensus_active = false;
+            bool has_emergency_key = false;
+        };
+
 
     }
 } // graphene::network
@@ -472,6 +511,7 @@ FC_REFLECT_ENUM(graphene::network::core_message_type_enum,
                 (check_firewall_reply_message_type)
                 (get_current_connections_request_message_type)
                 (get_current_connections_reply_message_type)
+                (chain_status_announcement_message_type)
                 (core_message_type_last)
                 (block_post_validation_message_type))
 
@@ -557,6 +597,14 @@ FC_REFLECT((graphene::network::get_current_connections_reply_message), (upload_r
         (upload_rate_one_hour)
         (download_rate_one_hour)
         (current_connections))
+FC_REFLECT((graphene::network::chain_status_announcement_message),
+        (head_block_id)
+        (head_block_num)
+        (last_irreversible_block_num)
+        (dlt_mode)
+        (dlt_earliest_block)
+        (emergency_consensus_active)
+        (has_emergency_key))
 
 #include <unordered_map>
 #include <fc/crypto/city.hpp>

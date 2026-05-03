@@ -216,6 +216,12 @@ namespace graphene {
             fc::optional<uint32_t> bitness;
             fc::optional<graphene::protocol::chain_id_type> chain_id;
 
+            // DLT and emergency consensus info from hello user_data
+            bool peer_dlt_mode = false;
+            uint32_t peer_dlt_earliest_block = 0;
+            bool peer_emergency_active = false;
+            bool peer_has_emergency_key = false;
+
             // for inbound connections, these fields record what the peer sent us in
             // its hello message.  For outbound, they record what we sent the peer
             // in our hello message

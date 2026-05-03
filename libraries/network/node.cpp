@@ -2261,6 +2261,15 @@ namespace graphene {
 
                 user_data["chain_id"] = CHAIN_ID;
 
+                // DLT mode and emergency consensus info — backward-compatible
+                // extension for P2P diagnostics and sync decision making.
+                user_data["dlt_mode"] = _delegate->is_dlt_mode();
+                if (_delegate->is_dlt_mode()) {
+                    user_data["dlt_earliest_block"] = _delegate->get_dlt_earliest_block_num();
+                }
+                user_data["emergency_consensus_active"] = _delegate->is_emergency_consensus_active();
+                user_data["has_emergency_key"] = _delegate->has_emergency_private_key();
+
                 return user_data;
             }
 
@@ -2293,6 +2302,19 @@ namespace graphene {
                 }
                 if (user_data.contains("chain_id")) {
                     originating_peer->chain_id = user_data["chain_id"].as<graphene::protocol::chain_id_type>();
+                }
+                // DLT and emergency consensus info (backward-compatible — absent on old peers)
+                if (user_data.contains("dlt_mode")) {
+                    originating_peer->peer_dlt_mode = user_data["dlt_mode"].as_bool();
+                }
+                if (user_data.contains("dlt_earliest_block")) {
+                    originating_peer->peer_dlt_earliest_block = user_data["dlt_earliest_block"].as<uint32_t>();
+                }
+                if (user_data.contains("emergency_consensus_active")) {
+                    originating_peer->peer_emergency_active = user_data["emergency_consensus_active"].as_bool();
+                }
+                if (user_data.contains("has_emergency_key")) {
+                    originating_peer->peer_has_emergency_key = user_data["has_emergency_key"].as_bool();
                 }
             }
 

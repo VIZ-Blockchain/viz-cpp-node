@@ -47,6 +47,7 @@ namespace graphene {
         const core_message_type_enum check_firewall_reply_message::type = core_message_type_enum::check_firewall_reply_message_type;
         const core_message_type_enum get_current_connections_request_message::type = core_message_type_enum::get_current_connections_request_message_type;
         const core_message_type_enum get_current_connections_reply_message::type = core_message_type_enum::get_current_connections_reply_message_type;
+        const core_message_type_enum chain_status_announcement_message::type = core_message_type_enum::chain_status_announcement_message_type;
 
     }
 } // graphene::network

@@ -45,6 +45,12 @@ namespace graphene {
 
                 void broadcast_transaction(const graphene::protocol::signed_transaction &tx);
 
+                /**
+                 * Broadcast chain status (DLT mode, emergency consensus) to all connected
+                 * peers.  Called on connection establishment and when chain state changes.
+                 */
+                void broadcast_chain_status();
+
                 void set_block_production(bool producing_blocks);
 
                 /**

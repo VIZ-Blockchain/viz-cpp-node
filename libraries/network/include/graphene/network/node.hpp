@@ -165,6 +165,18 @@ namespace graphene {
 
             virtual void error_encountered(const std::string &message, const fc::oexception &error) = 0;
 
+            /** Returns true if the node is in DLT (rolling block log) mode. */
+            virtual bool is_dlt_mode() const = 0;
+
+            /** Returns the earliest block number available in DLT mode, or 0 if not DLT. */
+            virtual uint32_t get_dlt_earliest_block_num() const = 0;
+
+            /** Returns true if emergency consensus is currently active. */
+            virtual bool is_emergency_consensus_active() const = 0;
+
+            /** Returns true if this node holds the emergency committee private key (is the emergency master). */
+            virtual bool has_emergency_private_key() const = 0;
+
         };
 
         /**
