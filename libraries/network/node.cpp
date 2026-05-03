@@ -1178,8 +1178,9 @@ namespace graphene {
                             }
                             if (stale_cleaned > 0) {
                                 fc_ilog(fc::logger::get("sync"),
-                                     "fetch_sync_items_loop: cleaned %u stale active_sync_requests "
-                                     "(pending >30s)", stale_cleaned);
+                                     "fetch_sync_items_loop: cleaned ${count} stale active_sync_requests "
+                                     "(pending >30s)",
+                                     ("count", stale_cleaned));
                             }
                         }
 
