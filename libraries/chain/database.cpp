@@ -4944,7 +4944,8 @@ namespace graphene { namespace chain {
                                 // too many consecutive blocks. This removes forked
                                 // witnesses from the schedule so committee can take
                                 // their slot and the network recovers faster.
-                                if (head_block_num() -
+                                if (w.signing_key != public_key_type() &&
+                                    head_block_num() -
                                     w.last_confirmed_block_num >
                                     CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS) {
                                     elog("Emergency: Witness ${w} missed ${missed} blocks since last confirmed ${lc}, blanking signing_key (was ${k})",
@@ -4972,7 +4973,8 @@ namespace graphene { namespace chain {
                                     });
                                 }
 
-                                if (head_block_num() -
+                                if (w.signing_key != public_key_type() &&
+                                    head_block_num() -
                                     w.last_confirmed_block_num >
                                     CHAIN_MAX_WITNESS_MISSED_BLOCKS) {
                                     elog("Witness ${w} missed too many blocks (${missed} since last confirmed ${lc}), blanking signing_key (was ${k})",
