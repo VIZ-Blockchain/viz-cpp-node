@@ -2652,6 +2652,25 @@ namespace graphene {
                 blockchain_item_ids_inventory_message reply_message;
                 reply_message.item_type = fetch_blockchain_item_ids_message_received.item_type;
                 reply_message.total_remaining_item_count = 0;
+
+                // Rate-limit redundant fetch_item_ids requests from in-sync peers.
+                // Only skip if our head hasn't changed since the last response —
+                // if we've accepted new blocks, the peer needs the updated IDs.
+                fc::time_point now = fc::time_point::now();
+                uint32_t our_current_head = _delegate->get_block_number(_delegate->get_head_block_id());
+                if (!originating_peer->peer_needs_sync_items_from_us &&
+                    now - originating_peer->last_fetch_item_ids_response_time < fc::seconds(5) &&
+                    our_current_head == originating_peer->last_fetch_item_ids_response_head_num) {
+                    fc_ilog(fc::logger::get("sync"),
+                         "sync: rate-limiting fetch_item_ids response for in-sync peer ${peer} "
+                         "(last response ${ms}ms ago, head unchanged at #${head})",
+                         ("peer", originating_peer->get_remote_endpoint())
+                         ("ms", (now - originating_peer->last_fetch_item_ids_response_time).count() / 1000)
+                         ("head", our_current_head));
+                    originating_peer->send_message(reply_message);
+                    return;
+                }
+
                 try {
                     reply_message.item_hashes_available = _delegate->get_block_ids(fetch_blockchain_item_ids_message_received.blockchain_synopsis,
                             reply_message.total_remaining_item_count);
@@ -2678,6 +2697,9 @@ namespace graphene {
                          ("peer", originating_peer->get_remote_endpoint()));
                     // Send empty reply so the peer gets a response rather than timing out
                 }
+
+                originating_peer->last_fetch_item_ids_response_time = fc::time_point::now();
+                originating_peer->last_fetch_item_ids_response_head_num = _delegate->get_block_number(_delegate->get_head_block_id());
 
                 bool disconnect_from_inhibited_peer = false;
                 // if our client doesn't have any items after the item the peer requested, it will send back
@@ -4084,9 +4106,20 @@ namespace graphene {
                             // find out about the new item.
                             if (!peer->peer_needs_sync_items_from_us &&
                                 !peer->we_need_sync_items_from_peer) {
-                                ilog("Sync block #${num} accepted: peer ${peer} has empty lists and is in sync, will restart sync to notify of new item",
-                                     ("num", block_message_to_send.block.block_num())("peer", peer->get_remote_endpoint()));
-                                peers_we_need_to_sync_to.insert(peer);
+                                fc::time_point now = fc::time_point::now();
+                                if (now - peer->last_in_sync_notification_sent < fc::seconds(5)) {
+                                    dlog("sync: skipping in-sync notification for peer ${peer} (last notification ${ms}ms ago)",
+                                         ("peer", peer->get_remote_endpoint())
+                                         ("ms", (now - peer->last_in_sync_notification_sent).count() / 1000));
+                                } else if (peer->item_ids_requested_from_peer.valid()) {
+                                    dlog("sync: skipping in-sync notification for peer ${peer} (synopsis request already pending)",
+                                         ("peer", peer->get_remote_endpoint()));
+                                } else {
+                                    ilog("Sync block #${num} accepted: peer ${peer} has empty lists and is in sync, will restart sync to notify of new item",
+                                         ("num", block_message_to_send.block.block_num())("peer", peer->get_remote_endpoint()));
+                                    peer->last_in_sync_notification_sent = now;
+                                    peers_we_need_to_sync_to.insert(peer);
+                                }
                             }
                         } else if (!disconnecting_this_peer) {
                             auto items_being_processed_iter = peer->ids_of_items_being_processed.find(block_message_to_send.block_id);

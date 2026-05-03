@@ -239,6 +239,9 @@ namespace graphene {
             std::set<item_hash_t> sync_items_requested_from_peer; /// ids of blocks we've requested from this peer during sync.  fetch from another peer if this peer disconnects
             item_hash_t last_block_delegate_has_seen; /// the hash of the last block  this peer has told us about that the peer knows
             fc::time_point_sec last_block_time_delegate_has_seen;
+            fc::time_point last_in_sync_notification_sent; /// when we last notified this in-sync peer about a new block (cooldown guard)
+            fc::time_point last_fetch_item_ids_response_time; /// when we last sent a full get_block_ids response to this peer (rate-limit guard)
+            uint32_t last_fetch_item_ids_response_head_num = 0; /// our head block number at time of last get_block_ids response (prevents rate-limit from hiding new blocks)
             bool inhibit_fetching_sync_blocks;
             /// @}
 
