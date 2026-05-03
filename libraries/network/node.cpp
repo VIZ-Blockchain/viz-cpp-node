@@ -1120,9 +1120,16 @@ namespace graphene {
                 _active_sync_requests.insert(active_sync_requests_map::value_type(item_to_request, fc::time_point::now()));
                 peer->last_sync_item_received_time = fc::time_point::now();
                 peer->sync_items_requested_from_peer.insert(item_to_request);
-                peer->send_message(fetch_items_message(item_id_to_request.item_type, std::vector<item_hash_t>{
-                        item_id_to_request.item_hash
-                }));
+                try {
+                    peer->send_message(fetch_items_message(item_id_to_request.item_type, std::vector<item_hash_t>{
+                            item_id_to_request.item_hash
+                    }));
+                } catch (const fc::exception &e) {
+                    wlog("Failed to send sync request to peer ${endpoint}: ${e}. Cleaning up.",
+                         ("endpoint", peer->get_remote_endpoint())("e", e.to_detail_string()));
+                    _active_sync_requests.erase(item_to_request);
+                    peer->sync_items_requested_from_peer.erase(item_to_request);
+                }
             }
 
             void node_impl::request_sync_items_from_peer(const peer_connection_ptr &peer, const std::vector<item_hash_t> &items_to_request) {
@@ -1134,16 +1141,48 @@ namespace graphene {
                     peer->last_sync_item_received_time = fc::time_point::now();
                     peer->sync_items_requested_from_peer.insert(item_to_request);
                 }
-                peer->send_message(fetch_items_message(graphene::network::block_message_type, items_to_request));
+                try {
+                    peer->send_message(fetch_items_message(graphene::network::block_message_type, items_to_request));
+                } catch (const fc::exception &e) {
+                    wlog("Failed to send sync request to peer ${endpoint}: ${e}. Cleaning up.",
+                         ("endpoint", peer->get_remote_endpoint())("e", e.to_detail_string()));
+                    for (const item_hash_t &item_to_request : items_to_request) {
+                        _active_sync_requests.erase(item_to_request);
+                        peer->sync_items_requested_from_peer.erase(item_to_request);
+                    }
+                }
             }
 
             void node_impl::fetch_sync_items_loop() {
                 VERIFY_CORRECT_THREAD();
                 while (!_fetch_sync_items_loop_done.canceled()) {
                     _sync_items_to_fetch_updated = false;
+                    try {
                     dlog("beginning another iteration of the sync items loop");
 
                     if (!_suspend_fetching_sync_blocks) {
+                        // Clean up stale _active_sync_requests entries that have been
+                        // pending for too long (orphaned by crash, disconnect, or
+                        // edge-case failures).  Without this, blocks in the stale set
+                        // can never be re-requested, permanently stalling sync.
+                        {
+                            fc::time_point stale_cutoff = fc::time_point::now() - fc::seconds(30);
+                            unsigned stale_cleaned = 0;
+                            for (auto it = _active_sync_requests.begin(); it != _active_sync_requests.end(); ) {
+                                if (it->second < stale_cutoff) {
+                                    it = _active_sync_requests.erase(it);
+                                    ++stale_cleaned;
+                                } else {
+                                    ++it;
+                                }
+                            }
+                            if (stale_cleaned > 0) {
+                                fc_ilog(fc::logger::get("sync"),
+                                     "fetch_sync_items_loop: cleaned %u stale active_sync_requests "
+                                     "(pending >30s)", stale_cleaned);
+                            }
+                        }
+
                         std::map<peer_connection_ptr, std::vector<item_hash_t>> sync_item_requests_to_send;
                         std::set<peer_connection_ptr> peers_with_completed_sync;
 
@@ -1275,6 +1314,25 @@ namespace graphene {
                         _retrigger_fetch_sync_items_loop_promise = fc::promise<void>::ptr(new fc::promise<void>("graphene::network::retrigger_fetch_sync_items_loop"));
                         _retrigger_fetch_sync_items_loop_promise->wait();
                         _retrigger_fetch_sync_items_loop_promise.reset();
+                    }
+                    } // end try
+                    catch (const fc::canceled_exception &) {
+                        throw; // allow clean shutdown
+                    }
+                    catch (const fc::exception &e) {
+                        elog("fetch_sync_items_loop caught exception: ${e}", ("e", e.to_detail_string()));
+                        if (_retrigger_fetch_sync_items_loop_promise)
+                            _retrigger_fetch_sync_items_loop_promise.reset();
+                    }
+                    catch (const std::exception &e) {
+                        elog("fetch_sync_items_loop caught std::exception: ${e}", ("e", e.what()));
+                        if (_retrigger_fetch_sync_items_loop_promise)
+                            _retrigger_fetch_sync_items_loop_promise.reset();
+                    }
+                    catch (...) {
+                        elog("fetch_sync_items_loop caught unknown exception");
+                        if (_retrigger_fetch_sync_items_loop_promise)
+                            _retrigger_fetch_sync_items_loop_promise.reset();
                     }
                 } // while( !canceled )
             }
@@ -1793,6 +1851,17 @@ namespace graphene {
                             offsetof(current_time_request_message, request_sent_time));
                 }
                 peers_to_send_keep_alive.clear();
+
+                // Safety net: auto-restart fetch_sync_items_loop if it crashed.
+                if (_fetch_sync_items_loop_done.valid() &&
+                    _fetch_sync_items_loop_done.error()) {
+                    fc_wlog(fc::logger::get("sync"),
+                         "fetch_sync_items_loop has crashed, auto-restarting; "
+                         "clearing stale _active_sync_requests entries");
+                    // Clear stale _active_sync_requests so re-fetch is possible
+                    _active_sync_requests.clear();
+                    _fetch_sync_items_loop_done = fc::async([=]() { fetch_sync_items_loop(); }, "fetch_sync_items_loop");
+                }
 
                 if (!_node_is_shutting_down &&
                     !_terminate_inactive_connections_loop_done.canceled()) {
@@ -2662,15 +2731,31 @@ namespace graphene {
                         uint32_t peer_block_num = _delegate->get_block_number(peers_last_item_seen.item_hash);
                         uint32_t our_head_num = _delegate->get_block_number(_delegate->get_head_block_id());
                         if (peer_block_num > our_head_num) {
-                            ilog("sync: restarting sync with peer ${peer} — peer has block #${peer_num} ahead of our head #${our_head}",
-                                 ("peer", originating_peer->get_remote_endpoint())
-                                 ("peer_num", peer_block_num)("our_head", our_head_num));
-                            originating_peer->sync_spam_strikes = 0;
-                            start_synchronizing_with_peer(originating_peer->shared_from_this());
+                            if (!originating_peer->ids_of_items_to_get.empty()) {
+                                // We already have block IDs queued from this peer
+                                // (populated by a recent blockchain_item_ids_inventory
+                                // response).  Calling start_synchronizing_with_peer()
+                                // would clear ids_of_items_to_get, wiping the blocks
+                                // we were about to fetch — the primary cause of DLT
+                                // sync stalls.  Skip the restart and let the fetch
+                                // loop proceed with what we already have.
+                                fc_ilog(fc::logger::get("sync"),
+                                     "sync: peer ${peer} is ahead (block #${peer_num} > our head #${our_head}) "
+                                     "but we already have ${n} block IDs queued; not restarting sync",
+                                     ("peer", originating_peer->get_remote_endpoint())
+                                     ("peer_num", peer_block_num)("our_head", our_head_num)
+                                     ("n", originating_peer->ids_of_items_to_get.size()));
+                            } else {
+                                ilog("sync: restarting sync with peer ${peer} — peer has block #${peer_num} ahead of our head #${our_head}",
+                                     ("peer", originating_peer->get_remote_endpoint())
+                                     ("peer_num", peer_block_num)("our_head", our_head_num));
+                                originating_peer->sync_spam_strikes = 0;
+                                start_synchronizing_with_peer(originating_peer->shared_from_this());
+                            }
                         } else {
                             // Peer is at the same height or behind — competing fork, not useful sync.
                             // Count as a sync spam strike; soft-ban after threshold.
-                            static constexpr uint32_t SYNC_SPAM_STRIKE_THRESHOLD = 50;
+                            static constexpr uint32_t SYNC_SPAM_STRIKE_THRESHOLD = 10;
                             static constexpr uint32_t SYNC_SPAM_BAN_DURATION_SEC = 300; // 5 minutes
                             ++originating_peer->sync_spam_strikes;
                             if (originating_peer->sync_spam_strikes >= SYNC_SPAM_STRIKE_THRESHOLD) {
@@ -2701,13 +2786,23 @@ namespace graphene {
                         uint32_t peer_block_num = _delegate->get_block_number(peers_last_item_seen.item_hash);
                         uint32_t our_head_num = _delegate->get_block_number(_delegate->get_head_block_id());
                         if (peer_block_num > our_head_num) {
-                            ilog("sync: restarting sync with peer ${peer} — peer has block #${peer_num} ahead of our head #${our_head}",
-                                 ("peer", originating_peer->get_remote_endpoint())
-                                 ("peer_num", peer_block_num)("our_head", our_head_num));
-                            originating_peer->sync_spam_strikes = 0;
-                            start_synchronizing_with_peer(originating_peer->shared_from_this());
+                            if (!originating_peer->ids_of_items_to_get.empty()) {
+                                // Same guard as above: don't wipe queued block IDs
+                                fc_ilog(fc::logger::get("sync"),
+                                     "sync: peer ${peer} is ahead (block #${peer_num} > our head #${our_head}) "
+                                     "but we already have ${n} block IDs queued; not restarting sync",
+                                     ("peer", originating_peer->get_remote_endpoint())
+                                     ("peer_num", peer_block_num)("our_head", our_head_num)
+                                     ("n", originating_peer->ids_of_items_to_get.size()));
+                            } else {
+                                ilog("sync: restarting sync with peer ${peer} — peer has block #${peer_num} ahead of our head #${our_head}",
+                                     ("peer", originating_peer->get_remote_endpoint())
+                                     ("peer_num", peer_block_num)("our_head", our_head_num));
+                                originating_peer->sync_spam_strikes = 0;
+                                start_synchronizing_with_peer(originating_peer->shared_from_this());
+                            }
                         } else {
-                            static constexpr uint32_t SYNC_SPAM_STRIKE_THRESHOLD = 50;
+                            static constexpr uint32_t SYNC_SPAM_STRIKE_THRESHOLD = 10;
                             static constexpr uint32_t SYNC_SPAM_BAN_DURATION_SEC = 300;
                             ++originating_peer->sync_spam_strikes;
                             if (originating_peer->sync_spam_strikes >= SYNC_SPAM_STRIKE_THRESHOLD) {
