@@ -127,6 +127,10 @@ namespace graphene {
                 /// Can be called from any plugin that detects corruption at runtime.
                 void attempt_auto_recovery();
 
+                /// Wipe shared memory (not block logs) to recover from a failed
+                /// snapshot import. Called by the snapshot plugin when import fails.
+                void wipe_state();
+
             private:
                 class plugin_impl;
 

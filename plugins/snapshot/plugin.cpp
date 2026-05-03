@@ -1267,6 +1267,7 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     // Import objects in dependency order
     std::cerr << "   Importing state into database...\n";
     db.with_strong_write_lock([&]() {
+        try {
         // Clear the undo stack FIRST, before any import operations.
         // During hot-reload (stalled sync detection), the database has
         // active undo sessions from normal block processing.
@@ -1550,6 +1551,16 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         }
 
         ilog(CLOG_ORANGE "All objects imported successfully" CLOG_RESET);
+        } catch (const fc::exception& e) {
+            elog(CLOG_RED "Snapshot import failed with fc::exception: ${e}" CLOG_RESET, ("e", e.to_detail_string()));
+            throw;
+        } catch (const std::exception& e) {
+            elog(CLOG_RED "Snapshot import failed with std::exception: ${e}" CLOG_RESET, ("e", e.what()));
+            throw;
+        } catch (...) {
+            elog(CLOG_RED "Snapshot import failed with unknown exception" CLOG_RESET);
+            throw;
+        }
     });
 
     // Seed fork_db with head block from snapshot.
@@ -3485,11 +3496,21 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     // BEFORE on_sync() fires and P2P starts syncing.
     if (!my->snapshot_path.empty()) {
         auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
-        chain_plug.snapshot_load_callback = [this]() {
+        chain_plug.snapshot_load_callback = [this, &chain_plug]() {
             ilog("Loading state from snapshot: ${p}", ("p", my->snapshot_path));
             auto start = fc::time_point::now();
-            my->load_snapshot(fc::path(my->snapshot_path));
-            my->db.initialize_hardforks();
+            try {
+                my->load_snapshot(fc::path(my->snapshot_path));
+                my->db.initialize_hardforks();
+            } catch (...) {
+                elog("Snapshot load failed — wiping corrupted shared memory before restart");
+                try {
+                    chain_plug.wipe_state();
+                } catch (const std::exception& wipe_err) {
+                    elog("Failed to wipe shared memory: ${e}", ("e", wipe_err.what()));
+                }
+                throw;
+            }
             auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
             ilog("Snapshot loaded successfully at block ${n}, elapsed time ${t} sec",
                 ("n", my->db.head_block_num())("t", elapsed));
@@ -3516,7 +3537,7 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     if (my->sync_snapshot_from_trusted_peer && !my->trusted_snapshot_peers.empty()) {
         ilog("P2P snapshot sync enabled: will download from trusted peers on empty state");
         auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
-        chain_plug.snapshot_p2p_sync_callback = [this]() {
+        chain_plug.snapshot_p2p_sync_callback = [this, &chain_plug]() {
             const uint32_t retry_interval_sec = my->stalled_sync_timeout_minutes * 60;
             uint32_t attempt = 0;
 
@@ -3538,9 +3559,19 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
                 if (!snapshot_path.empty()) {
                     std::cerr << "   Clearing state and importing snapshot...\n";
                     ilog("Download complete, loading snapshot...");
-                    my->load_snapshot(fc::path(snapshot_path));
-                    my->db.set_dlt_mode(true);  // Mark DLT mode — block_log stays empty
-                    my->db.initialize_hardforks();
+                    try {
+                        my->load_snapshot(fc::path(snapshot_path));
+                        my->db.set_dlt_mode(true);  // Mark DLT mode — block_log stays empty
+                        my->db.initialize_hardforks();
+                    } catch (...) {
+                        elog("P2P snapshot import failed — wiping corrupted shared memory before restart");
+                        try {
+                            chain_plug.wipe_state();
+                        } catch (const std::exception& wipe_err) {
+                            elog("Failed to wipe shared memory: ${e}", ("e", wipe_err.what()));
+                        }
+                        throw;
+                    }
                     auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
                     std::cerr << "   === P2P Snapshot Sync complete (block "
                               << my->db.head_block_num() << ", " << elapsed << " sec) ===\n";

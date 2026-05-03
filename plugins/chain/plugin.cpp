@@ -633,11 +633,19 @@ namespace chain {
             } catch (const fc::exception& e) {
                 elog("FATAL: P2P snapshot sync failed: ${e}", ("e", e.to_detail_string()));
                 std::cerr << "   FATAL: P2P snapshot sync failed: " << e.what() << "\n";
+                my->wipe_db(data_dir, false);
                 appbase::app().quit();
                 return;
             } catch (const std::exception& e) {
                 elog("FATAL: P2P snapshot sync failed: ${e}", ("e", e.what()));
                 std::cerr << "   FATAL: P2P snapshot sync failed: " << e.what() << "\n";
+                my->wipe_db(data_dir, false);
+                appbase::app().quit();
+                return;
+            } catch (...) {
+                elog("FATAL: P2P snapshot sync failed: unknown exception");
+                std::cerr << "   FATAL: P2P snapshot sync failed: unknown exception\n";
+                my->wipe_db(data_dir, false);
                 appbase::app().quit();
                 return;
             }
@@ -696,10 +704,17 @@ namespace chain {
                     elog("The snapshot file may be corrupted or incompatible. "
                          "Check the file path and try again.");
                 }
+                my->wipe_db(data_dir, false);
                 appbase::app().quit();
                 return;
             } catch (const std::exception& e) {
                 elog("FATAL: Failed to load snapshot: ${e}", ("e", e.what()));
+                my->wipe_db(data_dir, false);
+                appbase::app().quit();
+                return;
+            } catch (...) {
+                elog("FATAL: Failed to load snapshot: unknown exception");
+                my->wipe_db(data_dir, false);
                 appbase::app().quit();
                 return;
             }
@@ -828,6 +843,11 @@ namespace chain {
             elog("Auto-recovery FAILED during snapshot load: ${e}", ("e", e.what()));
             appbase::app().quit();
         }
+    }
+
+    void plugin::wipe_state() {
+        auto data_dir = appbase::app().data_dir() / "state";
+        my->wipe_db(data_dir, false);
     }
 
     void plugin::accept_transaction(const protocol::signed_transaction &trx) {
