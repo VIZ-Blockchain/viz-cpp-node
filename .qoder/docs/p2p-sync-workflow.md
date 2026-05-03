@@ -399,7 +399,10 @@ In DLT mode (node loaded from snapshot), several sync behaviors are adjusted:
 2. **Synopsis matching** tolerates gaps between the anchor block and continuation blocks (a DLT node may not have all historical blocks).
 3. **Peer ahead detection**: If all peer synopsis entries are above our head, return empty (peer is ahead, not on a fork).
 4. **Broadcast inventory** is suppressed when head block is >30 seconds behind real time, even if no peer has `we_need_sync_items_from_peer = true`.
-5. **Sync oscillation prevention**: When sync blocks arrive ahead of head (gap between head and arriving blocks), a progressive cooldown (5s→10s max) prevents thundering-herd restarts, and `resync()` clears all stale sync state so missing gap blocks can be re-fetched. See "DLT Emergency Sync Oscillation Prevention" above.
+5. **Sync oscillation prevention**: When sync blocks arrive ahead of head (gap between head and arriving blocks), a progressive cooldown (5s→10s max) prevents thundering-herd restarts, and `resync()` clears all stale sync state so missing gap blocks can be re-fetched. See "DLT Emergency Sync Oscillation Prevention" below.
+6. **Synopsis head-block guarantee**: `get_blockchain_synopsis()` ensures the reference point (`high_block_num`) is always included in the returned synopsis. When `true_high_block_num >> high_block_num` (which happens when IDs have already been queued), the logarithmic step can skip over `high_block_num` in a single jump; a post-loop guard appends it if missing. Without this, peer responses starting at our head fail validation ("invalid response"). See "Synopsis High-Block Guarantee" below.
+7. **Concurrent ID + block fetching**: Block fetching is allowed while block IDs are still being collected from a peer, once at least `GRAPHENE_NET_MIN_BLOCK_IDS_TO_PREFETCH` (10000) IDs are available. This prevents the "NOT IDLE (ids_req=true)" stall where a peer is perpetually busy fetching IDs and blocks are never requested. See "Concurrent ID and Block Fetching" below.
+8. **Duplicate sync-start guards**: `start_synchronizing_with_peer()` and `new_peer_just_added()` both guard against duplicate sync initiation for the same peer, preventing duplicate synopsis requests that cause "invalid response" disconnections. See "Duplicate Sync-Start Guards" below.
 
 ---
 
@@ -608,6 +611,49 @@ Cooldown resets to 5s on any successful block acceptance.
 
 The cooldown is tracked by `_last_deferred_resize_time` and `_consecutive_deferred_resize_count`. When a duplicate restart is attempted within the cooldown window, it is skipped entirely (early `return`), preventing the thundering herd.
 
+#### Synopsis High-Block Guarantee
+
+**Location:** `get_blockchain_synopsis()` (p2p_plugin.cpp, after the do-while loop)
+
+When the node has already collected block IDs (`ids_of_items_to_get` non-empty), subsequent synopsis requests pass `number_of_blocks_after_reference_point > 0`. Inside `get_blockchain_synopsis`, `true_high_block_num = high_block_num + number_of_blocks_after_reference_point`. The do-while loop steps logarithmically using `true_high_block_num` but exits when `low_block_num > high_block_num`. When `true_high_block_num >> high_block_num`, a single step can jump past `high_block_num`, producing a synopsis that omits the node's own head block entirely.
+
+When the peer responds with blocks starting near our head, the validation in `on_blockchain_item_ids_inventory` checks if the first block ID is in the synopsis. Since our head block is missing, validation fails and the peer is disconnected with "invalid response".
+
+The fix adds a guard after the do-while loop that appends `high_block_num` if the synopsis is empty or its last entry isn't `high_block_num`. The entry is looked up from the main chain (if within `non_fork_high_block_num`) or from `fork_history` (if on a fork).
+
+#### Duplicate Sync-Start Guards
+
+**Locations:** `start_synchronizing_with_peer()` (node.cpp) and `new_peer_just_added()` (node.cpp)
+
+When a peer connects, two code paths both call `start_synchronizing_with_peer` for the same peer:
+- `on_fetch_blockchain_item_ids` handler — fires when processing the peer's initial synopsis request
+- `new_peer_just_added` — fires when the peer finishes handshaking
+
+The second call clears the state set by the first (including `ids_of_items_to_get`) and sends a duplicate synopsis. The peer responds to both, and the second response triggers "invalid response" disconnection (exacerbated by the missing `high_block_num` from the synopsis bug).
+
+Two guards prevent this:
+1. **`start_synchronizing_with_peer`**: Skips if `item_ids_requested_from_peer` is already set (a pending ID request already exists for this peer). Logs the skip at debug level.
+2. **`new_peer_just_added`**: Checks both `we_need_sync_items_from_peer` and `item_ids_requested_from_peer` before calling `start_synchronizing_with_peer`. If either is set, sync was already started by the `on_fetch_blockchain_item_ids` handler and is skipped.
+
+#### Concurrent ID and Block Fetching
+
+**Location:** `fetch_sync_items_loop()` (node.cpp ~L1244)
+
+Previously, `fetch_sync_items_loop` required `peer->idle()` to schedule block requests. The `idle()` method returns false when `item_ids_requested_from_peer` is set — meaning blocks could never be fetched while IDs were being collected. During ID fetching, `fetch_next_batch_of_item_ids_from_peer` is called immediately after each batch, keeping `item_ids_requested_from_peer` permanently set. The loop logged "NOT IDLE (ids_req=true)" and skipped block fetching entirely.
+
+The fix replaces `peer->idle()` with a condition that only blocks on block-level requests:
+
+```cpp
+(!peer->item_ids_requested_from_peer ||                         // not fetching IDs, OR
+ peer->ids_of_items_to_get.size() >= GRAPHENE_NET_MIN_BLOCK_IDS_TO_PREFETCH)  // have enough IDs
+&& peer->items_requested_from_peer.empty()                       // no pending block requests
+&& peer->sync_items_requested_from_peer.empty()                  // no pending sync block requests
+```
+
+This allows block fetching once at least 10,000 IDs are available, even while more IDs are being fetched. The peer can serve both block data and ID responses simultaneously.
+
+The "NOT IDLE" diagnostic log was also updated to distinguish between "busy with blocks" (genuinely busy, can't fetch more) vs "skipped-other" (blocked by non-block state like ID requests with insufficient IDs).
+
 #### Emergency Consensus Head-Advancement Checks
 
 Both stale sync detectors skip recovery during emergency consensus if head is still advancing:
@@ -647,4 +693,5 @@ See [block-processing.md](block-processing.md) for details.
 | `GRAPHENE_NET_DEFAULT_DESIRED_CONNECTIONS` | `config.hpp` | 20 | Target number of active connections |
 | `GRAPHENE_NET_DEFAULT_MAX_CONNECTIONS` | `config.hpp` | 200 | Maximum allowed connections |
 | `DISCONNECT_RECONNECT_COOLDOWN_SEC` | `node.cpp` | 30s | Per-IP cooldown after disconnect |
+| `GRAPHENE_NET_MIN_BLOCK_IDS_TO_PREFETCH` | `config.hpp` | 10000 | Minimum IDs to collect before requesting blocks during concurrent ID+block fetch |
 | `GRAPHENE_PEER_DATABASE_RETRY_DELAY` | `config.hpp` | 15s | (unused, replaced by 10s sleep) |
