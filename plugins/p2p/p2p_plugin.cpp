@@ -409,10 +409,43 @@ namespace graphene {
                                             return result;  // empty — peer is ahead, not on a fork
                                         }
                                     }
-                                    wlog("peer_is_on_an_unreachable_fork — could not match any of "
-                                         "${n} synopsis entries. Synopsis: ${syn}",
-                                         ("n", blockchain_synopsis.size())("syn", blockchain_synopsis));
-                                    FC_THROW_EXCEPTION(graphene::network::peer_is_on_an_unreachable_fork, "Unable to provide a list of blocks starting at any of the blocks in peer's synopsis");
+                                    if (chain.db()._dlt_mode) {
+                                        // In DLT mode, check if all synopsis entries are below our
+                                        // DLT range.  The peer may be on the same chain but using
+                                        // ancient blocks as synopsis anchors.  This is NOT a fork.
+                                        uint32_t earliest = chain.db().earliest_available_block_num();
+                                        bool all_below_range = true;
+                                        block_id_type highest_below;
+                                        uint32_t highest_below_num = 0;
+                                        for (const auto& bid : blockchain_synopsis) {
+                                            if (bid == block_id_type()) continue;
+                                            uint32_t num = block_header::num_from_id(bid);
+                                            if (num >= earliest) {
+                                                all_below_range = false;
+                                                break;
+                                            }
+                                            if (num > highest_below_num) {
+                                                highest_below_num = num;
+                                                highest_below = bid;
+                                            }
+                                        }
+                                        if (all_below_range && highest_below_num > 0) {
+                                            dlog(CLOG_GRAY "DLT mode: get_block_ids() all ${n} synopsis entries "
+                                                 "below DLT range (earliest=${earliest}). Using highest "
+                                                 "synopsis entry #${anchor} as anchor and serving from "
+                                                 "our earliest block." CLOG_RESET,
+                                                 ("n", blockchain_synopsis.size())("earliest", earliest)
+                                                 ("anchor", highest_below_num));
+                                            last_known_block_id = highest_below;
+                                            found_a_block_in_synopsis = true;
+                                        }
+                                    }
+                                    if (!found_a_block_in_synopsis) {
+                                        wlog("peer_is_on_an_unreachable_fork — could not match any of "
+                                             "${n} synopsis entries. Synopsis: ${syn}",
+                                             ("n", blockchain_synopsis.size())("syn", blockchain_synopsis));
+                                        FC_THROW_EXCEPTION(graphene::network::peer_is_on_an_unreachable_fork, "Unable to provide a list of blocks starting at any of the blocks in peer's synopsis");
+                                    }
                                 }
                             }
 
