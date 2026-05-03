@@ -78,7 +78,7 @@ namespace graphene {
                 negotiation_status(connection_negotiation_status::disconnected),
                 number_of_unfetched_item_ids(0),
                 peer_needs_sync_items_from_us(true),
-                we_need_sync_items_from_peer(true),
+                we_need_sync_items_from_peer(false),
                 inhibit_fetching_sync_blocks(false),
                 transaction_fetching_inhibited_until(fc::time_point::min()),
                 last_known_fork_block_number(0),

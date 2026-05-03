@@ -147,6 +147,7 @@ namespace graphene {
                 bool p2p_plugin_impl::handle_block(const block_message &blk_msg, bool sync_mode, std::vector<fc::uint160_t> &, fc::optional<fc::ip::endpoint> originating_peer_endpoint) {
                     // Track last block received time for stale sync detection
                     _last_block_received_time = fc::time_point::now();
+                    _last_stale_check_head = blk_msg.block.block_num();
 
                     // Reject blocks while snapshot reload is in progress.
                     // Throw a transient exception so the P2P layer re-queues
