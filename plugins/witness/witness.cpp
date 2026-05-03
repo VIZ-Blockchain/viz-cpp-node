@@ -378,7 +378,7 @@ namespace graphene {
                 if (database()._debug_block_production) ilog("DEBUG_CRASH: maybe_produce_block returned ${r}", ("r", (int)result));
                 switch (result) {
                     case block_production_condition::produced:
-                        ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w}\033[0m", (capture));
+                        ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w} with ${tx} transactions\033[0m", (capture));
                         fork_collision_defer_count_ = 0;
                         if (_minority_fork_recovering) {
                             auto elapsed = fc::time_point::now() - _minority_fork_recovery_start;
@@ -943,7 +943,7 @@ namespace graphene {
                                 private_key_itr->second,
                                 _production_skip_flags
                         );
-                        capture("n", block.block_num())("t", block.timestamp)("c", now)("w", scheduled_witness);
+                        capture("n", block.block_num())("t", block.timestamp)("c", now)("w", scheduled_witness)("tx", block.transactions.size());
                         p2p().broadcast_block(block);
 
                         // If we produced a block but have few/no peers,
