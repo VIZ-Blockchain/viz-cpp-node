@@ -2965,6 +2965,13 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 
             FC_ASSERT(std::get<1>(info_result) == snapshot_info_reply, "Unexpected response from peer during download");
 
+            auto info2 = unpack_from_vec<snapshot_info_reply_data>(std::get<2>(info_result));
+
+            // Refresh metadata from Phase 2 in case the peer's snapshot changed since Phase 1
+            best->block_num = info2.block_num;
+            best->checksum = info2.checksum;
+            best->compressed_size = info2.compressed_size;
+
             FC_ASSERT(best->compressed_size <= MAX_SNAPSHOT_SIZE,
                 "Snapshot too large: ${s} bytes exceeds limit of ${l} bytes",
                 ("s", best->compressed_size)("l", MAX_SNAPSHOT_SIZE));
