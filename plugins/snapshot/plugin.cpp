@@ -2878,187 +2878,217 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
         return std::string();  // empty = no snapshot downloaded
     }
 
-    // Pick the peer with the highest block_num
-    auto best = std::max_element(available_peers.begin(), available_peers.end(),
-        [](const peer_info& a, const peer_info& b) { return a.block_num < b.block_num; });
+    // Sort peers by block_num descending so we try the best first
+    std::sort(available_peers.begin(), available_peers.end(),
+        [](const peer_info& a, const peer_info& b) { return a.block_num > b.block_num; });
 
-    ilog(CLOG_YELLOW "Selected peer ${p} with snapshot at block ${b} (${s} bytes)" CLOG_RESET,
-         ("p", best->endpoint_str)("b", best->block_num)("s", best->compressed_size));
-    std::cerr << "   Selected peer " << best->endpoint_str
-              << " (block " << best->block_num
-              << ", " << (best->compressed_size / 1048576) << " MB)\n";
-
-    // Phase 2: Download snapshot in chunks
-    // Brief delay to allow server-side cleanup of Phase 1 session.
-    // The server's anti-spam check rejects duplicate sessions per IP, and the
-    // Phase 1 handler fiber may not have cleaned up yet after we closed the socket.
-    fc::usleep(fc::seconds(2));
-
-    std::cerr << "   Downloading snapshot...\n";
-    fc::tcp_socket sock;
-    auto ep = fc::ip::endpoint::from_string(best->endpoint_str);
-
-    // Connect with retry — the server may briefly reject if Phase 1 session
-    // cleanup hasn't completed yet (anti-spam duplicate session check).
-    const int max_connect_retries = 3;
-    for (int retry = 0; retry < max_connect_retries; ++retry) {
-        bool connected = false;
-        try {
-            auto connect_future = fc::async([&sock, &ep]() {
-                sock.connect_to(ep);
-            });
-            connect_future.wait(SNAPSHOT_PEER_TIMEOUT);
-            connected = true;
-        } catch (...) {
-            if (retry + 1 >= max_connect_retries) throw;
-        }
-        if (connected) break;
-        // Retry logic outside catch block — fc::usleep cannot yield
-        // while an exception is active (fc asserts std::current_exception() == nullptr).
-        wlog("Phase 2 connect to ${p} failed (attempt ${a}/${m}), retrying...",
-             ("p", best->endpoint_str)("a", retry + 1)("m", max_connect_retries));
-        std::cerr << "   Connect retry " << (retry + 1) << "/" << max_connect_retries << "...\n";
-        try { sock.close(); } catch (...) {}
-        sock.open();
-        fc::usleep(fc::seconds(2));
-    }
-
-    // Request info again to establish session
-    try {
-        send_message_empty(sock, snapshot_info_request);
-    } catch (const fc::exception& e) {
-        // Send failed — server may have rejected us with an access-denied message.
-        auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
-        if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
-            auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
-            FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
-                ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
-        }
-        FC_THROW("Failed to send Phase 2 info request to peer ${p}: ${e}",
-            ("p", best->endpoint_str)("e", e.to_detail_string()));
-    } catch (const std::exception& e) {
-        auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
-        if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
-            auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
-            FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
-                ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
-        }
-        FC_THROW("Failed to send Phase 2 info request to peer ${p}: ${e}",
-            ("p", best->endpoint_str)("e", e.what()));
-    }
-    auto info_result = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
-    FC_ASSERT(std::get<0>(info_result), "Timeout waiting for peer response during download");
-
-    // Check for access denied response
-    if (std::get<1>(info_result) == snapshot_access_denied) {
-        auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(info_result));
-        FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
-            ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
-    }
-
-    FC_ASSERT(std::get<1>(info_result) == snapshot_info_reply, "Unexpected response from peer during download");
-
-    // Validate snapshot size against maximum
-    FC_ASSERT(best->compressed_size <= MAX_SNAPSHOT_SIZE,
-        "Snapshot too large: ${s} bytes exceeds limit of ${l} bytes",
-        ("s", best->compressed_size)("l", MAX_SNAPSHOT_SIZE));
-
-    // Create temp file for download
     std::string dir = snapshot_dir;
     if (!boost::filesystem::exists(dir)) {
         boost::filesystem::create_directories(dir);
         ilog(CLOG_YELLOW "Created snapshot directory: ${d}" CLOG_RESET, ("d", dir));
     }
     std::string temp_path = dir + "/snapshot-download-temp.vizjson";
-    std::ofstream out(temp_path, std::ios::binary);
-    FC_ASSERT(out.is_open(), "Failed to create temp file for snapshot download: ${p}", ("p", temp_path));
 
-    uint64_t total_size = best->compressed_size;
-    uint64_t offset = 0;
-    const uint32_t chunk_size = 1048576; // 1 MB chunks
-    int last_printed_percent = -1;
+    // Phase 2: Download snapshot in chunks — iterate peers from best to worst,
+    // falling back to the next peer if download or checksum verification fails.
+    while (!available_peers.empty()) {
+        auto best = available_peers.begin();
 
-    auto download_start = fc::time_point::now();
+        ilog(CLOG_YELLOW "Selected peer ${p} with snapshot at block ${b} (${s} bytes)" CLOG_RESET,
+             ("p", best->endpoint_str)("b", best->block_num)("s", best->compressed_size));
+        std::cerr << "   Selected peer " << best->endpoint_str
+                  << " (block " << best->block_num
+                  << ", " << (best->compressed_size / 1048576) << " MB)\n";
 
-    while (offset < total_size) {
-        snapshot_data_request_data req;
-        req.block_num = best->block_num;
-        req.offset = offset;
-        req.chunk_size = chunk_size;
+        // Brief delay to allow server-side cleanup of Phase 1 session.
+        fc::usleep(fc::seconds(2));
+
+        std::cerr << "   Downloading snapshot...\n";
 
         try {
-            send_message(sock, snapshot_data_request, pack_to_vec(req));
-        } catch (const fc::exception& e) {
-            FC_THROW("Failed to send chunk request to peer ${p} at offset ${o}: ${e}",
-                ("p", best->endpoint_str)("o", offset)("e", e.to_detail_string()));
-        } catch (const std::exception& e) {
-            FC_THROW("Failed to send chunk request to peer ${p} at offset ${o}: ${e}",
-                ("p", best->endpoint_str)("o", offset)("e", e.what()));
-        }
-        // Use longer timeout for chunk download to support slow connections.
-        // 1 MB chunk with 5 min timeout = min 3.4 KB/s required (very slow connections OK).
-        auto data_result = read_message_with_timeout(sock, 64 * 1024 * 1024, fc::minutes(5));
-        FC_ASSERT(std::get<0>(data_result), "Timeout waiting for chunk data from peer");
-        FC_ASSERT(std::get<1>(data_result) == snapshot_data_reply, "Unexpected response during chunk download");
+            fc::tcp_socket sock;
+            auto ep = fc::ip::endpoint::from_string(best->endpoint_str);
 
-        auto reply = unpack_from_vec<snapshot_data_reply_data>(std::get<2>(data_result));
-
-        if (!reply.data.empty()) {
-            out.write(reply.data.data(), reply.data.size());
-            offset += reply.data.size();
-        }
-
-        uint32_t percent = total_size > 0 ? static_cast<uint32_t>(offset * 100 / total_size) : 100;
-        if (static_cast<int>(percent) != last_printed_percent && (percent % 5 == 0 || reply.is_last)) {
-            std::cerr << "   Downloaded " << (offset / 1048576) << "/" << (total_size / 1048576) << " MB (" << percent << "%)\n";
-            last_printed_percent = static_cast<int>(percent);
-        }
-        ilog(CLOG_YELLOW "Downloaded ${offset}/${total} bytes (${pct}%)" CLOG_RESET,
-             ("offset", offset)("total", total_size)("pct", percent));
-
-        if (reply.is_last) break;
-    }
-
-    out.flush();
-    out.close();
-    sock.close();
-
-    auto download_elapsed = double((fc::time_point::now() - download_start).count()) / 1000000.0;
-    std::cerr << "   Download complete: " << (offset / 1048576) << " MB in " << download_elapsed << " sec\n";
-    ilog(CLOG_YELLOW "Download complete: ${s} bytes in ${t} sec" CLOG_RESET, ("s", offset)("t", download_elapsed));
-
-    // Verify checksum by streaming file in chunks (avoids loading entire file into memory)
-    std::cerr << "   Verifying checksum...\n";
-    {
-        std::ifstream verify_in(temp_path, std::ios::binary);
-        FC_ASSERT(verify_in.is_open(), "Failed to open downloaded snapshot for verification");
-
-        fc::sha256::encoder enc;
-        char buf[1048576]; // 1 MB chunks
-        while (verify_in.good()) {
-            verify_in.read(buf, sizeof(buf));
-            auto n = verify_in.gcount();
-            if (n > 0) {
-                enc.write(buf, static_cast<uint32_t>(n));
+            // Connect with retry — the server may briefly reject if Phase 1 session
+            // cleanup hasn't completed yet (anti-spam duplicate session check).
+            const int max_connect_retries = 3;
+            for (int retry = 0; retry < max_connect_retries; ++retry) {
+                bool connected = false;
+                try {
+                    auto connect_future = fc::async([&sock, &ep]() {
+                        sock.connect_to(ep);
+                    });
+                    connect_future.wait(SNAPSHOT_PEER_TIMEOUT);
+                    connected = true;
+                } catch (...) {
+                    if (retry + 1 >= max_connect_retries) throw;
+                }
+                if (connected) break;
+                wlog("Phase 2 connect to ${p} failed (attempt ${a}/${m}), retrying...",
+                     ("p", best->endpoint_str)("a", retry + 1)("m", max_connect_retries));
+                std::cerr << "   Connect retry " << (retry + 1) << "/" << max_connect_retries << "...\n";
+                try { sock.close(); } catch (...) {}
+                sock.open();
+                fc::usleep(fc::seconds(2));
             }
+
+            // Request info again to establish session
+            try {
+                send_message_empty(sock, snapshot_info_request);
+            } catch (const fc::exception& e) {
+                auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
+                if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
+                    auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
+                    FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
+                        ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
+                }
+                FC_THROW("Failed to send Phase 2 info request to peer ${p}: ${e}",
+                    ("p", best->endpoint_str)("e", e.to_detail_string()));
+            } catch (const std::exception& e) {
+                auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
+                if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
+                    auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
+                    FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
+                        ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
+                }
+                FC_THROW("Failed to send Phase 2 info request to peer ${p}: ${e}",
+                    ("p", best->endpoint_str)("e", e.what()));
+            }
+            auto info_result = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
+            FC_ASSERT(std::get<0>(info_result), "Timeout waiting for peer response during download");
+
+            if (std::get<1>(info_result) == snapshot_access_denied) {
+                auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(info_result));
+                FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
+                    ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
+            }
+
+            FC_ASSERT(std::get<1>(info_result) == snapshot_info_reply, "Unexpected response from peer during download");
+
+            FC_ASSERT(best->compressed_size <= MAX_SNAPSHOT_SIZE,
+                "Snapshot too large: ${s} bytes exceeds limit of ${l} bytes",
+                ("s", best->compressed_size)("l", MAX_SNAPSHOT_SIZE));
+
+            std::ofstream out(temp_path, std::ios::binary);
+            FC_ASSERT(out.is_open(), "Failed to create temp file for snapshot download: ${p}", ("p", temp_path));
+
+            uint64_t total_size = best->compressed_size;
+            uint64_t offset = 0;
+            const uint32_t chunk_size = 1048576; // 1 MB chunks
+            int last_printed_percent = -1;
+            auto download_start = fc::time_point::now();
+
+            while (offset < total_size) {
+                snapshot_data_request_data req;
+                req.block_num = best->block_num;
+                req.offset = offset;
+                req.chunk_size = chunk_size;
+
+                try {
+                    send_message(sock, snapshot_data_request, pack_to_vec(req));
+                } catch (const fc::exception& e) {
+                    FC_THROW("Failed to send chunk request to peer ${p} at offset ${o}: ${e}",
+                        ("p", best->endpoint_str)("o", offset)("e", e.to_detail_string()));
+                } catch (const std::exception& e) {
+                    FC_THROW("Failed to send chunk request to peer ${p} at offset ${o}: ${e}",
+                        ("p", best->endpoint_str)("o", offset)("e", e.what()));
+                }
+
+                auto data_result = read_message_with_timeout(sock, 64 * 1024 * 1024, fc::minutes(5));
+                FC_ASSERT(std::get<0>(data_result), "Timeout waiting for chunk data from peer");
+                FC_ASSERT(std::get<1>(data_result) == snapshot_data_reply, "Unexpected response during chunk download");
+
+                auto reply = unpack_from_vec<snapshot_data_reply_data>(std::get<2>(data_result));
+
+                if (!reply.data.empty()) {
+                    out.write(reply.data.data(), reply.data.size());
+                    offset += reply.data.size();
+                }
+
+                uint32_t percent = total_size > 0 ? static_cast<uint32_t>(offset * 100 / total_size) : 100;
+                if (static_cast<int>(percent) != last_printed_percent && (percent % 5 == 0 || reply.is_last)) {
+                    std::cerr << "   Downloaded " << (offset / 1048576) << "/" << (total_size / 1048576) << " MB (" << percent << "%)\n";
+                    last_printed_percent = static_cast<int>(percent);
+                }
+                ilog(CLOG_YELLOW "Downloaded ${offset}/${total} bytes (${pct}%)" CLOG_RESET,
+                     ("offset", offset)("total", total_size)("pct", percent));
+
+                if (reply.is_last) break;
+            }
+
+            out.flush();
+            out.close();
+            sock.close();
+
+            auto download_elapsed = double((fc::time_point::now() - download_start).count()) / 1000000.0;
+            std::cerr << "   Download complete: " << (offset / 1048576) << " MB in " << download_elapsed << " sec\n";
+            ilog(CLOG_YELLOW "Download complete: ${s} bytes in ${t} sec" CLOG_RESET, ("s", offset)("t", download_elapsed));
+
+            // Verify checksum by streaming file in chunks
+            std::cerr << "   Verifying checksum...\n";
+            {
+                std::ifstream verify_in(temp_path, std::ios::binary);
+                FC_ASSERT(verify_in.is_open(), "Failed to open downloaded snapshot for verification");
+
+                fc::sha256::encoder enc;
+                char buf[1048576];
+                while (verify_in.good()) {
+                    verify_in.read(buf, sizeof(buf));
+                    auto n = verify_in.gcount();
+                    if (n > 0) {
+                        enc.write(buf, static_cast<uint32_t>(n));
+                    }
+                }
+                verify_in.close();
+
+                fc::sha256 computed = enc.result();
+                FC_ASSERT(computed == best->checksum,
+                    "Snapshot checksum mismatch after download: computed=${c}, expected=${e}",
+                    ("c", std::string(computed))("e", std::string(best->checksum)));
+            }
+            ilog(CLOG_YELLOW "Snapshot checksum verified" CLOG_RESET);
+            std::cerr << "   Checksum verified OK\n";
+
+            // Rename to final path
+            std::string final_path = dir + "/snapshot-block-" + std::to_string(best->block_num) + ".vizjson";
+            boost::filesystem::rename(temp_path, final_path);
+
+            std::cerr << "   Snapshot saved to " << final_path << "\n";
+            ilog(CLOG_YELLOW "Snapshot saved to ${p}" CLOG_RESET, ("p", final_path));
+            return final_path;
+
+        } catch (const fc::assert_exception& e) {
+            // Checksum mismatch or other assert — remove this peer and try the next one
+            elog("Snapshot download from peer ${p} failed (assert): ${e}. Trying next peer...",
+                 ("p", best->endpoint_str)("e", e.to_detail_string()));
+            std::cerr << "   Peer " << best->endpoint_str << " failed verification: " << e.to_string() << "\n"
+                      << "   Trying next trusted peer...\n";
+        } catch (const fc::exception& e) {
+            elog("Snapshot download from peer ${p} failed: ${e}. Trying next peer...",
+                 ("p", best->endpoint_str)("e", e.to_detail_string()));
+            std::cerr << "   Peer " << best->endpoint_str << " failed: " << e.to_string() << "\n"
+                      << "   Trying next trusted peer...\n";
+        } catch (const std::exception& e) {
+            elog("Snapshot download from peer ${p} failed: ${e}. Trying next peer...",
+                 ("p", best->endpoint_str)("e", e.what()));
+            std::cerr << "   Peer " << best->endpoint_str << " failed: " << e.what() << "\n"
+                      << "   Trying next trusted peer...\n";
         }
-        verify_in.close();
 
-        fc::sha256 computed = enc.result();
-        FC_ASSERT(computed == best->checksum,
-            "Snapshot checksum mismatch after download: computed=${c}, expected=${e}",
-            ("c", std::string(computed))("e", std::string(best->checksum)));
+        // Cleanup temp file before trying next peer
+        try {
+            if (boost::filesystem::exists(temp_path)) {
+                boost::filesystem::remove(temp_path);
+            }
+        } catch (...) {}
+
+        // Remove failed peer and continue with the next best
+        available_peers.erase(best);
     }
-    ilog(CLOG_YELLOW "Snapshot checksum verified" CLOG_RESET);
-    std::cerr << "   Checksum verified OK\n";
 
-    // Rename to final path
-    std::string final_path = dir + "/snapshot-block-" + std::to_string(best->block_num) + ".vizjson";
-    boost::filesystem::rename(temp_path, final_path);
-
-    std::cerr << "   Snapshot saved to " << final_path << "\n";
-    ilog(CLOG_YELLOW "Snapshot saved to ${p}" CLOG_RESET, ("p", final_path));
-    return final_path;
+    wlog("All trusted peers exhausted. No valid snapshot downloaded.");
+    std::cerr << "   All trusted peers exhausted. No valid snapshot available.\n";
+    return std::string();
 }
 
 // ============================================================================
