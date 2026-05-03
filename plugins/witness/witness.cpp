@@ -687,33 +687,66 @@ namespace graphene {
                 // our witnesses legitimately produce blocks for their own slots, and
                 // one round of 21 blocks might have only our witnesses if the
                 // committee slots happened to be at the end of the round.
+                //
+                // IMPORTANT: If committee (CHAIN_EMERGENCY_WITNESS_ACCOUNT) is in the
+                // current witness schedule AND we have its key (emergency-private-key
+                // configured), this node IS the emergency master.  All blocks being
+                // "ours" is expected — other nodes sync from us.  Skip minority fork
+                // detection entirely to avoid false positives and the production
+                // deadlock that would otherwise occur.
                 if (dgp.emergency_consensus_active && db._dlt_mode) {
-                    auto fork_head = db.get_fork_db().head();
-                    if (fork_head) {
-                        const uint32_t dlt_minority_threshold = CHAIN_MAX_WITNESSES * 2; // 42 blocks = 2 full rounds
-                        bool all_ours = true;
-                        uint32_t blocks_checked = 0;
-                        auto current = fork_head;
-
-                        while (current && blocks_checked < dlt_minority_threshold) {
-                            if (_witnesses.find(current->data.witness) == _witnesses.end()) {
-                                all_ours = false;
+                    // If committee is in the schedule and we have its key, WE are the
+                    // emergency master.  All blocks being "ours" is expected -- other
+                    // nodes sync from us.  Skip minority fork detection to prevent
+                    // false positives and the production deadlock.
+                    // Check both conditions: (a) committee is in the schedule, AND
+                    // (b) we have its key (committee is in _witnesses only when
+                    // emergency-private-key was configured — see plugin_initialize).
+                    bool we_are_master = false;
+                    if (_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end()) {
+                        const witness_schedule_object &wso = db.get_witness_schedule_object();
+                        for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                            if (wso.current_shuffled_witnesses[i] == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                                we_are_master = true;
                                 break;
                             }
-                            blocks_checked++;
-                            current = current->prev.lock();
                         }
+                    }
 
-                        if (all_ours && blocks_checked >= dlt_minority_threshold) {
-                            elog("DLT EMERGENCY MINORITY FORK DETECTED: last ${n} blocks all from our "
-                                 "witnesses (2+ full rounds). Node is isolated from master. "
-                                 "Resetting to LIB and resyncing from P2P network.",
-                                 ("n", blocks_checked));
-                            p2p().resync_from_lib();
-                            _production_enabled = false;
-                            _minority_fork_recovering = true;
-                            _minority_fork_recovery_start = fc::time_point::now();
-                            return block_production_condition::minority_fork;
+                    if (!we_are_master) {
+                        // Slave DLT node: committee not in schedule or we don't have
+                        // the key.  Run the existing fork_db isolation scan.
+                        auto fork_head = db.get_fork_db().head();
+                        if (fork_head) {
+                            const uint32_t dlt_minority_threshold = CHAIN_MAX_WITNESSES * 2; // 42 blocks = 2 full rounds
+                            bool all_ours = true;
+                            uint32_t blocks_checked = 0;
+                            auto current = fork_head;
+
+                            while (current && blocks_checked < dlt_minority_threshold) {
+                                if (_witnesses.find(current->data.witness) == _witnesses.end()) {
+                                    all_ours = false;
+                                    break;
+                                }
+                                blocks_checked++;
+                                current = current->prev.lock();
+                            }
+
+                            if (all_ours && blocks_checked >= dlt_minority_threshold) {
+                                elog("DLT EMERGENCY MINORITY FORK DETECTED: last ${n} blocks all from our "
+                                     "witnesses (2+ full rounds). Node is isolated from master. "
+                                     "Resetting to LIB and resyncing from P2P network.",
+                                     ("n", blocks_checked));
+                                p2p().resync_from_lib();
+                                _production_enabled = false;
+                                _minority_fork_recovering = true;
+                                _minority_fork_recovery_start = fc::time_point::now();
+                                return block_production_condition::minority_fork;
+                            }
+                        }
+                    } else {
+                        if (db._debug_block_production) {
+                            ilog("DEBUG_CRASH: DLT minority fork check SKIPPED - we are emergency master");
                         }
                     }
                 }
