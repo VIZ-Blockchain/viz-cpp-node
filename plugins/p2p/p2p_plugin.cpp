@@ -686,6 +686,21 @@ namespace graphene {
                                 low_block_num += (true_high_block_num - low_block_num + 2) / 2;
                             } while (low_block_num <= high_block_num);
 
+                            // Ensure the reference point (high_block_num) is always represented.
+                            // In DLT mode true_high_block_num can be far larger than high_block_num,
+                            // so the step above may skip over high_block_num entirely.  Without this
+                            // entry, the peer's response starts from a block not in our synopsis and
+                            // we disconnect the peer with "invalid response".
+                            if (synopsis.empty() ||
+                                block_header::num_from_id(synopsis.back()) != high_block_num) {
+                                if (high_block_num <= non_fork_high_block_num) {
+                                    synopsis.push_back(chain.db().get_block_id_for_num(high_block_num));
+                                } else if (high_block_num > non_fork_high_block_num &&
+                                           !fork_history.empty()) {
+                                    synopsis.push_back(fork_history.back());
+                                }
+                            }
+
                             //idump((synopsis));
                             if (chain.db()._dlt_mode) {
                                 dlog(CLOG_GRAY "DLT mode: get_blockchain_synopsis() returning ${n} entries, "

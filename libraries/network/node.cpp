@@ -1238,13 +1238,22 @@ namespace graphene {
                                 }
                             }
 
-                            // for each idle peer that we're syncing with
+                            // for each peer that we're syncing with and is available for block fetching
+                            // (not busy with block requests; ID requests are lightweight and
+                            // don't conflict with block fetching)
                             for (const peer_connection_ptr &peer : _active_connections) {
                                 if (peer->we_need_sync_items_from_peer &&
                                     sync_item_requests_to_send.find(peer) ==
                                     sync_item_requests_to_send.end() &&
-                                    // if we've already scheduled a request for this peer, don't consider scheduling another
-                                    peer->idle()) {
+                                    // Allow block fetching when not busy with block requests.
+                                    // ID requests are lightweight and don't conflict with block
+                                    // fetching, but we need at least MIN_BLOCK_IDS_TO_PREFETCH
+                                    // IDs available before we start requesting blocks while IDs
+                                    // are still being fetched.
+                                    (!peer->item_ids_requested_from_peer ||
+                                     peer->ids_of_items_to_get.size() >= GRAPHENE_NET_MIN_BLOCK_IDS_TO_PREFETCH) &&
+                                    peer->items_requested_from_peer.empty() &&
+                                    peer->sync_items_requested_from_peer.empty()) {
                                     if (!peer->inhibit_fetching_sync_blocks) {
                                         // loop through the items it has that we don't yet have on our blockchain
                                         for (unsigned i = 0; i <
@@ -1275,11 +1284,17 @@ namespace graphene {
                                     }
                                 } else if (peer->we_need_sync_items_from_peer &&
                                            !peer->ids_of_items_to_get.empty()) {
+                                    // Distinguish between busy with block requests (can't fetch more)
+                                    // vs busy with ID requests only (now allowed to fetch blocks)
+                                    bool busy_with_blocks = !peer->items_requested_from_peer.empty() ||
+                                                            !peer->sync_items_requested_from_peer.empty();
                                     fc_dlog(fc::logger::get("sync"),
-                                         CLOG_GRAY "fetch_sync_items_loop: peer ${peer} has ${count} items but NOT IDLE "
+                                         CLOG_GRAY "fetch_sync_items_loop: peer ${peer} has ${count} items, "
+                                         "${status} "
                                          "(items_req=${items_req}, sync_req=${sync_req}, ids_req=${ids_req})" CLOG_RESET,
                                          ("peer", peer->get_remote_endpoint())
                                          ("count", peer->ids_of_items_to_get.size())
+                                         ("status", busy_with_blocks ? "busy with blocks" : "skipped-other")
                                          ("items_req", peer->items_requested_from_peer.size())
                                          ("sync_req", peer->sync_items_requested_from_peer.size())
                                          ("ids_req", peer->item_ids_requested_from_peer.valid()));
@@ -5048,6 +5063,16 @@ namespace graphene {
 
             void node_impl::start_synchronizing_with_peer(const peer_connection_ptr &peer) {
                 VERIFY_CORRECT_THREAD();
+                // Guard: skip if we already have a pending ID request for this peer
+                // (prevents duplicate synopsis from on_fetch_blockchain_item_ids +
+                //  new_peer_just_added racing for the same peer)
+                if (peer->item_ids_requested_from_peer) {
+                    fc_dlog(fc::logger::get("sync"),
+                         "Skipping start_synchronizing_with_peer for ${peer} — "
+                         "already has pending ID request",
+                         ("peer", peer->get_remote_endpoint()));
+                    return;
+                }
                 uint32_t head_num = _delegate->get_block_number(_delegate->get_head_block_id());
                 fc_dlog(fc::logger::get("sync"),
                      "Starting sync with peer ${peer} (our head_block: #${head}, peer state: we_need=${we_need}, peer_needs=${peer_needs})",
@@ -5074,7 +5099,16 @@ namespace graphene {
                 VERIFY_CORRECT_THREAD();
                 peer->send_message(current_time_request_message(),
                         offsetof(current_time_request_message, request_sent_time));
-                start_synchronizing_with_peer(peer);
+                // Only start sync if not already in progress (could have been
+                // started by on_fetch_blockchain_item_ids handler which fires
+                // when the peer's handshake includes a fetch_blockchain_item_ids)
+                if (!peer->we_need_sync_items_from_peer && !peer->item_ids_requested_from_peer) {
+                    start_synchronizing_with_peer(peer);
+                } else {
+                    fc_dlog(fc::logger::get("sync"),
+                         "Skipping sync start for new peer ${peer} — already syncing",
+                         ("peer", peer->get_remote_endpoint()));
+                }
                 if (_active_connections.size() !=
                     _last_reported_number_of_connections) {
                     _last_reported_number_of_connections = (uint32_t)_active_connections.size();
