@@ -3835,7 +3835,15 @@ namespace graphene {
                             "p2p pushing sync block #${block_num} ${block_hash}",
                             ("block_num", block_message_to_send.block.block_num())
                                     ("block_hash", block_message_to_send.block_id));
-                    bool accepted = _delegate->handle_block(block_message_to_send, true, contained_transaction_message_ids, fc::optional<fc::ip::endpoint>());
+                    fc::optional<fc::ip::endpoint> originating_peer_endpoint;
+                    for (const peer_connection_ptr &peer : _active_connections) {
+                        if (peer->ids_of_items_being_processed.find(block_message_to_send.block_id) !=
+                            peer->ids_of_items_being_processed.end()) {
+                            originating_peer_endpoint = peer->get_remote_endpoint();
+                            break;
+                        }
+                    }
+                    bool accepted = _delegate->handle_block(block_message_to_send, true, contained_transaction_message_ids, originating_peer_endpoint);
                     if (accepted) {
                         ilog("Successfully pushed sync block ${num} (id:${id})",
                                 ("num", block_message_to_send.block.block_num())
