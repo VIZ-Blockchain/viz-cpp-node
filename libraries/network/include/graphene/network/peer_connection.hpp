@@ -242,6 +242,7 @@ namespace graphene {
             fc::time_point last_in_sync_notification_sent; /// when we last notified this in-sync peer about a new block (cooldown guard)
             fc::time_point last_fetch_item_ids_response_time; /// when we last sent a full get_block_ids response to this peer (rate-limit guard)
             uint32_t last_fetch_item_ids_response_head_num = 0; /// our head block number at time of last get_block_ids response (prevents rate-limit from hiding new blocks)
+            fc::time_point last_synopsis_sent_time; /// when we last sent a synopsis to this peer (cooldown guard against rapid-fire requests)
             bool inhibit_fetching_sync_blocks;
             /// @}
 
@@ -291,6 +292,12 @@ namespace graphene {
             // is at or below our head (competing fork, not actually ahead).
             // After threshold, the peer is soft-banned to stop the flood.
             uint32_t sync_spam_strikes = 0;
+
+            // Strike counter for rate-limited fetch_item_ids from in-sync peers.
+            // Incremented when the rate-limit guard at on_fetch_blockchain_item_ids
+            // suppresses a response.  After threshold, the peer is soft-banned
+            // to stop log-spam and CPU waste from abusive polling.
+            uint32_t fetch_ids_rate_limit_strikes = 0;
 
             // Reason for disconnect (set before move_peer_to_closing_list)
             std::string closing_reason;

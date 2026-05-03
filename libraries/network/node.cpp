@@ -2661,12 +2661,32 @@ namespace graphene {
                 if (!originating_peer->peer_needs_sync_items_from_us &&
                     now - originating_peer->last_fetch_item_ids_response_time < fc::seconds(5) &&
                     our_current_head == originating_peer->last_fetch_item_ids_response_head_num) {
-                    fc_ilog(fc::logger::get("sync"),
-                         "sync: rate-limiting fetch_item_ids response for in-sync peer ${peer} "
-                         "(last response ${ms}ms ago, head unchanged at #${head})",
-                         ("peer", originating_peer->get_remote_endpoint())
-                         ("ms", (now - originating_peer->last_fetch_item_ids_response_time).count() / 1000)
-                         ("head", our_current_head));
+                    // Rate-limit: suppress redundant response, but track strikes
+                    // for in-sync peers that spam us with useless requests.
+                    // After threshold, soft-ban to stop log-spam and CPU waste.
+                    ++originating_peer->fetch_ids_rate_limit_strikes;
+                    static constexpr uint32_t FETCH_IDS_RATE_LIMIT_STRIKE_THRESHOLD = 50;
+                    static constexpr uint32_t FETCH_IDS_RATE_LIMIT_BAN_DURATION_SEC = 300; // 5 minutes
+                    if (originating_peer->fetch_ids_rate_limit_strikes >= FETCH_IDS_RATE_LIMIT_STRIKE_THRESHOLD) {
+                        fc_ilog(fc::logger::get("sync"),
+                             "sync: soft-banning peer ${peer} for ${dur}s — ${strikes} rate-limited "
+                             "fetch_item_ids requests (head unchanged at #${head})",
+                             ("peer", originating_peer->get_remote_endpoint())
+                             ("dur", FETCH_IDS_RATE_LIMIT_BAN_DURATION_SEC)
+                             ("strikes", originating_peer->fetch_ids_rate_limit_strikes)
+                             ("head", our_current_head));
+                        originating_peer->fork_rejected_until = fc::time_point::now()
+                            + fc::seconds(FETCH_IDS_RATE_LIMIT_BAN_DURATION_SEC);
+                        originating_peer->fetch_ids_rate_limit_strikes = 0;
+                    } else {
+                        dlog("sync: rate-limiting fetch_item_ids response for in-sync peer ${peer} "
+                             "(last response ${ms}ms ago, head unchanged at #${head}, strike ${s}/${max})",
+                             ("peer", originating_peer->get_remote_endpoint())
+                             ("ms", (now - originating_peer->last_fetch_item_ids_response_time).count() / 1000)
+                             ("head", our_current_head)
+                             ("s", originating_peer->fetch_ids_rate_limit_strikes)
+                             ("max", FETCH_IDS_RATE_LIMIT_STRIKE_THRESHOLD));
+                    }
                     originating_peer->send_message(reply_message);
                     return;
                 }
@@ -2700,6 +2720,7 @@ namespace graphene {
 
                 originating_peer->last_fetch_item_ids_response_time = fc::time_point::now();
                 originating_peer->last_fetch_item_ids_response_head_num = _delegate->get_block_number(_delegate->get_head_block_id());
+                originating_peer->fetch_ids_rate_limit_strikes = 0; // reset since we sent a real response
 
                 bool disconnect_from_inhibited_peer = false;
                 // if our client doesn't have any items after the item the peer requested, it will send back
@@ -2970,6 +2991,29 @@ namespace graphene {
                     peer->last_block_time_delegate_has_seen = _delegate->get_block_time(item_hash_t());
                 }
 
+                // Guard: don't send a new synopsis if a request is already in flight.
+                // Overwriting item_ids_requested_from_peer would orphan the pending
+                // response and can cause sync ping-pong loops when callers fire
+                // rapidly (e.g. old builds with the "double-check" infinite loop).
+                // The reset_fork_tracking_data_for_peer flag bypasses this guard
+                // for callers that explicitly need to force a re-request.
+                static constexpr uint32_t SYNOPSIS_COOLDOWN_MS = 100;
+                fc::time_point now = fc::time_point::now();
+                if (!reset_fork_tracking_data_for_peer) {
+                    if (peer->item_ids_requested_from_peer.valid()) {
+                        dlog("sync: skipping synopsis for peer ${peer} — request already pending",
+                             ("peer", peer->get_remote_endpoint()));
+                        return;
+                    }
+                    if (peer->last_synopsis_sent_time != fc::time_point() &&
+                        now - peer->last_synopsis_sent_time < fc::milliseconds(SYNOPSIS_COOLDOWN_MS)) {
+                        dlog("sync: skipping synopsis for peer ${peer} — cooldown (last sent ${ms}ms ago)",
+                             ("peer", peer->get_remote_endpoint())
+                             ("ms", (now - peer->last_synopsis_sent_time).count() / 1000));
+                        return;
+                    }
+                }
+
                 fc::oexception synopsis_exception;
                 try {
                     std::vector<item_hash_t> blockchain_synopsis = create_blockchain_synopsis_for_peer(peer);
@@ -2992,6 +3036,7 @@ namespace graphene {
                                     ("peer", peer->get_remote_endpoint())
                                     ("blockchain_synopsis", blockchain_synopsis));
                     peer->item_ids_requested_from_peer = boost::make_tuple(blockchain_synopsis, fc::time_point::now());
+                    peer->last_synopsis_sent_time = fc::time_point::now();
                     peer->send_message(fetch_blockchain_item_ids_message(_sync_item_type, blockchain_synopsis));
                 }
                 catch (const block_older_than_undo_history &e) {
@@ -6329,6 +6374,7 @@ namespace graphene {
                     peer->fork_rejected_until = fc::time_point();      // lift soft-ban
                     peer->unlinkable_block_strikes = 0;
                     peer->sync_spam_strikes = 0;
+                    peer->fetch_ids_rate_limit_strikes = 0;
                     peer->inhibit_fetching_sync_blocks = false;
                     peer->peer_needs_sync_items_from_us = true;        // re-evaluate
                     peer->we_need_sync_items_from_peer = true;
