@@ -287,7 +287,7 @@ The peer state reset logic lives in `node_impl::reset_active_peer_states()` (nod
 1. **`resync()`** — called during minority fork recovery via `resync_from_lib()`. Resets all peer state, clears `_active_sync_requests`, then calls `start_synchronizing()`.
 2. **`reconnect_seeds()`** — called by the witness plugin when producing a block with <2 peers. Resets all peer state, then force-reconnects seed nodes.
 
-The reset clears:
+The `resync()` function calls `reset_active_peer_states()` which clears per-peer state:
 
 ```
 For each active peer:
@@ -302,7 +302,17 @@ For each active peer:
   - Reset: last_block_delegate_has_seen
 ```
 
-This ensures no stale soft-bans, strike counters, or "already synced" markers prevent the node from re-syncing with available peers.
+Then `resync()` also clears global sync state:
+
+```
+  - _active_sync_requests.clear()       (stale in-flight request tracking)
+  - _received_sync_items.clear()         (accumulated blocks that failed to link)
+  - _new_received_sync_items.clear()     (recently arrived blocks not yet tried)
+  - _most_recent_blocks_accepted → reset to [current head block ID]
+                                         (prevents "already seen" skip of gap blocks)
+```
+
+Without clearing `_received_sync_items` and `_new_received_sync_items`, `have_already_received_sync_item()` would skip re-requesting blocks that arrived but failed to link (e.g., unlinkable blocks during a gap), leaving permanent gaps — especially critical in DLT emergency mode. Without resetting `_most_recent_blocks_accepted`, `process_backlog_of_sync_blocks()` would skip blocks that were accepted before the gap but need re-evaluation after resync.
 
 ---
 
@@ -389,6 +399,7 @@ In DLT mode (node loaded from snapshot), several sync behaviors are adjusted:
 2. **Synopsis matching** tolerates gaps between the anchor block and continuation blocks (a DLT node may not have all historical blocks).
 3. **Peer ahead detection**: If all peer synopsis entries are above our head, return empty (peer is ahead, not on a fork).
 4. **Broadcast inventory** is suppressed when head block is >30 seconds behind real time, even if no peer has `we_need_sync_items_from_peer = true`.
+5. **Sync oscillation prevention**: When sync blocks arrive ahead of head (gap between head and arriving blocks), a progressive cooldown (5s→10s max) prevents thundering-herd restarts, and `resync()` clears all stale sync state so missing gap blocks can be re-fetched. See "DLT Emergency Sync Oscillation Prevention" above.
 
 ---
 
@@ -574,6 +585,28 @@ When a broadcast block's number is ahead of head+1 (parent missing) and `handle_
 **Location:** `on_item_ids_inventory_message()` (node.cpp L3480-3513)
 
 When head is >30 seconds behind real time, broadcast inventory is normally suppressed. But if NO sync is in progress with ANY peer, the node is stuck — it ignores inventory AND doesn't sync. The fix detects this state and triggers `start_synchronizing_with_peer()` with the first peer that advertises blocks, breaking the deadlock.
+
+#### DLT Emergency Sync Oscillation Prevention
+
+**Location:** `send_sync_block_to_node_delegate()` (node.cpp L4141-4171)
+
+When a DLT emergency follower node loses sync with its master and reconnects, sync blocks ahead of the current head arrive but fail with `unlinkable_block_exception` (parent missing from `fork_db`). This triggers a sync restart, but the old implementation had two critical flaws:
+
+1. **Thundering herd**: Multiple concurrent async `send_sync_block_to_node_delegate` tasks fail simultaneously. Each slept 2s then called `start_synchronizing_with_peer()` for all peers — causing N concurrent full sync restarts at the same time.
+2. **Incomplete state reset**: `start_synchronizing_with_peer()` cleared `ids_of_items_to_get` but NOT `sync_items_requested_from_peer`, `ids_of_items_being_processed`, `_active_sync_requests`, `_received_sync_items`, or `_most_recent_blocks_accepted`. Old failed blocks remained, causing `have_already_received_sync_item()` to skip re-requesting the missing gap blocks.
+
+The fix replaces the per-peer `start_synchronizing_with_peer()` loop with a single `resync()` call (which does a complete state reset — see "Full Peer State Reset" above) protected by a **progressive cooldown**:
+
+```
+First restart:  5s cooldown
+Second restart: 7s cooldown
+Third restart:  9s cooldown
+Fourth+:       10s cooldown (max)
+
+Cooldown resets to 5s on any successful block acceptance.
+```
+
+The cooldown is tracked by `_last_deferred_resize_time` and `_consecutive_deferred_resize_count`. When a duplicate restart is attempted within the cooldown window, it is skipped entirely (early `return`), preventing the thundering herd.
 
 #### Emergency Consensus Head-Advancement Checks
 
