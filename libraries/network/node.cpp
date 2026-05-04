@@ -3927,6 +3927,7 @@ namespace graphene {
                 bool client_accepted_block = false;
                 bool discontinue_fetching_blocks_from_peer = false;
                 bool deferred_resize = false;
+                bool accepted = false;
 
                 fc::oexception handle_message_exception;
 
@@ -3944,7 +3945,7 @@ namespace graphene {
                             break;
                         }
                     }
-                    bool accepted = _delegate->handle_block(block_message_to_send, true, contained_transaction_message_ids, originating_peer_endpoint);
+                    accepted = _delegate->handle_block(block_message_to_send, true, contained_transaction_message_ids, originating_peer_endpoint);
                     if (accepted) {
                         ilog("Successfully pushed sync block ${num} (id:${id})",
                                 ("num", block_message_to_send.block.block_num())
