@@ -424,6 +424,14 @@ namespace graphene {
                 uint32_t estimate_last_known_fork_from_git_revision_timestamp(uint32_t unix_timestamp) const override;
 
                 void error_encountered(const std::string &message, const fc::oexception &error) override;
+
+                bool is_dlt_mode() const override;
+
+                uint32_t get_dlt_earliest_block_num() const override;
+
+                bool is_emergency_consensus_active() const override;
+
+                bool has_emergency_private_key() const override;
             };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -6848,6 +6856,22 @@ namespace graphene {
 
             void statistics_gathering_node_delegate_wrapper::error_encountered(const std::string &message, const fc::oexception &error) {
                 INVOKE_AND_COLLECT_STATISTICS(error_encountered, message, error);
+            }
+
+            bool statistics_gathering_node_delegate_wrapper::is_dlt_mode() const {
+                INVOKE_AND_COLLECT_STATISTICS(is_dlt_mode);
+            }
+
+            uint32_t statistics_gathering_node_delegate_wrapper::get_dlt_earliest_block_num() const {
+                INVOKE_AND_COLLECT_STATISTICS(get_dlt_earliest_block_num);
+            }
+
+            bool statistics_gathering_node_delegate_wrapper::is_emergency_consensus_active() const {
+                INVOKE_AND_COLLECT_STATISTICS(is_emergency_consensus_active);
+            }
+
+            bool statistics_gathering_node_delegate_wrapper::has_emergency_private_key() const {
+                INVOKE_AND_COLLECT_STATISTICS(has_emergency_private_key);
             }
 
 #undef INVOKE_AND_COLLECT_STATISTICS
