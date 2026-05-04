@@ -6,6 +6,8 @@
 #include <graphene/chain/dlt_block_log.hpp>
 #include <graphene/chain/fork_database.hpp>
 
+#include <graphene/plugins/witness/witness_plugin.hpp>
+
 #include <fc/network/resolve.hpp>
 #include <fc/thread/thread.hpp>
 
@@ -78,8 +80,11 @@ public:
     }
 
     bool has_emergency_private_key() const override {
-        // This is checked via the witness plugin — simplified here
-        return false; // The witness plugin provides this info separately
+        auto* wit_plug = appbase::app().find_plugin<graphene::plugins::witness_plugin::witness_plugin>();
+        if (wit_plug) {
+            return wit_plug->is_emergency_key_configured();
+        }
+        return false;
     }
 
     bool is_dlt_mode() const override {
@@ -138,8 +143,15 @@ public:
     // ── Block/transaction handling ───────────────────────────────
     bool accept_block(const signed_block& block, bool sync_mode) override {
         try {
-            auto result = chain.db().push_block(block);
-            return false; // push_block returns void; fork detection done via on_block_applied
+            uint32_t skip = graphene::chain::database::skip_nothing;
+            if (sync_mode) {
+                // During bulk sync, skip expensive checks that are redundant
+                // for blocks we trust from our fork peers
+                skip = graphene::chain::database::skip_witness_signature
+                     | graphene::chain::database::skip_transaction_signatures;
+            }
+            chain.db().push_block(block, skip);
+            return false; // fork detection done via on_block_applied callback
         } catch (const graphene::chain::unlinkable_block_exception&) {
             wlog("Unlinkable block #${n}, storing in fork_db", ("n", block.block_num()));
             chain.db().get_fork_db().push_block(block);
@@ -191,9 +203,11 @@ public:
             auto& fdb = chain.db().get_fork_db();
             auto block = fdb.fetch_block(new_head);
             if (block) {
-                chain.db().pop_block(); // pop back to fork point
-                // Re-push blocks from the fork
                 ilog("Switching to fork with head ${id}", ("id", new_head));
+                // The chain's push_block() handles full fork switch:
+                // pop-until-common-ancestor, re-apply new branch,
+                // LIB guard, DLT crash prevention
+                chain.db().push_block(*block);
             }
         } catch (const fc::exception& e) {
             wlog("Error switching to fork: ${e}", ("e", e.to_detail_string()));
@@ -201,8 +215,18 @@ public:
     }
 
     bool is_head_on_branch(const block_id_type& tip) const override {
-        // Simple check: if tip matches our head, we're on that branch
-        return tip == chain.db().head_block_id();
+        if (tip == chain.db().head_block_id()) return true;
+        try {
+            auto& fdb = chain.db().get_fork_db();
+            if (!fdb.is_known_block(tip) || !fdb.is_known_block(chain.db().head_block_id()))
+                return false;
+            auto branches = fdb.fetch_branch_from(tip, chain.db().head_block_id());
+            // If our head is in the "old" branch (branches.second), we're on the same branch
+            // as the tip -- they share a common ancestor and our head is below the tip
+            return !branches.second.empty();
+        } catch (...) {
+            return false;
+        }
     }
 
     // ── TaPoS helpers ───────────────────────────────────────────

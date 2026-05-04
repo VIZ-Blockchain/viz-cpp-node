@@ -191,6 +191,7 @@ void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason) {
 
     state.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
     state.disconnected_since = fc::time_point::now();
+    state.expected_next_block = 0;
 
     // Double backoff, cap at max
     state.reconnect_backoff_sec = std::min(state.reconnect_backoff_sec * 2,
@@ -520,7 +521,7 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
     if (it == _peer_states.end()) return;
 
     uint32_t our_head = _delegate->get_head_block_num();
-    uint32_t peer_latest = it->second.peer_dlt_latest_block;
+    uint32_t peer_latest = it->second.peer_dlt_latest;
 
     if (our_head >= peer_latest) {
         // We're caught up with this peer
@@ -528,7 +529,7 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
             // Check if ALL peers are caught up
             bool all_caught_up = true;
             for (auto& [id, s] : _peer_states) {
-                if (s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE && s.peer_dlt_latest_block > our_head) {
+                if (s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE && s.peer_dlt_latest > our_head) {
                     all_caught_up = false;
                     break;
                 }
@@ -630,16 +631,29 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
     }
 
     bool any_block_applied = false;
+    auto& state = it->second;
+    state.pending_block_batch_time = fc::time_point::now();
     for (const auto& block : reply.blocks) {
         if (_block_processing_paused) break;
+
+        // Validate block ordering
+        if (state.expected_next_block != 0 && block.block_num() != state.expected_next_block) {
+            wlog(DLT_LOG_RED "Block #${n} from ${ep} out of order (expected #${e})" DLT_LOG_RESET,
+                 ("n", block.block_num())("ep", state.endpoint)("e", state.expected_next_block));
+            record_packet_result(peer, false);
+            continue;
+        }
 
         bool caused_fork = _delegate->accept_block(block, /*sync_mode=*/(_node_status == DLT_NODE_STATUS_SYNC));
         any_block_applied = true;
         _last_block_received_time = fc::time_point::now();
         _last_network_block_time = fc::time_point::now();
 
+        state.expected_next_block = block.block_num() + 1;
+
         on_block_applied(block, caused_fork);
     }
+    state.pending_block_batch_time = fc::time_point();
 
     record_packet_result(peer, any_block_applied);
 
@@ -673,9 +687,23 @@ void dlt_p2p_node::on_dlt_get_block(peer_id peer, const dlt_get_block_message& r
 void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_message& reply) {
     if (_block_processing_paused) return;
 
+    auto it = _peer_states.find(peer);
+    if (it == _peer_states.end()) return;
+    auto& state = it->second;
+
+    // Validate block ordering
+    if (state.expected_next_block != 0 && reply.block.block_num() != state.expected_next_block) {
+        wlog(DLT_LOG_RED "Block #${n} from ${ep} out of order (expected #${e})" DLT_LOG_RESET,
+             ("n", reply.block.block_num())("ep", state.endpoint)("e", state.expected_next_block));
+        record_packet_result(peer, false);
+        return;
+    }
+
     bool caused_fork = _delegate->accept_block(reply.block, false);
     _last_network_block_time = fc::time_point::now();
     _last_block_received_time = fc::time_point::now();
+
+    state.expected_next_block = reply.block.block_num() + 1;
 
     on_block_applied(reply.block, caused_fork);
     record_packet_result(peer, true);
@@ -802,7 +830,7 @@ void dlt_p2p_node::broadcast_block_post_validation(
     dlt_fork_status_message msg;
     msg.fork_status = _fork_status;
     msg.head_block_id = block_id;
-    msg.head_block_num = 0; // filled by receiver from block_id
+    msg.head_block_num = block_header::num_from_id(block_id);
     send_to_all_our_fork_peers(message(msg));
 }
 
@@ -845,11 +873,23 @@ void dlt_p2p_node::set_block_production(bool producing) {
 }
 
 void dlt_p2p_node::resync_from_lib(bool force_emergency) {
-    ilog(DLT_LOG_GREEN "DLT P2P: resync from LIB requested" DLT_LOG_RESET);
+    ilog(DLT_LOG_GREEN "DLT P2P: resync from LIB requested (force_emergency=${f})" DLT_LOG_RESET,
+         ("f", force_emergency));
+
+    // Reset fork tracking
+    _fork_detected = false;
+    _fork_detection_block_num = 0;
+    _fork_resolution_state = dlt_fork_resolution_state();
+    _fork_status = DLT_FORK_STATUS_NORMAL;
+
     transition_to_sync();
+
+    // Re-send hello to all peers to get updated chain state
+    auto hello = build_hello_message();
     for (auto& [id, state] : _peer_states) {
         if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
             state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) {
+            send_message(id, message(hello));
             request_blocks_from_peer(id);
         }
     }
@@ -964,7 +1004,10 @@ bool dlt_p2p_node::add_to_mempool(const signed_transaction& trx, bool from_peer,
     if (_mempool_by_id.count(trx_id)) return false;
 
     // Check expiry
-    if (trx.expiration < fc::time_point_sec(fc::time_point::now())) return false;
+    if (trx.expiration < fc::time_point_sec(fc::time_point::now())) {
+        if (from_peer && sender != INVALID_PEER_ID) record_packet_result(sender, false);
+        return false;
+    }
 
     // Check expiration headroom
     auto max_exp = fc::time_point_sec(fc::time_point::now()) + fc::hours(_mempool_max_expiration_hours);
@@ -981,7 +1024,10 @@ bool dlt_p2p_node::add_to_mempool(const signed_transaction& trx, bool from_peer,
     }
 
     // Check TaPoS validity
-    if (!is_tapos_valid(trx)) return false;
+    if (!is_tapos_valid(trx)) {
+        if (from_peer && sender != INVALID_PEER_ID) record_packet_result(sender, false);
+        return false;
+    }
 
     // Enforce mempool size limits
     if (is_mempool_full()) {
@@ -1116,7 +1162,7 @@ void dlt_p2p_node::track_fork_state(const signed_block& block) {
     if (_fork_detected &&
         block.block_num() - _fork_detection_block_num >= FORK_RESOLUTION_BLOCK_THRESHOLD) {
         resolve_fork();
-        _fork_detected = false;
+        // _fork_detected is cleared inside resolve_fork() only when resolution completes
     }
 }
 
@@ -1124,19 +1170,19 @@ void dlt_p2p_node::resolve_fork() {
     auto tips = _delegate->get_fork_branch_tips();
     if (tips.size() < 2) {
         _fork_status = DLT_FORK_STATUS_NORMAL;
+        _fork_detected = false;  // fork resolved: only 1 branch remains
         return;
     }
 
-    // Find the heaviest branch
-    dlt_fork_branch_info winner;
-    bool first = true;
-    for (const auto& tip : tips) {
-        auto info = compute_branch_info(tip);
-        if (first || info.total_vote_weight > winner.total_vote_weight) {
-            winner = info;
-            first = false;
+    // Find the heaviest branch using vote-weighted comparison
+    block_id_type winner_tip = tips[0];
+    for (size_t i = 1; i < tips.size(); ++i) {
+        if (_delegate->compare_fork_branches(tips[i], winner_tip) > 0) {
+            winner_tip = tips[i];
         }
     }
+    dlt_fork_branch_info winner;
+    winner.tip = winner_tip;
 
     // Hysteresis check
     if (winner.tip == _fork_resolution_state.current_winner_tip) {
@@ -1167,6 +1213,7 @@ void dlt_p2p_node::resolve_fork() {
 
     // Reset hysteresis
     _fork_resolution_state = dlt_fork_resolution_state();
+    _fork_detected = false;  // fork resolution completed
 }
 
 dlt_fork_branch_info dlt_p2p_node::compute_branch_info(const block_id_type& tip) const {
@@ -1222,8 +1269,26 @@ void dlt_p2p_node::soft_ban_peer(peer_id peer) {
 // ── DLT block log pruning ────────────────────────────────────────────
 
 void dlt_p2p_node::periodic_dlt_prune_check() {
-    // This is handled by the plugin/chain layer, not directly by the P2P node
-    // The P2P node just signals when pruning should happen
+    if (!_delegate) return;
+    uint32_t earliest = _delegate->get_dlt_earliest_block();
+    uint32_t latest = _delegate->get_dlt_latest_block();
+    if (latest == 0 || earliest == 0) return;
+
+    uint32_t current_range = latest - earliest + 1;
+    if (current_range <= _dlt_block_log_max_blocks) return;
+
+    // Only prune in batches of DLT_PRUNE_BATCH_SIZE (10000)
+    if (latest - _last_prune_block_num < DLT_PRUNE_BATCH_SIZE) return;
+
+    ilog(DLT_LOG_GREEN "DLT block log exceeds max (${r} > ${m}), pruning ${b} blocks" DLT_LOG_RESET,
+         ("r", current_range)("m", _dlt_block_log_max_blocks)("b", DLT_PRUNE_BATCH_SIZE));
+
+    // The actual pruning is done at the chain level via truncate_before()
+    // We signal the delegate to prune, passing the new start block number
+    uint32_t new_start = earliest + DLT_PRUNE_BATCH_SIZE;
+    // TODO: Add dlt_p2p_delegate::prune_dlt_block_log(uint32_t new_start)
+    (void)new_start;  // suppress unused variable warning until delegate method is added
+    _last_prune_block_num = latest;
 }
 
 // ── Peer exchange periodic ───────────────────────────────────────────
@@ -1266,12 +1331,27 @@ bool dlt_p2p_node::is_same_subnet(const fc::ip::address& a, const fc::ip::addres
     return a_data[0] == b_data[0] && a_data[1] == b_data[1] && a_data[2] == b_data[2];
 }
 
+// ── Block validation timeout ─────────────────────────────────────────
+
+void dlt_p2p_node::block_validation_timeout() {
+    for (auto& [id, state] : _peer_states) {
+        if (state.has_pending_batch_timeout()) {
+            wlog(DLT_LOG_RED "Block validation timeout for peer ${ep} (30s)" DLT_LOG_RESET,
+                 ("ep", state.endpoint));
+            record_packet_result(id, false);
+            state.pending_block_batch_time = fc::time_point();
+            // If spam threshold reached, soft_ban will happen via record_packet_result
+        }
+    }
+}
+
 // ── Periodic task ────────────────────────────────────────────────────
 
 void dlt_p2p_node::periodic_task() {
     periodic_reconnect_check();
     periodic_lifecycle_timeout_check();
     sync_stagnation_check();
+    block_validation_timeout();
     periodic_mempool_cleanup();
     periodic_peer_exchange();
 

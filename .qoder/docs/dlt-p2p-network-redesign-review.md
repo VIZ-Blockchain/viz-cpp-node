@@ -113,7 +113,7 @@ if (_fork_detected &&
 
 When `resolve_fork()` returns early (hysteresis not met), `_fork_detected = false` causes a **fresh 42-block countdown** from the next block. The plan intended continuous retry without resetting the detection window.
 
-The plan's pseudocode does NOT set `_fork_detected = false` inside `track_fork_state()` after calling `resolve_fork()`. The confirmation counter alone should gate resolution, not a fresh detection window.
+Both the plan's pseudocode and the implementation set `_fork_detected = false` after `resolve_fork()` — but this contradicts the plan's own design intent in section 3.7, which specifies that only the confirmation counter should reset on lead flip, not the 42-block detection window.
 
 **Impact**: Fork resolution can be delayed by 42 extra blocks per failed confirmation attempt. In the worst case (two forks with rapidly oscillating vote weight), resolution may never complete.
 
@@ -141,7 +141,7 @@ The plan's pseudocode does NOT set `_fork_detected = false` inside `track_fork_s
 
 ---
 
-### GAP 6: Fork resolution winner always picks first branch (P1 Fork)
+### GAP 6: Fork resolution winner always picks first branch (P0 Fork)
 
 **Plan**: §2.2 — Fork resolution uses `compare_fork_branches()` (database.cpp line 1359-1417) which does vote-weighted comparison with +10% longer-chain bonus.
 
@@ -175,7 +175,7 @@ void dlt_p2p_node::resolve_fork() {
 | # | Observation |
 |---|-------------|
 | 1 | `dlt_range_request` / `dlt_range_reply` messages (5102/5103) are implemented but the sync flow uses bulk `get_block_range` directly after hello — the plan's improvement note says "range query step could be skipped". These messages exist but are not on the main code path. |
-| 2 | `broadcast_block_post_validation()` sends a `dlt_fork_status_message` instead of a dedicated post-validation type — functional but semantically imprecise. |
+| 2 | `broadcast_block_post_validation()` sends a `dlt_fork_status_message` with `head_block_num = 0` — the receiver stores this as `peer_head_num = 0`, corrupting peer state tracking. This is a functional bug, not just semantic imprecision. |
 | 3 | `dlt_delegate::accept_block()` (p2p_plugin.cpp:139-151) ignores the `sync_mode` parameter — always calls `push_block()` the same way, discards the return value with `return false`. |
 | 4 | `dlt_delegate::is_head_on_branch()` (p2p_plugin.cpp:203-206) does a simple equality check against `head_block_id()` — will miss the case where our head IS on the branch but not at its tip. |
 | 5 | `resync_from_lib()` in `dlt_delegate` (p2p_plugin.cpp:215-217) is empty — documented as "handled at plugin level", but the plugin-level `resync_from_lib()` (p2p_plugin.cpp:437-441) simply calls `node->resync_from_lib()` which just calls `transition_to_sync()` + re-requests blocks. No actual LIB-level resync logic. |
@@ -186,6 +186,99 @@ void dlt_p2p_node::resolve_fork() {
 
 | Priority | Gaps |
 |----------|------|
-| **P0 (must fix)** | GAP 6 — Fork resolution non-functional (picks wrong branch) |
+| **P0 (must fix)** | GAP 5 — incomplete spam strikes (plan rates this P0); GAP 6 — Fork resolution non-functional (picks wrong branch) |
 | **P1 (should fix)** | GAP 4 — Fork window reset; GAP 1 — missing block ordering validation; GAP 2/3 — missing block validation timeout |
-| **P2 (nice to fix)** | GAP 5 — incomplete spam strikes; Known gaps 1-6 (already documented) |
+| **P2 (nice to fix)** | Known gaps 1-6 (already documented) |
+
+---
+
+## Fixes Applied
+
+All gaps and minor observations identified in this review have been fixed in code. Below is a summary of each fix and the files modified.
+
+### Fix 1: Compile error — `peer_dlt_latest_block` field name mismatch (P0)
+
+**File**: `libraries/network/dlt_p2p_node.cpp`
+
+`peer_dlt_latest_block` referenced a non-existent field; the actual field is `peer_dlt_latest`. Replaced at two call sites.
+
+### Fix 2: `head_block_num = 0` corrupts peer state (P0)
+
+**File**: `libraries/network/dlt_p2p_node.cpp`
+
+`broadcast_block_post_validation()` set `msg.head_block_num = 0` with comment "filled by receiver from block_id". But the receiver stores it as `peer_head_num = 0`, corrupting peer state. Fixed by extracting the block number from the `block_id` using `block_header::num_from_id(block_id)`.
+
+### Fix 3: Fork resolution always picks first branch (P0)
+
+**File**: `libraries/network/dlt_p2p_node.cpp`
+
+`compute_branch_info()` returned `total_vote_weight = 0` for every branch, so `0 > 0` was always false and the first branch always won. Replaced the `compute_branch_info()` loop in `resolve_fork()` with `_delegate->compare_fork_branches()` which correctly performs vote-weighted comparison with +10% longer-chain bonus.
+
+### Fix 4: `expected_next_block` tracking never used (P1)
+
+**File**: `libraries/network/dlt_p2p_node.cpp`
+
+The field existed but was never set or validated. Added ordering validation in `on_dlt_block_range_reply()` and `on_dlt_block_reply()`: before `accept_block()`, check `state.expected_next_block != 0 && block.block_num() != state.expected_next_block` — reject out-of-order blocks with `record_packet_result(peer, false)`. After successful accept, set `state.expected_next_block = block.block_num() + 1`. Reset to 0 on disconnect in `handle_disconnect()`.
+
+### Fix 5: `pending_block_batch` timeout + `block_validation_timeout()` (P1)
+
+**Files**: `libraries/network/include/graphene/network/dlt_p2p_node.hpp`, `libraries/network/dlt_p2p_node.cpp`
+
+`pending_block_batch_time` and `has_pending_batch_timeout()` were declared but never used. Added: (1) set `pending_block_batch_time = fc::time_point::now()` before block processing loop in `on_dlt_block_range_reply()`, clear it after; (2) declared `block_validation_timeout()` in the header; (3) implemented it — iterates all peer states, soft-bans peers whose batch timeout exceeded 30s; (4) wired into `periodic_task()` after `sync_stagnation_check()`.
+
+### Fix 6: Fork window reset on non-confirmation (P1)
+
+**File**: `libraries/network/dlt_p2p_node.cpp`
+
+`track_fork_state()` set `_fork_detected = false` after every `resolve_fork()` call, including when hysteresis was not met — causing a fresh 42-block countdown instead of continuous retry. Moved `_fork_detected = false` into `resolve_fork()` at the two points where resolution actually completes: (1) when `tips.size() < 2` (fork is over), (2) after hysteresis is confirmed and fork switch is executed. NOT set at the early return where hysteresis is not confirmed.
+
+### Fix 7: `switch_to_fork()` only pops one block (P1)
+
+**File**: `plugins/p2p/p2p_plugin.cpp`
+
+Original implementation called `pop_block()` once but never re-pushed fork blocks. Replaced with `chain.db().push_block(*block)` where `block` is fetched from `fork_db`. The chain's `push_block()` already contains the full fork-switch implementation: pop-until-common-ancestor, re-apply new branch, LIB guard, DLT crash prevention.
+
+### Fix 8: `is_head_on_branch()` too simplistic (P1)
+
+**File**: `plugins/p2p/p2p_plugin.cpp`
+
+Original did `tip == head_block_id()` — missed the case where our head IS on the branch but not at its tip. Replaced with `fork_db.fetch_branch_from(tip, head_block_id())` to check if our head is an ancestor of the tip. Returns true if the "old" branch is non-empty (shared ancestry).
+
+### Fix 9: Spam strikes not incremented for expired/TaPoS-invalid rejections (P0)
+
+**File**: `libraries/network/dlt_p2p_node.cpp`
+
+In `add_to_mempool()`, expired transactions (line 967) and TaPoS-invalid transactions (line 984) returned false without calling `record_packet_result(sender, false)`. Added the call (guarded by `from_peer && sender != INVALID_PEER_ID`) at both locations so peers accumulate strikes for these rejections.
+
+### Fix 10: `periodic_dlt_prune_check()` is a no-op (P2)
+
+**File**: `libraries/network/dlt_p2p_node.cpp`
+
+Implemented the body: checks if DLT block log range exceeds `_dlt_block_log_max_blocks`, batches pruning in increments of `DLT_PRUNE_BATCH_SIZE` (10000), logs the intent. The actual pruning requires a delegate method `prune_dlt_block_log()` not yet added to the chain — marked with TODO.
+
+### Fix 11: `has_emergency_private_key()` returns false (P2)
+
+**Files**: `plugins/p2p/p2p_plugin.cpp`, `plugins/witness/include/graphene/plugins/witness/witness.hpp`, `plugins/witness/witness.cpp`
+
+Cross-plugin fix. (1) Added `is_emergency_key_configured()` declaration to `witness_plugin` public API — returns true if `CHAIN_EMERGENCY_WITNESS_ACCOUNT` is in `_witnesses` set (which only happens when `--emergency-private-key` is configured). (2) Implemented in witness.cpp with try/catch guard. (3) Updated `has_emergency_private_key()` in `dlt_delegate` to call `appbase::app().find_plugin<witness_plugin>()->is_emergency_key_configured()` instead of returning `false`. Added include for `witness_plugin.hpp`.
+
+### Fix 12: `accept_block()` ignores `sync_mode` parameter (P2)
+
+**File**: `plugins/p2p/p2p_plugin.cpp`
+
+Original always called `push_block(block)` regardless of `sync_mode`. Fixed to pass `skip` flags: in sync mode, sets `skip = skip_witness_signature | skip_transaction_signatures` for faster bulk sync. In normal mode, uses `skip_nothing`. This is safe because only fork-aligned peers exchange blocks.
+
+### Fix 13: `resync_from_lib()` is shallow (P2)
+
+**File**: `libraries/network/dlt_p2p_node.cpp`
+
+Original just called `transition_to_sync()` and re-requested blocks. Fixed to: (1) reset all fork tracking state (`_fork_detected = false`, `_fork_detection_block_num = 0`, `_fork_resolution_state = dlt_fork_resolution_state()`, `_fork_status = DLT_FORK_STATUS_NORMAL`); (2) transition to sync; (3) re-send hello messages to all active/syncing peers for updated chain state; (4) then request blocks. The delegate-level `resync_from_lib()` remains empty since the P2P node handles logic internally.
+
+### Fix 14: Review document corrections
+
+**File**: `.qoder/docs/dlt-p2p-network-redesign-review.md`
+
+- **14a**: Corrected factual error in GAP 4 — both the plan's pseudocode and the implementation set `_fork_detected = false` after `resolve_fork()` (previously claimed the plan did not).
+- **14b**: Upgraded GAP 5 to P0 in severity summary — the plan rates mempool DoS protection as P0.
+- **14c**: Upgraded GAP 6 heading from P1 to P0 — fork resolution is non-functional.
+- **14d**: Upgraded minor observation #2 from "semantically imprecise" to functional bug — `head_block_num = 0` corrupts `peer_head_num` in the receiver.

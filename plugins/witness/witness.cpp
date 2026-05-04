@@ -371,6 +371,19 @@ namespace graphene {
                 return false;
             }
 
+            bool witness_plugin::is_emergency_key_configured() const {
+                try {
+                    if (!pimpl || pimpl->_witnesses.empty()) {
+                        return false;
+                    }
+                    // CHAIN_EMERGENCY_WITNESS_ACCOUNT is added to _witnesses only
+                    // when --emergency-private-key is configured (see plugin_initialize).
+                    return pimpl->_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != pimpl->_witnesses.end();
+                } catch (...) {
+                    return false;
+                }
+            }
+
             void witness_plugin::impl::schedule_production_loop() {
                 //Schedule for the next 250ms tick regardless of chain state
                 // With +250ms look-ahead in maybe_produce_block(), the tick at

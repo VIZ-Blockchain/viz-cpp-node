@@ -70,6 +70,10 @@ namespace graphene {
                 /// are followers that must sync from the network.
                 bool is_emergency_master() const;
 
+                /// Returns true if the emergency-private-key is configured,
+                /// regardless of whether the committee is in the current schedule.
+                bool is_emergency_key_configured() const;
+
             private:
                 struct impl;
                 std::unique_ptr<impl> pimpl;

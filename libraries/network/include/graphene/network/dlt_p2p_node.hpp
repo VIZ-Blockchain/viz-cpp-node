@@ -192,6 +192,7 @@ private:
 
     // ── Periodic tasks ───────────────────────────────────────────
     void periodic_task();
+    void block_validation_timeout();
 
     // ── Subnet diversity ─────────────────────────────────────────
     uint32_t count_peers_in_subnet(const fc::ip::address& addr) const;
