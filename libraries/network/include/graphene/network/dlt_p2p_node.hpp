@@ -271,14 +271,18 @@ private:
     // ── Block processing pause ───────────────────────────────────
     bool                            _block_processing_paused = false;
 
-    // ── Color-coded logging ──────────────────────────────────────
-    static constexpr const char* DLT_LOG_GREEN   = "\033[32m";
-    static constexpr const char* DLT_LOG_WHITE   = "\033[37m";
-    static constexpr const char* DLT_LOG_RED     = "\033[91m";
-    static constexpr const char* DLT_LOG_DGRAY   = "\033[90m";
-    static constexpr const char* DLT_LOG_ORANGE  = "\033[33m";
-    static constexpr const char* DLT_LOG_RESET   = "\033[0m";
+    // ── Color-coded logging macros ─────────────────────────────
+    // Must be #define (not constexpr) so they concatenate with
+    // adjacent string literals in ilog/wlog format arguments.
 };
+
+// ── Color-coded logging macros (must be #define for string-literal concatenation) ─
+#define DLT_LOG_GREEN   "\033[32m"
+#define DLT_LOG_WHITE   "\033[37m"
+#define DLT_LOG_RED     "\033[91m"
+#define DLT_LOG_DGRAY   "\033[90m"
+#define DLT_LOG_ORANGE  "\033[33m"
+#define DLT_LOG_RESET   "\033[0m"
 
 } // namespace network
 } // namespace graphene

@@ -114,7 +114,9 @@ void dlt_p2p_node::close() {
     } catch (...) {}
 
     // Cancel all read fibers
-    for (auto& [id, fiber] : _read_fibers) {
+    for (auto& _fib_item : _read_fibers) {
+            auto& id = _fib_item.first;
+            auto& fiber = _fib_item.second;
         try { if (fiber.valid()) fiber.cancel_and_wait(__FUNCTION__); } catch (...) {}
     }
     _read_fibers.clear();
@@ -123,7 +125,9 @@ void dlt_p2p_node::close() {
         _tcp_server.close();
     } catch (...) {}
 
-    for (auto& [id, conn] : _connections) {
+    for (auto& _conn_item : _connections) {
+            auto& id = _conn_item.first;
+            auto& conn = _conn_item.second;
         try { if (conn) conn->close(); } catch (...) {}
     }
     _connections.clear();
@@ -137,7 +141,9 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
     if (_connections.size() >= _max_connections) return;
 
     // Don't connect to already-connected peer
-    for (auto& [id, state] : _peer_states) {
+    for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& state = _peer_item.second;
         if (state.endpoint == ep && state.lifecycle_state != DLT_PEER_LIFECYCLE_DISCONNECTED
             && state.lifecycle_state != DLT_PEER_LIFECYCLE_BANNED) {
             return;
@@ -269,7 +275,9 @@ void dlt_p2p_node::periodic_reconnect_check() {
 }
 
 void dlt_p2p_node::periodic_lifecycle_timeout_check() {
-    for (auto& [id, state] : _peer_states) {
+    for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& state = _peer_item.second;
         if (state.has_lifecycle_timeout()) {
             wlog("Peer ${ep} timed out in state ${s}",
                  ("ep", state.endpoint)("s", (int)state.lifecycle_state));
@@ -303,7 +311,9 @@ void dlt_p2p_node::send_message(peer_id peer, const message& msg) {
 }
 
 void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclude) {
-    for (auto& [id, state] : _peer_states) {
+    for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& state = _peer_item.second;
         if (id == exclude) continue;
         if (state.exchange_enabled && state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE) {
             send_message(id, msg);
@@ -314,7 +324,6 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
 void dlt_p2p_node::on_message(peer_id peer, const message& msg) {
     auto it = _peer_states.find(peer);
     if (it == _peer_states.end()) return;
-    auto& state = it->second;
 
     // Block processing pause check
     if (_block_processing_paused) {
@@ -528,7 +537,9 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
         if (_node_status == DLT_NODE_STATUS_SYNC) {
             // Check if ALL peers are caught up
             bool all_caught_up = true;
-            for (auto& [id, s] : _peer_states) {
+            for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& s = _peer_item.second;
                 if (s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE && s.peer_dlt_latest > our_head) {
                     all_caught_up = false;
                     break;
@@ -749,7 +760,9 @@ void dlt_p2p_node::on_dlt_peer_exchange_request(peer_id peer, const dlt_peer_exc
     // Collect "our fork" peers (exchange_enabled, active, min uptime)
     dlt_peer_exchange_reply reply;
     auto now = fc::time_point::now();
-    for (auto& [id, s] : _peer_states) {
+    for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& s = _peer_item.second;
         if (id == peer) continue;
         if (!s.exchange_enabled) continue;
         if (s.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;
@@ -830,7 +843,7 @@ void dlt_p2p_node::broadcast_block_post_validation(
     dlt_fork_status_message msg;
     msg.fork_status = _fork_status;
     msg.head_block_id = block_id;
-    msg.head_block_num = block_header::num_from_id(block_id);
+    msg.head_block_num = graphene::protocol::block_header::num_from_id(block_id);
     send_to_all_our_fork_peers(message(msg));
 }
 
@@ -855,7 +868,9 @@ void dlt_p2p_node::broadcast_chain_status() {
 
 uint32_t dlt_p2p_node::get_connection_count() const {
     uint32_t count = 0;
-    for (auto& [id, state] : _peer_states) {
+    for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& state = _peer_item.second;
         if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
             state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) {
             count++;
@@ -886,7 +901,9 @@ void dlt_p2p_node::resync_from_lib(bool force_emergency) {
 
     // Re-send hello to all peers to get updated chain state
     auto hello = build_hello_message();
-    for (auto& [id, state] : _peer_states) {
+    for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& state = _peer_item.second;
         if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
             state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) {
             send_message(id, message(hello));
@@ -899,7 +916,9 @@ void dlt_p2p_node::trigger_resync() {
     ilog(DLT_LOG_GREEN "DLT P2P: resync triggered" DLT_LOG_RESET);
     // Re-send hello to all active peers
     auto hello = build_hello_message();
-    for (auto& [id, state] : _peer_states) {
+    for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& state = _peer_item.second;
         if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE) {
             send_message(id, message(hello));
         }
@@ -910,7 +929,9 @@ void dlt_p2p_node::reconnect_seeds() {
     ilog(DLT_LOG_GREEN "DLT P2P: reconnecting seed nodes" DLT_LOG_RESET);
     for (const auto& ep : _seed_nodes) {
         // Reset backoff for seeds
-        for (auto& [id, state] : _peer_states) {
+        for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& state = _peer_item.second;
             if (state.endpoint == ep) {
                 state.reconnect_backoff_sec = dlt_peer_state::INITIAL_RECONNECT_BACKOFF_SEC;
                 state.next_reconnect_attempt = fc::time_point();
@@ -986,7 +1007,9 @@ void dlt_p2p_node::sync_stagnation_check() {
     }
 
     // Re-request from all active peers
-    for (auto& [id, state] : _peer_states) {
+    for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& state = _peer_item.second;
         if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
             state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) {
             request_blocks_from_peer(id);
@@ -1298,7 +1321,9 @@ void dlt_p2p_node::periodic_peer_exchange() {
 
     // Pick a random active peer to request exchange from
     std::vector<peer_id> candidates;
-    for (auto& [id, state] : _peer_states) {
+    for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& state = _peer_item.second;
         if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE && state.exchange_enabled) {
             if (!state.is_peer_exchange_rate_limited()) {
                 candidates.push_back(id);
@@ -1316,7 +1341,9 @@ void dlt_p2p_node::periodic_peer_exchange() {
 
 uint32_t dlt_p2p_node::count_peers_in_subnet(const fc::ip::address& addr) const {
     uint32_t count = 0;
-    for (auto& [id, state] : _peer_states) {
+    for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& state = _peer_item.second;
         if (is_same_subnet(state.endpoint.get_address(), addr)) {
             count++;
         }
@@ -1334,7 +1361,9 @@ bool dlt_p2p_node::is_same_subnet(const fc::ip::address& a, const fc::ip::addres
 // ── Block validation timeout ─────────────────────────────────────────
 
 void dlt_p2p_node::block_validation_timeout() {
-    for (auto& [id, state] : _peer_states) {
+    for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& state = _peer_item.second;
         if (state.has_pending_batch_timeout()) {
             wlog(DLT_LOG_RED "Block validation timeout for peer ${ep} (30s)" DLT_LOG_RESET,
                  ("ep", state.endpoint));
@@ -1356,7 +1385,9 @@ void dlt_p2p_node::periodic_task() {
     periodic_peer_exchange();
 
     // Check banned peers for unban
-    for (auto& [id, state] : _peer_states) {
+    for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& state = _peer_item.second;
         if (state.lifecycle_state == DLT_PEER_LIFECYCLE_BANNED) {
             auto elapsed = fc::time_point::now() - state.state_entered_time;
             if (elapsed.count() > BAN_DURATION_SEC * 1000000) {

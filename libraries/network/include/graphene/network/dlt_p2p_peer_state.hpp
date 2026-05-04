@@ -111,7 +111,7 @@ struct dlt_known_peer {
 
 // ── Mempool entry ───────────────────────────────────────────────────
 struct dlt_mempool_entry {
-    transaction_id_type          trx_id;
+    graphene::protocol::transaction_id_type          trx_id;
     signed_transaction          trx;
     fc::time_point              received_time;
     bool                        is_provisional = false;  // true if received during SYNC
