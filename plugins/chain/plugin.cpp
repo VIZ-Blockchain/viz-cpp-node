@@ -160,8 +160,10 @@ namespace chain {
     };
 
     void plugin::plugin_impl::replay_db(const bfs::path &data_dir, bool force_replay) {
-        auto head_block_log = db.get_block_log().head();
-        force_replay |= head_block_log && db.revision() >= head_block_log->block_num();
+        if (!force_replay) {
+            auto head_block_log = db.get_block_log().head();
+            force_replay |= head_block_log && db.revision() >= head_block_log->block_num();
+        }
 
         if (force_replay) {
             wipe_db(data_dir, false);
