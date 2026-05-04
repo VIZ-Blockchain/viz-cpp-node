@@ -1454,11 +1454,17 @@ namespace graphene { namespace chain {
                 //   - This covers the critical sync case: the very first block after
                 //     head must always be accepted for sync to make progress.
                 //
-                // For other blocks, we check _fork_db.is_known_block() (not
-                // database::is_known_block) because in DLT mode the full
-                // is_known_block() returns false for blocks whose data isn't on
-                // disk, even though they may exist in fork_db.
-                // Track whether we already know this block's parent is missing.
+                // We intentionally do NOT check _fork_db.is_known_block() here.
+                // is_known_block() returns true for blocks in _unlinked_index,
+                // which are NOT actually linked to the chain.  When a dead-fork
+                // block D+1 is deferred to _unlinked_index, its child D+2 will
+                // find its parent via is_known_block() → expect_unlinkable stays
+                // false → the exception propagates uncaught → DEFERRED_RESIZE
+                // cascade → crash.  By omitting the check, any block whose
+                // parent differs from head_id AND is not the immediate successor
+                // will have expect_unlinkable=true, safely deferring it.
+                //
+                // Track whether this block is expected to be unlinkable.
                 // When true, fork_db.push_block() will throw unlinkable_block_exception
                 // (expected) — we catch it below and return false instead of letting
                 // it propagate to the P2P layer which would trigger a sync restart,
@@ -1467,9 +1473,8 @@ namespace graphene { namespace chain {
 
                 if (new_block.block_num() > head_block_num() &&
                     new_block.previous != block_id_type() &&
-                    new_block.previous != head_block_id() &&
-                    !_fork_db.is_known_block(new_block.previous)) {
-                    // Parent block is not yet known.
+                    new_block.previous != head_block_id()) {
+                    // Parent block does not directly extend our head.
                     // For blocks close to head (small gap), let them through to
                     // fork_db which stores them in _unlinked_index.  When the
                     // missing parent arrives, fork_db._push_next() will
