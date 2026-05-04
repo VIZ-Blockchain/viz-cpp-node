@@ -450,6 +450,16 @@ namespace graphene {
                 fc::time_point now_fine = graphene::time::now();
                 fc::time_point_sec now = now_fine + fc::microseconds( 250000 );
 
+                // Read DGP early so the DLT sync guard can check emergency consensus state.
+                // In emergency mode the master MUST produce blocks regardless of sync state;
+                // blocking production here creates a permanent deadlock because:
+                //   - The master is the sole block producer
+                //   - No blocks arrive to clear the syncing flag
+                //   - The production loop is the only path to advance the chain
+                if (db._debug_block_production) ilog("DEBUG_CRASH: getting dgp");
+                const auto &dgp = db.get_dynamic_global_properties();
+                if (db._debug_block_production) ilog("DEBUG_CRASH: dgp ok, head=${h} emergency=${e}", ("h", dgp.head_block_number)("e", dgp.emergency_consensus_active));
+
                 // === DLT MODE: DEFER PRODUCTION DURING ACTIVE SYNC ===
                 // In DLT mode, the witness must not produce blocks while the
                 // chain is actively receiving sync blocks from P2P.  Producing
@@ -458,19 +468,22 @@ namespace graphene {
                 // re-triggering sync — the oscillation bug described in
                 // problem6.log.
                 //
+                // EMERGENCY EXCEPTION: When emergency consensus is active,
+                // the master node MUST produce blocks regardless of sync state.
+                // The master is the sole block producer — waiting for sync to
+                // complete would deadlock because no blocks arrive to clear
+                // the syncing flag (p18.log).
+                //
                 // Outside DLT mode this check is NOT applied because normal
                 // witnesses must produce on the canonical chain head even
                 // while the network is catching up.
-                if (db._dlt_mode && chain().is_syncing()) {
+                if (db._dlt_mode && chain().is_syncing() && !dgp.emergency_consensus_active) {
                     return block_production_condition::not_synced;
                 }
 
                 // === HARDFORK 12: THREE-STATE SAFETY ENFORCEMENT ===
-                if (db._debug_block_production) ilog("DEBUG_CRASH: getting dgp");
-                const auto &dgp = db.get_dynamic_global_properties();
-                if (db._debug_block_production) ilog("DEBUG_CRASH: dgp ok, head=${h} emergency=${e}", ("h", dgp.head_block_number)("e", dgp.emergency_consensus_active));
-
                 if (db._debug_block_production) ilog("DEBUG_CRASH: checking hardfork12 and emergency path");
+
                 if (db.has_hardfork(CHAIN_HARDFORK_12)) {
                     if (dgp.emergency_consensus_active) {
                         // EMERGENCY MODE: auto-bypass both stale and participation checks.
