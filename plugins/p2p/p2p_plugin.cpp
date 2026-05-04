@@ -3,6 +3,7 @@
 #include <graphene/network/dlt_p2p_node.hpp>
 
 #include <graphene/chain/database.hpp>
+#include <graphene/chain/database_exceptions.hpp>
 #include <graphene/chain/dlt_block_log.hpp>
 #include <graphene/chain/fork_database.hpp>
 
@@ -47,13 +48,13 @@ public:
     }
 
     block_id_type get_lib_block_id() const override {
-        return chain.db().with_read_lock([&]() {
+        return chain.db().with_weak_read_lock([&]() {
             return chain.db().get_dynamic_global_properties().last_irreversible_block_id;
         });
     }
 
     uint32_t get_lib_block_num() const override {
-        return chain.db().with_read_lock([&]() {
+        return chain.db().with_weak_read_lock([&]() {
             return chain.db().get_dynamic_global_properties().last_irreversible_block_num;
         });
     }
@@ -74,8 +75,8 @@ public:
 
     bool is_emergency_consensus_active() const override {
         return chain.db()._dlt_mode &&
-               chain.db().with_read_lock([&]() {
-                   return chain.db().get_dynamic_global_properties().is_emergency_consensus;
+               chain.db().with_weak_read_lock([&]() {
+                   return chain.db().get_dynamic_global_properties().emergency_consensus_active;
                });
     }
 
@@ -106,7 +107,7 @@ public:
         try {
             auto& fdb = db.get_fork_db();
             auto blocks = fdb.fetch_block_by_number(block_num);
-            if (!blocks.empty()) return blocks.front();
+            if (!blocks.empty()) return blocks.front()->data;
         } catch (...) {}
         return {};
     }
@@ -129,7 +130,7 @@ public:
             auto& fdb = db.get_fork_db();
             auto blocks = fdb.fetch_block_by_number(block_num);
             if (!blocks.empty()) {
-                id_out = blocks.front()->id();
+                id_out = blocks.front()->id;
                 return true;
             }
         } catch (...) {}
@@ -152,7 +153,7 @@ public:
             }
             chain.db().push_block(block, skip);
             return false; // fork detection done via on_block_applied callback
-        } catch (const graphene::chain::unlinkable_block_exception&) {
+        } catch (const graphene::chain::unlinkable_block_exception& e) {
             wlog("Unlinkable block #${n}, storing in fork_db", ("n", block.block_num()));
             chain.db().get_fork_db().push_block(block);
             return false;
@@ -164,7 +165,7 @@ public:
 
     bool accept_transaction(const signed_transaction& trx) override {
         try {
-            chain.db().accept_transaction(trx);
+            chain.db().push_transaction(trx);
             return true;
         } catch (const fc::exception& e) {
             dlog("Error accepting transaction: ${e}", ("e", e.to_detail_string()));
@@ -185,13 +186,13 @@ public:
             auto head_num = chain.db().head_block_num();
             auto blocks = fdb.fetch_block_by_number(head_num);
             for (auto& b : blocks) {
-                tips.push_back(b->id());
+                tips.push_back(b->id);
             }
             // Also check a few blocks ahead for competing forks
             for (uint32_t n = head_num + 1; n <= head_num + 5; ++n) {
                 auto more = fdb.fetch_block_by_number(n);
                 for (auto& b : more) {
-                    tips.push_back(b->id());
+                    tips.push_back(b->id);
                 }
             }
         } catch (...) {}
@@ -207,7 +208,7 @@ public:
                 // The chain's push_block() handles full fork switch:
                 // pop-until-common-ancestor, re-apply new branch,
                 // LIB guard, DLT crash prevention
-                chain.db().push_block(*block);
+                chain.db().push_block(block->data);
             }
         } catch (const fc::exception& e) {
             wlog("Error switching to fork: ${e}", ("e", e.to_detail_string()));
@@ -231,8 +232,8 @@ public:
 
     // ── TaPoS helpers ───────────────────────────────────────────
     bool is_tapos_block_known(uint32_t ref_block_num, uint32_t ref_block_prefix) const override {
-        return chain.db().with_read_lock([&]() {
-            return chain.db().is_known_block(ref_block_num);
+        return chain.db().with_weak_read_lock([&]() {
+            return chain.db().find_block_id_for_num(ref_block_num) != block_id_type();
         });
     }
 
@@ -247,7 +248,7 @@ public:
 class p2p_plugin_impl {
 public:
     p2p_plugin_impl(chain::plugin& c)
-        : chain(c), delegate(std::make_unique<dlt_delegate>(c)) {}
+        : delegate(std::make_unique<dlt_delegate>(c)), chain(c) {}
 
     ~p2p_plugin_impl() = default;
 
