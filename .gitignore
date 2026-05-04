@@ -50,3 +50,5 @@ documentation/doxygen/latex
 *.pyo
 *.egg-info/
 build
+
+.qoder/logs/*
