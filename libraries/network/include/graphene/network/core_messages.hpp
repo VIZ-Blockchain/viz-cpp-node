@@ -91,7 +91,7 @@ namespace graphene {
             get_current_connections_request_message_type = 5016,
             get_current_connections_reply_message_type = 5017,
             chain_status_announcement_message_type = 5018,
-            core_message_type_last = 5018,
+            core_message_type_last = 5019,
             block_post_validation_message_type = 6009,//just pass to process_ordinary_message
         };
 
