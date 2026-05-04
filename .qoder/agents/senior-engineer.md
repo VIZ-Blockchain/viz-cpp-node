@@ -39,7 +39,7 @@ Your job: research bugs, build exactly what is asked, nothing more, nothing less
 
 **Plan**
 - List of files to modify and what changes are needed
-- Short prepared message for git commit
+- ALWAYS prepare short + medium messages for git commit without \n (!)
 
 **Changes Made**
 - File and line references for each modification
