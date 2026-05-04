@@ -54,6 +54,10 @@ void dlt_p2p_node::set_peer_exchange_limits(uint32_t max_per_reply, uint32_t max
     _peer_exchange_min_uptime_sec = min_uptime_sec;
 }
 
+void dlt_p2p_node::set_stats_log_interval(uint32_t seconds) {
+    _stats_log_interval_sec = std::max(seconds, uint32_t(30));  // minimum 30s
+}
+
 // ── Lifecycle ────────────────────────────────────────────────────────
 
 void dlt_p2p_node::start() {
@@ -310,7 +314,9 @@ void dlt_p2p_node::send_message(peer_id peer, const message& msg) {
         }
         it->second->flush();
     } catch (const fc::exception& e) {
-        wlog("Failed to send to peer ${p}: ${e}", ("p", peer)("e", e.to_detail_string()));
+        auto ep_it_send = _peer_states.find(peer);
+        auto ep_send = (ep_it_send != _peer_states.end()) ? std::string(ep_it_send->second.endpoint) : std::to_string(peer);
+        wlog("Failed to send to peer ${ep}: ${e}", ("ep", ep_send)("e", e.to_detail_string()));
         handle_disconnect(peer, "send failed");
     }
 }
@@ -382,14 +388,21 @@ void dlt_p2p_node::on_message(peer_id peer, const message& msg) {
             case dlt_transaction_message_type:
                 on_dlt_transaction(peer, msg.as<dlt_transaction_message>());
                 break;
+            case dlt_soft_ban_message_type:
+                on_dlt_soft_ban(peer, msg.as<dlt_soft_ban_message>());
+                break;
             default:
-                wlog("Unknown DLT message type ${t} from peer ${p}", ("t", msg.msg_type)("p", peer));
+                auto ep_it_unk = _peer_states.find(peer);
+                auto ep_unk = (ep_it_unk != _peer_states.end()) ? std::string(ep_it_unk->second.endpoint) : std::to_string(peer);
+                wlog("Unknown DLT message type ${t} from peer ${ep}", ("t", msg.msg_type)("ep", ep_unk));
                 record_packet_result(peer, false);
                 break;
         }
     } catch (const fc::exception& e) {
-        wlog("Error processing message type ${t} from peer ${p}: ${e}",
-             ("t", msg.msg_type)("p", peer)("e", e.to_detail_string()));
+        auto ep_it_msg = _peer_states.find(peer);
+        auto ep_msg = (ep_it_msg != _peer_states.end()) ? std::string(ep_it_msg->second.endpoint) : std::to_string(peer);
+        wlog("Error processing message type ${t} from peer ${ep}: ${e}",
+             ("t", msg.msg_type)("ep", ep_msg)("e", e.to_detail_string()));
         // Don't punish peers for deserialization errors — these are typically
         // wire corruption or version mismatches, not malicious behavior.
         // Lifecycle timeouts and oversized-message checks handle truly bad peers.
@@ -760,8 +773,10 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
 }
 
 void dlt_p2p_node::on_dlt_not_available(peer_id peer, const dlt_not_available_message& msg) {
-    ilog(DLT_LOG_ORANGE "Peer ${p} doesn't have block #${n}" DLT_LOG_RESET,
-         ("p", peer)("n", msg.block_num));
+    auto it = _peer_states.find(peer);
+    auto ep = (it != _peer_states.end()) ? std::string(it->second.endpoint) : std::to_string(peer);
+    ilog(DLT_LOG_ORANGE "Peer ${ep} doesn't have block #${n}" DLT_LOG_RESET,
+         ("ep", ep)("n", msg.block_num));
     record_packet_result(peer, true);
 }
 
@@ -846,8 +861,10 @@ void dlt_p2p_node::on_dlt_peer_exchange_reply(peer_id peer, const dlt_peer_excha
 }
 
 void dlt_p2p_node::on_dlt_peer_exchange_rate_limited(peer_id peer, const dlt_peer_exchange_rate_limited& msg) {
-    ilog(DLT_LOG_DGRAY "Peer ${p} rate-limited our exchange request, wait ${w}s" DLT_LOG_RESET,
-         ("p", peer)("w", msg.wait_seconds));
+    auto it = _peer_states.find(peer);
+    auto ep = (it != _peer_states.end()) ? std::string(it->second.endpoint) : std::to_string(peer);
+    ilog(DLT_LOG_DGRAY "Peer ${ep} rate-limited our exchange request, wait ${w}s" DLT_LOG_RESET,
+         ("ep", ep)("w", msg.wait_seconds));
     record_packet_result(peer, true);
 }
 
@@ -856,8 +873,31 @@ void dlt_p2p_node::on_dlt_peer_exchange_rate_limited(peer_id peer, const dlt_pee
 void dlt_p2p_node::on_dlt_transaction(peer_id peer, const dlt_transaction_message& msg) {
     bool accepted = add_to_mempool(msg.trx, /*from_peer=*/true, peer);
     if (accepted) {
-        ilog(DLT_LOG_DGRAY "Got transaction ${id} from peer ${p}" DLT_LOG_RESET,
-             ("id", msg.trx.id())("p", peer));
+        auto it = _peer_states.find(peer);
+        auto ep = (it != _peer_states.end()) ? std::string(it->second.endpoint) : std::to_string(peer);
+        ilog(DLT_LOG_DGRAY "Got transaction ${id} from peer ${ep}" DLT_LOG_RESET,
+             ("id", msg.trx.id())("ep", ep));
+    }
+}
+
+void dlt_p2p_node::on_dlt_soft_ban(peer_id peer, const dlt_soft_ban_message& msg) {
+    auto it = _peer_states.find(peer);
+    if (it == _peer_states.end()) return;
+
+    ilog(DLT_LOG_ORANGE "Peer ${ep} soft-banned us for ${d}s (reason: ${r})" DLT_LOG_RESET,
+         ("ep", it->second.endpoint)("d", msg.ban_duration_sec)("r", msg.reason));
+
+    // Enter BANNED state with the duration specified by the remote peer
+    it->second.lifecycle_state = DLT_PEER_LIFECYCLE_BANNED;
+    it->second.state_entered_time = fc::time_point::now();
+    it->second.reconnect_backoff_sec = msg.ban_duration_sec;
+    it->second.next_reconnect_attempt = fc::time_point::now() + fc::seconds(msg.ban_duration_sec);
+
+    // Close connection — stop sending data to the peer that banned us
+    auto conn_it = _connections.find(peer);
+    if (conn_it != _connections.end()) {
+        try { if (conn_it->second) conn_it->second->close(); } catch (...) {}
+        _connections.erase(conn_it);
     }
 }
 
@@ -1327,6 +1367,16 @@ void dlt_p2p_node::soft_ban_peer(peer_id peer) {
     wlog(DLT_LOG_RED "Soft-banning peer ${ep} for ${d}s" DLT_LOG_RESET,
          ("ep", it->second.endpoint)("d", BAN_DURATION_SEC));
 
+    // Notify the peer before disconnecting so they can stop spamming us
+    try {
+        dlt_soft_ban_message ban_msg;
+        ban_msg.ban_duration_sec = BAN_DURATION_SEC;
+        ban_msg.reason = "spam strike threshold exceeded";
+        send_message(peer, message(ban_msg));
+    } catch (...) {
+        // Best-effort send — peer may already be disconnected
+    }
+
     it->second.lifecycle_state = DLT_PEER_LIFECYCLE_BANNED;
     it->second.state_entered_time = fc::time_point::now();
     it->second.reconnect_backoff_sec = BAN_DURATION_SEC;
@@ -1337,6 +1387,93 @@ void dlt_p2p_node::soft_ban_peer(peer_id peer) {
         try { if (conn_it->second) conn_it->second->close(); } catch (...) {}
         _connections.erase(conn_it);
     }
+}
+
+// ── Diagnostics ──────────────────────────────────────────────────────
+
+void dlt_p2p_node::log_peer_stats() {
+    const char* C = DLT_LOG_CYAN;
+    const char* R = DLT_LOG_RESET;
+
+    // Node-level summary
+    const char* status_str = (_node_status == DLT_NODE_STATUS_SYNC) ? "SYNC" : "FWD";
+    const char* fork_str;
+    switch (_fork_status) {
+        case DLT_FORK_STATUS_NORMAL: fork_str = "NORMAL"; break;
+        case DLT_FORK_STATUS_LOOKING_RESOLUTION: fork_str = "LOOKING"; break;
+        case DLT_FORK_STATUS_MINORITY: fork_str = "MINORITY"; break;
+        default: fork_str = "?"; break;
+    }
+    uint32_t our_head = _delegate ? _delegate->get_head_block_num() : 0;
+    uint32_t our_lib  = _delegate ? _delegate->get_lib_block_num() : 0;
+
+    ilog("${C}=== DLT P2P Stats | status=${st} fork=${fk} head=${h} lib=${lib} peers=${n} conn=${c} paused=${p} ===${R}",
+         ("C", C)("st", status_str)("fk", fork_str)("h", our_head)("lib", our_lib)
+         ("n", _peer_states.size())("c", _connections.size())
+         ("p", _block_processing_paused ? "YES" : "no")("R", R));
+
+    // Per-peer details
+    for (auto& _peer_item : _peer_states) {
+        auto& state = _peer_item.second;
+        auto ep = std::string(state.endpoint);
+
+        // Lifecycle state label
+        const char* ls;
+        switch (state.lifecycle_state) {
+            case DLT_PEER_LIFECYCLE_CONNECTING:   ls = "CONNECT"; break;
+            case DLT_PEER_LIFECYCLE_HANDSHAKING:  ls = "HANDSHAKE"; break;
+            case DLT_PEER_LIFECYCLE_SYNCING:      ls = "SYNCING"; break;
+            case DLT_PEER_LIFECYCLE_ACTIVE:       ls = "ACTIVE"; break;
+            case DLT_PEER_LIFECYCLE_DISCONNECTED: ls = "DISC"; break;
+            case DLT_PEER_LIFECYCLE_BANNED:       ls = "BANNED"; break;
+            default:                              ls = "?"; break;
+        }
+
+        if (state.lifecycle_state == DLT_PEER_LIFECYCLE_BANNED) {
+            auto ban_elapsed = (fc::time_point::now() - state.state_entered_time).count() / 1000000;
+            auto ban_remaining = (BAN_DURATION_SEC > ban_elapsed) ? (BAN_DURATION_SEC - ban_elapsed) : 0;
+            ilog("${C}  ${ep} | ${ls} | spam=${s} | ban_remaining=${br}s${R}",
+                 ("C", C)("ep", ep)("ls", ls)("s", state.spam_strikes)("br", ban_remaining)("R", R));
+            continue;
+        }
+
+        if (state.lifecycle_state == DLT_PEER_LIFECYCLE_DISCONNECTED) {
+            auto disc_sec = (fc::time_point::now() - state.disconnected_since).count() / 1000000;
+            auto recon_sec = (state.next_reconnect_attempt != fc::time_point())
+                             ? (state.next_reconnect_attempt - fc::time_point::now()).count() / 1000000 : 0;
+            ilog("${C}  ${ep} | ${ls} | backoff=${bo}s | reconnect_in=${ri}s | spam=${s}${R}",
+                 ("C", C)("ep", ep)("ls", ls)("bo", state.reconnect_backoff_sec)
+                 ("ri", (recon_sec > 0 ? recon_sec : 0))("s", state.spam_strikes)("R", R));
+            continue;
+        }
+
+        // Active/handshaking/syncing peers — show fork alignment, ranges, flags
+        std::string flags;
+        if (state.exchange_enabled) flags += "+fork";
+        if (state.fork_alignment) flags += "+align";
+        if (state.peer_emergency_active) flags += "+emrg";
+        if (state.peer_has_emergency_key) flags += "+ekey";
+        if (state.pending_sync_start > 0) flags += "+sync";
+        if (flags.empty()) flags = "-";
+
+        const char* peer_fork_str;
+        switch (state.peer_fork_status) {
+            case DLT_FORK_STATUS_NORMAL: peer_fork_str = "NORM"; break;
+            case DLT_FORK_STATUS_LOOKING_RESOLUTION: peer_fork_str = "LOOK"; break;
+            case DLT_FORK_STATUS_MINORITY: peer_fork_str = "MINO"; break;
+            default: peer_fork_str = "?"; break;
+        }
+        const char* peer_node_str = (state.peer_node_status == DLT_NODE_STATUS_SYNC) ? "SYNC" : "FWD";
+
+        ilog("${C}  ${ep} | ${ls} | head=${ph} lib=${pl} | range=${pe}-${pt} | peer_fork=${pf} peer_node=${pn} | spam=${s} | ${fl}${R}",
+             ("C", C)("ep", ep)("ls", ls)
+             ("ph", state.peer_head_num)("pl", state.peer_lib_num)
+             ("pe", state.peer_dlt_earliest)("pt", state.peer_dlt_latest)
+             ("pf", peer_fork_str)("pn", peer_node_str)
+             ("s", state.spam_strikes)("fl", flags)("R", R));
+    }
+
+    ilog("${C}=== End DLT P2P Stats ===${R}", ("C", C)("R", R));
 }
 
 // ── DLT block log pruning ────────────────────────────────────────────
@@ -1433,6 +1570,13 @@ void dlt_p2p_node::periodic_task() {
     periodic_mempool_cleanup();
     periodic_peer_exchange();
 
+    // Log peer stats at configured interval
+    _stats_log_counter++;
+    if (_stats_log_counter >= _stats_log_interval_sec) {
+        _stats_log_counter = 0;
+        log_peer_stats();
+    }
+
     // Check banned peers for unban
     for (auto& _peer_item : _peer_states) {
             auto& state = _peer_item.second;
@@ -1518,7 +1662,9 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
     auto sock = it->second;
 
     _read_fibers[peer] = _thread->async([this, peer, sock]() -> void {
-        ilog("Read loop started for peer ${p}", ("p", peer));
+        auto ep_it_rl = _peer_states.find(peer);
+        auto ep_str_rl = (ep_it_rl != _peer_states.end()) ? std::string(ep_it_rl->second.endpoint) : std::to_string(peer);
+        ilog("Read loop started for peer ${ep}", ("ep", ep_str_rl));
 
         try {
             while (_running) {
@@ -1540,8 +1686,10 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
 
                 // Validate message size
                 if (hdr.size > MAX_MESSAGE_SIZE) {
-                    wlog("Oversized message (${s} bytes) from peer ${p}, disconnecting",
-                         ("s", hdr.size)("p", peer));
+                    auto ep_it = _peer_states.find(peer);
+                    auto ep_str = (ep_it != _peer_states.end()) ? std::string(ep_it->second.endpoint) : std::to_string(peer);
+                    wlog("Oversized message (${s} bytes) from peer ${ep}, disconnecting",
+                         ("s", hdr.size)("ep", ep_str));
                     handle_disconnect(peer, "oversized message", true);
                     return;
                 }
@@ -1575,12 +1723,12 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
         } catch (const fc::canceled_exception&) {
             // Normal cancellation during shutdown
         } catch (const fc::exception& e) {
-            wlog("Read loop error for peer ${p}: ${e}",
-                 ("p", peer)("e", e.to_detail_string()));
+            wlog("Read loop error for peer ${ep}: ${e}",
+                 ("ep", ep_str_rl)("e", e.to_detail_string()));
             handle_disconnect(peer, "read error");
         }
 
-        ilog("Read loop ended for peer ${p}", ("p", peer));
+        ilog("Read loop ended for peer ${ep}", ("ep", ep_str_rl));
     }, "dlt read_loop");
 }
 

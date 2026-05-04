@@ -38,6 +38,7 @@ enum dlt_message_type_enum {
     dlt_peer_exchange_reply_type         = 5111,
     dlt_peer_exchange_rate_limited_type  = 5112,
     dlt_transaction_message_type         = 5113,
+    dlt_soft_ban_message_type            = 5114,
 };
 
 // ── DLT node status ─────────────────────────────────────────────────
@@ -195,6 +196,14 @@ struct dlt_transaction_message {
     signed_transaction trx;
 };
 
+// ── Soft-ban notification ────────────────────────────────────────────
+struct dlt_soft_ban_message {
+    static const dlt_message_type_enum type;
+
+    uint32_t      ban_duration_sec = 0;  // how long the ban lasts
+    std::string   reason;               // human-readable reason
+};
+
 } // namespace network
 } // namespace graphene
 
@@ -214,7 +223,8 @@ FC_REFLECT_ENUM(graphene::network::dlt_message_type_enum,
     (dlt_peer_exchange_request_type)
     (dlt_peer_exchange_reply_type)
     (dlt_peer_exchange_rate_limited_type)
-    (dlt_transaction_message_type))
+    (dlt_transaction_message_type)
+    (dlt_soft_ban_message_type))
 
 FC_REFLECT_ENUM(graphene::network::dlt_node_status,
     (DLT_NODE_STATUS_SYNC)(DLT_NODE_STATUS_FORWARD))
@@ -273,3 +283,6 @@ FC_REFLECT((graphene::network::dlt_peer_exchange_rate_limited),
 
 FC_REFLECT((graphene::network::dlt_transaction_message),
     (trx))
+
+FC_REFLECT((graphene::network::dlt_soft_ban_message),
+    (ban_duration_sec)(reason))

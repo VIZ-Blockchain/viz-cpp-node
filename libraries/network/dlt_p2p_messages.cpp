@@ -18,6 +18,7 @@ const dlt_message_type_enum dlt_peer_exchange_request::type       = dlt_peer_exc
 const dlt_message_type_enum dlt_peer_exchange_reply::type         = dlt_peer_exchange_reply_type;
 const dlt_message_type_enum dlt_peer_exchange_rate_limited::type  = dlt_peer_exchange_rate_limited_type;
 const dlt_message_type_enum dlt_transaction_message::type         = dlt_transaction_message_type;
+const dlt_message_type_enum dlt_soft_ban_message::type            = dlt_soft_ban_message_type;
 
 } // namespace network
 } // namespace graphene

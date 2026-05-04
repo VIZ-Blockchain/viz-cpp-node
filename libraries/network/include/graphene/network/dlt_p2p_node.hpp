@@ -84,6 +84,7 @@ public:
     void set_peer_max_disconnect_hours(uint32_t hours);
     void set_mempool_limits(uint32_t max_tx, uint32_t max_bytes, uint32_t max_tx_size, uint32_t max_expiration_hours);
     void set_peer_exchange_limits(uint32_t max_per_reply, uint32_t max_per_subnet, uint32_t min_uptime_sec);
+    void set_stats_log_interval(uint32_t seconds);
 
     // ── Lifecycle ────────────────────────────────────────────────
     void start();
@@ -149,6 +150,7 @@ private:
     void on_dlt_peer_exchange_reply(peer_id peer, const dlt_peer_exchange_reply& reply);
     void on_dlt_peer_exchange_rate_limited(peer_id peer, const dlt_peer_exchange_rate_limited& msg);
     void on_dlt_transaction(peer_id peer, const dlt_transaction_message& msg);
+    void on_dlt_soft_ban(peer_id peer, const dlt_soft_ban_message& msg);
 
     // ── Hello construction ───────────────────────────────────────
     dlt_hello_message        build_hello_message() const;
@@ -183,6 +185,9 @@ private:
     // ── Anti-spam ────────────────────────────────────────────────
     bool record_packet_result(peer_id peer, bool is_good);
     void soft_ban_peer(peer_id peer);
+
+    // ── Diagnostics ───────────────────────────────────────────────
+    void log_peer_stats();
 
     // ── DLT block log pruning ────────────────────────────────────
     void periodic_dlt_prune_check();
@@ -271,6 +276,10 @@ private:
     // ── Block processing pause ───────────────────────────────────
     bool                            _block_processing_paused = false;
 
+    // ── Diagnostics ───────────────────────────────────────────────
+    uint32_t                        _stats_log_counter = 0;
+    uint32_t                        _stats_log_interval_sec = 300;  // default 5 minutes
+
     // ── Color-coded logging macros ─────────────────────────────
     // Must be #define (not constexpr) so they concatenate with
     // adjacent string literals in ilog/wlog format arguments.
@@ -282,6 +291,7 @@ private:
 #define DLT_LOG_RED     "\033[91m"
 #define DLT_LOG_DGRAY   "\033[90m"
 #define DLT_LOG_ORANGE  "\033[33m"
+#define DLT_LOG_CYAN    "\033[36m"
 #define DLT_LOG_RESET   "\033[0m"
 
 } // namespace network

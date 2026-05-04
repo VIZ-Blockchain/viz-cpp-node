@@ -270,6 +270,7 @@ public:
     uint32_t peer_exchange_max_per_reply = 10;
     uint32_t peer_exchange_max_per_subnet = 2;
     uint32_t peer_exchange_min_uptime_sec = 600;
+    uint32_t stats_interval_sec = 300;
 
     chain::plugin& chain;
 
@@ -311,7 +312,9 @@ void p2p_plugin::set_program_options(
         ("dlt-peer-exchange-max-per-subnet", boost::program_options::value<uint32_t>()->default_value(2),
             "Max peers per /24 subnet in peer exchange replies.")
         ("dlt-peer-exchange-min-uptime-sec", boost::program_options::value<uint32_t>()->default_value(600),
-            "Min connection uptime (seconds) before sharing a peer in exchange replies.");
+            "Min connection uptime (seconds) before sharing a peer in exchange replies.")
+        ("dlt-stats-interval-sec", boost::program_options::value<uint32_t>()->default_value(300),
+            "Interval in seconds between P2P peer stats log output (default 300 = 5 min).");
 }
 
 void p2p_plugin::plugin_initialize(const boost::program_options::variables_map& options) {
@@ -379,6 +382,9 @@ void p2p_plugin::plugin_initialize(const boost::program_options::variables_map& 
     if (options.count("dlt-peer-exchange-min-uptime-sec")) {
         my->peer_exchange_min_uptime_sec = options.at("dlt-peer-exchange-min-uptime-sec").as<uint32_t>();
     }
+    if (options.count("dlt-stats-interval-sec")) {
+        my->stats_interval_sec = options.at("dlt-stats-interval-sec").as<uint32_t>();
+    }
 }
 
 void p2p_plugin::plugin_startup() {
@@ -407,6 +413,7 @@ void p2p_plugin::plugin_startup() {
         my->node->set_peer_exchange_limits(my->peer_exchange_max_per_reply,
                                             my->peer_exchange_max_per_subnet,
                                             my->peer_exchange_min_uptime_sec);
+        my->node->set_stats_log_interval(my->stats_interval_sec);
 
         // Start (accept loop + periodic task run as internal fibers)
         my->node->start();
