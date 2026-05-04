@@ -1550,33 +1550,52 @@ namespace graphene {
                     std::list<std::pair<peer_connection_ptr, item_ids_inventory_message>> inventory_messages_to_send;
 
                     for (const peer_connection_ptr &peer : _active_connections) {
-                        // only advertise to peers who are in sync with us
-                        if (!peer->peer_needs_sync_items_from_us) {
-                            std::map<uint32_t, std::vector<item_hash_t>> items_to_advertise_by_type;
-                            // don't send the peer anything we've already advertised to it
-                            // or anything it has advertised to us
-                            // group the items we need to send by type, because we'll need to send one inventory message per type
-                            unsigned total_items_to_send_to_this_peer = 0;
-                            //wdump((inventory_to_advertise));
-                            for (const item_id &item_to_advertise : inventory_to_advertise) {
-                                //if (peer->inventory_advertised_to_peer.find(item_to_advertise) != peer->inventory_advertised_to_peer.end() )
-                                //   wdump((*peer->inventory_advertised_to_peer.find(item_to_advertise)));
-                                //if (peer->inventory_peer_advertised_to_us.find(item_to_advertise) != peer->inventory_peer_advertised_to_us.end() )
-                                //   wdump((*peer->inventory_peer_advertised_to_us.find(item_to_advertise)));
+                        // Advertise blocks to ALL peers, even those in sync mode.
+                        // Suppressing block inventory to syncing peers prevents
+                        // them from receiving newly-produced blocks, causing fork
+                        // collisions when the peer produces a competing block at
+                        // the same height (e.g. emergency DLT mode: slave produces
+                        // block, master doesn't receive it, master produces
+                        // competing block for its own slot).
+                        //
+                        // Transaction inventory is still suppressed for syncing
+                        // peers to avoid the 1-second inactivity timeout that
+                        // kills sync connections during long-running block sync.
+                        bool peer_is_syncing = peer->peer_needs_sync_items_from_us;
 
-                                if (peer->inventory_advertised_to_peer.find(item_to_advertise) ==
-                                    peer->inventory_advertised_to_peer.end() &&
-                                    peer->inventory_peer_advertised_to_us.find(item_to_advertise) ==
-                                    peer->inventory_peer_advertised_to_us.end()) {
-                                    items_to_advertise_by_type[item_to_advertise.item_type].push_back(item_to_advertise.item_hash);
-                                    peer->inventory_advertised_to_peer.insert(peer_connection::timestamped_item_id(item_to_advertise, fc::time_point::now()));
-                                    ++total_items_to_send_to_this_peer;
-                                    if (item_to_advertise.item_type ==
-                                        trx_message_type)
-                                        testnetlog("advertising transaction ${id} to peer ${endpoint}", ("id", item_to_advertise.item_hash)("endpoint", peer->get_remote_endpoint()));
-                                    dlog("advertising item ${id} to peer ${endpoint}", ("id", item_to_advertise.item_hash)("endpoint", peer->get_remote_endpoint()));
-                                }
+                        std::map<uint32_t, std::vector<item_hash_t>> items_to_advertise_by_type;
+                        // don't send the peer anything we've already advertised to it
+                        // or anything it has advertised to us
+                        // group the items we need to send by type, because we'll need to send one inventory message per type
+                        unsigned total_items_to_send_to_this_peer = 0;
+                        //wdump((inventory_to_advertise));
+                        for (const item_id &item_to_advertise : inventory_to_advertise) {
+                            //if (peer->inventory_advertised_to_peer.find(item_to_advertise) != peer->inventory_advertised_to_peer.end() )
+                            //   wdump((*peer->inventory_advertised_to_peer.find(item_to_advertise)));
+                            //if (peer->inventory_peer_advertised_to_us.find(item_to_advertise) != peer->inventory_peer_advertised_to_us.end() )
+                            //   wdump((*peer->inventory_peer_advertised_to_us.find(item_to_advertise)));
+
+                            // For syncing peers, only advertise blocks.
+                            // Transactions are suppressed to avoid the 1-second
+                            // inactivity timeout on sync connections.
+                            if (peer_is_syncing && item_to_advertise.item_type == trx_message_type) {
+                                continue;
                             }
+
+                            if (peer->inventory_advertised_to_peer.find(item_to_advertise) ==
+                                peer->inventory_advertised_to_peer.end() &&
+                                peer->inventory_peer_advertised_to_us.find(item_to_advertise) ==
+                                peer->inventory_peer_advertised_to_us.end()) {
+                                items_to_advertise_by_type[item_to_advertise.item_type].push_back(item_to_advertise.item_hash);
+                                peer->inventory_advertised_to_peer.insert(peer_connection::timestamped_item_id(item_to_advertise, fc::time_point::now()));
+                                ++total_items_to_send_to_this_peer;
+                                if (item_to_advertise.item_type ==
+                                    trx_message_type)
+                                    testnetlog("advertising transaction ${id} to peer ${endpoint}", ("id", item_to_advertise.item_hash)("endpoint", peer->get_remote_endpoint()));
+                                dlog("advertising item ${id} to peer ${endpoint}", ("id", item_to_advertise.item_hash)("endpoint", peer->get_remote_endpoint()));
+                            }
+                        }
+                        if (total_items_to_send_to_this_peer > 0) {
                             dlog("advertising ${count} new item(s) of ${types} type(s) to peer ${endpoint}",
                                     ("count", total_items_to_send_to_this_peer)
                                             ("types", items_to_advertise_by_type.size())
