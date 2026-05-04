@@ -305,7 +305,11 @@ namespace graphene {
                                    (get_block_time) \
                                    (get_head_block_id) \
                                    (estimate_last_known_fork_from_git_revision_timestamp) \
-                                   (error_encountered)
+                                   (error_encountered) \
+                                   (is_dlt_mode) \
+                                   (get_dlt_earliest_block_num) \
+                                   (is_emergency_consensus_active) \
+                                   (has_emergency_private_key)
 
 
 #define DECLARE_ACCUMULATOR(r, data, method_name) \

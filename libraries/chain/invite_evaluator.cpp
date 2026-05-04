@@ -38,7 +38,7 @@ namespace graphene { namespace chain {
     }
 
     void claim_invite_balance_evaluator::do_apply(const claim_invite_balance_operation& o) {
-        const auto& initiator = _db.get_account(o.initiator);
+        _db.get_account(o.initiator);
         //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
         //    FC_ASSERT(!initiator.valid, "Account flagged as invalid");
         const auto& receiver = _db.get_account(o.receiver);
@@ -74,7 +74,7 @@ namespace graphene { namespace chain {
     void invite_registration_evaluator::do_apply(const invite_registration_operation& o) {
         FC_ASSERT(o.invite_secret.size(), "Invite secret cannot be blank.");
 
-        const auto& initiator = _db.get_account(o.initiator);
+        _db.get_account(o.initiator);
         //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
         //    FC_ASSERT(!initiator.valid, "Account flagged as invalid");
 
@@ -125,7 +125,7 @@ namespace graphene { namespace chain {
 
     void use_invite_balance_evaluator::do_apply(const use_invite_balance_operation& o) {
         FC_ASSERT( _db.has_hardfork(CHAIN_HARDFORK_9), "use_invite_balance not enabled until HF 9" );
-        const auto& initiator = _db.get_account(o.initiator);
+        _db.get_account(o.initiator);
         //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
         //    FC_ASSERT(!initiator.valid, "Account flagged as invalid");
         const auto& receiver = _db.get_account(o.receiver);
