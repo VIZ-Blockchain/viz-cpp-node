@@ -4554,12 +4554,41 @@ namespace graphene {
                     const message_hash_type &message_hash) {
                 fc::time_point message_receive_time = fc::time_point::now();
 
-                // HF12: P2P anti-spam — silently discard blocks from soft-banned peers
+                // HF12: Do NOT discard broadcast blocks from soft-banned peers.
+                //
+                // Previous code silently discarded ALL blocks from peers with
+                // fork_rejected_until set, but this caused a critical bug in DLT
+                // emergency mode: the master never receives blocks from slaves on
+                // competing forks because sync_spam_strikes accumulate (each
+                // fetch_blockchain_item_ids response that returns empty due to
+                // peer_is_on_an_unreachable_fork increments the strike counter).
+                // After 10 strikes the slave is soft-banned for 5 minutes, and
+                // during that time ALL its blocks — including broadcast blocks
+                // explicitly requested via inventory — are discarded.
+                //
+                // Broadcast blocks arrive because WE requested them via the
+                // inventory mechanism (on_item_ids_inventory_message →
+                // fetch_items_loop → items_requested_from_peer).  Discarding
+                // a block we explicitly requested is counterproductive.
+                //
+                // The soft-ban still correctly blocks:
+                //   - Sync initiation (on_fetch_blockchain_item_ids_message,
+                //     line ~2687: discards sync requests from soft-banned peers)
+                //   - Sync block fetching (inhibit_fetching_sync_blocks prevents
+                //     fetching sync items from the peer)
+                //
+                // handle_block() in p2p_plugin.cpp has its own guards:
+                //   - Emergency competing fork guard for sync-mode blocks
+                //   - accept_block/push_block handles invalid blocks properly
+                //     (adds to fork_db for fork resolution, or rejects)
+
+                // Log when processing a broadcast block from a soft-banned peer
+                // (for observability — previously these were silently discarded)
                 if (originating_peer->fork_rejected_until > message_receive_time) {
-                    dlog("Discarding block from soft-banned peer ${endpoint} (ban expires in ${sec}s)",
+                    ilog("Processing broadcast block #${n} from soft-banned peer ${endpoint} (soft-ban expires in ${sec}s)",
+                         ("n", block_message_to_process.block.block_num())
                          ("endpoint", originating_peer->get_remote_endpoint())
                          ("sec", (originating_peer->fork_rejected_until - message_receive_time).count() / 1000000));
-                    return;
                 }
 
                 // HF12: Reset inhibit_fetching_sync_blocks when soft-ban has expired.
@@ -6175,10 +6204,18 @@ namespace graphene {
                     peer_details["banscore"] = "";
                     peer_details["syncnode"] = "";
                     peer_details["latency_ms"] = peer->round_trip_delay.count() / 1000;
-                    peer_details["is_blocked"] = peer->inhibit_fetching_sync_blocks;
-                    peer_details["blocked_reason"] = peer->inhibit_fetching_sync_blocks
-                        ? std::string("fork_rejected")
-                        : std::string("");
+                    // Show both inhibit_fetching_sync_blocks and fork_rejected_until status.
+                    // A peer can have fork_rejected_until set (soft-banned, blocks discarded)
+                    // even when inhibit_fetching_sync_blocks is false (e.g. after rate-limit ban).
+                    bool is_soft_banned = peer->fork_rejected_until > fc::time_point::now();
+                    peer_details["is_blocked"] = peer->inhibit_fetching_sync_blocks || is_soft_banned;
+                    if (is_soft_banned) {
+                        peer_details["blocked_reason"] = "soft_banned";
+                    } else if (peer->inhibit_fetching_sync_blocks) {
+                        peer_details["blocked_reason"] = "fork_rejected";
+                    } else {
+                        peer_details["blocked_reason"] = "";
+                    }
 
                     if (peer->fc_git_revision_sha) {
                         std::string revision_string = *peer->fc_git_revision_sha;
