@@ -107,30 +107,11 @@ namespace chain {
     }
 
     bool plugin::plugin_impl::accept_block(const protocol::signed_block &block, bool currently_syncing_flag, uint32_t skip) {
-        currently_syncing.store(currently_syncing_flag, std::memory_order_relaxed);
-        if (currently_syncing_flag) {
-            if (!sync_start_logged) {
-                ilog("\033[92m>>> Syncing Blockchain started from block #${n} (head: ${head})\033[0m",
-                     ("n", block.block_num())("head", db.head_block_num()));
-                sync_start_logged = true;
-            }
-
-            if (block.block_num() % 500 == 0) {
-                ilog("\033[93mSyncing Blockchain --- Got block: #${n} time: ${t} producer: ${p}\033[0m",
-                     ("t", block.timestamp)("n", block.block_num())("p", block.witness));
-            }
-        } else {
-            if (sync_start_logged) {
-                ilog("\033[92mSync mode ended: received normal block #${n} (head: ${head}), sync_start_logged reset\033[0m",
-                     ("n", block.block_num())("head", db.head_block_num()));
-            }
-            sync_start_logged = false; // reset guard when not syncing
-        }
-
         check_time_in_block(block);
 
         skip = db.validate_block(block, skip);
 
+        bool block_applied;
         if (single_write_thread) {
             std::promise<bool> promise;
             auto result = promise.get_future();
@@ -142,10 +123,42 @@ namespace chain {
                     promise.set_exception(std::current_exception());
                 }
             });
-            return result.get(); // if an exception was, it will be thrown
+            block_applied = result.get(); // if an exception was, it will be thrown
         } else {
-            return db.push_block(block, skip);
+            block_applied = db.push_block(block, skip);
         }
+
+        // Update syncing state only after push_block, and only if the block
+        // was actually applied.  Previously this was done before push_block,
+        // which caused "Sync mode ended" to be logged even when the block
+        // failed to apply (e.g. dead-fork blocks that go to fork_db's
+        // unlinked index).  This created false syncing state transitions
+        // that confused the witness plugin and caused sync oscillation,
+        // particularly when the emergency master receives blocks from a
+        // competing fork that have gap=0 but previous != head_block_id.
+        if (block_applied) {
+            currently_syncing.store(currently_syncing_flag, std::memory_order_relaxed);
+            if (currently_syncing_flag) {
+                if (!sync_start_logged) {
+                    ilog("\033[92m>>> Syncing Blockchain started from block #${n} (head: ${head})\033[0m",
+                         ("n", block.block_num())("head", db.head_block_num()));
+                    sync_start_logged = true;
+                }
+
+                if (block.block_num() % 500 == 0) {
+                    ilog("\033[93mSyncing Blockchain --- Got block: #${n} time: ${t} producer: ${p}\033[0m",
+                         ("t", block.timestamp)("n", block.block_num())("p", block.witness));
+                }
+            } else {
+                if (sync_start_logged) {
+                    ilog("\033[92mSync mode ended: received normal block #${n} (head: ${head}), sync_start_logged reset\033[0m",
+                         ("n", block.block_num())("head", db.head_block_num()));
+                }
+                sync_start_logged = false; // reset guard when not syncing
+            }
+        }
+
+        return block_applied;
     }
 
     void plugin::plugin_impl::wipe_db(const bfs::path &data_dir, bool wipe_block_log) {

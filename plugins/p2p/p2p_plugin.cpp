@@ -178,10 +178,12 @@ namespace graphene {
                     }
 
                     uint32_t head_block_num = 0;
+                    protocol::block_id_type head_id;
                     try {
                         try {
                             chain.db().with_weak_read_lock([&]() {
                                 head_block_num = chain.db().head_block_num();
+                                head_id = chain.db().head_block_id();
                             });
                         } catch (const std::runtime_error& e) {
                             // READ lock timeout — transient condition during concurrent
@@ -231,15 +233,31 @@ namespace graphene {
                         //   sync mechanism, but the node should not enter full sync
                         //   mode which would set currently_syncing=true and disrupt
                         //   the witness block production loop.
+                        //
+                        // COMPETING FORK GUARD: For gap=0 blocks, only demote to
+                        // normal mode if the block actually extends our chain
+                        // (blk_msg.block.previous == our head_block_id).  When the
+                        // emergency master produces a block, the network may have a
+                        // different block at the same height (competing fork).  A
+                        // gap=0 block whose previous != head_id is from a competing
+                        // fork and must NOT be treated as a normal block — doing so
+                        // causes false "Sync mode ended" and syncing state corruption
+                        // even with the deferred state update in accept_block (because
+                        // the block is processed under wrong assumptions by the P2P
+                        // layer which then logs misleading messages and may restart
+                        // sync unnecessarily).
                         if (sync_mode && gap >= 0 && gap <= 2 && chain.db()._dlt_mode) {
-                            fc::microseconds block_age = fc::time_point::now() - blk_msg.block.timestamp;
-                            if (block_age < fc::seconds(30)) {
-                                ilog("DLT mode: treating near-caught-up sync block #${n} as normal "
-                                     "block (gap=${gap}, age=${age}s)",
-                                     ("n", blk_msg.block.block_num())
-                                     ("gap", gap)
-                                     ("age", block_age.count() / 1000000));
-                                sync_mode = false;
+                            bool extends_our_chain = (gap == 0) ? (blk_msg.block.previous == head_id) : true;
+                            if (extends_our_chain) {
+                                fc::microseconds block_age = fc::time_point::now() - blk_msg.block.timestamp;
+                                if (block_age < fc::seconds(30)) {
+                                    ilog("DLT mode: treating near-caught-up sync block #${n} as normal "
+                                         "block (gap=${gap}, age=${age}s)",
+                                         ("n", blk_msg.block.block_num())
+                                         ("gap", gap)
+                                         ("age", block_age.count() / 1000000));
+                                    sync_mode = false;
+                                }
                             }
                         }
 
