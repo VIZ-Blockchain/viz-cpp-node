@@ -14,6 +14,12 @@
 namespace graphene {
 namespace network {
 
+// ── Static constexpr out-of-line definitions (required for C++14 ODR-use) ─
+constexpr uint32_t dlt_peer_state::PEER_EXCHANGE_COOLDOWN_SEC;
+constexpr uint32_t dlt_peer_state::PENDING_BATCH_TIMEOUT_SEC;
+constexpr uint32_t dlt_peer_state::INITIAL_RECONNECT_BACKOFF_SEC;
+constexpr uint32_t dlt_peer_state::MAX_RECONNECT_BACKOFF_SEC;
+
 // ── Construction / destruction ───────────────────────────────────────
 
 dlt_p2p_node::dlt_p2p_node(const std::string& user_agent)

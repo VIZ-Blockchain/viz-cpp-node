@@ -2126,16 +2126,6 @@ bool read_exact_with_timeout(fc::tcp_socket& sock, char* buf, size_t len, const 
     return true;
 }
 
-/// Read exactly `len` bytes from a tcp_socket.
-void read_exact(fc::tcp_socket& sock, char* buf, size_t len) {
-    size_t total = 0;
-    while (total < len) {
-        size_t n = sock.readsome(buf + total, len - total);
-        FC_ASSERT(n > 0, "Connection closed while reading");
-        total += n;
-    }
-}
-
 /// Write exactly `len` bytes to a tcp_socket.
 void write_exact(fc::tcp_socket& sock, const char* buf, size_t len) {
     size_t total = 0;
