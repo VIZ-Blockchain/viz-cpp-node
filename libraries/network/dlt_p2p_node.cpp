@@ -685,17 +685,27 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
             // Fall through — fork_db or push_block will handle it
         }
 
-        bool caused_fork = _delegate->accept_block(block, /*sync_mode=*/(_node_status == DLT_NODE_STATUS_SYNC));
-        any_block_applied = true;
-        _last_block_received_time = fc::time_point::now();
-        _last_network_block_time = fc::time_point::now();
+        auto result = _delegate->accept_block(block, /*sync_mode=*/(_node_status == DLT_NODE_STATUS_SYNC));
 
-        dlog("Applied block #${n} witness=${w} time=${t} from ${ep}",
-             ("n", block.block_num())("w", block.witness)("t", block.timestamp)("ep", state.endpoint));
+        if (result == dlt_block_accept_result::ACCEPTED) {
+            any_block_applied = true;
+            _last_block_received_time = fc::time_point::now();
+            _last_network_block_time = fc::time_point::now();
+
+            dlog("Applied block #${n} witness=${w} time=${t} from ${ep}",
+                 ("n", block.block_num())("w", block.witness)("t", block.timestamp)("ep", state.endpoint));
+
+            on_block_applied(block, /*caused_fork_switch=*/false);
+        } else if (result == dlt_block_accept_result::FORK_DB_ONLY) {
+            dlog("Stored block #${n} in fork_db (not yet applied) from ${ep}",
+                 ("n", block.block_num())("ep", state.endpoint));
+        } else {
+            wlog(DLT_LOG_RED "Rejected block #${n} from ${ep}" DLT_LOG_RESET,
+                 ("n", block.block_num())("ep", state.endpoint));
+            continue; // skip updating expected_next_block for rejected blocks
+        }
 
         state.expected_next_block = std::max(state.expected_next_block, block.block_num() + 1);
-
-        on_block_applied(block, caused_fork);
     }
     state.pending_block_batch_time = fc::time_point();
 
@@ -754,22 +764,40 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
         // Fall through and try to apply — fork_db or push_block will handle it
     }
 
-    bool caused_fork = _delegate->accept_block(reply.block, false);
+    auto result = _delegate->accept_block(reply.block, false);
 
+    if (result == dlt_block_accept_result::REJECTED) {
+        wlog(DLT_LOG_RED "Rejected block #${n} from ${ep}" DLT_LOG_RESET,
+             ("n", block_num)("ep", state.endpoint));
+        record_packet_result(peer, false);
+        return;
+    }
+
+    if (result == dlt_block_accept_result::ACCEPTED) {
         dlog("Applied single block #${n} witness=${w} time=${t} from ${ep}",
              ("n", reply.block.block_num())("w", reply.block.witness)
              ("t", reply.block.timestamp)("ep", state.endpoint));
 
-    _last_network_block_time = fc::time_point::now();
-    _last_block_received_time = fc::time_point::now();
+        _last_network_block_time = fc::time_point::now();
+        _last_block_received_time = fc::time_point::now();
 
+        on_block_applied(reply.block, /*caused_fork_switch=*/false);
+
+        // Retransmit to our-fork peers
+        send_to_all_our_fork_peers(message(dlt_block_reply_message(reply)), peer);
+    } else {
+        // FORK_DB_ONLY: block stored in fork_db but not applied to chain.
+        // Do NOT call on_block_applied (which would corrupt mempool),
+        // do NOT retransmit (block is not on our main chain).
+        dlog("Stored block #${n} in fork_db (not yet applied) from ${ep}",
+             ("n", block_num)("ep", state.endpoint));
+    }
+
+    // Update peer's expected_next_block regardless of outcome so the
+    // sync state stays consistent with this peer's view.
     state.expected_next_block = std::max(state.expected_next_block, block_num + 1);
 
-    on_block_applied(reply.block, caused_fork);
     record_packet_result(peer, true);
-
-    // Retranslate to our-fork peers
-    send_to_all_our_fork_peers(message(dlt_block_reply_message(reply)), peer);
 }
 
 void dlt_p2p_node::on_dlt_not_available(peer_id peer, const dlt_not_available_message& msg) {

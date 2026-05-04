@@ -23,6 +23,7 @@ using appbase::app;
 
 using graphene::network::dlt_p2p_node;
 using graphene::network::dlt_p2p_delegate;
+using graphene::network::dlt_block_accept_result;
 
 using graphene::protocol::block_id_type;
 using graphene::protocol::signed_block;
@@ -142,7 +143,7 @@ public:
     }
 
     // ── Block/transaction handling ───────────────────────────────
-    bool accept_block(const signed_block& block, bool sync_mode) override {
+    dlt_block_accept_result accept_block(const signed_block& block, bool sync_mode) override {
         try {
             uint32_t skip = graphene::chain::database::skip_nothing;
             if (sync_mode) {
@@ -151,15 +152,26 @@ public:
                 skip = graphene::chain::database::skip_witness_signature
                      | graphene::chain::database::skip_transaction_signatures;
             }
-            chain.db().push_block(block, skip);
-            return false; // fork detection done via on_block_applied callback
+            bool applied = chain.db().push_block(block, skip);
+            if (applied) {
+                return dlt_block_accept_result::ACCEPTED;
+            }
+            // push_block returned false: block was pushed to fork_db but
+            // didn't become the new head (e.g. it's on a competing fork
+            // that is not yet the best).  Still a valid block worth
+            // tracking — but the P2P layer should NOT retransmit it or
+            // update mempool until it actually becomes head.
+            return dlt_block_accept_result::FORK_DB_ONLY;
         } catch (const graphene::chain::unlinkable_block_exception& e) {
             wlog("Unlinkable block #${n}, storing in fork_db", ("n", block.block_num()));
             chain.db().get_fork_db().push_block(block);
-            return false;
+            return dlt_block_accept_result::FORK_DB_ONLY;
+        } catch (const graphene::chain::deferred_resize_exception&) {
+            // Transient out-of-memory — not a bad block, just needs retry
+            throw;
         } catch (const fc::exception& e) {
             wlog("Error accepting block #${n}: ${e}", ("n", block.block_num())("e", e.to_detail_string()));
-            return false;
+            return dlt_block_accept_result::REJECTED;
         }
     }
 

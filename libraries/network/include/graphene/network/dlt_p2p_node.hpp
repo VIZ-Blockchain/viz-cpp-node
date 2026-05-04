@@ -23,6 +23,18 @@ namespace graphene {
 namespace network {
 
 /**
+ *  Result of accepting a block via dlt_p2p_delegate::accept_block().
+ *  Distinguishes between full application, fork-db-only storage, and
+ *  outright rejection so the P2P layer can decide whether to
+ *  retransmit, update peer state, etc.
+ */
+enum class dlt_block_accept_result {
+    ACCEPTED,       ///< Block was pushed to the chain (became head or fork_db head)
+    FORK_DB_ONLY,  ///< Block stored in fork_db but not applied (unlinkable / competing fork)
+    REJECTED       ///< Block failed validation entirely (bad signature, etc.)
+};
+
+/**
  *  @class dlt_p2p_delegate
  *  @brief Callback interface between dlt_p2p_node and the chain/plugin layer.
  *
@@ -50,7 +62,7 @@ public:
     virtual bool           is_block_known(const block_id_type& id) const = 0;
 
     // ── Block/transaction handling ───────────────────────────────
-    virtual bool           accept_block(const signed_block& block, bool sync_mode) = 0;
+    virtual dlt_block_accept_result accept_block(const signed_block& block, bool sync_mode) = 0;
     virtual bool           accept_transaction(const signed_transaction& trx) = 0;
 
     // ── Fork resolution ──────────────────────────────────────────
