@@ -339,6 +339,38 @@ namespace graphene {
                 return false;
             }
 
+            bool witness_plugin::is_emergency_master() const {
+                try {
+                    if (!pimpl || pimpl->_witnesses.empty()) {
+                        return false;
+                    }
+
+                    // Condition 1: we hold the emergency-private-key.
+                    // CHAIN_EMERGENCY_WITNESS_ACCOUNT is added to _witnesses only
+                    // when --emergency-private-key is configured (see plugin_initialize).
+                    if (pimpl->_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) == pimpl->_witnesses.end()) {
+                        return false;
+                    }
+
+                    // Condition 2: the committee account is in the current witness schedule.
+                    auto& db = pimpl->database();
+                    return db.with_weak_read_lock([&]() -> bool {
+                        const witness_schedule_object& wso = db.get_witness_schedule_object();
+                        for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                            if (wso.current_shuffled_witnesses[i] == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    });
+                } catch (const fc::exception& e) {
+                    wlog("is_emergency_master check failed: ${e}", ("e", e.to_detail_string()));
+                } catch (...) {
+                    wlog("is_emergency_master check failed with unknown exception");
+                }
+                return false;
+            }
+
             void witness_plugin::impl::schedule_production_loop() {
                 //Schedule for the next 250ms tick regardless of chain state
                 // With +250ms look-ahead in maybe_produce_block(), the tick at

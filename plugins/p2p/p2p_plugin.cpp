@@ -131,6 +131,12 @@ namespace graphene {
                     uint32_t _last_stale_check_head = 0;  // track head for emergency follower detection
                     fc::future<void> _stale_sync_task_done;
 
+                    // Network block tracking: only updated when a block received from
+                    // the P2P network is successfully applied (not self-produced blocks).
+                    // Used by snapshot plugin's stalled sync detection to distinguish
+                    // isolated-fork production from real network progress.
+                    std::atomic<int64_t> _last_network_block_time_us{0};  // microseconds since epoch
+
                     void stale_sync_check_task();
 
                     // Track previous connection count to detect new peer joins
@@ -157,9 +163,9 @@ namespace graphene {
                 }
 
                 bool p2p_plugin_impl::handle_block(const block_message &blk_msg, bool sync_mode, std::vector<fc::uint160_t> &, fc::optional<fc::ip::endpoint> originating_peer_endpoint) {
-                    // Track last block received time for stale sync detection
-                    _last_block_received_time = fc::time_point::now();
-                    _last_stale_check_head = blk_msg.block.block_num();
+                    // Note: _last_block_received_time is NOT updated here at the top.
+                    // It is updated only after successful block application (below) so
+                    // that rejected/dead-fork blocks don't defeat the stale sync timer.
 
                     // Reject blocks while snapshot reload is in progress.
                     // Throw a transient exception so the P2P layer re-queues
@@ -245,6 +251,20 @@ namespace graphene {
                             bool result = chain.accept_block(blk_msg.block, sync_mode, (block_producer | force_validate)
                                                                                        ? database::skip_nothing
                                                                                        : database::skip_transaction_signatures);
+
+                            // Block was successfully applied — update stale sync
+                            // timer and head tracker so the P2P stale sync detector
+                            // knows we're making progress. Only update on success so
+                            // rejected/dead-fork blocks don't defeat the timer.
+                            _last_block_received_time = fc::time_point::now();
+                            _last_stale_check_head = blk_msg.block.block_num();
+
+                            // Track network block time for snapshot stalled sync detection.
+                            // This is only updated for P2P-received blocks (not self-produced),
+                            // allowing the snapshot plugin to detect isolated-fork production.
+                            _last_network_block_time_us.store(
+                                fc::time_point::now().time_since_epoch().count(),
+                                std::memory_order_relaxed);
 
                             if (!sync_mode) {
                                 fc::microseconds latency = fc::time_point::now() - blk_msg.block.timestamp;
@@ -454,6 +474,21 @@ namespace graphene {
                                             }
                                         }
                                         if (all_below_range && highest_below_num > 0) {
+                                            if (earliest > highest_below_num + 1) {
+                                                // Gap between the peer's highest synopsis block and our
+                                                // earliest available block. Serving from earliest would
+                                                // create a gapped response [anchor, gap..., earliest, ...]
+                                                // where every block after the anchor is unlinkable (parent
+                                                // missing). Return empty instead so the requester can try
+                                                // other peers or trigger snapshot recovery.
+                                                wlog(CLOG_ORANGE "DLT mode: get_block_ids() gap between synopsis "
+                                                     "anchor #${anchor} and earliest available #${earliest} "
+                                                     "(blocks ${gap_start}..${gap_end} missing). "
+                                                     "Returning empty to avoid unlinkable response." CLOG_RESET,
+                                                     ("anchor", highest_below_num)("earliest", earliest)
+                                                     ("gap_start", highest_below_num + 1)("gap_end", earliest - 1));
+                                                return result;  // empty
+                                            }
                                             dlog(CLOG_GRAY "DLT mode: get_block_ids() all ${n} synopsis entries "
                                                  "below DLT range (earliest=${earliest}). Using highest "
                                                  "synopsis entry #${anchor} as anchor and serving from "
@@ -1507,6 +1542,9 @@ namespace graphene {
 
                     if (my->_stale_sync_enabled) {
                         my->_last_block_received_time = fc::time_point::now();
+                        my->_last_network_block_time_us.store(
+                            fc::time_point::now().time_since_epoch().count(),
+                            std::memory_order_relaxed);
                         ilog("P2P stale sync detection enabled, timeout: ${s}s", ("s", my->_stale_sync_timeout_seconds));
                         my->_stale_sync_task_done = fc::schedule(
                             [this]() { my->stale_sync_check_task(); },
@@ -1776,6 +1814,12 @@ namespace graphene {
             void p2p_plugin::resume_block_processing() {
                 my->block_processing_paused.store(false, std::memory_order_release);
                 ilog("Block processing resumed after snapshot reload");
+            }
+
+            fc::time_point p2p_plugin::get_last_network_block_time() const {
+                int64_t us = my->_last_network_block_time_us.load(std::memory_order_relaxed);
+                if (us == 0) return fc::time_point();
+                return fc::time_point() + fc::microseconds(us);
             }
 
         }

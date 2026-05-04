@@ -1828,20 +1828,71 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                             current_head = db.head_block_num();
                         });
                     } catch (...) {}
-                    if (current_head > _last_stalled_check_head) {
-                        dlog("Stalled sync timeout reached but emergency consensus is active "
-                             "and head is advancing (${h} > ${prev}) \u2014 skipping",
-                             ("h", current_head)("prev", _last_stalled_check_head));
+
+                    // If we ARE the emergency master (hold the emergency-private-key
+                    // AND committee is in the schedule), solo block production is
+                    // normal — the master IS the chain, other nodes sync from us.
+                    // Skip stalled sync recovery entirely.
+                    bool we_are_master = false;
+                    try {
+                        auto* witness_plug = appbase::app().find_plugin<graphene::plugins::witness_plugin::witness_plugin>();
+                        if (witness_plug && witness_plug->get_state() == appbase::abstract_plugin::started) {
+                            we_are_master = witness_plug->is_emergency_master();
+                        }
+                    } catch (...) {}
+
+                    if (we_are_master) {
+                        dlog("Stalled sync timeout reached but we are the emergency master "
+                             "(head #${h}) — solo block production is normal, skipping recovery",
+                             ("h", current_head));
                         _last_stalled_check_head = current_head;
                         last_block_received_time = fc::time_point::now();
                         continue;
                     }
-                    // Head is stuck \u2014 this is a follower node. Allow recovery.
-                    wlog("Stalled sync timeout during emergency consensus but head is stuck "
-                         "at #${h} \u2014 allowing recovery for follower node",
-                         ("h", current_head));
-                    _last_stalled_check_head = current_head;
-                    // Fall through to existing P2P recovery / snapshot download logic
+
+                    // We are a FOLLOWER (no emergency key, or committee not in schedule).
+                    // Check if we've received any network blocks recently.
+                    // Self-produced emergency blocks keep the head advancing,
+                    // but if no network blocks arrive, we're on an isolated fork.
+                    fc::time_point last_network = last_block_received_time;  // default fallback
+                    try {
+                        auto* p2p = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+                        if (p2p && p2p->get_state() == appbase::abstract_plugin::started) {
+                            fc::time_point p2p_network_time = p2p->get_last_network_block_time();
+                            if (p2p_network_time != fc::time_point()) {
+                                last_network = p2p_network_time;
+                            }
+                        }
+                    } catch (...) {}
+                    auto network_elapsed = now - last_network;
+
+                    if (current_head > _last_stalled_check_head && network_elapsed < timeout) {
+                        // Head advancing AND receiving network blocks recently —
+                        // normal emergency consensus operation, skip recovery.
+                        dlog("Stalled sync timeout reached but emergency consensus is active "
+                             "and head is advancing (${h} > ${prev}) with recent network blocks "
+                             "(${net_s}s ago) — skipping",
+                             ("h", current_head)("prev", _last_stalled_check_head)
+                             ("net_s", network_elapsed.count() / 1000000));
+                        _last_stalled_check_head = current_head;
+                        last_block_received_time = fc::time_point::now();
+                        continue;
+                    } else if (current_head > _last_stalled_check_head && network_elapsed >= timeout) {
+                        // Head advancing but NO network blocks for the timeout period —
+                        // we're on an isolated fork producing blocks solo. Allow recovery.
+                        wlog("Stalled sync timeout: emergency follower head advancing to #${h} but "
+                             "no network blocks for ${net_s}s — isolated fork, allowing recovery",
+                             ("h", current_head)("net_s", network_elapsed.count() / 1000000));
+                        _last_stalled_check_head = current_head;
+                        // Fall through to P2P recovery / snapshot download logic
+                    } else {
+                        // Head is stuck — this is a follower node. Allow recovery.
+                        wlog("Stalled sync timeout during emergency consensus but head is stuck "
+                             "at #${h} — allowing recovery for follower node",
+                             ("h", current_head));
+                        _last_stalled_check_head = current_head;
+                        // Fall through to existing P2P recovery / snapshot download logic
+                    }
                 }
 
                 uint32_t head_block = db.head_block_num();

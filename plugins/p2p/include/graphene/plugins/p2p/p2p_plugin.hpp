@@ -93,6 +93,16 @@ namespace graphene {
                  */
                 void resume_block_processing();
 
+                /**
+                 * Get the timestamp of the last block received from the P2P network
+                 * that was successfully applied to the chain. Unlike the generic
+                 * "last block received" timer, this is NOT updated for self-produced
+                 * blocks (broadcast_block), allowing callers to distinguish between
+                 * real network progress and isolated-fork production.
+                 * Returns fc::time_point() (epoch) if no network block has been received.
+                 */
+                fc::time_point get_last_network_block_time() const;
+
             private:
                 std::unique_ptr<detail::p2p_plugin_impl> my;
             };
