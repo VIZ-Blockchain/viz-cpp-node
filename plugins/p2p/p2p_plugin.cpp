@@ -296,8 +296,6 @@ void p2p_plugin::set_program_options(
             "The IP address and port of a remote peer to sync with. Deprecated in favor of p2p-seed-node.")
         ("p2p-seed-node", boost::program_options::value<vector<string>>()->composing(),
             "The IP address and port of a remote peer to sync with.")
-        ("dlt-block-log-max-blocks", boost::program_options::value<uint32_t>()->default_value(100000),
-            "Maximum number of blocks to keep in DLT block log (0 = no DLT log).")
         ("dlt-peer-max-disconnect-hours", boost::program_options::value<uint32_t>()->default_value(8),
             "Remove peer from known list after this many hours of non-response.")
         ("dlt-mempool-max-tx", boost::program_options::value<uint32_t>()->default_value(10000),
