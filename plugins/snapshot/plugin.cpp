@@ -1694,6 +1694,13 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             };
             flag_guard guard{snapshot_in_progress};
 
+            // Pause P2P block processing during snapshot serialization to ensure
+            // memory objects remain consistent while we read them.
+            auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+            if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                p2p_plug->pause_block_processing();
+            }
+
             try {
                 create_snapshot(output);
                 cleanup_old_snapshots();
@@ -1703,6 +1710,10 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
                 elog("Failed to create ${label} snapshot: ${e}", ("label", label)("e", e.what()));
             } catch (...) {
                 elog("Failed to create ${label} snapshot: unknown exception", ("label", label));
+            }
+
+            if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                p2p_plug->resume_block_processing();
             }
         }, "async_snapshot");
     };

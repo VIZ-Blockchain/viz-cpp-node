@@ -126,7 +126,7 @@ private:
 
     // ── Connection management ────────────────────────────────────
     void connect_to_peer(const fc::ip::endpoint& ep);
-    void handle_disconnect(peer_id peer, const std::string& reason);
+    void handle_disconnect(peer_id peer, const std::string& reason, bool skip_backoff_increase = false);
     void periodic_reconnect_check();
     void periodic_lifecycle_timeout_check();
     void accept_loop();

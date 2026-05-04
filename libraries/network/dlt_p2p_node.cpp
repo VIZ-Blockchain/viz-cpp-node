@@ -183,7 +183,7 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
     }
 }
 
-void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason) {
+void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason, bool skip_backoff_increase) {
     auto it = _peer_states.find(peer);
     if (it == _peer_states.end()) return;
 
@@ -202,9 +202,11 @@ void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason) {
     state.disconnected_since = fc::time_point::now();
     state.expected_next_block = 0;
 
-    // Double backoff, cap at max
-    state.reconnect_backoff_sec = std::min(state.reconnect_backoff_sec * 2,
-                                            dlt_peer_state::MAX_RECONNECT_BACKOFF_SEC);
+    // Double backoff, cap at max (skip for non-DLT peers sending garbage)
+    if (!skip_backoff_increase) {
+        state.reconnect_backoff_sec = std::min(state.reconnect_backoff_sec * 2,
+                                                dlt_peer_state::MAX_RECONNECT_BACKOFF_SEC);
+    }
 
     // Add jitter (±25%)
     uint32_t jitter_range = state.reconnect_backoff_sec / 2;
@@ -388,7 +390,9 @@ void dlt_p2p_node::on_message(peer_id peer, const message& msg) {
     } catch (const fc::exception& e) {
         wlog("Error processing message type ${t} from peer ${p}: ${e}",
              ("t", msg.msg_type)("p", peer)("e", e.to_detail_string()));
-        record_packet_result(peer, false);
+        // Don't punish peers for deserialization errors — these are typically
+        // wire corruption or version mismatches, not malicious behavior.
+        // Lifecycle timeouts and oversized-message checks handle truly bad peers.
     }
 }
 
@@ -645,16 +649,27 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
 
     bool any_block_applied = false;
     auto& state = it->second;
+
+    ilog(DLT_LOG_GREEN "Received block range #${first}-#${last} (${count} blocks) from ${ep}" DLT_LOG_RESET,
+         ("first", reply.blocks.front().block_num())
+         ("last", reply.blocks.back().block_num())("count", reply.blocks.size())
+         ("ep", state.endpoint));
+
     state.pending_block_batch_time = fc::time_point::now();
     for (const auto& block : reply.blocks) {
         if (_block_processing_paused) break;
 
-        // Validate block ordering
+        // Out-of-order check: duplicate blocks from another peer are fine
         if (state.expected_next_block != 0 && block.block_num() != state.expected_next_block) {
+            if (block.block_num() < state.expected_next_block && _delegate->is_block_known(block.id())) {
+                dlog("Skipping duplicate block #${n} in range from ${ep} (already applied)",
+                     ("n", block.block_num())("ep", state.endpoint));
+                continue;
+            }
+            // Unknown out-of-order block — might be a fork, try to apply
             wlog(DLT_LOG_RED "Block #${n} from ${ep} out of order (expected #${e})" DLT_LOG_RESET,
                  ("n", block.block_num())("ep", state.endpoint)("e", state.expected_next_block));
-            record_packet_result(peer, false);
-            continue;
+            // Fall through — fork_db or push_block will handle it
         }
 
         bool caused_fork = _delegate->accept_block(block, /*sync_mode=*/(_node_status == DLT_NODE_STATUS_SYNC));
@@ -662,7 +677,10 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
         _last_block_received_time = fc::time_point::now();
         _last_network_block_time = fc::time_point::now();
 
-        state.expected_next_block = block.block_num() + 1;
+        dlog("Applied block #${n} witness=${w} time=${t} from ${ep}",
+             ("n", block.block_num())("w", block.witness)("t", block.timestamp)("ep", state.endpoint));
+
+        state.expected_next_block = std::max(state.expected_next_block, block.block_num() + 1);
 
         on_block_applied(block, caused_fork);
     }
@@ -704,19 +722,35 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
     if (it == _peer_states.end()) return;
     auto& state = it->second;
 
-    // Validate block ordering
-    if (state.expected_next_block != 0 && reply.block.block_num() != state.expected_next_block) {
+    uint32_t block_num = reply.block.block_num();
+
+    // Out-of-order check: when multiple peers send us the same blocks,
+    // one peer's reply may arrive after we already advanced past that block.
+    if (state.expected_next_block != 0 && block_num != state.expected_next_block) {
+        // Block we already have (duplicate from another peer): don't punish
+        if (block_num < state.expected_next_block && _delegate->is_block_known(reply.block.id())) {
+            dlog("Ignoring duplicate block #${n} from ${ep} (already applied, head=${h})",
+                 ("n", block_num)("ep", state.endpoint)("h", _delegate->get_head_block_num()));
+            record_packet_result(peer, true);
+            return;
+        }
+
+        // Block from the past we don't know — might be a competing fork, try to apply
         wlog(DLT_LOG_RED "Block #${n} from ${ep} out of order (expected #${e})" DLT_LOG_RESET,
-             ("n", reply.block.block_num())("ep", state.endpoint)("e", state.expected_next_block));
-        record_packet_result(peer, false);
-        return;
+             ("n", block_num)("ep", state.endpoint)("e", state.expected_next_block));
+        // Fall through and try to apply — fork_db or push_block will handle it
     }
 
     bool caused_fork = _delegate->accept_block(reply.block, false);
+
+        dlog("Applied single block #${n} witness=${w} time=${t} from ${ep}",
+             ("n", reply.block.block_num())("w", reply.block.witness)
+             ("t", reply.block.timestamp)("ep", state.endpoint));
+
     _last_network_block_time = fc::time_point::now();
     _last_block_received_time = fc::time_point::now();
 
-    state.expected_next_block = reply.block.block_num() + 1;
+    state.expected_next_block = std::max(state.expected_next_block, block_num + 1);
 
     on_block_applied(reply.block, caused_fork);
     record_packet_result(peer, true);
@@ -1508,7 +1542,7 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
                 if (hdr.size > MAX_MESSAGE_SIZE) {
                     wlog("Oversized message (${s} bytes) from peer ${p}, disconnecting",
                          ("s", hdr.size)("p", peer));
-                    handle_disconnect(peer, "oversized message");
+                    handle_disconnect(peer, "oversized message", true);
                     return;
                 }
 
