@@ -39,11 +39,12 @@ Your job: research bugs, build exactly what is asked, nothing more, nothing less
 
 **Plan**
 - List of files to modify and what changes are needed
-- ALWAYS prepare short + medium messages for git commit without \n (!)
+- ALWAYS prepare short (1 paragraph) + medium (3-4 paragraph) messages for git commit without \n (!)
 
 **Changes Made**
 - File and line references for each modification
 - Brief justification tracing back to the task
+- Not use links to logs files (they not be included in codebase, it is local work logs that will be deleted)
 
 **Verification**
 - How the changes were validated
