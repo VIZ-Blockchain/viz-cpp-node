@@ -115,7 +115,6 @@ void dlt_p2p_node::close() {
 
     // Cancel all read fibers
     for (auto& _fib_item : _read_fibers) {
-            auto& id = _fib_item.first;
             auto& fiber = _fib_item.second;
         try { if (fiber.valid()) fiber.cancel_and_wait(__FUNCTION__); } catch (...) {}
     }
@@ -126,7 +125,6 @@ void dlt_p2p_node::close() {
     } catch (...) {}
 
     for (auto& _conn_item : _connections) {
-            auto& id = _conn_item.first;
             auto& conn = _conn_item.second;
         try { if (conn) conn->close(); } catch (...) {}
     }
@@ -142,7 +140,6 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
 
     // Don't connect to already-connected peer
     for (auto& _peer_item : _peer_states) {
-            auto& id = _peer_item.first;
             auto& state = _peer_item.second;
         if (state.endpoint == ep && state.lifecycle_state != DLT_PEER_LIFECYCLE_DISCONNECTED
             && state.lifecycle_state != DLT_PEER_LIFECYCLE_BANNED) {
@@ -538,7 +535,6 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
             // Check if ALL peers are caught up
             bool all_caught_up = true;
             for (auto& _peer_item : _peer_states) {
-            auto& id = _peer_item.first;
             auto& s = _peer_item.second;
                 if (s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE && s.peer_dlt_latest > our_head) {
                     all_caught_up = false;
@@ -869,7 +865,6 @@ void dlt_p2p_node::broadcast_chain_status() {
 uint32_t dlt_p2p_node::get_connection_count() const {
     uint32_t count = 0;
     for (auto& _peer_item : _peer_states) {
-            auto& id = _peer_item.first;
             auto& state = _peer_item.second;
         if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
             state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) {
@@ -930,7 +925,6 @@ void dlt_p2p_node::reconnect_seeds() {
     for (const auto& ep : _seed_nodes) {
         // Reset backoff for seeds
         for (auto& _peer_item : _peer_states) {
-            auto& id = _peer_item.first;
             auto& state = _peer_item.second;
             if (state.endpoint == ep) {
                 state.reconnect_backoff_sec = dlt_peer_state::INITIAL_RECONNECT_BACKOFF_SEC;
@@ -969,8 +963,13 @@ void dlt_p2p_node::transition_to_forward() {
         if (it->second.is_provisional) {
             if (!is_tapos_valid(it->second.trx)) {
                 _mempool_total_bytes -= it->second.estimated_size();
-                _mempool_by_expiry.erase(
-                    std::make_pair(it->second.trx.expiration, it->first));
+                auto range = _mempool_by_expiry.equal_range(it->second.trx.expiration);
+                for (auto exp_it = range.first; exp_it != range.second; ++exp_it) {
+                    if (exp_it->second == it->first) {
+                        _mempool_by_expiry.erase(exp_it);
+                        break;
+                    }
+                }
                 it = _mempool_by_id.erase(it);
                 continue;
             }
@@ -1086,7 +1085,13 @@ void dlt_p2p_node::remove_transactions_in_block(const signed_block& block) {
         auto it = _mempool_by_id.find(trx_id);
         if (it != _mempool_by_id.end()) {
             _mempool_total_bytes -= it->second.estimated_size();
-            _mempool_by_expiry.erase(std::make_pair(it->second.trx.expiration, trx_id));
+            auto range = _mempool_by_expiry.equal_range(it->second.trx.expiration);
+            for (auto exp_it = range.first; exp_it != range.second; ++exp_it) {
+                if (exp_it->second == trx_id) {
+                    _mempool_by_expiry.erase(exp_it);
+                    break;
+                }
+            }
             _mempool_by_id.erase(it);
         }
     }
@@ -1096,8 +1101,13 @@ void dlt_p2p_node::prune_mempool_on_fork_switch() {
     for (auto it = _mempool_by_id.begin(); it != _mempool_by_id.end(); ) {
         if (!is_tapos_valid(it->second.trx)) {
             _mempool_total_bytes -= it->second.estimated_size();
-            _mempool_by_expiry.erase(
-                std::make_pair(it->second.trx.expiration, it->first));
+            auto range = _mempool_by_expiry.equal_range(it->second.trx.expiration);
+            for (auto exp_it = range.first; exp_it != range.second; ++exp_it) {
+                if (exp_it->second == it->first) {
+                    _mempool_by_expiry.erase(exp_it);
+                    break;
+                }
+            }
             it = _mempool_by_id.erase(it);
         } else {
             ++it;
@@ -1342,7 +1352,6 @@ void dlt_p2p_node::periodic_peer_exchange() {
 uint32_t dlt_p2p_node::count_peers_in_subnet(const fc::ip::address& addr) const {
     uint32_t count = 0;
     for (auto& _peer_item : _peer_states) {
-            auto& id = _peer_item.first;
             auto& state = _peer_item.second;
         if (is_same_subnet(state.endpoint.get_address(), addr)) {
             count++;
@@ -1353,9 +1362,9 @@ uint32_t dlt_p2p_node::count_peers_in_subnet(const fc::ip::address& addr) const 
 
 bool dlt_p2p_node::is_same_subnet(const fc::ip::address& a, const fc::ip::address& b) const {
     // /24 subnet check — compare first 3 bytes
-    auto a_data = a.data();
-    auto b_data = b.data();
-    return a_data[0] == b_data[0] && a_data[1] == b_data[1] && a_data[2] == b_data[2];
+    uint32_t a_ip = static_cast<uint32_t>(a);
+    uint32_t b_ip = static_cast<uint32_t>(b);
+    return (a_ip >> 8) == (b_ip >> 8);
 }
 
 // ── Block validation timeout ─────────────────────────────────────────
@@ -1386,7 +1395,6 @@ void dlt_p2p_node::periodic_task() {
 
     // Check banned peers for unban
     for (auto& _peer_item : _peer_states) {
-            auto& id = _peer_item.first;
             auto& state = _peer_item.second;
         if (state.lifecycle_state == DLT_PEER_LIFECYCLE_BANNED) {
             auto elapsed = fc::time_point::now() - state.state_entered_time;
