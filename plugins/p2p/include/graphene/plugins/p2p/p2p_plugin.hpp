@@ -57,8 +57,14 @@ namespace graphene {
                  * Reset sync from the last irreversible block.
                  * Pops all reversible blocks back to LIB, resets fork_db,
                  * and re-initiates P2P sync. Used for minority fork recovery.
+                 *
+                 * @param force_emergency If true, bypass the emergency consensus
+                 * guard that normally prevents popping blocks during emergency
+                 * mode. Should only be set when the caller has already confirmed
+                 * the node is on a minority/isolated fork (e.g. DLT emergency
+                 * minority fork detector).
                  */
-                void resync_from_lib();
+                void resync_from_lib(bool force_emergency = false);
 
                 /**
                  * Re-initiate P2P sync from the current head block.

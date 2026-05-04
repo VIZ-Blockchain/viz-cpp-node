@@ -782,7 +782,7 @@ namespace graphene {
                                      "witnesses (2+ full rounds). Node is isolated from master. "
                                      "Resetting to LIB and resyncing from P2P network.",
                                      ("n", blocks_checked));
-                                p2p().resync_from_lib();
+                                p2p().resync_from_lib(true /*force_emergency*/);
                                 _production_enabled = false;
                                 _minority_fork_recovering = true;
                                 _minority_fork_recovery_start = fc::time_point::now();
@@ -1012,7 +1012,7 @@ namespace graphene {
                         // Roll back to LIB and resync from P2P network.
                         elog("unlinkable_block_exception during block generation: fork_db broken. "
                              "Rolling back to LIB and resyncing from P2P network.");
-                        p2p().resync_from_lib();
+                        p2p().resync_from_lib(dgp.emergency_consensus_active /*force_emergency*/);
                         _production_enabled = false;
                         _minority_fork_recovering = true;
                         _minority_fork_recovery_start = fc::time_point::now();

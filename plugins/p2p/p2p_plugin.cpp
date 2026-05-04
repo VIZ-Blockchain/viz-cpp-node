@@ -117,6 +117,13 @@ namespace graphene {
                     bool block_producer = false;
                     std::atomic<bool> block_processing_paused{false};
 
+                    // Minority fork recovery: when true, the P2P competing fork guard
+                    // is relaxed to allow committee blocks from the main chain to
+                    // enter fork_db even if they don't directly extend our head.
+                    // Set by resync_from_lib(force_emergency=true), cleared when
+                    // a block from the main chain is successfully applied.
+                    std::atomic<bool> _minority_fork_recovery{false};
+
                     bool stats_enabled = true;
                     uint32_t stats_interval_seconds = 300;
                     fc::future<void> _stats_task_done;
@@ -237,6 +244,18 @@ namespace graphene {
                                 if (blk_msg.block.witness == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
                                     // Emergency committee blocks are authoritative —
                                     // always let them through for fork resolution.
+                                } else if (_minority_fork_recovery.load(std::memory_order_relaxed)) {
+                                    // Minority fork recovery: accept any block from peers
+                                    // during recovery.  The node has been isolated on a
+                                    // minority fork and needs to accumulate main-chain
+                                    // blocks in fork_db's unlinked index so the fork switch
+                                    // can proceed once a common ancestor is found.
+                                    // Only committee blocks from the authoritative chain
+                                    // can trigger a fork switch, but other blocks help
+                                    // build the unlinked chain.
+                                    ilog("Minority fork recovery: accepting block #${n} from ${w} "
+                                         "despite competing fork guard",
+                                         ("n", blk_msg.block.block_num())("w", blk_msg.block.witness));
                                 } else if (blk_msg.block.block_num() <= head_block_num) {
                                     // Block at/below head from a competing fork:
                                     // our chain has a different block at this height.
@@ -328,6 +347,19 @@ namespace graphene {
                             // rejected/dead-fork blocks don't defeat the timer.
                             _last_block_received_time = fc::time_point::now();
                             _last_stale_check_head = blk_msg.block.block_num();
+
+                            // If we were in minority fork recovery and a committee
+                            // block was applied, we've switched to the main chain.
+                            // Clear the recovery flag so the competing fork guard
+                            // resumes normal operation.
+                            if (_minority_fork_recovery.load(std::memory_order_relaxed)) {
+                                if (blk_msg.block.witness == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                                    ilog("Minority fork recovery: committee block #${n} applied — "
+                                         "recovery complete, clearing recovery flag",
+                                         ("n", blk_msg.block.block_num()));
+                                    _minority_fork_recovery.store(false, std::memory_order_release);
+                                }
+                            }
 
                             // Track network block time for snapshot stalled sync detection.
                             // This is only updated for P2P-received blocks (not self-produced),
@@ -1716,7 +1748,7 @@ namespace graphene {
                 } FC_CAPTURE_AND_RETHROW()
             }
 
-            void p2p_plugin::resync_from_lib() {
+            void p2p_plugin::resync_from_lib(bool force_emergency) {
                 try {
                     auto& db = my->chain.db();
                     uint32_t head_num = 0;
@@ -1732,7 +1764,15 @@ namespace graphene {
                     // exist), and after fork_db reset, peer blocks from the real network
                     // may link to the re-seeded LIB block, triggering a fork switch that
                     // attempts to pop below committed LIB — infinite loop or crash.
-                    {
+                    //
+                    // HOWEVER: when the minority fork detector has confirmed that this
+                    // node is isolated on a minority fork (force_emergency=true), staying
+                    // on the wrong fork is worse than the risk.  The node must resync
+                    // even during emergency mode.  The "pop below LIB" risk is acceptable
+                    // here because: (a) the minority fork blocks are not the real chain,
+                    // so LIB on the minority fork is meaningless, and (b) after resync,
+                    // the node will re-derive LIB from the real network chain.
+                    if (!force_emergency) {
                         bool emergency = false;
                         db.with_weak_read_lock([&]() {
                             emergency = db.get_dynamic_global_properties().emergency_consensus_active;
@@ -1743,6 +1783,11 @@ namespace graphene {
                                  ("h", head_num)("lib", lib_num));
                             return;
                         }
+                    } else {
+                        wlog("resync_from_lib: FORCE-EMERGENCY override — minority fork detected "
+                             "during emergency consensus (head=${h}, LIB=${lib}). Proceeding with resync.",
+                             ("h", head_num)("lib", lib_num));
+                        my->_minority_fork_recovery.store(true, std::memory_order_release);
                     }
 
                     if (lib_num == 0 || head_num <= lib_num) {
