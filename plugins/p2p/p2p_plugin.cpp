@@ -6,7 +6,7 @@
 #include <graphene/chain/dlt_block_log.hpp>
 #include <graphene/chain/fork_database.hpp>
 
-#include <graphene/plugins/witness/witness_plugin.hpp>
+#include <graphene/plugins/witness/witness.hpp>
 
 #include <fc/network/resolve.hpp>
 #include <fc/thread/thread.hpp>
