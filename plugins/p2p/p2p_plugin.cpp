@@ -222,6 +222,11 @@ namespace graphene {
                             // Only applies to block-producing nodes (the emergency
                             // master).  Followers must still accept sync blocks to
                             // catch up to the master's chain.
+                            //
+                            // EXCEPTION: Blocks signed by the emergency committee
+                            // witness (CHAIN_EMERGENCY_WITNESS_ACCOUNT) are the
+                            // authoritative chain in emergency mode.  They must
+                            // never be skipped — the slave must switch to them.
                             bool emergency = false;
                             try {
                                 chain.db().with_weak_read_lock([&]() {
@@ -229,7 +234,10 @@ namespace graphene {
                                 });
                             } catch (...) {}
                             if (emergency && block_producer) {
-                                if (blk_msg.block.block_num() <= head_block_num) {
+                                if (blk_msg.block.witness == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                                    // Emergency committee blocks are authoritative —
+                                    // always let them through for fork resolution.
+                                } else if (blk_msg.block.block_num() <= head_block_num) {
                                     // Block at/below head from a competing fork:
                                     // our chain has a different block at this height.
                                     protocol::block_id_type our_id;

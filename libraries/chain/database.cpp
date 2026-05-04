@@ -1362,12 +1362,16 @@ namespace graphene { namespace chain {
 
                 auto branches = _fork_db.fetch_branch_from(branch_a_tip, branch_b_tip);
 
-                auto compute_branch_weight = [&](const fork_database::branch_type& branch) -> share_type {
+                auto compute_branch_info = [&](const fork_database::branch_type& branch) -> std::pair<share_type, bool> {
                     flat_set<account_name_type> seen_witnesses;
                     share_type total_weight = 0;
+                    bool has_emergency = false;
                     for (const auto& item : branch) {
                         const auto& wit_name = item->data.witness;
-                        if (wit_name == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
+                        if (wit_name == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                            has_emergency = true;
+                            continue;
+                        }
                         if (seen_witnesses.insert(wit_name).second) {
                             try {
                                 const auto& wit_obj = get_witness(wit_name);
@@ -1375,11 +1379,23 @@ namespace graphene { namespace chain {
                             } catch (...) {}
                         }
                     }
-                    return total_weight;
+                    return {total_weight, has_emergency};
                 };
 
-                share_type weight_a = compute_branch_weight(branches.first);
-                share_type weight_b = compute_branch_weight(branches.second);
+                auto [weight_a, emergency_a] = compute_branch_info(branches.first);
+                auto [weight_b, emergency_b] = compute_branch_info(branches.second);
+
+                // In emergency consensus mode, the emergency committee witness
+                // represents the collective authority of the committee.  Since
+                // the committee account has no vote weight, directly assign its
+                // chain as the main fork: if one branch has emergency committee
+                // blocks and the other doesn't, the emergency branch wins
+                // unconditionally.  If both or neither have emergency blocks,
+                // fall through to the normal vote-weight comparison.
+                if (get_dynamic_global_properties().emergency_consensus_active) {
+                    if (emergency_a && !emergency_b) return 1;   // branch_a has emergency → heavier
+                    if (!emergency_a && emergency_b) return -1;  // branch_b has emergency → heavier
+                }
 
                 // Longer chain gets +10% bonus on its vote weight.
                 // Each block produced is a consensus "vote" — witnesses on the longer
