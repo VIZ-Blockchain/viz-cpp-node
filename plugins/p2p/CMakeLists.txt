@@ -29,7 +29,6 @@ target_link_libraries(
         graphene_chain
         graphene::chain_plugin
         graphene::network
-        graphene::snapshot
         appbase
 )
 
