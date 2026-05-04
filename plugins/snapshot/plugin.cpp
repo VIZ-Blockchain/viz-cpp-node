@@ -2147,23 +2147,6 @@ void send_access_denied(fc::tcp_socket& sock, uint32_t reason) {
     }
 }
 
-/// Read a message: returns (msg_type, payload).
-/// max_payload_size limits the accepted payload (default 64 MB for data replies,
-/// use 64 KB for control/request messages to prevent memory abuse).
-std::pair<uint32_t, std::vector<char>> read_message(fc::tcp_socket& sock, uint32_t max_payload_size = 64 * 1024 * 1024) {
-    uint32_t payload_size = 0;
-    uint32_t msg_type = 0;
-    read_exact(sock, reinterpret_cast<char*>(&payload_size), 4);
-    read_exact(sock, reinterpret_cast<char*>(&msg_type), 4);
-    FC_ASSERT(payload_size <= max_payload_size, "Message too large: ${s} bytes (limit ${l})",
-        ("s", payload_size)("l", max_payload_size));
-    std::vector<char> payload(payload_size);
-    if (payload_size > 0) {
-        read_exact(sock, payload.data(), payload_size);
-    }
-    return {msg_type, std::move(payload)};
-}
-
 /// Read a message with timeout: returns (success, msg_type, payload).
 /// Returns success=false on timeout or error.
 std::tuple<bool, uint32_t, std::vector<char>> read_message_with_timeout(
