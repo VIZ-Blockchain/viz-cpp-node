@@ -47,11 +47,11 @@ This matches the old `message_oriented_connection` format without 16-byte paddin
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `libraries/network/include/graphene/network/dlt_p2p_messages.hpp` | 276 | All DLT message types (5100-5113), enums, structs, FC_REFLECT macros |
-| `libraries/network/dlt_p2p_messages.cpp` | 24 | Static `type` constants for each message struct |
+| `libraries/network/include/graphene/network/dlt_p2p_messages.hpp` | 290 | All DLT message types (5100-5114), enums, structs, FC_REFLECT macros |
+| `libraries/network/dlt_p2p_messages.cpp` | 25 | Static `type` constants for each message struct |
 | `libraries/network/include/graphene/network/dlt_p2p_peer_state.hpp` | 150 | `dlt_peer_state`, `dlt_known_peer`, `dlt_mempool_entry`, `dlt_fork_resolution_state`, `dlt_fork_branch_info` |
 | `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | 284 | `dlt_p2p_delegate` interface + `dlt_p2p_node` class declaration |
-| `libraries/network/dlt_p2p_node.cpp` | 1430 | Full `dlt_p2p_node` implementation |
+| `libraries/network/dlt_p2p_node.cpp` | 1740 | Full `dlt_p2p_node` implementation |
 
 ### Modified Files
 
@@ -81,7 +81,7 @@ This matches the old `message_oriented_connection` format without 16-byte paddin
 
 ### Phase 1: New Message Types ✅
 
-`dlt_p2p_messages.hpp` implements all 14 message types (5100-5113) exactly as specified:
+`dlt_p2p_messages.hpp` implements all 15 message types (5100-5114) exactly as specified:
 
 | Message Type | ID | Struct |
 |---|---|---|
@@ -99,6 +99,7 @@ This matches the old `message_oriented_connection` format without 16-byte paddin
 | `dlt_peer_exchange_reply_type` | 5111 | `dlt_peer_exchange_reply` — peers vector |
 | `dlt_peer_exchange_rate_limited_type` | 5112 | `dlt_peer_exchange_rate_limited` — wait_seconds |
 | `dlt_transaction_message_type` | 5113 | `dlt_transaction_message` — signed_transaction |
+| `dlt_soft_ban_message_type` | 5114 | `dlt_soft_ban_message` — ban_duration_sec, reason (sent before disconnecting a banned peer) |
 
 Enums: `dlt_node_status` (SYNC/FORWARD), `dlt_fork_status` (NORMAL/LOOKING_RESOLUTION/MINORITY), `dlt_peer_lifecycle_state` (6 states).
 
@@ -143,7 +144,7 @@ All FC_REFLECT macros defined for serialization.
 
 **Anti-spam**:
 - `record_packet_result()` — single `spam_strikes` counter per peer, reset on good packet, soft-ban at threshold=10
-- `soft_ban_peer()` — sets BANNED state for 3600s, closes connection
+- `soft_ban_peer()` — sets BANNED state for 3600s, sends `dlt_soft_ban_message` notification, then closes connection
 
 **Peer exchange** (rate-limited):
 - `on_dlt_peer_exchange_request()` — 10-min cooldown per peer, subnet diversity filter, min uptime 600s
@@ -155,7 +156,7 @@ All FC_REFLECT macros defined for serialization.
 - Reconnection: backoff 30s→60s→…→3600s with ±25% jitter, reset on stable >5min
 - Permanent removal after 8h non-response
 
-**Color-coded logging**: GREEN=sync/production, WHITE=normal block exchange, RED=fork, DARK_GRAY=transactions, ORANGE=warnings
+**Color-coded logging**: GREEN=sync/production, WHITE=normal block exchange, RED=fork, DARK_GRAY=transactions, ORANGE=warnings, CYAN=peer stats
 
 ### Phase 3: P2P Plugin Replacement ✅
 
@@ -180,14 +181,31 @@ All FC_REFLECT macros defined for serialization.
 | `dlt-peer-exchange-max-per-reply` | 10 | Cap peers per exchange reply |
 | `dlt-peer-exchange-max-per-subnet` | 2 | Anti-sybil: max 2 per /24 |
 | `dlt-peer-exchange-min-uptime-sec` | 600 | Min uptime before sharing |
+| `dlt-stats-interval-sec` | 300 (5 min) | Interval between P2P peer stats log output (min 30) |
 
-**Removed old config**: `p2p-stats-enabled`, `p2p-stats-interval`, `p2p-stale-sync-detection`, `p2p-stale-sync-timeout-seconds`
+**Removed old config**: `p2p-stats-enabled`, `p2p-stats-interval`, `p2p-stale-sync-detection`, `p2p-stale-sync-timeout-seconds` (replaced by `dlt-stats-interval-sec` and P2P-level stale sync detection)
 
 **Plugin startup** (deadlock fix):
 - Old: `p2p_thread.async([...infinite loop...]).wait()` — blocks forever
 - New: `p2p_thread.async([create node, set_thread, configure, start]).wait()` — returns after setup
 - `dlt_p2p_node::start()` internally spawns accept loop + periodic task as fibers
 - Thread reference passed via `node->set_thread(fc::thread::current())`
+
+**Soft-ban notification**:
+- `soft_ban_peer()` sends `dlt_soft_ban_message` (type 5114) before closing the connection
+- Receiving peer enters BANNED state with the specified duration and logs an orange/yellow notice
+- Prevents wasted bandwidth — both sides stop sending data immediately
+
+**Peer stats**:
+- `log_peer_stats()` outputs cyan-colored peer statistics at configurable interval
+- Shows: node status, fork state, head/LIB, per-peer details (flags, ranges, spam strikes, ban time)
+- Interval configured via `dlt-stats-interval-sec` (default 300s = 5 min)
+
+**Out-of-order/duplicate block handling**:
+- Duplicate blocks (already applied) from peers are silently skipped, not counted as spam
+- Out-of-order blocks in range replies fall through to fork_db/push_block instead of soft-banning
+- Deserialization errors no longer increment spam strikes
+- Oversized messages from old-protocol peers disconnect with `skip_backoff_increase=true`
 
 ### Phase 4: Fork Resolution ✅
 

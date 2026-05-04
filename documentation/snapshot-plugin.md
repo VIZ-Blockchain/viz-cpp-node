@@ -216,6 +216,21 @@ All soft-ban triggers set `fork_rejected_until = now + duration` and `inhibit_fe
 | 13 | Chain: `_push_block` | Block > head, `previous != head_block_id`, parent not in fork_db | > head | Return `false` silently | Prevent sync restart storms from broadcast blocks |
 | 14 | Chain: `push_block` | `bad_alloc` → `deferred_resize_exception` | any | Throw `deferred_resize_exception` | Shared memory exhausted; P2P must not penalize peer |
 
+### Soft-Ban Notification Protocol
+
+When a node soft-bans a peer (e.g., spam strike threshold exceeded), it sends a `dlt_soft_ban_message` (type 5114) **before** closing the connection. This allows the banned peer to:
+
+1. **Stop sending data immediately** — instead of continuing to spam until the connection times out
+2. **Enter BANNED state** with the correct duration — the ban message includes `ban_duration_sec` and a `reason` string
+3. **Log a yellow/orange notice** — the receiving node logs: `Peer X soft-banned us for Ns (reason: Y)`
+
+The receiving node closes the connection and waits for the ban duration before attempting to reconnect. This prevents wasted bandwidth from both sides when a peer is already rejected.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ban_duration_sec` | uint32_t | Ban duration in seconds (typically 3600 for 1 hour) |
+| `reason` | string | Human-readable ban reason (e.g., "spam strike threshold exceeded") |
+
 ### `is_known_block()` in DLT Mode
 
 In DLT mode, the `block_summary` table (TAPOS buffer, 65536 entries) survives snapshot import, but block data may not be available on disk. Simply returning `true` from `block_summary` would mislead P2P peers into requesting blocks the node can't serve.
@@ -438,6 +453,15 @@ Both can be enabled independently. For DLT nodes, the snapshot detection provide
 | `stalled-sync-timeout-minutes` | 5 | Timeout for stalled sync detection and startup retry interval |
 | `test-trusted-seeds` | false | Probe all trusted peers at startup (connect time, latency, speed) and exit |
 | `dlt-block-log-max-blocks` | 100000 | Rolling DLT block_log window size (0 = disabled) |
+| `dlt-stats-interval-sec` | 300 | Interval in seconds between P2P peer stats log output (min 30) |
+| `dlt-peer-max-disconnect-hours` | 8 | Remove peer from known list after this many hours of non-response |
+| `dlt-mempool-max-tx` | 10000 | Maximum number of transactions in P2P mempool |
+| `dlt-mempool-max-bytes` | 104857600 | Maximum total bytes of transactions in P2P mempool (default 100MB) |
+| `dlt-mempool-max-tx-size` | 65536 | Maximum single transaction size in bytes (default 64KB) |
+| `dlt-mempool-max-expiration-hours` | 24 | Reject transactions with expiration too far in the future (hours) |
+| `dlt-peer-exchange-max-per-reply` | 10 | Max peers to include in a peer exchange reply |
+| `dlt-peer-exchange-max-per-subnet` | 2 | Max peers per /24 subnet in peer exchange replies |
+| `dlt-peer-exchange-min-uptime-sec` | 600 | Min connection uptime (seconds) before sharing a peer in exchange replies |
 
 ### CLI options
 
