@@ -209,6 +209,50 @@ namespace graphene {
                                      ("n", blk_msg.block.block_num())("gap", behind)("h", head_block_num));
                                 return false;
                             }
+
+                            // EMERGENCY COMPETING FORK GUARD
+                            // When emergency consensus is active in DLT mode, the
+                            // master produces its own blocks.  Sync blocks from
+                            // peers on a different fork are dead-fork blocks —
+                            // pushing them triggers unlinkable_block_exception →
+                            // DEFERRED_RESIZE → sync restart → infinite crash loop
+                            // (p20/p21/p22.log).  Skip them entirely before they
+                            // enter accept_block/push_block.
+                            //
+                            // Only applies to block-producing nodes (the emergency
+                            // master).  Followers must still accept sync blocks to
+                            // catch up to the master's chain.
+                            bool emergency = false;
+                            try {
+                                chain.db().with_weak_read_lock([&]() {
+                                    emergency = chain.db().get_dynamic_global_properties().emergency_consensus_active;
+                                });
+                            } catch (...) {}
+                            if (emergency && block_producer) {
+                                if (blk_msg.block.block_num() <= head_block_num) {
+                                    // Block at/below head from a competing fork:
+                                    // our chain has a different block at this height.
+                                    protocol::block_id_type our_id;
+                                    try {
+                                        chain.db().with_weak_read_lock([&]() {
+                                            our_id = chain.db().find_block_id_for_num(blk_msg.block.block_num());
+                                        });
+                                    } catch (...) {}
+                                    if (our_id != protocol::block_id_type() && our_id != blk_msg.block.id()) {
+                                        dlog("Skipping emergency sync block #${n} from competing fork (our block differs)",
+                                             ("n", blk_msg.block.block_num()));
+                                        return false;
+                                    }
+                                } else {
+                                    // Block ahead of head from a competing fork:
+                                    // its parent doesn't match our head block.
+                                    if (blk_msg.block.previous != head_id) {
+                                        dlog("Skipping emergency sync block #${n} from competing fork (parent not our head)",
+                                             ("n", blk_msg.block.block_num()));
+                                        return false;
+                                    }
+                                }
+                            }
                         }
 
                         int32_t gap = (int32_t)blk_msg.block.block_num() - (int32_t)head_block_num - 1;
