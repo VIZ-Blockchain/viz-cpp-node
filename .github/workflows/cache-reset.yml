@@ -1,0 +1,74 @@
+name: Reset CI Cache
+
+# Manual recovery for poisoned BuildKit/ccache state: if a cache scope
+# is producing compile-time-only failures that warm builds reproduce
+# but cold builds do not, run this workflow with the scope substring
+# to delete all matching cache entries and force a cold rebuild.
+#
+# Usage: GitHub UI -> Actions -> Reset CI Cache -> Run workflow
+#        Enter scope substring, e.g.:
+#          - "main"            -> deletes master-branch cache
+#          - "pr-master"       -> deletes shared PR-against-master cache
+#          - "pr-release-1.0"  -> deletes a specific release-branch PR cache
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope_substring:
+        description: 'Substring of cache key to delete (e.g., main, pr-master)'
+        required: true
+        type: string
+
+permissions:
+  actions: write   # required to delete caches
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete matching caches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass user input via env (not direct ${{ }} interpolation in the
+          # run: block) to avoid workflow-injection if the substring contains
+          # shell metacharacters like single quotes.
+          SCOPE_PATTERN: ${{ inputs.scope_substring }}
+        run: |
+          set -uo pipefail
+          echo "Listing caches matching: $SCOPE_PATTERN"
+          # gh cache list returns id<TAB>key<TAB>... ; jq filters by key
+          # substring. --limit 1000 is the gh CLI page max. If we hit the
+          # limit, the listing may be incomplete and the operator should
+          # rerun after the first batch is deleted.
+          LIMIT=1000
+          listing=$(gh cache list --repo "$GITHUB_REPOSITORY" --limit "$LIMIT" --json id,key)
+          total=$(echo "$listing" | jq 'length')
+          if [ "$total" -eq "$LIMIT" ]; then
+            echo "WARN: hit --limit $LIMIT; listing may be truncated. Rerun after this batch."
+          fi
+          # Print id<TAB>key for each match so the operator can audit which
+          # entries are about to be deleted (substring matches can be broader
+          # than intended — e.g. 'main' matches 'domain-foo').
+          matches=$(echo "$listing" \
+                  | jq -r --arg pat "$SCOPE_PATTERN" '.[] | select(.key | contains($pat)) | "\(.id)\t\(.key)"')
+          if [ -z "$matches" ]; then
+            echo "No caches matched substring: $SCOPE_PATTERN"
+            exit 0
+          fi
+          echo "Will delete the following caches (id<TAB>key):"
+          echo "$matches"
+          # Best-effort deletion: a failure on one cache (race with auto-
+          # eviction, transient 5xx) should not abort the whole loop.
+          # Track failures and exit non-zero at the end if any occurred.
+          failures=0
+          while IFS=$'\t' read -r id key; do
+            if ! gh cache delete "$id" --repo "$GITHUB_REPOSITORY"; then
+              echo "WARN: failed to delete cache id=$id key=$key"
+              failures=$((failures + 1))
+            fi
+          done <<< "$matches"
+          if [ "$failures" -gt 0 ]; then
+            echo "Done with $failures failure(s)."
+            exit 1
+          fi
+          echo "Done."
