@@ -1660,7 +1660,7 @@ namespace graphene {
             }
 
             void p2p_plugin::broadcast_block(const protocol::signed_block &block) {
-                ulog("Broadcasting block #${n}", ("n", block.block_num()));
+                dlog("Broadcasting block #${n}", ("n", block.block_num()));
                 // Reset stale sync timer on own block production.
                 // Without this, the timer only resets on external blocks (handle_block),
                 // so during emergency mode (solo production, no external blocks) the

@@ -1592,6 +1592,8 @@ namespace graphene {
                                 if (item_to_advertise.item_type ==
                                     trx_message_type)
                                     testnetlog("advertising transaction ${id} to peer ${endpoint}", ("id", item_to_advertise.item_hash)("endpoint", peer->get_remote_endpoint()));
+                                if (item_to_advertise.item_type == block_message_type)
+                                    dlog("advertising block #${num} to peer ${endpoint}", ("num", protocol::block_header::num_from_id(item_to_advertise.item_hash))("endpoint", peer->get_remote_endpoint()));
                                 dlog("advertising item ${id} to peer ${endpoint}", ("id", item_to_advertise.item_hash)("endpoint", peer->get_remote_endpoint()));
                             }
                         }
