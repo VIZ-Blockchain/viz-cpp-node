@@ -4216,7 +4216,16 @@ namespace graphene {
                                 // (we don't want to allow a fiber swap in the middle of popping items off the list)
                                 if (peer->ids_of_items_to_get.empty() &&
                                     peer->number_of_unfetched_item_ids == 0 &&
-                                    peer->ids_of_items_being_processed.empty()) {
+                                    peer->ids_of_items_being_processed.empty() &&
+                                    accepted) {
+                                        // Only trigger synopsis completion check if the
+                                        // block was actually applied.  When handle_block
+                                        // returns false (competing-fork guard, dead-fork
+                                        // skip), our chain may not contain the block at
+                                        // this number — a synopsis exchange would call
+                                        // is_included_block() for block numbers we never
+                                        // applied, leading to an assert crash in
+                                        // get_block_id_for_num().
                                         peers_with_newly_empty_item_lists.insert(peer);
                                 }
 
