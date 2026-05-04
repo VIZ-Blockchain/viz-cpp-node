@@ -815,7 +815,7 @@ namespace graphene {
                                  ("old", _last_connection_count)("new", c)
                                  ("hn", msg.head_block_num)("dlt", msg.dlt_mode)
                                  ("emerg", msg.emergency_consensus_active));
-                        } FC_CAPTURE_LOG_AND_RETHROW()
+                        } FC_CAPTURE_AND_RETHROW()
                     }
                     _last_connection_count = c;
                 }
@@ -1597,7 +1597,7 @@ namespace graphene {
                          ("hn", msg.head_block_num)("lib", msg.last_irreversible_block_num)
                          ("dlt", msg.dlt_mode)("de", msg.dlt_earliest_block)
                          ("emerg", msg.emergency_consensus_active)("key", msg.has_emergency_key));
-                } FC_CAPTURE_LOG_AND_RETHROW()
+                } FC_CAPTURE_AND_RETHROW()
             }
 
             void p2p_plugin::resync_from_lib() {
