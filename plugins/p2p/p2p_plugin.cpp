@@ -998,7 +998,15 @@ namespace graphene {
                     try {
                         return chain.db().with_weak_read_lock([&]() {
                             uint32_t block_num = block_header::num_from_id(block_id);
-                            block_id_type block_id_in_preferred_chain = chain.db().get_block_id_for_num(block_num);
+                            // Use find_block_id_for_num (non-asserting) instead of
+                            // get_block_id_for_num (which FC_ASSERTs on empty result).
+                            // After an emergency competing-fork guard skip, the P2P
+                            // layer may trigger a synopsis exchange for a block number
+                            // we never actually applied — find_block_id_for_num
+                            // returns empty in that case, and we safely return false.
+                            block_id_type block_id_in_preferred_chain = chain.db().find_block_id_for_num(block_num);
+                            if (block_id_in_preferred_chain == block_id_type())
+                                return false;
                             return block_id == block_id_in_preferred_chain;
                         });
                     } FC_CAPTURE_AND_RETHROW()
