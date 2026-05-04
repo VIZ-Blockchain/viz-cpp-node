@@ -1,6 +1,7 @@
 #include <openssl/md5.h>
 
 #include <boost/iostreams/device/mapped_file.hpp>
+#include <boost/interprocess/exceptions.hpp>
 
 #include <graphene/protocol/chain_operations.hpp>
 
@@ -231,9 +232,25 @@ namespace graphene { namespace chain {
                     _dlt_block_log.open(data_dir / "dlt_block_log");
 
                     // Rewind all undo state. This should return us to the state at the last irreversible block.
-                    with_strong_write_lock([&]() {
-                        undo_all();
-                    });
+                    // Wrap in a try-catch for boost::interprocess::lock_exception:
+                    // After a hard crash, the previous process may have died while holding
+                    // shared-memory internal mutexes (e.g., inside managed_mapped_file allocator).
+                    // When undo_all() touches those allocations, boost throws lock_exception.
+                    // Convert it to database_revision_exception so the chain plugin's existing
+                    // recovery path (snapshot reload / replay) handles it instead of std::terminate.
+                    try {
+                        with_strong_write_lock([&]() {
+                            undo_all();
+                        });
+                    } catch (const boost::interprocess::lock_exception& e) {
+                        wlog("Shared memory lock exception during undo_all(): ${e}. "
+                             "The previous process may have crashed while holding a lock. "
+                             "Throwing revision mismatch to trigger recovery path.",
+                             ("e", e.what()));
+                        FC_THROW_EXCEPTION(database_revision_exception,
+                            "Shared memory lock corrupted (previous crash): ${what}",
+                            ("what", e.what()));
+                    }
 
                     if (revision() != head_block_num()) {
                         with_strong_read_lock([&]() {
@@ -4937,7 +4954,16 @@ namespace graphene { namespace chain {
                             witness_missed.owner != CHAIN_EMERGENCY_WITNESS_ACCOUNT;
 
                         modify(witness_missed, [&](witness_object &w) {
-                            w.current_run = 0;
+                            // Only reset current_run for witnesses that actually missed their slot.
+                            // In emergency hybrid mode, the committee witness occupies multiple
+                            // schedule slots and produces the current block.  If we reset current_run
+                            // for the committee witness's duplicate slots (which are also "missed"
+                            // because committee can't fill all slots simultaneously), current_run
+                            // never reaches CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN, so
+                            // last_supported_block_num never advances and LIB stalls.
+                            if (w.owner != b.witness) {
+                                w.current_run = 0;
+                            }
                             if(is_emergency_offline_witness) {
                                 // Skip vote penalties and total_missed, but still
                                 // blank the signing key if the witness has missed
