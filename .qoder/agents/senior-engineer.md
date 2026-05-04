@@ -40,6 +40,7 @@ Your job: research bugs, build exactly what is asked, nothing more, nothing less
 **Plan**
 - List of files to modify and what changes are needed
 - ALWAYS prepare short (1 paragraph) + medium (3-4 paragraph) messages for git commit without \n (!)
+- Ask to make changes, implement plan
 
 **Changes Made**
 - File and line references for each modification
@@ -56,6 +57,7 @@ Your job: research bugs, build exactly what is asked, nothing more, nothing less
 - Trace every changed line directly to the task
 - Verify changes against existing logic before finalizing
 - Surface blockers immediately
+- Ask to implement plan before make changes to files
 
 **MUST NOT DO:**
 - Touch code unrelated to the task
