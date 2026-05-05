@@ -1901,6 +1901,78 @@ namespace graphene { namespace chain {
                     }
                 }
 
+                // P39 fix: _push_next cascade. When fork_db.push_block()
+                // triggered _push_next, which linked previously-deferred blocks
+                // from _unlinked_index, fork_db._head may now be far ahead of
+                // the database head.  The blocks between the current database
+                // head and fork_db._head are valid linear extensions (they were
+                // linked by _push_next), so we apply them here to keep the
+                // database in sync with fork_db.
+                //
+                // Without this fix, the database head stays at the original
+                // block while fork_db._head jumps ahead.  Subsequent blocks
+                // in a range reply are then rejected as "too old" by fork_db's
+                // sliding window, and the P36 fix returns ALREADY_KNOWN —
+                // causing the range reply handler to skip them and the node
+                // to oscillate between FORWARD and SYNC mode.
+                if (new_head && new_head->data.block_num() > new_block.block_num()) {
+                    auto fb_head = _fork_db.head();
+                    if (fb_head && fb_head->data.block_num() > head_block_num() &&
+                        _fork_db.is_known_block(head_block_id())) {
+                        try {
+                            auto branches = _fork_db.fetch_branch_from(
+                                fb_head->data.id(), head_block_id());
+
+                            // These blocks are all on the same chain (linked
+                            // by _push_next), so this is always a linear
+                            // extension.  branches.second should be just
+                            // [head_block_id] (the common ancestor).
+                            bool is_cascade_linear =
+                                (!branches.second.empty() &&
+                                 branches.second.size() == 1 &&
+                                 branches.second.back()->data.id() == head_block_id() &&
+                                 branches.first.back()->data.id() == branches.second.back()->data.id());
+
+                            if (is_cascade_linear) {
+                                ilog("P39: _push_next cascade — applying ${n} blocks from fork_db "
+                                     "(db_head=#${dh}, fork_db_head=#${fh})",
+                                     ("n", branches.first.size() - 1)("dh", head_block_num())
+                                     ("fh", fb_head->data.block_num()));
+
+                                for (auto ritr = branches.first.rbegin();
+                                     ritr != branches.first.rend(); ++ritr) {
+                                    // Skip common ancestor (already applied)
+                                    if ((*ritr)->data.id() == head_block_id()) continue;
+
+                                    auto session = start_undo_session();
+                                    apply_block((*ritr)->data, skip);
+                                    session.push();
+                                }
+                                _fork_db.set_head(fb_head);
+                            } else {
+                                // Non-linear cascade: _push_next linked blocks
+                                // from a competing fork that has more weight.
+                                // Do a proper fork switch using the existing
+                                // logic above.  This is rare but possible.
+                                wlog("P39: _push_next cascade is non-linear, "
+                                     "skipping cascade apply (db_head=#${dh}, fork_db_head=#${fh})",
+                                     ("dh", head_block_num())("fh", fb_head->data.block_num()));
+                            }
+                        } catch (const fc::exception& e) {
+                            wlog("P39: Failed to apply _push_next cascade blocks: ${e}",
+                                 ("e", e.what()));
+                            // Don't throw — the original block was applied
+                            // successfully.  Reset fork_db to database head so
+                            // subsequent blocks aren't rejected as "too old".
+                            auto head_blk = fetch_block_by_id(head_block_id());
+                            _fork_db.reset();
+                            if (head_blk) {
+                                _fork_db.start_block(*head_blk);
+                            }
+                        }
+                    }
+                }
+
                 return true;
             } FC_CAPTURE_AND_RETHROW()
         }

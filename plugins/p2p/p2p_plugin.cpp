@@ -171,22 +171,53 @@ public:
             // update mempool until it actually becomes head.
             return dlt_block_accept_result::FORK_DB_ONLY;
         } catch (const graphene::chain::block_too_old_exception& e) {
-            // P36 fix: fork_db._head jumped ahead of database head via
+            // P36/P39 fix: fork_db._head jumped ahead of database head via
             // _push_next cascade (previously-deferred blocks linked when
             // their parent arrived).  The block we're trying to push is
             // now "too old" for fork_db's sliding window, even though it
             // might be a valid linear extension of the current database
-            // head.  This commonly happens when processing a block range
-            // reply: the first block triggers _push_next which links
-            // blocks from a competing fork in fork_db, advancing
-            // fork_db._head far beyond the database head.  Subsequent
-            // blocks in the range (possibly from a different fork) are
-            // then rejected as "too old".
+            // head.
             //
-            // Since fork_db already has a better chain at this height
-            // (that's why it considers the block "too old"), we treat
-            // it as ALREADY_KNOWN — the information is already present
-            // in a better form.
+            // P39: The primary fix is in _push_block, which applies cascade
+            // blocks after a linear extension.  This catch handles the
+            // remaining case where the cascade didn't help (e.g. non-linear
+            // cascade, or the block_too_old came from a different path).
+            //
+            // If the database is behind fork_db._head, reset fork_db to
+            // the database head and retry the push.  This lets the block
+            // go through the normal push path without being rejected as
+            // "too old" by a stale fork_db._head.
+            auto& db = chain.db();
+            auto fb_head = db.get_fork_db().head();
+            if (fb_head && fb_head->data.block_num() > db.head_block_num()) {
+                wlog("Block #${n} too old for fork_db — database head #${dh} behind fork_db head #${fh}, resetting fork_db and retrying",
+                     ("n", block.block_num())("dh", db.head_block_num())("fh", fb_head->data.block_num()));
+                try {
+                    auto head_blk = db.fetch_block_by_id(db.head_block_id());
+                    db.get_fork_db().reset();
+                    if (head_blk) {
+                        db.get_fork_db().start_block(*head_blk);
+                    }
+                    // Retry the push with reset fork_db
+                    bool applied = db.push_block(block, skip);
+                    if (applied) {
+                        return dlt_block_accept_result::ACCEPTED;
+                    }
+                    if (db.is_known_block(block.id())) {
+                        return dlt_block_accept_result::ALREADY_KNOWN;
+                    }
+                    return dlt_block_accept_result::FORK_DB_ONLY;
+                } catch (const graphene::chain::block_too_old_exception&) {
+                    // Still too old even after reset — shouldn't happen
+                } catch (const graphene::chain::unlinkable_block_exception&) {
+                    // Unlinkable after reset — genuine dead fork
+                    return dlt_block_accept_result::DEAD_FORK;
+                } catch (const fc::exception& retry_e) {
+                    wlog("Retry push after fork_db reset failed: ${e}", ("e", retry_e.what()));
+                }
+            }
+            // Database is not behind fork_db, or retry failed —
+            // the block is already known in a better form.
             wlog("Block #${n} too old for fork_db — fork_db already has a better chain at this height (${e})",
                  ("n", block.block_num())("e", e.to_detail_string()));
             return dlt_block_accept_result::ALREADY_KNOWN;

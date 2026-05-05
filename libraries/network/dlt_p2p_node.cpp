@@ -1194,13 +1194,11 @@ void dlt_p2p_node::on_dlt_gap_fill_request(peer_id peer, const dlt_gap_fill_requ
     auto it = _peer_states.find(peer);
     if (it == _peer_states.end()) return;
 
-    // Only serve gap fill requests from exchange-enabled peers
-    if (!it->second.exchange_enabled) {
-        wlog("Gap fill request from non-exchange peer ${ep}, ignoring",
-             ("ep", it->second.endpoint));
-        record_packet_result(peer, false);
-        return;
-    }
+    // P39 fix: Accept gap fill requests from any active peer, not just
+    // exchange-enabled.  Gap fill is a lightweight read from block_log
+    // (same as SYNC range requests), so there's no security reason to
+    // restrict it.  This allows newly-FORWARD peers (whose exchange
+    // status may not be set yet) to fill gaps immediately.
 
     // Validate request: limit number of blocks requested
     if (req.block_nums.empty() || req.block_nums.size() > GAP_FILL_MAX_BLOCKS) {
@@ -1346,14 +1344,22 @@ void dlt_p2p_node::request_gap_fill() {
     // block with a higher number, so it reflects reality even when
     // peer_head_num hasn't caught up.
     //
-    // We still prefer the peer with the highest peer_head_num as
-    // the target (it's most likely to have the blocks in its log),
-    // but fall back to any exchange-enabled peer if needed.
+    // P39 fix: Prefer exchange-enabled peers (they're confirmed on our
+    // fork), but fall back to ANY active peer.  The serving side
+    // validates the request independently — refusing if not exchange-enabled.
+    // Requiring exchange_enabled on the requesting side was too strict:
+    // right after SYNC→FORWARD transition, no peer may have exchange=true
+    // yet, causing gap fill to silently fail and the gap to grow forever.
     uint32_t max_peer_head = our_head;
     peer_id best_peer = INVALID_PEER_ID;
+    peer_id any_active_peer = INVALID_PEER_ID;  // P39 fallback
     for (const auto& _pi : _peer_states) {
         const auto& state = _pi.second;
         if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;
+        // Track any active peer as fallback
+        if (any_active_peer == INVALID_PEER_ID && state.peer_head_num > our_head) {
+            any_active_peer = _pi.first;
+        }
         if (!state.exchange_enabled) continue;
         if (state.peer_head_num > max_peer_head) {
             max_peer_head = state.peer_head_num;
@@ -1377,7 +1383,7 @@ void dlt_p2p_node::request_gap_fill() {
         req.block_nums.push_back(n);
     }
 
-    ilog(DLT_LOG_GREEN "Requesting gap fill for blocks ${s}-${e} (${n} blocks) from exchange peers (highest_seen=${hs})" DLT_LOG_RESET,
+    ilog(DLT_LOG_GREEN "Requesting gap fill for blocks ${s}-${e} (${n} blocks) (highest_seen=${hs})" DLT_LOG_RESET,
          ("s", our_head + 1)("e", gap_ceiling)("n", req.block_nums.size())("hs", _highest_seen_block_num));
 
     _gap_fill_in_progress = true;
@@ -1387,27 +1393,29 @@ void dlt_p2p_node::request_gap_fill() {
     // Send to the best exchange-enabled peer (the one with highest head)
     if (best_peer != INVALID_PEER_ID) {
         send_message(best_peer, message(req));
+    } else if (any_active_peer != INVALID_PEER_ID) {
+        // P39 fix: No exchange-enabled peer, but we have an active peer
+        // with a higher head.  Try it — the serving side will validate
+        // and refuse if not allowed.
+        auto& peer_state = _peer_states[any_active_peer];
+        ilog(DLT_LOG_ORANGE "Gap fill: no exchange-enabled peer, trying active peer ${ep} (peer_head=#${ph}, exchange=${ex})" DLT_LOG_RESET,
+             ("ep", peer_state.endpoint)("ph", peer_state.peer_head_num)("ex", peer_state.exchange_enabled));
+        send_message(any_active_peer, message(req));
     } else {
-        // P37 fix: If no peer has a higher REPORTED head, send to
-        // any exchange-enabled peer that's ACTIVE.  The serving side
-        // reads from dlt_block_log — even if peer_head_num is stale,
-        // the peer may have the blocks in its log and can serve them.
-        bool sent = false;
+        // P39 fix: No peer at all with a higher head — gap fill
+        // can't help.  Transition to SYNC immediately instead of
+        // waiting for stagnation detection.
+        wlog("Gap fill: no peer available — transitioning to SYNC");
+        _gap_fill_in_progress = false;
+        _gap_fill_start_time = fc::time_point();
+        transition_to_sync();
+        // Request blocks from all active peers
         for (const auto& _pi : _peer_states) {
             const auto& state = _pi.second;
-            if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE &&
-                state.exchange_enabled) {
-                ilog(DLT_LOG_GREEN "Gap fill: sending to ${ep} (peer_head=#${ph}, our_head=#${oh})" DLT_LOG_RESET,
-                     ("ep", state.endpoint)("ph", state.peer_head_num)("oh", our_head));
-                send_message(_pi.first, message(req));
-                sent = true;
-                break;
+            if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
+                state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) {
+                request_blocks_from_peer(_pi.first);
             }
-        }
-        if (!sent) {
-            wlog("Gap fill: no exchange-enabled peer available to request blocks from");
-            _gap_fill_in_progress = false;
-            _gap_fill_start_time = fc::time_point();
         }
     }
 }

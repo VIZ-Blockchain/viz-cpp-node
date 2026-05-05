@@ -407,6 +407,7 @@ Post-implementation issues observed in production (4-node DLT emergency consensu
 | P27 | ~~CRITICAL~~ **Fixed** (diag) | Write lock diagnostic — overall + per-plugin timing, lock-holder ID |
 | P36 | ~~HIGH~~ **Fixed** | `block_too_old_exception` during SYNC range processing + FORWARD mode gap fill |
 | P37 | ~~HIGH~~ **Fixed** | Gap fill never triggers: stale peer_head_num + no FORWARD stagnation detection |
+| P39 | ~~CRITICAL~~ **Fixed** | `_push_next` cascade blocks not applied to database + gap fill requires exchange peers |
 
 Full analysis in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md#new-problems-discovered-post-implementation).
 
@@ -515,3 +516,21 @@ Gap fill is triggered in three places:
 **Fix 3 — Gap fill timeout:** `_gap_fill_in_progress` now times out after 15s (`GAP_FILL_TIMEOUT_SEC`). Prevents the flag from getting permanently stuck if the target peer disconnects.
 
 **Fix 4 — FORWARD stagnation detection:** New `check_forward_stagnation()` called from `periodic_task()`. If in FORWARD mode and our head hasn't advanced in 30 seconds (`FORWARD_STAGNATION_SEC`), transitions to SYNC mode and requests blocks from all exchange-enabled peers. This is the safety net when gap fill fails (no peer has the missing blocks).
+
+### P39: `_push_next` Cascade Blocks Not Applied to Database + Gap Fill Requires Exchange Peers
+
+**Files:** `libraries/chain/database.cpp`, `plugins/p2p/p2p_plugin.cpp`, `libraries/network/dlt_p2p_node.cpp`
+
+**Root cause (2 bugs):**
+
+1. **`_push_block` doesn't apply `_push_next` cascade blocks after linear extension.** When a block that directly extends `head_block_id()` is pushed to fork_db, `_push_next` may link previously-deferred blocks from `_unlinked_index`, advancing `fork_db._head` far beyond the database head. But `_push_block` only applies the original block — the cascaded blocks are never applied to the database. Subsequent blocks in the range reply are rejected as "too old" by fork_db's sliding window (`max_size=2`), the P36 fix returns ALREADY_KNOWN, `expected_next_block` advances past them, and the node thinks it's caught up while the database head is stuck behind. This causes FORWARD\u2192SYNC oscillation.
+
+2. **Gap fill requires exchange-enabled peers on both sides.** Right after SYNC\u2192FORWARD transition, no peer may have `exchange_enabled=true` yet (the hello exchange may not have re-evaluated fork alignment). The gap fill request fails with "no exchange-enabled peer available", the gap grows, and the node must wait for stagnation detection (30s) before transitioning to SYNC.
+
+**Fix 1 — Apply cascade blocks in `_push_block`:** After the linear extension block is applied, check if `new_head` (returned by `fork_db.push_block()`) is ahead of the applied block. If so, `fetch_branch_from` to get the cascade blocks and apply them as linear extensions. On failure, reset fork_db to database head to prevent subsequent "too old" rejections.
+
+**Fix 2 — Gap fill uses any active peer:** `request_gap_fill()` now prefers exchange-enabled peers but falls back to any active peer with a higher head. The serving side (`on_dlt_gap_fill_request`) also accepts requests from any peer (not just exchange-enabled), since gap fill is a lightweight block_log read.
+
+**Fix 3 — Gap fill failure transitions to SYNC:** When no peer at all is available for gap fill, immediately transition to SYNC mode instead of waiting for stagnation detection.
+
+**Fix 4 — Belt-and-suspenders in `accept_block`:** When `block_too_old_exception` is caught and the database is behind fork_db._head, reset fork_db to the database head and retry the push. This handles edge cases where the primary cascade fix (Fix 1) doesn't apply (e.g., non-linear cascade).
