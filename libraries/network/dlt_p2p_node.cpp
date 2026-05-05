@@ -1,5 +1,6 @@
 #include <graphene/network/dlt_p2p_node.hpp>
 #include <graphene/network/config.hpp>
+#include <graphene/chain/database_exceptions.hpp>
 
 #include <fc/network/resolve.hpp>
 #include <fc/crypto/sha256.hpp>
@@ -685,7 +686,17 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
             // Fall through — fork_db or push_block will handle it
         }
 
-        auto result = _delegate->accept_block(block, /*sync_mode=*/(_node_status == DLT_NODE_STATUS_SYNC));
+        dlt_block_accept_result result;
+        try {
+            result = _delegate->accept_block(block, /*sync_mode=*/(_node_status == DLT_NODE_STATUS_SYNC));
+        } catch (const graphene::chain::deferred_resize_exception&) {
+            // Transient local out-of-memory: stop processing this range,
+            // don't punish the peer, and trigger resync after resize.
+            wlog("Deferred resize on block #${n} from ${ep}, stopping range processing",
+                 ("n", block.block_num())("ep", state.endpoint));
+            record_packet_result(peer, true);
+            break;
+        }
 
         if (result == dlt_block_accept_result::ACCEPTED) {
             any_block_applied = true;
@@ -764,7 +775,18 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
         // Fall through and try to apply — fork_db or push_block will handle it
     }
 
-    auto result = _delegate->accept_block(reply.block, false);
+    dlt_block_accept_result result;
+    try {
+        result = _delegate->accept_block(reply.block, false);
+    } catch (const graphene::chain::deferred_resize_exception&) {
+        // Transient local out-of-memory: not the peer's fault.
+        // The missed block will be re-fetched after the deferred resize
+        // completes.  Don't punish the peer, don't update sync state.
+        wlog("Deferred resize on block #${n} from ${ep}, will retry after resize",
+             ("n", block_num)("ep", state.endpoint));
+        record_packet_result(peer, true);
+        return;
+    }
 
     if (result == dlt_block_accept_result::REJECTED) {
         wlog(DLT_LOG_RED "Rejected block #${n} from ${ep}" DLT_LOG_RESET,
