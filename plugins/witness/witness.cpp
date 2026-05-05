@@ -472,7 +472,7 @@ namespace graphene {
                         {
                             auto _now = graphene::time::now();
                             auto _hbt = database().head_block_time();
-                            if (_now <= _hbt) {
+                            if (_now <= fc::time_point(_hbt)) {
                                 // Real stall: NTP time is behind chain time
                                 _slot_zero_streak++;
                             } else {
