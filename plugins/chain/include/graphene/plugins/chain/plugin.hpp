@@ -90,6 +90,18 @@ namespace graphene {
 
                 const graphene::chain::database &db() const;
 
+                /// Returns true when the node is processing P2P sync blocks
+                /// (i.e. catching up to the network head).  Plugins that perform
+                /// heavy background work (e.g. periodic snapshots) should defer
+                /// until this returns false.
+                bool is_syncing() const;
+
+                /// Explicitly clear the syncing flag.  Called by the P2P
+                /// layer when sync completes (all peers report zero
+                /// unfetched items) so that the witness plugin can resume
+                /// block production.
+                void clear_syncing();
+
                 // Emitted when the blockchain is syncing/live.
                 // This is to synchronize plugins that have the chain plugin as an optional dependency.
                 boost::signals2::signal<void()> on_sync;
@@ -108,6 +120,16 @@ namespace graphene {
                 // when --sync-snapshot-from-trusted-peer is enabled. Called by the chain plugin
                 // during startup() when state is empty (head_block_num == 0), BEFORE on_sync().
                 std::function<void()> snapshot_p2p_sync_callback;
+
+                /// Attempt immediate auto-recovery from shared memory corruption.
+                /// Closes database, finds latest snapshot, wipes shared memory,
+                /// imports snapshot, replays dlt_block_log, and resumes.
+                /// Can be called from any plugin that detects corruption at runtime.
+                void attempt_auto_recovery();
+
+                /// Wipe shared memory (not block logs) to recover from a failed
+                /// snapshot import. Called by the snapshot plugin when import fails.
+                void wipe_state();
 
             private:
                 class plugin_impl;

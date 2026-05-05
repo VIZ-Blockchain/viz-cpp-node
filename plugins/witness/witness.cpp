@@ -22,6 +22,9 @@
 using std::string;
 using std::vector;
 
+using namespace graphene::chain;
+using namespace graphene::protocol;
+
 namespace bpo = boost::program_options;
 
 void new_chain_banner(const graphene::chain::database &db) {
@@ -120,6 +123,12 @@ namespace graphene {
                 // Fork collision resolution state
                 uint32_t fork_collision_defer_count_ = 0;
                 uint32_t _fork_collision_timeout_blocks = 21;  // one full witness round (21 blocks = 63s)
+
+                // Minority fork recovery state: tracks when we rolled back to
+                // LIB and are waiting for P2P sync to catch up before
+                // re-enabling block production.
+                bool _minority_fork_recovering = false;
+                fc::time_point _minority_fork_recovery_start;
             };
 
             void witness_plugin::set_program_options(
@@ -156,6 +165,8 @@ namespace graphene {
                         ("fork-collision-timeout-blocks", bpo::value<uint32_t>()->default_value(21),
                          "Number of consecutive fork-collision deferrals (block slots) before forcing production. "
                          "One full witness schedule round is 21 blocks (63 seconds). Default: 21.")
+                        ("debug-block-production", bpo::value<bool>()->default_value(false),
+                         "Enable verbose debug logging for block production and chain internals. Default: false.")
                         ;
 
                 config_file_options.add(command_line_options);
@@ -223,6 +234,13 @@ namespace graphene {
                         pimpl->_fork_collision_timeout_blocks = options["fork-collision-timeout-blocks"].as<uint32_t>();
                     }
 
+                    if (options.count("debug-block-production")) {
+                        pimpl->chain().db()._debug_block_production = options["debug-block-production"].as<bool>();
+                        if (pimpl->chain().db()._debug_block_production) {
+                            ilog("Debug block production logging ENABLED");
+                        }
+                    }
+
                     ilog("witness plugin:  plugin_initialize() end");
                 } FC_LOG_AND_RETHROW()
             }
@@ -233,6 +251,18 @@ namespace graphene {
                     auto &d = pimpl->database();
                     //Start NTP time client
                     graphene::time::now();
+
+                    // Force NTP sync before first production tick to minimize the
+                    // window where get_slot_at_time() returns 0 due to unsynchronized
+                    // NTP on restart.
+                    graphene::time::update_ntp_time();
+
+                    // Log witness configuration for post-crash diagnostics
+                    ilog("Witness config: ${n} witnesses, ${k} private keys",
+                         ("n", pimpl->_witnesses.size())("k", pimpl->_private_keys.size()));
+                    for (const auto& w : pimpl->_witnesses) {
+                        ilog("  configured witness: ${w}", ("w", w));
+                    }
 
                     if (!pimpl->_witnesses.empty()) {
                         ilog("Launching block production for ${n} witnesses.", ("n", pimpl->_witnesses.size()));
@@ -309,6 +339,51 @@ namespace graphene {
                 return false;
             }
 
+            bool witness_plugin::is_emergency_master() const {
+                try {
+                    if (!pimpl || pimpl->_witnesses.empty()) {
+                        return false;
+                    }
+
+                    // Condition 1: we hold the emergency-private-key.
+                    // CHAIN_EMERGENCY_WITNESS_ACCOUNT is added to _witnesses only
+                    // when --emergency-private-key is configured (see plugin_initialize).
+                    if (pimpl->_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) == pimpl->_witnesses.end()) {
+                        return false;
+                    }
+
+                    // Condition 2: the committee account is in the current witness schedule.
+                    auto& db = pimpl->database();
+                    return db.with_weak_read_lock([&]() -> bool {
+                        const witness_schedule_object& wso = db.get_witness_schedule_object();
+                        for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                            if (wso.current_shuffled_witnesses[i] == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    });
+                } catch (const fc::exception& e) {
+                    wlog("is_emergency_master check failed: ${e}", ("e", e.to_detail_string()));
+                } catch (...) {
+                    wlog("is_emergency_master check failed with unknown exception");
+                }
+                return false;
+            }
+
+            bool witness_plugin::is_emergency_key_configured() const {
+                try {
+                    if (!pimpl || pimpl->_witnesses.empty()) {
+                        return false;
+                    }
+                    // CHAIN_EMERGENCY_WITNESS_ACCOUNT is added to _witnesses only
+                    // when --emergency-private-key is configured (see plugin_initialize).
+                    return pimpl->_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != pimpl->_witnesses.end();
+                } catch (...) {
+                    return false;
+                }
+            }
+
             void witness_plugin::impl::schedule_production_loop() {
                 //Schedule for the next 250ms tick regardless of chain state
                 // With +250ms look-ahead in maybe_produce_block(), the tick at
@@ -327,6 +402,7 @@ namespace graphene {
             block_production_condition::block_production_condition_enum witness_plugin::impl::block_production_loop() {
                 block_production_condition::block_production_condition_enum result;
                 fc::mutable_variant_object capture;
+                if (database()._debug_block_production) ilog("DEBUG_CRASH: block_production_loop ENTER");
                 try {
                     result = maybe_produce_block(capture);
                 }
@@ -344,14 +420,31 @@ namespace graphene {
                     result = block_production_condition::exception_producing_block;
                 }
 
+                if (database()._debug_block_production) ilog("DEBUG_CRASH: maybe_produce_block returned ${r}", ("r", (int)result));
                 switch (result) {
                     case block_production_condition::produced:
-                        ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w}\033[0m", (capture));
+                        ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w} with ${tx} transactions\033[0m", (capture));
                         fork_collision_defer_count_ = 0;
+                        if (_minority_fork_recovering) {
+                            auto elapsed = fc::time_point::now() - _minority_fork_recovery_start;
+                            ilog("MINORITY FORK RECOVERY COMPLETE: production resumed after ${e}s",
+                                 ("e", elapsed.count() / 1000000));
+                            _minority_fork_recovering = false;
+                        }
                         break;
                     case block_production_condition::not_synced:
-                        // This log-record is commented, because it outputs very often
-                        // ilog("Not producing block because production is disabled until we receive a recent block (see: --enable-stale-production)");
+                        if (_minority_fork_recovering) {
+                            auto elapsed = fc::time_point::now() - _minority_fork_recovery_start;
+                            if (elapsed.count() % 5000000 < 300000) { // log every ~5 seconds
+                                auto &rdb = database();
+                                ilog("MINORITY FORK RECOVERY: waiting for P2P sync (head=#${h}, "
+                                     "slot_time=${st}, now=${now}, elapsed=${e}s)",
+                                     ("h", rdb.head_block_num())
+                                     ("st", rdb.get_slot_time(1))
+                                     ("now", graphene::time::now())
+                                     ("e", elapsed.count() / 1000000));
+                            }
+                        }
                         fork_collision_defer_count_ = 0;
                         break;
                     case block_production_condition::not_my_turn:
@@ -385,31 +478,75 @@ namespace graphene {
                         wlog("Deferred block production due to fork collision; will retry next slot");
                         graphene::time::update_ntp_time();  // Force NTP sync on fork issues
                         break;
+                    case block_production_condition::minority_fork:
+                        elog("Not producing block: minority fork detected, resyncing from P2P network");
+                        break;
                 }
 
+                if (database()._debug_block_production) ilog("DEBUG_CRASH: scheduling next production loop");
                 schedule_production_loop();
+                if (database()._debug_block_production) ilog("DEBUG_CRASH: block_production_loop EXIT");
                 return result;
             }
 
             block_production_condition::block_production_condition_enum witness_plugin::impl::maybe_produce_block(fc::mutable_variant_object &capture) {
                 auto &db = database();
+                if (db._debug_block_production) ilog("DEBUG_CRASH: maybe_produce_block ENTER");
                 fc::time_point now_fine = graphene::time::now();
                 fc::time_point_sec now = now_fine + fc::microseconds( 250000 );
 
-                // === HARDFORK 12: THREE-STATE SAFETY ENFORCEMENT ===
+                // Read DGP early so the DLT sync guard can check emergency consensus state.
+                // In emergency mode the master MUST produce blocks regardless of sync state;
+                // blocking production here creates a permanent deadlock because:
+                //   - The master is the sole block producer
+                //   - No blocks arrive to clear the syncing flag
+                //   - The production loop is the only path to advance the chain
+                if (db._debug_block_production) ilog("DEBUG_CRASH: getting dgp");
                 const auto &dgp = db.get_dynamic_global_properties();
+                if (db._debug_block_production) ilog("DEBUG_CRASH: dgp ok, head=${h} emergency=${e}", ("h", dgp.head_block_number)("e", dgp.emergency_consensus_active));
+
+                // === DLT MODE: DEFER PRODUCTION DURING ACTIVE SYNC ===
+                // In DLT mode, the witness must not produce blocks while the
+                // chain is actively receiving sync blocks from P2P.  Producing
+                // during sync creates blocks on a stale head that conflict
+                // with incoming blocks, causing "failed to link" errors and
+                // re-triggering sync — the oscillation bug described in
+                // problem6.log.
+                //
+                // EMERGENCY EXCEPTION: When emergency consensus is active,
+                // the master node MUST produce blocks regardless of sync state.
+                // The master is the sole block producer — waiting for sync to
+                // complete would deadlock because no blocks arrive to clear
+                // the syncing flag (p18.log).
+                //
+                // Outside DLT mode this check is NOT applied because normal
+                // witnesses must produce on the canonical chain head even
+                // while the network is catching up.
+                if (db._dlt_mode && chain().is_syncing() && !dgp.emergency_consensus_active) {
+                    return block_production_condition::not_synced;
+                }
+
+                // === HARDFORK 12: THREE-STATE SAFETY ENFORCEMENT ===
+                if (db._debug_block_production) ilog("DEBUG_CRASH: checking hardfork12 and emergency path");
 
                 if (db.has_hardfork(CHAIN_HARDFORK_12)) {
                     if (dgp.emergency_consensus_active) {
                         // EMERGENCY MODE: auto-bypass both stale and participation checks.
                         // The consensus layer has determined emergency mode is needed.
                         _production_enabled = true;
+                        if (_witnesses.empty()) {
+                            elog("EMERGENCY MODE ACTIVE but no witnesses configured! "
+                                 "Block production impossible. Add --emergency-private-key to config.");
+                        }
                     } else {
                         uint32_t prate = db.witness_participation_rate();
                         if (prate >= 33 * CHAIN_1_PERCENT) {
                             // HEALTHY NETWORK: enforce safe defaults automatically.
                             // Even if operator has enable-stale-production=true in config,
                             // it's overridden because the network doesn't need it.
+                            // Clear the stale-production skip flag so that minority fork
+                            // detection is re-enabled now that the network is healthy.
+                            _production_skip_flags &= ~graphene::chain::database::skip_undo_history_check;
                             if (!_production_enabled) {
                                 if (db.get_slot_time(1) >= now) {
                                     _production_enabled = true;
@@ -433,8 +570,17 @@ namespace graphene {
                                 }
                             }
                             if (prate < _required_witness_participation) {
-                                capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
-                                return block_production_condition::low_participation;
+                                if (_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
+                                    // enable-stale-production=true: operator override, produce anyway
+                                    // to bootstrap/recover a fully stalled network where all nodes
+                                    // see low participation and would otherwise deadlock.
+                                    dlog("Witness participation is ${p}% but stale-production is enabled, "
+                                         "producing anyway to recover stalled network",
+                                         ("p", uint32_t(prate / CHAIN_1_PERCENT)));
+                                } else {
+                                    capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
+                                    return block_production_condition::low_participation;
+                                }
                             }
                         }
                     }
@@ -452,13 +598,37 @@ namespace graphene {
                 //try get block post validation list for each witness
                 //if witness can validate it, sign chain_id and block_id for message
                 //broadcast validation message by p2p plugin
+                if (db._debug_block_production) ilog("DEBUG_CRASH: emergency/participation check done, entering block_post_validation");
                 if(last_block_post_validation_time < now_fine ){
                     last_block_post_validation_time = now;
-                    //ilog("! tick last_block_post_validation_time");
+                    if (db._debug_block_production) ilog("DEBUG_CRASH: block_post_validation tick, iterating ${n} witnesses", ("n", _witnesses.size()));
+
+                    // Pre-compute the current scheduled witnesses set so we can skip
+                    // configured witnesses that are not actually scheduled.  A witness
+                    // that is not in the current schedule cannot contribute to LIB
+                    // advancement and broadcasting their post-validation is wasted
+                    // bandwidth and CPU.
+                    const witness_schedule_object &wso = db.get_witness_schedule_object();
+                    std::set<string> scheduled_witnesses_set;
+                    for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                        if (wso.current_shuffled_witnesses[i] != account_name_type()) {
+                            scheduled_witnesses_set.insert(wso.current_shuffled_witnesses[i]);
+                        }
+                    }
+
                     //get block post validation for each witness we have
                     for (auto &witness_account : _witnesses) {
+                        // Skip witnesses not in the current schedule — they cannot
+                        // contribute to block post validation and broadcasting their
+                        // signatures is pointless network spam.
+                        if (scheduled_witnesses_set.find(witness_account) == scheduled_witnesses_set.end()) {
+                            continue;
+                        }
+
                         bool ignore_witness = false;
+                        if (db._debug_block_production) ilog("DEBUG_CRASH: get_block_post_validations for ${w}", ("w", witness_account));
                         auto block_post_validations = db.get_block_post_validations(witness_account);
+                        if (db._debug_block_production) ilog("DEBUG_CRASH: got ${n} post_validations for ${w}", ("n", block_post_validations.size())("w", witness_account));
                         if (block_post_validations.size() > 0) {
                             const auto &witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
                             auto w_itr = witness_by_name.find(witness_account);
@@ -480,6 +650,7 @@ namespace graphene {
                                 ignore_witness = true;
                             }
                             if(!ignore_witness){
+                                if (db._debug_block_production) ilog("DEBUG_CRASH: signing post_validations for ${w}", ("w", witness_account));
                                 graphene::protocol::private_key_type witness_priv_key = private_key_itr->second;
                                 //we have block post validations for this witness
                                 //check if we have a block
@@ -500,14 +671,156 @@ namespace graphene {
                     }
                 }
 
+                if (db._debug_block_production) ilog("DEBUG_CRASH: block_post_validation done, entering minority fork detection");
+                // === MINORITY FORK DETECTION ===
+                // If the last CHAIN_MAX_WITNESSES (21) blocks in fork_db were ALL
+                // produced by our own configured witnesses, we are likely stuck on
+                // a minority fork where no external witnesses are participating.
+                //
+                // SKIP during emergency consensus: in emergency mode all blocks are
+                // produced by the committee account (which is in _witnesses), so the
+                // check would always falsely trigger and kill recovery.
+                //
+                // EXCEPTION: In DLT mode, even during emergency consensus, we apply
+                // a higher-threshold minority fork check.  See the DLT-specific block
+                // below.
+                //
+                // With enable-stale-production=true: operator knows what they're doing,
+                //   continue producing (bootstrap / testnet / recovery scenario).
+                // With enable-stale-production=false (default): we're on the wrong fork,
+                //   pop back to LIB and resync from the P2P network.
+                if (!dgp.emergency_consensus_active) {
+                    auto fork_head = db.get_fork_db().head();
+                    if (fork_head) {
+                        bool all_ours = true;
+                        uint32_t blocks_checked = 0;
+                        auto current = fork_head;
+
+                        while (current && blocks_checked < CHAIN_MAX_WITNESSES) {
+                            if (_witnesses.find(current->data.witness) == _witnesses.end()) {
+                                all_ours = false;
+                                break;
+                            }
+                            blocks_checked++;
+                            current = current->prev.lock();
+                        }
+
+                        if (all_ours && blocks_checked >= CHAIN_MAX_WITNESSES) {
+                            if (_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
+                                // enable-stale-production=true: operator override, continue
+                                dlog("Minority fork detected (last ${n} blocks from our witnesses) "
+                                     "but stale production enabled, continuing",
+                                     ("n", blocks_checked));
+                            } else {
+                                // Wrong fork: trigger recovery
+                                elog("MINORITY FORK DETECTED: last ${n} blocks all from our witnesses. "
+                                     "Resetting to LIB and resyncing from P2P network.",
+                                     ("n", blocks_checked));
+                                p2p().resync_from_lib();
+                                _production_enabled = false;
+                                _minority_fork_recovering = true;
+                                _minority_fork_recovery_start = fc::time_point::now();
+                                return block_production_condition::minority_fork;
+                            }
+                        }
+                    }
+                }
+
+                // === DLT-SPECIFIC MINORITY FORK DETECTION IN EMERGENCY MODE ===
+                // In emergency + DLT mode, the standard minority fork check above is
+                // skipped because committee blocks are produced by an account that
+                // may be in _witnesses.  However, a DLT emergency witness that has
+                // lost its P2P connection to the master will produce blocks for its
+                // own witness slots AND the committee slots (because the emergency
+                // key covers committee).  After a few rounds with NO external blocks
+                // at all, the node is on a minority fork.
+                //
+                // Detect this by checking whether the last 2 full rounds (42 blocks)
+                // in fork_db contain ONLY blocks from our witnesses.  In a healthy
+                // emergency hybrid schedule, committee slots are filled by the master
+                // node's blocks — so we should see non-our-witness blocks regularly.
+                // If we don't, we're isolated.
+                //
+                // We use 2 rounds (42 blocks) instead of 1 because in emergency mode
+                // our witnesses legitimately produce blocks for their own slots, and
+                // one round of 21 blocks might have only our witnesses if the
+                // committee slots happened to be at the end of the round.
+                //
+                // IMPORTANT: If committee (CHAIN_EMERGENCY_WITNESS_ACCOUNT) is in the
+                // current witness schedule AND we have its key (emergency-private-key
+                // configured), this node IS the emergency master.  All blocks being
+                // "ours" is expected — other nodes sync from us.  Skip minority fork
+                // detection entirely to avoid false positives and the production
+                // deadlock that would otherwise occur.
+                if (dgp.emergency_consensus_active && db._dlt_mode) {
+                    // If committee is in the schedule and we have its key, WE are the
+                    // emergency master.  All blocks being "ours" is expected -- other
+                    // nodes sync from us.  Skip minority fork detection to prevent
+                    // false positives and the production deadlock.
+                    // Check both conditions: (a) committee is in the schedule, AND
+                    // (b) we have its key (committee is in _witnesses only when
+                    // emergency-private-key was configured — see plugin_initialize).
+                    bool we_are_master = false;
+                    if (_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end()) {
+                        const witness_schedule_object &wso = db.get_witness_schedule_object();
+                        for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                            if (wso.current_shuffled_witnesses[i] == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                                we_are_master = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!we_are_master) {
+                        // Slave DLT node: committee not in schedule or we don't have
+                        // the key.  Run the existing fork_db isolation scan.
+                        auto fork_head = db.get_fork_db().head();
+                        if (fork_head) {
+                            const uint32_t dlt_minority_threshold = CHAIN_MAX_WITNESSES * 2; // 42 blocks = 2 full rounds
+                            bool all_ours = true;
+                            uint32_t blocks_checked = 0;
+                            auto current = fork_head;
+
+                            while (current && blocks_checked < dlt_minority_threshold) {
+                                if (_witnesses.find(current->data.witness) == _witnesses.end()) {
+                                    all_ours = false;
+                                    break;
+                                }
+                                blocks_checked++;
+                                current = current->prev.lock();
+                            }
+
+                            if (all_ours && blocks_checked >= dlt_minority_threshold) {
+                                elog("DLT EMERGENCY MINORITY FORK DETECTED: last ${n} blocks all from our "
+                                     "witnesses (2+ full rounds). Node is isolated from master. "
+                                     "Resetting to LIB and resyncing from P2P network.",
+                                     ("n", blocks_checked));
+                                p2p().resync_from_lib(true /*force_emergency*/);
+                                _production_enabled = false;
+                                _minority_fork_recovering = true;
+                                _minority_fork_recovery_start = fc::time_point::now();
+                                return block_production_condition::minority_fork;
+                            }
+                        }
+                    } else {
+                        if (db._debug_block_production) {
+                            ilog("DEBUG_CRASH: DLT minority fork check SKIPPED - we are emergency master");
+                        }
+                    }
+                }
+
                 // Guard lockless reads into shared memory with the resize barrier.
                 // This prevents a concurrent shared memory resize from invalidating
                 // pointers while we read witness schedule, slot time, etc.
                 // The guard is released before generate_block() which has its own.
+                if (db._debug_block_production) ilog("DEBUG_CRASH: creating op_guard");
                 auto op_guard = db.make_operation_guard();
+                if (db._debug_block_production) ilog("DEBUG_CRASH: op_guard ok");
 
                 // is anyone scheduled to produce now or one second in the future?
+                if (db._debug_block_production) ilog("DEBUG_CRASH: get_slot_at_time");
                 uint32_t slot = db.get_slot_at_time(now);
+                if (db._debug_block_production) ilog("DEBUG_CRASH: slot=${s}", ("s", slot));
                 if (slot == 0) {
                     capture("next_time", db.get_slot_time(1));
                     return block_production_condition::not_time_yet;
@@ -523,18 +836,23 @@ namespace graphene {
                 //
                 assert(now > db.head_block_time());
 
+                if (db._debug_block_production) ilog("DEBUG_CRASH: get_scheduled_witness(${s})", ("s", slot));
                 string scheduled_witness = db.get_scheduled_witness(slot);
+                if (db._debug_block_production) ilog("DEBUG_CRASH: scheduled_witness=${w}", ("w", scheduled_witness));
                 // we must control the witness scheduled to produce the next block.
                 if (_witnesses.find(scheduled_witness) == _witnesses.end()) {
                     capture("scheduled_witness", scheduled_witness);
                     return block_production_condition::not_my_turn;
                 }
 
+                if (db._debug_block_production) ilog("DEBUG_CRASH: looking up witness in index");
                 const auto &witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
                 auto itr = witness_by_name.find(scheduled_witness);
+                if (db._debug_block_production) ilog("DEBUG_CRASH: witness found=${f}", ("f", itr != witness_by_name.end()));
 
                 fc::time_point_sec scheduled_time = db.get_slot_time(slot);
                 graphene::protocol::public_key_type scheduled_key = itr->signing_key;
+                if (db._debug_block_production) ilog("DEBUG_CRASH: scheduled_key=${k}", ("k", scheduled_key));
 
                 // Check if witness has zero/null signing key (intentionally disabled for block production)
                 if (scheduled_key == graphene::protocol::public_key_type()) {
@@ -554,8 +872,14 @@ namespace graphene {
                 if (!db.has_hardfork(CHAIN_HARDFORK_12)) {
                     uint32_t prate = db.witness_participation_rate();
                     if (prate < _required_witness_participation) {
-                        capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
-                        return block_production_condition::low_participation;
+                        if (_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
+                            dlog("Witness participation is ${p}% but stale-production is enabled, "
+                                 "producing anyway to recover stalled network",
+                                 ("p", uint32_t(prate / CHAIN_1_PERCENT)));
+                        } else {
+                            capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
+                            return block_production_condition::low_participation;
+                        }
                     }
                 }
 
@@ -665,6 +989,7 @@ namespace graphene {
                 // and with_strong_write_lock().
                 op_guard.release();
 
+                if (db._debug_block_production) ilog("DEBUG_CRASH: calling generate_block for ${w}", ("w", scheduled_witness));
                 int retry = 0;
                 do {
                     try {
@@ -676,10 +1001,35 @@ namespace graphene {
                                 private_key_itr->second,
                                 _production_skip_flags
                         );
-                        capture("n", block.block_num())("t", block.timestamp)("c", now)("w", scheduled_witness);
+                        capture("n", block.block_num())("t", block.timestamp)("c", now)("w", scheduled_witness)("tx", block.transactions.size());
                         p2p().broadcast_block(block);
 
+                        // If we produced a block but have few/no peers,
+                        // force-reconnect seeds so the block can propagate
+                        auto peer_count = p2p().get_connections_count();
+                        if (peer_count < 2) {
+                            wlog("Produced block #${n} but only ${p} peer(s) connected — force-reconnecting seeds",
+                                 ("n", block.block_num())("p", peer_count));
+                            p2p().reconnect_seeds();
+                        }
+
                         return block_production_condition::produced;
+                    }
+                    catch (const graphene::chain::shared_memory_corruption_exception& e) {
+                        elog("Shared memory corruption detected during block generation: ${e}", ("e", e.to_detail_string()));
+                        chain().attempt_auto_recovery();
+                        return block_production_condition::exception_producing_block;
+                    }
+                    catch (const graphene::chain::unlinkable_block_exception& e) {
+                        // Fork DB broken prev chain — retrying won't help.
+                        // Roll back to LIB and resync from P2P network.
+                        elog("unlinkable_block_exception during block generation: fork_db broken. "
+                             "Rolling back to LIB and resyncing from P2P network.");
+                        p2p().resync_from_lib(dgp.emergency_consensus_active /*force_emergency*/);
+                        _production_enabled = false;
+                        _minority_fork_recovering = true;
+                        _minority_fork_recovery_start = fc::time_point::now();
+                        return block_production_condition::minority_fork;
                     }
                     catch (fc::exception &e) {
                         elog("${e}", ("e", e.to_detail_string()));

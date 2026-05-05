@@ -1,6 +1,6 @@
 # Emergency Consensus Recovery — Implementation Review
 
-## Status: Implemented (Hardfork 12, version 3.1.0) — Bugs Found and Fixed (B1–B8)
+## Status: Implemented (Hardfork 12, version 3.1.0) — Bugs Found and Fixed (B1–B15)
 
 Research source: [consensus-emergency-recovery.md](../research/consensus-emergency-recovery.md)
 
@@ -8,7 +8,9 @@ Research source: [consensus-emergency-recovery.md](../research/consensus-emergen
 
 ## System Overview
 
-Hardfork 12 adds an automatic on-chain **Emergency Consensus Mode** that activates when the VIZ network stalls for >1 hour (no LIB advancement). A well-known committee key (`VIZ75CRHVHPwYiUESy1bgN3KhVFbZCQQRA9jT6TnpzKAmpxMPD6Xv`) becomes the block producer, keeping the chain alive until real witnesses return. The system requires **zero manual intervention** to enter or exit.
+Hardfork 12 adds an on-chain **Emergency Consensus Mode** that activates automatically when the VIZ network stalls for >1 hour (no LIB advancement). The activation check is fully deterministic — it uses only block timestamps from the chain state (`b.timestamp - lib_block.timestamp`), ensuring identical results on every node and during every replay. A well-known committee key (`VIZ75CRHVHPwYiUESy1bgN3KhVFbZCQQRA9jT6TnpzKAmpxMPD6Xv`) becomes the block producer, keeping the chain alive until real witnesses return.
+
+On activation, **all real witnesses are disabled** (`signing_key` set to null, penalties reset to zero, `current_run` reset). Only the committee produces blocks initially. Operators must manually re-enable witnesses via `witness_update_operation` transactions. This ensures a clean start where only intentionally re-registered witnesses participate.
 
 The committee witness is a **neutral voter**: it copies the current median chain properties and votes for the currently applied hardfork version (not a future one). This ensures that committee slots in the schedule don't skew governance parameters or push unvoted hardforks.
 
@@ -18,13 +20,13 @@ The committee witness is a **neutral voter**: it copies the current median chain
 |---|---|
 | `libraries/chain/hardfork.d/12.hf` | Hardfork 12 definition |
 | `libraries/protocol/include/graphene/protocol/config.hpp` | Emergency constants, version 3.1.0 |
-| `libraries/chain/include/graphene/chain/global_property_object.hpp` | DGP fields: `emergency_consensus_active`, `emergency_consensus_start_block` |
-| `libraries/chain/database.cpp` | Activation, hybrid schedule, LIB freeze, vote-weighted fork comparison |
+| `libraries/chain/include/graphene/chain/database.hpp` | DGP fields, skip flags |
+| `libraries/chain/database.cpp` | Activation, hybrid schedule, LIB advancement (capped), startup recovery, vote-weighted fork comparison |
 | `libraries/chain/include/graphene/chain/fork_database.hpp` | Emergency mode flag, size increase 1024→2400 |
 | `libraries/chain/fork_database.cpp` | Hash tie-breaking, `set_emergency_mode()` |
 | `plugins/witness/witness.cpp` | Three-state safety, emergency key config, fork collision |
-| `libraries/network/include/graphene/network/peer_connection.hpp` | `fork_rejected_until` soft-ban field |
-| `libraries/network/node.cpp` | P2P anti-spam (soft-ban vs disconnect) |
+| `libraries/network/include/graphene/network/peer_connection.hpp` | `fork_rejected_until` soft-ban field, `sync_spam_strikes` counter |
+| `libraries/network/node.cpp` | P2P anti-spam (soft-ban vs disconnect), sync ping-pong loop fix, sync spam soft-ban |
 | `plugins/snapshot/plugin.cpp` | Forward-compatible DGP import |
 | `share/vizd/config/config_witness.ini` | `emergency-private-key` option |
 
@@ -37,15 +39,22 @@ The committee witness is a **neutral voter**: it copies the current median chain
                     │   update_global_dynamic_data  │
                     │   (every block)               │
                     │                               │
-                    │  lib_block available?          │
+                    │  HF12 active?                 │
+                    │  emergency_active == false?    │
+                    │       ├── NO ─────────────────│── Skip check
+                    │       └── YES                  │
+                    │  lib_block available?           │
                     │       ├── NO ─────────────────│── Skip check (snapshot restore)
                     │       └── YES                  │
                     │           seconds_since_lib    │
+                    │           = b.timestamp -      │
+                    │             lib_block.timestamp │
                     │           ≥ 3600?              │
                     │           ├── YES ─────────────│── Activate Emergency
                     │           │                   │   • emergency_consensus_active = true
                     │           │                   │   • Create/update committee witness
-                    │           │                   │   • Reset all penalties
+                    │           │                   │   • Disable ALL real witnesses
+                    │           │                   │     (signing_key = null, penalties = 0)
                     │           │                   │   • Override schedule → committee
                     │           │                   │   • next_shuffle_block_num = now+N
                     │           │                   │   • fork_db.set_emergency_mode(true)
@@ -57,19 +66,24 @@ The committee witness is a **neutral voter**: it copies the current median chain
                     │   update_witness_schedule     │
                     │   (every round)               │
                     │                               │
-                    │  Hybrid schedule:             │
-                    │   • Real witnesses keep slots │
-                    │   • Committee fills gaps      │
-                    │   • Expand to full 21 slots   │
-                    │   • Sync committee props/vote │
+                    │  1. Normal schedule build      │
+                    │     (may zero all slots if no  │
+                    │      witnesses have valid keys) │
+                    │  2. Hybrid schedule override:  │
+                    │     • Real witnesses keep slots │
+                    │     • Committee fills gaps      │
+                    │     • Expand to full 21 slots   │
+                    │     • Sync committee props/vote │
+                    │  3. update_median_witness_props │
                     │                               │
                     │  Skip committee in:           │
                     │   • Hardfork vote tally       │
                     │   • Median props computation  │
                     │                               │
                     │  Exit check:                  │
-                    │   LIB > emergency_start_block?│
-                    │       ├── YES ───────────────►│── Deactivate Emergency
+                    │   real_witness_slots >= 75%    │
+                    │   of CHAIN_MAX_WITNESSES?      │
+                    │       ├── YES ─────────────►│── Deactivate Emergency
                     │       │                       │   • emergency_consensus_active = false
                     │       │                       │   • fork_db.set_emergency_mode(false)
                     │       └── NO                  │
@@ -80,11 +94,25 @@ The committee witness is a **neutral voter**: it copies the current median chain
                     │ update_last_irreversible_block│
                     │                               │
                     │  During emergency:            │
-                    │   • Count only real witnesses │
-                    │   • 0 real → LIB frozen       │
-                    │   • N real → 75% of N needed  │
-                    │   • LIB advances → triggers   │
-                    │     exit in schedule update   │
+                    │   • All schedule witnesses    │
+                    │     used (including committee) │
+                    │   • 75% nth_element threshold  │
+                    │   • LIB capped at HEAD−1      │
+                    │     (preserves undo session    │
+                    │      for current block)        │
+                    │   • LIB advances every block   │
+                    │     (1 block behind head)      │
+                    └──────────────────────────────┘
+                                    │
+                                    ▼
+                    ┌──────────────────────────────┐
+                    │   Startup Recovery            │
+                    │   (database::open)            │
+                    │                               │
+                    │  If schedule has empty slots:  │
+                    │   • Fill all with committee    │
+                    │   • Ensure emergency active    │
+                    │   • Restore fork_db flag       │
                     └──────────────────────────────┘
 ```
 
@@ -96,30 +124,30 @@ The committee witness is a **neutral voter**: it copies the current median chain
 
 **When**: A bug or time desync causes `seconds_since_lib >= 3600` while the network is actually healthy.
 
-**Why this is extremely unlikely**: The check uses `head_block_time() - LIB_block_timestamp`. For a false trigger, LIB must genuinely stall for 1 hour (1200 blocks). During healthy operation LIB advances every few seconds (3s block interval × ~5 blocks to reach 75% threshold). A time desync large enough would break all consensus, not just emergency detection.
+**Why this is extremely unlikely**: Emergency activation is fully deterministic: `seconds_since_lib = b.timestamp - lib_block.timestamp`. For a false trigger, LIB must genuinely stall for 1 hour (1200 blocks at 3s intervals). No config flags or skip-flags gate the check — it relies solely on signed block timestamps embedded in the chain, ensuring identical results on every node and during every replay.
 
 **Special case — snapshot restore**: After `open_from_snapshot()`, the block_log is empty, so `fetch_block_by_number(LIB)` returns invalid. If we fell back to `genesis_time`, emergency would activate immediately. This is now prevented: when the LIB block is unavailable, the emergency check is skipped entirely (B7 fix).
 
 **If it happens** (legitimate false activation):
-1. Emergency activates, committee fills offline witnesses' slots (hybrid schedule).
-2. Real witnesses are still online → they produce at their normal slots.
-3. LIB continues advancing via real witnesses (75% threshold on real witnesses only).
-4. **LIB passes `emergency_consensus_start_block` within 1 round (~63 seconds)** → emergency exits automatically.
-5. **No manual intervention required**. The exit is self-healing because LIB is already moving.
+1. Emergency activates, all real witnesses are **disabled** (`signing_key` zeroed).
+2. Committee produces blocks alone initially.
+3. Since all witnesses had valid keys before, operators quickly re-register via `witness_update_operation`.
+4. Once **16+ real witnesses** (75% of 21) have re-registered with valid signing keys in the hybrid schedule, **emergency exits automatically**.
+5. **Manual intervention required**: operators must re-register witnesses via transactions.
 
-**Worst case**: If all 21 witnesses are healthy and LIB is advancing, emergency cannot persist for more than 1 schedule round.
+**Worst case**: If all 21 witness operators are available, recovery takes as fast as they can broadcast `witness_update_operation` transactions.
 
 ### F2: Emergency Exit Does Not Trigger
 
-**When**: Emergency is active but the exit condition (`LIB > emergency_consensus_start_block`) never becomes true.
+**When**: Emergency is active but the exit condition (75% real witnesses in schedule) never becomes true.
 
-**Root cause**: Fewer than 75% of the 21 scheduled witnesses (i.e., <16) have returned and are actively producing. The LIB computation during emergency uses only real (non-committee) witnesses at a 75% threshold of real witnesses, but LIB must advance past `emergency_consensus_start_block`, which requires sustained production.
+**Root cause**: Fewer than 75% of the 21 schedule slots (i.e., <16) are occupied by real witnesses with valid `signing_key`. Since all witnesses are disabled on activation, operators must manually re-enable them.
 
 **Recovery procedure**:
 1. **Check how many witnesses are active**: `get_dynamic_global_properties` → `participation_count`, plus inspect `witness_schedule` to see how many non-committee slots exist.
-2. **Activate more witnesses**: Each witness operator re-registers via `witness_update_operation` from CLI wallet or service. The witness only needs a valid `signing_key` — the hybrid schedule will automatically assign their slot.
+2. **Activate more witnesses**: Each witness operator re-registers via `witness_update_operation` from CLI wallet or service. The witness only needs a valid `signing_key` — the hybrid schedule will automatically assign their slot on the next schedule update.
 3. **No config changes needed**: The `enable-stale-production` and `required-participation` settings are auto-bypassed during emergency. Witnesses just need to be connected to P2P and have their signing key registered.
-4. **Threshold**: Once 16+ witnesses are producing, LIB advances. Once LIB passes `emergency_consensus_start_block`, emergency exits on the next `update_witness_schedule()` call.
+4. **Threshold**: Once 16+ witnesses have valid signing keys in the schedule, emergency exits on the next `update_witness_schedule()` call.
 
 **If witnesses cannot re-register** (e.g., lost master keys): The network remains in emergency mode indefinitely but still produces blocks. Governance intervention (committee proposals) would be needed to resolve witness account recovery.
 
@@ -133,7 +161,7 @@ The committee witness is a **neutral voter**: it copies the current median chain
 3. **No permanent split**: Because all emergency blocks use the same `committee` witness account and the schedule is identical on all nodes, there is no ongoing disagreement. Convergence is guaranteed within seconds.
 
 **If a persistent split occurs** (e.g., network partition during emergency):
-- LIB is frozen on all partitions → all emergency blocks are reversible.
+- LIB is 1 block behind head on all partitions → most emergency blocks are irreversible.
 - When partitions reconnect, **vote-weighted chain comparison** (`push_block()`) resolves the fork:
   - Branches with real witnesses (non-committee) win over pure-committee branches.
   - Among branches with only committee blocks, the longer chain wins, with hash tie-breaking as the final tiebreaker.
@@ -141,33 +169,22 @@ The committee witness is a **neutral voter**: it copies the current median chain
 
 ### F4: Emergency Lasts Longer Than Undo Window
 
-**When**: Emergency mode persists for >8.3 hours (>10,000 blocks), reaching `CHAIN_MAX_UNDO_HISTORY`.
+**When**: This failure mode is now **largely mitigated**. LIB advances every block during emergency (capped at HEAD−1), so the gap between HEAD and LIB stays at exactly 1 block. The 10,000-block undo limit cannot be reached.
 
-**Mechanism**: During emergency, `update_last_irreversible_block()` dynamically expands `fork_db._max_size` up to `CHAIN_MAX_UNDO_HISTORY` (10,000 blocks). The formula: `min(head_block_number - last_irreversible_block_num + 1, 10000)`.
+**Previous behavior (before LIB advancement fix)**: LIB was frozen during emergency, and the gap grew at 1 block per 3 seconds. After ~8.3 hours (10,000 blocks), the undo limit was hit and block production halted.
 
-**What happens at the limit**:
-- The undo history check in `database.cpp` enforces `head - LIB < CHAIN_MAX_UNDO_HISTORY`.
-- If this limit is hit, the node cannot apply new blocks without committing (advancing LIB).
-- Since LIB is frozen (no real witnesses), **block production halts**.
+**Current behavior**: LIB = HEAD−1 at all times during emergency. `fork_db` size stays at 2 blocks. Emergency can run indefinitely without hitting any undo limits.
 
-**Recovery procedure**:
-1. **Before the limit**: Operators have ~8.3 hours to bring witnesses back. This is the hard deadline.
-2. **If the limit is hit**: The node stops producing. Operators must:
-   a. Bring enough witnesses online (16+) so LIB can advance.
-   b. If that's impossible, a coordinated restart with `--replay` may be needed after witnesses are available.
-3. **Prevention**: The 8.3-hour window is generous. In practice, any network stall >2 hours triggers community response (social media alerts, monitoring systems).
+**Remaining risk**: If a bug prevents LIB from advancing despite the cap, the old failure mode would resurface. The startup recovery mechanism (B12) provides an additional safety net.
 
-**Note**: The `fork_db` size increase from 1024 to 2400 blocks (~2 hours) is the *standard* limit. During emergency, dynamic expansion goes up to 10,000 blocks. These are separate mechanisms.
+### F5: Witnesses Disabled On Emergency Activation
 
-### F5: Witnesses Lost Their signing_key
-
-**When**: Witnesses were shut down by the `CHAIN_MAX_WITNESS_MISSED_BLOCKS` (200 blocks) mechanism, which sets `signing_key = public_key_type()` (null key).
+**When**: On emergency activation, **all real witnesses are disabled**: `signing_key` is set to `public_key_type()` (null), `penalty_percent` reset to 0, `counted_votes` restored to `votes`, `current_run` reset to 0. All `witness_penalty_expire_object` entries are removed.
 
 **Emergency behavior**:
-1. On emergency activation, **all penalties are reset**: `penalty_percent = 0`, `counted_votes = votes`, `current_run = 0`. All `witness_penalty_expire_object` entries are removed.
-2. **During emergency, offline witnesses do NOT accumulate new missed-block penalties**. The `update_global_dynamic_data()` penalty/shutdown logic is skipped for witnesses that are not the block producer and not the committee account. This prevents the `signing_key = null` shutdown from re-triggering after the initial penalty reset.
-3. However, `signing_key` reset from **before** emergency activation is **not** reversed. Witnesses with null keys have their slots filled by committee (since `signing_key == null` triggers committee substitution in `update_witness_schedule()`).
-4. Witnesses must broadcast `witness_update_operation` to re-register their signing key.
+1. On activation, **all real witnesses are immediately disabled** by zeroing their `signing_key`. This is intentional — it ensures a clean start where only the committee produces blocks. Operators must explicitly re-register witnesses.
+2. **During emergency, offline witnesses do NOT accumulate new missed-block penalties**. The `update_global_dynamic_data()` penalty/shutdown logic is skipped for witnesses that are not the block producer and not the committee account.
+3. Witnesses must broadcast `witness_update_operation` to re-register their signing key.
 
 **Recovery**: Emergency blocks **allow transactions** (not forced empty). So witnesses can:
 1. Connect their node to the P2P network.
@@ -175,7 +192,7 @@ The committee witness is a **neutral voter**: it copies the current median chain
 3. The transaction enters the next emergency block.
 4. On the next schedule update, the witness gets their slot back in the hybrid schedule.
 
-**This is intentional**: `signing_key = null` is a consensus-level safety mechanism. Automatically restoring it would bypass the witness's explicit consent to re-enter production.
+**This is intentional**: Disabling all witnesses on activation ensures that only intentionally re-registered witnesses participate. This prevents stale/crashed witnesses from being included in the schedule and causing production failures.
 
 ---
 
@@ -251,6 +268,58 @@ When a peer on a stale fork sends an unlinkable block at or below our head block
 1. In the `unlinkable_block_exception` catch handler, compare the peer's block number against our head. If the block is at or below our head, the peer is on a stale fork — soft-ban for 1 hour and set `inhibit_fetching_sync_blocks = true`. If the block is ahead of us, resync is justified (keep original behavior).
 2. Remove the dead `unlinkable_block_exception::code_enum::code_value` check from the `fc::exception` handler, leaving only the `block_num <= head` comparison for the soft-ban decision.
 
+### B10 (Critical): All Real Witnesses Must Be Disabled On Emergency Activation
+
+**Problem**: When emergency consensus activated, real witnesses retained their `signing_key` values. If they had valid signing keys but were offline, the hybrid schedule assigned them slots — but they could never produce blocks at those slots. The schedule had a mix of online committee and offline real witnesses, making block production unreliable.
+
+**Fix**: On emergency activation, **all real witnesses are immediately disabled**: `signing_key` set to `public_key_type()` (null), `penalty_percent` reset to 0, `counted_votes` restored to `votes`, `current_run` reset to 0. All `witness_penalty_expire_object` entries are removed. This ensures the initial schedule is all-committee (100% available). Operators must explicitly re-register witnesses via `witness_update_operation` transactions.
+
+### B11 (Critical): Schedule Crash — `get_witness("")` on Empty Schedule
+
+**Problem**: During emergency, the normal schedule build in `update_witness_schedule()` iterates all witnesses but skips any with null `signing_key`. Since B10 zeroes all keys, `sum_witnesses_count = 0` → all 21 slots are set to `account_name_type()` (empty string). The execution order was:
+1. `modify(wso, ...)` — builds normal schedule (all slots zeroed)
+2. `update_median_witness_props()` — iterates schedule, calls `get_witness("")` → **crash: `unknown key`**
+3. Emergency hybrid override — would have filled empty slots with committee, but runs too late
+
+**Fix**: Moved the emergency hybrid schedule override to execute **before** `update_median_witness_props()`. The hybrid override fills empty/unavailable slots with committee first, so by the time `update_median_witness_props()` runs, all 21 slots contain valid witness names.
+
+### B12 (Critical): Permanently Corrupted Schedule After LIB=HEAD Commit
+
+**Problem**: During emergency, all 21 schedule slots point to the same committee witness. LIB computation via `nth_element` yields `last_supported_block_num == HEAD`. In `_apply_block`, the execution order is:
+1. `update_last_irreversible_block()` (line ~4455) — calls `commit(HEAD)`, which **destroys the undo session** for the current block
+2. `update_witness_schedule()` (line ~4466) — zeros all slots (pre-B11 fix), then crashes at `get_witness("")`
+
+Since `commit(HEAD)` already consumed the undo session, the zeroed schedule from step 2 was **permanently written** to shared memory with no rollback possible. On node restart, the schedule contained all empty slots, emergency mode was not re-entered, and the node couldn't produce blocks.
+
+**Fix** (three-part):
+1. **LIB cap to HEAD−1**: During emergency, `new_last_irreversible_block_num` is capped to `head_block_number - 1`. This ensures `commit()` never catches up to the current block, preserving the undo session.
+2. **Schedule override execution order** (B11 fix): Hybrid override runs before `update_median_witness_props()`, preventing the crash entirely.
+3. **Startup schedule recovery**: In `database::open()`, after `init_hardforks()`, the schedule is scanned for empty slots. If found: all 21 slots are filled with committee, `emergency_consensus_active` is set to `true`, and `fork_db.set_emergency_mode(true)` is called. If the schedule is OK but emergency is active, the fork_db flag is restored (it's in-memory only and lost on restart).
+
+### B13 (Critical): Stack Buffer Overflow in `get_block_post_validations()`
+
+**Problem**: During emergency mode, the committee account fills 18 of 21 schedule slots. `get_block_post_validations()` iterates all `block_post_validation_object` entries and matches each against the schedule. For each match, it writes an entry to a fixed-size array of `CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT = 20`. With the committee occupying 18 slots, each validation object generates up to 18 matches — a single object with its matching witnesses could write up to 18 entries per iteration. With 20 objects, this produced up to 360 writes into a 20-element array, causing a stack buffer overflow and silent segfault.
+
+**Fix** (two-part):
+1. **Bounds check**: Break the inner loop when the result array reaches `CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT`.
+2. **One match per object**: Once a `block_post_validation_object` matches any schedule slot, skip remaining slots for that object. Each validation object contributes at most one entry.
+
+### B14 (High): P2P Sync Ping-Pong Loop in Emergency Mode
+
+**Problem**: In `on_fetch_blockchain_item_ids_message()` (`node.cpp`), when node A responds to node B's sync request, it checks whether it has B's last block. During emergency mode, competing forks produce different blocks at the same height — so A doesn't have B's block (and vice versa). Both nodes then call `start_synchronizing_with_peer()` for each other, which resets all tracking state and sends a new request, creating an infinite ping-pong loop. This generated hundreds of `get_block_ids()` calls per second, flooding logs and wasting CPU.
+
+**Fix**: Before calling `start_synchronizing_with_peer()`, compare the peer's block number (extracted via `block_header::num_from_id()`) against our head block number. Only restart sync if `peer_block_num > our_head_num` (peer is genuinely ahead). When `peer_block_num <= our_head_num`, the peer is on a competing fork at the same height — skip the restart.
+
+### B15 (Medium): Sync Spam Soft-Ban for Old Peers
+
+**Problem**: After the B14 fix, the local node no longer amplifies the sync loop. However, old peers (without the B14 fix) continue flooding the node with `fetch_blockchain_item_ids_message` requests from their own unpatched ping-pong loops. Each request triggers `get_block_ids()` on the server side — harmless but wasteful (CPU, log noise).
+
+**Fix**: Added sync spam detection with soft-ban in `on_fetch_blockchain_item_ids_message()`:
+1. At the top of the handler, check `fork_rejected_until` — silently discard requests from already-banned peers (skips `get_block_ids()` entirely).
+2. In both competing-fork branches (where `peer_block_num <= our_head_num`), increment a per-peer `sync_spam_strikes` counter.
+3. After 50 strikes, set `fork_rejected_until = now + 300s` (5 minute soft-ban). Reset strikes on legitimate sync (peer genuinely ahead).
+4. At the observed spam rate (~23 requests per 4ms burst), the threshold is hit in under 1 second.
+
 ### Committee Neutral Voter Design
 
 After all fixes, the committee witness has these properties:
@@ -304,7 +373,7 @@ In practice: **every public witness node** should have it configured. During eme
 | Attacker produces emergency blocks during normal operation | **None.** Emergency mode only activates when `seconds_since_lib >= 3600`. During normal operation, the schedule does not contain `committee`, so the attacker's blocks are invalid (wrong scheduled witness). | Consensus-level gating |
 | Attacker produces blocks during real emergency | Blocks are valid but **compete equally** with other emergency producers. Hash tie-breaking resolves conflicts deterministically. The attacker cannot produce *more* blocks than any other node with the key. | Hash tie-breaking + fork collision check |
 | Attacker produces blocks with invalid transactions | **Rejected.** Full consensus validation still applies to emergency blocks. Invalid operations, double-spends, etc. are caught by `apply_block()`. | Standard block validation |
-| Attacker floods P2P with emergency blocks | **Mitigated.** P2P anti-spam (`fork_rejected_until`) soft-bans peers sending blocks on rejected forks for 1 hour. Fork collision check limits production to 1 block per slot. After soft-ban expires, `inhibit_fetching_sync_blocks` is automatically reset (B8 fix) so the peer remains available for sync. | P2P soft-ban + fork collision + auto-reset |
+| Attacker floods P2P with emergency blocks | **Mitigated.** P2P anti-spam (`fork_rejected_until`) soft-bans peers sending blocks on rejected forks for 15 minutes (5 minutes for trusted peers). Sync request spam is detected separately: 50 repeated competing-fork sync requests trigger a 5-minute soft-ban, silently discarding further requests. Fork collision check limits production to 1 block per slot. After soft-ban expires, `inhibit_fetching_sync_blocks` is automatically reset (B8 fix) so the peer remains available for sync. | P2P soft-ban + sync spam ban + fork collision + auto-reset |
 
 ### Key Rotation
 
@@ -324,10 +393,12 @@ In practice: **every public witness node** should have it configured. During eme
 ### Summary
 
 The emergency key is a **public coordination mechanism**, not a secret. Its security model is:
+- **Deterministic activation**: Uses only signed block timestamps (`b.timestamp - lib_block.timestamp ≥ 3600`), no config flags or wall-clock time — identical results on every node and during every replay
 - **Activation gating**: Only usable when `emergency_consensus_active == true` (requires 1-hour LIB stall)
+- **Snapshot safety**: When LIB block is unavailable (post-snapshot restore), emergency check is skipped to prevent false activation
 - **Convergence**: Hash tie-breaking + fork collision → single effective producer
 - **Validation**: Full consensus rules apply to emergency blocks
-- **Deactivation**: Automatic when real witnesses return (LIB advancement)
+- **Deactivation**: Automatic when 75% (16/21) of schedule slots are real witnesses with valid signing keys
 - **Scope**: Delegates can immediately re-activate through wallets/services once their nodes reconnect to the P2P network, because the emergency chain is public and accepts transactions
 
 ---
@@ -342,8 +413,8 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 |---|---|
 | **Precondition** | 21 witnesses active, network healthy |
 | **Action** | Shut down all 21 witnesses. Wait >1 hour. Start 1 node with emergency key. Gradually restart witnesses. |
-| **Expected** | Emergency activates at LIB+3600s. Committee produces blocks (full 21-slot hybrid schedule). Offline witnesses do NOT accumulate penalties. Committee props synced to median, hardfork vote synced to current version. Witnesses re-register via `witness_update_operation`. When 16+ produce → LIB advances → emergency exits. |
-| **Components** | Activation, hybrid schedule (full expansion), LIB freeze, penalty skip, committee neutral voter, exit condition |
+| **Expected** | Emergency activates at LIB+3600s. All real witnesses disabled (signing_key zeroed). Committee produces blocks (full 21-slot schedule). LIB advances every block (capped at HEAD−1). Offline witnesses do NOT accumulate penalties. Committee props synced to median, hardfork vote synced to current version. Witnesses re-register via `witness_update_operation`. When 16+ real witnesses have valid signing keys in schedule (75%) → emergency exits automatically. |
+| **Components** | Activation, witness disabling, hybrid schedule (full expansion), LIB advancement (capped at HEAD−1), penalty skip, committee neutral voter, exit condition (75% real witnesses) |
 
 ### T2: 2-Way Partition (Majority/Minority)
 
@@ -360,8 +431,8 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 |---|---|
 | **Precondition** | 21 witnesses, healthy network |
 | **Action** | Partition: 10 witnesses on A, 11 on B. Neither side has 75% → both stall. Wait 1 hour → both enter emergency. Reconnect after 2 hours. |
-| **Expected** | Both sides produce emergency+hybrid blocks. LIB frozen on both. On reconnect, vote-weighted comparison: side with higher total `votes` wins. Losing side unwinds. Emergency exits when LIB advances. |
-| **Components** | LIB freeze, vote-weighted comparison, fork_db expansion, partition merge |
+| **Expected** | Both sides produce emergency+hybrid blocks. LIB advances (capped at HEAD−1) on both. On reconnect, vote-weighted comparison: side with higher total `votes` wins. Losing side unwinds. Emergency exits when 16+ real witnesses have valid keys in the merged schedule. |
+| **Components** | LIB advancement (capped), vote-weighted comparison, fork_db expansion, partition merge |
 
 ### T4: 3-Way Partition
 
@@ -369,8 +440,8 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 |---|---|
 | **Precondition** | 21 witnesses, healthy network |
 | **Action** | Partition into 3 groups: 7+7+7 witnesses. All stall → all enter emergency. Reconnect sequentially (A↔B first, then AB↔C). |
-| **Expected** | Each partition produces emergency blocks independently. LIB frozen on all. First merge (A↔B): vote-weighted comparison picks winner. Second merge (AB↔C): vote-weighted comparison again. Final chain has highest cumulative vote weight. |
-| **Components** | Multi-partition merge, vote-weighted comparison, cascading fork resolution |
+| **Expected** | Each partition produces emergency blocks independently. LIB advances (capped at HEAD−1) on all. First merge (A↔B): vote-weighted comparison picks winner. Second merge (AB↔C): vote-weighted comparison again. Final chain has highest cumulative vote weight. |
+| **Components** | Multi-partition merge, vote-weighted comparison, cascading fork resolution, LIB advancement (capped) |
 
 ### T5: Late Peer Rejoin
 
@@ -378,8 +449,8 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 |---|---|
 | **Precondition** | Emergency active for 2 hours. 10 witnesses already back. |
 | **Action** | Witness #11 comes online with stale chain (2 hours behind). |
-| **Expected** | Peer syncs from the emergency chain. Once synced, witness's slot appears in hybrid schedule. Witness produces at its assigned slot. No special handling needed — standard P2P sync. |
-| **Components** | P2P sync during emergency, hybrid schedule, fork_db size (2400 standard) |
+| **Expected** | Peer syncs from the emergency chain. Once synced, witness re-registers via `witness_update_operation`. Their slot appears in hybrid schedule on next update. Witness produces at its assigned slot. LIB on the emergency chain is at HEAD−1, so only 1 reversible block exists — sync is fast. |
+| **Components** | P2P sync during emergency, hybrid schedule, LIB advancement (capped), witness re-registration |
 
 ### T6: Conflicting Emergency Producers
 
@@ -395,9 +466,9 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 | | |
 |---|---|
 | **Precondition** | All witnesses offline. Emergency active. |
-| **Action** | Let emergency run for 8+ hours (approaching 10,000 block undo limit). |
-| **Expected** | fork_db dynamically expands up to `CHAIN_MAX_UNDO_HISTORY` (10,000). At the limit, block production halts because new blocks can't be applied without LIB advancement. Recovery requires bringing 16+ witnesses online. |
-| **Components** | Dynamic fork_db expansion, undo history limit, LIB freeze |
+| **Action** | Let emergency run for 8+ hours (well beyond old undo limit). |
+| **Expected** | LIB advances every block (capped at HEAD−1), so HEAD−LIB gap stays at exactly 1. fork_db size stays at 2 blocks. Emergency runs indefinitely without hitting any undo limits. No degradation over time. |
+| **Components** | LIB advancement (capped at HEAD−1), fork_db sizing, indefinite emergency operation |
 
 ### T8: Witness Shutdown + Re-registration During Emergency
 
@@ -450,8 +521,8 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 |---|---|
 | **Precondition** | Network stalled >1 hour. 1 node with 11 top witnesses + emergency key. 10 other witnesses offline. |
 | **Action** | Emergency activates. 11 real witnesses produce at their slots. Committee fills the other 10 slots. Over time, other witnesses re-join. |
-| **Expected** | Hybrid schedule expands to full 21 slots (11 real + 10 committee). Committee witness has `props = median_props` and `hardfork_version_vote = current_hardfork_version` — neutral voter. Hardfork vote tally excludes committee (only 11 real votes counted). Median props computed from real witnesses only. Offline witnesses don't accumulate penalties. When 16+ real witnesses are producing, LIB advances past `emergency_consensus_start_block` → emergency exits. |
-| **Components** | Hybrid schedule expansion, committee neutral voter, hardfork tally exclusion, median props exclusion, penalty skip, LIB computation with partial witnesses |
+| **Expected** | All witnesses initially disabled (signing_key zeroed). 11 witnesses re-register via `witness_update_operation`. Hybrid schedule expands to full 21 slots (11 real + 10 committee). Committee witness has `props = median_props` and `hardfork_version_vote = current_hardfork_version` — neutral voter. Hardfork vote tally excludes committee (only 11 real votes counted). Median props computed from real witnesses only. Offline witnesses don't accumulate penalties. When 16+ real witnesses have valid signing keys in schedule (75% of 21) → emergency exits automatically. |
+| **Components** | Witness disabling, hybrid schedule expansion, committee neutral voter, hardfork tally exclusion, median props exclusion, penalty skip, exit condition (75% real witnesses) |
 
 ### T14: Committee Hardfork Vote Neutrality
 
@@ -479,3 +550,48 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 | **Action** | The soft-ban expires. Peer sends a valid block. |
 | **Expected** | `fork_rejected_until` is in the past → block is processed (not discarded). `inhibit_fetching_sync_blocks` is reset to `false` (B8 fix). Node resumes requesting sync inventory from this peer. Gradual peer loss during extended emergency is prevented. |
 | **Components** | B8 fix (inhibit flag reset on soft-ban expiry), P2P soft-ban lifecycle, sync operations |
+
+### T17: Startup Schedule Recovery (B12 Fix)
+
+| | |
+|---|---|
+| **Precondition** | Node crashed during emergency with corrupted schedule (all empty witness slots in shared memory). |
+| **Action** | Restart the node. |
+| **Expected** | `database::open()` detects empty slots in schedule. Fills all 21 slots with committee. Sets `emergency_consensus_active = true` if not already set. Restores `fork_db.set_emergency_mode(true)`. Node resumes producing emergency blocks. LIB advances normally (capped at HEAD−1). |
+| **Components** | Startup recovery (B12), schedule repair, fork_db flag restoration |
+
+### T18: Emergency fork_db Flag Restored On Normal Restart
+
+| | |
+|---|---|
+| **Precondition** | Emergency active, schedule is healthy (all committee slots). Node restarted cleanly. |
+| **Action** | Restart the node. |
+| **Expected** | `database::open()` sees schedule is OK but `emergency_consensus_active == true` in DGP. Calls `fork_db.set_emergency_mode(true)` to restore the in-memory flag. Node continues in emergency mode without interruption. |
+| **Components** | Startup recovery (fork_db flag), DGP state persistence |
+
+### T19: Block Post-Validation During Emergency (B13 Fix)
+
+| | |
+|---|---|
+| **Precondition** | Emergency active. Committee fills 18/21 schedule slots. Multiple `block_post_validation_object` entries exist. |
+| **Action** | Call `get_block_post_validations()` (triggered by P2P block validation). |
+| **Expected** | Result array stays within `CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT = 20` bounds. Each validation object produces at most one entry (no duplicate committee matches). No stack overflow, no segfault. |
+| **Components** | B13 fix (bounds check + one-match-per-object), `get_block_post_validations()` |
+
+### T20: P2P Sync Ping-Pong Loop Prevention (B14 Fix)
+
+| | |
+|---|---|
+| **Precondition** | Emergency active. Two nodes (A, B) with competing forks at the same height. Both have the B14 fix. |
+| **Action** | A sends sync request to B. B responds. Observe whether `start_synchronizing_with_peer()` is called. |
+| **Expected** | B sees A's last block is at the same height as B's head (`peer_block_num == our_head_num`). B does NOT call `start_synchronizing_with_peer()`. No ping-pong loop. `get_block_ids()` is called once per request, not hundreds of times per second. |
+| **Components** | B14 fix (block-number comparison guard), `on_fetch_blockchain_item_ids_message()` |
+
+### T21: Sync Spam Soft-Ban (B15 Fix)
+
+| | |
+|---|---|
+| **Precondition** | Emergency active. Node has B14+B15 fixes. Connected to old peers without B14 fix. |
+| **Action** | Old peers flood the node with `fetch_blockchain_item_ids_message` requests (competing fork at same height). |
+| **Expected** | First 50 requests are processed normally (each incrementing `sync_spam_strikes`). At strike 50, peer is soft-banned for 5 minutes (`fork_rejected_until` set). Subsequent requests are silently discarded at the top of `on_fetch_blockchain_item_ids_message()` — no `get_block_ids()` calls. After 5 minutes, ban expires and strikes reset if peer sends legitimate sync requests. |
+| **Components** | B15 fix (sync spam strikes + soft-ban), `fork_rejected_until` reuse, `on_fetch_blockchain_item_ids_message()` |

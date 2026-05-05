@@ -28,7 +28,8 @@ namespace graphene {
                     lag = 6,
                     consecutive = 7,
                     exception_producing_block = 8,
-                    fork_collision = 9
+                    fork_collision = 9,
+                    minority_fork = 10
                 };
             }
 
@@ -61,6 +62,17 @@ namespace graphene {
 
                 /// Returns true if a locally-controlled witness is scheduled to produce in the next slot
                 bool is_witness_scheduled_soon() const;
+
+                /// Returns true if this node is the emergency master: holds the
+                /// emergency-private-key (committee is in _witnesses) AND committee
+                /// appears in the current witness schedule.  Only the master should
+                /// produce blocks solo during emergency consensus; all other nodes
+                /// are followers that must sync from the network.
+                bool is_emergency_master() const;
+
+                /// Returns true if the emergency-private-key is configured,
+                /// regardless of whether the committee is in the current schedule.
+                bool is_emergency_key_configured() const;
 
             private:
                 struct impl;

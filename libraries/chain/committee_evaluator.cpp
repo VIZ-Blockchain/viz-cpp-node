@@ -66,7 +66,7 @@ namespace graphene { namespace chain {
     }
 
     void committee_worker_cancel_request_evaluator::do_apply(const committee_worker_cancel_request_operation& o) {
-        const auto &creator = _db.get_account(o.creator);
+        _db.get_account(o.creator);
         //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
         //    FC_ASSERT(!creator.valid, "Account flagged as invalid");
         const auto &idx = _db.get_index<committee_request_index>().indices().get<by_request_id>();
@@ -88,7 +88,7 @@ namespace graphene { namespace chain {
     }
 
     void committee_vote_request_evaluator::do_apply(const committee_vote_request_operation& o) {
-        const auto &voter = _db.get_account(o.voter);
+        _db.get_account(o.voter);
         //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
         //    FC_ASSERT(!voter.valid, "Account flagged as invalid");
         const auto &idx = _db.get_index<committee_request_index>().indices().get<by_request_id>();

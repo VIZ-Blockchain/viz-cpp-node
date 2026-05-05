@@ -2,6 +2,8 @@
 #include <graphene/plugins/snapshot/snapshot_types.hpp>
 #include <graphene/plugins/snapshot/snapshot_serializer.hpp>
 #include <graphene/plugins/witness/witness.hpp>
+#include <graphene/plugins/p2p/p2p_plugin.hpp>
+#include <graphene/plugins/chain/plugin.hpp>
 
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/global_property_object.hpp>
@@ -707,6 +709,11 @@ public:
     std::string pending_snapshot_path;    // path for deferred snapshot
     std::atomic<bool> snapshot_in_progress{false}; // async snapshot creation guard
 
+    // Stale snapshot detection: set at startup when the latest snapshot is
+    // older than the DLT block log's start block. A fresh snapshot is created
+    // on the first synced block to prevent serving a broken snapshot.
+    bool needs_fresh_snapshot = false;
+
     // Snapshot P2P sync config
     bool allow_snapshot_serving = false;
     bool allow_snapshot_serving_only_trusted = false;
@@ -777,13 +784,20 @@ public:
     static constexpr uint64_t MAX_SNAPSHOT_SIZE = 2ULL * 1024 * 1024 * 1024;
 
     boost::signals2::scoped_connection applied_block_conn;
+    boost::signals2::scoped_connection dlt_reset_conn;
 
     // Stalled sync detection for DLT mode
     bool enable_stalled_sync_detection = false;
     uint32_t stalled_sync_timeout_minutes = 5;
     fc::time_point last_block_received_time;
+    std::unique_ptr<fc::thread> stalled_sync_thread;  // dedicated thread (main thread can't run fc fibers)
     fc::future<void> stalled_sync_check_future;
     std::atomic<bool> stalled_sync_check_running{false};
+    bool _p2p_recovery_attempted = false;  // guard: try P2P recovery before snapshot download
+    uint32_t _last_stalled_check_head = 0;  // track head for emergency follower detection
+    std::atomic<bool> _snapshot_reloading{false};  // guard: block on_applied_block during snapshot reload
+    fc::time_point sync_ended_at;  // when is_syncing last transitioned to false
+    std::atomic<bool> cancel_snapshot_requested{false};  // cancellation flag for in-progress snapshot
 
     void create_snapshot(const fc::path& output_path);
     void load_snapshot(const fc::path& input_path);
@@ -831,6 +845,10 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     // Helper macro to export an index
     #define EXPORT_INDEX(index_type, obj_type, name) \
     { \
+        if (cancel_snapshot_requested.load(std::memory_order_relaxed)) { \
+            wlog("Snapshot cancelled during serialization (before ${type})", ("type", name)); \
+            return state; \
+        } \
         fc::variants arr; \
         const auto& idx = db.get_index<index_type>().indices(); \
         for (auto itr = idx.begin(); itr != idx.end(); ++itr) { \
@@ -855,13 +873,55 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(content_vote_index, content_vote_object, "content_vote")
     EXPORT_INDEX(block_post_validation_index, block_post_validation_object, "block_post_validation")
 
+    if (cancel_snapshot_requested.load(std::memory_order_relaxed)) {
+        wlog("Snapshot cancelled during serialization (before transaction)");
+        return state;
+    }
+
     // IMPORTANT objects
-    EXPORT_INDEX(transaction_index, transaction_object, "transaction")
+    // Export only confirmed (block-applied) transactions, excluding any
+    // pending mempool transactions.  Snapshot creation runs asynchronously
+    // on a background thread, AFTER without_pending_transactions has
+    // re-applied pending transactions.  If we export them, the importing
+    // node's transaction_index will contain unconfirmed transaction IDs.
+    // When the next block arrives via P2P (applied without
+    // skip_transaction_dupe_check), any transaction that was pending at
+    // snapshot time and is included in that block will trigger
+    // "Duplicate transaction check failed".
+    //
+    // The witness node needs this index to avoid producing blocks with
+    // duplicate transactions, so we must export confirmed entries.
+    {
+        fc::flat_set<transaction_id_type> pending_ids;
+        for (const auto& ptx : db._pending_tx) {
+            pending_ids.insert(ptx.id());
+        }
+
+        fc::variants arr;
+        const auto& idx = db.get_index<transaction_index>().indices();
+        for (auto itr = idx.begin(); itr != idx.end(); ++itr) {
+            if (pending_ids.find(itr->trx_id) != pending_ids.end()) {
+                continue;  // skip pending mempool transaction
+            }
+            fc::variant v;
+            fc::to_variant(*itr, v);
+            arr.push_back(std::move(v));
+        }
+        state["transaction"] = std::move(arr);
+
+        auto exported = state["transaction"].get_array().size();
+        ilog(CLOG_GREEN "Exported ${n} transaction objects (skipped ${p} pending)" CLOG_RESET,
+             ("n", exported)("p", pending_ids.size()));
+    }
     EXPORT_INDEX(vesting_delegation_index, vesting_delegation_object, "vesting_delegation")
     EXPORT_INDEX(vesting_delegation_expiration_index, vesting_delegation_expiration_object, "vesting_delegation_expiration")
     EXPORT_INDEX(fix_vesting_delegation_index, fix_vesting_delegation_object, "fix_vesting_delegation")
     EXPORT_INDEX(withdraw_vesting_route_index, withdraw_vesting_route_object, "withdraw_vesting_route")
     EXPORT_INDEX(escrow_index, escrow_object, "escrow")
+    if (cancel_snapshot_requested.load(std::memory_order_relaxed)) {
+        wlog("Snapshot cancelled during serialization (before proposal)");
+        return state;
+    }
     // proposal_object has bip::flat_set with shared allocators — custom export
     {
         fc::variants arr;
@@ -922,6 +982,7 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
 }
 
 void snapshot_plugin::plugin_impl::create_snapshot(const fc::path& output_path) {
+    cancel_snapshot_requested.store(false, std::memory_order_relaxed);
     ilog(CLOG_GREEN "Creating snapshot at ${path}..." CLOG_RESET, ("path", output_path.string()));
 
     // Phase 1: read database state under a read lock.
@@ -966,6 +1027,12 @@ void snapshot_plugin::plugin_impl::create_snapshot(const fc::path& output_path) 
 
     auto read_elapsed = double((fc::time_point::now() - read_start).count()) / 1000000.0;
     ilog(CLOG_GREEN "Snapshot DB read completed in ${t} sec, lock released" CLOG_RESET, ("t", read_elapsed));
+
+    // Check if snapshot was cancelled during serialization
+    if (cancel_snapshot_requested.load(std::memory_order_relaxed)) {
+        wlog("Snapshot creation cancelled (serialization was interrupted), skipping file write");
+        return;
+    }
 
     // Phase 2: compression + file I/O — no database lock needed.
     write_snapshot_to_file(output_path, std::move(header), std::move(state));
@@ -1131,8 +1198,26 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
               << (json_content.size() / 1048576) << " MB (" << decompress_elapsed << " sec)\n";
 
     // Parse JSON
-    std::cerr << "   Parsing JSON...\n";
-    fc::variant snapshot_var = fc::json::from_string(json_content);
+    std::cerr << "   Parsing JSON (" << (json_content.size() / 1048576) << " MB)...\n";
+    ilog(CLOG_ORANGE "Parsing JSON (${size} bytes)..." CLOG_RESET, ("size", json_content.size()));
+    auto json_parse_start = fc::time_point::now();
+    fc::variant snapshot_var;
+    try {
+        snapshot_var = fc::json::from_string(json_content);
+    } catch (const fc::exception& e) {
+        auto json_parse_elapsed = double((fc::time_point::now() - json_parse_start).count()) / 1000000.0;
+        elog("JSON parsing failed after ${t} sec: ${e}", ("t", json_parse_elapsed)("e", e.to_detail_string()));
+        std::cerr << "   ERROR: JSON parsing failed after " << json_parse_elapsed << " sec: " << e.what() << "\n";
+        throw;
+    } catch (const std::exception& e) {
+        auto json_parse_elapsed = double((fc::time_point::now() - json_parse_start).count()) / 1000000.0;
+        elog("JSON parsing failed after ${t} sec (std): ${e}", ("t", json_parse_elapsed)("e", e.what()));
+        std::cerr << "   ERROR: JSON parsing failed after " << json_parse_elapsed << " sec: " << e.what() << "\n";
+        throw;
+    }
+    auto json_parse_elapsed = double((fc::time_point::now() - json_parse_start).count()) / 1000000.0;
+    ilog(CLOG_ORANGE "JSON parsed successfully in ${t} sec" CLOG_RESET, ("t", json_parse_elapsed));
+    std::cerr << "   JSON parsed in " << json_parse_elapsed << " sec\n";
     FC_ASSERT(snapshot_var.is_object(), "Snapshot file is not a valid JSON object");
 
     // Free decompressed JSON immediately after parsing to reduce peak memory.
@@ -1182,6 +1267,18 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     // Import objects in dependency order
     std::cerr << "   Importing state into database...\n";
     db.with_strong_write_lock([&]() {
+        try {
+        // Clear the undo stack FIRST, before any import operations.
+        // During hot-reload (stalled sync detection), the database has
+        // active undo sessions from normal block processing.
+        // If we import objects first and then undo_all(), it reverts
+        // both the old block processing AND our import changes,
+        // leaving the database in the old LIB state instead of the
+        // snapshot state.  By clearing the stack first, all subsequent
+        // import operations are permanent (no undo tracking).
+        // On initial load (fresh DB), the stack is empty and this is a no-op.
+        db.undo_all();
+
         // Clear ALL existing multi-instance objects before importing.
         // This is critical for the hot-reload path (stalled sync detection)
         // where load_snapshot() is called on an already-populated database.
@@ -1454,6 +1551,16 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         }
 
         ilog(CLOG_ORANGE "All objects imported successfully" CLOG_RESET);
+        } catch (const fc::exception& e) {
+            elog(CLOG_RED "Snapshot import failed with fc::exception: ${e}" CLOG_RESET, ("e", e.to_detail_string()));
+            throw;
+        } catch (const std::exception& e) {
+            elog(CLOG_RED "Snapshot import failed with std::exception: ${e}" CLOG_RESET, ("e", e.what()));
+            throw;
+        } catch (...) {
+            elog(CLOG_RED "Snapshot import failed with unknown exception" CLOG_RESET);
+            throw;
+        }
     });
 
     // Seed fork_db with head block from snapshot.
@@ -1464,6 +1571,29 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         auto head_block = state["fork_db_head_block"].as<signed_block>();
         db.get_fork_db().start_block(head_block);
         ilog(CLOG_ORANGE "Fork database seeded with head block ${n}" CLOG_RESET, ("n", header.snapshot_block_num));
+
+        // Persist the head block into dlt_block_log so that database::open()
+        // can reconstruct fork_db on restart. Without this, a restart shortly
+        // after snapshot import leaves fork_db empty (dlt_block_log does not
+        // cover head), causing unlinkable_block_exception on any stale broadcast
+        // block and stalling P2P sync.
+        auto dlt_head = db.get_dlt_block_log().head();
+        if (!dlt_head || dlt_head->block_num() < head_block.block_num()) {
+            // If the existing dlt_block_log has blocks but there's a gap
+            // between its head and the snapshot head, reset it first.
+            // Otherwise append() asserts on index position mismatch.
+            if (dlt_head) {
+                uint32_t dlt_head_num = dlt_head->block_num();
+                if (head_block.block_num() > dlt_head_num + 1) {
+                    ilog(CLOG_ORANGE "DLT block log: gap detected (dlt_head=${dh}, snapshot_head=${sh}), resetting" CLOG_RESET,
+                         ("dh", dlt_head_num)("sh", head_block.block_num()));
+                    db.get_dlt_block_log().reset();
+                }
+            }
+            db.get_dlt_block_log().append(head_block);
+            db.get_dlt_block_log().flush();
+            ilog(CLOG_ORANGE "DLT block log seeded with head block ${n}" CLOG_RESET, ("n", header.snapshot_block_num));
+        }
     }
 
     auto end = fc::time_point::now();
@@ -1475,13 +1605,57 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
 void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::signed_block& b) {
     uint32_t block_num = b.block_num();
 
+    // Skip all processing while a snapshot reload is in progress.
+    // During hot-reload, the database is being cleared and re-imported;
+    // any attempt to access objects or schedule snapshots will cause
+    // exceptions or inconsistent state.
+    if (_snapshot_reloading.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    // Cancel any in-progress snapshot when a new block arrives.
+    // This breaks the serialization loop and releases the read lock quickly,
+    // preventing write-lock starvation for push_block().
+    if (snapshot_in_progress.load(std::memory_order_relaxed)) {
+        cancel_snapshot_requested.store(true, std::memory_order_relaxed);
+        dlog("New block #${n} received while snapshot in progress — requesting cancellation",
+             ("n", b.block_num()));
+    }
+
     // Update last block received time for stalled sync detection
     last_block_received_time = fc::time_point::now();
+    _p2p_recovery_attempted = false;  // reset escalation guard on successful block
 
-    // Skip snapshot creation while syncing from P2P (block time far behind wall clock).
-    // Only create snapshots when the node is caught up and processing live blocks.
-    auto block_age = fc::time_point::now() - fc::time_point(b.timestamp);
-    bool is_syncing = block_age > fc::seconds(60);
+    // Skip snapshot creation while the node is still catching up via P2P sync.
+    // The old heuristic (block_age > 60s) was unreliable: when catching up recent
+    // blocks the age is < 60s, so snapshots would fire during sync, causing
+    // read-lock timeouts that stall sync entirely.
+    bool is_syncing = false;
+    try {
+        auto& chain_plug = appbase::app().get_plugin<graphene::plugins::chain::plugin>();
+        is_syncing = chain_plug.is_syncing();
+    } catch (...) {
+        // Fallback: if chain plugin not available, use block age heuristic
+        auto block_age = fc::time_point::now() - fc::time_point(b.timestamp);
+        is_syncing = block_age > fc::seconds(60);
+    }
+
+    // Track sync-to-normal transition for cooldown.
+    // After sync ends, more sync blocks may still be queued in the P2P pipeline.
+    // Creating a snapshot immediately would hold a read lock for minutes, blocking
+    // those queued blocks from acquiring write locks (cascading lock timeout).
+    if (is_syncing) {
+        sync_ended_at = fc::time_point();  // reset while syncing
+    } else if (sync_ended_at == fc::time_point()) {
+        sync_ended_at = fc::time_point::now();  // mark transition
+    }
+
+    bool too_soon_after_sync = (sync_ended_at != fc::time_point() &&
+        fc::time_point::now() - sync_ended_at < fc::seconds(60));
+    if (too_soon_after_sync) {
+        // Defer all snapshot creation until sync pipeline has fully drained
+        return;
+    }
 
     // Helper lambda: check if local witness is scheduled to produce soon
     auto is_witness_producing_soon = [&]() -> bool {
@@ -1520,6 +1694,13 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             };
             flag_guard guard{snapshot_in_progress};
 
+            // Pause P2P block processing during snapshot serialization to ensure
+            // memory objects remain consistent while we read them.
+            auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+            if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                p2p_plug->pause_block_processing();
+            }
+
             try {
                 create_snapshot(output);
                 cleanup_old_snapshots();
@@ -1529,6 +1710,10 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
                 elog("Failed to create ${label} snapshot: ${e}", ("label", label)("e", e.what()));
             } catch (...) {
                 elog("Failed to create ${label} snapshot: unknown exception", ("label", label));
+            }
+
+            if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                p2p_plug->resume_block_processing();
             }
         }, "async_snapshot");
     };
@@ -1563,6 +1748,23 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         }
     }
 
+    // Urgent fresh snapshot: the latest snapshot is stale relative to the
+    // DLT block log (snapshot_block < dlt_start_block). Create a new snapshot
+    // immediately on the first synced block so downloading nodes can sync.
+    if (needs_fresh_snapshot && !is_syncing) {
+        needs_fresh_snapshot = false;
+        std::string dir = snapshot_dir;
+        fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
+        if (is_witness_producing_soon()) {
+            ilog(CLOG_GREEN "Deferring urgent fresh snapshot at block ${b}: witness scheduled" CLOG_RESET, ("b", block_num));
+            snapshot_pending = true;
+            pending_snapshot_path = output.string();
+        } else {
+            ilog(CLOG_GREEN "Creating urgent fresh snapshot (stale snapshot detected at startup): ${p}" CLOG_RESET, ("p", output.string()));
+            schedule_async_snapshot(output, "urgent-fresh");
+        }
+    }
+
     // Check --snapshot-every-n-blocks: periodic snapshots (only when synced)
     if (snapshot_every_n_blocks > 0 && block_num % snapshot_every_n_blocks == 0 && !is_syncing) {
         std::string dir = snapshot_dir;
@@ -1583,7 +1785,13 @@ void snapshot_plugin::plugin_impl::start_stalled_sync_detection() {
         return; // Already running
     }
     last_block_received_time = fc::time_point::now();
-    stalled_sync_check_future = fc::async([this]() {
+    // Must run on a dedicated fc::thread — the main thread is blocked in
+    // io_serv->run() and never pumps the fc fiber scheduler, so fc::async()
+    // fibers scheduled there will never execute.
+    if (!stalled_sync_thread) {
+        stalled_sync_thread = std::make_unique<fc::thread>("stalled_sync");
+    }
+    stalled_sync_check_future = stalled_sync_thread->async([this]() {
         check_stalled_sync_loop();
     }, "stalled_sync_check");
     ilog(CLOG_YELLOW "Stalled sync detection started (timeout: ${m} min)" CLOG_RESET, ("m", stalled_sync_timeout_minutes));
@@ -1595,6 +1803,10 @@ void snapshot_plugin::plugin_impl::stop_stalled_sync_detection() {
     }
     if (stalled_sync_check_future.valid()) {
         stalled_sync_check_future.cancel_and_wait();
+    }
+    if (stalled_sync_thread) {
+        stalled_sync_thread->quit();
+        stalled_sync_thread.reset();
     }
     ilog(CLOG_YELLOW "Stalled sync detection stopped" CLOG_RESET);
 }
@@ -1614,15 +1826,148 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
             auto timeout = fc::minutes(stalled_sync_timeout_minutes);
 
             if (elapsed > timeout) {
+                bool emergency = false;
+                try {
+                    db.with_weak_read_lock([&]() {
+                        emergency = db.get_dynamic_global_properties().emergency_consensus_active;
+                    });
+                } catch (...) {}
+                if (emergency) {
+                    uint32_t current_head = 0;
+                    try {
+                        db.with_weak_read_lock([&]() {
+                            current_head = db.head_block_num();
+                        });
+                    } catch (...) {}
+
+                    // If we ARE the emergency master (hold the emergency-private-key
+                    // AND committee is in the schedule), solo block production is
+                    // normal — the master IS the chain, other nodes sync from us.
+                    // Skip stalled sync recovery entirely.
+                    bool we_are_master = false;
+                    try {
+                        auto* witness_plug = appbase::app().find_plugin<graphene::plugins::witness_plugin::witness_plugin>();
+                        if (witness_plug && witness_plug->get_state() == appbase::abstract_plugin::started) {
+                            we_are_master = witness_plug->is_emergency_master();
+                        }
+                    } catch (...) {}
+
+                    if (we_are_master) {
+                        dlog("Stalled sync timeout reached but we are the emergency master "
+                             "(head #${h}) — solo block production is normal, skipping recovery",
+                             ("h", current_head));
+                        _last_stalled_check_head = current_head;
+                        last_block_received_time = fc::time_point::now();
+                        continue;
+                    }
+
+                    // We are a FOLLOWER (no emergency key, or committee not in schedule).
+                    // Check if we've received any network blocks recently.
+                    // Self-produced emergency blocks keep the head advancing,
+                    // but if no network blocks arrive, we're on an isolated fork.
+                    fc::time_point last_network = last_block_received_time;  // default fallback
+                    try {
+                        auto* p2p = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+                        if (p2p && p2p->get_state() == appbase::abstract_plugin::started) {
+                            fc::time_point p2p_network_time = p2p->get_last_network_block_time();
+                            if (p2p_network_time != fc::time_point()) {
+                                last_network = p2p_network_time;
+                            }
+                        }
+                    } catch (...) {}
+                    auto network_elapsed = now - last_network;
+
+                    if (current_head > _last_stalled_check_head && network_elapsed < timeout) {
+                        // Head advancing AND receiving network blocks recently —
+                        // normal emergency consensus operation, skip recovery.
+                        dlog("Stalled sync timeout reached but emergency consensus is active "
+                             "and head is advancing (${h} > ${prev}) with recent network blocks "
+                             "(${net_s}s ago) — skipping",
+                             ("h", current_head)("prev", _last_stalled_check_head)
+                             ("net_s", network_elapsed.count() / 1000000));
+                        _last_stalled_check_head = current_head;
+                        last_block_received_time = fc::time_point::now();
+                        continue;
+                    } else if (current_head > _last_stalled_check_head && network_elapsed >= timeout) {
+                        // Head advancing but NO network blocks for the timeout period —
+                        // we're on an isolated fork producing blocks solo. Allow recovery.
+                        wlog("Stalled sync timeout: emergency follower head advancing to #${h} but "
+                             "no network blocks for ${net_s}s — isolated fork, allowing recovery",
+                             ("h", current_head)("net_s", network_elapsed.count() / 1000000));
+                        _last_stalled_check_head = current_head;
+                        // Fall through to P2P recovery / snapshot download logic
+                    } else {
+                        // Head is stuck — this is a follower node. Allow recovery.
+                        wlog("Stalled sync timeout during emergency consensus but head is stuck "
+                             "at #${h} — allowing recovery for follower node",
+                             ("h", current_head));
+                        _last_stalled_check_head = current_head;
+                        // Fall through to existing P2P recovery / snapshot download logic
+                    }
+                }
+
                 uint32_t head_block = db.head_block_num();
 
-                std::cerr << "   WARNING: No blocks received for " << (elapsed.count() / 1000000 / 60)
-                          << " minutes (head: " << head_block << "). Checking for newer snapshot...\n";
-                wlog("Stalled sync detected: no blocks for ${e} min, head=${h}",
-                     ("e", elapsed.count() / 1000000 / 60)("h", head_block));
+                // Escalation: try lightweight P2P recovery first before heavy snapshot download.
+                // First trigger  → reconnect seeds + reset peer flags, delay 1 minute.
+                // Second trigger → proceed with snapshot download.
+                // If a snapshot is currently in progress and holding a read lock,
+                // cancel it first — this is likely the cause of the stall.
+                if (snapshot_in_progress.load(std::memory_order_relaxed)) {
+                    wlog("Stalled sync detected while snapshot in progress — cancelling snapshot to release locks");
+                    cancel_snapshot_requested.store(true, std::memory_order_relaxed);
+                    // Wait briefly for snapshot to finish/cancel and release locks
+                    for (int i = 0; i < 10 && snapshot_in_progress.load(std::memory_order_relaxed); ++i) {
+                        fc::usleep(fc::seconds(1));
+                    }
+                    if (!snapshot_in_progress.load(std::memory_order_relaxed)) {
+                        ilog("Snapshot cancelled successfully, locks should be released");
+                        // Reset timer — give P2P a chance to recover now that locks are free
+                        last_block_received_time = fc::time_point::now();
+                        continue;
+                    } else {
+                        wlog("Snapshot still in progress after 10s wait, proceeding with recovery anyway");
+                    }
+                }
 
-                // Try to download a newer snapshot
-                try {
+                if (!_p2p_recovery_attempted) {
+                    std::cerr << "   WARNING: No blocks received for " << (elapsed.count() / 1000000 / 60)
+                              << " minutes (head: " << head_block << "). Trying P2P recovery first...\n";
+                    wlog("Stalled sync detected: no blocks for ${e} min, head=${h}. "
+                         "Attempting P2P recovery before snapshot download.",
+                         ("e", elapsed.count() / 1000000 / 60)("h", head_block));
+
+                    try {
+                        auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+                        if (p2p_plug != nullptr && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                            p2p_plug->trigger_resync();
+                            ilog("P2P recovery: resync triggered + seeds reconnected. "
+                                 "Waiting 1 minute before attempting snapshot download.");
+                        } else {
+                            wlog("P2P plugin not available, skipping P2P recovery");
+                        }
+                    } catch (const fc::exception& e) {
+                        wlog("P2P recovery failed: ${e}", ("e", e.to_detail_string()));
+                    }
+
+                    _p2p_recovery_attempted = true;
+                    // Give P2P recovery 1 minute to work before next check
+                    last_block_received_time = fc::time_point::now() - timeout + fc::minutes(1);
+                } else {
+                    // P2P recovery already attempted and didn't help — proceed with snapshot
+                    _p2p_recovery_attempted = false;  // reset guard for next cycle
+
+                    std::cerr << "   WARNING: No blocks received for " << (elapsed.count() / 1000000 / 60)
+                              << " minutes (head: " << head_block << "). P2P recovery didn't help. Checking for newer snapshot...\n";
+                    wlog("Stalled sync detected: no blocks for ${e} min, head=${h}. "
+                         "P2P recovery didn't help, proceeding with snapshot download.",
+                         ("e", elapsed.count() / 1000000 / 60)("h", head_block));
+                    // Try to download a newer snapshot
+                    graphene::plugins::p2p::p2p_plugin* p2p_plug = nullptr;
+                    try {
+                        p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+                    } catch (...) {}
+                    try {
                     std::cerr << "   Querying trusted peers for newer snapshot...\n";
                     auto snapshot_path = download_snapshot_from_peers();
 
@@ -1633,14 +1978,67 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                         // Stop the check temporarily during reload
                         stalled_sync_check_running.store(false);
 
+                        // Pause P2P block processing to prevent concurrent database
+                        // modifications during snapshot reload.  Without this, blocks
+                        // arriving while load_snapshot() parses JSON and clears the DB
+                        // cause "Caught unexpected exception in plugin", peer
+                        // disconnections, socket corruption, and 100% CPU hang.
+                        _snapshot_reloading.store(true, std::memory_order_release);
+                        try {
+                            if (p2p_plug != nullptr && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                                p2p_plug->pause_block_processing();
+                            }
+                        } catch (...) {
+                            wlog("Failed to pause block processing before snapshot reload");
+                        }
+
                         load_snapshot(fc::path(snapshot_path));
                         db.set_dlt_mode(true);
                         db.initialize_hardforks();
+
+                        // Replay blocks from dlt_block_log that are beyond the
+                        // snapshot head.  The dlt_block_log may contain blocks
+                        // from the previous session that are newer than the
+                        // snapshot.  Replaying them here avoids depending on P2P
+                        // sync for blocks we already have locally.
+                        uint32_t snapshot_head = db.head_block_num();
+                        auto dlt_head = db.get_dlt_block_log().head();
+                        if (dlt_head && dlt_head->block_num() > snapshot_head) {
+                            ilog(CLOG_YELLOW "Replaying dlt_block_log from block ${from} to ${to}..." CLOG_RESET,
+                                 ("from", snapshot_head + 1)("to", dlt_head->block_num()));
+                            std::cerr << "   Replaying dlt_block_log blocks "
+                                      << (snapshot_head + 1) << ".." << dlt_head->block_num() << "...\n";
+                            try {
+                                db.reindex_from_dlt(snapshot_head + 1);
+                            } catch (const fc::exception& e) {
+                                elog("Failed to replay dlt_block_log: ${e}", ("e", e.to_detail_string()));
+                                std::cerr << "   dlt_block_log replay failed, will rely on P2P sync.\n";
+                            }
+                        }
 
                         last_block_received_time = fc::time_point::now();
 
                         std::cerr << "   === Snapshot reload complete (block " << db.head_block_num() << ") ===\n";
                         ilog(CLOG_YELLOW "Snapshot reload complete at block ${n}" CLOG_RESET, ("n", db.head_block_num()));
+
+                        // Re-initiate P2P sync from the new head block.
+                        // Without this, the P2P layer still has stale sync
+                        // state from before the snapshot reload and will
+                        // never request new blocks from peers.
+                        try {
+                            if (p2p_plug != nullptr && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                                p2p_plug->resume_block_processing();
+                                p2p_plug->trigger_resync();
+                                ilog(CLOG_YELLOW "P2P resync triggered after snapshot reload" CLOG_RESET);
+                            } else {
+                                wlog("P2P plugin not available, cannot trigger resync after snapshot reload");
+                            }
+                        } catch (const fc::exception& e) {
+                            elog("Failed to trigger P2P resync after snapshot reload: ${e}", ("e", e.to_detail_string()));
+                        } catch (...) {
+                            elog("Failed to trigger P2P resync after snapshot reload: unknown exception");
+                        }
+                        _snapshot_reloading.store(false, std::memory_order_release);
 
                         // Restart the check
                         stalled_sync_check_running.store(true);
@@ -1651,18 +2049,43 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                         last_block_received_time = fc::time_point::now();
                     }
                 } catch (const fc::exception& e) {
-                    std::cerr << "   Failed to download newer snapshot: " << e.what() << "\n";
-                    elog("Failed to download newer snapshot: ${e}", ("e", e.to_detail_string()));
+                    std::cerr << "   Failed to reload snapshot: " << e.what() << "\n";
+                    elog("Failed to reload snapshot: ${e}", ("e", e.to_detail_string()));
+                    // Resume P2P and clear reloading flag on failure
+                    _snapshot_reloading.store(false, std::memory_order_release);
+                    try {
+                        if (p2p_plug != nullptr && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                            p2p_plug->resume_block_processing();
+                        }
+                    } catch (...) {}
+                    // Ensure check stays running even if load_snapshot() failed
+                    stalled_sync_check_running.store(true);
                     // Reset timer to avoid immediate retry
                     last_block_received_time = fc::time_point::now();
+                } catch (const std::exception& e) {
+                    std::cerr << "   Failed to reload snapshot: " << e.what() << "\n";
+                    elog("Failed to reload snapshot (std): ${e}", ("e", e.what()));
+                    _snapshot_reloading.store(false, std::memory_order_release);
+                    try {
+                        if (p2p_plug != nullptr && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                            p2p_plug->resume_block_processing();
+                        }
+                    } catch (...) {}
+                    stalled_sync_check_running.store(true);
+                    last_block_received_time = fc::time_point::now();
                 }
+                } // else (P2P recovery already attempted)
             }
         } catch (const fc::canceled_exception&) {
             break;
         } catch (const std::exception& e) {
             elog("Error in stalled sync check: ${e}", ("e", e.what()));
-            fc::usleep(fc::seconds(5));
+            // Reset timer to avoid immediate retry on unexpected errors
+            last_block_received_time = fc::time_point::now();
         }
+        // Sleep outside catch — fc::usleep cannot yield while an exception is active.
+        // On error, the 30s sleep at loop top provides the retry delay.
+
     }
 }
 
@@ -1712,16 +2135,6 @@ bool read_exact_with_timeout(fc::tcp_socket& sock, char* buf, size_t len, const 
         total += n;
     }
     return true;
-}
-
-/// Read exactly `len` bytes from a tcp_socket.
-void read_exact(fc::tcp_socket& sock, char* buf, size_t len) {
-    size_t total = 0;
-    while (total < len) {
-        size_t n = sock.readsome(buf + total, len - total);
-        FC_ASSERT(n > 0, "Connection closed while reading");
-        total += n;
-    }
 }
 
 /// Write exactly `len` bytes to a tcp_socket.
@@ -1784,23 +2197,6 @@ void send_access_denied(fc::tcp_socket& sock, uint32_t reason) {
     } catch (...) {
         // Best-effort: client may have already disconnected
     }
-}
-
-/// Read a message: returns (msg_type, payload).
-/// max_payload_size limits the accepted payload (default 64 MB for data replies,
-/// use 64 KB for control/request messages to prevent memory abuse).
-std::pair<uint32_t, std::vector<char>> read_message(fc::tcp_socket& sock, uint32_t max_payload_size = 64 * 1024 * 1024) {
-    uint32_t payload_size = 0;
-    uint32_t msg_type = 0;
-    read_exact(sock, reinterpret_cast<char*>(&payload_size), 4);
-    read_exact(sock, reinterpret_cast<char*>(&msg_type), 4);
-    FC_ASSERT(payload_size <= max_payload_size, "Message too large: ${s} bytes (limit ${l})",
-        ("s", payload_size)("l", max_payload_size));
-    std::vector<char> payload(payload_size);
-    if (payload_size > 0) {
-        read_exact(sock, payload.data(), payload_size);
-    }
-    return {msg_type, std::move(payload)};
 }
 
 /// Read a message with timeout: returns (success, msg_type, payload).
@@ -2528,183 +2924,224 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
         return std::string();  // empty = no snapshot downloaded
     }
 
-    // Pick the peer with the highest block_num
-    auto best = std::max_element(available_peers.begin(), available_peers.end(),
-        [](const peer_info& a, const peer_info& b) { return a.block_num < b.block_num; });
+    // Sort peers by block_num descending so we try the best first
+    std::sort(available_peers.begin(), available_peers.end(),
+        [](const peer_info& a, const peer_info& b) { return a.block_num > b.block_num; });
 
-    ilog(CLOG_YELLOW "Selected peer ${p} with snapshot at block ${b} (${s} bytes)" CLOG_RESET,
-         ("p", best->endpoint_str)("b", best->block_num)("s", best->compressed_size));
-    std::cerr << "   Selected peer " << best->endpoint_str
-              << " (block " << best->block_num
-              << ", " << (best->compressed_size / 1048576) << " MB)\n";
-
-    // Phase 2: Download snapshot in chunks
-    // Brief delay to allow server-side cleanup of Phase 1 session.
-    // The server's anti-spam check rejects duplicate sessions per IP, and the
-    // Phase 1 handler fiber may not have cleaned up yet after we closed the socket.
-    fc::usleep(fc::seconds(2));
-
-    std::cerr << "   Downloading snapshot...\n";
-    fc::tcp_socket sock;
-    auto ep = fc::ip::endpoint::from_string(best->endpoint_str);
-
-    // Connect with retry — the server may briefly reject if Phase 1 session
-    // cleanup hasn't completed yet (anti-spam duplicate session check).
-    const int max_connect_retries = 3;
-    for (int retry = 0; retry < max_connect_retries; ++retry) {
-        try {
-            auto connect_future = fc::async([&sock, &ep]() {
-                sock.connect_to(ep);
-            });
-            connect_future.wait(SNAPSHOT_PEER_TIMEOUT);
-            break;  // connected
-        } catch (...) {
-            if (retry + 1 >= max_connect_retries) throw;
-            wlog("Phase 2 connect to ${p} failed (attempt ${a}/${m}), retrying...",
-                 ("p", best->endpoint_str)("a", retry + 1)("m", max_connect_retries));
-            std::cerr << "   Connect retry " << (retry + 1) << "/" << max_connect_retries << "...\n";
-            try { sock.close(); } catch (...) {}
-            sock.open();
-            fc::usleep(fc::seconds(2));
-        }
-    }
-
-    // Request info again to establish session
-    try {
-        send_message_empty(sock, snapshot_info_request);
-    } catch (const fc::exception& e) {
-        // Send failed — server may have rejected us with an access-denied message.
-        auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
-        if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
-            auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
-            FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
-                ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
-        }
-        FC_THROW("Failed to send Phase 2 info request to peer ${p}: ${e}",
-            ("p", best->endpoint_str)("e", e.to_detail_string()));
-    } catch (const std::exception& e) {
-        auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
-        if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
-            auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
-            FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
-                ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
-        }
-        FC_THROW("Failed to send Phase 2 info request to peer ${p}: ${e}",
-            ("p", best->endpoint_str)("e", e.what()));
-    }
-    auto info_result = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
-    FC_ASSERT(std::get<0>(info_result), "Timeout waiting for peer response during download");
-
-    // Check for access denied response
-    if (std::get<1>(info_result) == snapshot_access_denied) {
-        auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(info_result));
-        FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
-            ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
-    }
-
-    FC_ASSERT(std::get<1>(info_result) == snapshot_info_reply, "Unexpected response from peer during download");
-
-    // Validate snapshot size against maximum
-    FC_ASSERT(best->compressed_size <= MAX_SNAPSHOT_SIZE,
-        "Snapshot too large: ${s} bytes exceeds limit of ${l} bytes",
-        ("s", best->compressed_size)("l", MAX_SNAPSHOT_SIZE));
-
-    // Create temp file for download
     std::string dir = snapshot_dir;
     if (!boost::filesystem::exists(dir)) {
         boost::filesystem::create_directories(dir);
         ilog(CLOG_YELLOW "Created snapshot directory: ${d}" CLOG_RESET, ("d", dir));
     }
     std::string temp_path = dir + "/snapshot-download-temp.vizjson";
-    std::ofstream out(temp_path, std::ios::binary);
-    FC_ASSERT(out.is_open(), "Failed to create temp file for snapshot download: ${p}", ("p", temp_path));
 
-    uint64_t total_size = best->compressed_size;
-    uint64_t offset = 0;
-    const uint32_t chunk_size = 1048576; // 1 MB chunks
-    int last_printed_percent = -1;
+    // Phase 2: Download snapshot in chunks — iterate peers from best to worst,
+    // falling back to the next peer if download or checksum verification fails.
+    while (!available_peers.empty()) {
+        auto best = available_peers.begin();
 
-    auto download_start = fc::time_point::now();
+        ilog(CLOG_YELLOW "Selected peer ${p} with snapshot at block ${b} (${s} bytes)" CLOG_RESET,
+             ("p", best->endpoint_str)("b", best->block_num)("s", best->compressed_size));
+        std::cerr << "   Selected peer " << best->endpoint_str
+                  << " (block " << best->block_num
+                  << ", " << (best->compressed_size / 1048576) << " MB)\n";
 
-    while (offset < total_size) {
-        snapshot_data_request_data req;
-        req.block_num = best->block_num;
-        req.offset = offset;
-        req.chunk_size = chunk_size;
+        // Brief delay to allow server-side cleanup of Phase 1 session.
+        fc::usleep(fc::seconds(2));
+
+        std::cerr << "   Downloading snapshot...\n";
 
         try {
-            send_message(sock, snapshot_data_request, pack_to_vec(req));
-        } catch (const fc::exception& e) {
-            FC_THROW("Failed to send chunk request to peer ${p} at offset ${o}: ${e}",
-                ("p", best->endpoint_str)("o", offset)("e", e.to_detail_string()));
-        } catch (const std::exception& e) {
-            FC_THROW("Failed to send chunk request to peer ${p} at offset ${o}: ${e}",
-                ("p", best->endpoint_str)("o", offset)("e", e.what()));
-        }
-        // Use longer timeout for chunk download to support slow connections.
-        // 1 MB chunk with 5 min timeout = min 3.4 KB/s required (very slow connections OK).
-        auto data_result = read_message_with_timeout(sock, 64 * 1024 * 1024, fc::minutes(5));
-        FC_ASSERT(std::get<0>(data_result), "Timeout waiting for chunk data from peer");
-        FC_ASSERT(std::get<1>(data_result) == snapshot_data_reply, "Unexpected response during chunk download");
+            fc::tcp_socket sock;
+            auto ep = fc::ip::endpoint::from_string(best->endpoint_str);
 
-        auto reply = unpack_from_vec<snapshot_data_reply_data>(std::get<2>(data_result));
-
-        if (!reply.data.empty()) {
-            out.write(reply.data.data(), reply.data.size());
-            offset += reply.data.size();
-        }
-
-        uint32_t percent = total_size > 0 ? static_cast<uint32_t>(offset * 100 / total_size) : 100;
-        if (static_cast<int>(percent) != last_printed_percent && (percent % 5 == 0 || reply.is_last)) {
-            std::cerr << "   Downloaded " << (offset / 1048576) << "/" << (total_size / 1048576) << " MB (" << percent << "%)\n";
-            last_printed_percent = static_cast<int>(percent);
-        }
-        ilog(CLOG_YELLOW "Downloaded ${offset}/${total} bytes (${pct}%)" CLOG_RESET,
-             ("offset", offset)("total", total_size)("pct", percent));
-
-        if (reply.is_last) break;
-    }
-
-    out.flush();
-    out.close();
-    sock.close();
-
-    auto download_elapsed = double((fc::time_point::now() - download_start).count()) / 1000000.0;
-    std::cerr << "   Download complete: " << (offset / 1048576) << " MB in " << download_elapsed << " sec\n";
-    ilog(CLOG_YELLOW "Download complete: ${s} bytes in ${t} sec" CLOG_RESET, ("s", offset)("t", download_elapsed));
-
-    // Verify checksum by streaming file in chunks (avoids loading entire file into memory)
-    std::cerr << "   Verifying checksum...\n";
-    {
-        std::ifstream verify_in(temp_path, std::ios::binary);
-        FC_ASSERT(verify_in.is_open(), "Failed to open downloaded snapshot for verification");
-
-        fc::sha256::encoder enc;
-        char buf[1048576]; // 1 MB chunks
-        while (verify_in.good()) {
-            verify_in.read(buf, sizeof(buf));
-            auto n = verify_in.gcount();
-            if (n > 0) {
-                enc.write(buf, static_cast<uint32_t>(n));
+            // Connect with retry — the server may briefly reject if Phase 1 session
+            // cleanup hasn't completed yet (anti-spam duplicate session check).
+            const int max_connect_retries = 3;
+            for (int retry = 0; retry < max_connect_retries; ++retry) {
+                bool connected = false;
+                try {
+                    auto connect_future = fc::async([&sock, &ep]() {
+                        sock.connect_to(ep);
+                    });
+                    connect_future.wait(SNAPSHOT_PEER_TIMEOUT);
+                    connected = true;
+                } catch (...) {
+                    if (retry + 1 >= max_connect_retries) throw;
+                }
+                if (connected) break;
+                wlog("Phase 2 connect to ${p} failed (attempt ${a}/${m}), retrying...",
+                     ("p", best->endpoint_str)("a", retry + 1)("m", max_connect_retries));
+                std::cerr << "   Connect retry " << (retry + 1) << "/" << max_connect_retries << "...\n";
+                try { sock.close(); } catch (...) {}
+                sock.open();
+                fc::usleep(fc::seconds(2));
             }
+
+            // Request info again to establish session
+            try {
+                send_message_empty(sock, snapshot_info_request);
+            } catch (const fc::exception& e) {
+                auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
+                if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
+                    auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
+                    FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
+                        ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
+                }
+                FC_THROW("Failed to send Phase 2 info request to peer ${p}: ${e}",
+                    ("p", best->endpoint_str)("e", e.to_detail_string()));
+            } catch (const std::exception& e) {
+                auto rej_result = read_message_with_timeout(sock, 256 * 1024, fc::seconds(5));
+                if (std::get<0>(rej_result) && std::get<1>(rej_result) == snapshot_access_denied) {
+                    auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(rej_result));
+                    FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
+                        ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
+                }
+                FC_THROW("Failed to send Phase 2 info request to peer ${p}: ${e}",
+                    ("p", best->endpoint_str)("e", e.what()));
+            }
+            auto info_result = read_message_with_timeout(sock, 256 * 1024, SNAPSHOT_PEER_TIMEOUT);
+            FC_ASSERT(std::get<0>(info_result), "Timeout waiting for peer response during download");
+
+            if (std::get<1>(info_result) == snapshot_access_denied) {
+                auto denial = unpack_from_vec<snapshot_access_denied_data>(std::get<2>(info_result));
+                FC_THROW("Peer ${p} denied access during Phase 2: ${r}",
+                    ("p", best->endpoint_str)("r", deny_reason_to_string(denial.reason)));
+            }
+
+            FC_ASSERT(std::get<1>(info_result) == snapshot_info_reply, "Unexpected response from peer during download");
+
+            auto info2 = unpack_from_vec<snapshot_info_reply_data>(std::get<2>(info_result));
+
+            // Refresh metadata from Phase 2 in case the peer's snapshot changed since Phase 1
+            best->block_num = info2.block_num;
+            best->checksum = info2.checksum;
+            best->compressed_size = info2.compressed_size;
+
+            FC_ASSERT(best->compressed_size <= MAX_SNAPSHOT_SIZE,
+                "Snapshot too large: ${s} bytes exceeds limit of ${l} bytes",
+                ("s", best->compressed_size)("l", MAX_SNAPSHOT_SIZE));
+
+            std::ofstream out(temp_path, std::ios::binary);
+            FC_ASSERT(out.is_open(), "Failed to create temp file for snapshot download: ${p}", ("p", temp_path));
+
+            uint64_t total_size = best->compressed_size;
+            uint64_t offset = 0;
+            const uint32_t chunk_size = 1048576; // 1 MB chunks
+            int last_printed_percent = -1;
+            auto download_start = fc::time_point::now();
+
+            while (offset < total_size) {
+                snapshot_data_request_data req;
+                req.block_num = best->block_num;
+                req.offset = offset;
+                req.chunk_size = chunk_size;
+
+                try {
+                    send_message(sock, snapshot_data_request, pack_to_vec(req));
+                } catch (const fc::exception& e) {
+                    FC_THROW("Failed to send chunk request to peer ${p} at offset ${o}: ${e}",
+                        ("p", best->endpoint_str)("o", offset)("e", e.to_detail_string()));
+                } catch (const std::exception& e) {
+                    FC_THROW("Failed to send chunk request to peer ${p} at offset ${o}: ${e}",
+                        ("p", best->endpoint_str)("o", offset)("e", e.what()));
+                }
+
+                auto data_result = read_message_with_timeout(sock, 64 * 1024 * 1024, fc::minutes(5));
+                FC_ASSERT(std::get<0>(data_result), "Timeout waiting for chunk data from peer");
+                FC_ASSERT(std::get<1>(data_result) == snapshot_data_reply, "Unexpected response during chunk download");
+
+                auto reply = unpack_from_vec<snapshot_data_reply_data>(std::get<2>(data_result));
+
+                if (!reply.data.empty()) {
+                    out.write(reply.data.data(), reply.data.size());
+                    offset += reply.data.size();
+                }
+
+                uint32_t percent = total_size > 0 ? static_cast<uint32_t>(offset * 100 / total_size) : 100;
+                if (static_cast<int>(percent) != last_printed_percent && (percent % 5 == 0 || reply.is_last)) {
+                    std::cerr << "   Downloaded " << (offset / 1048576) << "/" << (total_size / 1048576) << " MB (" << percent << "%)\n";
+                    last_printed_percent = static_cast<int>(percent);
+                }
+                ilog(CLOG_YELLOW "Downloaded ${offset}/${total} bytes (${pct}%)" CLOG_RESET,
+                     ("offset", offset)("total", total_size)("pct", percent));
+
+                if (reply.is_last) break;
+            }
+
+            out.flush();
+            out.close();
+            sock.close();
+
+            auto download_elapsed = double((fc::time_point::now() - download_start).count()) / 1000000.0;
+            std::cerr << "   Download complete: " << (offset / 1048576) << " MB in " << download_elapsed << " sec\n";
+            ilog(CLOG_YELLOW "Download complete: ${s} bytes in ${t} sec" CLOG_RESET, ("s", offset)("t", download_elapsed));
+
+            // Verify checksum by streaming file in chunks
+            std::cerr << "   Verifying checksum...\n";
+            {
+                std::ifstream verify_in(temp_path, std::ios::binary);
+                FC_ASSERT(verify_in.is_open(), "Failed to open downloaded snapshot for verification");
+
+                fc::sha256::encoder enc;
+                char buf[1048576];
+                while (verify_in.good()) {
+                    verify_in.read(buf, sizeof(buf));
+                    auto n = verify_in.gcount();
+                    if (n > 0) {
+                        enc.write(buf, static_cast<uint32_t>(n));
+                    }
+                }
+                verify_in.close();
+
+                fc::sha256 computed = enc.result();
+                FC_ASSERT(computed == best->checksum,
+                    "Snapshot checksum mismatch after download: computed=${c}, expected=${e}",
+                    ("c", std::string(computed))("e", std::string(best->checksum)));
+            }
+            ilog(CLOG_YELLOW "Snapshot checksum verified" CLOG_RESET);
+            std::cerr << "   Checksum verified OK\n";
+
+            // Rename to final path
+            std::string final_path = dir + "/snapshot-block-" + std::to_string(best->block_num) + ".vizjson";
+            boost::filesystem::rename(temp_path, final_path);
+
+            std::cerr << "   Snapshot saved to " << final_path << "\n";
+            ilog(CLOG_YELLOW "Snapshot saved to ${p}" CLOG_RESET, ("p", final_path));
+            return final_path;
+
+        } catch (const fc::assert_exception& e) {
+            // Checksum mismatch or other assert — remove this peer and try the next one
+            elog("Snapshot download from peer ${p} failed (assert): ${e}. Trying next peer...",
+                 ("p", best->endpoint_str)("e", e.to_detail_string()));
+            std::cerr << "   Peer " << best->endpoint_str << " failed verification: " << e.to_string() << "\n"
+                      << "   Trying next trusted peer...\n";
+        } catch (const fc::exception& e) {
+            elog("Snapshot download from peer ${p} failed: ${e}. Trying next peer...",
+                 ("p", best->endpoint_str)("e", e.to_detail_string()));
+            std::cerr << "   Peer " << best->endpoint_str << " failed: " << e.to_string() << "\n"
+                      << "   Trying next trusted peer...\n";
+        } catch (const std::exception& e) {
+            elog("Snapshot download from peer ${p} failed: ${e}. Trying next peer...",
+                 ("p", best->endpoint_str)("e", e.what()));
+            std::cerr << "   Peer " << best->endpoint_str << " failed: " << e.what() << "\n"
+                      << "   Trying next trusted peer...\n";
         }
-        verify_in.close();
 
-        fc::sha256 computed = enc.result();
-        FC_ASSERT(computed == best->checksum,
-            "Snapshot checksum mismatch after download: computed=${c}, expected=${e}",
-            ("c", std::string(computed))("e", std::string(best->checksum)));
+        // Cleanup temp file before trying next peer
+        try {
+            if (boost::filesystem::exists(temp_path)) {
+                boost::filesystem::remove(temp_path);
+            }
+        } catch (...) {}
+
+        // Remove failed peer and continue with the next best
+        available_peers.erase(best);
     }
-    ilog(CLOG_YELLOW "Snapshot checksum verified" CLOG_RESET);
-    std::cerr << "   Checksum verified OK\n";
 
-    // Rename to final path
-    std::string final_path = dir + "/snapshot-block-" + std::to_string(best->block_num) + ".vizjson";
-    boost::filesystem::rename(temp_path, final_path);
-
-    std::cerr << "   Snapshot saved to " << final_path << "\n";
-    ilog(CLOG_YELLOW "Snapshot saved to ${p}" CLOG_RESET, ("p", final_path));
-    return final_path;
+    wlog("All trusted peers exhausted. No valid snapshot downloaded.");
+    std::cerr << "   All trusted peers exhausted. No valid snapshot available.\n";
+    return std::string();
 }
 
 // ============================================================================
@@ -3094,11 +3531,21 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     // BEFORE on_sync() fires and P2P starts syncing.
     if (!my->snapshot_path.empty()) {
         auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
-        chain_plug.snapshot_load_callback = [this]() {
+        chain_plug.snapshot_load_callback = [this, &chain_plug]() {
             ilog("Loading state from snapshot: ${p}", ("p", my->snapshot_path));
             auto start = fc::time_point::now();
-            my->load_snapshot(fc::path(my->snapshot_path));
-            my->db.initialize_hardforks();
+            try {
+                my->load_snapshot(fc::path(my->snapshot_path));
+                my->db.initialize_hardforks();
+            } catch (...) {
+                elog("Snapshot load failed — wiping corrupted shared memory before restart");
+                try {
+                    chain_plug.wipe_state();
+                } catch (const std::exception& wipe_err) {
+                    elog("Failed to wipe shared memory: ${e}", ("e", wipe_err.what()));
+                }
+                throw;
+            }
             auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
             ilog("Snapshot loaded successfully at block ${n}, elapsed time ${t} sec",
                 ("n", my->db.head_block_num())("t", elapsed));
@@ -3125,7 +3572,7 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     if (my->sync_snapshot_from_trusted_peer && !my->trusted_snapshot_peers.empty()) {
         ilog("P2P snapshot sync enabled: will download from trusted peers on empty state");
         auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
-        chain_plug.snapshot_p2p_sync_callback = [this]() {
+        chain_plug.snapshot_p2p_sync_callback = [this, &chain_plug]() {
             const uint32_t retry_interval_sec = my->stalled_sync_timeout_minutes * 60;
             uint32_t attempt = 0;
 
@@ -3147,9 +3594,19 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
                 if (!snapshot_path.empty()) {
                     std::cerr << "   Clearing state and importing snapshot...\n";
                     ilog("Download complete, loading snapshot...");
-                    my->load_snapshot(fc::path(snapshot_path));
-                    my->db.set_dlt_mode(true);  // Mark DLT mode — block_log stays empty
-                    my->db.initialize_hardforks();
+                    try {
+                        my->load_snapshot(fc::path(snapshot_path));
+                        my->db.set_dlt_mode(true);  // Mark DLT mode — block_log stays empty
+                        my->db.initialize_hardforks();
+                    } catch (...) {
+                        elog("P2P snapshot import failed — wiping corrupted shared memory before restart");
+                        try {
+                            chain_plug.wipe_state();
+                        } catch (const std::exception& wipe_err) {
+                            elog("Failed to wipe shared memory: ${e}", ("e", wipe_err.what()));
+                        }
+                        throw;
+                    }
                     auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
                     std::cerr << "   === P2P Snapshot Sync complete (block "
                               << my->db.head_block_num() << ", " << elapsed << " sec) ===\n";
@@ -3216,9 +3673,50 @@ void snapshot_plugin::plugin_startup() {
         my->start_server();
     }
 
+    // Stale snapshot detection: if we're in DLT mode with snapshot serving or
+    // periodic snapshots enabled, check that the latest snapshot covers the
+    // DLT block log start. If the snapshot is older than the log's first block
+    // by more than one (snap_block + 1 < dlt_start_block), downloading nodes
+    // would have a gap and fail to sync. When snap_block + 1 == dlt_start,
+    // the snapshot and DLT log are contiguous (no gap).
+    if (my->db._dlt_mode && !my->snapshot_dir.empty() &&
+        (my->allow_snapshot_serving || my->snapshot_every_n_blocks > 0)) {
+        uint32_t dlt_start = my->db.get_dlt_block_log().start_block_num();
+        if (dlt_start > 0) {
+            fc::path latest = my->find_latest_snapshot();
+            uint32_t snap_block = 0;
+            if (!latest.string().empty()) {
+                // Parse block number from filename
+                std::string filename = latest.filename().string();
+                auto pos = filename.find("snapshot-block-");
+                if (pos != std::string::npos) {
+                    try {
+                        std::string num_str = filename.substr(pos + 15);
+                        auto dot_pos = num_str.find('.');
+                        if (dot_pos != std::string::npos) num_str = num_str.substr(0, dot_pos);
+                        snap_block = static_cast<uint32_t>(std::stoul(num_str));
+                    } catch (...) {}
+                }
+            }
+
+            if (snap_block + 1 < dlt_start) {
+                wlog(CLOG_RED "STALE SNAPSHOT DETECTED: latest snapshot at block ${snap} "
+                     "is older than DLT block log start at block ${dlt}. "
+                     "Downloading nodes would have a sync gap (blocks ${gap_start}..${gap_end} missing). "
+                     "A fresh snapshot will be created on the first synced block." CLOG_RESET,
+                     ("snap", snap_block)("dlt", dlt_start)
+                     ("gap_start", snap_block + 1)("gap_end", dlt_start - 1));
+                std::cerr << "   WARNING: Stale snapshot (block " << snap_block
+                          << ") < DLT start - 1 (block " << dlt_start - 1
+                          << "). Fresh snapshot will be created.\n";
+                my->needs_fresh_snapshot = true;
+            }
+        }
+    }
+
     // If --snapshot-at-block or --snapshot-every-n-blocks is set, OR if stalled sync detection is enabled,
     // connect to applied_block signal
-    if (my->snapshot_at_block > 0 || my->snapshot_every_n_blocks > 0 || my->enable_stalled_sync_detection) {
+    if (my->snapshot_at_block > 0 || my->snapshot_every_n_blocks > 0 || my->enable_stalled_sync_detection || my->needs_fresh_snapshot) {
         my->applied_block_conn = my->db.applied_block.connect(
             [this](const graphene::protocol::signed_block& b) {
                 my->on_applied_block(b);
@@ -3234,6 +3732,65 @@ void snapshot_plugin::plugin_startup() {
     // Start stalled sync detection if enabled (for DLT mode)
     if (my->enable_stalled_sync_detection && !my->trusted_snapshot_peers.empty()) {
         my->start_stalled_sync_detection();
+    }
+
+    // Listen for dlt_block_log reset events — create a fresh snapshot so other
+    // DLT nodes can bootstrap from us (ignores snapshot-every-n-blocks, etc.)
+    if (my->db._dlt_mode && !my->snapshot_dir.empty()) {
+        my->dlt_reset_conn = my->db.dlt_block_log_was_reset.connect([this]() {
+            // If the node is currently syncing (e.g. processing a large fork
+            // switch), defer the snapshot to avoid lock contention.  The async
+            // snapshot's Phase 1 read-lock would block concurrent push_block
+            // write-locks, causing "Unable to acquire READ lock" timeouts on
+            // the P2P thread and triggering infinite sync-restart loops.
+            // Setting needs_fresh_snapshot lets on_applied_block() schedule
+            // the snapshot once sync completes.
+            bool is_syncing = false;
+            try {
+                auto& chain_plug = appbase::app().get_plugin<graphene::plugins::chain::plugin>();
+                is_syncing = chain_plug.is_syncing();
+            } catch (...) {}
+
+            if (is_syncing) {
+                ilog(CLOG_GREEN "dlt_block_log was reset during sync — deferring snapshot until sync completes" CLOG_RESET);
+                my->needs_fresh_snapshot = true;
+                return;
+            }
+
+            std::string dir = my->snapshot_dir;
+            uint32_t head = my->db.head_block_num();
+            fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(head) + ".vizjson");
+
+            ilog(CLOG_GREEN "dlt_block_log was reset — scheduling fresh snapshot for other nodes: ${p}" CLOG_RESET,
+                 ("p", output.string()));
+
+            // Reuse the async snapshot scheduling logic
+            if (my->snapshot_in_progress.exchange(true)) {
+                wlog("Snapshot already in progress, skipping post-reset snapshot");
+                return;
+            }
+            if (!my->snapshot_thread) {
+                my->snapshot_thread = std::make_unique<fc::thread>("async_snapshot");
+            }
+            my->snapshot_future = my->snapshot_thread->async([this, output]() {
+                struct flag_guard {
+                    std::atomic<bool>& flag;
+                    ~flag_guard() { flag = false; }
+                };
+                flag_guard guard{my->snapshot_in_progress};
+                try {
+                    my->create_snapshot(output);
+                    my->cleanup_old_snapshots();
+                } catch (const fc::exception& e) {
+                    elog("Failed to create post-reset snapshot: ${e}", ("e", e.to_detail_string()));
+                } catch (const std::exception& e) {
+                    elog("Failed to create post-reset snapshot: ${e}", ("e", e.what()));
+                } catch (...) {
+                    elog("Failed to create post-reset snapshot: unknown exception");
+                }
+            }, "async_snapshot_dlt_reset");
+        });
+        ilog("Listening for dlt_block_log reset events to create fresh snapshots");
     }
 }
 

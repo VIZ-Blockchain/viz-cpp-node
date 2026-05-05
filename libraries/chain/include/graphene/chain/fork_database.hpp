@@ -125,6 +125,30 @@ namespace graphene {
                 return _emergency_consensus_active;
             }
 
+            /// Diagnostic accessors for block storage stats
+            size_t linked_size() const { return _index.size(); }
+            size_t unlinked_size() const { return _unlinked_index.size(); }
+
+            /// Returns min/max block numbers in the linked index (0 if empty)
+            uint32_t linked_min_block_num() const {
+                auto& by_num = _index.get<block_num>();
+                return by_num.empty() ? 0 : (*by_num.begin())->num;
+            }
+            uint32_t linked_max_block_num() const {
+                auto& by_num = _index.get<block_num>();
+                return by_num.empty() ? 0 : (*by_num.rbegin())->num;
+            }
+
+            /// Returns min/max block numbers in the unlinked index (0 if empty)
+            uint32_t unlinked_min_block_num() const {
+                auto& by_num = _unlinked_index.get<block_num>();
+                return by_num.empty() ? 0 : (*by_num.begin())->num;
+            }
+            uint32_t unlinked_max_block_num() const {
+                auto& by_num = _unlinked_index.get<block_num>();
+                return by_num.empty() ? 0 : (*by_num.rbegin())->num;
+            }
+
         private:
             /** @return a pointer to the newly pushed item */
             void _push_block(const item_ptr &b);

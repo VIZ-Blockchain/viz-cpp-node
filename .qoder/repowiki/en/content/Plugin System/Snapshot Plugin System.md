@@ -13,8 +13,9 @@
 - [plugin.cpp](file://plugins/chain/plugin.cpp)
 - [plugin.hpp](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp)
 - [database.cpp](file://libraries/chain/database.cpp)
-- [witness.cpp](file://plugins/witness/witness.cpp)
+- [database.hpp](file://libraries/chain/include/graphene/chain/database.hpp)
 - [dlt_block_log.cpp](file://libraries/chain/dlt_block_log.cpp)
+- [witness.cpp](file://plugins/witness/witness.cpp)
 - [file_mutex.cpp](file://thirdparty/fc/src/interprocess/file_mutex.cpp)
 - [config.ini](file://share/vizd/config/config.ini)
 - [node.cpp](file://libraries/network/node.cpp)
@@ -22,14 +23,15 @@
 - [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
 - [logger_config.cpp](file://thirdparty/fc/src/log/logger_config.cpp)
 - [console_appender.cpp](file://thirdparty/fc/src/log/console_appender.cpp)
+- [chainbase.cpp](file://thirdparty/chainbase/src/chainbase.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Updated anti-spam configuration documentation to reflect increased maximum sessions per IP from 2 to 3 and maximum connections per hour from 6 to 10
-- Enhanced access control and security mechanisms documentation with new configuration values
-- Updated troubleshooting guide to include new anti-spam limits and their implications
-- Revised configuration reference to show updated anti-spam parameters
+- Added comprehensive stale snapshot detection feature that automatically identifies snapshots older than DLT block log start
+- Implemented urgent fresh snapshot creation to prevent sync gaps when downloading nodes would have missing blocks
+- Enhanced DLT mode recovery capabilities with intelligent gap detection and automatic snapshot regeneration
+- Improved snapshot validation logic to prevent serving broken snapshots with gaps
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -43,24 +45,25 @@
 9. [Automatic Snapshot Discovery](#automatic-snapshot-discovery)
 10. [Integrated Recovery Workflow](#integrated-recovery-workflow)
 11. [DLT Replay Integration](#dlt-replay-integration)
-12. [Peer-to-Peer Snapshot Synchronization](#peer-to-peer-snapshot-synchronization)
-13. [Enhanced P2P Integration with Trusted Peers](#enhanced-p2p-integration-with-trusted-peers)
-14. [Watchdog and Stalled Sync Detection](#watchdog-and-stalled-sync-detection)
-15. [P2P Stale Sync Detection](#p2p-stale-sync-detection)
-16. [Emergency Consensus Handling](#emergency-consensus-handling)
-17. [Enhanced Anti-Spam Protection](#enhanced-anti-spam-protection)
-18. [Access Control and Security Mechanisms](#access-control-and-security-mechanisms)
-19. [Integration with Chain Plugin](#integration-with-chain-plugin)
-20. [Dependency Analysis](#dependency-analysis)
-21. [Performance Considerations](#performance-considerations)
-22. [Troubleshooting Guide](#troubleshooting-guide)
-23. [Conclusion](#conclusion)
+12. [Signal-Based DLT Block Log Reset Handling](#signal-based-dlt-block-log-reset-handling)
+13. [Peer-to-Peer Snapshot Synchronization](#peer-to-peer-snapshot-synchronization)
+14. [Enhanced P2P Integration with Trusted Peers](#enhanced-p2p-integration-with-trusted-peers)
+15. [Watchdog and Stalled Sync Detection](#watchdog-and-stalled-sync-detection)
+16. [P2P Stale Sync Detection](#p2p-stale-sync-detection)
+17. [Emergency Consensus Handling](#emergency-consensus-handling)
+18. [Enhanced Anti-Spam Protection](#enhanced-anti-spam-protection)
+19. [Access Control and Security Mechanisms](#access-control-and-security-mechanisms)
+20. [Integration with Chain Plugin](#integration-with-chain-plugin)
+21. [Dependency Analysis](#dependency-analysis)
+22. [Performance Considerations](#performance-considerations)
+23. [Troubleshooting Guide](#troubleshooting-guide)
+24. [Conclusion](#conclusion)
 
 ## Introduction
 
 The Snapshot Plugin System is a comprehensive solution for VIZ blockchain nodes that enables efficient state synchronization through distributed ledger technology (DLT). This system provides mechanisms for creating, loading, serving, and downloading blockchain state snapshots, significantly reducing bootstrap times and enabling rapid node initialization.
 
-**Updated** The system has been enhanced with comprehensive snapshot plugin configuration supporting multiple trusted snapshot peers, snapshot scheduling parameters, serving options, watchdog monitoring, automatic snapshot discovery, integrated recovery workflow, enhanced anti-spam protection, and **enhanced P2P integration with automatic trusted peer registration**. These enhancements provide robust error handling for recovery scenarios, automatic peer-to-peer snapshot synchronization for empty state nodes, **automatic registration of trusted peer endpoints with the P2P layer**, and **advanced watchdog mechanisms for DLT mode operation**.
+**Updated** The system has been enhanced with comprehensive snapshot plugin configuration supporting multiple trusted snapshot peers, snapshot scheduling parameters, serving options, watchdog monitoring, automatic snapshot discovery, integrated recovery workflow, enhanced anti-spam protection, **signal-based DLT block log reset handling**, **enhanced P2P integration with trusted peers**, **enhanced error handling for snapshot download operations**, **improved undo stack management during snapshot loading**, and **stale snapshot detection**. These enhancements provide robust error handling for recovery scenarios, automatic peer-to-peer snapshot synchronization for empty state nodes, **automatic registration of trusted peer endpoints with the P2P layer**, **advanced watchdog mechanisms for DLT mode operation**, **automatic snapshot creation during DLT block log reset scenarios**, and **intelligent gap detection to prevent sync gaps when serving snapshots**.
 
 The plugin addresses the fundamental challenge of blockchain bootstrapping by allowing nodes to jump directly to a recent state rather than replaying thousands of blocks. This is particularly crucial for VIZ's social media and content platform characteristics, where rapid deployment and scaling are essential.
 
@@ -135,6 +138,9 @@ Deep integration with the VIZ blockchain database ensures seamless state transit
 #### Watchdog Monitoring Layer
 **New** Comprehensive watchdog system that monitors server health and automatically restarts dead accept loops to ensure continuous operation.
 
+#### **Signal-Based DLT Block Log Reset Handling Layer**
+**New** Advanced integration with DLT block log reset events that automatically schedules fresh snapshot creation for other DLT nodes to bootstrap from, providing seamless network recovery and state synchronization.
+
 #### **Enhanced P2P Integration Layer**
 **New** Advanced integration with the P2P layer that automatically registers trusted peer endpoints for reduced soft-ban duration, enabling trusted peers to receive 5-minute bans instead of the default 1-hour duration.
 
@@ -144,7 +150,25 @@ Deep integration with the VIZ blockchain database ensures seamless state transit
 #### **P2P Stale Sync Detection Layer**
 **New** Lightweight recovery mechanism that automatically detects and recovers from network stalls without requiring snapshot downloads, resetting sync from LIB and reconnecting peers.
 
-**Updated** The modular architecture provides enhanced extensibility and maintainability through clear separation of concerns between interface, serialization, network, database, recovery, asynchronous execution, watchdog, and **enhanced P2P integration** components. The recent additions include asynchronous snapshot creation, witness-aware deferral, watchdog mechanisms, automatic snapshot discovery, integrated recovery workflow, comprehensive error handling, **enhanced P2P integration with trusted peer support**, and **P2P stale sync detection**.
+#### **Dedicated Threading for Stalled Sync Detection**
+**New** Dedicated fc::thread instance for stalled sync detection operations, preventing fc fibers from stalling on main thread blocked in io_serv->run().
+
+#### **Automatic Gap Detection for DLT Block Log Initialization**
+**New** Intelligent gap detection and automatic reset logic that prevents index position mismatch assertions during DLT block log initialization after snapshot imports, ensuring seamless state synchronization.
+
+#### **Enhanced Error Handling for Snapshot Download Operations**
+**New** Comprehensive error handling around snapshot download operations within the check_stalled_sync_loop method, ensuring stalled sync monitoring continues running even when snapshot loading fails.
+
+#### **Improved Undo Stack Management**
+**New** Enhanced undo stack management in load_snapshot method by adding proper undo stack management with db.undo_all() call before set_revision operations, ensuring proper database state cleanup.
+
+#### **Enhanced Exception Handling**
+**New** Enhanced exception handling for both fc::exception and std::exception types during snapshot download attempts, providing robust error recovery mechanisms.
+
+#### **Stale Snapshot Detection Layer**
+**New** Intelligent stale snapshot detection system that automatically identifies snapshots older than DLT block log start and schedules urgent fresh snapshot creation to prevent sync gaps when downloading nodes would encounter missing blocks.
+
+**Updated** The modular architecture provides enhanced extensibility and maintainability through clear separation of concerns between interface, serialization, network, database, recovery, asynchronous execution, watchdog, **signal-based DLT block log reset handling**, **enhanced P2P integration**, **enhanced error handling**, **improved undo stack management**, and **stale snapshot detection** components. The recent additions include asynchronous snapshot creation, witness-aware deferral, watchdog mechanisms, automatic snapshot discovery, integrated recovery workflow, comprehensive error handling, **signal-based DLT block log reset handling**, **enhanced P2P integration with trusted peer support**, **dedicated threading for stalled sync detection**, **P2P stale sync detection**, **automatic gap detection for DLT block log initialization**, **enhanced error handling for snapshot download operations**, **improved undo stack management**, **enhanced exception handling**, and **stale snapshot detection**.
 
 **Section sources**
 - [plugin.hpp:42-76](file://plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp#L42-L76)
@@ -172,59 +196,75 @@ B --> J[Watchdog Monitor]
 B --> K[P2P Integration Layer]
 B --> L[Enhanced Logging System]
 B --> M[P2P Stale Sync Detection]
+B --> N[Signal-Based DLT Reset Handler]
+B --> O[Dedicated Threading for Stalled Sync]
+B --> P[Automatic Gap Detection for DLT]
+B --> Q[Enhanced Error Handling]
+B --> R[Improved Undo Stack Management]
+B --> S[Stale Snapshot Detection]
 end
 subgraph "Security Layer"
-F --> N[Access Control]
-N --> O[Trust Enforcement]
-N --> P[Anti-Spam Protection]
+F --> T[Access Control]
+T --> U[Trust Enforcement]
+T --> V[Anti-Spam Protection]
 end
 subgraph "Serialization Layer"
-E --> Q[Object Exporter]
-E --> R[Object Importer]
-Q --> S[JSON Serializer]
-R --> T[Object Constructor]
+E --> W[Object Exporter]
+E --> X[Object Importer]
+W --> Y[JSON Serializer]
+X --> Z[Object Constructor]
 end
 subgraph "Network Layer"
-F --> U[TCP Server]
-F --> V[TCP Client]
-U --> W[Connection Management]
-V --> X[Peer Discovery]
+F --> AA[TCP Server]
+F --> AB[TCP Client]
+AA --> AC[Connection Management]
+AB --> AD[Peer Discovery]
 end
 subgraph "Database Layer"
-G --> Y[Chainbase Integration]
-G --> Z[Fork Database]
-Y --> AA[Object Indexes]
-Z --> AB[Block Validation]
+G --> AE[Chainbase Integration]
+G --> AF[Fork Database]
+AE --> AG[Object Indexes]
+AF --> AH[Block Validation]
 end
 subgraph "Storage Layer"
-S --> AC[File System]
-T --> AC
-AC --> AD[Snapshot Files]
+Y --> AI[File System]
+Z --> AI
+AI --> AJ[Snapshot Files]
 end
 subgraph "Recovery Layer"
-H --> AE[DLT Replay Engine]
-H --> AF[Automatic Discovery]
-H --> AG[Error Handling]
-AE --> AH[Block Log Integration]
-AF --> AI[Peer Synchronization]
-AG --> AJ[Diagnostic Tools]
+H --> AK[DLT Replay Engine]
+H --> AL[Automatic Discovery]
+H --> AM[Error Handling]
+AK --> AN[Block Log Integration]
+AL --> AO[Peer Synchronization]
+AM --> AP[Diagnostic Tools]
 end
 subgraph "Reliability Layer"
-U --> AK[Watchdog Mechanism]
-AK --> AL[Dedicated Server Thread]
-AK --> AM[Stalled Sync Detection]
-I --> AN[Dedicated Snapshot Thread]
-I --> AO[Async Snapshot Guard]
-K --> AP[Trusted Peer Registration]
-K --> AQ[Soft-Ban Duration Management]
-L --> AR[ANSI Color Codes]
-L --> AS[Level-Based Coloring]
-M --> AT[LIB Reset Mechanism]
-M --> AU[Peer Reconnection]
-M --> AV[Seed Node Management]
+AA --> AQ[Watchdog Mechanism]
+AQ --> AR[Dedicated Server Thread]
+AQ --> AS[Stalled Sync Detection]
+I --> AT[Dedicated Snapshot Thread]
+I --> AU[Async Snapshot Guard]
+O --> AV[Dedicated Stalled Sync Thread]
+O --> AW[Stalled Sync Operations]
+K --> AX[Trusted Peer Registration]
+K --> AY[Soft-Ban Duration Management]
+L --> AZ[ANSI Color Codes]
+L --> BA[Level-Based Coloring]
+M --> BB[LIB Reset Mechanism]
+M --> BC[Peer Reconnection]
+M --> BD[Seed Node Management]
+N --> BE[DLT Reset Signal Handling]
+N --> BF[Automatic Snapshot Scheduling]
+P --> BG[Index Position Mismatch Prevention]
+P --> BH[Gap Detection Logic]
+Q --> BI[Enhanced Exception Handling]
+R --> BJ[Undo Stack Management]
+S --> BK[Gap Detection Logic]
+S --> BL[Urgent Fresh Snapshot Creation]
 ```
 
-**Updated** The architecture emphasizes separation of concerns with clear boundaries between serialization, networking, database operations, security controls, recovery workflows, asynchronous execution, watchdog monitoring, and **enhanced P2P integration**. The modular design enables independent development and testing of each component while maintaining system coherence. Recent enhancements include integrated recovery workflow, DLT replay integration, automatic snapshot discovery, comprehensive watchdog mechanisms, asynchronous execution system, enhanced error handling, **enhanced P2P integration with trusted peer support**, and **P2P stale sync detection**.
+**Updated** The architecture emphasizes separation of concerns with clear boundaries between serialization, networking, database operations, security controls, recovery workflows, asynchronous execution, watchdog monitoring, **signal-based DLT block log reset handling**, **enhanced P2P integration**, **enhanced error handling**, **improved undo stack management**, and **stale snapshot detection**. The modular design enables independent development and testing of each component while maintaining system coherence. Recent enhancements include integrated recovery workflow, DLT replay integration, automatic snapshot discovery, comprehensive watchdog mechanisms, asynchronous execution system, enhanced error handling, **signal-based DLT block log reset handling**, **enhanced P2P integration with trusted peer support**, **dedicated threading for stalled sync detection**, **P2P stale sync detection**, **automatic gap detection for DLT block log initialization**, **enhanced error handling for snapshot download operations**, **improved undo stack management**, **enhanced exception handling**, and **stale snapshot detection**.
 
 **Diagram sources**
 - [plugin.cpp:675-780](file://plugins/snapshot/plugin.cpp#L675-L780)
@@ -265,7 +305,7 @@ FileSys-->>Plugin : success
 Plugin-->>CLI : completion_status
 ```
 
-**Updated** The creation process handles over 30 different object types, from critical singleton objects to optional metadata. Each object type receives specialized treatment based on its memory layout and data structure complexity, demonstrating the modular architecture's flexibility. The recent enhancements include witness-aware deferral to prevent missed block production slots, improved anti-spam protection, integrated recovery workflow capabilities, asynchronous execution system that prevents read-lock timeouts for API and P2P threads, and **enhanced P2P integration with automatic trusted peer endpoint registration**.
+**Updated** The creation process handles over 30 different object types, from critical singleton objects to optional metadata. Each object type receives specialized treatment based on its memory layout and data structure complexity, demonstrating the modular architecture's flexibility. The recent enhancements include witness-aware deferral to prevent missed block production slots, improved anti-spam protection, integrated recovery workflow capabilities, asynchronous execution system that prevents read-lock timeouts for API and P2P threads, **signal-based DLT block log reset handling**, **dedicated threading for stalled sync detection**, **enhanced error handling for snapshot download operations**, **improved undo stack management**, **stale snapshot detection**, and **enhanced P2P integration with automatic trusted peer endpoint registration**.
 
 **Diagram sources**
 - [plugin.cpp:885-987](file://plugins/snapshot/plugin.cpp#L885-L987)
@@ -274,7 +314,7 @@ Plugin-->>CLI : completion_status
 
 ### Snapshot Loading and Validation
 
-Snapshot loading implements rigorous validation and reconstruction procedures with enhanced memory management:
+Snapshot loading implements rigorous validation and reconstruction procedures with enhanced memory management and improved error handling:
 
 ```mermaid
 flowchart TD
@@ -289,13 +329,14 @@ ClearGenesis --> ImportSingletons["Import Singleton Objects"]
 ImportSingletons --> ImportCritical["Import Critical Objects"]
 ImportCritical --> ImportImportant["Import Important Objects"]
 ImportImportant --> ImportOptional["Import Optional Objects"]
-ImportOptional --> SetRevision["Set Database Revision"]
+ImportOptional --> UndoAll["db.undo_all() - Clear Undo Stack"]
+UndoAll --> SetRevision["Set Database Revision"]
 SetRevision --> SeedForkDB["Seed Fork Database"]
 SeedForkDB --> PromoteLIB["Promote LIB to Head Block"]
 PromoteLIB --> Complete([Load Complete])
 ```
 
-**Updated** The loading process includes extensive validation steps to ensure data integrity and compatibility with the current node configuration, showcasing the robustness of the modular design. Recent improvements include enhanced LIB promotion for DLT mode, improved fork database seeding for reliable P2P synchronization, integrated recovery workflow integration, comprehensive error handling for unlinkable_block_exception scenarios, comprehensive object clearing for hot-reload scenarios, and **enhanced P2P integration with automatic trusted peer endpoint registration**.
+**Updated** The loading process includes extensive validation steps to ensure data integrity and compatibility with the current node configuration, showcasing the robustness of the modular design. Recent improvements include enhanced LIB promotion for DLT mode, improved fork database seeding for reliable P2P synchronization, integrated recovery workflow integration, comprehensive error handling for unlinkable_block_exception scenarios, comprehensive object clearing for hot-reload scenarios, **improved undo stack management with proper cleanup before set_revision operations**, **enhanced error handling for snapshot download operations**, **enhanced exception handling for both fc::exception and std::exception types**, **stale snapshot detection with gap prevention**, and **enhanced P2P integration with automatic trusted peer endpoint registration**.
 
 **Diagram sources**
 - [plugin.cpp:1046-1288](file://plugins/snapshot/plugin.cpp#L1046-L1288)
@@ -343,7 +384,7 @@ end
 Note over Client,Server : Connection Closed
 ```
 
-**Updated** The protocol includes sophisticated anti-spam protection mechanisms, trust enforcement, and detailed denial reasons. The security layer provides comprehensive access control with specific reason codes for different violation types. Recent enhancements include watchdog mechanisms for server reliability, improved peer selection algorithms, integrated recovery workflow support, enhanced error handling for connection timeouts and failures, and **dual-tier soft-ban system with automatic trusted peer endpoint registration**.
+**Updated** The protocol includes sophisticated anti-spam protection mechanisms, trust enforcement, and detailed denial reasons. The security layer provides comprehensive access control with specific reason codes for different violation types. Recent enhancements include watchdog mechanisms for server reliability, improved peer selection algorithms, integrated recovery workflow support, enhanced error handling for connection timeouts and failures, **dual-tier soft-ban system with automatic trusted peer endpoint registration**, **signal-based DLT block log reset handling**, **dedicated threading for stalled sync detection**, **P2P stale sync detection**, **enhanced error handling for snapshot download operations**, **stale snapshot detection**, and **enhanced exception handling**.
 
 **Diagram sources**
 - [plugin.cpp:1902-2038](file://plugins/snapshot/plugin.cpp#L1902-L2038)
@@ -371,10 +412,12 @@ The plugin supports extensive configuration through both command-line arguments 
 | `dlt-block-log-max-blocks` | uint32 | 100000 | Rolling DLT block log window |
 | `disable-snapshot-anti-spam` | bool | false | Disable anti-spam checks |
 | `snapshot-serve-allow-ip` | string[] | [] | Allowed client IPs for serving |
+| **`dlt-block-log-reset-snapshots`** | **bool** | **true** | Enable automatic snapshots on DLT reset |
 | **`p2p-stale-sync-detection`** | **bool** | **false** | **Enable P2P stale sync detection** |
 | **`p2p-stale-sync-timeout-seconds`** | **uint32** | **120** | **Timeout for P2P stale sync detection** |
+| **`needs_fresh_snapshot`** | **bool** | **false** | **Internal flag for stale snapshot detection** |
 
-**Updated** The configuration system now includes new options for enhanced anti-spam protection, automatic snapshot discovery, integrated recovery workflow, watchdog monitoring, and **enhanced P2P integration with trusted peer support**. The `snapshot-auto-latest` option enables automatic discovery of the latest snapshot in the specified directory, while `replay-from-snapshot` provides comprehensive recovery mode functionality, and `trusted-snapshot-peer` enables **automatic registration of trusted peer endpoints with the P2P layer**. **The new P2P stale sync detection options provide lightweight recovery from network stalls without requiring snapshot downloads**.
+**Updated** The configuration system now includes new options for enhanced anti-spam protection, automatic snapshot discovery, integrated recovery workflow, watchdog monitoring, **signal-based DLT block log reset handling**, **enhanced P2P integration with trusted peer support**, **dedicated threading for stalled sync detection**, **P2P stale sync detection**, **enhanced error handling for snapshot download operations**, **improved undo stack management**, **stale snapshot detection**, and **enhanced exception handling**. The `snapshot-auto-latest` option enables automatic discovery of the latest snapshot in the specified directory, while `replay-from-snapshot` provides comprehensive recovery mode functionality, and `trusted-snapshot-peer` enables **automatic registration of trusted peer endpoints with the P2P layer**. **The new DLT block log reset snapshots option enables automatic snapshot creation when DLT block logs are reset, the new P2P stale sync detection options provide lightweight recovery from network stalls without requiring snapshot downloads, and the needs_fresh_snapshot internal flag enables stale snapshot detection and urgent fresh snapshot creation**.
 
 **Section sources**
 - [plugin.cpp:2473-2510](file://plugins/snapshot/plugin.cpp#L2473-L2510)
@@ -543,6 +586,16 @@ The enhanced error handling system includes several key improvements:
 - **Server Health Monitoring**: Integrates with watchdog to detect and recover from server failures
 - **Connection Timeout Handling**: Manages connection timeouts and socket errors gracefully
 - **Thread Safety**: Ensures error handling doesn't interfere with other system components
+
+#### **Enhanced Error Handling for Snapshot Download Operations**
+- **Stalled Sync Monitoring Continuity**: Ensures stalled sync monitoring continues running even when snapshot loading fails
+- **Graceful Recovery**: Restarts stalled sync detection after failed snapshot download attempts
+- **Improved Exception Handling**: Enhanced exception handling for both fc::exception and std::exception types during snapshot download attempts
+
+#### **Improved Undo Stack Management**
+- **Proper Cleanup**: Adds proper undo stack management with db.undo_all() call before set_revision operations
+- **Database State Consistency**: Ensures proper cleanup of database state during snapshot loading
+- **Hot-Reload Safety**: Prevents undo stack corruption during hot-reload scenarios
 
 **Section sources**
 - [plugin.cpp:1326-1376](file://plugins/snapshot/plugin.cpp#L1326-L1376)
@@ -713,6 +766,62 @@ The DLT replay integration includes several key improvements:
 - [database.cpp:441-5201](file://libraries/chain/database.cpp#L441-L5201)
 - [plugin.cpp:542-559](file://plugins/chain/plugin.cpp#L542-L559)
 
+## Signal-Based DLT Block Log Reset Handling
+
+**New** The snapshot plugin now includes comprehensive signal-based DLT block log reset handling that automatically creates fresh snapshots when DLT block logs are reset, enabling other DLT nodes to bootstrap from the current state.
+
+### DLT Block Log Reset Architecture
+
+The signal-based DLT block log reset handling provides automatic snapshot creation:
+
+```mermaid
+sequenceDiagram
+participant DLT as DLT Block Log
+participant DB as Database
+participant Snap as Snapshot Plugin
+participant FS as File System
+DLT->>DB : reset() or truncate_before()
+DB->>DB : emit dlt_block_log_was_reset()
+DB->>Snap : dlt_block_log_was_reset signal
+Snap->>Snap : Check DLT mode and snapshot_dir
+Snap->>Snap : schedule_async_snapshot()
+Snap->>Snap : snapshot_thread->async()
+Snap->>FS : create_snapshot(output_path)
+FS-->>Snap : snapshot_created
+Snap->>Snap : cleanup_old_snapshots()
+Snap-->>DB : automatic snapshot ready
+```
+
+### DLT Reset Handling Features
+
+The signal-based DLT block log reset handling includes several key improvements:
+
+#### Signal-Based Event Handling
+- **Automatic Connection**: The snapshot plugin connects to `dlt_block_log_was_reset` signal during initialization
+- **Conditional Activation**: Only activates when DLT mode is enabled and snapshot directory is configured
+- **Event-Driven Creation**: Creates snapshots automatically when DLT block logs are reset
+
+#### Automatic Snapshot Generation
+- **Fresh State Creation**: Generates snapshots at the current head block number after reset
+- **Directory Management**: Places snapshots in the configured snapshot directory with proper naming
+- **Async Execution**: Uses the existing asynchronous snapshot creation system to prevent blocking
+
+#### Integration with Existing Systems
+- **Consistent Naming**: Uses the same naming convention as manual snapshots (`snapshot-block-<num>.vizjson`)
+- **Cache Updates**: Automatically updates the snapshot cache after creation
+- **Cleanup Integration**: Integrates with existing snapshot cleanup mechanisms
+
+#### Enhanced Error Handling
+- **Exception Safety**: Comprehensive error handling with proper logging
+- **Guard Mechanisms**: Uses atomic flags to prevent concurrent snapshot creation
+- **Thread Management**: Reuses existing dedicated snapshot thread infrastructure
+
+**Section sources**
+- [plugin.cpp:3252-3290](file://plugins/snapshot/plugin.cpp#L3252-L3290)
+- [database.cpp:4945-4947](file://libraries/chain/database.cpp#L4945-L4947)
+- [database.cpp:5139-5140](file://libraries/chain/database.cpp#L5139-L5140)
+- [database.hpp:337-338](file://libraries/chain/include/graphene/chain/database.hpp#L337-L338)
+
 ## Peer-to-Peer Snapshot Synchronization
 
 **New** The snapshot plugin now includes comprehensive peer-to-peer snapshot synchronization capabilities for nodes with empty state, enabling automatic discovery and download of snapshots from trusted peers.
@@ -808,8 +917,6 @@ The enhanced P2P integration implements a comprehensive dual-tier soft-ban syste
 
 #### Enhanced P2P Integration Features
 
-The enhanced P2P integration includes several key improvements:
-
 #### Automatic Registration Process
 - **Plugin Discovery**: P2P plugin automatically discovers snapshot plugin
 - **Endpoint Retrieval**: Retrieves trusted snapshot peer endpoints
@@ -904,10 +1011,21 @@ The watchdog and stalled sync detection include several key improvements:
 - **Socket Recreation**: Creates fresh server sockets for new connections
 - **Thread Safety**: Properly shuts down dedicated server thread before restart
 
+#### **Dedicated Threading for Stalled Sync Detection**
+- **Thread Isolation**: Uses dedicated `fc::thread` for stalled sync operations
+- **Fiber Scheduler Independence**: Prevents fc fibers from stalling on main thread blocked in io_serv->run()
+- **Background Processing**: Runs stalled sync detection in background without affecting main thread
+
+#### **Enhanced Error Handling for Snapshot Download Operations**
+- **Continuity Guarantee**: Ensures stalled sync monitoring continues running even when snapshot loading fails
+- **Graceful Recovery**: Restarts stalled sync detection after failed snapshot download attempts
+- **Improved Exception Handling**: Enhanced exception handling for both fc::exception and std::exception types during snapshot download attempts
+
 **Section sources**
 - [plugin.cpp:735-740](file://plugins/snapshot/plugin.cpp#L735-L740)
 - [plugin.cpp:1814-1862](file://plugins/snapshot/plugin.cpp#L1814-L1862)
 - [plugin.cpp:772-785](file://plugins/snapshot/plugin.cpp#L772-L785)
+- [plugin.cpp:1595-1624](file://plugins/snapshot/plugin.cpp#L1595-L1624)
 
 ## P2P Stale Sync Detection
 
@@ -1079,8 +1197,10 @@ Accept --> Process["Process Snapshot Request"]
 **Updated** The access control system now enforces the enhanced anti-spam limits with improved session management and rate limiting:
 
 - **Maximum concurrent connections**: 5 simultaneous connections
-- **Maximum sessions per IP**: 3 active sessions per IP (increased from 2)
-- **Maximum connections per hour**: 10 connections per hour per IP (increased from 6)
+- **Per-IP session limit**: 3 active sessions per IP (increased from 2)
+- **Rate limit**: 10 connections per hour per IP (increased from 6)
+
+These enhanced limits provide better support for legitimate users while maintaining effective protection against abuse.
 
 ### Enhanced Denial Reason Codes
 
@@ -1131,7 +1251,7 @@ participant Chain as Chain Plugin
 participant Snapshot as Snapshot Plugin
 participant DB as Database
 Chain->>Chain : Detect --snapshot option
-Chain->>Snapshot : Register snapshot_load_callback
+Chain->>Snapshot : Register snapshot_load_callback()
 Snapshot->>Chain : Callback registered
 Chain->>Chain : During startup, check for callback
 Chain->>Snapshot : Execute snapshot_load_callback()
@@ -1145,7 +1265,7 @@ Chain->>Chain : Continue normal startup
 The snapshot plugin registers a callback that executes during chain plugin startup to create snapshots after full database load, ensuring proper state capture.
 
 ### Enhanced P2P Snapshot Sync Callback
-For nodes with empty state, the snapshot plugin registers a callback that downloads and loads snapshots from trusted peers before normal P2P synchronization begins. Enhanced with automatic retry logic, improved peer selection algorithms, comprehensive error handling, and **automatic trusted peer endpoint registration with the P2P layer**.
+For nodes with empty state, the snapshot plugin registers a callback that downloads and loads snapshots from trusted peers before normal P2P synchronization begins. Enhanced with automatic retry logic, improved peer selection algorithms, comprehensive error handling, **automatic trusted peer endpoint registration with the P2P layer**, **signal-based DLT block log reset handling**, **dedicated threading for stalled sync detection**, **enhanced error handling for snapshot download operations**, **improved undo stack management**, and **stale snapshot detection**.
 
 ### Enhanced Recovery Workflow Integration
 **New** The chain plugin now includes comprehensive recovery workflow integration that coordinates with the snapshot plugin for automatic recovery from corrupted states using snapshot-based restoration and DLT block log replay.
@@ -1184,7 +1304,7 @@ N --> P[Shared Library]
 end
 ```
 
-**Updated** The dependency graph reveals a clean separation between core blockchain functionality and plugin-specific features. The plugin relies on established VIZ infrastructure while maintaining independence from external systems, demonstrating the benefits of the modular architecture. Recent enhancements include watchdog dependencies, enhanced P2P integration, automatic snapshot discovery, comprehensive recovery workflow integration, asynchronous execution system dependencies, and **enhanced P2P integration with trusted peer support**.
+**Updated** The dependency graph reveals a clean separation between core blockchain functionality and plugin-specific features. The plugin relies on established VIZ infrastructure while maintaining independence from external systems, demonstrating the benefits of the modular architecture. Recent enhancements include watchdog dependencies, **signal-based DLT block log reset handling**, enhanced P2P integration, automatic snapshot discovery, comprehensive recovery workflow integration, asynchronous execution system dependencies, **enhanced P2P integration with trusted peer support**, **dedicated threading for stalled sync detection**, **P2P stale sync detection**, **enhanced error handling for snapshot download operations**, **improved undo stack management**, **stale snapshot detection**, and **enhanced exception handling**.
 
 **Diagram sources**
 - [CMakeLists.txt:27-38](file://plugins/snapshot/CMakeLists.txt#L27-L38)
@@ -1221,6 +1341,12 @@ The snapshot plugin implements several performance optimization strategies throu
 - Efficient object copying mechanisms handle complex data structures
 - Automatic cleanup of temporary files and resources
 
+### **Signal-Based DLT Block Log Reset Performance**
+- **Event-Driven Creation**: Automatic snapshot creation only when DLT block logs are reset
+- **Async Execution**: Reuses existing asynchronous snapshot creation infrastructure
+- **Minimal Overhead**: Single atomic flag check during DLT reset events
+- **Thread Safety**: Dedicated snapshot thread prevents blocking during reset events
+
 ### **Enhanced P2P Integration Performance**
 - **Automatic Registration**: Eliminates manual configuration overhead
 - **Efficient Lookup**: O(1) trust validation using raw IP addresses
@@ -1230,7 +1356,7 @@ The snapshot plugin implements several performance optimization strategies throu
 ### **Enhanced Logging Performance**
 - **ANSI Color Codes**: Provides visual distinction between log levels without performance overhead
 - **Level-Based Coloring**: Green for success, orange for warnings, yellow for informational messages
-- **Minimal Processing**: Color code injection occurs only when terminal supports color output
+- **Minimal Processing Overhead**: Color code injection occurs only when terminal supports color output
 
 ### **P2P Stale Sync Detection Performance**
 - **Lightweight Monitoring**: Minimal CPU overhead through efficient background task scheduling
@@ -1238,7 +1364,43 @@ The snapshot plugin implements several performance optimization strategies throu
 - **Selective Peer Reconnection**: Only reconnects seed nodes that were previously connected
 - **30-second Check Interval**: Balances responsiveness with minimal resource usage
 
-**Updated** The modular architecture enhances performance by enabling independent optimization of each layer while maintaining system coherence. The watchdog mechanism, enhanced anti-spam protections, automatic snapshot discovery, integrated recovery workflow, asynchronous execution system, comprehensive error handling, **enhanced P2P integration with trusted peer support**, and **P2P stale sync detection** are designed to minimize performance impact while providing comprehensive functionality. Recent improvements include dedicated server thread optimizations, DLT replay efficiency, enhanced error handling performance, witness-aware deferral optimization, **efficient dual-tier soft-ban system implementation**, and **optimized P2P stale sync detection with minimal overhead**.
+### **Dedicated Threading for Stalled Sync Detection Performance**
+- **Thread Isolation**: Dedicated fc::thread prevents main thread blocking
+- **Fiber Scheduler Independence**: Prevents fc fibers from stalling on main thread blocked in io_serv->run()
+- **Background Processing**: Runs stalled sync detection in background without affecting main thread
+- **Minimal Overhead**: Single dedicated thread for all stalled sync operations
+
+### **Automatic Gap Detection for DLT Block Log Initialization Performance**
+- **Intelligent Gap Detection**: Prevents index position mismatch assertions through early detection
+- **Automatic Reset Mechanism**: Seamlessly resets DLT block log when gaps are detected
+- **Minimal Performance Impact**: Gap detection adds negligible overhead during snapshot import
+- **Thread-Safe Operations**: Uses atomic operations to prevent race conditions during gap detection
+
+### **Enhanced Error Handling Performance**
+- **Exception Safety**: Comprehensive error handling prevents cascading failures
+- **Graceful Degradation**: Continues normal operation even when snapshot download fails
+- **Minimal Overhead**: Enhanced exception handling adds negligible performance impact
+- **Improved Resource Management**: Proper cleanup prevents resource leaks during error scenarios
+
+### **Improved Undo Stack Management Performance**
+- **Efficient Cleanup**: db.undo_all() call prevents undo stack corruption
+- **Minimal Performance Impact**: Undo stack management adds negligible overhead
+- **Thread Safety**: Atomic operations ensure safe undo stack manipulation
+- **Hot-Reload Optimization**: Prevents undo stack issues during state reload scenarios
+
+### **Enhanced Anti-Spam Configuration Performance**
+- **Optimized Limits**: Enhanced limits provide better user experience with minimal overhead
+- **Efficient Rate Limiting**: Sliding window algorithm minimizes memory usage
+- **Thread-Safe Operations**: Atomic counters prevent race conditions
+- **Minimal Processing Overhead**: Anti-spam checks add negligible CPU overhead
+
+### **Stale Snapshot Detection Performance**
+- **Intelligent Gap Detection**: Prevents serving broken snapshots with gaps through early detection
+- **Automatic Fresh Snapshot Creation**: Urgent snapshot creation eliminates sync gaps without manual intervention
+- **Minimal Performance Impact**: Stale detection adds negligible overhead during plugin initialization
+- **Thread-Safe Operations**: Uses atomic flags to prevent race conditions during detection
+
+**Updated** The modular architecture enhances performance by enabling independent optimization of each layer while maintaining system coherence. The watchdog mechanism, **signal-based DLT block log reset handling**, enhanced anti-spam protections, automatic snapshot discovery, integrated recovery workflow, asynchronous execution system, comprehensive error handling, **enhanced P2P integration with trusted peer support**, **dedicated threading for stalled sync detection**, **P2P stale sync detection**, **automatic gap detection for DLT block log initialization**, **enhanced error handling for snapshot download operations**, **improved undo stack management**, **enhanced anti-spam configuration**, **stale snapshot detection**, and **enhanced exception handling** are designed to minimize performance impact while providing comprehensive functionality. Recent improvements include dedicated server thread optimizations, DLT replay efficiency, enhanced error handling performance, witness-aware deferral optimization, **efficient dual-tier soft-ban system implementation**, **signal-based DLT block log reset handling**, **optimized P2P stale sync detection with minimal overhead**, **dedicated threading for stalled sync detection with thread isolation**, **intelligent gap detection preventing index position mismatch assertions**, **enhanced error handling for snapshot download operations**, **improved undo stack management**, **stale snapshot detection with urgent fresh snapshot creation**, and **enhanced exception handling**.
 
 ### Enhanced Security Performance Considerations
 - Access control checks are performed efficiently using hash maps for IP lookups
@@ -1247,9 +1409,16 @@ The snapshot plugin implements several performance optimization strategies throu
 - Watchdog mechanism operates with minimal CPU overhead through efficient monitoring
 - Recovery workflow includes performance-optimized snapshot validation and checksum verification
 - Asynchronous execution system minimizes main thread blocking time
+- **Signal-based DLT block log reset handling provides efficient event-driven snapshot creation**
 - **Enhanced P2P integration provides efficient trust validation with O(1) lookup performance**
 - **Enhanced logging system provides efficient colored output with minimal performance impact**
 - **P2P stale sync detection operates with minimal overhead through optimized background tasks**
+- **Dedicated threading for stalled sync detection prevents main thread blocking and fiber stalling**
+- **Automatic gap detection prevents index position mismatch assertions with minimal performance impact**
+- **Enhanced error handling for snapshot download operations ensures continuous monitoring**
+- **Improved undo stack management prevents database state corruption**
+- **Stale snapshot detection prevents serving broken snapshots with gaps**
+- **Enhanced exception handling provides robust error recovery mechanisms**
 
 ## Troubleshooting Guide
 
@@ -1305,32 +1474,10 @@ The snapshot plugin implements several performance optimization strategies throu
 - **Cause**: Improper LIB promotion or fork database state
 - **Solution**: Verify LIB promotion to head block and fork database seeding
 
-**Enhanced Access Control Issues**
-
-**Connection Denied - Untrusted IP**
-- **Symptom**: Clients receive `SNAPSHOT_ACCESS_DENIED` with reason "untrusted IP"
-- **Cause**: Client IP not in `trusted-snapshot-peer` list
-- **Solution**: Add client IP to trusted list or disable trust enforcement
-
-**Connection Denied - Maximum Connections**
-- **Symptom**: Server responds with "server at max concurrent connections"
-- **Cause**: 5 concurrent connections already active
-- **Solution**: Wait for connections to close or increase connection limits
-
-**Connection Denied - Session Limit**
-- **Symptom**: "too many active sessions from this IP" error
-- **Cause**: Client already has 3 active sessions (increased from 2)
-- **Solution**: Wait for session cleanup or reduce concurrent sessions
-
-**Connection Denied - Rate Limited**
-- **Symptom**: "rate limit exceeded (too many connections per hour)" error
-- **Cause**: Client exceeded 10 connections per hour limit (increased from 6)
-- **Solution**: Wait for rate limit window to reset or reduce connection frequency
-
 **Enhanced P2P Integration Issues**
 - **Symptom**: Trusted peers still receiving 1-hour soft-bans instead of 5-minute soft-bans
 - **Cause**: P2P plugin not properly registering trusted peer endpoints
-- **Solution**: Verify `trusted-snapshot-peer` configuration and P2P plugin startup logs
+- **Solution**: Add client IP to trusted list or disable trust enforcement
 
 **Enhanced Trusted Peer Registration Issues**
 - **Symptom**: P2P plugin fails to register trusted peer endpoints
@@ -1352,19 +1499,60 @@ The snapshot plugin implements several performance optimization strategies throu
 - **Cause**: Timeout too low or P2P plugin not properly tracking last block received time
 - **Solution**: Increase `p2p-stale-sync-timeout-seconds`, verify P2P plugin initialization
 
-- **Symptom**: Recovery actions not completing successfully
-- **Cause**: Peer reconnection failures or LIB reset issues
-- **Solution**: Check peer connectivity, verify LIB availability, review P2P plugin logs
-
-**Enhanced Snapshot Stalled Sync Detection Issues**
-- **Symptom**: Snapshot stalled sync detection not finding newer snapshots
-- **Cause**: Trusted peers not providing newer snapshots or network connectivity issues
-- **Solution**: Verify trusted peer configuration, check snapshot availability, review network connectivity
+**Enhanced DLT Block Log Reset Handling Issues**
+- **Symptom**: Automatic snapshots not created after DLT block log reset
+- **Cause**: DLT mode not enabled or snapshot directory not configured
+- **Solution**: Verify DLT mode configuration and snapshot directory settings
 
 **Enhanced Anti-Spam Configuration Issues**
 - **Symptom**: Users experiencing connection denials despite legitimate usage
 - **Cause**: Anti-spam limits too restrictive with new values (3 sessions/IP, 10 connections/hour/IP)
 - **Solution**: Review anti-spam configuration, consider increasing limits for legitimate use cases, monitor connection patterns
+
+**Enhanced Stalled Sync Detection Issues**
+- **Symptom**: Stalled sync detection not functioning properly
+- **Cause**: Main thread blocked in io_serv->run() preventing fc fiber execution
+- **Solution**: Verify dedicated stalled sync thread is running and properly configured
+
+**Enhanced Automatic Gap Detection Issues**
+- **Symptom**: Index position mismatch assertions during DLT block log initialization
+- **Cause**: Gap between DLT block log head and snapshot head not properly detected
+- **Solution**: Verify DLT block log gap detection logic and automatic reset mechanism
+
+**Enhanced Error Handling for Snapshot Download Operations Issues**
+- **Symptom**: Stalled sync monitoring stops when snapshot download fails
+- **Cause**: Missing exception handling for snapshot download attempts
+- **Solution**: Verify enhanced error handling is properly catching fc::exception and std::exception types
+
+**Enhanced Undo Stack Management Issues**
+- **Symptom**: Database state corruption during snapshot loading
+- **Cause**: Missing db.undo_all() call before set_revision operations
+- **Solution**: Verify proper undo stack management with db.undo_all() before set_revision
+
+**Enhanced Exception Handling Issues**
+- **Symptom**: Snapshot download failures not properly handled
+- **Cause**: Missing comprehensive exception handling for both fc::exception and std::exception types
+- **Solution**: Verify enhanced exception handling covers all error scenarios during snapshot download attempts
+
+**Enhanced Hot-Reload Scenario Issues**
+- **Symptom**: Stalled sync detection fails during hot-reload scenarios
+- **Cause**: Undo stack not properly cleared before import operations
+- **Solution**: Verify db.undo_all() is called before import operations during hot-reload scenarios
+
+**Enhanced Database State Cleanup Issues**
+- **Symptom**: Database state inconsistency after snapshot loading
+- **Cause**: Missing proper cleanup of multi-instance objects during hot-reload
+- **Solution**: Verify comprehensive object clearing for hot-reload scenarios before import operations
+
+**Enhanced Stale Snapshot Detection Issues**
+- **Symptom**: Stale snapshot detection not working properly
+- **Cause**: needs_fresh_snapshot flag not being set or applied_block signal not connecting
+- **Solution**: Verify stale snapshot detection logic, check DLT block log start block detection, and ensure urgent fresh snapshot creation is triggered
+
+**Enhanced Urgent Fresh Snapshot Creation Issues**
+- **Symptom**: Urgent fresh snapshots not being created when stale snapshot detected
+- **Cause**: needs_fresh_snapshot flag not reset or witness-aware deferral interfering
+- **Solution**: Verify needs_fresh_snapshot flag management, check witness-aware deferral logic, and ensure proper snapshot creation scheduling
 
 **Enhanced Diagnostic Tools**
 
@@ -1378,13 +1566,21 @@ The plugin includes comprehensive enhanced diagnostic capabilities:
 - **Recovery Workflow Diagnostics**: Comprehensive logging for recovery process monitoring
 - **DLT Replay Status**: Real-time monitoring of DLT replay progress and status
 - **Asynchronous Execution Monitoring**: Tracks snapshot creation progress and thread health
+- **Signal-Based DLT Reset Handling**: Monitors DLT block log reset events and automatic snapshot creation
 - **Enhanced P2P Integration Diagnostics**: Monitors trusted peer endpoint registration and soft-ban duration application
 - **Snapshot Directory Management**: Monitors automatic directory creation and cleanup processes
 - **Enhanced Logging Diagnostics**: Monitors ANSI color code application and terminal compatibility
 - **P2P Stale Sync Detection Diagnostics**: Monitors LIB reset, peer reconnection, and seed node management
 - **Enhanced Anti-Spam Configuration Diagnostics**: Monitors session limits, rate limiting, and connection patterns
+- **Dedicated Threading Diagnostics**: Monitors stalled sync thread health and operation status
+- **Automatic Gap Detection Diagnostics**: Monitors DLT block log gap detection and automatic reset operations
+- **Enhanced Error Handling Diagnostics**: Monitors exception handling for snapshot download operations
+- **Undo Stack Management Diagnostics**: Monitors database state cleanup and undo stack operations
+- **Enhanced Exception Handling Diagnostics**: Monitors comprehensive exception handling coverage
+- **Stale Snapshot Detection Diagnostics**: Monitors gap detection logic and urgent fresh snapshot creation
+- **Urgent Fresh Snapshot Creation Diagnostics**: Monitors needs_fresh_snapshot flag management and snapshot creation scheduling
 
-**Updated** The modular architecture provides enhanced diagnostic capabilities through separate layers for serialization, networking, database operations, security controls, recovery workflows, asynchronous execution, watchdog monitoring, and **enhanced P2P integration**. Recent improvements include watchdog monitoring, enhanced P2P fallback diagnostics, emergency consensus status tracking, comprehensive recovery workflow diagnostics, DLT replay status monitoring, asynchronous execution health monitoring, **P2P stale sync detection diagnostics**, and **dual-tier soft-ban system diagnostics**.
+**Updated** The modular architecture provides enhanced diagnostic capabilities through separate layers for serialization, networking, database operations, security controls, recovery workflows, asynchronous execution, watchdog monitoring, **signal-based DLT block log reset handling**, **enhanced P2P integration**, **enhanced error handling**, **improved undo stack management**, **stale snapshot detection**, and **enhanced exception handling**. Recent improvements include watchdog monitoring, **signal-based DLT block log reset handling diagnostics**, enhanced P2P fallback diagnostics, emergency consensus status tracking, comprehensive recovery workflow diagnostics, DLT replay status monitoring, asynchronous execution health monitoring, **P2P stale sync detection diagnostics**, **dedicated threading diagnostics**, **automatic gap detection diagnostics**, **enhanced error handling diagnostics**, **undo stack management diagnostics**, **stale snapshot detection diagnostics**, **urgent fresh snapshot creation diagnostics**, and **enhanced exception handling diagnostics**.
 
 **Section sources**
 - [plugin.cpp:2294-2464](file://plugins/snapshot/plugin.cpp#L2294-L2464)
@@ -1394,10 +1590,10 @@ The plugin includes comprehensive enhanced diagnostic capabilities:
 
 The Snapshot Plugin System represents a sophisticated solution for blockchain state synchronization that significantly improves the VIZ node bootstrapping experience. Through careful architectural design, comprehensive feature coverage, and robust error handling, it enables efficient deployment and scaling of VIZ-based applications.
 
-**Updated** The recent enhancements with comprehensive snapshot plugin configuration supporting multiple trusted snapshot peers, snapshot scheduling parameters, serving options, watchdog monitoring, automatic snapshot discovery, integrated recovery workflow, enhanced anti-spam protection, and **enhanced P2P integration with trusted peer support** have significantly strengthened the security, reliability, and resource management capabilities of the snapshot distribution services.
+**Updated** The recent enhancements with comprehensive snapshot plugin configuration supporting multiple trusted snapshot peers, snapshot scheduling parameters, serving options, watchdog monitoring, automatic snapshot discovery, integrated recovery workflow, enhanced anti-spam protection, **signal-based DLT block log reset handling**, **enhanced P2P integration with trusted peer support**, **enhanced error handling for snapshot download operations**, **improved undo stack management**, **stale snapshot detection**, and **enhanced exception handling** have significantly strengthened the security, reliability, and resource management capabilities of the snapshot distribution services.
 
-Key strengths of the system include its modular architecture, extensive configuration options, built-in performance optimizations, comprehensive security features, automatic snapshot discovery, integrated recovery workflow, DLT replay integration, watchdog monitoring, asynchronous execution system, comprehensive diagnostic capabilities, **P2P stale sync detection**, and **automatic trusted peer endpoint registration with dual-tier soft-ban system**. The plugin seamlessly integrates with existing VIZ infrastructure while providing powerful new capabilities for state management, peer-to-peer synchronization, automatic recovery from corrupted states, intelligent witness-aware scheduling, and **efficient P2P integration with trusted peer support**.
+Key strengths of the system include its modular architecture, extensive configuration options, built-in performance optimizations, comprehensive security features, automatic snapshot discovery, integrated recovery workflow, DLT replay integration, watchdog monitoring, asynchronous execution system, comprehensive diagnostic capabilities, **signal-based DLT block log reset handling**, **P2P stale sync detection**, **dedicated threading for stalled sync detection**, **automatic gap detection for DLT block log initialization**, **enhanced error handling for snapshot download operations**, **improved undo stack management**, **stale snapshot detection**, **automatic P2P integration with trusted peer support**, and **enhanced exception handling**. The plugin seamlessly integrates with existing VIZ infrastructure while providing powerful new capabilities for state management, peer-to-peer synchronization, automatic recovery from corrupted states, intelligent witness-aware scheduling, **efficient P2P integration with trusted peer support**, **lightweight P2P stale sync detection**, **intelligent gap detection preventing index position mismatch assertions**, **robust error handling for snapshot download operations**, **proper undo stack management during snapshot loading**, **stale snapshot detection with urgent fresh snapshot creation**, and **comprehensive exception handling mechanisms**.
 
-The implementation demonstrates best practices in blockchain plugin development, including proper resource management, error handling, user experience considerations, security through layered access control, comprehensive monitoring and recovery capabilities, asynchronous execution for improved performance, and **automatic P2P integration with trusted peer support**. The modular design enables independent development and testing of each component while maintaining system coherence, representing a significant advancement in extensibility and maintainability.
+The implementation demonstrates best practices in blockchain plugin development, including proper resource management, error handling, user experience considerations, security through layered access control, comprehensive monitoring and recovery capabilities, asynchronous execution for improved performance, **signal-based DLT block log reset handling**, **dedicated threading for stalled sync detection**, **automatic gap detection for DLT block log initialization**, **enhanced error handling for snapshot download operations**, **improved undo stack management**, **stale snapshot detection**, and **enhanced exception handling**. The modular design enables independent development and testing of each component while maintaining system coherence, representing a significant advancement in extensibility and maintainability.
 
-Future enhancements could focus on additional compression algorithms, enhanced security features, expanded monitoring capabilities, more sophisticated access control policies, improved recovery workflow automation, enhanced DLT replay performance optimization, advanced witness-aware scheduling algorithms, **optimized P2P stale sync detection**, and **further optimization of the dual-tier soft-ban system**, leveraging the solid foundation provided by the modular architecture with comprehensive asynchronous execution system, witness-aware deferral mechanism, watchdog monitoring, automatic snapshot discovery, integrated recovery workflow, advanced error handling capabilities, **efficient P2P integration with trusted peer support**, and **lightweight P2P stale sync detection**.
+Future enhancements could focus on additional compression algorithms, enhanced security features, expanded monitoring capabilities, more sophisticated access control policies, improved recovery workflow automation, enhanced DLT replay performance optimization, advanced witness-aware scheduling algorithms, **optimized signal-based DLT block log reset handling**, **further optimization of the dual-tier soft-ban system**, **enhanced P2P stale sync detection**, **improved dedicated threading for stalled sync detection**, **intelligent gap detection preventing index position mismatch assertions**, **comprehensive error handling for all snapshot operations**, **advanced undo stack management techniques**, **stale snapshot detection optimization**, **enhanced exception handling mechanisms**, and **stale snapshot detection with urgent fresh snapshot creation**.

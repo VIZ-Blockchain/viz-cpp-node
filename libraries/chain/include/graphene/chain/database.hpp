@@ -57,6 +57,7 @@ namespace graphene { namespace chain {
             // DLT mode: node was loaded from a snapshot, block_log is empty/partial.
             // When true, block_log append operations are skipped.
             bool _dlt_mode = false;
+            bool _debug_block_production = false;
 
             /// Set DLT mode flag. Should be called before loading snapshot data
             /// so that all subsequent code sees a consistent state.
@@ -330,6 +331,14 @@ namespace graphene { namespace chain {
             fc::signal<void(const signed_block &)> applied_block;
 
             /**
+             * Emitted when dlt_block_log is reset due to a gap between
+             * dlt_block_log end and fork_db start.  The snapshot plugin
+             * listens for this to create a fresh snapshot so other DLT
+             * nodes can bootstrap from us.
+             */
+            fc::signal<void()> dlt_block_log_was_reset;
+
+            /**
              * This signal is emitted any time a new transaction is added to the pending
              * block state.
              */
@@ -513,6 +522,14 @@ namespace graphene { namespace chain {
             const block_log &get_block_log() const;
 
             const dlt_block_log &get_dlt_block_log() const { return _dlt_block_log; }
+            dlt_block_log &get_dlt_block_log() { return _dlt_block_log; }
+
+            /// Returns the lowest block number for which this node can serve
+            /// full block data (block_log, dlt_block_log, or fork_db).
+            /// In DLT mode after snapshot import, this is typically the head
+            /// block number (only the head block is in dlt_block_log).
+            /// Used by P2P layer to avoid advertising blocks we can't serve.
+            uint32_t earliest_available_block_num() const;
 
             fork_database &get_fork_db() {
                 return _fork_db;
@@ -645,10 +662,6 @@ namespace graphene { namespace chain {
             bool _skip_virtual_ops = false;
             bool _enable_plugins_on_push_transaction = false;
 
-            /// Wall-clock time when the database was opened (node startup).
-            /// Used to delay emergency consensus activation until the node
-            /// has had time to sync with peers.
-            fc::time_point _node_startup_time;
 
             flat_map<std::string, std::shared_ptr<custom_operation_interpreter>> _custom_operation_interpreters;
             std::string _json_schema;

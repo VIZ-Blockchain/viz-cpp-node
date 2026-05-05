@@ -9,6 +9,7 @@
 #include <graphene/protocol/protocol.hpp>
 #include <graphene/protocol/types.hpp>
 #include <future>
+#include <atomic>
 
 namespace graphene {
 namespace plugins {
@@ -52,12 +53,16 @@ namespace chain {
 
         std::string snapshot_path; // --snapshot: load state from snapshot file
         bool replay_from_snapshot = false; // --replay-from-snapshot: snapshot + dlt_block_log replay
+        bool auto_recover_from_snapshot = false; // --auto-recover-from-snapshot: auto-recover on corruption
+        std::string snapshot_dir; // resolved snapshot directory for auto-discovery
 
         graphene::chain::database db;
 
         bool single_write_thread = false;
 
         bool sync_start_logged = false; // guard to log sync start only once
+
+        std::atomic<bool> currently_syncing{false}; // true while processing P2P sync blocks
 
         bool pending_snapshot_load = false; // set when snapshot args present but callback not yet registered
 
@@ -90,6 +95,7 @@ namespace chain {
         void accept_transaction(const protocol::signed_transaction &trx);
         void wipe_db(const bfs::path &data_dir, bool wipe_block_log);
         void replay_db(const bfs::path &data_dir, bool force_replay);
+        fc::path find_latest_snapshot();
     };
 
     void plugin::plugin_impl::check_time_in_block(const protocol::signed_block &block) {
@@ -100,30 +106,12 @@ namespace chain {
         FC_ASSERT(block.timestamp.sec_since_epoch() <= max_accept_time);
     }
 
-    bool plugin::plugin_impl::accept_block(const protocol::signed_block &block, bool currently_syncing, uint32_t skip) {
-        if (currently_syncing) {
-            if (!sync_start_logged) {
-                ilog("\033[92m>>> Syncing Blockchain started from block #${n} (head: ${head})\033[0m",
-                     ("n", block.block_num())("head", db.head_block_num()));
-                sync_start_logged = true;
-            }
-
-            if (block.block_num() % 500 == 0) {
-                ilog("\033[93mSyncing Blockchain --- Got block: #${n} time: ${t} producer: ${p}\033[0m",
-                     ("t", block.timestamp)("n", block.block_num())("p", block.witness));
-            }
-        } else {
-            if (sync_start_logged) {
-                ilog("\033[92mSync mode ended: received normal block #${n} (head: ${head}), sync_start_logged reset\033[0m",
-                     ("n", block.block_num())("head", db.head_block_num()));
-            }
-            sync_start_logged = false; // reset guard when not syncing
-        }
-
+    bool plugin::plugin_impl::accept_block(const protocol::signed_block &block, bool currently_syncing_flag, uint32_t skip) {
         check_time_in_block(block);
 
         skip = db.validate_block(block, skip);
 
+        bool block_applied;
         if (single_write_thread) {
             std::promise<bool> promise;
             auto result = promise.get_future();
@@ -135,10 +123,42 @@ namespace chain {
                     promise.set_exception(std::current_exception());
                 }
             });
-            return result.get(); // if an exception was, it will be thrown
+            block_applied = result.get(); // if an exception was, it will be thrown
         } else {
-            return db.push_block(block, skip);
+            block_applied = db.push_block(block, skip);
         }
+
+        // Update syncing state only after push_block, and only if the block
+        // was actually applied.  Previously this was done before push_block,
+        // which caused "Sync mode ended" to be logged even when the block
+        // failed to apply (e.g. dead-fork blocks that go to fork_db's
+        // unlinked index).  This created false syncing state transitions
+        // that confused the witness plugin and caused sync oscillation,
+        // particularly when the emergency master receives blocks from a
+        // competing fork that have gap=0 but previous != head_block_id.
+        if (block_applied) {
+            currently_syncing.store(currently_syncing_flag, std::memory_order_relaxed);
+            if (currently_syncing_flag) {
+                if (!sync_start_logged) {
+                    ilog("\033[92m>>> Syncing Blockchain started from block #${n} (head: ${head})\033[0m",
+                         ("n", block.block_num())("head", db.head_block_num()));
+                    sync_start_logged = true;
+                }
+
+                if (block.block_num() % 500 == 0) {
+                    ilog("\033[93mSyncing Blockchain --- Got block: #${n} time: ${t} producer: ${p}\033[0m",
+                         ("t", block.timestamp)("n", block.block_num())("p", block.witness));
+                }
+            } else {
+                if (sync_start_logged) {
+                    ilog("\033[92mSync mode ended: received normal block #${n} (head: ${head}), sync_start_logged reset\033[0m",
+                         ("n", block.block_num())("head", db.head_block_num()));
+                }
+                sync_start_logged = false; // reset guard when not syncing
+            }
+        }
+
+        return block_applied;
     }
 
     void plugin::plugin_impl::wipe_db(const bfs::path &data_dir, bool wipe_block_log) {
@@ -153,8 +173,10 @@ namespace chain {
     };
 
     void plugin::plugin_impl::replay_db(const bfs::path &data_dir, bool force_replay) {
-        auto head_block_log = db.get_block_log().head();
-        force_replay |= head_block_log && db.revision() >= head_block_log->block_num();
+        if (!force_replay) {
+            auto head_block_log = db.get_block_log().head();
+            force_replay |= head_block_log && db.revision() >= head_block_log->block_num();
+        }
 
         if (force_replay) {
             wipe_db(data_dir, false);
@@ -165,6 +187,42 @@ namespace chain {
         ilog("Replaying blockchain from block num ${from}.", ("from", from_block_num));
         db.reindex(data_dir, shared_memory_dir, from_block_num, shared_memory_size);
     };
+
+    fc::path plugin::plugin_impl::find_latest_snapshot() {
+        if (snapshot_dir.empty()) {
+            return fc::path();
+        }
+        fc::path dir_path(snapshot_dir);
+        if (!fc::exists(dir_path) || !fc::is_directory(dir_path)) {
+            return fc::path();
+        }
+
+        fc::path best_path;
+        uint32_t best_block = 0;
+        boost::filesystem::directory_iterator end_itr;
+        for (boost::filesystem::directory_iterator itr(dir_path); itr != end_itr; ++itr) {
+            if (boost::filesystem::is_regular_file(itr->status())) {
+                std::string filename = itr->path().filename().string();
+                std::string ext = itr->path().extension().string();
+                if (ext == ".vizjson" || ext == ".json") {
+                    auto pos = filename.find("snapshot-block-");
+                    if (pos != std::string::npos) {
+                        try {
+                            std::string num_str = filename.substr(pos + 15);
+                            auto dot_pos = num_str.find('.');
+                            if (dot_pos != std::string::npos) num_str = num_str.substr(0, dot_pos);
+                            uint32_t block_num = static_cast<uint32_t>(std::stoul(num_str));
+                            if (block_num > best_block) {
+                                best_block = block_num;
+                                best_path = fc::path(itr->path().string());
+                            }
+                        } catch (...) {}
+                    }
+                }
+            }
+        }
+        return best_path;
+    }
 
     void plugin::plugin_impl::accept_transaction(const protocol::signed_transaction &trx) {
         uint32_t skip = db.validate_transaction(trx, db.skip_apply_transaction);
@@ -199,6 +257,17 @@ namespace chain {
 
     const graphene::chain::database &plugin::db() const {
         return my->db;
+    }
+
+    bool plugin::is_syncing() const {
+        return my->currently_syncing.load(std::memory_order_relaxed);
+    }
+
+    void plugin::clear_syncing() {
+        if (my->currently_syncing.exchange(false, std::memory_order_relaxed)) {
+            ilog("Sync complete: cleared currently_syncing flag (witness block production may resume)");
+            my->sync_start_logged = false;
+        }
     }
 
     void plugin::set_program_options(boost::program_options::options_description &cli,
@@ -267,6 +336,9 @@ namespace chain {
                 "replay-from-snapshot", boost::program_options::bool_switch()->default_value(false),
                 "recover from corruption: import latest snapshot and replay dlt_block_log"
             ) (
+                "auto-recover-from-snapshot", boost::program_options::bool_switch()->default_value(true),
+                "automatically recover from shared memory corruption by importing latest snapshot and replaying dlt_block_log (enabled by default)"
+            ) (
                 "resync-blockchain", boost::program_options::bool_switch()->default_value(false),
                 "clear chain database and block log"
             ) (
@@ -323,6 +395,7 @@ namespace chain {
         my->force_replay = options.at("force-replay-blockchain").as<bool>();
         my->resync = options.at("resync-blockchain").as<bool>();
         my->replay_from_snapshot = options.at("replay-from-snapshot").as<bool>();
+        my->auto_recover_from_snapshot = options.at("auto-recover-from-snapshot").as<bool>();
         my->check_locks = options.at("check-locks").as<bool>();
         my->validate_invariants = options.at("validate-database-invariants").as<bool>();
         if (options.count("flush-state-interval")) {
@@ -353,6 +426,7 @@ namespace chain {
             if (snap_dir.empty()) {
                 snap_dir = (appbase::app().data_dir() / "snapshots").string();
             }
+            my->snapshot_dir = snap_dir;
             fc::path dir_path(snap_dir);
             if (fc::exists(dir_path) && fc::is_directory(dir_path)) {
                 fc::path best_path;
@@ -391,6 +465,15 @@ namespace chain {
         // DLT rolling block_log config
         if (options.count("dlt-block-log-max-blocks")) {
             my->db._dlt_block_log_max_blocks = options.at("dlt-block-log-max-blocks").as<uint32_t>();
+        }
+
+        // Ensure snapshot_dir is always resolved for auto-recovery even if --snapshot-auto-latest not set
+        if (my->snapshot_dir.empty()) {
+            std::string sd = options.count("snapshot-dir") ? options.at("snapshot-dir").as<std::string>() : "";
+            if (sd.empty()) {
+                sd = (appbase::app().data_dir() / "snapshots").string();
+            }
+            my->snapshot_dir = sd;
         }
     }
 
@@ -492,6 +575,18 @@ namespace chain {
                 my->replay_db(data_dir, my->force_replay);
             }
         } catch (const graphene::chain::database_revision_exception &) {
+            if (my->auto_recover_from_snapshot && snapshot_load_callback) {
+                wlog("Shared memory corrupted (revision mismatch). Attempting automatic recovery from snapshot...");
+                fc::path snap = my->find_latest_snapshot();
+                if (!snap.string().empty()) {
+                    wlog("Auto-recovery: found snapshot ${p}. Wiping shared memory and importing...", ("p", snap.string()));
+                    my->snapshot_path = snap.string();
+                    do_snapshot_load(data_dir, true);
+                    return;
+                } else {
+                    wlog("Auto-recovery: no snapshots found in ${d}. Falling back to replay.", ("d", my->snapshot_dir));
+                }
+            }
             if (my->replay_if_corrupted) {
                 wlog("Error opening database, attempting to replay blockchain.");
                 my->force_replay |= my->db.revision() >= my->db.head_block_num();
@@ -507,6 +602,18 @@ namespace chain {
                 return;
             }
         } catch (...) {
+            if (my->auto_recover_from_snapshot && snapshot_load_callback) {
+                wlog("Shared memory corrupted (open failed). Attempting automatic recovery from snapshot...");
+                fc::path snap = my->find_latest_snapshot();
+                if (!snap.string().empty()) {
+                    wlog("Auto-recovery: found snapshot ${p}. Wiping shared memory and importing...", ("p", snap.string()));
+                    my->snapshot_path = snap.string();
+                    do_snapshot_load(data_dir, true);
+                    return;
+                } else {
+                    wlog("Auto-recovery: no snapshots found in ${d}. Falling back to replay.", ("d", my->snapshot_dir));
+                }
+            }
             if (my->replay_if_corrupted) {
                 wlog("Error opening database, attempting to replay blockchain.");
                 try {
@@ -541,11 +648,19 @@ namespace chain {
             } catch (const fc::exception& e) {
                 elog("FATAL: P2P snapshot sync failed: ${e}", ("e", e.to_detail_string()));
                 std::cerr << "   FATAL: P2P snapshot sync failed: " << e.what() << "\n";
+                my->wipe_db(data_dir, false);
                 appbase::app().quit();
                 return;
             } catch (const std::exception& e) {
                 elog("FATAL: P2P snapshot sync failed: ${e}", ("e", e.what()));
                 std::cerr << "   FATAL: P2P snapshot sync failed: " << e.what() << "\n";
+                my->wipe_db(data_dir, false);
+                appbase::app().quit();
+                return;
+            } catch (...) {
+                elog("FATAL: P2P snapshot sync failed: unknown exception");
+                std::cerr << "   FATAL: P2P snapshot sync failed: unknown exception\n";
+                my->wipe_db(data_dir, false);
                 appbase::app().quit();
                 return;
             }
@@ -604,10 +719,17 @@ namespace chain {
                     elog("The snapshot file may be corrupted or incompatible. "
                          "Check the file path and try again.");
                 }
+                my->wipe_db(data_dir, false);
                 appbase::app().quit();
                 return;
             } catch (const std::exception& e) {
                 elog("FATAL: Failed to load snapshot: ${e}", ("e", e.what()));
+                my->wipe_db(data_dir, false);
+                appbase::app().quit();
+                return;
+            } catch (...) {
+                elog("FATAL: Failed to load snapshot: unknown exception");
+                my->wipe_db(data_dir, false);
                 appbase::app().quit();
                 return;
             }
@@ -652,7 +774,12 @@ namespace chain {
             ilog("Started on blockchain with ${n} blocks (from snapshot)", ("n", my->db.head_block_num()));
         }
 
-        on_sync();
+        // During auto-recovery, on_sync() must NOT fire again —
+        // webserver/P2P plugins are already running and calling
+        // start_webserver() twice destroys joinable threads (std::terminate).
+        if (!is_recovery) {
+            on_sync();
+        }
     }
 
     void plugin::trigger_snapshot_load() {
@@ -673,7 +800,69 @@ namespace chain {
     }
 
     bool plugin::accept_block(const protocol::signed_block &block, bool currently_syncing, uint32_t skip) {
-        return my->accept_block(block, currently_syncing, skip);
+        try {
+            return my->accept_block(block, currently_syncing, skip);
+        } catch (const graphene::chain::shared_memory_corruption_exception& e) {
+            elog("Shared memory corruption detected during block processing: ${e}", ("e", e.to_detail_string()));
+            if (my->auto_recover_from_snapshot) {
+                attempt_auto_recovery();
+            } else {
+                elog("Auto-recovery disabled. Restart with --replay-from-snapshot --snapshot-auto-latest");
+                appbase::app().quit();
+            }
+            return false;
+        }
+    }
+
+    void plugin::attempt_auto_recovery() {
+        wlog("=== IMMEDIATE AUTO-RECOVERY: shared memory corruption detected ===");
+
+        // 1. Find latest snapshot
+        fc::path snap = my->find_latest_snapshot();
+        if (snap.string().empty()) {
+            elog("Auto-recovery FAILED: no snapshots found in ${d}. "
+                 "Restart manually with --replay-from-snapshot --snapshot-auto-latest",
+                 ("d", my->snapshot_dir));
+            appbase::app().quit();
+            return;
+        }
+
+        if (!snapshot_load_callback) {
+            elog("Auto-recovery FAILED: snapshot plugin not configured. "
+                 "Add 'plugin = snapshot' to config.ini");
+            appbase::app().quit();
+            return;
+        }
+
+        wlog("Auto-recovery: closing database and recovering from snapshot ${p}...", ("p", snap.string()));
+
+        // 2. Close current (corrupted) database
+        try {
+            my->db.close(false); // close without rewind — state is corrupted anyway
+        } catch (...) {
+            wlog("Auto-recovery: ignoring error during database close (state is corrupted)");
+        }
+
+        // 3. Set snapshot path and trigger full recovery (wipe + import + dlt replay)
+        my->snapshot_path = snap.string();
+        auto data_dir = appbase::app().data_dir() / "state";
+
+        try {
+            do_snapshot_load(data_dir, true);
+            wlog("=== AUTO-RECOVERY COMPLETE: node resumed at block ${n} ===",
+                 ("n", my->db.head_block_num()));
+        } catch (const fc::exception& e) {
+            elog("Auto-recovery FAILED during snapshot load: ${e}", ("e", e.to_detail_string()));
+            appbase::app().quit();
+        } catch (const std::exception& e) {
+            elog("Auto-recovery FAILED during snapshot load: ${e}", ("e", e.what()));
+            appbase::app().quit();
+        }
+    }
+
+    void plugin::wipe_state() {
+        auto data_dir = appbase::app().data_dir() / "state";
+        my->wipe_db(data_dir, false);
     }
 
     void plugin::accept_transaction(const protocol::signed_transaction &trx) {

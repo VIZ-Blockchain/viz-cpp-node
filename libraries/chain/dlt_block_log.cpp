@@ -28,6 +28,15 @@ namespace graphene { namespace chain {
             boost::iostreams::mapped_file index_mapped_file;
             read_write_mutex mutex;
 
+            // Logical file sizes tracked independently of mapped_file.size().
+            // After thousands of resize() cycles (close→truncate→remap),
+            // mapped_file.size() can return stale values, causing
+            // get_block_pos() to reject valid block numbers.  By tracking
+            // logical sizes ourselves we avoid this bug.
+            std::size_t _logical_block_size = 0;
+            std::size_t _logical_index_size = 0;
+            uint64_t _resize_count = 0; // for diagnostics
+
             bool has_block_records() const {
                 auto size = block_mapped_file.size();
                 return (size > dlt_min_valid_file_size);
@@ -45,6 +54,49 @@ namespace graphene { namespace chain {
                     return 0;
                 }
                 return size;
+            }
+
+            // Use logical sizes (tracked by us) instead of mapped_file.size()
+            // to avoid stale mapping metadata after many resize() cycles.
+            std::size_t logical_block_size() const {
+                return _logical_block_size >= dlt_min_valid_file_size ? _logical_block_size : 0;
+            }
+            std::size_t logical_index_size() const {
+                return _logical_index_size >= dlt_min_valid_file_size ? _logical_index_size : 0;
+            }
+
+            // Sync logical sizes from actual mapped file sizes (call after open/reopen)
+            void sync_logical_sizes() {
+                _logical_block_size = block_mapped_file.is_open() ? block_mapped_file.size() : 0;
+                _logical_index_size = index_mapped_file.is_open() ? index_mapped_file.size() : 0;
+            }
+
+            // Detect and fix stale mapping: if mapped_file.size() disagrees
+            // with our tracked logical size, close and reopen the file.
+            void heal_if_stale() {
+                if (block_mapped_file.is_open()) {
+                    auto actual = block_mapped_file.size();
+                    if (actual != _logical_block_size) {
+                        wlog("DLT block log: STALE block mapping detected "
+                             "(mapped_size=${actual}, logical_size=${logical}). Reopening.",
+                             ("actual", actual)("logical", _logical_block_size));
+                        block_mapped_file.close();
+                        open_block_mapped_file();
+                        // After reopen, the mapping should reflect the actual file size
+                        _logical_block_size = block_mapped_file.size();
+                    }
+                }
+                if (index_mapped_file.is_open()) {
+                    auto actual = index_mapped_file.size();
+                    if (actual != _logical_index_size) {
+                        wlog("DLT block log: STALE index mapping detected "
+                             "(mapped_size=${actual}, logical_size=${logical}). Reopening.",
+                             ("actual", actual)("logical", _logical_index_size));
+                        index_mapped_file.close();
+                        open_index_mapped_file();
+                        _logical_index_size = index_mapped_file.size();
+                    }
+                }
             }
 
             uint64_t get_uint64(const boost::iostreams::mapped_file& mapped_file, std::size_t pos) const {
@@ -74,7 +126,9 @@ namespace graphene { namespace chain {
                 }
                 // Index entry is at: header(8) + 8 * (block_num - start_block_num)
                 std::size_t idx_offset = INDEX_HEADER_SIZE + sizeof(uint64_t) * (block_num - _start_block_num);
-                auto idx_size = get_mapped_size(index_mapped_file);
+                // Use our tracked logical size instead of mapped_file.size()
+                // to avoid stale mapping metadata after many resizes.
+                auto idx_size = logical_index_size();
                 if (idx_offset + sizeof(uint64_t) > idx_size) {
                     return dlt_block_log::npos;
                 }
@@ -82,8 +136,10 @@ namespace graphene { namespace chain {
             }
 
             uint64_t read_block(uint64_t pos, signed_block& block) const {
-                const auto file_size = get_mapped_size(block_mapped_file);
-                FC_ASSERT(file_size > pos);
+                const auto file_size = logical_block_size();
+                FC_ASSERT(file_size > pos,
+                    "DLT block log: read_block pos=${pos} >= logical_size=${size}",
+                    ("pos", pos)("size", file_size));
 
                 const auto* ptr = block_mapped_file.data() + pos;
                 const auto available_size = file_size - pos;
@@ -157,6 +213,7 @@ namespace graphene { namespace chain {
                     pos = read_block(pos, tmp_block);
                     idx_ptr += sizeof(uint64_t);
                 }
+                sync_logical_sizes();
             }
 
             void open(const fc::path& file) { try {
@@ -203,6 +260,7 @@ namespace graphene { namespace chain {
 
                 open_block_mapped_file();
                 open_index_mapped_file();
+                sync_logical_sizes();  // Must sync before read_head()/construct_index()
 
                 if (has_block_records()) {
                     ilog("DLT block log: data file is nonempty");
@@ -229,6 +287,7 @@ namespace graphene { namespace chain {
 
                     ilog("DLT block log: opened with blocks ${s}-${h}",
                          ("s", _start_block_num)("h", head->block_num()));
+                    sync_logical_sizes();  // Re-sync after potential construct_index() resize
                 } else if (has_index_records()) {
                     // Data empty but index exists -- wipe index
                     ilog("DLT block log: data empty but index exists, wiping");
@@ -239,24 +298,27 @@ namespace graphene { namespace chain {
                     open_block_mapped_file();
                     open_index_mapped_file();
                 }
+                sync_logical_sizes();
             } FC_LOG_AND_RETHROW() }
 
             uint64_t append(const signed_block& b, const std::vector<char>& data) { try {
-                const auto idx_size = get_mapped_size(index_mapped_file);
+                const auto idx_size = logical_index_size();
                 const uint32_t block_num = b.block_num();
 
                 if (_start_block_num == 0) {
                     // First block ever written -- initialize the index header
                     _start_block_num = block_num;
 
-                    // Write header + first entry
-                    index_mapped_file.resize(INDEX_HEADER_SIZE + sizeof(uint64_t));
+                    auto new_idx_size = INDEX_HEADER_SIZE + sizeof(uint64_t);
+                    index_mapped_file.resize(new_idx_size);
+                    _logical_index_size = new_idx_size;
                     { uint64_t tmp = _start_block_num; std::memcpy(index_mapped_file.data(), &tmp, sizeof(tmp)); }
 
-                    uint64_t block_pos = get_mapped_size(block_mapped_file);
+                    uint64_t block_pos = logical_block_size();
 
-                    // Write block data + trailing position
-                    block_mapped_file.resize(block_pos + data.size() + sizeof(block_pos));
+                    auto new_block_size = block_pos + data.size() + sizeof(block_pos);
+                    block_mapped_file.resize(new_block_size);
+                    _logical_block_size = new_block_size;
                     auto* ptr = block_mapped_file.data() + block_pos;
                     std::memcpy(ptr, data.data(), data.size());
                     ptr += data.size();
@@ -268,6 +330,7 @@ namespace graphene { namespace chain {
 
                     head = b;
                     head_id = b.id();
+                    ++_resize_count;
                     return block_pos;
                 }
 
@@ -281,22 +344,27 @@ namespace graphene { namespace chain {
                     ("block_num", block_num)
                     ("start_block_num", _start_block_num));
 
-                uint64_t block_pos = get_mapped_size(block_mapped_file);
+                uint64_t block_pos = logical_block_size();
 
                 // Write block data + trailing position
-                block_mapped_file.resize(block_pos + data.size() + sizeof(block_pos));
+                auto new_block_size = block_pos + data.size() + sizeof(block_pos);
+                block_mapped_file.resize(new_block_size);
+                _logical_block_size = new_block_size;
                 auto* ptr = block_mapped_file.data() + block_pos;
                 std::memcpy(ptr, data.data(), data.size());
                 ptr += data.size();
                 std::memcpy(ptr, &block_pos, sizeof(block_pos));
 
                 // Write index entry
-                index_mapped_file.resize(idx_size + sizeof(uint64_t));
+                auto new_idx_size = idx_size + sizeof(uint64_t);
+                index_mapped_file.resize(new_idx_size);
+                _logical_index_size = new_idx_size;
                 ptr = index_mapped_file.data() + idx_size;
                 std::memcpy(ptr, &block_pos, sizeof(block_pos));
 
                 head = b;
                 head_id = b.id();
+                ++_resize_count;
                 return block_pos;
             } FC_LOG_AND_RETHROW() }
 
@@ -306,6 +374,8 @@ namespace graphene { namespace chain {
                 head.reset();
                 head_id = block_id_type();
                 _start_block_num = 0;
+                _logical_block_size = 0;
+                _logical_index_size = 0;
             }
         };
     }
@@ -360,9 +430,9 @@ namespace graphene { namespace chain {
         return result;
     } FC_LOG_AND_RETHROW() }
 
-    const optional<signed_block>& dlt_block_log::head() const {
+    optional<signed_block> dlt_block_log::head() const {
         detail::read_lock lock(my->mutex);
-        return my->head;
+        return my->head; // return by value — safe against concurrent append()
     }
 
     uint32_t dlt_block_log::start_block_num() const {
@@ -449,5 +519,91 @@ namespace graphene { namespace chain {
         ilog("DLT block log: truncation complete, now blocks ${s}-${h}",
              ("s", my->_start_block_num)("h", (my->head.valid() ? my->head->block_num() : 0)));
     } FC_CAPTURE_AND_RETHROW((new_start)) }
+
+    void dlt_block_log::reset() { try {
+        detail::write_lock lock(my->mutex);
+
+        uint32_t old_start = my->_start_block_num;
+        uint32_t old_end = my->head.valid() ? my->head->block_num() : 0;
+
+        my->close();
+
+        boost::filesystem::remove_all(my->block_path);
+        boost::filesystem::remove_all(my->index_path);
+        // Also remove stale temp/backup files
+        boost::filesystem::remove_all(my->block_path + ".tmp");
+        boost::filesystem::remove_all(my->index_path + ".tmp");
+        boost::filesystem::remove_all(my->block_path + ".bak");
+        boost::filesystem::remove_all(my->index_path + ".bak");
+
+        my->open(fc::path(my->block_path));
+
+        ilog("DLT block log: reset complete (was blocks ${s}-${h}, now empty)",
+             ("s", old_start)("h", old_end));
+    } FC_CAPTURE_AND_RETHROW() }
+
+    bool dlt_block_log::verify_mapping() {
+        detail::write_lock lock(my->mutex);
+        bool was_stale = false;
+
+        if (my->block_mapped_file.is_open()) {
+            auto mapped = my->block_mapped_file.size();
+            if (mapped != my->_logical_block_size) {
+                wlog("DLT block log: verify_mapping() STALE block mapping "
+                     "(mapped_size=${mapped}, logical_size=${logical}, resizes=${r}). Healing.",
+                     ("mapped", mapped)("logical", my->_logical_block_size)
+                     ("r", my->_resize_count));
+                was_stale = true;
+            }
+        }
+        if (my->index_mapped_file.is_open()) {
+            auto mapped = my->index_mapped_file.size();
+            if (mapped != my->_logical_index_size) {
+                wlog("DLT block log: verify_mapping() STALE index mapping "
+                     "(mapped_size=${mapped}, logical_size=${logical}, resizes=${r}). Healing.",
+                     ("mapped", mapped)("logical", my->_logical_index_size)
+                     ("r", my->_resize_count));
+                was_stale = true;
+            }
+        }
+
+        if (was_stale) {
+            my->heal_if_stale();
+        }
+        return was_stale;
+    }
+
+    std::vector<uint32_t> dlt_block_log::verify_continuity() const {
+        detail::read_lock lock(my->mutex);
+        std::vector<uint32_t> gaps;
+
+        if (!my->head.valid() || my->_start_block_num == 0) {
+            return gaps;
+        }
+
+        uint32_t head_num = protocol::block_header::num_from_id(my->head_id);
+        for (uint32_t n = my->_start_block_num; n <= head_num; ++n) {
+            uint64_t pos = my->get_block_pos(n);
+            if (pos == npos) {
+                gaps.push_back(n);
+                continue;
+            }
+            try {
+                signed_block blk;
+                my->read_block(pos, blk);
+                if (blk.block_num() != n) {
+                    gaps.push_back(n);
+                }
+            } catch (...) {
+                gaps.push_back(n);
+            }
+        }
+        return gaps;
+    }
+
+    uint64_t dlt_block_log::resize_count() const {
+        detail::read_lock lock(my->mutex);
+        return my->_resize_count;
+    }
 
 } } // graphene::chain

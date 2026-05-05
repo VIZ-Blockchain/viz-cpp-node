@@ -2,23 +2,16 @@ set(CURRENT_TARGET network)
 
 list(APPEND ${CURRENT_TARGET}_HEADERS
         include/graphene/network/config.hpp
-        include/graphene/network/core_messages.hpp
         include/graphene/network/exceptions.hpp
         include/graphene/network/message.hpp
-        include/graphene/network/message_oriented_connection.hpp
-        include/graphene/network/node.hpp
-        include/graphene/network/peer_connection.hpp
-        include/graphene/network/peer_database.hpp
-        include/graphene/network/stcp_socket.hpp
+        include/graphene/network/dlt_p2p_messages.hpp
+        include/graphene/network/dlt_p2p_peer_state.hpp
+        include/graphene/network/dlt_p2p_node.hpp
         )
 
 list(APPEND ${CURRENT_TARGET}_SOURCES
-        core_messages.cpp
-        message_oriented_connection.cpp
-        node.cpp
-        peer_connection.cpp
-        peer_database.cpp
-        stcp_socket.cpp
+        dlt_p2p_messages.cpp
+        dlt_p2p_node.cpp
         )
 
 if(BUILD_SHARED_LIBRARIES)
@@ -44,7 +37,7 @@ target_include_directories(graphene_${CURRENT_TARGET}
         )
 
 if(MSVC)
-    set_source_files_properties(node.cpp PROPERTIES COMPILE_FLAGS "/bigobj")
+    set_source_files_properties(dlt_p2p_node.cpp PROPERTIES COMPILE_FLAGS "/bigobj")
 endif(MSVC)
 
 if(USE_PCH)
@@ -60,4 +53,3 @@ install(TARGETS
         ARCHIVE DESTINATION lib
         )
 install(FILES ${${CURRENT_TARGET}_HEADERS} DESTINATION "include/graphene/${CURRENT_TARGET}")
-

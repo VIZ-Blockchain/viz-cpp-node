@@ -30,6 +30,7 @@
 #define CHAIN_BLOCKS_PER_DAY                  (24*60*60/CHAIN_BLOCK_INTERVAL)
 #define CHAIN_BLOCKS_PER_HOUR                 (60*60/CHAIN_BLOCK_INTERVAL)
 #define CHAIN_MAX_WITNESS_MISSED_BLOCKS       200 // ~10 min after first missed block for top witness
+#define CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS (5 * CHAIN_MAX_WITNESSES) // in emergency mode, blank key after 5 full rounds of missed scheduled slots (~5 min)
 
 #define CHAIN_INITIATOR_NAME                 "viz"
 // Private key: 5JabcrvaLnBTCkCVFX5r4rmeGGfuJuVp4NAKRNLTey6pxhRQmf4
@@ -110,11 +111,6 @@
 /// Emergency consensus mode: activates when no block has been produced for
 /// this many seconds since the last irreversible block.
 #define CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC    3600  // 1 hour
-
-/// Minimum wall-clock time (seconds) after node startup before emergency
-/// consensus mode may be activated. This gives the node time to sync
-/// with peers before considering the network stalled.
-#define CHAIN_EMERGENCY_STARTUP_DELAY_SEC         600  // 10 minutes
 
 /// The witness account name that produces blocks during emergency mode
 #define CHAIN_EMERGENCY_WITNESS_ACCOUNT          CHAIN_COMMITTEE_ACCOUNT  // "committee"

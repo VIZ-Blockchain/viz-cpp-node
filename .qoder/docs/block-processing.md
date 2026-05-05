@@ -107,13 +107,56 @@ Source: [database.cpp:1125-1160](../../libraries/chain/database.cpp#L1125)
 
 ---
 
+## Fork DB Head-Seeding
+
+Source: [database.cpp `_push_block`](../../libraries/chain/database.cpp)
+
+Before pushing a block to `fork_db`, `_push_block()` ensures the current database head block is present in `fork_db`. After snapshot import, stale sync recovery, or fork_db trimming, the head block may be absent from `fork_db`'s `_index`.
+
+Without this seed, any block whose `previous == head_block_id()` would throw `unlinkable_block_exception` inside `fork_database::_push_block()` ("block does not link to known chain"), silently rejecting valid next-blocks and preventing head advancement.
+
+```
+if new_block.previous == head_block_id()
+   AND head_block_id() NOT in fork_db:
+     fetch head block from block log
+     fork_db.start_block(head_block)   ← seeds fork_db with the head
+```
+
+This also fixes **witness nodes that generate their own blocks**: `generate_block()` sets `pending_block.previous = head_block_id()`, and without the seed the self-generated block would fail to push into `fork_db`.
+
+---
+
+## Direct-Extension Bypass
+
+Source: [database.cpp `_push_block`](../../libraries/chain/database.cpp)
+
+After pushing a block to `fork_db`, `_push_block()` checks whether the block directly extends the database head (`new_block.previous == head_block_id()`). If so, the fork switch logic is bypassed entirely and the block falls through to `apply_block()`.
+
+This handles the case where `fork_db._head` points to a stale higher block accumulated from previous failed sync cycles (stale sync recovery does not reset `fork_db`). Without this bypass:
+
+1. `fork_db.push_block()` returns the stale `_head` (e.g., block #79609893)
+2. `new_head->data.previous != head_block_id()` evaluates to TRUE
+3. The fork switch logic either rejects the block (head not in fork_db) or can't compare branches
+4. The valid next-block is silently dropped, head never advances
+
+```
+if new_block.previous == head_block_id():
+    → skip fork switch, fall through to apply_block
+else if new_head->data.previous != head_block_id():
+    → existing fork switch logic (unchanged)
+```
+
+Together with fork_db head-seeding, this ensures blocks that correctly link to the database head are always applied, regardless of `fork_db`'s internal `_head` state.
+
+---
+
 ## Fork Switch Flow
 
 When a node switches to a different fork:
 
 1. `pop_block()` removes the current head block
    - Transactions from the popped block are saved to `_popped_tx`
-   - Source: [database.cpp:1223-1238](../../libraries/chain/database.cpp#L1223)
+   - Source: [database.cpp](../../libraries/chain/database.cpp)
 
 2. The new block is applied via `push_block()`
 
@@ -121,6 +164,88 @@ When a node switches to a different fork:
    - `_popped_tx` transactions are processed first (from the old fork)
    - Then original `_pending_transactions` are processed
    - Duplicate transactions (already in the new chain) are silently skipped
+
+### Linear Extension vs. Actual Fork
+
+When `fork_db._push_next()` auto-links orphan blocks from the unlinked index, the fork_db head can jump multiple blocks ahead of the database head in a single `push_block()` call. This triggers the fork switch code path (`new_head->data.previous != head_block_id()`), but there is no actual fork — the new chain extends directly from the current head.
+
+`fetch_branch_from(new_head, head_block_id)` always appends the common ancestor to **both** branches. For a linear extension, the common ancestor IS the current head:
+- `branches.first` = `[new_tip, ..., HEAD]` (blocks to apply + common ancestor)
+- `branches.second` = `[HEAD]` (just the common ancestor)
+
+**Detection:** `is_linear_extension = branches.second.size() == 1 && branches.second.back()->id == head_block_id()`.
+
+**Behavior when linear:**
+- Skip the pop loop entirely (the common ancestor is already applied, no blocks to undo)
+- Skip the common ancestor when applying `branches.first` (avoid re-applying HEAD)
+- On error: pop any newly applied blocks back to the common ancestor, set fork_db head to it
+
+**Why this matters in DLT mode:** In DLT mode, LIB = head, so undo sessions are committed (not just pushed). `pop_block()` → `undo()` has no effect — `head_block_id()` never changes. The pop loop becomes infinite, eventually emptying the fork_db and crashing with "popping head block would leave fork DB empty".
+
+For **actual forks** (`branches.second.size() > 1` or common ancestor != head), the original behavior is preserved: pop old-fork blocks including the common ancestor, then re-apply the common ancestor and new-fork blocks from `branches.first`.
+
+### Debug Logging
+
+Diagnostic logs at every `pop_block()` call site:
+
+| Log prefix | Location | Meaning |
+|---|---|---|
+| `Fork switch: new_head=#X, db_head=#Y, branches.first=N, branches.second=M` | Before fork switch | Shows branch sizes; `branches.second=0` = linear extension |
+| `FORK-SWITCH-POP: popping head #H` | Main pop loop | Normal fork switch pop |
+| `FORK-RECOVER-POP: popping head #H` | Error recovery pop loop | Reverting failed fork switch |
+| `POP_BLOCK: db_head=#X, fork_db_head=#Y, fork_db_head_prev=Z` | Inside `database::pop_block()` | Fork_db state before every pop; `prev=0` = root block (will crash) |
+
+---
+
+## Orphan Block Handling (Unlinked Index)
+
+Source: [database.cpp `_push_block`](../../libraries/chain/database.cpp), [fork_database.cpp](../../libraries/chain/fork_database.cpp)
+
+When a block arrives whose parent is unknown (missed broadcast), the node can either reject it or defer it for later linking.
+
+### Pre-check in `_push_block()`
+
+```
+if block.num > head_num
+   AND block.previous != head_block_id
+   AND block.previous not in fork_db:
+     if gap > 100 → reject (too far ahead, avoid memory bloat)
+     if gap <= 100 → allow through to fork_db
+```
+
+Blocks within 100 of head pass to `fork_db.push_block()`, which throws `unlinkable_block_exception` but stores the block in `_unlinked_index` first.
+
+### Auto-linking via `_push_next()`
+
+When the missing parent block finally arrives and is pushed to fork_db:
+1. `_push_block(parent)` links the parent to the chain
+2. `_push_next(parent)` searches `_unlinked_index` for children of `parent`
+3. Found children are moved from `_unlinked_index` to `_index` and recursively linked
+4. fork_db head may jump multiple blocks ahead in one call
+
+This triggers the linear extension fork switch (see above).
+
+### P2P Recovery
+
+When `unlinkable_block_exception` propagates to the P2P layer (`process_block_during_normal_operation`):
+- Block **at or below head** → strike counter incremented (soft-ban after 20 strikes)
+- Block **ahead of head** → `start_synchronizing_with_peer()` restarts sync to fetch the missing block
+
+---
+
+## Peer Strike-Based Soft-Ban
+
+Source: [node.cpp](../../libraries/network/node.cpp), [peer_connection.hpp](../../libraries/network/include/graphene/network/peer_connection.hpp)
+
+Peers are not immediately soft-banned for sending unlinkable or rejected blocks. Instead, a strike counter accumulates:
+
+| Path | Threshold | Counter field |
+|---|---|---|
+| Normal operation: unlinkable block at/below head | 20 strikes | `unlinkable_block_strikes` |
+| Sync path: generic block rejection | 20 strikes | `unlinkable_block_strikes` |
+| Dead fork / block too old | Immediate | N/A |
+
+**Reset on valid block:** When a peer sends a block that is successfully accepted (normal or sync), their `unlinkable_block_strikes` counter resets to 0. This allows honest peers to recover from transient errors (snapshot reload, timing races, brief micro-forks).
 
 ---
 
@@ -274,6 +399,7 @@ When block at T=6 is pushed, `update_global_dynamic_data()` counts `missed_block
 | Participation | Network participation ≥ required (pre-HF12 only) | `low_participation` |
 | Lag | `|scheduled_time - now| <= 500ms` | `lag` |
 | Fork collision | No competing block at same height in fork_db | `fork_collision` |
+| Minority fork | Last 21 blocks NOT all from our own witnesses (or `enable-stale-production` or emergency mode) | `minority_fork` |
 
 ---
 

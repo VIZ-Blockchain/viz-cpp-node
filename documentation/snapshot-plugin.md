@@ -182,6 +182,10 @@ Early-rejection checks in `_push_block` prevent sync disruption:
 
 4. **Immediate successor always allowed**: Blocks whose `previous == head_block_id()` always pass — this is the critical sync case where the next sequential block must be accepted, even when `fork_db` is empty after a restart.
 
+5. **Fork DB head-seeding**: Before pushing to `fork_db`, if `new_block.previous == head_block_id()` and the head block is NOT in `fork_db`, the head block is fetched from the block log and seeded into `fork_db` via `start_block()`. This ensures the incoming block can link to the chain even after snapshot import, stale sync recovery, or `fork_db` trimming where the head was absent. Without this, `fork_db::_push_block()` would throw `unlinkable_block_exception` ("block does not link to known chain"), silently rejecting valid next-blocks. This also fixes witness nodes generating their own blocks (where `generate_block()` sets `pending_block.previous = head_block_id()`).
+
+6. **Direct-extension bypass**: After pushing to `fork_db`, if `new_block.previous == head_block_id()`, the fork switch logic is bypassed entirely and the block falls through to `apply_block()`. This handles the case where `fork_db._head` points to a stale higher block accumulated from previous failed sync cycles (stale sync recovery does not reset `fork_db`), preventing valid next-blocks from being silently rejected by the fork switch comparison.
+
 ### Deferred Resize and Sync Recovery
 
 When shared memory is exhausted during block processing, the node schedules a deferred resize and throws `deferred_resize_exception`. The P2P layer handles this as a transient local condition:
@@ -211,6 +215,21 @@ All soft-ban triggers set `fork_rejected_until = now + duration` and `inhibit_fe
 | 12 | Chain: `_push_block` | Block ≤ head, different fork, parent not in fork_db | ≤ head | Throw `unlinkable_block_exception` | Fork diverged before fork_db window |
 | 13 | Chain: `_push_block` | Block > head, `previous != head_block_id`, parent not in fork_db | > head | Return `false` silently | Prevent sync restart storms from broadcast blocks |
 | 14 | Chain: `push_block` | `bad_alloc` → `deferred_resize_exception` | any | Throw `deferred_resize_exception` | Shared memory exhausted; P2P must not penalize peer |
+
+### Soft-Ban Notification Protocol
+
+When a node soft-bans a peer (e.g., spam strike threshold exceeded), it sends a `dlt_soft_ban_message` (type 5114) **before** closing the connection. This allows the banned peer to:
+
+1. **Stop sending data immediately** — instead of continuing to spam until the connection times out
+2. **Enter BANNED state** with the correct duration — the ban message includes `ban_duration_sec` and a `reason` string
+3. **Log a yellow/orange notice** — the receiving node logs: `Peer X soft-banned us for Ns (reason: Y)`
+
+The receiving node closes the connection and waits for the ban duration before attempting to reconnect. This prevents wasted bandwidth from both sides when a peer is already rejected.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ban_duration_sec` | uint32_t | Ban duration in seconds (typically 3600 for 1 hour) |
+| `reason` | string | Human-readable ban reason (e.g., "spam strike threshold exceeded") |
 
 ### `is_known_block()` in DLT Mode
 
@@ -302,6 +321,49 @@ Test complete. Exiting.
 - The speed probe downloads one 1 MB chunk. Actual full-download speed may differ slightly.
 - The test runs before the snapshot TCP server starts, so it does not affect other connected clients.
 
+## Stale Snapshot Detection (DLT Mode)
+
+In DLT mode, the `dlt_block_log` is a rolling window — old blocks are pruned as new ones arrive. If the node's latest snapshot is older than the DLT block log's start block, downloading nodes would face an **unsyncable gap**: the snapshot restores state at block N, but the DLT block log starts at block M > N, leaving blocks N+1..M-1 unavailable.
+
+### How It Works
+
+At startup, the snapshot plugin checks:
+1. Is the node in DLT mode?
+2. Is snapshot serving or periodic creation enabled?
+3. Is the latest snapshot's block number **less than** `dlt_block_log.start_block_num()`?
+
+If all conditions are true, the plugin logs a **STALE SNAPSHOT DETECTED** warning and sets an internal flag. On the first fully-synced block (not during P2P catch-up), the plugin creates an **urgent fresh snapshot** immediately — either asynchronously or deferred if the witness is about to produce.
+
+### Example Scenario
+
+```
+Latest snapshot:     snapshot-block-900.vizjson   (block 900)
+DLT block log:       blocks 1000..2000
+Gap:                 blocks 901..999 are missing
+```
+
+A downloading node would restore state at block 900 but the serving node can only provide blocks from 1000 onward — P2P sync fails. The stale detection creates a fresh snapshot at the current head (e.g., block 2000), eliminating the gap.
+
+### Log Output
+
+```
+STALE SNAPSHOT DETECTED: latest snapshot at block 900 is older than DLT block log start at block 1000.
+Downloading nodes would have a sync gap (blocks 900..1000 missing).
+A fresh snapshot will be created on the first synced block.
+```
+
+When the fresh snapshot is created:
+```
+Creating urgent fresh snapshot (stale snapshot detected at startup): /data/snapshots/snapshot-block-2000.vizjson
+```
+
+### Notes
+
+- The check only runs when `allow-snapshot-serving = true` or `snapshot-every-n-blocks > 0`.
+- The urgent snapshot follows the same witness-aware deferral and async creation as periodic snapshots.
+- After the fresh snapshot is created, normal periodic snapshot scheduling resumes.
+- If no snapshot exists at all (`snap_block = 0`), it is also considered stale (0 < any DLT start block).
+
 ## Stalled Sync Detection (DLT Mode)
 
 For DLT mode nodes that may fall behind the network, automatic stalled sync detection can re-download a newer snapshot when P2P sync is no longer possible (peers have pruned old blocks).
@@ -391,6 +453,15 @@ Both can be enabled independently. For DLT nodes, the snapshot detection provide
 | `stalled-sync-timeout-minutes` | 5 | Timeout for stalled sync detection and startup retry interval |
 | `test-trusted-seeds` | false | Probe all trusted peers at startup (connect time, latency, speed) and exit |
 | `dlt-block-log-max-blocks` | 100000 | Rolling DLT block_log window size (0 = disabled) |
+| `dlt-stats-interval-sec` | 300 | Interval in seconds between P2P peer stats log output (min 30) |
+| `dlt-peer-max-disconnect-hours` | 8 | Remove peer from known list after this many hours of non-response |
+| `dlt-mempool-max-tx` | 10000 | Maximum number of transactions in P2P mempool |
+| `dlt-mempool-max-bytes` | 104857600 | Maximum total bytes of transactions in P2P mempool (default 100MB) |
+| `dlt-mempool-max-tx-size` | 65536 | Maximum single transaction size in bytes (default 64KB) |
+| `dlt-mempool-max-expiration-hours` | 24 | Reject transactions with expiration too far in the future (hours) |
+| `dlt-peer-exchange-max-per-reply` | 10 | Max peers to include in a peer exchange reply |
+| `dlt-peer-exchange-max-per-subnet` | 2 | Max peers per /24 subnet in peer exchange replies |
+| `dlt-peer-exchange-min-uptime-sec` | 600 | Min connection uptime (seconds) before sharing a peer in exchange replies |
 
 ### CLI options
 

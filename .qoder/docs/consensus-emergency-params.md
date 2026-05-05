@@ -6,13 +6,15 @@ Parameters used to restart stuck consensus, their operational mechanics, and the
 
 ## Overview
 
-When the VIZ network stalls — no blocks are produced because too few witnesses are online — operators can activate three emergency parameters to unblock production:
+When the VIZ network stalls — no blocks are produced because too few witnesses are online — operators can activate emergency parameters to unblock production:
 
 | Parameter | Normal Value | Emergency Value | Location |
 |---|---|---|---|
 | `enable-stale-production` | `false` | `true` | witness plugin |
 | `required-participation` | `3300` (33%) | `0` | witness plugin |
 | `fork_db` `_max_size` | `1024` (dynamic) | `1024` (initial) | chain library |
+
+Starting with Hardfork 12, the on-chain **emergency consensus activation** is fully automatic and deterministic. When the network stalls for >1 hour (`b.timestamp - lib_block.timestamp >= 3600`), emergency consensus mode activates on every node — no config flags needed. The activation uses only signed block timestamps from the chain state, ensuring identical results during replay. **All real witnesses are disabled** on activation (signing_key zeroed); operators must re-register via `witness_update_operation`. LIB advances every block (capped at HEAD−1), so the undo limit is never reached. Emergency exits automatically when 75% (16/21) of schedule slots are real witnesses. The older `enable-stale-production` and `required-participation` overrides are still available for pre-HF12 scenarios or manual recovery.
 
 These parameters are essential for chain recovery, but if left in emergency mode after the network stabilizes, they become the **root cause of micro-forks**: isolated delegates continue producing blocks on their own divergent chain during any subsequent network partition.
 
@@ -301,9 +303,11 @@ When the network has stalled and block production must be restarted:
 
 1. **Edit config.ini** (or pass command-line flags):
    ```ini
+   # Needed for block production on a stale chain:
    enable-stale-production = true
    required-participation = 0
    ```
+   Note: Emergency consensus activation (HF12+) is automatic and deterministic — no config flag is needed. When `b.timestamp - lib_block.timestamp >= 3600`, emergency mode activates on all nodes.
 
 2. **Restart the node**:
    ```bash
@@ -389,6 +393,7 @@ required-participation = 0
 | `CHAIN_100_PERCENT` | 10000 | 100% in basis points | [config.hpp:57](../../libraries/protocol/include/graphene/protocol/config.hpp#L57) |
 | `CHAIN_1_PERCENT` | 100 | 1% in basis points | [config.hpp:58](../../libraries/protocol/include/graphene/protocol/config.hpp#L58) |
 | `CHAIN_MAX_UNDO_HISTORY` | 10000 | Max head-LIB gap before undo history exception | [config.hpp:108](../../libraries/protocol/include/graphene/protocol/config.hpp#L108) |
+| `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` | 3600 | Seconds since LIB before emergency activates | [config.hpp:112](../../libraries/protocol/include/graphene/protocol/config.hpp#L112) |
 | `CHAIN_IRREVERSIBLE_THRESHOLD` | 7500 (75%) | Witness validation threshold for LIB advancement | [config.hpp:110](../../libraries/protocol/include/graphene/protocol/config.hpp#L110) |
 | `fork_db._max_size` | 1024 | Default fork database depth | [fork_database.hpp:117](../../libraries/chain/include/graphene/chain/fork_database.hpp#L117) |
 | `MAX_BLOCK_REORDERING` | 1024 | Max out-of-order block insertion distance | [fork_database.hpp:57](../../libraries/chain/include/graphene/chain/fork_database.hpp#L57) |
@@ -421,6 +426,9 @@ With 3-second block intervals and 128-slot window:
 ```
 maybe_produce_block()
   │
+  ├─ [HF12+] Is emergency_consensus_active?
+  │   └─ Yes: Three-state safety handles production/sync checks automatically
+  │
   ├─ Is _production_enabled?
   │   ├─ No: Is chain synced (get_slot_time(1) >= now)?
   │   │   ├─ Yes: _production_enabled = true (auto-enable)
@@ -442,8 +450,19 @@ maybe_produce_block()
   ├─ Fork collision in fork_db?
   │   └─ Yes: return fork_collision
   │
+  ├─ Minority fork detection? (last 21 blocks all ours)
+  │   └─ Yes: return minority_fork            ← BYPASSED when enable-stale-production=true
+  │
   └─ Generate and broadcast block
       └─ return produced
+
+update_global_dynamic_data() — Emergency activation:
+  │
+  ├─ HF12 not active or emergency already active? → skip
+  ├─ LIB block not available (snapshot restore)? → skip
+  ├─ seconds_since_lib = b.timestamp - lib_block.timestamp
+  ├─ seconds_since_lib < 3600? → skip
+  └─ Activate emergency consensus mode
 ```
 
 The two emergency parameters bypass the two most important safeguards (steps 1 and 4), removing all automatic protection against solo production during network partitions.
