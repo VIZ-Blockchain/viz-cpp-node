@@ -292,7 +292,7 @@ void dlt_p2p_node::periodic_reconnect_check() {
 
             // Attempt reconnection if backoff elapsed
             if (now >= state.next_reconnect_attempt && _connections.size() < _max_connections) {
-                ilog("Reconnecting to peer ${ep} (backoff=${b}s)",
+                ilog(DLT_LOG_DGRAY "Reconnecting to peer ${ep} (backoff=${b}s)" DLT_LOG_RESET,
                      ("ep", it->endpoint)("b", state.reconnect_backoff_sec));
                 connect_to_peer(it->endpoint);
             }
@@ -850,7 +850,7 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
             _last_block_received_time = fc::time_point::now();
             _last_network_block_time = fc::time_point::now();
 
-            ilog(DLT_LOG_GREEN "Got block #${n} with ${tx} transaction(s) by witness ${w} [${ep}]" DLT_LOG_RESET,
+            ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by witness ${w} [${ep}]" DLT_LOG_RESET,
                  ("n", block.block_num())("tx", block.transactions.size())
                  ("w", block.witness)("ep", state.endpoint));
 
@@ -866,7 +866,7 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
                 state.fork_alignment = true;
             }
         } else if (result == dlt_block_accept_result::ALREADY_KNOWN) {
-            dlog("Block #${n} from ${ep} is already on our chain (duplicate)",
+            dlog(DLT_LOG_DGRAY "Block #${n} from ${ep} is already on our chain (duplicate)" DLT_LOG_RESET,
                  ("n", block.block_num())("ep", state.endpoint));
         } else if (result == dlt_block_accept_result::FORK_DB_ONLY) {
             dlog("Stored block #${n} in fork_db (not yet applied) from ${ep}",
@@ -977,7 +977,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
     }
 
     if (result == dlt_block_accept_result::ACCEPTED) {
-        ilog(DLT_LOG_GREEN "Got block #${n} with ${tx} transaction(s) by witness ${w} [${ep}]" DLT_LOG_RESET,
+        ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by witness ${w} [${ep}]" DLT_LOG_RESET,
              ("n", reply.block.block_num())("tx", reply.block.transactions.size())
              ("w", reply.block.witness)("ep", state.endpoint));
 
@@ -1001,7 +1001,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
         // P26 fix: Check if we've caught up to all peers via single-block replies
         check_sync_catchup();
     } else if (result == dlt_block_accept_result::ALREADY_KNOWN) {
-        dlog("Block #${n} from ${ep} is already on our chain (duplicate)",
+        dlog(DLT_LOG_DGRAY "Block #${n} from ${ep} is already on our chain (duplicate)" DLT_LOG_RESET,
              ("n", block_num)("ep", state.endpoint));
     } else {
         // FORK_DB_ONLY: block stored in fork_db but not applied to chain.
@@ -2113,7 +2113,7 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
     _read_fibers[peer] = _thread->async([this, peer, sock]() -> void {
         auto ep_it_rl = _peer_states.find(peer);
         auto ep_str_rl = (ep_it_rl != _peer_states.end()) ? std::string(ep_it_rl->second.endpoint) : std::to_string(peer);
-        ilog("Read loop started for peer ${ep}", ("ep", ep_str_rl));
+        ilog(DLT_LOG_DGRAY "Read loop started for peer ${ep}" DLT_LOG_RESET, ("ep", ep_str_rl));
 
         try {
             while (_running) {
@@ -2137,7 +2137,7 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
                 if (hdr.size > MAX_MESSAGE_SIZE) {
                     auto ep_it = _peer_states.find(peer);
                     auto ep_str = (ep_it != _peer_states.end()) ? std::string(ep_it->second.endpoint) : std::to_string(peer);
-                    wlog("Oversized message (${s} bytes) from peer ${ep}, disconnecting",
+                    wlog(DLT_LOG_DGRAY "Oversized message (${s} bytes) from peer ${ep}, disconnecting" DLT_LOG_RESET,
                          ("s", hdr.size)("ep", ep_str));
                     handle_disconnect(peer, "oversized message", true);
                     return;

@@ -28,6 +28,10 @@
 
 #include <fc/container/deque.hpp>
 
+// ANSI escape for dark-grey console log color (matches DLT_LOG_DGRAY in network lib)
+#define DB_LOG_DGRAY "\033[90m"
+#define DB_LOG_RESET "\033[0m"
+
 #include <fc/io/fstream.hpp>
 #include <fc/io/json.hpp>
 
@@ -1490,7 +1494,7 @@ namespace graphene { namespace chain {
                 if (new_block.block_num() <= head_block_num()) {
                     block_id_type existing_id = find_block_id_for_num(new_block.block_num());
                     if (existing_id == new_block.id()) {
-                        dlog("Ignoring block ${n} that is already on our chain", ("n", new_block.block_num()));
+                        dlog(DB_LOG_DGRAY "Ignoring block ${n} that is already on our chain" DB_LOG_RESET, ("n", new_block.block_num()));
                         return false;
                     }
                     // Block is at or before head but on a different fork.
@@ -1568,7 +1572,7 @@ namespace graphene { namespace chain {
                              ("n", new_block.block_num())("h", head_block_num())("g", gap));
                         return false;
                     }
-                    dlog("Deferring unlinkable block ${n} to fork_db unlinked index (parent unknown, head=${h}, gap=${g})",
+                    dlog(DB_LOG_DGRAY "Deferring unlinkable block ${n} to fork_db unlinked index (parent unknown, head=${h}, gap=${g})" DB_LOG_RESET,
                          ("n", new_block.block_num())("h", head_block_num())("g", gap));
                     expect_unlinkable = true;
                 }

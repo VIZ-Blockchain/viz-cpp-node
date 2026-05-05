@@ -314,6 +314,7 @@ private:
 // ── Color-coded logging macros (must be #define for string-literal concatenation) ─
 #define DLT_LOG_GREEN   "\033[32m"
 #define DLT_LOG_WHITE   "\033[37m"
+#define DLT_LOG_BWHITE  "\033[1;37m"
 #define DLT_LOG_RED     "\033[91m"
 #define DLT_LOG_DGRAY   "\033[90m"
 #define DLT_LOG_ORANGE  "\033[33m"
