@@ -38,7 +38,7 @@ namespace detail {
 // ── DLT P2P Delegate — bridges chain state to the P2P node ──────────
 class dlt_delegate : public dlt_p2p_delegate {
 public:
-    explicit dlt_delegate(chain::plugin& c) : chain(c) {}
+    explicit dlt_delegate(chain::plugin& c) : chain(c), _startup_time(fc::time_point::now()) {}
 
     // ── Chain state queries ──────────────────────────────────────
     block_id_type get_head_block_id() const override {
@@ -170,7 +170,25 @@ public:
             // blocks.  Do NOT push to fork_db._unlinked_index (it would
             // grow unboundedly) — return DEAD_FORK so the P2P layer can
             // soft-ban the peer on a competing fork.
+            //
+            // P22 fix: Grace period after startup. For the first 60 seconds,
+            // blocks that are close to our head (within 10 blocks) are treated
+            // as FORK_DB_ONLY instead of DEAD_FORK. On restart, fork_db may
+            // not have enough context for blocks near the head even though
+            // they're from the same chain.
             if (block.block_num() <= chain.db().head_block_num()) {
+                auto time_since_startup = fc::time_point::now() - _startup_time;
+                bool in_grace_period = time_since_startup.count() < 60 * 1000000; // 60s
+                uint32_t distance = chain.db().head_block_num() - block.block_num();
+                bool close_to_head = distance <= 10;
+                if (in_grace_period && close_to_head) {
+                    wlog("Grace-period: treating near-head block #${n} as FORK_DB_ONLY instead of DEAD_FORK (startup ${s}s ago)",
+                         ("n", block.block_num())("s", time_since_startup.count() / 1000000));
+                    try {
+                        chain.db().get_fork_db().push_block(block);
+                    } catch (...) {}
+                    return dlt_block_accept_result::FORK_DB_ONLY;
+                }
                 wlog("Dead fork block #${n} from competitor (parent not in fork_db, head=${h})",
                      ("n", block.block_num())("h", chain.db().head_block_num()));
                 return dlt_block_accept_result::DEAD_FORK;
@@ -271,6 +289,7 @@ public:
     }
 
     chain::plugin& chain;
+    fc::time_point _startup_time;  ///< P22: startup timestamp for dead-fork grace period
 };
 
 // ── New p2p_plugin_impl — wraps dlt_p2p_node ────────────────────────

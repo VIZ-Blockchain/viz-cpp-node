@@ -129,6 +129,11 @@ namespace graphene {
                 // re-enabling block production.
                 bool _minority_fork_recovering = false;
                 fc::time_point _minority_fork_recovery_start;
+
+                // P18: slot=0 stall detection — tracks consecutive
+                // not_time_yet returns to detect NTP/clock issues.
+                uint32_t _slot_zero_streak = 0;
+                fc::time_point _slot_zero_streak_start;
             };
 
             void witness_plugin::set_program_options(
@@ -425,6 +430,7 @@ namespace graphene {
                     case block_production_condition::produced:
                         ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w} with ${tx} transactions\033[0m", (capture));
                         fork_collision_defer_count_ = 0;
+                        _slot_zero_streak = 0;  // P18: reset stall counter on success
                         if (_minority_fork_recovering) {
                             auto elapsed = fc::time_point::now() - _minority_fork_recovery_start;
                             ilog("MINORITY FORK RECOVERY COMPLETE: production resumed after ${e}s",
@@ -446,15 +452,44 @@ namespace graphene {
                             }
                         }
                         fork_collision_defer_count_ = 0;
+                        _slot_zero_streak = 0;  // P18: reset on valid non-stall result
                         break;
                     case block_production_condition::not_my_turn:
                         // This log-record is commented, because it outputs very often
                         // ilog("Not producing block because it isn't my turn");
                         fork_collision_defer_count_ = 0;
+                        _slot_zero_streak = 0;  // P18: reset on valid non-stall result
                         break;
                     case block_production_condition::not_time_yet:
                         // This log-record is commented, because it outputs very often
                         // ilog("Not producing block because slot has not yet arrived");
+                        // P18 fix: Detect slot=0 stall. If get_slot_at_time() keeps
+                        // returning 0, NTP time may be behind head_block_time.
+                        // Track consecutive occurrences and force NTP resync.
+                        _slot_zero_streak++;
+                        if (_slot_zero_streak == 1) {
+                            _slot_zero_streak_start = fc::time_point::now();
+                        }
+                        if (_slot_zero_streak == 10) {
+                            // ~3s at 250ms schedule interval — likely NTP drift
+                            wlog("slot=0 streak: ${n} consecutive not_time_yet results. "
+                                 "head_block_time=${hbt}, now=${now}, next_slot_time=${nst}. "
+                                 "Forcing NTP resync.",
+                                 ("n", _slot_zero_streak)
+                                 ("hbt", database().head_block_time())
+                                 ("now", graphene::time::now())
+                                 ("nst", database().get_slot_time(1)));
+                            graphene::time::update_ntp_time();
+                        }
+                        if (_slot_zero_streak == 120) {
+                            // ~30s — serious stall, head_block_time may be in the future
+                            auto elapsed = fc::time_point::now() - _slot_zero_streak_start;
+                            elog("CRITICAL: slot=0 stall for ${s}s! head_block_time=${hbt} is in the future "
+                                 "relative to NTP time. Network is stalled. "
+                                 "Consider checking NTP sync or system clock.",
+                                 ("s", elapsed.count() / 1000000)
+                                 ("hbt", database().head_block_time()));
+                        }
                         break;
                     case block_production_condition::no_private_key:
                         ilog("Not producing block for ${scheduled_witness} because I don't have the private key for ${scheduled_key}",

@@ -286,6 +286,36 @@ namespace graphene { namespace chain {
                                 "Chain state does not match block log. Please reindex blockchain.");
                             _fork_db.start_block(*head_block);
 
+                            // P22 fix: Seed fork_db with recent blocks (up to 100)
+                            // so that incoming sync blocks from peers near our head
+                            // can find their parent chain. After restart, fork_db only
+                            // has the head block; if peers send blocks a few behind
+                            // head (e.g., because their DLT range overlaps), those
+                            // blocks get rejected as "dead fork" because their parent
+                            // isn't in fork_db.
+                            const uint32_t FORK_DB_SEED_DEPTH = 100;
+                            uint32_t seed_start = head_block_num() > FORK_DB_SEED_DEPTH
+                                ? head_block_num() - FORK_DB_SEED_DEPTH + 1
+                                : 1;
+                            uint32_t seeded = 0;
+                            for (uint32_t n = seed_start; n < head_block_num(); ++n) {
+                                auto blk = _block_log.read_block_by_num(n);
+                                if (blk.valid()) {
+                                    _fork_db.push_block(*blk);
+                                    ++seeded;
+                                } else if (_dlt_block_log.is_open()) {
+                                    blk = _dlt_block_log.read_block_by_num(n);
+                                    if (blk.valid()) {
+                                        _fork_db.push_block(*blk);
+                                        ++seeded;
+                                    }
+                                }
+                            }
+                            if (seeded > 0) {
+                                ilog("fork_db seeded with ${n} recent blocks (${first}-${last}) for P2P sync resilience",
+                                     ("n", seeded)("first", seed_start)("last", head_block_num() - 1));
+                            }
+
                         } else {
                             // DLT mode: block_log is empty but chainbase has state (loaded from snapshot).
                             set_dlt_mode(true);

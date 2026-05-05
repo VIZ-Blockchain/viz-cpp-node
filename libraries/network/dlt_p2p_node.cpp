@@ -609,9 +609,45 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
     // are pruned and the peer can't serve them.  Clamp start to the
     // peer's earliest available block.
     uint32_t peer_earliest = it->second.peer_dlt_earliest;
+    bool has_gap = false;
     if (start < peer_earliest && peer_earliest > 0) {
-        ilog(DLT_LOG_ORANGE "Skipping blocks ${a}-${b} (peer ${ep} DLT starts at ${c})" DLT_LOG_RESET,
-             ("a", start)("b", peer_earliest - 1)("ep", it->second.endpoint)("c", peer_earliest));
+        // P19 fix: Detect unbridgeable gap. If no peer has the missing
+        // blocks, we need a snapshot. Try to find a peer that can bridge.
+        has_gap = true;
+        ilog(DLT_LOG_ORANGE "Gap detected: blocks ${a}-${b} missing (our head=#${h}, peer ${ep} DLT starts at ${c})" DLT_LOG_RESET,
+             ("a", start)("b", peer_earliest - 1)("h", our_head)("ep", it->second.endpoint)("c", peer_earliest));
+
+        // Check if any other peer can serve the missing blocks
+        bool peer_with_gap_blocks = false;
+        for (const auto& _pi : _peer_states) {
+            if (_pi.first == peer) continue;
+            const auto& ps = _pi.second;
+            if (ps.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE &&
+                ps.lifecycle_state != DLT_PEER_LIFECYCLE_SYNCING) continue;
+            if (ps.peer_dlt_earliest > 0 && ps.peer_dlt_earliest <= start &&
+                ps.peer_dlt_latest > our_head) {
+                peer_with_gap_blocks = true;
+                ilog(DLT_LOG_GREEN "Peer ${ep2} can bridge gap (DLT range ${e}-${l})" DLT_LOG_RESET,
+                     ("ep2", ps.endpoint)("e", ps.peer_dlt_earliest)("l", ps.peer_dlt_latest));
+                break;
+            }
+        }
+
+        if (peer_with_gap_blocks) {
+            // Another peer can fill the gap — skip this peer for now and
+            // try it later after the gap is filled.
+            ilog(DLT_LOG_ORANGE "Deferring sync from ${ep} — other peer can bridge gap" DLT_LOG_RESET,
+                 ("ep", it->second.endpoint));
+            return;
+        }
+
+        // No peer can bridge the gap — we may need a snapshot.
+        wlog(DLT_LOG_RED "No peer has blocks ${a}-${b}. Snapshot may be required to continue sync." DLT_LOG_RESET,
+             ("a", start)("b", peer_earliest - 1));
+
+        // Still attempt clamped request — the blocks might be linkable
+        // via fork_db or boundary link, even if they don't directly
+        // follow our head.
         start = peer_earliest;
     }
 
@@ -754,6 +790,16 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
                  ("n", block.block_num())("w", block.witness)("t", block.timestamp)("ep", state.endpoint));
 
             on_block_applied(block, /*caused_fork_switch=*/false);
+
+            // P25 fix: If this peer has exchange_enabled=false but its block was
+            // accepted, it must be on our chain — enable exchange so we receive
+            // future blocks from it.
+            if (!state.exchange_enabled) {
+                ilog(DLT_LOG_GREEN "Enabling exchange for peer ${ep} after accepting its block #${n}" DLT_LOG_RESET,
+                     ("ep", state.endpoint)("n", block.block_num()));
+                state.exchange_enabled = true;
+                state.fork_alignment = true;
+            }
         } else if (result == dlt_block_accept_result::FORK_DB_ONLY) {
             dlog("Stored block #${n} in fork_db (not yet applied) from ${ep}",
                  ("n", block.block_num())("ep", state.endpoint));
@@ -872,8 +918,20 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
 
         on_block_applied(reply.block, /*caused_fork_switch=*/false);
 
+        // P25 fix: If this peer has exchange_enabled=false but its block was
+        // accepted, it must be on our chain — enable exchange.
+        if (!state.exchange_enabled) {
+            ilog(DLT_LOG_GREEN "Enabling exchange for peer ${ep} after accepting its block #${n}" DLT_LOG_RESET,
+                 ("ep", state.endpoint)("n", reply.block.block_num()));
+            state.exchange_enabled = true;
+            state.fork_alignment = true;
+        }
+
         // Retransmit to our-fork peers
         send_to_all_our_fork_peers(message(dlt_block_reply_message(reply)), peer);
+
+        // P26 fix: Check if we've caught up to all peers via single-block replies
+        check_sync_catchup();
     } else {
         // FORK_DB_ONLY: block stored in fork_db but not applied to chain.
         // Do NOT call on_block_applied (which would corrupt mempool),
@@ -1155,6 +1213,27 @@ void dlt_p2p_node::transition_to_forward() {
     _sync_stagnation_retries = 0;
     ilog(DLT_LOG_GREEN "=== DLT P2P: transitioning to FORWARD mode ===" DLT_LOG_RESET);
 
+    // P25 fix: Re-evaluate exchange_enabled for all peers now that
+    // we're in FORWARD mode. Peers that were SYNC when we first
+    // handshaked may now be fork-aligned (their blocks are in our
+    // chain after sync). Re-run fork alignment check for peers
+    // that currently have exchange_enabled=false.
+    for (auto& _peer_item : _peer_states) {
+        auto& state = _peer_item.second;
+        if (!state.exchange_enabled &&
+            state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE &&
+            state.peer_head_num > 0) {
+            // Re-check: if the peer's head block is now known to us,
+            // enable exchange. The peer is on our chain.
+            if (_delegate->is_block_known(state.peer_head_id)) {
+                ilog(DLT_LOG_GREEN "Re-enabling exchange for peer ${ep} (head #${hn} now recognized)" DLT_LOG_RESET,
+                     ("ep", state.endpoint)("hn", state.peer_head_num));
+                state.exchange_enabled = true;
+                state.fork_alignment = true;
+            }
+        }
+    }
+
     // Revalidate provisional mempool entries
     for (auto it = _mempool_by_id.begin(); it != _mempool_by_id.end(); ) {
         if (it->second.is_provisional) {
@@ -1212,6 +1291,35 @@ void dlt_p2p_node::sync_stagnation_check() {
         }
     }
     _last_block_received_time = fc::time_point::now(); // reset timer
+}
+
+void dlt_p2p_node::check_sync_catchup() {
+    if (_node_status != DLT_NODE_STATUS_SYNC) return;
+    if (!_delegate) return;
+
+    uint32_t our_head = _delegate->get_head_block_num();
+    if (our_head == 0) return;  // nothing to catch up to
+
+    // Check if our head is at or ahead of ALL active peers' heads.
+    // If so, we've caught up and should transition to FORWARD.
+    bool all_caught_up = true;
+    for (const auto& _peer_item : _peer_states) {
+        const auto& state = _peer_item.second;
+        if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE &&
+            state.lifecycle_state != DLT_PEER_LIFECYCLE_SYNCING) continue;
+        // Only consider peers that have reported their head block number
+        if (state.peer_head_num == 0) continue;
+        if (our_head < state.peer_head_num) {
+            all_caught_up = false;
+            break;
+        }
+    }
+
+    if (all_caught_up) {
+        ilog(DLT_LOG_GREEN "Sync catchup detected: our head (#${h}) >= all peers, transitioning to FORWARD" DLT_LOG_RESET,
+             ("h", our_head));
+        transition_to_forward();
+    }
 }
 
 // ── Mempool ──────────────────────────────────────────────────────────
@@ -1709,6 +1817,7 @@ void dlt_p2p_node::periodic_task() {
 
     // Normal path: all periodic operations run.
     sync_stagnation_check();
+    check_sync_catchup();   // P26 fix: periodic catch-up detection
     periodic_peer_exchange();
 
     // Log peer stats at configured interval

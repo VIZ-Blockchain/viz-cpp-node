@@ -194,11 +194,17 @@ namespace graphene {
                 // back to the most recent common ancestor.
                 pair<branch_type, branch_type> result;
                 auto first_branch_itr = _index.get<block_id>().find(first);
-                FC_ASSERT(first_branch_itr != _index.get<block_id>().end());
+                if (first_branch_itr == _index.get<block_id>().end()) {
+                    wlog("fetch_branch_from: first block not in fork_db index");
+                    return result;
+                }
                 auto first_branch = *first_branch_itr;
 
                 auto second_branch_itr = _index.get<block_id>().find(second);
-                FC_ASSERT(second_branch_itr != _index.get<block_id>().end());
+                if (second_branch_itr == _index.get<block_id>().end()) {
+                    wlog("fetch_branch_from: second block not in fork_db index");
+                    return result;
+                }
                 auto second_branch = *second_branch_itr;
 
 
@@ -206,22 +212,34 @@ namespace graphene {
                        second_branch->data.block_num()) {
                     result.first.push_back(first_branch);
                     first_branch = first_branch->prev.lock();
-                    FC_ASSERT(first_branch);
+                    if (!first_branch) {
+                        wlog("fetch_branch_from: broken prev chain on first branch");
+                        return result;
+                    }
                 }
                 while (second_branch->data.block_num() >
                        first_branch->data.block_num()) {
                     result.second.push_back(second_branch);
                     second_branch = second_branch->prev.lock();
-                    FC_ASSERT(second_branch);
+                    if (!second_branch) {
+                        wlog("fetch_branch_from: broken prev chain on second branch");
+                        return result;
+                    }
                 }
                 while (first_branch->data.previous !=
                        second_branch->data.previous) {
                     result.first.push_back(first_branch);
                     result.second.push_back(second_branch);
                     first_branch = first_branch->prev.lock();
-                    FC_ASSERT(first_branch);
+                    if (!first_branch || !second_branch) {
+                        wlog("fetch_branch_from: broken prev chain during common ancestor search");
+                        return result;
+                    }
                     second_branch = second_branch->prev.lock();
-                    FC_ASSERT(second_branch);
+                    if (!second_branch) {
+                        wlog("fetch_branch_from: broken prev chain on second branch during ancestor search");
+                        return result;
+                    }
                 }
                 if (first_branch && second_branch) {
                     result.first.push_back(first_branch);

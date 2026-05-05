@@ -185,6 +185,7 @@ private:
     // ── Sync logic ───────────────────────────────────────────────
     void request_blocks_from_peer(peer_id peer);
     void sync_stagnation_check();
+    void check_sync_catchup();   ///< Transition SYNC→FORWARD if caught up to all peers
 
     // ── Mempool ──────────────────────────────────────────────────
     bool add_to_mempool(const signed_transaction& trx, bool from_peer, peer_id sender);

@@ -47,11 +47,11 @@ This matches the old `message_oriented_connection` format without 16-byte paddin
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `libraries/network/include/graphene/network/dlt_p2p_messages.hpp` | 289 | All DLT message types (5100-5114), enums, structs, FC_REFLECT macros |
-| `libraries/network/dlt_p2p_messages.cpp` | 25 | Static `type` constants for each message struct |
-| `libraries/network/include/graphene/network/dlt_p2p_peer_state.hpp` | 150 | `dlt_peer_state`, `dlt_known_peer`, `dlt_mempool_entry`, `dlt_fork_resolution_state`, `dlt_fork_branch_info` |
-| `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | 316 | `dlt_p2p_delegate` interface + `dlt_p2p_node` class declaration |
-| `libraries/network/dlt_p2p_node.cpp` | 1877 | Full `dlt_p2p_node` implementation |
+| `libraries/network/include/graphene/network/dlt_p2p_messages.hpp` | 226 | All DLT message types (5100-5114), enums, structs, FC_REFLECT macros |
+| `libraries/network/dlt_p2p_messages.cpp` | 21 | Static `type` constants for each message struct |
+| `libraries/network/include/graphene/network/dlt_p2p_peer_state.hpp` | 123 | `dlt_peer_state`, `dlt_known_peer`, `dlt_mempool_entry`, `dlt_fork_resolution_state`, `dlt_fork_branch_info` |
+| `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | 262 | `dlt_p2p_delegate` interface + `dlt_p2p_node` class declaration |
+| `libraries/network/dlt_p2p_node.cpp` | 1689 | Full `dlt_p2p_node` implementation |
 
 ### Modified Files
 
@@ -128,7 +128,8 @@ All FC_REFLECT macros defined for serialization.
 - `on_dlt_block_range_reply()` — validates prev_hash, applies blocks, transitions to FORWARD when `is_last`
 - `on_dlt_get_block()` / `on_dlt_block_reply()` — single-block fetch variant
 - `sync_stagnation_check()` — 30s no-block timeout, 3 retries, then FORWARD with warning
-- `transition_to_forward()` — revalidates provisional mempool entries
+- `check_sync_catchup()` — compares our head against all peers' heads, transitions to FORWARD if caught up (P26 fix)
+- `transition_to_forward()` — revalidates provisional mempool entries, re-evaluates `exchange_enabled` for all peers (P25 fix)
 
 **Mempool** (separate from chain's `_pending_tx`):
 - `add_to_mempool()` — dedup by tx_id, check expiry/size/TaPoS, enforce limits with oldest-expiry eviction, retranslate to our-fork peers
@@ -160,12 +161,12 @@ All FC_REFLECT macros defined for serialization.
 
 ### Phase 3: P2P Plugin Replacement ✅
 
-`p2p_plugin.cpp` rewritten from 1951 lines (node.cpp-based) to 536 lines (dlt_p2p_node wrapper):
+`p2p_plugin.cpp` rewritten from 1951 lines (node.cpp-based) to 487 lines (dlt_p2p_node wrapper):
 
 **`dlt_delegate` class** (implements `dlt_p2p_delegate`):
 - Bridges chain state queries using `chain.db()` with appropriate read locks
 - `read_block_by_num()` — checks dlt_block_log first, then fork_db
-- `accept_block()` — calls `push_block()`, catches `unlinkable_block_exception` → stores in fork_db
+- `accept_block()` — calls `push_block()`, catches `unlinkable_block_exception` → stores in fork_db; 60s startup grace period for near-head blocks (P22 fix)
 - `get_fork_branch_tips()` — fetches from fork_db at head_num through head_num+5
 - `is_tapos_block_known()` — delegates to `chain.db().is_known_block()`
 
@@ -392,15 +393,67 @@ Post-implementation issues observed in production (4-node DLT emergency consensu
 | # | Severity | Problem |
 |---|----------|---------|
 | P17 | ~~CRITICAL~~ **Fixed** | DLT block log corruption on crash → auto-detected and reset |
-| P18 | CRITICAL | Master stops producing blocks for minutes (`slot=0` loop) |
-| P19 | HIGH | Slave stuck in SYNC — synopsis returns empty, never receives blocks |
+| P18 | ~~CRITICAL~~ **Fixed** | Master stops producing blocks for minutes (`slot=0` loop) → stall detector + NTP force-sync |
+| P19 | ~~HIGH~~ **Fixed** | Slave stuck in SYNC → gap detection + multi-peer fallback + snapshot warning |
 | P20 | ~~CRITICAL~~ **Fixed** | Dead fork blocks → DEAD_FORK result, soft-ban, no crash |
 | P21 | ~~CRITICAL~~ **Fixed** | Dead fork crash loop → blocks rejected, fork_db protected |
-| P22 | HIGH | fork_db rejection cascade on restart |
-| P23 | HIGH | `fetch_branch_from` assertion failure during synopsis |
+| P22 | ~~HIGH~~ **Fixed** | fork_db rejection cascade on restart → seed 100 blocks + 60s grace period |
+| P23 | ~~HIGH~~ **Fixed** | `fetch_branch_from` assertion failure → graceful empty-branch return |
 | P24 | ~~CRITICAL~~ **Fixed** | Snapshot lock isolation → periodic tasks skip DB, stall check aware |
-| P25 | HIGH | Slave-produced block ignored by master → fork switch |
-| P26 | MED | Sync state confusion — slave never transitions SYNC→FORWARD |
+| P25 | ~~HIGH~~ **Fixed** | Slave-produced block ignored → exchange_enabled re-evaluated on block accept + FORWARD transition |
+| P26 | ~~MED~~ **Fixed** | Sync state confusion → `check_sync_catchup()` on block accept + periodic task |
 | P27 | ~~CRITICAL~~ **Fixed** (diag) | Write lock diagnostic — overall + per-plugin timing, lock-holder ID |
 
 Full analysis in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md#new-problems-discovered-post-implementation).
+
+---
+
+## Subsequent Enhancements & Fixes (2026-05-07)
+
+### P23: fetch_branch_from Assertion Safety
+
+**Files:** `libraries/chain/fork_database.cpp`
+
+**Root cause:** `fetch_branch_from()` had 6 `FC_ASSERT` calls that crashed the node when block IDs weren't in the fork_db index. In production, peers on different forks triggered these assertions, crashing the node.
+
+**Fix:** Replaced all `FC_ASSERT` calls with graceful early returns (empty branches + `wlog`). Callers already handle empty branches (e.g., `is_head_on_branch()` catches exceptions, `compare_fork_branches()` has try-catch with fork_db reset).
+
+### P26: SYNC→FORWARD Transition Fix
+
+**Files:** `libraries/network/dlt_p2p_node.cpp`, `libraries/network/include/graphene/network/dlt_p2p_node.hpp`
+
+**Root cause:** `transition_to_forward()` was only called in `on_dlt_block_range_reply()` and `sync_stagnation_check()`. If a slave caught up via individual block replies, the transition never triggered.
+
+**Fix:** Added `check_sync_catchup()` that compares `our_head` against all active peers' `peer_head_num`. Called from `on_dlt_block_reply()` after accepting a block, and from `periodic_task()`.
+
+### P25: exchange_enabled Re-evaluation
+
+**Files:** `libraries/network/dlt_p2p_node.cpp`
+
+**Root cause:** `exchange_enabled` was set once during hello handshake and never updated. Slaves that caught up still had `exchange_enabled=false` on the master side, so their block broadcasts were ignored.
+
+**Fix:** Three re-evaluation triggers: (1) in `transition_to_forward()` re-check `is_block_known(peer_head_id)`, (2) in `on_dlt_block_range_reply()` enable exchange when a non-exchange-enabled peer's block is ACCEPTED, (3) same in `on_dlt_block_reply()`.
+
+### P22: fork_db Restart Recovery
+
+**Files:** `libraries/chain/database.cpp`, `plugins/p2p/p2p_plugin.cpp`
+
+**Root cause:** After restart, fork_db was seeded with only the head block. Peers sending sync blocks near the head were rejected as "dead fork" because their parent chain wasn't in fork_db.
+
+**Fix:** (1) Seed the last 100 blocks from block_log/dlt_block_log into fork_db on startup. (2) Dead-fork grace period: for the first 60s after startup, blocks within 10 of the head are treated as `FORK_DB_ONLY` instead of `DEAD_FORK`.
+
+### P18: slot=0 Production Stall Detector
+
+**Files:** `plugins/witness/witness.cpp`
+
+**Root cause:** `get_slot_at_time()` returns 0 when NTP time is behind `head_block_time()`. After crash/restart with NTP desync, the master could loop on `not_time_yet` for minutes.
+
+**Fix:** Added `_slot_zero_streak` counter: at streak=10 (~3s) logs warning + forces NTP resync; at streak=120 (~30s) logs CRITICAL error. Counter resets on any non-stall result.
+
+### P19: Sync Gap Detection + Multi-Peer Fallback
+
+**Files:** `libraries/network/dlt_p2p_node.cpp`
+
+**Root cause:** When `our_head + 1 < peer_dlt_earliest` (gap between our head and what the peer can serve), blocks were clamped but didn't link to our head. No attempt was made to find a peer with the missing blocks.
+
+**Fix:** When a gap is detected in `request_blocks_from_peer()`: (1) search other peers for one whose DLT range covers the missing blocks, (2) if found, defer current peer and sync from the bridging peer, (3) if no peer can bridge, log "Snapshot may be required" warning and still attempt the clamped request.

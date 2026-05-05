@@ -936,15 +936,15 @@ Or change the usage to avoid ODR-use.
 
 ```
 P17 [FIX] DLT block log corruption on crash → infinite restart loop
-P18 [CRIT] Master stops producing blocks for minutes (slot=0 loop, no clear cause)
-P19 [HIGH]  Slave stuck in SYNC — synopsis returns empty, never receives blocks
+P18 [FIX] Master stops producing blocks for minutes (slot=0 loop) → stall detector + NTP force-sync
+P19 [FIX] Slave stuck in SYNC → gap detection + multi-peer fallback + snapshot warning
 P20 [FIX] Dead fork blocks trigger sync status loss → silent crash
 P21 [FIX] Dead fork → crash → restart → dead fork loop
-P22 [HIGH]  fork_db rejection cascade on restart (old sync blocks rejected, crash follows)
-P23 [HIGH]  fetch_branch_from assertion failure during synopsis (fork_db doesn't have peer's branch)
+P22 [FIX] fork_db rejection cascade on restart → seed 100 blocks + 60s grace period
+P23 [FIX] fetch_branch_from assertion failure → graceful empty-branch return
 P24 [FIX] Snapshot write lock freezes entire node (all peers disconnect, self-isolation)
-P25 [HIGH]  Slave-produced block ignored by master → fork switch (double-production collision)
-P26 [MED]   Sync state confusion — slave never transitions from SYNC to FORWARD
+P25 [FIX] Slave-produced block ignored by master → exchange_enabled re-evaluated
+P26 [FIX] Sync state confusion → check_sync_catchup() on block accept + periodic
 P27 [FIX] Write lock held 25+ sec during _apply_block (notify_applied_block bottleneck)
 P28 [MED]   Build error: multimap::erase with pair, ip::address::data() missing
 P29 [MED]   Build error: missing witness_plugin.hpp include
@@ -968,13 +968,13 @@ P31 [MED]   Linker error: static constexpr ODR-use (MAX_RECONNECT_BACKOFF_SEC)
 
 ### High (sync/catchup reliability)
 
-| # | Problem | Impact |
-|---|---------|--------|
-| P18 | Master stops producing blocks | Network stalls |
-| P19 | Slave stuck in SYNC | Never catches up |
-| P22 | fork_db rejection cascade | Restart recovery fails |
-| P23 | fetch_branch_from assertion | Sync with some peers breaks |
-| P25 | Slave block ignored by master | Fork switches |
+| # | Problem | Impact | Status |
+|---|---------|--------|--------|
+| P18 | Master stops producing blocks | Network stalls | **Fixed** |
+| P19 | Slave stuck in SYNC | Never catches up | **Fixed** |
+| P22 | fork_db rejection cascade | Restart recovery fails | **Fixed** |
+| P23 | fetch_branch_from assertion | Sync with some peers breaks | **Fixed** |
+| P25 | Slave block ignored by master | Fork switches | **Fixed** |
 
 ### Build (must compile)
 
@@ -987,6 +987,6 @@ P31 [MED]   Linker error: static constexpr ODR-use (MAX_RECONNECT_BACKOFF_SEC)
 
 ### Lower
 
-| # | Problem | Impact |
-|---|---------|--------|
-| P26 | Sync state confusion | Cosmetic status bug |
+| # | Problem | Impact | Status |
+|---|---------|--------|--------|
+| P26 | Sync state confusion | Cosmetic status bug | **Fixed** |
