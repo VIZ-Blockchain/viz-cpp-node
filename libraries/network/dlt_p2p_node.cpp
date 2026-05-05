@@ -73,17 +73,24 @@ void dlt_p2p_node::start() {
         wlog("DLT P2P failed to listen on ${ep}: ${e}", ("ep", _listen_endpoint)("e", e.to_detail_string()));
     }
 
-    // Add seed nodes to known peers
+    // Add seed nodes to known peers and register for immediate async reconnection.
+    // Do NOT connect synchronously — an unreachable seed can block startup
+    // for 2+ minutes on TCP SYN timeout, preventing witness block production.
     for (const auto& ep : _seed_nodes) {
         dlt_known_peer kp;
         kp.endpoint = ep;
         kp.node_id = node_id_t();
         _known_peers.insert(kp);
-    }
 
-    // Connect to seed nodes
-    for (const auto& ep : _seed_nodes) {
-        connect_to_peer(ep);
+        // Register as DISCONNECTED with immediate reconnect so periodic_reconnect_check()
+        // picks them up on the first cycle (within 5 seconds).
+        peer_id pid = _next_peer_id++;
+        auto& state = _peer_states[pid];
+        state.endpoint = ep;
+        state.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
+        state.disconnected_since = fc::time_point::now();
+        state.next_reconnect_attempt = fc::time_point::now();  // immediate
+        state.reconnect_backoff_sec = dlt_peer_state::INITIAL_RECONNECT_BACKOFF_SEC;
     }
 
     // Start accept loop as a fiber on the p2p thread
@@ -164,42 +171,53 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
     state.lifecycle_state = DLT_PEER_LIFECYCLE_CONNECTING;
     state.state_entered_time = fc::time_point::now();
 
-    try {
-        auto sock = std::make_shared<fc::tcp_socket>();
-        sock->connect_to(ep);
-        _connections[pid] = sock;
+    // Run the TCP connect asynchronously in a fiber so an unreachable
+    // seed node doesn't block the periodic task or startup.
+    if (_thread) {
+        _thread->async([this, pid, ep]() {
+            // Re-lookup state — the map may have rehashed since we started.
+            auto it = _peer_states.find(pid);
+            if (it == _peer_states.end()) return;
+            auto& state = it->second;
 
-        state.lifecycle_state = DLT_PEER_LIFECYCLE_HANDSHAKING;
-        state.state_entered_time = fc::time_point::now();
-        state.connected_since = fc::time_point::now();
+            try {
+                auto sock = std::make_shared<fc::tcp_socket>();
+                sock->connect_to(ep);
+                _connections[pid] = sock;
 
-        // Send hello
-        send_message(pid, message(build_hello_message()));
-        ilog(DLT_LOG_GREEN "Connected to peer ${ep}, sent DLT hello" DLT_LOG_RESET, ("ep", ep));
+                state.lifecycle_state = DLT_PEER_LIFECYCLE_HANDSHAKING;
+                state.state_entered_time = fc::time_point::now();
+                state.connected_since = fc::time_point::now();
 
-        // Start read loop as a fiber on the p2p thread
-        start_read_loop(pid);
+                // Send hello
+                send_message(pid, message(build_hello_message()));
+                ilog(DLT_LOG_GREEN "Connected to peer ${ep}, sent DLT hello" DLT_LOG_RESET, ("ep", ep));
 
-    } catch (const fc::exception& e) {
-        // Connection refused / timeout are expected transient conditions — debug level.
-        // Only warn on unexpected errors.
-        // Note: e.what() returns "0 exception: unspecified" for ASIO errors;
-        // the actual error text (e.g. "Connection refused") is in to_detail_string().
-        std::string detail = e.to_detail_string();
-        bool is_expected = (detail.find("Connection refused") != std::string::npos)
-                       || (detail.find("connection refused") != std::string::npos)
-                       || (detail.find("Connection timed out") != std::string::npos)
-                       || (detail.find("Host unreachable") != std::string::npos)
-                       || (detail.find("No route to host") != std::string::npos)
-                       || (detail.find("End of file") != std::string::npos)
-                       || (detail.find("Operation aborted") != std::string::npos);
-        if (is_expected)
-            dlog("Connect to ${ep} failed: ${w}", ("ep", ep)("w", e.what()));
-        else
-            wlog("Failed to connect to ${ep}: ${e}", ("ep", ep)("e", e.to_detail_string()));
-        state.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
-        state.disconnected_since = fc::time_point::now();
-        state.next_reconnect_attempt = fc::time_point::now() + fc::seconds(30);
+                // Start read loop as a fiber on the p2p thread
+                start_read_loop(pid);
+
+            } catch (const fc::exception& e) {
+                // Connection refused / timeout are expected transient conditions — debug level.
+                // Only warn on unexpected errors.
+                // Note: e.what() returns "0 exception: unspecified" for ASIO errors;
+                // the actual error text (e.g. "Connection refused") is in to_detail_string().
+                std::string detail = e.to_detail_string();
+                bool is_expected = (detail.find("Connection refused") != std::string::npos)
+                               || (detail.find("connection refused") != std::string::npos)
+                               || (detail.find("Connection timed out") != std::string::npos)
+                               || (detail.find("Host unreachable") != std::string::npos)
+                               || (detail.find("No route to host") != std::string::npos)
+                               || (detail.find("End of file") != std::string::npos)
+                               || (detail.find("Operation aborted") != std::string::npos);
+                if (is_expected)
+                    dlog("Connect to ${ep} failed: ${w}", ("ep", ep)("w", e.what()));
+                else
+                    wlog("Failed to connect to ${ep}: ${e}", ("ep", ep)("e", e.to_detail_string()));
+                state.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
+                state.disconnected_since = fc::time_point::now();
+                state.next_reconnect_attempt = fc::time_point::now() + fc::seconds(30);
+            }
+        }, "dlt connect_to_peer");
     }
 }
 
