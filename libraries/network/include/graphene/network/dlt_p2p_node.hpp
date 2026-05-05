@@ -203,7 +203,7 @@ private:
 
     // ── Anti-spam ────────────────────────────────────────────────
     bool record_packet_result(peer_id peer, bool is_good);
-    void soft_ban_peer(peer_id peer);
+    void soft_ban_peer(peer_id peer, const std::string& reason = "");
 
     // ── Diagnostics ───────────────────────────────────────────────
     void log_peer_stats();

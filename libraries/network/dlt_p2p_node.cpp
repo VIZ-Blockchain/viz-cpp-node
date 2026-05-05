@@ -810,7 +810,7 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
             // immediately and stop processing blocks from it.
             wlog(DLT_LOG_RED "Peer ${ep} sent dead-fork block #${n} (parent not in fork_db, head=${h}) — soft-banning" DLT_LOG_RESET,
                  ("ep", state.endpoint)("n", block.block_num())("h", _delegate->get_head_block_num()));
-            soft_ban_peer(peer);
+            soft_ban_peer(peer, "dead-fork block #" + std::to_string(block.block_num()));
             break;
         } else {
             wlog(DLT_LOG_RED "Rejected block #${n} from ${ep}" DLT_LOG_RESET,
@@ -904,7 +904,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
         // fork_db window — soft-ban immediately.
         wlog(DLT_LOG_RED "Peer ${ep} sent dead-fork block #${n} (parent not in fork_db, head=${h}) — soft-banning" DLT_LOG_RESET,
              ("ep", state.endpoint)("n", block_num)("h", _delegate->get_head_block_num()));
-        soft_ban_peer(peer);
+        soft_ban_peer(peer, "dead-fork block #" + std::to_string(block_num));
         return;
     }
 
@@ -1065,6 +1065,8 @@ void dlt_p2p_node::on_dlt_soft_ban(peer_id peer, const dlt_soft_ban_message& msg
     // Enter BANNED state with the duration specified by the remote peer
     it->second.lifecycle_state = DLT_PEER_LIFECYCLE_BANNED;
     it->second.state_entered_time = fc::time_point::now();
+    it->second.ban_reason = "remote: " + msg.reason;
+    it->second.ban_duration_sec = msg.ban_duration_sec;
     it->second.reconnect_backoff_sec = msg.ban_duration_sec;
     it->second.next_reconnect_attempt = fc::time_point::now() + fc::seconds(msg.ban_duration_sec);
 
@@ -1579,24 +1581,24 @@ bool dlt_p2p_node::record_packet_result(peer_id peer, bool is_good) {
 
     it->second.spam_strikes++;
     if (it->second.spam_strikes >= SPAM_STRIKE_THRESHOLD) {
-        soft_ban_peer(peer);
+        soft_ban_peer(peer, "spam strike threshold exceeded");
         return false;
     }
     return true;
 }
 
-void dlt_p2p_node::soft_ban_peer(peer_id peer) {
+void dlt_p2p_node::soft_ban_peer(peer_id peer, const std::string& reason) {
     auto it = _peer_states.find(peer);
     if (it == _peer_states.end()) return;
 
-    wlog(DLT_LOG_RED "Soft-banning peer ${ep} for ${d}s" DLT_LOG_RESET,
-         ("ep", it->second.endpoint)("d", BAN_DURATION_SEC));
+    wlog(DLT_LOG_RED "Soft-banning peer ${ep} for ${d}s (reason: ${r})" DLT_LOG_RESET,
+         ("ep", it->second.endpoint)("d", BAN_DURATION_SEC)("r", reason));
 
     // Notify the peer before disconnecting so they can stop spamming us
     try {
         dlt_soft_ban_message ban_msg;
         ban_msg.ban_duration_sec = BAN_DURATION_SEC;
-        ban_msg.reason = "spam strike threshold exceeded";
+        ban_msg.reason = reason;
         send_message(peer, message(ban_msg));
     } catch (...) {
         // Best-effort send — peer may already be disconnected
@@ -1604,6 +1606,8 @@ void dlt_p2p_node::soft_ban_peer(peer_id peer) {
 
     it->second.lifecycle_state = DLT_PEER_LIFECYCLE_BANNED;
     it->second.state_entered_time = fc::time_point::now();
+    it->second.ban_reason = reason;
+    it->second.ban_duration_sec = BAN_DURATION_SEC;
     it->second.reconnect_backoff_sec = BAN_DURATION_SEC;
     it->second.next_reconnect_attempt = fc::time_point::now() + fc::seconds(BAN_DURATION_SEC);
 
@@ -1656,9 +1660,10 @@ void dlt_p2p_node::log_peer_stats() {
 
         if (state.lifecycle_state == DLT_PEER_LIFECYCLE_BANNED) {
             auto ban_elapsed = (fc::time_point::now() - state.state_entered_time).count() / 1000000;
-            auto ban_remaining = (BAN_DURATION_SEC > ban_elapsed) ? (BAN_DURATION_SEC - ban_elapsed) : 0;
-            ilog("${C}  ${ep} | ${ls} | spam=${s} | ban_remaining=${br}s${R}",
-                 ("C", C)("ep", ep)("ls", ls)("s", state.spam_strikes)("br", ban_remaining)("R", R));
+            auto ban_dur = (state.ban_duration_sec > 0) ? state.ban_duration_sec : BAN_DURATION_SEC;
+            auto ban_remaining = (ban_dur > ban_elapsed) ? (ban_dur - ban_elapsed) : 0;
+            ilog("${C}  ${ep} | ${ls} | ban_remaining=${br}s | reason=${reason}${R}",
+                 ("C", C)("ep", ep)("ls", ls)("br", ban_remaining)("reason", state.ban_reason)("R", R));
             continue;
         }
 
@@ -1803,8 +1808,9 @@ void dlt_p2p_node::periodic_task() {
         for (auto& _peer_item : _peer_states) {
                 auto& state = _peer_item.second;
             if (state.lifecycle_state == DLT_PEER_LIFECYCLE_BANNED) {
+                auto ban_dur = (state.ban_duration_sec > 0) ? state.ban_duration_sec : BAN_DURATION_SEC;
                 auto elapsed = fc::time_point::now() - state.state_entered_time;
-                if (elapsed.count() > BAN_DURATION_SEC * 1000000) {
+                if (elapsed.count() > ban_dur * 1000000) {
                     state.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
                     state.disconnected_since = fc::time_point::now();
                     state.next_reconnect_attempt = fc::time_point::now() + fc::seconds(30);
@@ -1831,8 +1837,9 @@ void dlt_p2p_node::periodic_task() {
     for (auto& _peer_item : _peer_states) {
             auto& state = _peer_item.second;
         if (state.lifecycle_state == DLT_PEER_LIFECYCLE_BANNED) {
+            auto ban_dur = (state.ban_duration_sec > 0) ? state.ban_duration_sec : BAN_DURATION_SEC;
             auto elapsed = fc::time_point::now() - state.state_entered_time;
-            if (elapsed.count() > BAN_DURATION_SEC * 1000000) {
+            if (elapsed.count() > ban_dur * 1000000) {
                 state.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
                 state.disconnected_since = fc::time_point::now();
                 state.next_reconnect_attempt = fc::time_point::now() + fc::seconds(30);

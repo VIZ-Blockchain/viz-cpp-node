@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <set>
+#include <string>
 
 namespace graphene {
 namespace network {
@@ -44,6 +45,10 @@ struct dlt_peer_state {
     // Anti-spam
     uint32_t                     spam_strikes = 0;
     fc::time_point               last_good_packet_time;
+
+    // Ban tracking
+    std::string                  ban_reason;              // why we (or they) were banned
+    uint32_t                     ban_duration_sec = 0;    // actual ban duration (may differ from BAN_DURATION_SEC for remote bans)
 
     // Peer exchange rate-limiting
     fc::time_point               last_peer_exchange_request_time;
