@@ -47,11 +47,11 @@ This matches the old `message_oriented_connection` format without 16-byte paddin
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `libraries/network/include/graphene/network/dlt_p2p_messages.hpp` | 226 | All DLT message types (5100-5114), enums, structs, FC_REFLECT macros |
+| `libraries/network/include/graphene/network/dlt_p2p_messages.hpp` | 319 | All DLT message types (5100-5116), enums, structs, FC_REFLECT macros |
 | `libraries/network/dlt_p2p_messages.cpp` | 21 | Static `type` constants for each message struct |
 | `libraries/network/include/graphene/network/dlt_p2p_peer_state.hpp` | 123 | `dlt_peer_state`, `dlt_known_peer`, `dlt_mempool_entry`, `dlt_fork_resolution_state`, `dlt_fork_branch_info` |
-| `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | 262 | `dlt_p2p_delegate` interface + `dlt_p2p_node` class declaration |
-| `libraries/network/dlt_p2p_node.cpp` | 1689 | Full `dlt_p2p_node` implementation |
+| `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | 337 | `dlt_p2p_delegate` interface + `dlt_p2p_node` class declaration |
+| `libraries/network/dlt_p2p_node.cpp` | 2387 | Full `dlt_p2p_node` implementation |
 
 ### Modified Files
 
@@ -81,7 +81,7 @@ This matches the old `message_oriented_connection` format without 16-byte paddin
 
 ### Phase 1: New Message Types ✅
 
-`dlt_p2p_messages.hpp` implements all 15 message types (5100-5114) exactly as specified:
+`dlt_p2p_messages.hpp` implements all 17 message types (5100-5116) exactly as specified:
 
 | Message Type | ID | Struct |
 |---|---|---|
@@ -100,6 +100,8 @@ This matches the old `message_oriented_connection` format without 16-byte paddin
 | `dlt_peer_exchange_rate_limited_type` | 5112 | `dlt_peer_exchange_rate_limited` — wait_seconds |
 | `dlt_transaction_message_type` | 5113 | `dlt_transaction_message` — signed_transaction |
 | `dlt_soft_ban_message_type` | 5114 | `dlt_soft_ban_message` — ban_duration_sec, reason (sent before disconnecting a banned peer) |
+| `dlt_gap_fill_request_type` | 5115 | `dlt_gap_fill_request` — block_nums (exchange-only, FORWARD mode gap fill) |
+| `dlt_gap_fill_reply_type` | 5116 | `dlt_gap_fill_reply` — blocks (exchange-only, FORWARD mode gap fill) |
 
 Enums: `dlt_node_status` (SYNC/FORWARD), `dlt_fork_status` (NORMAL/LOOKING_RESOLUTION/MINORITY), `dlt_peer_lifecycle_state` (6 states).
 
@@ -391,7 +393,7 @@ The following compilation/linking issues block building with newer GCC (13+) in 
 Post-implementation issues observed in production (4-node DLT emergency consensus network):
 
 | # | Severity | Problem |
-|---|----------|---------|
+|---|----------|--------|
 | P17 | ~~CRITICAL~~ **Fixed** | DLT block log corruption on crash → auto-detected and reset |
 | P18 | ~~CRITICAL~~ **Fixed** | Master stops producing blocks for minutes (`slot=0` loop) → stall detector + NTP force-sync |
 | P19 | ~~HIGH~~ **Fixed** | Slave stuck in SYNC → gap detection + multi-peer fallback + snapshot warning |
@@ -403,6 +405,7 @@ Post-implementation issues observed in production (4-node DLT emergency consensu
 | P25 | ~~HIGH~~ **Fixed** | Slave-produced block ignored → exchange_enabled re-evaluated on block accept + FORWARD transition |
 | P26 | ~~MED~~ **Fixed** | Sync state confusion → `check_sync_catchup()` on block accept + periodic task |
 | P27 | ~~CRITICAL~~ **Fixed** (diag) | Write lock diagnostic — overall + per-plugin timing, lock-holder ID |
+| P36 | ~~HIGH~~ **Fixed** | `block_too_old_exception` during SYNC range processing + FORWARD mode gap fill |
 
 Full analysis in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md#new-problems-discovered-post-implementation).
 
@@ -457,3 +460,37 @@ Full analysis in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md#new-
 **Root cause:** When `our_head + 1 < peer_dlt_earliest` (gap between our head and what the peer can serve), blocks were clamped but didn't link to our head. No attempt was made to find a peer with the missing blocks.
 
 **Fix:** When a gap is detected in `request_blocks_from_peer()`: (1) search other peers for one whose DLT range covers the missing blocks, (2) if found, defer current peer and sync from the bridging peer, (3) if no peer can bridge, log "Snapshot may be required" warning and still attempt the clamped request.
+
+---
+
+## Subsequent Enhancements & Fixes (2026-05-08)
+
+### P36: block_too_old_exception During SYNC Range Processing + Gap Fill Exchange Packet
+
+**Files:** `plugins/p2p/p2p_plugin.cpp`, `libraries/network/include/graphene/network/dlt_p2p_messages.hpp`, `libraries/network/dlt_p2p_messages.cpp`, `libraries/network/include/graphene/network/dlt_p2p_node.hpp`, `libraries/network/dlt_p2p_node.cpp`
+
+**Problem B — Root cause:** When processing a block range reply in SYNC mode, the first block can trigger `fork_db._push_next()` which cascades and links previously-deferred blocks from a competing fork. This advances `fork_db._head` far beyond the database head. Subsequent blocks in the range (from a different fork or the same chain) are then rejected with `block_too_old_exception` because they fall outside fork_db's `_max_size=2` sliding window. The exception fell through to the generic `catch (const fc::exception&)` which returned `REJECTED`, causing the P2P layer to skip updating `expected_next_block`. This made every subsequent block in the range appear "out of order", creating an unresolvable gap.
+
+**Problem B — Fix:** Added `catch (const graphene::chain::block_too_old_exception& e)` in `dlt_delegate::accept_block()` before the generic `fc::exception` catch. Returns `ALREADY_KNOWN` instead of `REJECTED`. This is correct because fork_db already has a better chain at that height (that's why it considers the block "too old"). The `ALREADY_KNOWN` result allows `expected_next_block` to be updated properly, preventing the cascading gap.
+
+**Gap fill — Root cause:** When transitioning SYNC→FORWARD with a 1-2 block gap, the only recovery mechanism was the FORWARD→SYNC fallbehind detection (threshold=2 blocks), causing oscillation between modes. Broadcast blocks arrive out-of-order and get deferred to fork_db._unlinked_index, but there's no way to proactively request the specific missing blocks.
+
+**Gap fill — Fix:** Added two new exchange-only message types:
+
+| Type | ID | Purpose |
+|------|----|---------|
+| `dlt_gap_fill_request` | 5115 | Request specific block numbers from exchange-enabled peers |
+| `dlt_gap_fill_reply` | 5116 | Return requested blocks from dlt_block_log or fork_db |
+
+Protocol:
+- Only exchanged between exchange-enabled peers (`on_dlt_gap_fill_request` rejects non-exchange peers)
+- Maximum 100 blocks per request (`GAP_FILL_MAX_BLOCKS`)
+- 5-second cooldown between requests (`GAP_FILL_COOLDOWN_SEC`)
+- Only used in FORWARD mode for gaps ≤100 blocks (larger gaps use SYNC mode)
+- Requesting peer selects the exchange-enabled peer with the highest head block
+- Requested blocks must be within the serving peer's DLT log range
+
+Gap fill is triggered in three places:
+1. `on_dlt_block_reply()` — when an out-of-order block is detected in FORWARD mode
+2. `periodic_task()` — proactive gap detection every 5s cycle
+3. `resume_block_processing()` — after snapshot pause, tries gap fill before falling back to SYNC

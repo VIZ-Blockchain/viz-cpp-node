@@ -166,6 +166,11 @@ private:
     void on_dlt_transaction(peer_id peer, const dlt_transaction_message& msg);
     void on_dlt_soft_ban(peer_id peer, const dlt_soft_ban_message& msg);
 
+    // ── Gap fill handlers (exchange-only) ────────────────────────
+    void on_dlt_gap_fill_request(peer_id peer, const dlt_gap_fill_request& req);
+    void on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply& reply);
+    void request_gap_fill();
+
     // ── Hello construction ───────────────────────────────────────
     dlt_hello_message        build_hello_message() const;
     dlt_hello_reply_message  build_hello_reply(peer_id peer, const dlt_hello_message& hello) const;
@@ -297,6 +302,12 @@ private:
 
     // ── Fork resolution ──────────────────────────────────────────
     static constexpr uint32_t       FORK_RESOLUTION_BLOCK_THRESHOLD = 42;
+
+    // ── Gap fill ──────────────────────────────────────────────
+    static constexpr uint32_t       GAP_FILL_MAX_BLOCKS = 100;  ///< Max blocks per gap fill request
+    bool                            _gap_fill_in_progress = false;
+    fc::time_point                  _last_gap_fill_time;
+    static constexpr uint32_t       GAP_FILL_COOLDOWN_SEC = 5;  ///< Min seconds between gap fill attempts
 
     // ── Block processing pause ───────────────────────────────────
     bool                            _block_processing_paused = false;

@@ -21,6 +21,9 @@ constexpr uint32_t dlt_peer_state::PENDING_BATCH_TIMEOUT_SEC;
 constexpr uint32_t dlt_peer_state::INITIAL_RECONNECT_BACKOFF_SEC;
 constexpr uint32_t dlt_peer_state::MAX_RECONNECT_BACKOFF_SEC;
 
+constexpr uint32_t dlt_p2p_node::GAP_FILL_MAX_BLOCKS;
+constexpr uint32_t dlt_p2p_node::GAP_FILL_COOLDOWN_SEC;
+
 // ── Construction / destruction ───────────────────────────────────────
 
 dlt_p2p_node::dlt_p2p_node(const std::string& user_agent)
@@ -424,6 +427,12 @@ void dlt_p2p_node::on_message(peer_id peer, const message& msg) {
                 break;
             case dlt_soft_ban_message_type:
                 on_dlt_soft_ban(peer, msg.as<dlt_soft_ban_message>());
+                break;
+            case dlt_gap_fill_request_type:
+                on_dlt_gap_fill_request(peer, msg.as<dlt_gap_fill_request>());
+                break;
+            case dlt_gap_fill_reply_type:
+                on_dlt_gap_fill_reply(peer, msg.as<dlt_gap_fill_reply>());
                 break;
             default:
                 auto ep_it_unk = _peer_states.find(peer);
@@ -944,6 +953,12 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
         // Block from the past we don't know — might be a competing fork, try to apply
         wlog(DLT_LOG_RED "Block #${n} from ${ep} out of order (expected #${e})" DLT_LOG_RESET,
              ("n", block_num)("ep", state.endpoint)("e", state.expected_next_block));
+        // P36: In FORWARD mode, an out-of-order block indicates a gap.
+        // Trigger gap fill to quickly request the missing blocks from
+        // exchange-enabled peers instead of oscillating SYNC↔FORWARD.
+        if (_node_status == DLT_NODE_STATUS_FORWARD && block_num > _delegate->get_head_block_num()) {
+            request_gap_fill();
+        }
         // Fall through and try to apply — fork_db or push_block will handle it
     }
 
@@ -1149,6 +1164,186 @@ void dlt_p2p_node::on_dlt_soft_ban(peer_id peer, const dlt_soft_ban_message& msg
     }
 }
 
+// ── Gap fill handlers (exchange-only) ─────────────────────────────────
+
+void dlt_p2p_node::on_dlt_gap_fill_request(peer_id peer, const dlt_gap_fill_request& req) {
+    auto it = _peer_states.find(peer);
+    if (it == _peer_states.end()) return;
+
+    // Only serve gap fill requests from exchange-enabled peers
+    if (!it->second.exchange_enabled) {
+        wlog("Gap fill request from non-exchange peer ${ep}, ignoring",
+             ("ep", it->second.endpoint));
+        record_packet_result(peer, false);
+        return;
+    }
+
+    // Validate request: limit number of blocks requested
+    if (req.block_nums.empty() || req.block_nums.size() > GAP_FILL_MAX_BLOCKS) {
+        wlog("Gap fill request from ${ep} has invalid block count (${n})",
+             ("ep", it->second.endpoint)("n", req.block_nums.size()));
+        record_packet_result(peer, false);
+        return;
+    }
+
+    // Verify requested blocks are within reasonable range of our head
+    uint32_t our_head = _delegate->get_head_block_num();
+    uint32_t our_earliest = _delegate->get_dlt_earliest_block();
+    dlt_gap_fill_reply reply;
+
+    for (uint32_t num : req.block_nums) {
+        // Only serve blocks within our DLT log range and not too far from head
+        if (num < our_earliest || num > our_head + GAP_FILL_MAX_BLOCKS) continue;
+        auto block = _delegate->read_block_by_num(num);
+        if (block.valid()) {
+            reply.blocks.push_back(std::move(*block));
+        }
+    }
+
+    if (!reply.blocks.empty()) {
+        ilog(DLT_LOG_GREEN "Serving gap fill: ${n} blocks to ${ep}" DLT_LOG_RESET,
+             ("n", reply.blocks.size())("ep", it->second.endpoint));
+        send_message(peer, message(reply));
+    } else {
+        ilog(DLT_LOG_ORANGE "Gap fill request from ${ep}: no blocks available" DLT_LOG_RESET,
+             ("ep", it->second.endpoint));
+    }
+
+    record_packet_result(peer, true);
+}
+
+void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply& reply) {
+    if (_block_processing_paused) return;
+
+    auto it = _peer_states.find(peer);
+    if (it == _peer_states.end()) return;
+
+    _gap_fill_in_progress = false;
+
+    if (reply.blocks.empty()) {
+        ilog(DLT_LOG_ORANGE "Gap fill reply from ${ep}: no blocks" DLT_LOG_RESET,
+             ("ep", it->second.endpoint));
+        record_packet_result(peer, true);
+        return;
+    }
+
+    ilog(DLT_LOG_GREEN "Gap fill: received ${n} blocks from ${ep}" DLT_LOG_RESET,
+         ("n", reply.blocks.size())("ep", it->second.endpoint));
+
+    // Apply received blocks via normal accept_block flow
+    bool any_applied = false;
+    for (const auto& block : reply.blocks) {
+        if (_block_processing_paused) break;
+
+        dlt_block_accept_result result;
+        try {
+            result = _delegate->accept_block(block, /*sync_mode=*/false);
+        } catch (const graphene::network::deferred_resize_exception&) {
+            wlog("Deferred resize during gap fill, stopping");
+            break;
+        }
+
+        if (result == dlt_block_accept_result::ACCEPTED) {
+            any_applied = true;
+            _last_block_received_time = fc::time_point::now();
+            _last_network_block_time = fc::time_point::now();
+
+            ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by witness ${w} [${ep}] (gap fill)" DLT_LOG_RESET,
+                 ("n", block.block_num())("tx", block.transactions.size())
+                 ("w", block.witness)("ep", it->second.endpoint));
+
+            on_block_applied(block, /*caused_fork_switch=*/false);
+
+            // P25 fix: enable exchange after accepting block from non-exchange peer
+            if (!it->second.exchange_enabled) {
+                ilog(DLT_LOG_GREEN "Enabling exchange for peer ${ep} after gap fill block #${n}" DLT_LOG_RESET,
+                     ("ep", it->second.endpoint)("n", block.block_num()));
+                it->second.exchange_enabled = true;
+                it->second.fork_alignment = true;
+            }
+        } else if (result == dlt_block_accept_result::ALREADY_KNOWN) {
+            dlog(DLT_LOG_DGRAY "Gap fill block #${n} already on chain" DLT_LOG_RESET,
+                 ("n", block.block_num()));
+        } else if (result == dlt_block_accept_result::FORK_DB_ONLY) {
+            dlog("Gap fill block #${n} stored in fork_db", ("n", block.block_num()));
+        } else if (result == dlt_block_accept_result::DEAD_FORK) {
+            wlog(DLT_LOG_RED "Gap fill: peer ${ep} sent dead-fork block #${n}" DLT_LOG_RESET,
+                 ("ep", it->second.endpoint)("n", block.block_num()));
+            soft_ban_peer(peer, "dead-fork block in gap fill");
+            break;
+        } else {
+            wlog(DLT_LOG_RED "Gap fill: rejected block #${n} from ${ep}" DLT_LOG_RESET,
+                 ("n", block.block_num())("ep", it->second.endpoint));
+        }
+    }
+
+    record_packet_result(peer, any_applied);
+}
+
+void dlt_p2p_node::request_gap_fill() {
+    if (!_delegate) return;
+    if (_gap_fill_in_progress) return;
+
+    // Cooldown: don't spam gap fill requests
+    if (_last_gap_fill_time != fc::time_point()) {
+        auto elapsed = fc::time_point::now() - _last_gap_fill_time;
+        if (elapsed.count() < GAP_FILL_COOLDOWN_SEC * 1000000) return;
+    }
+
+    uint32_t our_head = _delegate->get_head_block_num();
+    if (our_head == 0) return;
+
+    // Find gaps: blocks that are expected but we don't have.
+    // In FORWARD mode, a gap exists when our head is below any
+    // exchange-enabled peer's head by 1-100 blocks.
+    if (_node_status != DLT_NODE_STATUS_FORWARD) return;
+
+    // Collect the missing block numbers (our_head+1 through max peer head)
+    uint32_t max_peer_head = our_head;
+    peer_id best_peer = INVALID_PEER_ID;
+    for (const auto& _pi : _peer_states) {
+        const auto& state = _pi.second;
+        if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;
+        if (!state.exchange_enabled) continue;
+        if (state.peer_head_num > max_peer_head) {
+            max_peer_head = state.peer_head_num;
+            best_peer = _pi.first;
+        }
+    }
+
+    if (max_peer_head <= our_head) return;  // no gap
+
+    uint32_t gap = max_peer_head - our_head;
+    if (gap > GAP_FILL_MAX_BLOCKS) return;  // gap too large, use SYNC instead
+
+    // Build request for the missing blocks
+    dlt_gap_fill_request req;
+    for (uint32_t n = our_head + 1; n <= max_peer_head; ++n) {
+        req.block_nums.push_back(n);
+    }
+
+    ilog(DLT_LOG_GREEN "Requesting gap fill for blocks ${s}-${e} (${n} blocks) from exchange peers" DLT_LOG_RESET,
+         ("s", our_head + 1)("e", max_peer_head)("n", req.block_nums.size()));
+
+    _gap_fill_in_progress = true;
+    _last_gap_fill_time = fc::time_point::now();
+
+    // Send to the best exchange-enabled peer (the one with highest head)
+    if (best_peer != INVALID_PEER_ID) {
+        send_message(best_peer, message(req));
+    } else {
+        // Fallback: send to any exchange-enabled peer that's ahead
+        for (const auto& _pi : _peer_states) {
+            const auto& state = _pi.second;
+            if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE &&
+                state.exchange_enabled && state.peer_head_num > our_head) {
+                send_message(_pi.first, message(req));
+                break;
+            }
+        }
+    }
+}
+
 // ── Broadcast methods ────────────────────────────────────────────────
 
 void dlt_p2p_node::broadcast_block(const signed_block& block) {
@@ -1301,7 +1496,12 @@ void dlt_p2p_node::resume_block_processing() {
              "(head=#${h}), requesting missing blocks from peers" DLT_LOG_RESET,
              ("h", our_head));
 
+        // P36: Try gap fill first for small gaps (up to GAP_FILL_MAX_BLOCKS)
+        // before falling back to full SYNC mode.
         if (_node_status == DLT_NODE_STATUS_FORWARD) {
+            request_gap_fill();
+            // If gap fill is in progress, don't transition to SYNC yet
+            if (_gap_fill_in_progress) return;
             transition_to_sync();
         }
 
@@ -2009,6 +2209,7 @@ void dlt_p2p_node::periodic_task() {
     sync_stagnation_check();
     check_sync_catchup();   // P26 fix: periodic catch-up detection
     check_forward_behind(); // P27 fix: detect falling behind in FORWARD mode
+    request_gap_fill();     // P36 fix: fill gaps in FORWARD mode via exchange
     periodic_peer_exchange();
 
     // Log node status every 1 minute (12 cycles at 5s)

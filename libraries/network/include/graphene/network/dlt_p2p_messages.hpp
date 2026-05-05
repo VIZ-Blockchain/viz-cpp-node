@@ -39,6 +39,8 @@ enum dlt_message_type_enum {
     dlt_peer_exchange_rate_limited_type  = 5112,
     dlt_transaction_message_type         = 5113,
     dlt_soft_ban_message_type            = 5114,
+    dlt_gap_fill_request_type           = 5115,
+    dlt_gap_fill_reply_type             = 5116,
 };
 
 // ── DLT node status ─────────────────────────────────────────────────
@@ -204,6 +206,26 @@ struct dlt_soft_ban_message {
     std::string   reason;               // human-readable reason
 };
 
+// ── Gap fill request (exchange-only) ──────────────────────────────────
+// Sent by a node in FORWARD mode that detected a gap (missing 1-100
+// blocks). Only exchanged between exchange-enabled peers. The receiving
+// peer reads the requested blocks from its dlt_block_log and sends
+// them back via dlt_gap_fill_reply.
+struct dlt_gap_fill_request {
+    static const dlt_message_type_enum type;
+
+    std::vector<uint32_t> block_nums;  // specific block numbers requested
+};
+
+// ── Gap fill reply (exchange-only) ─────────────────────────────────────
+// Response to dlt_gap_fill_request. Contains the requested blocks that
+// the peer had available in its dlt_block_log or fork_db.
+struct dlt_gap_fill_reply {
+    static const dlt_message_type_enum type;
+
+    std::vector<signed_block> blocks;  // requested blocks (may be partial)
+};
+
 } // namespace network
 } // namespace graphene
 
@@ -224,7 +246,9 @@ FC_REFLECT_ENUM(graphene::network::dlt_message_type_enum,
     (dlt_peer_exchange_reply_type)
     (dlt_peer_exchange_rate_limited_type)
     (dlt_transaction_message_type)
-    (dlt_soft_ban_message_type))
+    (dlt_soft_ban_message_type)
+    (dlt_gap_fill_request_type)
+    (dlt_gap_fill_reply_type))
 
 FC_REFLECT_ENUM(graphene::network::dlt_node_status,
     (DLT_NODE_STATUS_SYNC)(DLT_NODE_STATUS_FORWARD))
@@ -286,3 +310,9 @@ FC_REFLECT((graphene::network::dlt_transaction_message),
 
 FC_REFLECT((graphene::network::dlt_soft_ban_message),
     (ban_duration_sec)(reason))
+
+FC_REFLECT((graphene::network::dlt_gap_fill_request),
+    (block_nums))
+
+FC_REFLECT((graphene::network::dlt_gap_fill_reply),
+    (blocks))

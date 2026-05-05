@@ -170,6 +170,26 @@ public:
             // tracking — but the P2P layer should NOT retransmit it or
             // update mempool until it actually becomes head.
             return dlt_block_accept_result::FORK_DB_ONLY;
+        } catch (const graphene::chain::block_too_old_exception& e) {
+            // P36 fix: fork_db._head jumped ahead of database head via
+            // _push_next cascade (previously-deferred blocks linked when
+            // their parent arrived).  The block we're trying to push is
+            // now "too old" for fork_db's sliding window, even though it
+            // might be a valid linear extension of the current database
+            // head.  This commonly happens when processing a block range
+            // reply: the first block triggers _push_next which links
+            // blocks from a competing fork in fork_db, advancing
+            // fork_db._head far beyond the database head.  Subsequent
+            // blocks in the range (possibly from a different fork) are
+            // then rejected as "too old".
+            //
+            // Since fork_db already has a better chain at this height
+            // (that's why it considers the block "too old"), we treat
+            // it as ALREADY_KNOWN — the information is already present
+            // in a better form.
+            wlog("Block #${n} too old for fork_db — fork_db already has a better chain at this height (${e})",
+                 ("n", block.block_num())("e", e.to_detail_string()));
+            return dlt_block_accept_result::ALREADY_KNOWN;
         } catch (const graphene::chain::unlinkable_block_exception& e) {
             // Dead-fork detection: block at or below our head whose parent
             // is not in fork_db.  The database already determined this fork
