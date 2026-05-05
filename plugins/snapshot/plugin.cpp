@@ -1622,12 +1622,19 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         return;
     }
 
-    // Cancel any in-progress snapshot when a new block arrives.
-    // This breaks the serialization loop and releases the read lock quickly,
-    // preventing write-lock starvation for push_block().
+    // A snapshot is in progress — blocks that arrive will be
+    // deferred.  The snapshot holds a read lock and P2P block
+    // processing is paused, so we cannot apply the block now.
+    // The gap-fill logic in resume_block_processing() will request
+    // any missing blocks from peers once the snapshot completes.
+    // We intentionally do NOT cancel the snapshot: doing so wastes
+    // the serialization work done so far and forces a retry later.
+    // Empirical evidence shows push_block() is not starved by the
+    // read lock (the master generated blocks just 3ms after the
+    // snapshot started), so cancellation is unnecessary.
     if (snapshot_in_progress.load(std::memory_order_relaxed)) {
-        cancel_snapshot_requested.store(true, std::memory_order_relaxed);
-        dlog("New block #${n} received while snapshot in progress — requesting cancellation",
+        ilog("New block #${n} received while snapshot in progress — "
+             "block will be processed after snapshot completes",
              ("n", b.block_num()));
     }
 

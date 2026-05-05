@@ -1272,6 +1272,49 @@ void dlt_p2p_node::pause_block_processing() {
 void dlt_p2p_node::resume_block_processing() {
     _block_processing_paused = false;
     ilog("DLT P2P: block processing resumed");
+
+    // After resuming from a pause (typically during snapshot creation),
+    // blocks that arrived while paused were silently dropped.  Check if
+    // any exchange-enabled peer is ahead of our head and request the
+    // missing blocks to fill the gap.  The existing sync infrastructure
+    // (transition_to_sync + request_blocks_from_peer) handles the
+    // actual block fetching; check_sync_catchup will return us to
+    // FORWARD mode once caught up.
+    if (!_delegate) return;
+
+    uint32_t our_head = _delegate->get_head_block_num();
+    bool need_catchup = false;
+
+    for (const auto& _peer_item : _peer_states) {
+        const auto& state = _peer_item.second;
+        if ((state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
+             state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) &&
+            state.exchange_enabled &&
+            state.peer_head_num > our_head) {
+            need_catchup = true;
+            break;
+        }
+    }
+
+    if (need_catchup) {
+        ilog(DLT_LOG_ORANGE "DLT P2P: gap detected after block processing pause "
+             "(head=#${h}), requesting missing blocks from peers" DLT_LOG_RESET,
+             ("h", our_head));
+
+        if (_node_status == DLT_NODE_STATUS_FORWARD) {
+            transition_to_sync();
+        }
+
+        for (auto& _peer_item : _peer_states) {
+            auto& id = _peer_item.first;
+            auto& state = _peer_item.second;
+            if (state.exchange_enabled && state.peer_head_num > our_head &&
+                (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
+                 state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING)) {
+                request_blocks_from_peer(id);
+            }
+        }
+    }
 }
 
 bool dlt_p2p_node::is_on_majority_fork() const {
