@@ -604,6 +604,22 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
     }
 
     uint32_t start = our_head + 1;
+
+    // Don't request blocks below the peer's DLT range — those blocks
+    // are pruned and the peer can't serve them.  Clamp start to the
+    // peer's earliest available block.
+    uint32_t peer_earliest = it->second.peer_dlt_earliest;
+    if (start < peer_earliest && peer_earliest > 0) {
+        ilog(DLT_LOG_ORANGE "Skipping blocks ${a}-${b} (peer ${ep} DLT starts at ${c})" DLT_LOG_RESET,
+             ("a", start)("b", peer_earliest - 1)("ep", it->second.endpoint)("c", peer_earliest));
+        start = peer_earliest;
+    }
+
+    // After clamping, start may now be beyond peer_latest (gap case).
+    if (start > peer_latest) {
+        return;
+    }
+
     uint32_t end = std::min(start + 200 - 1, peer_latest); // max 200 blocks per request
 
     dlt_get_block_range_message req;
