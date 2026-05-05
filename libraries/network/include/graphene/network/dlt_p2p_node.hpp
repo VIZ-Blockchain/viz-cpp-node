@@ -307,7 +307,16 @@ private:
     static constexpr uint32_t       GAP_FILL_MAX_BLOCKS = 100;  ///< Max blocks per gap fill request
     bool                            _gap_fill_in_progress = false;
     fc::time_point                  _last_gap_fill_time;
+    fc::time_point                  _gap_fill_start_time;        ///< When current gap fill request was sent
     static constexpr uint32_t       GAP_FILL_COOLDOWN_SEC = 5;  ///< Min seconds between gap fill attempts
+    static constexpr uint32_t       GAP_FILL_TIMEOUT_SEC = 15;  ///< Max seconds to wait for gap fill reply
+    uint32_t                        _highest_seen_block_num = 0; ///< Highest block num seen from any source
+
+    // ── FORWARD stagnation ──────────────────────────────────────
+    uint32_t                        _last_forward_head_num = 0;
+    fc::time_point                  _last_forward_progress_time; ///< Last time our head advanced in FORWARD mode
+    static constexpr uint32_t       FORWARD_STAGNATION_SEC = 30; ///< Seconds without head progress → SYNC
+    void                            check_forward_stagnation();
 
     // ── Block processing pause ───────────────────────────────────
     bool                            _block_processing_paused = false;

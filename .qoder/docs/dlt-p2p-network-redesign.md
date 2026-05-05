@@ -406,6 +406,7 @@ Post-implementation issues observed in production (4-node DLT emergency consensu
 | P26 | ~~MED~~ **Fixed** | Sync state confusion → `check_sync_catchup()` on block accept + periodic task |
 | P27 | ~~CRITICAL~~ **Fixed** (diag) | Write lock diagnostic — overall + per-plugin timing, lock-holder ID |
 | P36 | ~~HIGH~~ **Fixed** | `block_too_old_exception` during SYNC range processing + FORWARD mode gap fill |
+| P37 | ~~HIGH~~ **Fixed** | Gap fill never triggers: stale peer_head_num + no FORWARD stagnation detection |
 
 Full analysis in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md#new-problems-discovered-post-implementation).
 
@@ -494,3 +495,23 @@ Gap fill is triggered in three places:
 1. `on_dlt_block_reply()` — when an out-of-order block is detected in FORWARD mode
 2. `periodic_task()` — proactive gap detection every 5s cycle
 3. `resume_block_processing()` — after snapshot pause, tries gap fill before falling back to SYNC
+
+### P37: Gap Fill Never Triggers — Stale peer_head_num + No FORWARD Stagnation Detection
+
+**Files:** `libraries/network/dlt_p2p_node.cpp`, `libraries/network/include/graphene/network/dlt_p2p_node.hpp`
+
+**Root cause (3 bugs):**
+
+1. **`peer_head_num` never updated from received blocks.** Only set during hello/fork_status exchange. When peers broadcast blocks #79678587+ but their recorded `peer_head_num` stays at #79678585, `request_gap_fill()` sees `max_peer_head <= our_head` and silently returns — the gap grows forever.
+
+2. **`check_forward_behind()` depends on stale `peer_head_num`.** The fallbehind detection checks `peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD`, which never triggers for the same reason.
+
+3. **No FORWARD-mode head-progress stagnation detection.** There was no "our head hasn't advanced in N seconds" check — the node stays stuck in FORWARD mode indefinitely.
+
+**Fix 1 — Update `peer_head_num` from received blocks:** In both `on_dlt_block_reply()` and `on_dlt_block_range_reply()`, when a block with number N is received from a peer, update `state.peer_head_num = max(state.peer_head_num, N)`. A peer that can send us block #N must have applied it, so its head is ≥ N.
+
+**Fix 2 — Track `_highest_seen_block_num`:** Global high-water mark updated whenever we see any block with a higher number. Used in `request_gap_fill()` as a fallback gap ceiling when no peer reports a higher head: `gap_ceiling = max(max_peer_head, _highest_seen_block_num)`. Also sends gap fill to ANY exchange-enabled peer if none has a higher reported head.
+
+**Fix 3 — Gap fill timeout:** `_gap_fill_in_progress` now times out after 15s (`GAP_FILL_TIMEOUT_SEC`). Prevents the flag from getting permanently stuck if the target peer disconnects.
+
+**Fix 4 — FORWARD stagnation detection:** New `check_forward_stagnation()` called from `periodic_task()`. If in FORWARD mode and our head hasn't advanced in 30 seconds (`FORWARD_STAGNATION_SEC`), transitions to SYNC mode and requests blocks from all exchange-enabled peers. This is the safety net when gap fill fails (no peer has the missing blocks).

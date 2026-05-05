@@ -23,6 +23,8 @@ constexpr uint32_t dlt_peer_state::MAX_RECONNECT_BACKOFF_SEC;
 
 constexpr uint32_t dlt_p2p_node::GAP_FILL_MAX_BLOCKS;
 constexpr uint32_t dlt_p2p_node::GAP_FILL_COOLDOWN_SEC;
+constexpr uint32_t dlt_p2p_node::GAP_FILL_TIMEOUT_SEC;
+constexpr uint32_t dlt_p2p_node::FORWARD_STAGNATION_SEC;
 
 // ── Construction / destruction ───────────────────────────────────────
 
@@ -825,6 +827,16 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
          ("last", reply.blocks.back().block_num())("count", reply.blocks.size())
          ("ep", state.endpoint));
 
+    // P37 fix: Update peer head from the range's last block.
+    // The peer can serve blocks up to at least this number.
+    uint32_t range_last = reply.blocks.back().block_num();
+    if (range_last > state.peer_head_num) {
+        state.peer_head_num = range_last;
+    }
+    if (range_last > _highest_seen_block_num) {
+        _highest_seen_block_num = range_last;
+    }
+
     state.pending_block_batch_time = fc::time_point::now();
     for (const auto& block : reply.blocks) {
         if (_block_processing_paused) break;
@@ -938,6 +950,18 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
     auto& state = it->second;
 
     uint32_t block_num = reply.block.block_num();
+
+    // P37 fix: Update peer's head from the block it sent us.
+    // If a peer can send us block #N, its chain head must be >= N.
+    // Without this, peer_head_num stays stale (only set from hello
+    // exchange), which breaks gap fill and fallbehind detection.
+    if (block_num > state.peer_head_num) {
+        state.peer_head_num = block_num;
+        dlog("Updated peer ${ep} head to #${n} from received block", ("ep", state.endpoint)("n", block_num));
+    }
+    if (block_num > _highest_seen_block_num) {
+        _highest_seen_block_num = block_num;
+    }
 
     // Out-of-order check: when multiple peers send us the same blocks,
     // one peer's reply may arrive after we already advanced past that block.
@@ -1219,6 +1243,7 @@ void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply&
     if (it == _peer_states.end()) return;
 
     _gap_fill_in_progress = false;
+    _gap_fill_start_time = fc::time_point();
 
     if (reply.blocks.empty()) {
         ilog(DLT_LOG_ORANGE "Gap fill reply from ${ep}: no blocks" DLT_LOG_RESET,
@@ -1282,7 +1307,23 @@ void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply&
 
 void dlt_p2p_node::request_gap_fill() {
     if (!_delegate) return;
-    if (_gap_fill_in_progress) return;
+
+    // P37 fix: timeout stale _gap_fill_in_progress.  If the peer
+    // we asked disconnected or is slow, the flag gets stuck and
+    // blocks all future gap fill attempts forever.
+    if (_gap_fill_in_progress) {
+        if (_gap_fill_start_time != fc::time_point()) {
+            auto elapsed = fc::time_point::now() - _gap_fill_start_time;
+            if (elapsed.count() > GAP_FILL_TIMEOUT_SEC * 1000000) {
+                wlog("Gap fill timed out after ${t}s, resetting", ("t", GAP_FILL_TIMEOUT_SEC));
+                _gap_fill_in_progress = false;
+            } else {
+                return;  // still waiting for reply
+            }
+        } else {
+            return;  // in progress but no start time (shouldn't happen)
+        }
+    }
 
     // Cooldown: don't spam gap fill requests
     if (_last_gap_fill_time != fc::time_point()) {
@@ -1293,12 +1334,21 @@ void dlt_p2p_node::request_gap_fill() {
     uint32_t our_head = _delegate->get_head_block_num();
     if (our_head == 0) return;
 
-    // Find gaps: blocks that are expected but we don't have.
-    // In FORWARD mode, a gap exists when our head is below any
-    // exchange-enabled peer's head by 1-100 blocks.
     if (_node_status != DLT_NODE_STATUS_FORWARD) return;
 
-    // Collect the missing block numbers (our_head+1 through max peer head)
+    // P37 fix: Use _highest_seen_block_num as the upper bound for
+    // gap detection, NOT just peer_head_num.  When broadcast blocks
+    // arrive from peers whose peer_head_num is stale (not updated
+    // since the last hello exchange), the old code saw no peer with
+    // head > our_head and silently returned — the gap grew forever.
+    //
+    // _highest_seen_block_num is updated whenever we receive any
+    // block with a higher number, so it reflects reality even when
+    // peer_head_num hasn't caught up.
+    //
+    // We still prefer the peer with the highest peer_head_num as
+    // the target (it's most likely to have the blocks in its log),
+    // but fall back to any exchange-enabled peer if needed.
     uint32_t max_peer_head = our_head;
     peer_id best_peer = INVALID_PEER_ID;
     for (const auto& _pi : _peer_states) {
@@ -1311,35 +1361,53 @@ void dlt_p2p_node::request_gap_fill() {
         }
     }
 
-    if (max_peer_head <= our_head) return;  // no gap
+    // If no peer reports a higher head, use _highest_seen_block_num
+    // as the gap ceiling.  This covers the case where we're receiving
+    // broadcast blocks from peers with stale peer_head_num.
+    uint32_t gap_ceiling = std::max(max_peer_head, _highest_seen_block_num);
 
-    uint32_t gap = max_peer_head - our_head;
+    if (gap_ceiling <= our_head) return;  // truly no gap
+
+    uint32_t gap = gap_ceiling - our_head;
     if (gap > GAP_FILL_MAX_BLOCKS) return;  // gap too large, use SYNC instead
 
     // Build request for the missing blocks
     dlt_gap_fill_request req;
-    for (uint32_t n = our_head + 1; n <= max_peer_head; ++n) {
+    for (uint32_t n = our_head + 1; n <= gap_ceiling; ++n) {
         req.block_nums.push_back(n);
     }
 
-    ilog(DLT_LOG_GREEN "Requesting gap fill for blocks ${s}-${e} (${n} blocks) from exchange peers" DLT_LOG_RESET,
-         ("s", our_head + 1)("e", max_peer_head)("n", req.block_nums.size()));
+    ilog(DLT_LOG_GREEN "Requesting gap fill for blocks ${s}-${e} (${n} blocks) from exchange peers (highest_seen=${hs})" DLT_LOG_RESET,
+         ("s", our_head + 1)("e", gap_ceiling)("n", req.block_nums.size())("hs", _highest_seen_block_num));
 
     _gap_fill_in_progress = true;
+    _gap_fill_start_time = fc::time_point::now();
     _last_gap_fill_time = fc::time_point::now();
 
     // Send to the best exchange-enabled peer (the one with highest head)
     if (best_peer != INVALID_PEER_ID) {
         send_message(best_peer, message(req));
     } else {
-        // Fallback: send to any exchange-enabled peer that's ahead
+        // P37 fix: If no peer has a higher REPORTED head, send to
+        // any exchange-enabled peer that's ACTIVE.  The serving side
+        // reads from dlt_block_log — even if peer_head_num is stale,
+        // the peer may have the blocks in its log and can serve them.
+        bool sent = false;
         for (const auto& _pi : _peer_states) {
             const auto& state = _pi.second;
             if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE &&
-                state.exchange_enabled && state.peer_head_num > our_head) {
+                state.exchange_enabled) {
+                ilog(DLT_LOG_GREEN "Gap fill: sending to ${ep} (peer_head=#${ph}, our_head=#${oh})" DLT_LOG_RESET,
+                     ("ep", state.endpoint)("ph", state.peer_head_num)("oh", our_head));
                 send_message(_pi.first, message(req));
+                sent = true;
                 break;
             }
+        }
+        if (!sent) {
+            wlog("Gap fill: no exchange-enabled peer available to request blocks from");
+            _gap_fill_in_progress = false;
+            _gap_fill_start_time = fc::time_point();
         }
     }
 }
@@ -1527,6 +1595,8 @@ void dlt_p2p_node::transition_to_forward() {
     if (_node_status == DLT_NODE_STATUS_FORWARD) return;
     _node_status = DLT_NODE_STATUS_FORWARD;
     _sync_stagnation_retries = 0;
+    _last_forward_head_num = 0;   // P37: reset so check_forward_stagnation initializes
+    _last_forward_progress_time = fc::time_point();
     ilog(DLT_LOG_GREEN "=== DLT P2P: transitioning to FORWARD mode ===" DLT_LOG_RESET);
 
     // P25 fix: Re-evaluate exchange_enabled for all peers now that
@@ -1666,6 +1736,43 @@ void dlt_p2p_node::check_forward_behind() {
                 }
             }
             return;
+        }
+    }
+}
+
+void dlt_p2p_node::check_forward_stagnation() {
+    if (_node_status != DLT_NODE_STATUS_FORWARD) return;
+    if (!_delegate) return;
+
+    uint32_t our_head = _delegate->get_head_block_num();
+
+    // Initialize on first call in FORWARD mode
+    if (_last_forward_head_num == 0 || _last_forward_progress_time == fc::time_point()) {
+        _last_forward_head_num = our_head;
+        _last_forward_progress_time = fc::time_point::now();
+        return;
+    }
+
+    // If our head has advanced, reset the timer
+    if (our_head > _last_forward_head_num) {
+        _last_forward_head_num = our_head;
+        _last_forward_progress_time = fc::time_point::now();
+        return;
+    }
+
+    // Head hasn't advanced — check how long we've been stuck
+    auto elapsed = fc::time_point::now() - _last_forward_progress_time;
+    if (elapsed.count() > FORWARD_STAGNATION_SEC * 1000000) {
+        wlog(DLT_LOG_ORANGE "FORWARD stagnation: head stuck at #${h} for ${s}s — transitioning to SYNC" DLT_LOG_RESET,
+             ("h", our_head)("s", FORWARD_STAGNATION_SEC));
+        transition_to_sync();
+        // Request blocks from all exchange-enabled peers
+        for (auto& pi : _peer_states) {
+            auto& s = pi.second;
+            if (s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE &&
+                s.exchange_enabled && s.peer_head_num > our_head) {
+                request_blocks_from_peer(pi.first);
+            }
         }
     }
 }
@@ -2209,6 +2316,7 @@ void dlt_p2p_node::periodic_task() {
     sync_stagnation_check();
     check_sync_catchup();   // P26 fix: periodic catch-up detection
     check_forward_behind(); // P27 fix: detect falling behind in FORWARD mode
+    check_forward_stagnation(); // P37 fix: detect head stuck in FORWARD mode
     request_gap_fill();     // P36 fix: fill gaps in FORWARD mode via exchange
     periodic_peer_exchange();
 
