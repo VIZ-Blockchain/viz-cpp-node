@@ -181,7 +181,18 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
         start_read_loop(pid);
 
     } catch (const fc::exception& e) {
-        wlog("Failed to connect to ${ep}: ${e}", ("ep", ep)("e", e.to_detail_string()));
+        // Connection refused / timeout are expected transient conditions — debug level.
+        // Only warn on unexpected errors.
+        std::string what = e.what();
+        bool is_expected = (what.find("Connection refused") != std::string::npos)
+                       || (what.find("connection refused") != std::string::npos)
+                       || (what.find("Connection timed out") != std::string::npos)
+                       || (what.find("Host unreachable") != std::string::npos)
+                       || (what.find("No route to host") != std::string::npos);
+        if (is_expected)
+            dlog("Connect to ${ep} failed: ${w}", ("ep", ep)("w", what));
+        else
+            wlog("Failed to connect to ${ep}: ${e}", ("ep", ep)("e", e.to_detail_string()));
         state.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
         state.disconnected_since = fc::time_point::now();
         state.next_reconnect_attempt = fc::time_point::now() + fc::seconds(30);
