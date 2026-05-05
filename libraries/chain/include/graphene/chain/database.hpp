@@ -662,6 +662,16 @@ namespace graphene { namespace chain {
             bool _skip_virtual_ops = false;
             bool _enable_plugins_on_push_transaction = false;
 
+            /// Deferred applied_block notification support.
+            /// When _defer_block_notifications is true (set by push_block),
+            /// applied_block notifications are collected in
+            /// _pending_block_notifications and delivered after the write
+            /// lock is released.  This prevents slow plugin callbacks
+            /// from blocking P2P/RPC threads (p32.log 13.8s lock hold).
+            bool _defer_block_notifications = false;
+            std::vector<signed_block> _pending_block_notifications;
+            void flush_pending_block_notifications();
+
 
             flat_map<std::string, std::shared_ptr<custom_operation_interpreter>> _custom_operation_interpreters;
             std::string _json_schema;

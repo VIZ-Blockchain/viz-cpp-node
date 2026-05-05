@@ -797,16 +797,17 @@ namespace graphene {
                 // key covers committee).  After a few rounds with NO external blocks
                 // at all, the node is on a minority fork.
                 //
-                // Detect this by checking whether the last 2 full rounds (42 blocks)
+                // Detect this by checking whether the last full round (21 blocks)
                 // in fork_db contain ONLY blocks from our witnesses.  In a healthy
                 // emergency hybrid schedule, committee slots are filled by the master
                 // node's blocks — so we should see non-our-witness blocks regularly.
                 // If we don't, we're isolated.
                 //
-                // We use 2 rounds (42 blocks) instead of 1 because in emergency mode
-                // our witnesses legitimately produce blocks for their own slots, and
-                // one round of 21 blocks might have only our witnesses if the
-                // committee slots happened to be at the end of the round.
+                // We use 1 round (21 blocks) because in a healthy emergency hybrid
+                // schedule the committee (master) produces at least 1 block per
+                // round, so we should never see 21 consecutive blocks from only
+                // our witnesses unless we're isolated from the master.  This matches
+                // the standard non-emergency minority fork threshold.
                 //
                 // IMPORTANT: If committee (CHAIN_EMERGENCY_WITNESS_ACCOUNT) is in the
                 // current witness schedule AND we have its key (emergency-private-key
@@ -838,7 +839,7 @@ namespace graphene {
                         // the key.  Run the existing fork_db isolation scan.
                         auto fork_head = db.get_fork_db().head();
                         if (fork_head) {
-                            const uint32_t dlt_minority_threshold = CHAIN_MAX_WITNESSES * 2; // 42 blocks = 2 full rounds
+                            const uint32_t dlt_minority_threshold = CHAIN_MAX_WITNESSES; // 21 blocks = 1 full round
                             bool all_ours = true;
                             uint32_t blocks_checked = 0;
                             auto current = fork_head;
@@ -854,7 +855,7 @@ namespace graphene {
 
                             if (all_ours && blocks_checked >= dlt_minority_threshold) {
                                 elog("DLT EMERGENCY MINORITY FORK DETECTED: last ${n} blocks all from our "
-                                     "witnesses (2+ full rounds). Node is isolated from master. "
+                                     "witnesses (1+ full rounds). Node is isolated from master. "
                                      "Resetting to LIB and resyncing from P2P network.",
                                      ("n", blocks_checked));
                                 p2p().resync_from_lib(true /*force_emergency*/);

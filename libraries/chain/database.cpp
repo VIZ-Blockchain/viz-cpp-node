@@ -1306,33 +1306,53 @@ namespace graphene { namespace chain {
             // the shared memory segment during the remap.
             apply_pending_resize();
 
+            // Defer applied_block notifications until after the write lock is
+            // released.  Plugin callbacks (MongoDB, operation_history, etc.)
+            // can take seconds — holding the write lock during that time
+            // blocks P2P and RPC threads (p32.log: 13.8s lock hold).
+            _defer_block_notifications = true;
+
             bool result = false;
-            with_strong_write_lock([&]() {
-                detail::without_pending_transactions(*this, skip, std::move(_pending_tx), [&]() {
-                    try {
-                        result = _push_block(new_block, skip);
-                        check_free_memory(false, new_block.block_num());
-                    } catch (const fc::exception &e) {
-                        auto msg = std::string(e.what());
-                        // TODO: there is no easy way to catch boost::interprocess::bad_alloc
-                        if (msg.find("boost::interprocess::bad_alloc") == msg.npos) {
-                            throw;  // preserve derived exception type (e.g. unlinkable_block_exception)
+            try {
+                with_strong_write_lock([&]() {
+                    detail::without_pending_transactions(*this, skip, std::move(_pending_tx), [&]() {
+                        try {
+                            result = _push_block(new_block, skip);
+                            check_free_memory(false, new_block.block_num());
+                        } catch (const fc::exception &e) {
+                            auto msg = std::string(e.what());
+                            // TODO: there is no easy way to catch boost::interprocess::bad_alloc
+                            if (msg.find("boost::interprocess::bad_alloc") == msg.npos) {
+                                throw;  // preserve derived exception type (e.g. unlinkable_block_exception)
+                            }
+                            // Out of shared memory. Schedule a deferred resize.
+                            // Throw a specific exception so the P2P layer can distinguish
+                            // this transient condition from a permanently invalid block.
+                            // apply_pending_resize() at the top of the next push_block() call
+                            // will perform the resize safely before any database access, and
+                            // the missed block will be re-received during normal sync.
+                            wlog("Received bad_alloc exception. Scheduling deferred resize.");
+                            set_reserved_memory(free_memory());
+                            _resize(new_block.block_num()); // deferred (immediate=false by default)
+                            FC_THROW_EXCEPTION(deferred_resize_exception,
+                                "Shared memory exhausted on block ${block}, resize deferred. Retry next block.",
+                                ("block", new_block.block_num()));
                         }
-                        // Out of shared memory. Schedule a deferred resize.
-                        // Throw a specific exception so the P2P layer can distinguish
-                        // this transient condition from a permanently invalid block.
-                        // apply_pending_resize() at the top of the next push_block() call
-                        // will perform the resize safely before any database access, and
-                        // the missed block will be re-received during normal sync.
-                        wlog("Received bad_alloc exception. Scheduling deferred resize.");
-                        set_reserved_memory(free_memory());
-                        _resize(new_block.block_num()); // deferred (immediate=false by default)
-                        FC_THROW_EXCEPTION(deferred_resize_exception,
-                            "Shared memory exhausted on block ${block}, resize deferred. Retry next block.",
-                            ("block", new_block.block_num()));
-                    }
+                    });
                 });
-            });
+            } catch (...) {
+                // Exception during push_block: discard pending notifications
+                // (they are for blocks that were rolled back by the undo stack).
+                _defer_block_notifications = false;
+                _pending_block_notifications.clear();
+                throw;
+            }
+
+            // Write lock released — deliver deferred notifications now.
+            // P2P and RPC threads can proceed concurrently while plugins
+            // process the block at their own pace.
+            _defer_block_notifications = false;
+            flush_pending_block_notifications();
 
             //fc::time_point end_time = fc::time_point::now();
             //fc::microseconds dt = end_time - begin_time;
@@ -2210,9 +2230,10 @@ namespace graphene { namespace chain {
 
         void database::notify_applied_block(const signed_block &block) {
             // Timing diagnostics for applied_block signal.
-            // The write lock is held during this notification; any slow plugin
-            // callback blocks ALL P2P and RPC for the duration.  Log total
-            // time if it exceeds 200ms so operators can identify the hotspot.
+            // When called from flush_pending_block_notifications(), the write
+            // lock is NOT held, so slow plugin callbacks no longer block
+            // P2P/RPC.  When called directly (replay), there is no
+            // contention so timing is irrelevant.
             auto notify_start = fc::time_point::now();
             size_t num_slots = applied_block.num_slots();
 
@@ -2222,9 +2243,18 @@ namespace graphene { namespace chain {
             auto total_ms = (notify_end - notify_start).count() / 1000;
             if (total_ms > 200) {
                 wlog("applied_block notification took ${ms}ms for block #${bnum} "
-                     "(${slots} connected plugins) — write lock held throughout, "
-                     "blocking P2P/RPC.",
+                     "(${slots} connected plugins)",
                      ("ms", total_ms)("bnum", block.block_num())("slots", num_slots));
+            }
+        }
+
+        void database::flush_pending_block_notifications() {
+            // Move the pending list to a local so we can deliver without
+            // holding any lock on the vector (notifications may take seconds).
+            auto pending = std::move(_pending_block_notifications);
+            _pending_block_notifications.clear();
+            for (const auto& blk : pending) {
+                notify_applied_block(blk);
             }
         }
 
@@ -4822,7 +4852,16 @@ namespace graphene { namespace chain {
 
                 // notify observers that the block has been applied
                 if (_debug_block_production) ilog("DEBUG_CRASH: notify_applied_block start");
-                notify_applied_block(next_block);
+                if (_defer_block_notifications) {
+                    // Defer notification until after the write lock is released.
+                    // This prevents slow plugin callbacks (MongoDB, etc.) from
+                    // blocking P2P/RPC threads while the write lock is held.
+                    _pending_block_notifications.push_back(next_block);
+                } else {
+                    // Direct call (replay / standalone apply_block) — no
+                    // write lock contention, safe to notify immediately.
+                    notify_applied_block(next_block);
+                }
                 if (_debug_block_production) ilog("DEBUG_CRASH: notify_applied_block done");
 
                 if (_debug_block_production) ilog("DEBUG_CRASH: notify_changed_objects start");

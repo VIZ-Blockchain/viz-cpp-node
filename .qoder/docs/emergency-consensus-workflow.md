@@ -206,8 +206,8 @@ maybe_produce_block() {now = NTP + 250ms}
   │   │       (all blocks being "ours" is expected for master)
   │   │
   │   └── Emergency + DLT + NOT MASTER (follower):
-  │       └── 42-block check (2 full rounds via CHAIN_MAX_WITNESSES × 2)
-  │           └── All 42 blocks from our witnesses?
+  │       └── 21-block check (1 full round via CHAIN_MAX_WITNESSES)
+  │           └── All 21 blocks from our witnesses?
   │               └── Yes → DLT EMERGENCY MINORITY FORK:
   │                   resync_from_lib()  [but see guard in §2G below]
   │
@@ -229,6 +229,42 @@ maybe_produce_block() {now = NTP + 250ms}
   │
   └── generate_block() with committee private key
 ```
+
+#### Deferred Block Notifications
+
+`notify_applied_block()` is deferred outside the write-lock scope in `push_block()`:
+
+```
+push_block(new_block)
+  │
+  ├── _defer_block_notifications = true
+  │
+  ├── with_strong_write_lock():
+  │   └── _push_block() → _apply_block()
+  │       └── notify_applied_block deferred:
+  │           _pending_block_notifications.push_back(block)
+  │
+  ├── [on exception]:
+  │   └── Clear pending, re-throw
+  │
+  ├── _defer_block_notifications = false
+  │
+  └── flush_pending_block_notifications()
+      └── For each pending block:
+          notify_applied_block(block)  ← no write lock held
+```
+
+**Why:** Plugin callbacks (MongoDB, operation_history, account_history) can take
+seconds. Holding the write lock during notification blocks ALL P2P and RPC
+threads (p32.log: 13.8s lock hold). Deferring releases the lock first, allowing
+concurrent reads while plugins process at their own pace.
+
+**Replay path:** `apply_block()` (public, called during replay) does NOT set
+`_defer_block_notifications`, so notifications are delivered immediately — same
+as before (no contention during replay).
+
+**Exception safety:** If `push_block()` throws, pending notifications are discarded
+(those blocks were rolled back by the undo stack).
 
 #### Master/Follower Detection (DLT Emergency)
 
@@ -659,6 +695,7 @@ graph TB
 | 16 | `update_median_witness_props` | `database.cpp` | Exclude committee from median computation |
 | 17 | `_push_block` fork switch | `database.cpp` | Direct-extension bypass + fork_db head-seeding (protects emergency after stale sync resets) |
 | 18 | `update_global_dynamic_data` | `database.cpp` | Skip emergency activation if LIB block not in block_log (DLT snapshot safety) |
+| 19 | `push_block` | `database.cpp` | Deferred applied_block notification: plugin callbacks run outside write lock to avoid blocking P2P/RPC |
 
 ---
 
@@ -667,7 +704,7 @@ graph TB
 1. **Deterministic activation**: `seconds_since_lib` uses only block-embedded timestamps — identical on every node, every replay.
 2. **DLT snapshot safety**: Activation skipped when LIB block is unavailable in block_log (empty after snapshot restore).
 3. **Emergency fork immutability**: `resync_from_lib()` refuses to unwind during emergency, protecting against LIB-close-to-HEAD crashes.
-4. **Master/Follower distinction**: DLT nodes with `--emergency-private-key` are masters (bypass sync checks, skip minority fork detection); followers must sync before producing and run 42-block isolation check.
+4. **Master/Follower distinction**: DLT nodes with `--emergency-private-key` are masters (bypass sync checks, skip minority fork detection); followers must sync before producing and run 21-block isolation check (1 round).
 5. **Fork DB convergence**: Deterministic hash tie-breaking ensures all nodes pick the same block when multiple emergency producers compete.
 6. **LIB safety**: Capped at HEAD-1 to preserve undo protection for the current `_apply_block`.
 7. **Neutral committee voting**: Committee votes for currently-applied hardfork version (not binary version), copies median props — does not skew governance or chain properties.
