@@ -186,6 +186,7 @@ private:
     void request_blocks_from_peer(peer_id peer);
     void sync_stagnation_check();
     void check_sync_catchup();   ///< Transition SYNC→FORWARD if caught up to all peers
+    void check_forward_behind(); ///< Transition FORWARD→SYNC if fallen behind peers
 
     // ── Mempool ──────────────────────────────────────────────────
     bool add_to_mempool(const signed_transaction& trx, bool from_peer, peer_id sender);
@@ -247,6 +248,9 @@ private:
     uint32_t                        _sync_stagnation_retries = 0;
     static constexpr uint32_t       SYNC_STAGNATION_SEC = 30;
     static constexpr uint32_t       SYNC_STAGNATION_MAX_RETRIES = 3;
+
+    // ── FORWARD fallbehind ──────────────────────────────────────
+    static constexpr uint32_t       FORWARD_FALLBEHIND_THRESHOLD = 2; ///< Blocks behind peer before FORWARD→SYNC
 
     // ── Peer state ───────────────────────────────────────────────
     peer_id                         _next_peer_id = 1;

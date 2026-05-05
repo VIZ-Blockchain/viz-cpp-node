@@ -585,8 +585,25 @@ void dlt_p2p_node::on_dlt_hello_reply(peer_id peer, const dlt_hello_reply_messag
     if (it == _peer_states.end()) return;
     auto& state = it->second;
 
-    state.exchange_enabled = reply.exchange_enabled;
-    state.fork_alignment = reply.fork_alignment;
+    // P27 fix: Use OR to combine local and remote exchange_enabled determinations.
+    //
+    // The local determination (set in on_dlt_hello) reflects whether WE can
+    // verify the peer's chain (their head/LIB is known to us). The remote
+    // determination (in reply) reflects whether THEY can verify OUR chain.
+    //
+    // Without OR, a slave that can't verify the master's ahead-of-us chain
+    // sends hello_reply with exchange_enabled=false. The master then
+    // overwrites its own exchange_enabled=true with false, which stops ALL
+    // block broadcasts to the slave — even though the master knows the slave
+    // IS on its fork.
+    //
+    // With OR: if EITHER side considers the peer fork-aligned, exchange is
+    // enabled. This is correct because:
+    //  - If we think the peer is on our fork → we should send blocks to them
+    //  - If they think we're on their fork → we should request blocks from them
+    //  - If both are false → truly different forks, no exchange
+    state.exchange_enabled = state.exchange_enabled || reply.exchange_enabled;
+    state.fork_alignment = state.fork_alignment || reply.fork_alignment;
     state.recognized_head = reply.initiator_head_seen;
     state.recognized_lib = reply.initiator_lib_seen;
 
@@ -599,10 +616,24 @@ void dlt_p2p_node::on_dlt_hello_reply(peer_id peer, const dlt_hello_reply_messag
 
     record_packet_result(peer, true);
 
-    // If we're in SYNC mode and exchange is enabled, start fetching blocks
-    if (_node_status == DLT_NODE_STATUS_SYNC && reply.exchange_enabled) {
-        request_blocks_from_peer(peer);
-    } else if (!reply.exchange_enabled) {
+    // If exchange is enabled, request blocks when appropriate
+    if (state.exchange_enabled) {
+        if (_node_status == DLT_NODE_STATUS_SYNC) {
+            // SYNC mode: always request blocks from exchange-enabled peers
+            request_blocks_from_peer(peer);
+        } else if (_node_status == DLT_NODE_STATUS_FORWARD) {
+            // FORWARD mode: if the peer is significantly ahead of us, we've
+            // fallen behind (missed broadcast blocks) — transition to SYNC
+            // and request the missing range.
+            uint32_t our_head = _delegate->get_head_block_num();
+            if (state.peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD) {
+                ilog(DLT_LOG_ORANGE "Falling behind in FORWARD mode: peer ${ep} at #${pn}, our head #${hn} — transitioning to SYNC" DLT_LOG_RESET,
+                     ("ep", state.endpoint)("pn", state.peer_head_num)("hn", our_head));
+                transition_to_sync();
+                request_blocks_from_peer(peer);
+            }
+        }
+    } else {
         ilog(DLT_LOG_ORANGE "Peer ${ep} says we are NOT on its fork (fork_alignment=false)" DLT_LOG_RESET,
              ("ep", state.endpoint));
     }
@@ -1358,6 +1389,38 @@ void dlt_p2p_node::check_sync_catchup() {
     }
 }
 
+void dlt_p2p_node::check_forward_behind() {
+    if (_node_status != DLT_NODE_STATUS_FORWARD) return;
+    if (!_delegate) return;
+
+    uint32_t our_head = _delegate->get_head_block_num();
+
+    // Check if any active peer is significantly ahead of us.
+    // In FORWARD mode, blocks arrive via broadcast. If we've fallen
+    // behind by more than FORWARD_FALLBEHIND_THRESHOLD blocks, we likely
+    // missed broadcast blocks (e.g. connection dropped during production)
+    // and need to catch up via SYNC range requests.
+    for (const auto& _peer_item : _peer_states) {
+        const auto& state = _peer_item.second;
+        if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;
+        if (state.peer_head_num == 0) continue;
+        if (state.peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD) {
+            ilog(DLT_LOG_ORANGE "Falling behind in FORWARD mode: our head #${h}, peer ${ep} at #${p} — transitioning to SYNC" DLT_LOG_RESET,
+                 ("h", our_head)("ep", state.endpoint)("p", state.peer_head_num));
+            transition_to_sync();
+            // Request blocks from all exchange-enabled peers that are ahead
+            for (auto& pi : _peer_states) {
+                auto& s = pi.second;
+                if (s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE &&
+                    s.exchange_enabled && s.peer_head_num > our_head) {
+                    request_blocks_from_peer(pi.first);
+                }
+            }
+            return;
+        }
+    }
+}
+
 // ── Mempool ──────────────────────────────────────────────────────────
 
 bool dlt_p2p_node::add_to_mempool(const signed_transaction& trx, bool from_peer, peer_id sender) {
@@ -1896,6 +1959,7 @@ void dlt_p2p_node::periodic_task() {
     // Normal path: all periodic operations run.
     sync_stagnation_check();
     check_sync_catchup();   // P26 fix: periodic catch-up detection
+    check_forward_behind(); // P27 fix: detect falling behind in FORWARD mode
     periodic_peer_exchange();
 
     // Log node status every 1 minute (12 cycles at 5s)

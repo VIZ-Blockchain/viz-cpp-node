@@ -158,7 +158,7 @@ void dlt_p2p_node::transition_to_forward() {
 ### Transition Triggers
 
 | Trigger | Location | Condition |
-|---------|----------|-----------|
+|---------|----------|------------|
 | **Block range complete** | `on_dlt_block_range_reply()` | `is_last == true` AND `any_block_applied == true` (P20 guard) |
 | **Sync catchup** | `check_sync_catchup()` | `our_head >= all_active_peer_heads` |
 | **Stagnation timeout** | `sync_stagnation_check()` | 30s no-block, 3 retries exhausted → FORWARD with warning |
@@ -175,9 +175,18 @@ void dlt_p2p_node::transition_to_forward() {
 
 ---
 
+## FORWARD→SYNC Transition (P27)
+
+| Trigger | Location | Condition |
+|---------|----------|------------|
+| **Peer ahead in hello_reply** | `on_dlt_hello_reply()` | `peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD` while in FORWARD mode |
+| **Periodic fallbehind check** | `check_forward_behind()` | Any active peer is ahead by > `FORWARD_FALLBEHIND_THRESHOLD` (2) blocks |
+
+---
+
 ## The `exchange_enabled` Flag
 
-`exchange_enabled` is the primary gatekeeper for forward-mode traffic. It is set once during hello handshake and re-evaluated at key lifecycle events.
+`exchange_enabled` is the primary gatekeeper for forward-mode traffic. It is set during hello handshake, combined via logical OR in hello_reply, and re-evaluated at key lifecycle events.
 
 ### Initial Setting (Hello Handshake)
 
@@ -192,6 +201,35 @@ During `build_hello_reply()`, `check_fork_alignment()` determines whether the pe
 
 If any check passes → `exchange_enabled = true`, `fork_alignment = true`.
 
+### P27 Fix: OR Combination in `on_dlt_hello_reply`
+
+When two nodes connect, **both sides send hello messages** to each other. Each side computes its own `exchange_enabled` in `on_dlt_hello` (local determination), then receives the other side's determination in `on_dlt_hello_reply`.
+
+**The bug (P27):** `on_dlt_hello_reply` used to **overwrite** `state.exchange_enabled` with the remote side's determination. This caused a critical failure:
+
+```
+Slave (head=79673001) connects to Master (head=79673101)
+
+1. Master's on_dlt_hello:
+   - check_fork_alignment(slave_head) → true (master has block 79673001)
+   - state.exchange_enabled = true  ✅
+
+2. Slave's on_dlt_hello:
+   - check_fork_alignment(master_head) → false (slave doesn't have block 79673101)
+   - state.exchange_enabled = false
+   - Sends hello_reply with exchange_enabled=false to master
+
+3. Master's on_dlt_hello_reply:
+   - state.exchange_enabled = reply.exchange_enabled  (overwrite!)
+   - state.exchange_enabled = false  ❌  BUG!
+   - Master stops broadcasting blocks to slave!
+```
+
+**The fix:** Use `state.exchange_enabled = state.exchange_enabled || reply.exchange_enabled`. If **either** side considers the peer fork-aligned, exchange is enabled:
+- If we think the peer is on our fork → we should send blocks to them
+- If they think we're on their fork → we should receive blocks from them
+- If both are false → truly different forks, no exchange
+
 ### Re-Evaluation Triggers (P25 Fix)
 
 The original implementation set `exchange_enabled` once and never updated it, causing slave-produced blocks to be ignored by the master. Three re-evaluation points were added:
@@ -199,6 +237,47 @@ The original implementation set `exchange_enabled` once and never updated it, ca
 1. **`transition_to_forward()`**: Re-checks `is_block_known(peer_head_id)` for all peers with `exchange_enabled=false`
 2. **`on_dlt_block_range_reply()`**: When a non-exchange-enabled peer's block is ACCEPTED, enables exchange for that peer
 3. **`on_dlt_block_reply()`**: Same — when a single block from a non-exchange-enabled peer is ACCEPTED
+
+---
+
+## FORWARD→SYNC Fallback (P27 Fix)
+
+In FORWARD mode, blocks arrive via broadcast from fork-aligned peers. But if broadcast blocks are missed (e.g., connection dropped, `exchange_enabled` was incorrectly false), the node can fall behind with no recovery mechanism.
+
+Two detection points were added:
+
+### 1. In `on_dlt_hello_reply` (Reactive)
+
+When a FORWARD node receives a hello_reply from a peer that is significantly ahead (`peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD`), it transitions to SYNC and requests the missing range:
+
+```cpp
+if (_node_status == DLT_NODE_STATUS_FORWARD) {
+    uint32_t our_head = _delegate->get_head_block_num();
+    if (state.peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD) {
+        transition_to_sync();
+        request_blocks_from_peer(peer);
+    }
+}
+```
+
+### 2. In `check_forward_behind()` (Periodic)
+
+Called every ~5 seconds from `periodic_task()`. Iterates all active peers and checks if any is ahead by more than `FORWARD_FALLBEHIND_THRESHOLD` blocks:
+
+```cpp
+void dlt_p2p_node::check_forward_behind() {
+    if (_node_status != DLT_NODE_STATUS_FORWARD) return;
+    for (const auto& [id, state] : _peer_states) {
+        if (state.peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD) {
+            transition_to_sync();
+            // Request blocks from ALL exchange-enabled ahead peers
+            break;
+        }
+    }
+}
+```
+
+The threshold is `FORWARD_FALLBEHIND_THRESHOLD = 2` (3+ blocks behind = ~9s at 3s/block). This avoids false triggers from normal 1-block broadcast latency.
 
 ---
 
