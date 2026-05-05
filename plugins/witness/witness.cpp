@@ -463,10 +463,23 @@ namespace graphene {
                     case block_production_condition::not_time_yet:
                         // This log-record is commented, because it outputs very often
                         // ilog("Not producing block because slot has not yet arrived");
-                        // P18 fix: Detect slot=0 stall. If get_slot_at_time() keeps
-                        // returning 0, NTP time may be behind head_block_time.
-                        // Track consecutive occurrences and force NTP resync.
-                        _slot_zero_streak++;
+                        // P18 fix: Detect slot=0 stall caused by NTP drift.
+                        // Only count as a stall when now <= head_block_time (NTP time
+                        // has fallen behind chain time).  When now > head_block_time
+                        // we are simply between slots — this is normal and should NOT
+                        // increment the streak counter, otherwise every 2.5s of normal
+                        // waiting triggers a spurious NTP resync.
+                        {
+                            auto _now = graphene::time::now();
+                            auto _hbt = database().head_block_time();
+                            if (_now <= _hbt) {
+                                // Real stall: NTP time is behind chain time
+                                _slot_zero_streak++;
+                            } else {
+                                // Normal: just waiting for next slot
+                                _slot_zero_streak = 0;
+                            }
+                        }
                         if (_slot_zero_streak == 1) {
                             _slot_zero_streak_start = fc::time_point::now();
                         }
