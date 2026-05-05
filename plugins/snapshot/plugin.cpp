@@ -842,12 +842,21 @@ constexpr uint32_t snapshot_plugin::plugin_impl::WATCHDOG_CHECK_INTERVAL_SEC;
 fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     fc::mutable_variant_object state;
 
-    // Helper macro to export an index
+    // Helper macro to export an index (with progress logging)
+    auto serialize_start = fc::time_point::now();
+    fc::time_point last_progress = serialize_start;
     #define EXPORT_INDEX(index_type, obj_type, name) \
     { \
         if (cancel_snapshot_requested.load(std::memory_order_relaxed)) { \
             wlog("Snapshot cancelled during serialization (before ${type})", ("type", name)); \
             return state; \
+        } \
+        auto _now = fc::time_point::now(); \
+        if ((_now - last_progress).count() > 5000000LL) { \
+            auto _elapsed = double((_now - serialize_start).count()) / 1000000.0; \
+            ilog(CLOG_GREEN "Snapshot serialization in progress... ${t}s elapsed, next: ${type}" CLOG_RESET, \
+                 ("t", _elapsed)("type", name)); \
+            last_progress = _now; \
         } \
         fc::variants arr; \
         const auto& idx = db.get_index<index_type>().indices(); \
@@ -1819,6 +1828,18 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
 
             if (!stalled_sync_check_running.load()) {
                 break;
+            }
+
+            // If a snapshot is currently in progress, the snapshot's
+            // strong read lock prevents block processing from acquiring
+            // write locks.  This is an expected temporary stall, not a
+            // network failure.  Skip the stall check and reset the timer
+            // so we don't trigger a false recovery.
+            if (snapshot_in_progress.load(std::memory_order_relaxed)) {
+                dlog("Stalled sync check skipped: snapshot creation in progress "
+                     "(expected to block P2P for 30-120s)");
+                last_block_received_time = fc::time_point::now();
+                continue;
             }
 
             auto now = fc::time_point::now();

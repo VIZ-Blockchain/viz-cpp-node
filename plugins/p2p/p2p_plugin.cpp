@@ -164,6 +164,20 @@ public:
             // update mempool until it actually becomes head.
             return dlt_block_accept_result::FORK_DB_ONLY;
         } catch (const graphene::chain::unlinkable_block_exception& e) {
+            // Dead-fork detection: block at or below our head whose parent
+            // is not in fork_db.  The database already determined this fork
+            // diverged before our fork_db window — we can never link these
+            // blocks.  Do NOT push to fork_db._unlinked_index (it would
+            // grow unboundedly) — return DEAD_FORK so the P2P layer can
+            // soft-ban the peer on a competing fork.
+            if (block.block_num() <= chain.db().head_block_num()) {
+                wlog("Dead fork block #${n} from competitor (parent not in fork_db, head=${h})",
+                     ("n", block.block_num())("h", chain.db().head_block_num()));
+                return dlt_block_accept_result::DEAD_FORK;
+            }
+            // Block is ahead of our head but unlinkable (gap <= 100).
+            // Store in fork_db._unlinked_index — when the missing parent
+            // arrives via sync, fork_db._push_next() will link it.
             wlog("Unlinkable block #${n}, storing in fork_db", ("n", block.block_num()));
             chain.db().get_fork_db().push_block(block);
             return dlt_block_accept_result::FORK_DB_ONLY;

@@ -81,6 +81,11 @@ namespace graphene {
             /// This is O(N) where N = num_blocks, use sparingly (e.g. stats task).
             std::vector<uint32_t> verify_continuity() const;
 
+            /// Check if the DLT block log is consistent with the given database head block number.
+            /// Returns false if the log appears corrupted (e.g., only 1 block when database has many).
+            /// This is a lightweight check; for deep validation use verify_continuity().
+            bool is_consistent_with(uint32_t db_head_block_num) const;
+
             /// Number of resize() calls since open (for diagnostics).
             uint64_t resize_count() const;
 

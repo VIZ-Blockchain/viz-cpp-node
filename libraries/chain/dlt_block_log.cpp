@@ -601,6 +601,56 @@ namespace graphene { namespace chain {
         return gaps;
     }
 
+    bool dlt_block_log::is_consistent_with(uint32_t db_head_block_num) const {
+        detail::read_lock lock(my->mutex);
+
+        // If database is empty, any DLT state is acceptable.
+        if (db_head_block_num == 0) {
+            return true;
+        }
+
+        // Calculate number of blocks directly (cannot call num_blocks() — would deadlock).
+        uint32_t dlt_blocks = 0;
+        uint32_t dlt_head = 0;
+        if (my->head.valid() && my->_start_block_num > 0) {
+            dlt_head = protocol::block_header::num_from_id(my->head_id);
+            dlt_blocks = dlt_head - my->_start_block_num + 1;
+        }
+
+        // Empty DLT log is fine (normal after fresh snapshot import).
+        if (dlt_blocks == 0) {
+            return true;
+        }
+
+        // CORRUPTION DETECTION: If DLT log has only 1 block but database has many,
+        // the log was truncated/corrupted on crash (index/data reduced to a single entry).
+        if (dlt_blocks == 1 && db_head_block_num > 1) {
+            wlog("DLT block log CORRUPTED: only 1 block in log but database head is ${db_h}. "
+                 "Log was truncated during crash.",
+                 ("db_h", db_head_block_num));
+            return false;
+        }
+
+        // DLT head should never exceed database head.
+        if (dlt_head > db_head_block_num) {
+            wlog("DLT block log CORRUPTED: log head ${dlt_h} is ahead of database head ${db_h}.",
+                 ("dlt_h", dlt_head)("db_h", db_head_block_num));
+            return false;
+        }
+
+        // DLT head is far behind database head with very few blocks:
+        // indicates the log was partially wiped.
+        // Threshold: if DB head is 1000+ blocks ahead but DLT has < 10 blocks, it's corrupted.
+        if (db_head_block_num > dlt_head + 1000 && dlt_blocks < 10) {
+            wlog("DLT block log CORRUPTED: only ${dlt_n} blocks (head=${dlt_h}) "
+                 "but database head is ${db_h}.",
+                 ("dlt_n", dlt_blocks)("dlt_h", dlt_head)("db_h", db_head_block_num));
+            return false;
+        }
+
+        return true;
+    }
+
     uint64_t dlt_block_log::resize_count() const {
         detail::read_lock lock(my->mutex);
         return my->_resize_count;

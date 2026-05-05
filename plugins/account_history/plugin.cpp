@@ -541,7 +541,14 @@ if( options.count(name) ) { \
 
         // Always connect to applied_block for purging - coordinates with operation_history
         pimpl->applied_block_connection = pimpl->database.applied_block.connect([&](const signed_block& block){
+            auto cb_start = fc::time_point::now();
             pimpl->purge_old_history();
+            auto cb_ms = (fc::time_point::now() - cb_start).count() / 1000;
+            if (cb_ms > 100) {
+                wlog("account_history purge_old_history took ${ms}ms (block #${n}) — "
+                     "write lock held, blocking P2P/RPC",
+                     ("ms", cb_ms)("n", block.block_num()));
+            }
         });
 
         ilog("account_history: history-count-blocks ${s}", ("s", pimpl->history_count_blocks));

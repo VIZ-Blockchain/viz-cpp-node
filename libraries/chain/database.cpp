@@ -266,6 +266,19 @@ namespace graphene { namespace chain {
                     }
 
                     if (head_block_num()) {
+                        // Validate DLT block log consistency before seeding fork_db.
+                        // After a crash, the DLT block log index/data files can become
+                        // truncated (e.g., only 1 block when database has thousands).
+                        // Using corrupted DLT data for fork_db seeding causes cascading
+                        // P2P failures (dead forks, sync stalls, crash loops).
+                        if (!_dlt_block_log.is_consistent_with(head_block_num())) {
+                            elog("DLT block log is corrupted (db_head=${db_h}). "
+                                 "Resetting DLT block log to prevent cascading failures. "
+                                 "P2P sync will rebuild it.",
+                                 ("db_h", head_block_num()));
+                            _dlt_block_log.reset();
+                        }
+
                         auto head_block = _block_log.read_block_by_num(head_block_num());
                         if (head_block.valid()) {
                             // Block_log has the head block
@@ -2166,7 +2179,23 @@ namespace graphene { namespace chain {
         }
 
         void database::notify_applied_block(const signed_block &block) {
+            // Timing diagnostics for applied_block signal.
+            // The write lock is held during this notification; any slow plugin
+            // callback blocks ALL P2P and RPC for the duration.  Log total
+            // time if it exceeds 200ms so operators can identify the hotspot.
+            auto notify_start = fc::time_point::now();
+            size_t num_slots = applied_block.num_slots();
+
             CHAIN_TRY_NOTIFY(applied_block, block)
+
+            auto notify_end = fc::time_point::now();
+            auto total_ms = (notify_end - notify_start).count() / 1000;
+            if (total_ms > 200) {
+                wlog("applied_block notification took ${ms}ms for block #${bnum} "
+                     "(${slots} connected plugins) — write lock held throughout, "
+                     "blocking P2P/RPC.",
+                     ("ms", total_ms)("bnum", block.block_num())("slots", num_slots));
+            }
         }
 
         void database::notify_on_pending_transaction(const signed_transaction &tx) {

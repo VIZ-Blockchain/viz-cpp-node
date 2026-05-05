@@ -757,6 +757,15 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
         } else if (result == dlt_block_accept_result::FORK_DB_ONLY) {
             dlog("Stored block #${n} in fork_db (not yet applied) from ${ep}",
                  ("n", block.block_num())("ep", state.endpoint));
+        } else if (result == dlt_block_accept_result::DEAD_FORK) {
+            // Peer sent a block from a dead fork (parent not in fork_db,
+            // block at or below our head).  This peer is on a competing
+            // fork that diverged before our fork_db window — soft-ban it
+            // immediately and stop processing blocks from it.
+            wlog(DLT_LOG_RED "Peer ${ep} sent dead-fork block #${n} (parent not in fork_db, head=${h}) — soft-banning" DLT_LOG_RESET,
+                 ("ep", state.endpoint)("n", block.block_num())("h", _delegate->get_head_block_num()));
+            soft_ban_peer(peer);
+            break;
         } else {
             wlog(DLT_LOG_RED "Rejected block #${n} from ${ep}" DLT_LOG_RESET,
                  ("n", block.block_num())("ep", state.endpoint));
@@ -769,8 +778,10 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
 
     record_packet_result(peer, any_block_applied);
 
-    // If SYNC and last block, transition to FORWARD
-    if (_node_status == DLT_NODE_STATUS_SYNC) {
+    // If SYNC and last block, transition to FORWARD — but only if we
+    // actually applied at least one block.  A range full of dead-fork
+    // rejects should NOT end sync mode.
+    if (_node_status == DLT_NODE_STATUS_SYNC && any_block_applied) {
         if (reply.is_last) {
             transition_to_forward();
         } else if (reply.last_block_next_available > 0) {
@@ -839,6 +850,15 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
         wlog(DLT_LOG_RED "Rejected block #${n} from ${ep}" DLT_LOG_RESET,
              ("n", block_num)("ep", state.endpoint));
         record_packet_result(peer, false);
+        return;
+    }
+
+    if (result == dlt_block_accept_result::DEAD_FORK) {
+        // Peer sent a block from a dead fork that diverged before our
+        // fork_db window — soft-ban immediately.
+        wlog(DLT_LOG_RED "Peer ${ep} sent dead-fork block #${n} (parent not in fork_db, head=${h}) — soft-banning" DLT_LOG_RESET,
+             ("ep", state.endpoint)("n", block_num)("h", _delegate->get_head_block_num()));
+        soft_ban_peer(peer);
         return;
     }
 
@@ -1660,11 +1680,35 @@ void dlt_p2p_node::block_validation_timeout() {
 // ── Periodic task ────────────────────────────────────────────────────
 
 void dlt_p2p_node::periodic_task() {
+    // Non-DB-access housekeeping always runs.
     periodic_reconnect_check();
     periodic_lifecycle_timeout_check();
-    sync_stagnation_check();
     block_validation_timeout();
     periodic_mempool_cleanup();
+
+    // When block processing is paused (snapshot creation in progress),
+    // skip periodic operations that need database read locks.  The snapshot
+    // holds a strong read lock for 30-120s; trying to acquire another read
+    // lock from this fiber would time out and cascade into peer disconnections.
+    if (_block_processing_paused) {
+        // Still check banned peers for unban -- no DB access needed.
+        for (auto& _peer_item : _peer_states) {
+                auto& state = _peer_item.second;
+            if (state.lifecycle_state == DLT_PEER_LIFECYCLE_BANNED) {
+                auto elapsed = fc::time_point::now() - state.state_entered_time;
+                if (elapsed.count() > BAN_DURATION_SEC * 1000000) {
+                    state.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
+                    state.disconnected_since = fc::time_point::now();
+                    state.next_reconnect_attempt = fc::time_point::now() + fc::seconds(30);
+                    ilog("Unbanning peer ${ep}", ("ep", state.endpoint));
+                }
+            }
+        }
+        return;
+    }
+
+    // Normal path: all periodic operations run.
+    sync_stagnation_check();
     periodic_peer_exchange();
 
     // Log peer stats at configured interval

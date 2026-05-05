@@ -31,6 +31,7 @@ namespace network {
 enum class dlt_block_accept_result {
     ACCEPTED,       ///< Block was pushed to the chain (became head or fork_db head)
     FORK_DB_ONLY,  ///< Block stored in fork_db but not applied (unlinkable / competing fork)
+    DEAD_FORK,     ///< Block from a different fork whose parent is not in fork_db (at/below head)
     REJECTED       ///< Block failed validation entirely (bad signature, etc.)
 };
 
