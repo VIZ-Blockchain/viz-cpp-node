@@ -41,7 +41,7 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
 
 | Filter | Source | Meaning |
 |--------|--------|---------|
-| `exchange_enabled == true` | Set during hello handshake; re-evaluated on block accept and FORWARD transition (P25 fix) | Peer is on our fork — its head block is known to us |
+| `exchange_enabled == true` | Set during hello handshake, combined via OR in hello_reply (P27 fix); re-evaluated on block accept and FORWARD transition (P25 fix) | Peer is on our fork — its head block is known to us |
 | `lifecycle_state == ACTIVE` | Peer lifecycle FSM | Peer has completed handshake and is in normal operation |
 
 **`exclude` parameter:** When relaying a message received from a peer, that peer's ID is passed as `exclude` to avoid echoing the message back.
@@ -328,7 +328,7 @@ When `_block_processing_paused == true` (snapshot in progress), periodic tasks s
 
 | File | Content |
 |------|---------|
-| `libraries/network/dlt_p2p_node.cpp` | `broadcast_block()`, `broadcast_transaction()`, `send_to_all_our_fork_peers()`, `transition_to_forward()`, `check_sync_catchup()`, `add_to_mempool()` |
+| `libraries/network/dlt_p2p_node.cpp` | `broadcast_block()`, `broadcast_transaction()`, `send_to_all_our_fork_peers()`, `transition_to_forward()`, `check_sync_catchup()`, `check_forward_behind()`, `add_to_mempool()` |
 | `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | `dlt_p2p_node` class declaration, `dlt_node_status` enum |
 | `libraries/network/include/graphene/network/dlt_p2p_messages.hpp` | `dlt_block_reply_message`, `dlt_transaction_message`, `dlt_message_type_enum` |
 | `libraries/network/include/graphene/network/dlt_p2p_peer_state.hpp` | `dlt_peer_state` (contains `exchange_enabled`, `fork_alignment`) |
