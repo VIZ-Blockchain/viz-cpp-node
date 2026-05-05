@@ -435,10 +435,9 @@ dlt_hello_reply_message dlt_p2p_node::build_hello_reply(peer_id peer, const dlt_
     reply.our_fork_status = _fork_status;
     reply.our_node_status = _node_status;
 
-    // Check fork alignment
+    // Check fork alignment using DLT-range-aware logic
     block_id_type recognized_head, recognized_lib;
-    reply.fork_alignment = check_fork_alignment(hello.head_block_id, hello.lib_block_id,
-                                                  recognized_head, recognized_lib);
+    reply.fork_alignment = check_fork_alignment(hello, recognized_head, recognized_lib);
     reply.initiator_head_seen = recognized_head;
     reply.initiator_lib_seen = recognized_lib;
     reply.exchange_enabled = reply.fork_alignment; // exchange enabled if fork-aligned
@@ -446,20 +445,46 @@ dlt_hello_reply_message dlt_p2p_node::build_hello_reply(peer_id peer, const dlt_
     return reply;
 }
 
-bool dlt_p2p_node::check_fork_alignment(const block_id_type& head_id, const block_id_type& lib_id,
+bool dlt_p2p_node::check_fork_alignment(const dlt_hello_message& hello,
                                           block_id_type& recognized_head_out, block_id_type& recognized_lib_out) const {
     if (!_delegate) return false;
 
-    // Check if peer's head is known to us
-    if (_delegate->is_block_known(head_id)) {
-        recognized_head_out = head_id;
-    }
-    // Check if peer's LIB is known to us
-    if (_delegate->is_block_known(lib_id)) {
-        recognized_lib_out = lib_id;
+    // ── Empty peer (no blocks at all) ──────────────────────────
+    // An empty peer has no fork to be on — accept it so it stays connected
+    // and can eventually receive a snapshot. Don't mark any block as
+    // recognized since it has none.
+    if (hello.head_block_num == 0) {
+        return true;
     }
 
-    // Fork alignment: at least one of head/LIB must be known
+    uint32_t our_earliest = _delegate->get_dlt_earliest_block();
+    uint32_t our_latest = _delegate->get_dlt_latest_block();
+
+    // ── Range overlap: peer's head is within our DLT range ─────
+    if (hello.head_block_num >= our_earliest && hello.head_block_num <= our_latest) {
+        if (_delegate->is_block_known(hello.head_block_id)) {
+            recognized_head_out = hello.head_block_id;
+        }
+    }
+
+    // ── Boundary link: peer's head is just before our earliest ─
+    // In DLT mode, blocks below our_earliest are pruned so is_block_known()
+    // returns false. But if our earliest block's previous links to the
+    // peer's head, the peer IS on our chain.
+    if (hello.head_block_num + 1 == our_earliest && our_earliest > 0) {
+        auto our_earliest_block = _delegate->read_block_by_num(our_earliest);
+        if (our_earliest_block.valid() && our_earliest_block->previous == hello.head_block_id) {
+            recognized_head_out = hello.head_block_id;
+        }
+    }
+
+    // ── LIB-based fallback ─────────────────────────────────────
+    // If head check didn't match, try the LIB — it may be within our range
+    // even when the head is on a competing tip.
+    if (_delegate->is_block_known(hello.lib_block_id)) {
+        recognized_lib_out = hello.lib_block_id;
+    }
+
     return (recognized_head_out != block_id_type() || recognized_lib_out != block_id_type());
 }
 
@@ -498,7 +523,8 @@ void dlt_p2p_node::on_dlt_hello(peer_id peer, const dlt_hello_message& hello) {
 
     // Transition to active
     if (state.lifecycle_state == DLT_PEER_LIFECYCLE_HANDSHAKING) {
-        if (reply.exchange_enabled || _node_status == DLT_NODE_STATUS_SYNC) {
+        if (reply.exchange_enabled || _node_status == DLT_NODE_STATUS_SYNC
+            || hello.node_status == DLT_NODE_STATUS_SYNC) {
             state.lifecycle_state = DLT_PEER_LIFECYCLE_ACTIVE;
             state.state_entered_time = fc::time_point::now();
         }
@@ -506,9 +532,14 @@ void dlt_p2p_node::on_dlt_hello(peer_id peer, const dlt_hello_message& hello) {
 
     record_packet_result(peer, true);
 
-    // If we're in SYNC mode, request blocks
+    // If we're in SYNC mode and exchange is enabled, start fetching blocks.
     if (_node_status == DLT_NODE_STATUS_SYNC && reply.exchange_enabled) {
         request_blocks_from_peer(peer);
+    }
+
+    if (!reply.exchange_enabled && hello.node_status == DLT_NODE_STATUS_SYNC) {
+        ilog(DLT_LOG_ORANGE "SYNC peer ${ep} at head #${hn} not yet fork-aligned (needs snapshot or boundary catch-up)" DLT_LOG_RESET,
+             ("ep", state.endpoint)("hn", hello.head_block_num));
     }
 
     ilog(DLT_LOG_WHITE "Received DLT hello from ${ep}: head=#${hn} lib=#${ln} fork=${f} node=${ns} exchange=${ex}" DLT_LOG_RESET,
@@ -539,7 +570,7 @@ void dlt_p2p_node::on_dlt_hello_reply(peer_id peer, const dlt_hello_reply_messag
     if (_node_status == DLT_NODE_STATUS_SYNC && reply.exchange_enabled) {
         request_blocks_from_peer(peer);
     } else if (!reply.exchange_enabled) {
-        ilog(DLT_LOG_ORANGE "Peer ${ep} is NOT on our fork (fork_alignment=false)" DLT_LOG_RESET,
+        ilog(DLT_LOG_ORANGE "Peer ${ep} says we are NOT on its fork (fork_alignment=false)" DLT_LOG_RESET,
              ("ep", state.endpoint));
     }
 }

@@ -169,7 +169,12 @@ private:
     dlt_hello_reply_message  build_hello_reply(peer_id peer, const dlt_hello_message& hello) const;
 
     // ── Fork alignment check ─────────────────────────────────────
-    bool check_fork_alignment(const block_id_type& head_id, const block_id_type& lib_id,
+    // Accepts the full hello to perform DLT-range-aware alignment:
+    //  - Range overlap: peer head within [our_dlt_earliest, our_dlt_latest]
+    //  - Boundary link: peer head + 1 == our_dlt_earliest && our_earliest_block.previous == peer head
+    //  - LIB-based fallback
+    //  - Empty peer (head=0): always aligned (needs snapshot, not a fork)
+    bool check_fork_alignment(const dlt_hello_message& hello,
                               block_id_type& recognized_head_out, block_id_type& recognized_lib_out) const;
 
     // ── Node status transitions ──────────────────────────────────
