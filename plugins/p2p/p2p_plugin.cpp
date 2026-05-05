@@ -145,14 +145,14 @@ public:
 
     // ── Block/transaction handling ───────────────────────────────
     dlt_block_accept_result accept_block(const signed_block& block, bool sync_mode) override {
+        uint32_t skip = graphene::chain::database::skip_nothing;
+        if (sync_mode) {
+            // During bulk sync, skip expensive checks that are redundant
+            // for blocks we trust from our fork peers
+            skip = graphene::chain::database::skip_witness_signature
+                 | graphene::chain::database::skip_transaction_signatures;
+        }
         try {
-            uint32_t skip = graphene::chain::database::skip_nothing;
-            if (sync_mode) {
-                // During bulk sync, skip expensive checks that are redundant
-                // for blocks we trust from our fork peers
-                skip = graphene::chain::database::skip_witness_signature
-                     | graphene::chain::database::skip_transaction_signatures;
-            }
             bool applied = chain.db().push_block(block, skip);
             if (applied) {
                 return dlt_block_accept_result::ACCEPTED;
