@@ -1,6 +1,6 @@
 #include <graphene/network/dlt_p2p_node.hpp>
 #include <graphene/network/config.hpp>
-#include <graphene/chain/database_exceptions.hpp>
+#include <graphene/network/exceptions.hpp>
 
 #include <fc/network/resolve.hpp>
 #include <fc/crypto/sha256.hpp>
@@ -689,7 +689,7 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
         dlt_block_accept_result result;
         try {
             result = _delegate->accept_block(block, /*sync_mode=*/(_node_status == DLT_NODE_STATUS_SYNC));
-        } catch (const graphene::chain::deferred_resize_exception&) {
+        } catch (const graphene::network::deferred_resize_exception&) {
             // Transient local out-of-memory: stop processing this range,
             // don't punish the peer, and trigger resync after resize.
             wlog("Deferred resize on block #${n} from ${ep}, stopping range processing",
@@ -778,7 +778,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
     dlt_block_accept_result result;
     try {
         result = _delegate->accept_block(reply.block, false);
-    } catch (const graphene::chain::deferred_resize_exception&) {
+    } catch (const graphene::network::deferred_resize_exception&) {
         // Transient local out-of-memory: not the peer's fault.
         // The missed block will be re-fetched after the deferred resize
         // completes.  Don't punish the peer, don't update sync state.

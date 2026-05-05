@@ -1,6 +1,7 @@
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
 
 #include <graphene/network/dlt_p2p_node.hpp>
+#include <graphene/network/exceptions.hpp>
 
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/database_exceptions.hpp>
@@ -167,8 +168,10 @@ public:
             chain.db().get_fork_db().push_block(block);
             return dlt_block_accept_result::FORK_DB_ONLY;
         } catch (const graphene::chain::deferred_resize_exception&) {
-            // Transient out-of-memory — not a bad block, just needs retry
-            throw;
+            // Transient out-of-memory — not a bad block, just needs retry.
+            // Re-throw as the network-namespace equivalent so the P2P layer
+            // (which can't depend on chain headers) can catch it.
+            throw graphene::network::deferred_resize_exception();
         } catch (const fc::exception& e) {
             wlog("Error accepting block #${n}: ${e}", ("n", block.block_num())("e", e.to_detail_string()));
             return dlt_block_accept_result::REJECTED;
