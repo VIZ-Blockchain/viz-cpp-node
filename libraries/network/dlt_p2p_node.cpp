@@ -1070,6 +1070,11 @@ void dlt_p2p_node::on_dlt_fork_status(peer_id peer, const dlt_fork_status_messag
     it->second.peer_fork_status = msg.fork_status;
     it->second.peer_head_id = msg.head_block_id;
     it->second.peer_head_num = msg.head_block_num;
+    it->second.peer_lib_id = msg.lib_block_id;
+    it->second.peer_lib_num = msg.lib_block_num;
+    it->second.peer_dlt_earliest = msg.dlt_earliest_block;
+    it->second.peer_dlt_latest = msg.dlt_latest_block;
+    it->second.peer_node_status = msg.node_status;
     record_packet_result(peer, true);
 }
 
@@ -1437,6 +1442,13 @@ void dlt_p2p_node::broadcast_block_post_validation(
     msg.fork_status = _fork_status;
     msg.head_block_id = block_id;
     msg.head_block_num = graphene::protocol::block_header::num_from_id(block_id);
+    if (_delegate) {
+        msg.lib_block_id = _delegate->get_lib_block_id();
+        msg.lib_block_num = _delegate->get_lib_block_num();
+        msg.dlt_earliest_block = _delegate->get_dlt_earliest_block();
+        msg.dlt_latest_block = _delegate->get_dlt_latest_block();
+    }
+    msg.node_status = _node_status;
     send_to_all_our_fork_peers(message(msg));
 }
 
@@ -1449,11 +1461,15 @@ void dlt_p2p_node::broadcast_transaction(const signed_transaction& trx) {
 
 void dlt_p2p_node::broadcast_chain_status() {
     auto hello = build_hello_message();
-    // Send as fork_status for lightweight status update
     dlt_fork_status_message msg;
     msg.fork_status = _fork_status;
     msg.head_block_id = hello.head_block_id;
     msg.head_block_num = hello.head_block_num;
+    msg.lib_block_id = hello.lib_block_id;
+    msg.lib_block_num = hello.lib_block_num;
+    msg.dlt_earliest_block = hello.dlt_earliest_block;
+    msg.dlt_latest_block = hello.dlt_latest_block;
+    msg.node_status = hello.node_status;
     send_to_all_our_fork_peers(message(msg));
 }
 
@@ -1604,6 +1620,10 @@ void dlt_p2p_node::transition_to_forward() {
     _last_forward_head_num = 0;   // P37: reset so check_forward_stagnation initializes
     _last_forward_progress_time = fc::time_point();
     ilog(DLT_LOG_GREEN "=== DLT P2P: transitioning to FORWARD mode ===" DLT_LOG_RESET);
+
+    // Emit peer stats immediately upon entering FORWARD mode
+    log_peer_stats();
+    _stats_log_counter = 0;  // reset interval timer from this point
 
     // P25 fix: Re-evaluate exchange_enabled for all peers now that
     // we're in FORWARD mode. Peers that were SYNC when we first
@@ -2115,6 +2135,12 @@ void dlt_p2p_node::log_node_status() {
          ("de", dlt_earliest)("dl", dlt_latest)
          ("a", active)("c", connected)
          ("fl", flags)("R", R));
+
+    // Emit peer stats on the first node status log (1 min after startup)
+    if (!_first_node_status_logged) {
+        _first_node_status_logged = true;
+        log_peer_stats();
+    }
 }
 
 void dlt_p2p_node::log_peer_stats() {
@@ -2333,8 +2359,8 @@ void dlt_p2p_node::periodic_task() {
         log_node_status();
     }
 
-    // Log peer stats at configured interval
-    _stats_log_counter++;
+    // Log peer stats at configured interval (counter tracks seconds, ticks are 5s)
+    _stats_log_counter += 5;
     if (_stats_log_counter >= _stats_log_interval_sec) {
         _stats_log_counter = 0;
         log_peer_stats();

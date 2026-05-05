@@ -325,6 +325,7 @@ private:
     uint32_t                        _stats_log_counter = 0;
     uint32_t                        _stats_log_interval_sec = 300;  // default 5 minutes
     uint32_t                        _status_log_counter = 0;       // 1-minute node status heartbeat
+    bool                            _first_node_status_logged = false;  // trigger peer stats at 1 min
 
     // ── Color-coded logging macros ─────────────────────────────
     // Must be #define (not constexpr) so they concatenate with

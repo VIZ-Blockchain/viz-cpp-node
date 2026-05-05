@@ -163,6 +163,11 @@ struct dlt_fork_status_message {
     uint8_t       fork_status = DLT_FORK_STATUS_NORMAL;
     block_id_type head_block_id;
     uint32_t      head_block_num = 0;
+    block_id_type lib_block_id;
+    uint32_t      lib_block_num = 0;
+    uint32_t      dlt_earliest_block = 0;
+    uint32_t      dlt_latest_block = 0;
+    uint8_t       node_status = DLT_NODE_STATUS_SYNC;
 };
 
 // ── Peer exchange request ───────────────────────────────────────────
@@ -292,7 +297,7 @@ FC_REFLECT((graphene::network::dlt_not_available_message),
     (block_num))
 
 FC_REFLECT((graphene::network::dlt_fork_status_message),
-    (fork_status)(head_block_id)(head_block_num))
+    (fork_status)(head_block_id)(head_block_num)(lib_block_id)(lib_block_num)(dlt_earliest_block)(dlt_latest_block)(node_status))
 
 FC_REFLECT_EMPTY((graphene::network::dlt_peer_exchange_request))
 
