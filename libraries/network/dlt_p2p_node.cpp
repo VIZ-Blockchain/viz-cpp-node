@@ -684,11 +684,9 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
     // are pruned and the peer can't serve them.  Clamp start to the
     // peer's earliest available block.
     uint32_t peer_earliest = it->second.peer_dlt_earliest;
-    bool has_gap = false;
     if (start < peer_earliest && peer_earliest > 0) {
         // P19 fix: Detect unbridgeable gap. If no peer has the missing
         // blocks, we need a snapshot. Try to find a peer that can bridge.
-        has_gap = true;
         ilog(DLT_LOG_ORANGE "Gap detected: blocks ${a}-${b} missing (our head=#${h}, peer ${ep} DLT starts at ${c})" DLT_LOG_RESET,
              ("a", start)("b", peer_earliest - 1)("h", our_head)("ep", it->second.endpoint)("c", peer_earliest));
 
@@ -2170,8 +2168,8 @@ void dlt_p2p_node::log_peer_stats() {
             auto disc_sec = (fc::time_point::now() - state.disconnected_since).count() / 1000000;
             auto recon_sec = (state.next_reconnect_attempt != fc::time_point())
                              ? (state.next_reconnect_attempt - fc::time_point::now()).count() / 1000000 : 0;
-            ilog("${C}  ${ep} | ${ls} | backoff=${bo}s | reconnect_in=${ri}s | spam=${s}${R}",
-                 ("C", C)("ep", ep)("ls", ls)("bo", state.reconnect_backoff_sec)
+            ilog("${C}  ${ep} | ${ls} | disconnected=${ds}s | backoff=${bo}s | reconnect_in=${ri}s | spam=${s}${R}",
+                 ("C", C)("ep", ep)("ls", ls)("ds", disc_sec)("bo", state.reconnect_backoff_sec)
                  ("ri", (recon_sec > 0 ? recon_sec : 0))("s", state.spam_strikes)("R", R));
             continue;
         }

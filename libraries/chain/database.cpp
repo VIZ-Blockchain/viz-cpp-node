@@ -1449,8 +1449,12 @@ namespace graphene { namespace chain {
                     return {total_weight, has_emergency};
                 };
 
-                auto [weight_a, emergency_a] = compute_branch_info(branches.first);
-                auto [weight_b, emergency_b] = compute_branch_info(branches.second);
+                auto branch_info_a = compute_branch_info(branches.first);
+                auto weight_a = branch_info_a.first;
+                auto emergency_a = branch_info_a.second;
+                auto branch_info_b = compute_branch_info(branches.second);
+                auto weight_b = branch_info_b.first;
+                auto emergency_b = branch_info_b.second;
 
                 // In emergency consensus mode, the emergency committee witness
                 // represents the collective authority of the committee.  Since
@@ -1915,9 +1919,9 @@ namespace graphene { namespace chain {
                 // sliding window, and the P36 fix returns ALREADY_KNOWN —
                 // causing the range reply handler to skip them and the node
                 // to oscillate between FORWARD and SYNC mode.
-                if (new_head && new_head->data.block_num() > new_block.block_num()) {
-                    auto fb_head = _fork_db.head();
-                    if (fb_head && fb_head->data.block_num() > head_block_num() &&
+                auto fb_head = _fork_db.head();
+                if (fb_head && fb_head->data.block_num() > new_block.block_num()) {
+                    if (fb_head->data.block_num() > head_block_num() &&
                         _fork_db.is_known_block(head_block_id())) {
                         try {
                             auto branches = _fork_db.fetch_branch_from(
