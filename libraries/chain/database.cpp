@@ -1490,7 +1490,7 @@ namespace graphene { namespace chain {
                 if (new_block.block_num() <= head_block_num()) {
                     block_id_type existing_id = find_block_id_for_num(new_block.block_num());
                     if (existing_id == new_block.id()) {
-                        ilog("Ignoring block ${n} that is already on our chain", ("n", new_block.block_num()));
+                        dlog("Ignoring block ${n} that is already on our chain", ("n", new_block.block_num()));
                         return false;
                     }
                     // Block is at or before head but on a different fork.

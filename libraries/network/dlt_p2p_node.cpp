@@ -865,6 +865,9 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
                 state.exchange_enabled = true;
                 state.fork_alignment = true;
             }
+        } else if (result == dlt_block_accept_result::ALREADY_KNOWN) {
+            dlog("Block #${n} from ${ep} is already on our chain (duplicate)",
+                 ("n", block.block_num())("ep", state.endpoint));
         } else if (result == dlt_block_accept_result::FORK_DB_ONLY) {
             dlog("Stored block #${n} in fork_db (not yet applied) from ${ep}",
                  ("n", block.block_num())("ep", state.endpoint));
@@ -997,6 +1000,9 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
 
         // P26 fix: Check if we've caught up to all peers via single-block replies
         check_sync_catchup();
+    } else if (result == dlt_block_accept_result::ALREADY_KNOWN) {
+        dlog("Block #${n} from ${ep} is already on our chain (duplicate)",
+             ("n", block_num)("ep", state.endpoint));
     } else {
         // FORK_DB_ONLY: block stored in fork_db but not applied to chain.
         // Do NOT call on_block_applied (which would corrupt mempool),

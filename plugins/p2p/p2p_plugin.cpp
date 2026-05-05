@@ -157,6 +157,13 @@ public:
             if (applied) {
                 return dlt_block_accept_result::ACCEPTED;
             }
+            // push_block returned false but it may have been because the block
+            // is already on our chain (duplicate from another peer), NOT because
+            // it was stored in fork_db.  Check which case we're in.
+            if (chain.db().is_known_block(block.id())) {
+                // Already on our chain — just a duplicate from another peer.
+                return dlt_block_accept_result::ALREADY_KNOWN;
+            }
             // push_block returned false: block was pushed to fork_db but
             // didn't become the new head (e.g. it's on a competing fork
             // that is not yet the best).  Still a valid block worth
