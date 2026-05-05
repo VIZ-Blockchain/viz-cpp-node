@@ -47,11 +47,11 @@ This matches the old `message_oriented_connection` format without 16-byte paddin
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `libraries/network/include/graphene/network/dlt_p2p_messages.hpp` | 290 | All DLT message types (5100-5114), enums, structs, FC_REFLECT macros |
+| `libraries/network/include/graphene/network/dlt_p2p_messages.hpp` | 289 | All DLT message types (5100-5114), enums, structs, FC_REFLECT macros |
 | `libraries/network/dlt_p2p_messages.cpp` | 25 | Static `type` constants for each message struct |
 | `libraries/network/include/graphene/network/dlt_p2p_peer_state.hpp` | 150 | `dlt_peer_state`, `dlt_known_peer`, `dlt_mempool_entry`, `dlt_fork_resolution_state`, `dlt_fork_branch_info` |
-| `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | 284 | `dlt_p2p_delegate` interface + `dlt_p2p_node` class declaration |
-| `libraries/network/dlt_p2p_node.cpp` | 1740 | Full `dlt_p2p_node` implementation |
+| `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | 316 | `dlt_p2p_delegate` interface + `dlt_p2p_node` class declaration |
+| `libraries/network/dlt_p2p_node.cpp` | 1877 | Full `dlt_p2p_node` implementation |
 
 ### Modified Files
 
@@ -160,7 +160,7 @@ All FC_REFLECT macros defined for serialization.
 
 ### Phase 3: P2P Plugin Replacement ✅
 
-`p2p_plugin.cpp` rewritten from 1951 lines (node.cpp-based) to 478 lines (dlt_p2p_node wrapper):
+`p2p_plugin.cpp` rewritten from 1951 lines (node.cpp-based) to 536 lines (dlt_p2p_node wrapper):
 
 **`dlt_delegate` class** (implements `dlt_p2p_delegate`):
 - Bridges chain state queries using `chain.db()` with appropriate read locks
@@ -235,12 +235,172 @@ Implemented in `dlt_p2p_node.cpp`:
 | Separate P2P mempool | Chain's `_pending_tx` only applies after acceptance. P2P mempool provides earlier filtering (expiry, TaPoS, size limits) before pushing to chain. |
 | In-place replacement, no dual-mode | Old and new protocols are incompatible. Dual-mode creates isolated sub-networks. Emergency mode means all witnesses can switch simultaneously. |
 
+## Subsequent Enhancements & Fixes (2026-05-05)
+
+### DLT-Range-Aware Fork Alignment (P1-P16 fixes)
+
+The original `check_fork_alignment` only called `is_block_known()` on peer head/LIB IDs. In DLT mode, old blocks are pruned from the rolling block log, so peers on the same chain were falsely flagged as "different fork" and disconnected.
+
+**Fix:** `check_fork_alignment` now accepts the full `dlt_hello_message` and performs multi-tier alignment:
+
+| Check | Condition | Result |
+|-------|-----------|--------|
+| Empty peer | `head_block_num == 0` | Aligned (new node, no fork to be on) |
+| Range overlap | `head_num >= our_earliest && head_num <= our_latest` | Uses `is_block_known(head_id)` |
+| Boundary link | `head_num + 1 == our_earliest` | Reads `our_earliest_block`, checks `previous == head_id` |
+| LIB fallback | Always | `is_block_known(lib_id)` as before |
+
+**Peer lifecycle fix:** `on_dlt_hello()` now transitions SYNC peers to ACTIVE regardless of `exchange_enabled`:
+```cpp
+// OLD:  if (reply.exchange_enabled || _node_status == DLT_NODE_STATUS_SYNC)
+// NEW:
+if (reply.exchange_enabled || _node_status == DLT_NODE_STATUS_SYNC
+    || hello.node_status == DLT_NODE_STATUS_SYNC)
+```
+
+This eliminates the HANDSHAKING timeout → disconnect → reconnect loop for same-chain peers whose blocks were pruned.
+
+Full details in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md).
+
+### Soft-Ban Notification (type 5114)
+
+`dlt_soft_ban_message` is sent before disconnecting a banned peer:
+- Contains `ban_duration_sec` and human-readable `reason`
+- Receiving peer enters BANNED state with the specified duration
+- Logged as orange/yellow notice on both sides
+- Prevents wasted bandwidth — both sides stop sending immediately
+
+### Peer Stats Logging
+
+`log_peer_stats()` outputs cyan-colored peer statistics at configurable interval (`dlt-stats-interval-sec`, default 300s). Shows node status, fork state, head/LIB, per-peer details (flags, ranges, spam strikes, ban time).
+
+### Out-of-Order / Duplicate Block Tolerance
+
+- Duplicate blocks (already applied) from peers are silently skipped, not counted as spam
+- Out-of-order blocks in range replies fall through to fork_db instead of soft-banning
+- Deserialization errors no longer increment spam strikes
+- Oversized messages from old-protocol peers disconnect with `skip_backoff_increase=true`
+
+### Block Processing Pause/Resume
+
+`pause_block_processing()` / `resume_block_processing()` with `_block_processing_paused` flag allows the snapshot or other plugins to temporarily halt P2P block intake during critical operations.
+
+### Additional Public API
+
+| Method | Purpose |
+|--------|---------|
+| `broadcast_block_post_validation()` | Broadcast block by ID+witness+signature after validation |
+| `broadcast_chain_status()` | Send hello to all connected peers |
+| `trigger_resync()` | Force re-enter SYNC mode and re-request blocks |
+| `reconnect_seeds()` | Re-connect to all seed nodes |
+| `pause_block_processing()` / `resume_block_processing()` | Temporarily halt P2P block intake |
+| `set_stats_log_interval()` | Configure periodic peer stats output interval |
+
+### C++14 constexpr ODR-use Fix
+
+`static constexpr` members that are ODR-used (e.g., `MAX_RECONNECT_BACKOFF_SEC`) now have out-of-line definitions in `dlt_p2p_node.cpp`:
+```cpp
+constexpr uint32_t dlt_peer_state::PEER_EXCHANGE_COOLDOWN_SEC;
+constexpr uint32_t dlt_peer_state::PENDING_BATCH_TIMEOUT_SEC;
+constexpr uint32_t dlt_peer_state::INITIAL_RECONNECT_BACKOFF_SEC;
+constexpr uint32_t dlt_peer_state::MAX_RECONNECT_BACKOFF_SEC;
+```
+
+### `dlt_block_accept_result` Enum
+
+New enum replaces the old `bool` return from `accept_block()`:
+```cpp
+enum class dlt_block_accept_result {
+    ACCEPTED,      // pushed to chain (became head or fork_db head)
+    FORK_DB_ONLY,  // stored in fork_db but not applied (unlinkable / competing fork)
+    DEAD_FORK,     // block from a dead fork (parent not in fork_db, at/below head)
+    REJECTED       // failed validation entirely
+};
+```
+
+---
+
+## Subsequent Enhancements & Fixes (2026-05-06)
+
+### Dead Fork Block Crash Protection (P20/P21)
+
+Added `DEAD_FORK` to `dlt_block_accept_result` enum. When `push_block()` throws `unlinkable_block_exception` and the block is at/below our head (`block.block_num() <= head_block_num()`), the delegate returns `DEAD_FORK` instead of pushing to `fork_db._unlinked_index`. The P2P layer soft-bans peers sending dead-fork blocks and breaks out of the block processing loop. `transition_to_forward()` is now guarded by `any_block_applied` — a range full of dead-fork rejects does NOT end sync mode.
+
+**Files:** `dlt_p2p_node.hpp`, `p2p_plugin.cpp`, `dlt_p2p_node.cpp`
+
+### DLT Block Log Corruption Recovery (P17)
+
+New `dlt_block_log::is_consistent_with(db_head_block_num)` method detects corruption on startup: single-block log with thousands in DB, DLT head exceeding DB head, or far-behind with few blocks. In `database::open()`, corrupted DLT block logs are auto-reset before fork_db seeding. P2P sync rebuilds the log naturally after reset.
+
+**Files:** `dlt_block_log.hpp`, `dlt_block_log.cpp`, `database.cpp`
+
+### Snapshot Lock Isolation Prevention (P24)
+
+When `_block_processing_paused` is true (snapshot in progress), `periodic_task()` skips operations that need database read locks: `sync_stagnation_check()`, `periodic_peer_exchange()`, `log_peer_stats()`. Non-DB housekeeping (reconnect, lifecycle, validation, mempool cleanup, banned-peer unban) still runs. `check_stalled_sync_loop()` skips stall detection when `snapshot_in_progress` is true and resets the timer. `serialize_state()` now logs progress every 5s during long serialization.
+
+**Files:** `dlt_p2p_node.cpp`, `snapshot/plugin.cpp`
+
+### Write Lock Diagnostic Logging (P27)
+
+`notify_applied_block()` now times the overall signal notification and logs a warning if it exceeds 200ms (with block number, duration, and connected plugin count). Self-timing added to the 3 most likely slow handlers: `mongo_db::on_block()`, `operation_history::purge_old_history()`, `account_history::purge_old_history()` — each logs if >100ms. The chainbase `with_strong_write_lock` macro already captures `__FILE__`/`__LINE__`/`__func__` so lock timeout messages identify the call site.
+
+**Files:** `database.cpp`, `mongo_db_plugin.cpp`, `operation_history/plugin.cpp`, `account_history/plugin.cpp`
+
+---
+
 ## Known Limitations / Future Work
 
-- `dlt_delegate::has_emergency_private_key()` returns `false` — needs integration with witness plugin
-- `dlt_delegate::switch_to_fork()` is a stub — needs full implementation with block replay
-- `dlt_delegate::resync_from_lib()` is empty — handled at plugin level instead
+- `has_emergency_private_key()` **now queries witness plugin** (was hardcoded `false`)
+- `switch_to_fork()` **now has full implementation** with fork_db fetch + `push_block()`
+- `resync_from_lib()` is handled at plugin level (by design — delegate returns early)
 - `compute_branch_info()` returns simplified info — detailed vote-weight computation needs fork_db traversal
 - `dlt_block_log` batch pruning (10000 at a time) not yet connected — `periodic_dlt_prune_check()` is a no-op
 - No unit tests yet for the new message types or node logic
-- Build not verified (no BOOST_ROOT/OPENSSL_ROOT_DIR configured in the environment)
+- `dlt_delegate::is_tapos_block_known()` uses `find_block_id_for_num()` — may need chain index access
+
+---
+
+## Build Issues (GCC 13 / Docker)
+
+The following compilation/linking issues block building with newer GCC (13+) in Docker:
+
+| # | Issue | File | Fix |
+|---|-------|------|-----|
+| P28 | `multimap::erase` with `std::pair` — C++17 removed value-erase overload | `dlt_p2p_node.cpp` | Use iterator-erase: `_mempool_by_expiry.erase(it_by_expiry)` |
+| P28b | `ip::address::data()` doesn't exist in fc | `dlt_p2p_node.cpp` | Use `fc::raw::pack()` |
+| P29 | Missing `witness_plugin.hpp` — actual file is `witness.hpp` | `p2p_plugin.cpp` | Fix include path |
+| P30 | 6+ API mismatches in `p2p_plugin.cpp` (see below) | `p2p_plugin.cpp` | Update delegate calls |
+| P31 | Linker error: `static constexpr` ODR-use | `dlt_p2p_peer_state.hpp` | **Fixed** — out-of-line definitions added |
+
+**P30 API mismatch details:**
+| Error | Fix Needed |
+|-------|------------|
+| `with_read_lock([&]{...})` — expects 6 args, 1 provided | Add `lock_type, timeout_ms, file, line, func` params |
+| `is_emergency_consensus` is not a member | Field renamed; find new name in `dynamic_global_property_object` |
+| `blocks.front()->id()` — `id` is field, not method | Change to `blocks.front()->id` |
+| `catch (const unlinkable_block_exception&)` — missing var name | Add variable: `catch (const unlinkable_block_exception& e)` |
+| `accept_transaction` doesn't exist | Renamed to `apply_transaction` or similar |
+| `push_block(*block)` with `fork_item` — not `signed_block` | Use `fork_item->data` |
+| `is_known_block(ref_block_num)` with `uint32_t` — expects `block_id_type` | Fetch block ID by number first |
+
+---
+
+## Known Runtime Issues
+
+Post-implementation issues observed in production (4-node DLT emergency consensus network):
+
+| # | Severity | Problem |
+|---|----------|---------|
+| P17 | ~~CRITICAL~~ **Fixed** | DLT block log corruption on crash → auto-detected and reset |
+| P18 | CRITICAL | Master stops producing blocks for minutes (`slot=0` loop) |
+| P19 | HIGH | Slave stuck in SYNC — synopsis returns empty, never receives blocks |
+| P20 | ~~CRITICAL~~ **Fixed** | Dead fork blocks → DEAD_FORK result, soft-ban, no crash |
+| P21 | ~~CRITICAL~~ **Fixed** | Dead fork crash loop → blocks rejected, fork_db protected |
+| P22 | HIGH | fork_db rejection cascade on restart |
+| P23 | HIGH | `fetch_branch_from` assertion failure during synopsis |
+| P24 | ~~CRITICAL~~ **Fixed** | Snapshot lock isolation → periodic tasks skip DB, stall check aware |
+| P25 | HIGH | Slave-produced block ignored by master → fork switch |
+| P26 | MED | Sync state confusion — slave never transitions SYNC→FORWARD |
+| P27 | ~~CRITICAL~~ **Fixed** (diag) | Write lock diagnostic — overall + per-plugin timing, lock-holder ID |
+
+Full analysis in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md#new-problems-discovered-post-implementation).
