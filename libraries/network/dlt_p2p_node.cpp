@@ -265,7 +265,7 @@ void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason, bo
         _connections.erase(conn_it);
     }
 
-    wlog("Disconnected from peer ${ep}: ${reason} (backoff=${b}s)",
+    wlog(DLT_LOG_DGRAY "Disconnected from peer ${ep}: ${reason} (backoff=${b}s)" DLT_LOG_RESET,
          ("ep", state.endpoint)("reason", reason)("b", state.reconnect_backoff_sec));
 }
 
