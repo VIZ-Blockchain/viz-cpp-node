@@ -548,17 +548,28 @@ namespace graphene {
                 // re-triggering sync — the oscillation bug described in
                 // problem6.log.
                 //
-                // EMERGENCY EXCEPTION: When emergency consensus is active,
-                // the master node MUST produce blocks regardless of sync state.
+                // EMERGENCY MASTER EXCEPTION: When emergency consensus is active
+                // AND this node holds the emergency-private-key (i.e. it IS the
+                // master), production MUST proceed regardless of sync state.
                 // The master is the sole block producer — waiting for sync to
                 // complete would deadlock because no blocks arrive to clear
                 // the syncing flag (p18.log).
                 //
+                // EMERGENCY SLAVE: Must still respect the syncing flag.  A slave
+                // node that produces on a stale head creates double-production
+                // collisions and minority forks (p32.log).
+                //
                 // Outside DLT mode this check is NOT applied because normal
                 // witnesses must produce on the canonical chain head even
                 // while the network is catching up.
-                if (db._dlt_mode && chain().is_syncing() && !dgp.emergency_consensus_active) {
-                    return block_production_condition::not_synced;
+                if (db._dlt_mode && chain().is_syncing()) {
+                    bool we_are_emergency_master =
+                        dgp.emergency_consensus_active &&
+                        _witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end();
+                    if (!we_are_emergency_master) {
+                        return block_production_condition::not_synced;
+                    }
+                    // Emergency master: bypass sync check to avoid deadlock.
                 }
 
                 // === HARDFORK 12: THREE-STATE SAFETY ENFORCEMENT ===
@@ -566,9 +577,25 @@ namespace graphene {
 
                 if (db.has_hardfork(CHAIN_HARDFORK_12)) {
                     if (dgp.emergency_consensus_active) {
-                        // EMERGENCY MODE: auto-bypass both stale and participation checks.
-                        // The consensus layer has determined emergency mode is needed.
-                        _production_enabled = true;
+                        // EMERGENCY MODE: auto-bypass both stale and participation checks
+                        // for the emergency master only.  The master holds the
+                        // emergency-private-key and MUST produce to avoid deadlock.
+                        //
+                        // Slave nodes (no emergency key) must still sync first —
+                        // producing on a stale head creates double-production
+                        // collisions and minority forks (p32.log).
+                        bool we_are_emergency_master =
+                            _witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end();
+                        if (we_are_emergency_master) {
+                            _production_enabled = true;
+                        } else if (!_production_enabled) {
+                            // Slave node in emergency mode: still need sync check
+                            if (db.get_slot_time(1) >= now) {
+                                _production_enabled = true;
+                            } else {
+                                return block_production_condition::not_synced;
+                            }
+                        }
                         if (_witnesses.empty()) {
                             elog("EMERGENCY MODE ACTIVE but no witnesses configured! "
                                  "Block production impossible. Add --emergency-private-key to config.");
