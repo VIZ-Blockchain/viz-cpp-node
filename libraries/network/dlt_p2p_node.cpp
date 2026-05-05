@@ -797,8 +797,9 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
             _last_block_received_time = fc::time_point::now();
             _last_network_block_time = fc::time_point::now();
 
-            dlog("Applied block #${n} witness=${w} time=${t} from ${ep}",
-                 ("n", block.block_num())("w", block.witness)("t", block.timestamp)("ep", state.endpoint));
+            ilog(DLT_LOG_GREEN "Got block #${n} with ${tx} transaction(s) by witness ${w} [${ep}]" DLT_LOG_RESET,
+                 ("n", block.block_num())("tx", block.transactions.size())
+                 ("w", block.witness)("ep", state.endpoint));
 
             on_block_applied(block, /*caused_fork_switch=*/false);
 
@@ -920,9 +921,9 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
     }
 
     if (result == dlt_block_accept_result::ACCEPTED) {
-        dlog("Applied single block #${n} witness=${w} time=${t} from ${ep}",
-             ("n", reply.block.block_num())("w", reply.block.witness)
-             ("t", reply.block.timestamp)("ep", state.endpoint));
+        ilog(DLT_LOG_GREEN "Got block #${n} with ${tx} transaction(s) by witness ${w} [${ep}]" DLT_LOG_RESET,
+             ("n", reply.block.block_num())("tx", reply.block.transactions.size())
+             ("w", reply.block.witness)("ep", state.endpoint));
 
         _last_network_block_time = fc::time_point::now();
         _last_block_received_time = fc::time_point::now();
@@ -1631,6 +1632,44 @@ void dlt_p2p_node::soft_ban_peer(peer_id peer, const std::string& reason) {
 
 // ── Diagnostics ──────────────────────────────────────────────────────
 
+void dlt_p2p_node::log_node_status() {
+    const char* G = DLT_LOG_GREEN;
+    const char* R = DLT_LOG_RESET;
+
+    const char* status_str = (_node_status == DLT_NODE_STATUS_SYNC) ? "SYNC" : "FWD";
+    const char* fork_str;
+    switch (_fork_status) {
+        case DLT_FORK_STATUS_NORMAL: fork_str = "NORMAL"; break;
+        case DLT_FORK_STATUS_LOOKING_RESOLUTION: fork_str = "LOOKING"; break;
+        case DLT_FORK_STATUS_MINORITY: fork_str = "MINORITY"; break;
+        default: fork_str = "?"; break;
+    }
+    uint32_t our_head = _delegate ? _delegate->get_head_block_num() : 0;
+    uint32_t our_lib  = _delegate ? _delegate->get_lib_block_num() : 0;
+    uint32_t dlt_earliest = _delegate ? _delegate->get_dlt_earliest_block() : 0;
+    uint32_t dlt_latest   = _delegate ? _delegate->get_dlt_latest_block() : 0;
+
+    // Count connected / active peers
+    uint32_t connected = 0, active = 0;
+    for (const auto& item : _peer_states) {
+        const auto& s = item.second;
+        if (s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
+            s.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) { active++; connected++; }
+        else if (s.lifecycle_state == DLT_PEER_LIFECYCLE_HANDSHAKING) { connected++; }
+    }
+
+    std::string flags;
+    if (_block_processing_paused) flags += "PAUSED ";
+    if (_fork_status != DLT_FORK_STATUS_NORMAL) flags += "FORK:" + std::string(fork_str) + " ";
+    if (flags.empty()) flags = "ok";
+
+    ilog("${G}DLT Status | ${st} | head=#${h} lib=#${lib} | dlt_range=${de}-${dl} | peers=${a}active/${c}conn | ${fl}${R}",
+         ("G", G)("st", status_str)("h", our_head)("lib", our_lib)
+         ("de", dlt_earliest)("dl", dlt_latest)
+         ("a", active)("c", connected)
+         ("fl", flags)("R", R));
+}
+
 void dlt_p2p_node::log_peer_stats() {
     const char* C = DLT_LOG_CYAN;
     const char* R = DLT_LOG_RESET;
@@ -1836,6 +1875,13 @@ void dlt_p2p_node::periodic_task() {
     sync_stagnation_check();
     check_sync_catchup();   // P26 fix: periodic catch-up detection
     periodic_peer_exchange();
+
+    // Log node status every 1 minute (12 cycles at 5s)
+    _status_log_counter++;
+    if (_status_log_counter >= 12) {
+        _status_log_counter = 0;
+        log_node_status();
+    }
 
     // Log peer stats at configured interval
     _stats_log_counter++;
