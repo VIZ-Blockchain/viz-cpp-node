@@ -157,14 +157,28 @@ update_witness_schedule()
 ```
 maybe_produce_block() {now = NTP + 250ms}
   │
-  ├── DLT mode sync check:
-  │   └── db._dlt_mode && chain().is_syncing()?  → not_synced
+  ├── === DLT MODE SYNC CHECK ===
+  │   │
+  │   ├── NOT DLT mode OR NOT syncing?  → continue
+  │   │
+  │   └── DLT mode AND syncing?
+  │       ├── IS emergency master? (emergency key in _witnesses)
+  │       │   └── Yes → BYPASS sync check (deadlock prevention — p18.log)
+  │       └── NOT emergency master (slave)
+  │           └── Return not_synced (producing on stale head creates
+  │               double-production collisions — p32.log)
   │
   ├── === HARDFORK 12 THREE-STATE SAFETY ===
   │   │
   │   ├── emergency_consensus_active?
   │   │   └── Yes → EMERGENCY PATH:
-  │   │       ├── _production_enabled = true (bypass stale + participation)
+  │   │       ├── IS emergency master? (emergency key in _witnesses)
+  │   │       │   └── Yes → _production_enabled = true (bypass stale + participation)
+  │   │       ├── NOT emergency master (slave):
+  │   │       │   ├── _production_enabled already? → continue
+  │   │       │   └── Else: check get_slot_time(1) >= now
+  │   │       │       ├── Yes → _production_enabled = true
+  │   │       │       └── No  → return not_synced
   │   │       └── _witnesses.empty()?
   │   │           └── Yes → ERROR: "no witnesses configured"
   │   │
@@ -633,7 +647,7 @@ graph TB
 | 4 | `check_block_post_validation_chain` | `database.cpp` | Skip BPV-based LIB advancement during emergency |
 | 5 | `verify_signing_witness` | `database.cpp` | Relax slot-to-witness mapping during emergency |
 | 6 | `fork_db._push_block` | `fork_database.cpp` | Deterministic hash tie-breaking during emergency |
-| 7 | `maybe_produce_block` | `witness.cpp` | Emergency: bypass stale+participation, master skip minority fork, fork collision → any block competes |
+| 7 | `maybe_produce_block` | `witness.cpp` | Emergency master: bypass sync+stale+participation, skip minority fork; slave: must sync first, standard production gate |
 | 8 | `resync_from_lib` | `p2p_plugin.cpp` | SKIP entirely during emergency (prevent crash) |
 | 9 | `stale_sync_check_task` | `p2p_plugin.cpp` | Skip recovery if master's head advancing; allow if follower stuck |
 | 10 | `handle_block` | `p2p_plugin.cpp` | Near-caught-up blocks treated as normal in DLT emergency |
@@ -653,7 +667,7 @@ graph TB
 1. **Deterministic activation**: `seconds_since_lib` uses only block-embedded timestamps — identical on every node, every replay.
 2. **DLT snapshot safety**: Activation skipped when LIB block is unavailable in block_log (empty after snapshot restore).
 3. **Emergency fork immutability**: `resync_from_lib()` refuses to unwind during emergency, protecting against LIB-close-to-HEAD crashes.
-4. **Master/Follower distinction**: DLT nodes with `--emergency-private-key` are masters (skip minority fork detection); followers run 42-block isolation check.
+4. **Master/Follower distinction**: DLT nodes with `--emergency-private-key` are masters (bypass sync checks, skip minority fork detection); followers must sync before producing and run 42-block isolation check.
 5. **Fork DB convergence**: Deterministic hash tie-breaking ensures all nodes pick the same block when multiple emergency producers compete.
 6. **LIB safety**: Capped at HEAD-1 to preserve undo protection for the current `_apply_block`.
 7. **Neutral committee voting**: Committee votes for currently-applied hardfork version (not binary version), copies median props — does not skew governance or chain properties.

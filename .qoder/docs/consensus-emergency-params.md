@@ -427,7 +427,14 @@ With 3-second block intervals and 128-slot window:
 maybe_produce_block()
   │
   ├─ [HF12+] Is emergency_consensus_active?
-  │   └─ Yes: Three-state safety handles production/sync checks automatically
+  │   └─ Yes: Three-state safety handles production/sync checks:
+  │       ├─ IS emergency master? (emergency key in _witnesses)
+  │       │   └─ Yes: _production_enabled = true (bypass sync/stale/participation)
+  │       └─ NOT emergency master (slave):
+  │           ├─ _production_enabled already? → continue
+  │           └─ Else: check get_slot_time(1) >= now
+  │               ├─ Yes: _production_enabled = true
+  │               └─ No: return not_synced
   │
   ├─ Is _production_enabled?
   │   ├─ No: Is chain synced (get_slot_time(1) >= now)?
