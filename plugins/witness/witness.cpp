@@ -930,6 +930,24 @@ namespace graphene {
                 graphene::protocol::public_key_type scheduled_key = itr->signing_key;
                 if (db._debug_block_production) ilog("DEBUG_CRASH: scheduled_key=${k}", ("k", scheduled_key));
 
+                // Skip production if the scheduled slot time is at or before
+                // the current head block time. This means the slot was already filled
+                // by another block (e.g. received from P2P during/after a snapshot pause).
+                // Without this guard, the witness produces a competing block at the same
+                // height, creating a micro-fork that propagates to all peers.
+                //
+                // This can happen when:
+                //   1. Snapshot pauses P2P processing for several seconds
+                //   2. A block from another witness fills the slot during/after pause
+                //   3. Our witness production loop fires for a slot that's now occupied
+                if (scheduled_time <= db.head_block_time()) {
+                    wlog("Skipping block production: scheduled slot ${st} is at or before "
+                         "head_block_time ${hbt} (head=#${hn}). Slot was already filled.",
+                         ("st", scheduled_time)("hbt", db.head_block_time())
+                         ("hn", db.head_block_num()));
+                    return block_production_condition::not_time_yet;
+                }
+
                 // Check if witness has zero/null signing key (intentionally disabled for block production)
                 if (scheduled_key == graphene::protocol::public_key_type()) {
                     // Don't log - witness is configured but has zero key on chain (monitoring only)

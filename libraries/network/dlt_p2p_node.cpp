@@ -1111,6 +1111,35 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
         if (_node_status == DLT_NODE_STATUS_FORWARD && block_num > _delegate->get_head_block_num()) {
             request_gap_fill();
         }
+
+        // Detect competing fork parent at our head height.
+        // When a received block's previous hash points to a block at the
+        // same height as our head but with a DIFFERENT ID, the peer is on
+        // a competing fork. We must request that competing parent block
+        // so fork_db can evaluate both forks and potentially switch.
+        //
+        // Example: our head is social's #79693402, but the received
+        // #79693403 links to committee's #79693402 (different block).
+        // Without this fix, we'd only request gap fill by block number
+        // which returns the same committee block we already can't link —
+        // leaving the competing fork unevaluated.
+        if (block_num > _delegate->get_head_block_num()) {
+            uint32_t parent_num = block_header::num_from_id(reply.block.previous);
+            block_id_type our_head_id = _delegate->get_head_block_id();
+            if (parent_num == _delegate->get_head_block_num() &&
+                reply.block.previous != our_head_id &&
+                reply.block.previous != block_id_type()) {
+                wlog(DLT_LOG_ORANGE "Competing fork parent detected: block #${n} links to "
+                     "a different #${pn} than our head (our=${ours}, theirs=${theirs}). "
+                     "Requesting competing block from ${ep}" DLT_LOG_RESET,
+                     ("n", block_num)("pn", parent_num)
+                     ("ours", our_head_id)("theirs", reply.block.previous)("ep", state.endpoint));
+                dlt_get_block_message req;
+                req.block_num = parent_num;
+                send_message(peer, message(req));
+            }
+        }
+
         // Fall through and try to apply — fork_db or push_block will handle it
     }
 
@@ -2748,8 +2777,27 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
         } catch (const fc::canceled_exception&) {
             // Normal cancellation during shutdown
         } catch (const fc::exception& e) {
-            wlog("Read loop error for peer ${ep}: ${e}",
-                 ("ep", ep_str_rl)("e", e.to_detail_string()));
+            // Detect common transient TCP errors and log them at info level
+            // with a short, human-friendly message instead of the full stack trace.
+            const auto& detail = e.to_detail_string();
+            bool is_transient =
+                detail.find("Connection reset by peer") != std::string::npos ||
+                detail.find("Connection refused") != std::string::npos ||
+                detail.find("Broken pipe") != std::string::npos ||
+                detail.find("end of stream") != std::string::npos ||
+                detail.find("Operation aborted") != std::string::npos ||
+                detail.find("Network is unreachable") != std::string::npos ||
+                detail.find("No route to host") != std::string::npos ||
+                detail.find("Connection timed out") != std::string::npos ||
+                detail.find("Host is unreachable") != std::string::npos;
+
+            if (is_transient) {
+                ilog(DLT_LOG_DGRAY "Peer ${ep} disconnected: ${msg}" DLT_LOG_RESET,
+                     ("ep", ep_str_rl)("msg", e.get_message()));
+            } else {
+                wlog("Read loop error for peer ${ep}: ${e}",
+                     ("ep", ep_str_rl)("e", detail));
+            }
             handle_disconnect(peer, "read error");
         }
 

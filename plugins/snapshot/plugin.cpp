@@ -1633,9 +1633,9 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     // read lock (the master generated blocks just 3ms after the
     // snapshot started), so cancellation is unnecessary.
     if (snapshot_in_progress.load(std::memory_order_relaxed)) {
-        ilog("New block #${n} received while snapshot in progress — "
+        ilog("New block #${n} (witness ${w}) received while snapshot in progress \u2014 "
              "block will be processed after snapshot completes",
-             ("n", b.block_num()));
+             ("n", b.block_num())("w", b.witness));
     }
 
     // Update last block received time for stalled sync detection
