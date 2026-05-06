@@ -169,9 +169,10 @@ void dlt_p2p_node::transition_to_forward() {
 
 ### What Happens on Transition
 
-1. **Re-evaluate `exchange_enabled` for all peers** (P25 fix): peers whose head block is now recognized (because we synced past it) get `exchange_enabled = true`
-2. **Revalidate provisional mempool entries**: entries tagged during SYNC are checked for TaPoS validity against the current head; invalid ones are purged
-3. **Reset stagnation retries**: counter set to 0 for clean slate
+1. **Notify all connected peers**: Send `dlt_fork_status_message` with `node_status=FORWARD` to ALL active/syncing peers (not just exchange-enabled). This lets peers know we're now in FORWARD mode so they can re-evaluate `exchange_enabled` for us.
+2. **Re-evaluate `exchange_enabled` for all peers** (P25 fix): peers whose head block is now recognized (because we synced past it) get `exchange_enabled = true`
+3. **Revalidate provisional mempool entries**: entries tagged during SYNC are checked for TaPoS validity against the current head; invalid ones are purged
+4. **Reset stagnation retries**: counter set to 0 for clean slate
 
 ---
 
@@ -230,13 +231,18 @@ Slave (head=79673001) connects to Master (head=79673101)
 - If they think we're on their fork → we should receive blocks from them
 - If both are false → truly different forks, no exchange
 
+### Receiving FORWARD Transition from a Peer
+
+When `on_dlt_fork_status()` receives a status update from a peer that just transitioned SYNC→FORWARD, the node re-evaluates `exchange_enabled` for that peer. The peer's head block may now be within our known chain, meaning we should enable block/transaction exchange with it.
+
 ### Re-Evaluation Triggers (P25 Fix)
 
-The original implementation set `exchange_enabled` once and never updated it, causing slave-produced blocks to be ignored by the master. Three re-evaluation points were added:
+The original implementation set `exchange_enabled` once and never updated it, causing slave-produced blocks to be ignored by the master. Re-evaluation points:
 
 1. **`transition_to_forward()`**: Re-checks `is_block_known(peer_head_id)` for all peers with `exchange_enabled=false`
-2. **`on_dlt_block_range_reply()`**: When a non-exchange-enabled peer's block is ACCEPTED, enables exchange for that peer
-3. **`on_dlt_block_reply()`**: Same — when a single block from a non-exchange-enabled peer is ACCEPTED
+2. **`on_dlt_fork_status()`**: When a peer transitions SYNC→FORWARD, re-checks if the peer's head block is now known to us
+3. **`on_dlt_block_range_reply()`**: When a non-exchange-enabled peer's block is ACCEPTED, enables exchange for that peer
+4. **`on_dlt_block_reply()`**: Same — when a single block from a non-exchange-enabled peer is ACCEPTED
 
 ---
 
@@ -321,6 +327,20 @@ When `_block_processing_paused == true` (snapshot in progress), periodic tasks s
 | Node receives a transaction from peer X | All ACTIVE peers with `exchange_enabled=true` | X |
 | Peer has `exchange_enabled=false` | *nothing* | — |
 | Node is in SYNC mode | *nothing* (only range requests) | — |
+
+---
+
+## Peer Stats: Stale `peer_head_num` Caveat
+
+The `peer_head_num` shown in the P2P stats table is **not real-time**. It is a snapshot from the last communication event:
+
+| Update Source | When `peer_head_num` Gets Updated |
+|-------------|----------------------------------|
+| `dlt_hello_message` | Initial handshake when connection is established |
+| `dlt_fork_status_message` | Periodic fork_status exchanges between peers |
+| `dlt_block_reply_message` | Updated if a peer sends us block #N, its head must be ≥ N |
+
+Between these events, the peer's actual chain head may advance significantly (e.g., the peer produces or receives blocks via broadcast). **Do not treat `peer_head_num` in the stats table as the peer's current chain state.** It is useful for relative ordering and sync progress estimation, but not as a real-time block height monitor.
 
 ---
 

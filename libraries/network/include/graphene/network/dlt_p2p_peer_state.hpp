@@ -24,7 +24,11 @@ struct dlt_peer_state {
     fc::time_point               state_entered_time;       // when we entered current lifecycle state
     fc::time_point               connected_since;          // when connection was established
 
-    // Peer's chain state (from hello)
+    // Peer's chain state (from hello, fork_status, or block relay)
+    // IMPORTANT: These values are NOT real-time. They are snapshots from the
+    // last communication (hello handshake, fork_status message, or block
+    // relay). The peer's actual chain head may be significantly higher.
+    // Do not treat peer_head_num as authoritative current state.
     block_id_type                peer_head_id;
     uint32_t                     peer_head_num = 0;
     block_id_type                peer_lib_id;

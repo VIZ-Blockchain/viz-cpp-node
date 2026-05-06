@@ -414,6 +414,7 @@ Post-implementation issues observed in production (4-node DLT emergency consensu
 | P36 | ~~HIGH~~ **Fixed** | `block_too_old_exception` during SYNC range processing + FORWARD mode gap fill |
 | P37 | ~~HIGH~~ **Fixed** | Gap fill never triggers: stale peer_head_num + no FORWARD stagnation detection |
 | P39 | ~~CRITICAL~~ **Fixed** | `_push_next` cascade blocks not applied to database + gap fill requires exchange peers |
+| P40 | ~~HIGH~~ **Fixed** | FORWARD transition not announced to peers + exchange status not visible in stats |
 
 Full analysis in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md#new-problems-discovered-post-implementation).
 
@@ -540,3 +541,17 @@ Gap fill is triggered in three places:
 **Fix 3 — Gap fill failure transitions to SYNC:** When no peer at all is available for gap fill, immediately transition to SYNC mode instead of waiting for stagnation detection.
 
 **Fix 4 — Belt-and-suspenders in `accept_block`:** When `block_too_old_exception` is caught and the database is behind fork_db._head, reset fork_db to the database head and retry the push. This handles edge cases where the primary cascade fix (Fix 1) doesn't apply (e.g., non-linear cascade).
+
+### P40: FORWARD Transition Peer Notification + Exchange Status Visibility
+
+**Files:** `libraries/network/dlt_p2p_node.cpp`, `libraries/network/include/graphene/network/dlt_p2p_peer_state.hpp`
+
+**Root cause:** When a node transitions from SYNC→FORWARD, it locally re-evaluates `exchange_enabled` for its peers (P25 fix), but does NOT notify peers. The peer still sees this node as SYNC with `exchange_enabled=false`, and won't send blocks/transactions to it. This delays exchange activation until the next periodic `broadcast_chain_status()` cycle (which only targets exchange-enabled peers — a catch-22).
+
+**Fix 1 — Notify ALL peers on FORWARD transition:** `transition_to_forward()` now sends a `dlt_fork_status_message` with `node_status=FORWARD` to ALL active/syncing peers, not just exchange-enabled ones. This ensures peers know we're ready for exchange.
+
+**Fix 2 — Re-evaluate exchange on received FORWARD status:** `on_dlt_fork_status()` now detects SYNC→FORWARD transitions in the peer's status. When a peer transitions to FORWARD, it re-checks `is_block_known(peer_head_id)` and enables exchange if the peer's head is now recognized.
+
+**Fix 3 — Exchange status in peer stats:** `log_peer_stats()` now shows `exch=YES/no` explicitly in the per-peer stats line, making it easy to see which peers are exchange-enabled at a glance.
+
+**Fix 4 — Document stale `peer_head_num`:** Added comments in `dlt_peer_state` and `log_peer_stats()` clarifying that `peer_head_num` is a stale snapshot (from hello/fork_status/block relay), NOT real-time. The peer's actual head may be significantly higher. This prevents AI assistants and developers from misinterpreting the stats table as showing real-time peer state.

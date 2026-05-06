@@ -1180,15 +1180,43 @@ void dlt_p2p_node::on_dlt_not_available(peer_id peer, const dlt_not_available_me
 void dlt_p2p_node::on_dlt_fork_status(peer_id peer, const dlt_fork_status_message& msg) {
     auto it = _peer_states.find(peer);
     if (it == _peer_states.end()) return;
+    auto& state = it->second;
 
-    it->second.peer_fork_status = msg.fork_status;
-    it->second.peer_head_id = msg.head_block_id;
-    it->second.peer_head_num = msg.head_block_num;
-    it->second.peer_lib_id = msg.lib_block_id;
-    it->second.peer_lib_num = msg.lib_block_num;
-    it->second.peer_dlt_earliest = msg.dlt_earliest_block;
-    it->second.peer_dlt_latest = msg.dlt_latest_block;
-    it->second.peer_node_status = msg.node_status;
+    // Track what the peer's node_status was before this update, so we can
+    // detect a SYNC→FORWARD transition and react to it.
+    uint8_t prev_node_status = state.peer_node_status;
+
+    state.peer_fork_status = msg.fork_status;
+    state.peer_head_id = msg.head_block_id;
+    state.peer_head_num = msg.head_block_num;
+    state.peer_lib_id = msg.lib_block_id;
+    state.peer_lib_num = msg.lib_block_num;
+    state.peer_dlt_earliest = msg.dlt_earliest_block;
+    state.peer_dlt_latest = msg.dlt_latest_block;
+    state.peer_node_status = msg.node_status;
+
+    // When a peer transitions from SYNC to FORWARD (or is already FORWARD)
+    // and we haven't enabled exchange with it yet, re-evaluate. The peer
+    // just finished syncing — its head block may now be within our known
+    // chain, meaning we should enable block/transaction exchange.
+    if (!state.exchange_enabled &&
+        msg.node_status == DLT_NODE_STATUS_FORWARD &&
+        prev_node_status == DLT_NODE_STATUS_SYNC &&
+        state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE &&
+        msg.head_block_num > 0 && _delegate) {
+        if (_delegate->is_block_known(msg.head_block_id)) {
+            ilog(DLT_LOG_GREEN "Peer ${ep} transitioned to FORWARD, re-enabling exchange (head #${hn} now recognized)" DLT_LOG_RESET,
+                 ("ep", state.endpoint)("hn", msg.head_block_num));
+            state.exchange_enabled = true;
+            state.fork_alignment = true;
+        }
+    }
+
+    // Also update _highest_seen_block_num for gap detection (P37)
+    if (msg.head_block_num > _highest_seen_block_num) {
+        _highest_seen_block_num = msg.head_block_num;
+    }
+
     record_packet_result(peer, true);
 }
 
@@ -1771,6 +1799,36 @@ void dlt_p2p_node::transition_to_forward() {
         }
     }
 
+    // Notify ALL connected peers (not just exchange-enabled) that we are
+    // now in FORWARD mode. Peers that still have us listed as SYNC need
+    // this update to re-evaluate their exchange_enabled flag for us.
+    // Without this, a peer that connected while we were SYNC may still
+    // have exchange_enabled=false for us and won't send us blocks/txs.
+    {
+        dlt_fork_status_message status_msg;
+        if (_delegate) {
+            dlt_hello_message hello = build_hello_message();
+            status_msg.fork_status = _fork_status;
+            status_msg.head_block_id = hello.head_block_id;
+            status_msg.head_block_num = hello.head_block_num;
+            status_msg.lib_block_id = hello.lib_block_id;
+            status_msg.lib_block_num = hello.lib_block_num;
+            status_msg.dlt_earliest_block = hello.dlt_earliest_block;
+            status_msg.dlt_latest_block = hello.dlt_latest_block;
+        }
+        status_msg.node_status = DLT_NODE_STATUS_FORWARD;
+
+        message fwd_msg(status_msg);
+        for (auto& _peer_item : _peer_states) {
+            auto& state = _peer_item.second;
+            if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
+                state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) {
+                send_message(_peer_item.first, fwd_msg);
+            }
+        }
+        ilog(DLT_LOG_GREEN "Sent FORWARD status notification to all connected peers" DLT_LOG_RESET);
+    }
+
     // Revalidate provisional mempool entries
     for (auto it = _mempool_by_id.begin(); it != _mempool_by_id.end(); ) {
         if (it->second.is_provisional) {
@@ -2290,6 +2348,10 @@ void dlt_p2p_node::log_peer_stats() {
          ("p", _block_processing_paused ? "YES" : "no")("R", R));
 
     // Per-peer details
+    // NOTE: peer_head_num is from the last hello/fork_status exchange or
+    // block relay — it is NOT real-time. The peer's actual head may be
+    // higher. It should not be used as an authoritative measure of the
+    // peer's current chain state.
     for (auto& _peer_item : _peer_states) {
         auto& state = _peer_item.second;
         auto ep = std::string(state.endpoint);
@@ -2325,14 +2387,15 @@ void dlt_p2p_node::log_peer_stats() {
             continue;
         }
 
-        // Active/handshaking/syncing peers — show fork alignment, ranges, flags
+        // Active/handshaking/syncing peers — show exchange status, fork alignment, ranges, flags
         std::string flags;
-        if (state.exchange_enabled) flags += "+fork";
         if (state.fork_alignment) flags += "+align";
         if (state.peer_emergency_active) flags += "+emrg";
         if (state.peer_has_emergency_key) flags += "+ekey";
         if (state.pending_sync_start > 0) flags += "+sync";
         if (flags.empty()) flags = "-";
+
+        const char* exch_str = state.exchange_enabled ? "YES" : "no";
 
         const char* peer_fork_str;
         switch (state.peer_fork_status) {
@@ -2343,8 +2406,8 @@ void dlt_p2p_node::log_peer_stats() {
         }
         const char* peer_node_str = (state.peer_node_status == DLT_NODE_STATUS_SYNC) ? "SYNC" : "FWD";
 
-        ilog("${C}  ${ep} | ${ls} | head=${ph} lib=${pl} | range=${pe}-${pt} | peer_fork=${pf} peer_node=${pn} | spam=${s} | ${fl}${R}",
-             ("C", C)("ep", ep)("ls", ls)
+        ilog("${C}  ${ep} | ${ls} | exch=${ex} | head=${ph} lib=${pl} | range=${pe}-${pt} | peer_fork=${pf} peer_node=${pn} | spam=${s} | ${fl}${R}",
+             ("C", C)("ep", ep)("ls", ls)("ex", exch_str)
              ("ph", state.peer_head_num)("pl", state.peer_lib_num)
              ("pe", state.peer_dlt_earliest)("pt", state.peer_dlt_latest)
              ("pf", peer_fork_str)("pn", peer_node_str)
