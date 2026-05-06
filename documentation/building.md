@@ -28,10 +28,9 @@ We ship Dockerfiles for building production and testnet images.
 
 | Dockerfile | Purpose | Image Tag | CMake Options |
 |------------|---------|-----------|---------------|
-| `share/vizd/docker/Dockerfile-production` | Mainnet node | `vizblockchain/vizd:latest` | `LOW_MEMORY_NODE=FALSE`, `ENABLE_MONGO_PLUGIN=FALSE` |
+| `share/vizd/docker/Dockerfile-production` | Mainnet node | `vizblockchain/vizd:latest` | `LOW_MEMORY_NODE=FALSE` |
 | `share/vizd/docker/Dockerfile-testnet` | Testnet node | `vizblockchain/vizd:testnet` | `BUILD_TESTNET=TRUE`, `LOW_MEMORY_NODE=FALSE` |
 | `share/vizd/docker/Dockerfile-lowmem` | Low memory consensus node | `vizblockchain/vizd:lowmem` | `LOW_MEMORY_NODE=TRUE` |
-| `share/vizd/docker/Dockerfile-mongo` | Node with MongoDB plugin | `vizblockchain/vizd:mongo` | `ENABLE_MONGO_PLUGIN=TRUE` |
 
 ### Building Locally
 
@@ -64,12 +63,6 @@ Build the low-memory image (for witnesses and seed-nodes):
 
 ```bash
 docker build -t vizblockchain/vizd:lowmem -f share/vizd/docker/Dockerfile-lowmem .
-```
-
-Build the MongoDB-enabled image:
-
-```bash
-docker build -t vizblockchain/vizd:mongo -f share/vizd/docker/Dockerfile-mongo .
 ```
 
 ### Pushing to Docker Hub
@@ -132,12 +125,6 @@ docker run -d \
   -v /path/to/blockchain:/var/lib/vizd \
   vizblockchain/vizd:lowmem
 
-# MongoDB-enabled node
-docker run -d \
-  --name vizd-mongo \
-  -p 8090:8090 -p 8091:8091 -p 2001:2001 \
-  -v /path/to/blockchain:/var/lib/vizd \
-  vizblockchain/vizd:mongo
 ```
 
 ### Troubleshooting

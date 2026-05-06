@@ -36,7 +36,6 @@ target_link_libraries(
         graphene_${CURRENT_TARGET}
         graphene_chain
         graphene::chain_plugin
-        graphene::follow
         graphene_protocol
         graphene::json_rpc
         graphene_utilities

@@ -1,6 +1,5 @@
 #include <graphene/plugins/database_api/plugin.hpp>
 
-#include <graphene/plugins/follow/plugin.hpp>
 
 #include <graphene/protocol/get_config.hpp>
 
