@@ -1124,7 +1124,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
         // which returns the same committee block we already can't link —
         // leaving the competing fork unevaluated.
         if (block_num > _delegate->get_head_block_num()) {
-            uint32_t parent_num = block_header::num_from_id(reply.block.previous);
+            uint32_t parent_num = protocol::block_header::num_from_id(reply.block.previous);
             block_id_type our_head_id = _delegate->get_head_block_id();
             if (parent_num == _delegate->get_head_block_num() &&
                 reply.block.previous != our_head_id &&
@@ -2793,7 +2793,7 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
 
             if (is_transient) {
                 ilog(DLT_LOG_DGRAY "Peer ${ep} disconnected: ${msg}" DLT_LOG_RESET,
-                     ("ep", ep_str_rl)("msg", e.get_message()));
+                     ("ep", ep_str_rl)("msg", std::string(e.what())));
             } else {
                 wlog("Read loop error for peer ${ep}: ${e}",
                      ("ep", ep_str_rl)("e", detail));
