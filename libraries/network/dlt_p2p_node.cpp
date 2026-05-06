@@ -161,16 +161,27 @@ void dlt_p2p_node::close() {
 void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
     if (_connections.size() >= _max_connections) return;
 
-    // Don't connect to already-connected peer
-    for (auto& _peer_item : _peer_states) {
-            auto& state = _peer_item.second;
-        if (state.endpoint == ep && state.lifecycle_state != DLT_PEER_LIFECYCLE_DISCONNECTED
-            && state.lifecycle_state != DLT_PEER_LIFECYCLE_BANNED) {
-            return;
+    // Check for existing entry — reuse DISCONNECTED, skip if active/handshaking
+    peer_id pid = 0;
+    bool found_existing = false;
+    for (auto& item : _peer_states) {
+        auto& state = item.second;
+        if (state.endpoint == ep) {
+            if (state.lifecycle_state != DLT_PEER_LIFECYCLE_DISCONNECTED
+                && state.lifecycle_state != DLT_PEER_LIFECYCLE_BANNED) {
+                return;  // already connected or connecting
+            }
+            // Reuse existing DISCONNECTED entry instead of creating a duplicate
+            pid = item.first;
+            found_existing = true;
+            break;
         }
     }
 
-    peer_id pid = _next_peer_id++;
+    if (!found_existing) {
+        pid = _next_peer_id++;
+    }
+
     auto& state = _peer_states[pid];
     state.endpoint = ep;
     state.lifecycle_state = DLT_PEER_LIFECYCLE_CONNECTING;
@@ -241,6 +252,30 @@ void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason, bo
         }
     }
 
+    // Cancel read fiber
+    auto fiber_it = _read_fibers.find(peer);
+    if (fiber_it != _read_fibers.end()) {
+        try { if (fiber_it->second.valid()) fiber_it->second.cancel_and_wait(__FUNCTION__); } catch (...) {}
+        _read_fibers.erase(fiber_it);
+    }
+
+    // Close connection
+    auto conn_it = _connections.find(peer);
+    if (conn_it != _connections.end()) {
+        try { if (conn_it->second) conn_it->second->close(); } catch (...) {}
+        _connections.erase(conn_it);
+    }
+
+    // Incoming peers (from accept_loop) have ephemeral random ports —
+    // there is no P2P server to reconnect to. Remove them immediately
+    // instead of putting them in the DISCONNECTED reconnection cycle.
+    if (state.is_incoming) {
+        wlog(DLT_LOG_DGRAY "Incoming peer ${ep} disconnected: ${reason} (removed, no reconnect)" DLT_LOG_RESET,
+             ("ep", state.endpoint)("reason", reason));
+        _peer_states.erase(it);
+        return;
+    }
+
     state.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
     state.disconnected_since = fc::time_point::now();
     state.expected_next_block = 0;
@@ -255,20 +290,6 @@ void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason, bo
     uint32_t jitter_range = state.reconnect_backoff_sec / 2;
     uint32_t jitter = (jitter_range > 0) ? (rand() % jitter_range) - (jitter_range / 2) : 0;
     state.next_reconnect_attempt = fc::time_point::now() + fc::seconds(state.reconnect_backoff_sec + jitter);
-
-    // Cancel read fiber
-    auto fiber_it = _read_fibers.find(peer);
-    if (fiber_it != _read_fibers.end()) {
-        try { if (fiber_it->second.valid()) fiber_it->second.cancel_and_wait(__FUNCTION__); } catch (...) {}
-        _read_fibers.erase(fiber_it);
-    }
-
-    // Close connection
-    auto conn_it = _connections.find(peer);
-    if (conn_it != _connections.end()) {
-        try { if (conn_it->second) conn_it->second->close(); } catch (...) {}
-        _connections.erase(conn_it);
-    }
 
     wlog(DLT_LOG_DGRAY "Disconnected from peer ${ep}: ${reason} (backoff=${b}s)" DLT_LOG_RESET,
          ("ep", state.endpoint)("reason", reason)("b", state.reconnect_backoff_sec));
@@ -319,6 +340,29 @@ void dlt_p2p_node::periodic_reconnect_check() {
             }
         }
         ++it;
+    }
+
+    // Hard cap: if _peer_states is too large, evict oldest DISCONNECTED entries.
+    // This is a safety net against any edge case that causes accumulation.
+    static constexpr uint32_t MAX_PEER_STATES = 200;
+    if (_peer_states.size() > MAX_PEER_STATES) {
+        uint32_t excess = static_cast<uint32_t>(_peer_states.size()) - MAX_PEER_STATES;
+        uint32_t removed = 0;
+        // Collect DISCONNECTED peers sorted by disconnect time (oldest first)
+        std::vector<std::pair<fc::time_point, peer_id>> disc_peers;
+        for (const auto& item : _peer_states) {
+            if (item.second.lifecycle_state == DLT_PEER_LIFECYCLE_DISCONNECTED) {
+                disc_peers.emplace_back(item.second.disconnected_since, item.first);
+            }
+        }
+        std::sort(disc_peers.begin(), disc_peers.end());
+        for (uint32_t i = 0; i < std::min(excess, static_cast<uint32_t>(disc_peers.size())) && removed < excess; ++i) {
+            wlog("Evicting stale peer ${ep} (peer_states cap exceeded, ${n} entries)",
+                 ("ep", _peer_states[disc_peers[i].second].endpoint)
+                 ("n", _peer_states.size()));
+            _peer_states.erase(disc_peers[i].second);
+            removed++;
+        }
     }
 }
 
@@ -2417,12 +2461,11 @@ void dlt_p2p_node::accept_loop() {
             state.lifecycle_state = DLT_PEER_LIFECYCLE_HANDSHAKING;
             state.state_entered_time = fc::time_point::now();
             state.connected_since = fc::time_point::now();
+            state.is_incoming = true;
 
-            // Add to known peers
-            dlt_known_peer kp;
-            kp.endpoint = state.endpoint;
-            kp.node_id = node_id_t();
-            _known_peers.insert(kp);
+            // Do NOT add incoming random-port endpoints to _known_peers.
+            // Ephemeral client ports (e.g. 35048) are not listening P2P servers
+            // and should never be reconnected to or shared in peer exchange.
 
             // Send hello
             send_message(pid, message(build_hello_message()));

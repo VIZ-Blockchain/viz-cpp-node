@@ -41,6 +41,7 @@ struct dlt_peer_state {
     bool                         fork_alignment = false;    // true = blocks link to ours
     block_id_type                recognized_head;           // which of peer's blocks we recognize
     block_id_type                recognized_lib;
+    bool                         is_incoming = false;       // true = accepted in accept_loop (random port)
 
     // Anti-spam
     uint32_t                     spam_strikes = 0;
