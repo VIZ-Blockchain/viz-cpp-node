@@ -775,7 +775,11 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
     if (it == _peer_states.end()) return;
 
     uint32_t our_head = _delegate->get_head_block_num();
-    uint32_t peer_latest = it->second.peer_dlt_latest;
+    // P42 fix: Use the freshest view of the peer's highest block.
+    // peer_dlt_latest is set during hello exchange and goes stale
+    // as blocks arrive.  peer_head_num is updated from received
+    // blocks (P37) and reflects the real chain tip.
+    uint32_t peer_latest = std::max(it->second.peer_dlt_latest, it->second.peer_head_num);
 
     if (our_head >= peer_latest) {
         // We're caught up with this peer
@@ -784,7 +788,8 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
             bool all_caught_up = true;
             for (auto& _peer_item : _peer_states) {
             auto& s = _peer_item.second;
-                if (s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE && s.peer_dlt_latest > our_head) {
+                uint32_t s_latest = std::max(s.peer_dlt_latest, s.peer_head_num);
+                if (s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE && s_latest > our_head) {
                     all_caught_up = false;
                     break;
                 }
@@ -815,8 +820,9 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
             const auto& ps = _pi.second;
             if (ps.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE &&
                 ps.lifecycle_state != DLT_PEER_LIFECYCLE_SYNCING) continue;
+            uint32_t ps_latest = std::max(ps.peer_dlt_latest, ps.peer_head_num);
             if (ps.peer_dlt_earliest > 0 && ps.peer_dlt_earliest <= start &&
-                ps.peer_dlt_latest > our_head) {
+                ps_latest > our_head) {
                 peer_with_gap_blocks = true;
                 ilog(DLT_LOG_GREEN "Peer ${ep2} can bridge gap (DLT range ${e}-${l})" DLT_LOG_RESET,
                      ("ep2", ps.endpoint)("e", ps.peer_dlt_earliest)("l", ps.peer_dlt_latest));
@@ -1789,6 +1795,19 @@ void dlt_p2p_node::transition_to_forward() {
     // Emit peer stats immediately upon entering FORWARD mode
     log_peer_stats();
     _stats_log_counter = 0;  // reset interval timer from this point
+
+    // P42 fix: Reset SYNCING peers to ACTIVE.  After transition_to_forward(),
+    // any peer still in SYNCING lifecycle is one we just finished syncing from.
+    // Without this reset, request_gap_fill() filters for ACTIVE peers only
+    // and skips SYNCING ones — so it finds no eligible peer and falls back
+    // to transition_to_sync(), causing the SYNC↔FORWARD oscillation.
+    for (auto& _peer_item : _peer_states) {
+        auto& state = _peer_item.second;
+        if (state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) {
+            state.lifecycle_state = DLT_PEER_LIFECYCLE_ACTIVE;
+            state.state_entered_time = fc::time_point::now();
+        }
+    }
 
     // P25 fix: Re-evaluate exchange_enabled for all peers now that
     // we're in FORWARD mode. Peers that were SYNC when we first
