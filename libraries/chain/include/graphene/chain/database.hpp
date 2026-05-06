@@ -674,6 +674,14 @@ namespace graphene { namespace chain {
 
 
             flat_map<std::string, std::shared_ptr<custom_operation_interpreter>> _custom_operation_interpreters;
+
+            // Non-consensus round-gap tracking for emergency witness blanking.
+            // Maps witness account name -> gap (head_block_num - last_confirmed_block_num)
+            // recorded at the START of the current schedule round.  Updated in
+            // update_witness_schedule(); compared at the END of each round to decide
+            // whether the witness produced any block during the round.
+            std::map<account_name_type, uint32_t> _emergency_round_start_gap;
+
             std::string _json_schema;
         };
 

@@ -439,22 +439,41 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
     // peer entries exist for the same IP (belt-and-suspenders safety net).
     std::set<fc::ip::address> sent_to_ips;
 
-    // P40 fix: collect target peers first to avoid iterator invalidation
+    // Diagnostic: count eligible vs skipped peers
+    uint32_t eligible = 0, skipped_not_exchange = 0, skipped_not_active = 0;
+
+    // fix: collect target peers first to avoid iterator invalidation
     // when send_message -> handle_disconnect erases incoming peers.
     std::vector<peer_id> targets;
     for (const auto& _peer_item : _peer_states) {
         const auto& id = _peer_item.first;
         const auto& state = _peer_item.second;
         if (id == exclude) continue;
-        if (state.exchange_enabled && state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE) {
-            fc::ip::address ip = state.endpoint.get_address();
-            if (sent_to_ips.count(ip)) continue;  // already sent to this IP
-            sent_to_ips.insert(ip);
-            targets.push_back(id);
+        if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) {
+            if (state.lifecycle_state == DLT_PEER_LIFECYCLE_HANDSHAKING ||
+                state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING ||
+                state.lifecycle_state == DLT_PEER_LIFECYCLE_CONNECTING)
+                skipped_not_active++;
+            continue;
         }
+        if (!state.exchange_enabled) {
+            skipped_not_exchange++;
+            continue;
+        }
+        fc::ip::address ip = state.endpoint.get_address();
+        if (sent_to_ips.count(ip)) continue;  // already sent to this IP
+        sent_to_ips.insert(ip);
+        targets.push_back(id);
+        eligible++;
     }
     for (auto id : targets) {
         send_message(id, msg);
+    }
+
+    // diagnostic: log relay stats for block messages
+    if (msg.msg_type == dlt_block_reply_message_type) {
+        dlog("Relay block_reply to ${e} peers (${nx} skipped: no_exchange, ${na} skipped: not_active)",
+             ("e", eligible)("nx", skipped_not_exchange)("na", skipped_not_active));
     }
 }
 
@@ -1116,7 +1135,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
 
         on_block_applied(reply.block, /*caused_fork_switch=*/false);
 
-        // P25 fix: If this peer has exchange_enabled=false but its block was
+        // If this peer has exchange_enabled=false but its block was
         // accepted, it must be on our chain — enable exchange.
         if (!state.exchange_enabled) {
             ilog(DLT_LOG_GREEN "Enabling exchange for peer ${ep} after accepting its block #${n}" DLT_LOG_RESET,
@@ -1126,6 +1145,8 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
         }
 
         // Retransmit to our-fork peers
+        dlog(DLT_LOG_DGRAY "Retransmitting block #${n} by ${w} to fork peers (excluding ${ep})" DLT_LOG_RESET,
+             ("n", reply.block.block_num())("w", reply.block.witness)("ep", state.endpoint));
         send_to_all_our_fork_peers(message(dlt_block_reply_message(reply)), peer);
 
         // P26 fix: Check if we've caught up to all peers via single-block replies
@@ -1137,8 +1158,8 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
         // FORK_DB_ONLY: block stored in fork_db but not applied to chain.
         // Do NOT call on_block_applied (which would corrupt mempool),
         // do NOT retransmit (block is not on our main chain).
-        dlog("Stored block #${n} in fork_db (not yet applied) from ${ep}",
-             ("n", block_num)("ep", state.endpoint));
+        dlog(DLT_LOG_ORANGE "Stored block #${n} by witness ${w} in fork_db (not applied, head=${h}) from ${ep}" DLT_LOG_RESET,
+             ("n", block_num)("w", reply.block.witness)("h", _delegate->get_head_block_num())("ep", state.endpoint));
     }
 
     // Update peer's expected_next_block regardless of outcome so the
