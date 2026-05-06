@@ -56,7 +56,6 @@ target_link_libraries(
         graphene::database_api
         graphene::account_history
         graphene::operation_history
-        graphene::private_message
         graphene::account_by_key
         graphene::witness_api
         graphene_protocol

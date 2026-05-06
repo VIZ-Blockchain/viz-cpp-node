@@ -7,7 +7,6 @@
 #include <fc/api.hpp>
 #include <graphene/plugins/network_broadcast_api/network_broadcast_api_plugin.hpp>
 
-#include <graphene/plugins/private_message/private_message_objects.hpp>
 #include <graphene/api/account_api_object.hpp>
 #include <graphene/plugins/witness_api/plugin.hpp>
 
@@ -22,7 +21,6 @@ using namespace plugins;
 //using namespace plugins::condenser_api;
 using namespace plugins::database_api;
 using namespace plugins::network_broadcast_api;
-using namespace plugins::private_message;
 using namespace graphene::api;
 using namespace plugins::witness_api;
 
@@ -81,15 +79,6 @@ struct remote_network_broadcast_api {
     void broadcast_transaction( signed_transaction );
     broadcast_transaction_synchronous_t broadcast_transaction_synchronous( signed_transaction );
     void broadcast_block( signed_block );
-};
-
-/**
- * This is a dummy class exists only to provide method signature information to fc::api, not to execute calls.
- * Class is used by wallet to send formatted API calls to private_message plugin on remote node.
- */
-struct remote_private_message {
-    vector <message_api_obj> get_inbox(const std::string& to, time_point newest, uint16_t limit, std::uint64_t offset) const;
-    vector <message_api_obj> get_outbox(const std::string& from, time_point newest, uint16_t limit, std::uint64_t offset) const;
 };
 
 /**
@@ -166,14 +155,6 @@ FC_API( graphene::wallet::remote_network_broadcast_api,
         (broadcast_transaction)
         (broadcast_transaction_synchronous)
         (broadcast_block)
-)
-
-/**
- * Declaration of remote API formatter to private message plugin on remote node
- */
-FC_API( graphene::wallet::remote_private_message,
-        (get_inbox)
-        (get_outbox)
 )
 
 /**

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <graphene/wallet/remote_node_api.hpp>
-#include <graphene/plugins/private_message/private_message_plugin.hpp>
 #include <graphene/plugins/account_history/history_object.hpp>
 
 #include <graphene/utilities/key_conversion.hpp>
@@ -17,7 +16,6 @@ namespace graphene { namespace wallet {
 
         using namespace graphene::utilities;
         using namespace graphene::protocol;
-        using namespace graphene::plugins::private_message;
 
         typedef uint16_t transaction_handle_type;
 
@@ -971,14 +969,6 @@ namespace graphene { namespace wallet {
              */
             string decrypt_memo( string memo );
 
-            // Private message
-            vector<extended_message_object> get_inbox(
-                    const std::string& to, time_point newest, uint16_t limit, std::uint64_t offset);
-            vector<extended_message_object> get_outbox(
-                    const std::string& from, time_point newest, uint16_t limit, std::uint64_t offset);
-
-            message_body try_decrypt_message( const message_api_obj& mo );
-
             /**
              * Broadcast a custom operation.
              *
@@ -1539,8 +1529,6 @@ FC_API( graphene::wallet::wallet_api,
 
                 (get_active_witnesses)
                 (get_transaction)
-                (get_inbox)
-                (get_outbox)
 )
 
 FC_REFLECT( (graphene::wallet::memo_data), (from)(to)(nonce)(check)(encrypted) )
