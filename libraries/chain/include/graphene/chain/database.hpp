@@ -16,6 +16,26 @@
 
 namespace graphene { namespace chain {
 
+        /// Custom combiner for applied_block signal that logs per-slot timing.
+        /// This allows diagnosing which plugin callback is slow without
+        /// modifying each plugin individually.
+        struct applied_block_timing_combiner {
+            typedef void result_type;
+            template<typename InputIterator>
+            result_type operator()(InputIterator first, InputIterator last) const {
+                int slot_idx = 0;
+                for (auto it = first; it != last; ++it, ++slot_idx) {
+                    auto slot_start = fc::time_point::now();
+                    *it;  // invoke the slot
+                    auto slot_ms = (fc::time_point::now() - slot_start).count() / 1000;
+                    if (slot_ms > 100) {
+                        wlog("applied_block slot #${idx} took ${ms}ms",
+                             ("idx", slot_idx)("ms", slot_ms));
+                    }
+                }
+            }
+        };
+
         using graphene::protocol::signed_transaction;
         using graphene::protocol::operation;
         using graphene::protocol::authority;
@@ -328,7 +348,7 @@ namespace graphene { namespace chain {
              *  the write lock and may be in an "inconstant state" until after it is
              *  released.
              */
-            fc::signal<void(const signed_block &)> applied_block;
+            boost::signals2::signal<void(const signed_block &), applied_block_timing_combiner> applied_block;
 
             /**
              * Emitted when dlt_block_log is reset due to a gap between

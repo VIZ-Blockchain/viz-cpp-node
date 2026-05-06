@@ -6,6 +6,8 @@
 #include <graphene/plugins/json_rpc/utility.hpp>
 #include <graphene/plugins/json_rpc/plugin.hpp>
 
+#include <unordered_map>
+
 namespace graphene {
 namespace plugins {
 namespace block_info {
@@ -35,7 +37,7 @@ public:
 // protected:
     boost::signals2::scoped_connection applied_block_conn_;
 private:
-    std::vector<block_info> block_info_;
+    std::unordered_map<uint32_t, block_info> block_info_;
 
     graphene::chain::database & db_;
 };
@@ -45,12 +47,17 @@ std::vector<block_info> plugin::plugin_impl::get_block_info(uint32_t start_block
 
     FC_ASSERT(start_block_num > 0);
     FC_ASSERT(count <= 10000);
-    uint32_t n = std::min(uint32_t(block_info_.size()),
-    start_block_num + count);
 
+    result.reserve(count);
     for (uint32_t block_num = start_block_num;
-        block_num < n; block_num++) {
-        result.emplace_back(block_info_[block_num]);
+         block_num < start_block_num + count; block_num++) {
+        auto it = block_info_.find(block_num);
+        if (it == block_info_.end()) {
+            // No info stored for this block (e.g. blocks before snapshot in DLT mode)
+            result.emplace_back();
+        } else {
+            result.emplace_back(it->second);
+        }
     }
 
     return result;
@@ -63,21 +70,25 @@ std::vector<block_with_info> plugin::plugin_impl::get_blocks_with_info(
 
     FC_ASSERT(start_block_num > 0);
     FC_ASSERT(count <= 10000);
-    uint32_t n = std::min( uint32_t( block_info_.size() ), start_block_num + count );
 
     uint64_t total_size = 0;
     for (uint32_t block_num = start_block_num;
-         block_num < n; block_num++) {
-        uint64_t new_size =
-                total_size + block_info_[block_num].block_size;
+         block_num < start_block_num + count; block_num++) {
+        auto it = block_info_.find(block_num);
+        if (it == block_info_.end()) {
+            // No info stored for this block (e.g. blocks before snapshot in DLT mode)
+            break;
+        }
+
+        uint64_t new_size = total_size + it->second.block_size;
         if ((new_size > 8 * 1024 * 1024) &&
             (block_num != start_block_num)) {
-                break;
+            break;
         }
         total_size = new_size;
         result.emplace_back();
         result.back().block = *db.fetch_block_by_number(block_num);
-        result.back().info = block_info_[block_num];
+        result.back().info = it->second;
     }
 
     return result;
@@ -87,10 +98,6 @@ void plugin::plugin_impl::on_applied_block(const protocol::signed_block &b) {
     uint32_t block_num = b.block_num();
     const auto &db = appbase::app().get_plugin<chain::plugin>().db();
 
-    while (block_num >= block_info_.size()) {
-        block_info_.emplace_back();
-    }
-
     block_info &info = block_info_[block_num];
     const dynamic_global_property_object &dgpo = db.get_dynamic_global_properties();
 
@@ -99,7 +106,6 @@ void plugin::plugin_impl::on_applied_block(const protocol::signed_block &b) {
     info.average_block_size = dgpo.average_block_size;
     info.aslot = dgpo.current_aslot;
     info.last_irreversible_block_num = dgpo.last_irreversible_block_num;
-    return;
 }
 
 DEFINE_API ( plugin, get_block_info ) {

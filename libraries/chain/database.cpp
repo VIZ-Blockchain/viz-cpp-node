@@ -2311,10 +2311,8 @@ namespace graphene { namespace chain {
 
         void database::notify_applied_block(const signed_block &block) {
             // Timing diagnostics for applied_block signal.
-            // When called from flush_pending_block_notifications(), the write
-            // lock is NOT held, so slow plugin callbacks no longer block
-            // P2P/RPC.  When called directly (replay), there is no
-            // contention so timing is irrelevant.
+            // The applied_block_timing_combiner (database.hpp) logs per-slot timing
+            // when any individual slot exceeds 100ms. This outer log shows the total.
             auto notify_start = fc::time_point::now();
             size_t num_slots = applied_block.num_slots();
 
@@ -2322,7 +2320,7 @@ namespace graphene { namespace chain {
 
             auto notify_end = fc::time_point::now();
             auto total_ms = (notify_end - notify_start).count() / 1000;
-            if (total_ms > 200) {
+            if (total_ms > 100) {
                 wlog("applied_block notification took ${ms}ms for block #${bnum} "
                      "(${slots} connected plugins)",
                      ("ms", total_ms)("bnum", block.block_num())("slots", num_slots));
