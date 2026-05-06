@@ -182,7 +182,7 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
     fc::ip::address target_ip = ep.get_address();
     peer_id existing_ip_conn = find_active_peer_by_ip(target_ip);
     if (existing_ip_conn != INVALID_PEER_ID) {
-        dlog("Skipping connect to ${ep} (already connected to this IP as peer ${pid})",
+        dlog(DLT_LOG_DGRAY "Skipping connect to ${ep} (already connected to this IP as peer ${pid})" DLT_LOG_RESET,
              ("ep", ep)("pid", existing_ip_conn));
         return;
     }
@@ -264,7 +264,7 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
                                || (detail.find("End of file") != std::string::npos)
                                || (detail.find("Operation aborted") != std::string::npos);
                 if (is_expected)
-                    dlog("Connect to ${ep} failed: ${w}", ("ep", ep)("w", e.what()));
+                    dlog(DLT_LOG_DGRAY "Connect to ${ep} failed: ${w}" DLT_LOG_RESET, ("ep", ep)("w", e.what()));
                 else
                     wlog("Failed to connect to ${ep}: ${e}", ("ep", ep)("e", e.to_detail_string()));
                 state.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
@@ -484,7 +484,7 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
 
     // diagnostic: log relay stats for block messages
     if (msg.msg_type == dlt_block_reply_message_type) {
-        dlog("Relay block_reply to ${e} peers (${nx} skipped: no_exchange, ${na} skipped: not_active)",
+        dlog(DLT_LOG_DGRAY "Relay block_reply to ${e} peers (${nx} skipped: no_exchange, ${na} skipped: not_active)" DLT_LOG_RESET,
              ("e", eligible)("nx", skipped_not_exchange)("na", skipped_not_active));
     }
     if (msg.msg_type == dlt_transaction_message_type) {
@@ -1089,7 +1089,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
     // exchange), which breaks gap fill and fallbehind detection.
     if (block_num > state.peer_head_num) {
         state.peer_head_num = block_num;
-        dlog("Updated peer ${ep} head to #${n} from received block", ("ep", state.endpoint)("n", block_num));
+        dlog(DLT_LOG_DGRAY "Updated peer ${ep} head to #${n} from received block" DLT_LOG_RESET, ("ep", state.endpoint)("n", block_num));
     }
     if (block_num > _highest_seen_block_num) {
         _highest_seen_block_num = block_num;
@@ -1796,7 +1796,7 @@ void dlt_p2p_node::reconnect_seeds() {
 
 void dlt_p2p_node::pause_block_processing() {
     _block_processing_paused = true;
-    ilog("DLT P2P: block processing paused");
+    ilog(DLT_LOG_ORANGE "DLT P2P: block processing paused" DLT_LOG_RESET);
 }
 
 void dlt_p2p_node::resume_block_processing() {

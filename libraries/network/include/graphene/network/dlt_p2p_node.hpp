@@ -350,6 +350,7 @@ private:
 #define DLT_LOG_DGRAY   "\033[90m"
 #define DLT_LOG_ORANGE  "\033[33m"
 #define DLT_LOG_CYAN    "\033[36m"
+#define DLT_LOG_YELLOW  "\033[93m"
 #define DLT_LOG_RESET   "\033[0m"
 
 } // namespace network

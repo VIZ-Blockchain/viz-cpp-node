@@ -43,6 +43,10 @@
 #include <fcntl.h>
 #endif
 
+// ANSI escape codes for colored console logging
+#define SNAP_LOG_YELLOW "\033[93m"
+#define SNAP_LOG_RESET "\033[0m"
+
 namespace graphene { namespace plugins { namespace snapshot {
 
 using namespace graphene::chain;
@@ -1633,8 +1637,8 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     // read lock (the master generated blocks just 3ms after the
     // snapshot started), so cancellation is unnecessary.
     if (snapshot_in_progress.load(std::memory_order_relaxed)) {
-        ilog("New block #${n} (witness ${w}) received while snapshot in progress \u2014 "
-             "block will be processed after snapshot completes",
+        dlog(SNAP_LOG_YELLOW "New block #${n} (witness ${w}) received while snapshot in progress \u2014 "
+             "block will be processed after snapshot completes" SNAP_LOG_RESET,
              ("n", b.block_num())("w", b.witness));
     }
 

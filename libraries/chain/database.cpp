@@ -29,8 +29,9 @@
 #include <fc/container/deque.hpp>
 
 // ANSI escape for dark-grey console log color (matches DLT_LOG_DGRAY in network lib)
-#define DB_LOG_DGRAY "\033[90m"
-#define DB_LOG_RESET "\033[0m"
+#define DB_LOG_DGRAY  "\033[90m"
+#define DB_LOG_YELLOW "\033[93m"
+#define DB_LOG_RESET  "\033[0m"
 
 #include <fc/io/fstream.hpp>
 #include <fc/io/json.hpp>
@@ -2950,8 +2951,8 @@ namespace graphene { namespace chain {
                     _wso.next_shuffle_block_num =
                         head_block_num() + _wso.num_scheduled_witnesses;
 
-                    ilog("Emergency hybrid schedule: ${r} real witness slots, "
-                         "${c} committee slots",
+                    dlog(DB_LOG_YELLOW "Emergency hybrid schedule: ${r} real witness slots, "
+                         "${c} committee slots" DB_LOG_RESET,
                          ("r", real_witness_slots)
                          ("c", committee_slots));
                 });
