@@ -415,6 +415,7 @@ Post-implementation issues observed in production (4-node DLT emergency consensu
 | P37 | ~~HIGH~~ **Fixed** | Gap fill never triggers: stale peer_head_num + no FORWARD stagnation detection |
 | P39 | ~~CRITICAL~~ **Fixed** | `_push_next` cascade blocks not applied to database + gap fill requires exchange peers |
 | P40 | ~~HIGH~~ **Fixed** | FORWARD transition not announced to peers + exchange status not visible in stats |
+| P41 | ~~HIGH~~ **Fixed** | Stale peer state on reconnect: exchange_enabled, spam_strikes, peer_head_num leak from old session |
 
 Full analysis in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md#new-problems-discovered-post-implementation).
 
@@ -555,3 +556,15 @@ Gap fill is triggered in three places:
 **Fix 3 — Exchange status in peer stats:** `log_peer_stats()` now shows `exch=YES/no` explicitly in the per-peer stats line, making it easy to see which peers are exchange-enabled at a glance.
 
 **Fix 4 — Document stale `peer_head_num`:** Added comments in `dlt_peer_state` and `log_peer_stats()` clarifying that `peer_head_num` is a stale snapshot (from hello/fork_status/block relay), NOT real-time. The peer's actual head may be significantly higher. This prevents AI assistants and developers from misinterpreting the stats table as showing real-time peer state.
+
+### P41: Stale Peer State on Reconnect — exchange_enabled, spam_strikes, peer_head_num Leak
+
+**Files:** `libraries/network/dlt_p2p_node.cpp`
+
+**Root cause:** When `connect_to_peer()` reuses a `DISCONNECTED` peer state entry for reconnection, it only overwrites `endpoint`, `lifecycle_state`, and `state_entered_time`. All other fields from the previous session persist:
+- `exchange_enabled=true` leaks — combined with the OR in `on_dlt_hello_reply`, this makes exchange appear enabled even if the peer switched forks while disconnected.
+- `peer_head_num` / `peer_head_id` are stale — used by `check_forward_behind()`, `check_sync_catchup()`, `request_gap_fill()` with outdated data.
+- `spam_strikes` carries over — unfair penalty for the new connection.
+- `fork_alignment`, `peer_fork_status`, `peer_node_status`, `expected_next_block` are all stale.
+
+**Fix — Full state reset on reconnect:** `connect_to_peer()` now saves only cross-session fields (`reconnect_backoff_sec`, `last_connection_duration`, `node_id`) and then resets the entire `dlt_peer_state` via `state = dlt_peer_state()`. All per-session fields start fresh. The hello handshake re-establishes `exchange_enabled`, `peer_head_num`, etc. from scratch.

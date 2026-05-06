@@ -208,8 +208,20 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
         pid = _next_peer_id++;
     }
 
+    // Preserve only cross-session data (backoff, node_id, endpoint)
+    // and reset all per-session fields that are stale from the old connection.
+    // Without this, exchange_enabled=true leaks into the new session,
+    // peer_head_num is stale, spam_strikes are unfair, etc.
     auto& state = _peer_states[pid];
+    uint32_t saved_backoff = state.reconnect_backoff_sec;
+    fc::microseconds saved_duration = state.last_connection_duration;
+    node_id_t saved_node_id = state.node_id;
+
+    state = dlt_peer_state();           // zero-init everything
     state.endpoint = ep;
+    state.reconnect_backoff_sec = saved_backoff;
+    state.last_connection_duration = saved_duration;
+    state.node_id = saved_node_id;
     state.lifecycle_state = DLT_PEER_LIFECYCLE_CONNECTING;
     state.state_entered_time = fc::time_point::now();
 
