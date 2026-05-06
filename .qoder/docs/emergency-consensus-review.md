@@ -1,6 +1,6 @@
 # Emergency Consensus Recovery — Implementation Review
 
-## Status: Implemented (Hardfork 12, version 3.1.0) — Bugs Found and Fixed (B1–B15)
+## Status: Implemented (Hardfork 12, version 3.1.0) — Bugs Found and Fixed (B1–B17)
 
 Research source: [consensus-emergency-recovery.md](../research/consensus-emergency-recovery.md)
 
@@ -224,7 +224,9 @@ The following bugs were discovered during code review of the emergency consensus
 
 **Problem**: When committee produced a block, the `missed_blocks` loop in `update_global_dynamic_data()` applied penalties to offline witnesses for every missed slot. After 200 missed blocks (~10 minutes), their `signing_key` was set to null again — the same problem that emergency activation's penalty reset tried to solve.
 
-**Fix**: During emergency mode, the penalty/shutdown logic is skipped for witnesses that are not the block producer and not the committee. Only `current_run` is reset; `total_missed`, `penalty_percent`, and `signing_key` shutdown do not apply.
+**Fix** (consensus-based, deterministic): During emergency mode, the penalty/shutdown logic is split:
+- **Skipped**: `total_missed++`, `penalty_percent` increment, and `counted_votes` recalculation for offline witnesses. Only `current_run` is reset.
+- **Applied (consensus check)**: Key-blanking uses `head_block_num() - last_confirmed_block_num > CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS` (105 blocks = 5 full rounds). Both `head_block_num()` and `last_confirmed_block_num` are on-chain consensus fields stored in `witness_object` shared memory, so all nodes compute identical results. This replaces the old non-consensus approach that used a local `_emergency_round_start_gap` map (which could diverge between nodes). The threshold (105) is tighter than the normal-mode threshold (200) because real witnesses should re-enable faster during emergency recovery.
 
 ### B5 (Medium): Committee Could Be Selected as Top/Support Witness
 
@@ -319,6 +321,20 @@ Since `commit(HEAD)` already consumed the undo session, the zeroed schedule from
 2. In both competing-fork branches (where `peer_block_num <= our_head_num`), increment a per-peer `sync_spam_strikes` counter.
 3. After 50 strikes, set `fork_rejected_until = now + 300s` (5 minute soft-ban). Reset strikes on legitimate sync (peer genuinely ahead).
 4. At the observed spam rate (~23 requests per 4ms burst), the threshold is hit in under 1 second.
+
+### B16 (High): Null Witness Signing Key Crashes Block Validation
+
+**Problem**: When a witness has a null/empty `signing_key` (disabled via `shutdown_witness_operation` or emergency activation), and a block from that witness arrives via P2P, `validate_block_header()` calls `validate_signee(witness.signing_key)` with the empty key. The elliptic curve library crashes with `my->_key != empty_pub` deep inside `serialize()` — an opaque assertion that gives no indication of the root cause. The node then enters an infinite retry loop: gap fill requests the same block, receives it, rejects it with the crash, requests it again.
+
+**Fix** (two parts):
+1. **Clear error message**: Added a pre-check in `validate_block_header()` before `validate_signee()` that catches `witness.signing_key == public_key_type()` and throws a descriptive `FC_ASSERT` naming the witness and block number.
+2. **Gap fill blacklist**: Added rejection tracking in the DLT P2P node. When the same block is rejected 3 times (from any combination of broadcast + gap fill), gap fill is blacklisted for 120 seconds, breaking the infinite retry loop.
+
+### B17 (Critical): Emergency Witness Blanking Was Non-Consensus
+
+**Problem**: The emergency witness blanking logic in `update_witness_schedule()` used `_emergency_round_start_gap` — a local `std::map` that is NOT consensus state. It was populated at runtime and not stored in shared memory. Different nodes could compute different values depending on startup timing, replay history, and when they entered emergency mode. This meant two nodes could reach different conclusions about whether to blank a witness's signing key, causing chain divergence.
+
+**Fix**: Replaced the non-consensus approach with the same deterministic pattern used in normal mode. Key-blanking now happens in `update_global_dynamic_data()` (the consensus path) and checks `head_block_num() - last_confirmed_block_num > CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS` (105). Both values are on-chain consensus fields in `witness_object` shared memory — all nodes compute identical results. Removed `_emergency_round_start_gap` entirely.
 
 ### Committee Neutral Voter Design
 

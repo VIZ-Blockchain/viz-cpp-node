@@ -97,11 +97,13 @@ The `peer` (sender) is excluded to prevent echo. All other ACTIVE fork-aligned p
 When a transaction arrives via API (`network_broadcast_api`):
 
 ```cpp
-// dlt_p2p_node.cpp:1137
+// dlt_p2p_node.cpp
 void dlt_p2p_node::broadcast_transaction(const signed_transaction& trx) {
     add_to_mempool(trx, /*from_peer=*/false, INVALID_PEER_ID);
     dlt_transaction_message msg;
     msg.trx = trx;
+    dlog(DLT_LOG_DGRAY "Broadcasting transaction ${id} to fork peers" DLT_LOG_RESET,
+         ("id", trx.id()));
     send_to_all_our_fork_peers(message(msg));  // NO exclude
 }
 ```
@@ -110,12 +112,14 @@ The transaction is added to the local mempool and broadcast to **all** fork-alig
 
 ### Relaying Received Transactions
 
-When a transaction arrives from a peer (via `on_dlt_transaction_message` → `add_to_mempool`):
+When a transaction arrives from a peer (via `on_dlt_transaction` → `add_to_mempool`):
 
 ```cpp
-// dlt_p2p_node.cpp:1413-1417
+// dlt_p2p_node.cpp — in add_to_mempool()
 // Retranslate to our-fork peers (if from peer)
 if (from_peer && sender != INVALID_PEER_ID) {
+    dlog(DLT_LOG_DGRAY "Relaying transaction ${id} to fork peers (excluding sender)" DLT_LOG_RESET,
+         ("id", trx_id));
     dlt_transaction_message msg;
     msg.trx = trx;
     send_to_all_our_fork_peers(message(msg), sender);  // exclude sender
@@ -123,6 +127,20 @@ if (from_peer && sender != INVALID_PEER_ID) {
 ```
 
 The sender is excluded; all other fork-aligned peers receive the relay.
+
+### Transaction Diagnostic Logging
+
+All transaction exchange events produce dark-gray `dlog` messages (visible at debug log level):
+
+| Event | Log Message | Level |
+|-------|-------------|-------|
+| Self-originated send (API) | `Broadcasting transaction ${id} to fork peers` | `dlog` DGRAY |
+| Peer relay (retransmit) | `Relaying transaction ${id} to fork peers (excluding sender)` | `dlog` DGRAY |
+| Relay stats in `send_to_all_our_fork_peers` | `Relay transaction to ${e} peers (${nx} skipped: no_exchange, ${na} skipped: not_active)` | `dlog` DGRAY |
+| Received from peer (new) | `Got transaction ${id} from peer ${ep}` | `dlog` DGRAY |
+| Received duplicate | *Silent — no log emitted* | — |
+
+Duplicate transactions (already in `_mempool_by_id`) are silently ignored in both `on_dlt_transaction` and `add_to_mempool`, same as duplicate blocks — no console spam.
 
 ### Mempool Validation (Pre-Forwarding)
 

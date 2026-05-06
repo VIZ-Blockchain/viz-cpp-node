@@ -315,6 +315,13 @@ private:
     static constexpr uint32_t       GAP_FILL_TIMEOUT_SEC = 15;  ///< Max seconds to wait for gap fill reply
     uint32_t                        _highest_seen_block_num = 0; ///< Highest block num seen from any source
 
+    // ── Gap fill rejection tracking ──────────────────────────────
+    uint32_t                        _gap_rejected_block_num = 0;  ///< Last block num rejected by gap fill
+    uint32_t                        _gap_rejected_count = 0;      ///< How many times that block was rejected
+    static constexpr uint32_t       GAP_REJECT_MAX_RETRIES = 3;   ///< Give up after this many rejections of same block
+    static constexpr uint32_t       GAP_REJECT_BLACKLIST_SEC = 120; ///< Blacklist a permanently-rejected block for this long
+    fc::time_point                  _gap_rejected_blacklist_until;   ///< Don't gap-fill any block until this time
+
     // ── FORWARD stagnation ──────────────────────────────────────
     uint32_t                        _last_forward_head_num = 0;
     fc::time_point                  _last_forward_progress_time; ///< Last time our head advanced in FORWARD mode

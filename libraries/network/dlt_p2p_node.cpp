@@ -487,6 +487,10 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
         dlog("Relay block_reply to ${e} peers (${nx} skipped: no_exchange, ${na} skipped: not_active)",
              ("e", eligible)("nx", skipped_not_exchange)("na", skipped_not_active));
     }
+    if (msg.msg_type == dlt_transaction_message_type) {
+        dlog(DLT_LOG_DGRAY "Relay transaction to ${e} peers (${nx} skipped: no_exchange, ${na} skipped: not_active)" DLT_LOG_RESET,
+             ("e", eligible)("nx", skipped_not_exchange)("na", skipped_not_active));
+    }
 }
 
 void dlt_p2p_node::on_message(peer_id peer, const message& msg) {
@@ -1159,6 +1163,21 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
     if (result == dlt_block_accept_result::REJECTED) {
         wlog(DLT_LOG_RED "Rejected block #${n} from ${ep}" DLT_LOG_RESET,
              ("n", block_num)("ep", state.endpoint));
+        // Track rejected blocks to prevent gap fill infinite retry loop
+        if (block_num == _gap_rejected_block_num) {
+            _gap_rejected_count++;
+        } else {
+            _gap_rejected_block_num = block_num;
+            _gap_rejected_count = 1;
+        }
+        if (_gap_rejected_count >= GAP_REJECT_MAX_RETRIES) {
+            elog(DLT_LOG_RED "Block #${n} rejected ${c} times from peers — blacklisting gap fill for ${t}s "
+                 "(witness key likely invalid on this fork)" DLT_LOG_RESET,
+                 ("n", block_num)("c", _gap_rejected_count)("t", GAP_REJECT_BLACKLIST_SEC));
+            _gap_rejected_blacklist_until = fc::time_point::now() + fc::seconds(GAP_REJECT_BLACKLIST_SEC);
+            _gap_rejected_count = 0;
+            _gap_rejected_block_num = 0;
+        }
         record_packet_result(peer, false);
         return;
     }
@@ -1353,7 +1372,7 @@ void dlt_p2p_node::on_dlt_transaction(peer_id peer, const dlt_transaction_messag
     if (accepted) {
         auto it = _peer_states.find(peer);
         auto ep = (it != _peer_states.end()) ? std::string(it->second.endpoint) : std::to_string(peer);
-        ilog(DLT_LOG_DGRAY "Got transaction ${id} from peer ${ep}" DLT_LOG_RESET,
+        dlog(DLT_LOG_DGRAY "Got transaction ${id} from peer ${ep}" DLT_LOG_RESET,
              ("id", msg.trx.id())("ep", ep));
     }
 }
@@ -1490,6 +1509,21 @@ void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply&
         } else {
             wlog(DLT_LOG_RED "Gap fill: rejected block #${n} from ${ep}" DLT_LOG_RESET,
                  ("n", block.block_num())("ep", it->second.endpoint));
+            // Track rejected blocks to prevent infinite retry loop
+            if (block.block_num() == _gap_rejected_block_num) {
+                _gap_rejected_count++;
+            } else {
+                _gap_rejected_block_num = block.block_num();
+                _gap_rejected_count = 1;
+            }
+            if (_gap_rejected_count >= GAP_REJECT_MAX_RETRIES) {
+                elog(DLT_LOG_RED "Gap fill: block #${n} rejected ${c} times — blacklisting for ${t}s "
+                     "(witness key likely invalid on this fork)" DLT_LOG_RESET,
+                     ("n", block.block_num())("c", _gap_rejected_count)("t", GAP_REJECT_BLACKLIST_SEC));
+                _gap_rejected_blacklist_until = fc::time_point::now() + fc::seconds(GAP_REJECT_BLACKLIST_SEC);
+                _gap_rejected_count = 0;
+                _gap_rejected_block_num = 0;
+            }
         }
     }
 
@@ -1520,6 +1554,15 @@ void dlt_p2p_node::request_gap_fill() {
     if (_last_gap_fill_time != fc::time_point()) {
         auto elapsed = fc::time_point::now() - _last_gap_fill_time;
         if (elapsed.count() < GAP_FILL_COOLDOWN_SEC * 1000000) return;
+    }
+
+    // Blacklist: if a block was permanently rejected (e.g. null witness key),
+    // don't keep requesting it in a tight loop.
+    if (_gap_rejected_blacklist_until != fc::time_point()) {
+        if (fc::time_point::now() < _gap_rejected_blacklist_until) {
+            return;
+        }
+        _gap_rejected_blacklist_until = fc::time_point();  // blacklist expired
     }
 
     uint32_t our_head = _delegate->get_head_block_num();
@@ -1646,6 +1689,8 @@ void dlt_p2p_node::broadcast_transaction(const signed_transaction& trx) {
     add_to_mempool(trx, /*from_peer=*/false, INVALID_PEER_ID);
     dlt_transaction_message msg;
     msg.trx = trx;
+    dlog(DLT_LOG_DGRAY "Broadcasting transaction ${id} to fork peers" DLT_LOG_RESET,
+         ("id", trx.id()));
     send_to_all_our_fork_peers(message(msg));
 }
 
@@ -2100,6 +2145,8 @@ bool dlt_p2p_node::add_to_mempool(const signed_transaction& trx, bool from_peer,
 
     // Retranslate to our-fork peers (if from peer)
     if (from_peer && sender != INVALID_PEER_ID) {
+        dlog(DLT_LOG_DGRAY "Relaying transaction ${id} to fork peers (excluding sender)" DLT_LOG_RESET,
+             ("id", trx_id));
         dlt_transaction_message msg;
         msg.trx = trx;
         send_to_all_our_fork_peers(message(msg), sender);

@@ -2977,61 +2977,6 @@ namespace graphene { namespace chain {
                     });
                 }
 
-                // Round-based emergency witness blanking.
-                // At each schedule boundary, compare each real witness's gap
-                // (head_block_num - last_confirmed_block_num) against the gap
-                // recorded at the START of the previous round.  If the gap did
-                // not decrease, the witness produced no blocks during the entire
-                // round — P2P has had plenty of time to deliver their block.
-                // Only then do we blank the signing key.
-                //
-                // This replaces the per-block blanking that was in
-                // update_global_dynamic_data() which triggered too early —
-                // before P2P had a chance to relay the witness's block.
-                {
-                    const auto &latest_wso = get_witness_schedule_object();
-                    for (int i = 0; i < CHAIN_MAX_WITNESSES; i += CHAIN_BLOCK_WITNESS_REPEAT) {
-                        const auto &wname = (i < latest_wso.num_scheduled_witnesses)
-                            ? latest_wso.current_shuffled_witnesses[i]
-                            : account_name_type();
-
-                        // Only check real witnesses (not committee, not empty)
-                        if (wname == account_name_type() ||
-                            wname == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
-
-                        const auto *w = find_witness(wname);
-                        if (!w) continue;
-
-                        uint32_t current_gap = static_cast<uint32_t>(
-                            head_block_num() > w->last_confirmed_block_num
-                            ? head_block_num() - w->last_confirmed_block_num
-                            : 0);
-
-                        auto gap_it = _emergency_round_start_gap.find(wname);
-                        if (gap_it != _emergency_round_start_gap.end()) {
-                            uint32_t prev_gap = gap_it->second;
-                            // If gap didn't decrease, the witness didn't produce
-                            // during the entire round.
-                            if (current_gap > CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS &&
-                                current_gap >= prev_gap &&
-                                w->signing_key != public_key_type()) {
-                                elog("Emergency round-blanking: Witness ${w} gap did not decrease "
-                                     "over round (was ${pg}, now ${cg}, missed threshold=${t}). "
-                                     "Blanking signing_key (was ${k})",
-                                     ("w", wname)("pg", prev_gap)("cg", current_gap)
-                                     ("t", CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS)
-                                     ("k", w->signing_key));
-                                modify(*w, [&](witness_object &wo) {
-                                    wo.signing_key = public_key_type();
-                                });
-                                push_virtual_operation(shutdown_witness_operation(wname));
-                            }
-                        }
-
-                        // Record gap for the NEXT round comparison
-                        _emergency_round_start_gap[wname] = current_gap;
-                    }
-                }
 
                 // EXIT CONDITION: enough real witnesses have re-enabled.
                 // When >= 75% of schedule slots are real witnesses (not committee),
@@ -5132,8 +5077,13 @@ namespace graphene { namespace chain {
                           next_block.timestamp, "", ("head_block_time", head_block_time())("next", next_block.timestamp)("blocknum", next_block.block_num()));
                 const witness_object &witness = get_witness(next_block.witness);
 
-                if (!(skip & skip_witness_signature))
+                if (!(skip & skip_witness_signature)) {
+                    FC_ASSERT(witness.signing_key != public_key_type(),
+                              "Witness '${w}' has null signing key — cannot validate block #${n}. "
+                              "The witness disabled their key or the node is on a different fork.",
+                              ("w", next_block.witness)("n", next_block.block_num()));
                     FC_ASSERT(next_block.validate_signee(witness.signing_key));
+                }
 
                 if (!(skip & skip_witness_schedule_check)) {
                     uint32_t slot_num = get_slot_at_time(next_block.timestamp);
@@ -5221,9 +5171,21 @@ namespace graphene { namespace chain {
                             }
                             if(is_emergency_offline_witness) {
                                 // Emergency mode: skip per-block vote penalties and total_missed.
-                                // Key-blanking was moved to update_witness_schedule() so it only
-                                // triggers at round boundaries — giving P2P time to deliver the
-                                // witness's block before we take irreversible action (P41).
+                                // Key-blanking uses a deterministic consensus check:
+                                // head_block_num - last_confirmed_block_num (both on-chain state)
+                                // against CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS.
+                                // All nodes compute the same result.
+                                if (w.signing_key != public_key_type() &&
+                                    head_block_num() -
+                                    w.last_confirmed_block_num >
+                                    CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS) {
+                                    elog("Emergency consensus: Witness ${w} missed ${missed} blocks since last confirmed ${lc} "
+                                         "(threshold=${t}), blanking signing_key",
+                                         ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
+                                         ("lc", w.last_confirmed_block_num)("t", CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS));
+                                    w.signing_key = public_key_type();
+                                    push_virtual_operation(shutdown_witness_operation(w.owner));
+                                }
                             } else if(witness_missed.owner != b.witness){
                                 // total_missed does not increment when witness_missed.owner == b.witness
                                 // because a low total_missed is a "prestige" item and a witness that
