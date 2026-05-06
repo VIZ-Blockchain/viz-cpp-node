@@ -393,14 +393,18 @@ void dlt_p2p_node::periodic_reconnect_check() {
 }
 
 void dlt_p2p_node::periodic_lifecycle_timeout_check() {
-    for (auto& _peer_item : _peer_states) {
-            auto& id = _peer_item.first;
-            auto& state = _peer_item.second;
-        if (state.has_lifecycle_timeout()) {
+    // P40 fix: collect timed-out peers first to avoid iterator invalidation
+    // when handle_disconnect erases incoming peers from _peer_states.
+    std::vector<peer_id> timed_out;
+    for (const auto& _peer_item : _peer_states) {
+        if (_peer_item.second.has_lifecycle_timeout()) {
             wlog("Peer ${ep} timed out in state ${s}",
-                 ("ep", state.endpoint)("s", (int)state.lifecycle_state));
-            handle_disconnect(id, "lifecycle timeout");
+                 ("ep", _peer_item.second.endpoint)("s", (int)_peer_item.second.lifecycle_state));
+            timed_out.push_back(_peer_item.first);
         }
+    }
+    for (auto id : timed_out) {
+        handle_disconnect(id, "lifecycle timeout");
     }
 }
 
@@ -435,16 +439,22 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
     // peer entries exist for the same IP (belt-and-suspenders safety net).
     std::set<fc::ip::address> sent_to_ips;
 
-    for (auto& _peer_item : _peer_states) {
-            auto& id = _peer_item.first;
-            auto& state = _peer_item.second;
+    // P40 fix: collect target peers first to avoid iterator invalidation
+    // when send_message -> handle_disconnect erases incoming peers.
+    std::vector<peer_id> targets;
+    for (const auto& _peer_item : _peer_states) {
+        const auto& id = _peer_item.first;
+        const auto& state = _peer_item.second;
         if (id == exclude) continue;
         if (state.exchange_enabled && state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE) {
             fc::ip::address ip = state.endpoint.get_address();
             if (sent_to_ips.count(ip)) continue;  // already sent to this IP
-            send_message(id, msg);
             sent_to_ips.insert(ip);
+            targets.push_back(id);
         }
+    }
+    for (auto id : targets) {
+        send_message(id, msg);
     }
 }
 
@@ -1592,28 +1602,38 @@ void dlt_p2p_node::resync_from_lib(bool force_emergency) {
     transition_to_sync();
 
     // Re-send hello to all peers to get updated chain state
+    // P40 fix: collect peers first to avoid iterator invalidation
+    // when send_message -> handle_disconnect erases incoming peers.
     auto hello = build_hello_message();
-    for (auto& _peer_item : _peer_states) {
-            auto& id = _peer_item.first;
-            auto& state = _peer_item.second;
+    std::vector<peer_id> targets;
+    for (const auto& _peer_item : _peer_states) {
+        const auto& state = _peer_item.second;
         if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
             state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) {
-            send_message(id, message(hello));
-            request_blocks_from_peer(id);
+            targets.push_back(_peer_item.first);
         }
+    }
+    for (auto id : targets) {
+        send_message(id, message(hello));
+        request_blocks_from_peer(id);
     }
 }
 
 void dlt_p2p_node::trigger_resync() {
     ilog(DLT_LOG_GREEN "DLT P2P: resync triggered" DLT_LOG_RESET);
     // Re-send hello to all active peers
+    // P40 fix: collect peers first to avoid iterator invalidation
+    // when send_message -> handle_disconnect erases incoming peers.
     auto hello = build_hello_message();
-    for (auto& _peer_item : _peer_states) {
-            auto& id = _peer_item.first;
-            auto& state = _peer_item.second;
+    std::vector<peer_id> targets;
+    for (const auto& _peer_item : _peer_states) {
+        const auto& state = _peer_item.second;
         if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE) {
-            send_message(id, message(hello));
+            targets.push_back(_peer_item.first);
         }
+    }
+    for (auto id : targets) {
+        send_message(id, message(hello));
     }
 }
 
