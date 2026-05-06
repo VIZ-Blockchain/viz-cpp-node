@@ -785,6 +785,12 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
     it->second.lifecycle_state = DLT_PEER_LIFECYCLE_SYNCING;
     it->second.state_entered_time = fc::time_point::now();
 
+    // Reset expected_next_block for the new range request to prevent
+    // false "out of order" errors when the response arrives. The
+    // expected_next_block may be stale from previous sync attempts
+    // or from blocks received from other peers.
+    it->second.expected_next_block = 0;
+
     send_message(peer, message(req));
     ilog(DLT_LOG_GREEN "Requesting blocks ${s}-${e} from ${ep}" DLT_LOG_RESET,
          ("s", start)("e", end)("ep", it->second.endpoint));
