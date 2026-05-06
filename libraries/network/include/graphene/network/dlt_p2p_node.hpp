@@ -230,6 +230,9 @@ private:
     uint32_t count_peers_in_subnet(const fc::ip::address& addr) const;
     bool is_same_subnet(const fc::ip::address& a, const fc::ip::address& b) const;
 
+    // ── Per-IP dedup ─────────────────────────────────────────────
+    peer_id find_active_peer_by_ip(const fc::ip::address& addr) const;
+
 private:
     dlt_p2p_delegate*               _delegate = nullptr;
     std::string                     _user_agent;

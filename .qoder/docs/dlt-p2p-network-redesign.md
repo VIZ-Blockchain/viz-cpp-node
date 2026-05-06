@@ -50,8 +50,8 @@ This matches the old `message_oriented_connection` format without 16-byte paddin
 | `libraries/network/include/graphene/network/dlt_p2p_messages.hpp` | 319 | All DLT message types (5100-5116), enums, structs, FC_REFLECT macros |
 | `libraries/network/dlt_p2p_messages.cpp` | 21 | Static `type` constants for each message struct |
 | `libraries/network/include/graphene/network/dlt_p2p_peer_state.hpp` | 123 | `dlt_peer_state`, `dlt_known_peer`, `dlt_mempool_entry`, `dlt_fork_resolution_state`, `dlt_fork_branch_info` |
-| `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | 337 | `dlt_p2p_delegate` interface + `dlt_p2p_node` class declaration |
-| `libraries/network/dlt_p2p_node.cpp` | 2387 | Full `dlt_p2p_node` implementation |
+| `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | 350 | `dlt_p2p_delegate` interface + `dlt_p2p_node` class declaration |
+| `libraries/network/dlt_p2p_node.cpp` | 2627 | Full `dlt_p2p_node` implementation |
 
 ### Modified Files
 
@@ -112,8 +112,9 @@ All FC_REFLECT macros defined for serialization.
 `dlt_p2p_node.hpp` + `dlt_p2p_node.cpp` implement the full node:
 
 **Connection management**:
-- `connect_to_peer()` — synchronous connect on p2p thread, sends hello, starts read loop
-- `accept_loop()` — fiber that accepts incoming connections, creates peer state, sends hello, starts read loop
+- `find_active_peer_by_ip()` — per-IP dedup helper: returns peer_id of any existing active connection from the same IP address, or INVALID_PEER_ID if none
+- `connect_to_peer()` — per-IP dedup check before connecting (skips if same IP already has active connection), then synchronous connect on p2p thread, sends hello, starts read loop
+- `accept_loop()` — fiber that accepts incoming connections, **per-IP dedup check rejects duplicate connections from same IP** (prevents broadcast amplification), creates peer state, sends hello, starts read loop
 - `start_read_loop()` — per-peer fiber that reads message_header + data, dispatches to `on_message()`
 - `handle_disconnect()` — cancels read fiber, closes socket, calculates backoff with jitter
 - Periodic reconnect/backoff/expire logic
@@ -148,9 +149,14 @@ All FC_REFLECT macros defined for serialization.
 **Anti-spam**:
 - `record_packet_result()` — single `spam_strikes` counter per peer, reset on good packet, soft-ban at threshold=10
 - `soft_ban_peer()` — sets BANNED state for 3600s, sends `dlt_soft_ban_message` notification, then closes connection
+- **Per-IP connection dedup** (sender-side broadcast spam prevention):
+  - `find_active_peer_by_ip()` — scans `_peer_states` for any CONNECTING/HANDSHAKING/SYNCING/ACTIVE peer with matching IP address
+  - `accept_loop()` — rejects incoming connections from IPs that already have an active peer entry, preventing N connections from the same node via different ephemeral ports
+  - `connect_to_peer()` — skips outbound connection if target IP already has an active entry, preventing cross-direction duplication (inbound + outbound to same node)
+  - `send_to_all_our_fork_peers()` — belt-and-suspenders IP dedup in broadcast: tracks `std::set<fc::ip::address>` of IPs already sent to, skipping duplicates
 
 **Peer exchange** (rate-limited):
-- `on_dlt_peer_exchange_request()` — 10-min cooldown per peer, subnet diversity filter, min uptime 600s
+- `on_dlt_peer_exchange_request()` — 10-min cooldown per peer, subnet diversity filter, min uptime 600s, **skips `is_incoming` peers to prevent ephemeral port propagation**
 - `on_dlt_peer_exchange_reply()` — adds to known peers, connects if under max_connections
 - Subnet diversity via `/24` prefix comparison
 

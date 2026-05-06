@@ -158,8 +158,34 @@ void dlt_p2p_node::close() {
 
 // ── Connection management ────────────────────────────────────────────
 
+// ── Per-IP dedup: find any existing active connection from the same IP ─
+dlt_p2p_node::peer_id dlt_p2p_node::find_active_peer_by_ip(const fc::ip::address& addr) const {
+    for (const auto& item : _peer_states) {
+        const auto& state = item.second;
+        if (state.endpoint.get_address() == addr &&
+            (state.lifecycle_state == DLT_PEER_LIFECYCLE_CONNECTING ||
+             state.lifecycle_state == DLT_PEER_LIFECYCLE_HANDSHAKING ||
+             state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING ||
+             state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE)) {
+            return item.first;
+        }
+    }
+    return INVALID_PEER_ID;
+}
+
 void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
     if (_connections.size() >= _max_connections) return;
+
+    // Per-IP dedup: skip if we already have an active connection to this IP.
+    // This prevents cross-direction duplication (outbound + inbound to same node)
+    // which causes broadcast amplification.
+    fc::ip::address target_ip = ep.get_address();
+    peer_id existing_ip_conn = find_active_peer_by_ip(target_ip);
+    if (existing_ip_conn != INVALID_PEER_ID) {
+        dlog("Skipping connect to ${ep} (already connected to this IP as peer ${pid})",
+             ("ep", ep)("pid", existing_ip_conn));
+        return;
+    }
 
     // Check for existing entry — reuse DISCONNECTED, skip if active/handshaking
     peer_id pid = 0;
@@ -405,12 +431,19 @@ void dlt_p2p_node::send_message(peer_id peer, const message& msg) {
 }
 
 void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclude) {
+    // Per-IP dedup: send to each unique IP only once, even if multiple
+    // peer entries exist for the same IP (belt-and-suspenders safety net).
+    std::set<fc::ip::address> sent_to_ips;
+
     for (auto& _peer_item : _peer_states) {
             auto& id = _peer_item.first;
             auto& state = _peer_item.second;
         if (id == exclude) continue;
         if (state.exchange_enabled && state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE) {
+            fc::ip::address ip = state.endpoint.get_address();
+            if (sent_to_ips.count(ip)) continue;  // already sent to this IP
             send_message(id, msg);
+            sent_to_ips.insert(ip);
         }
     }
 }
@@ -1155,6 +1188,7 @@ void dlt_p2p_node::on_dlt_peer_exchange_request(peer_id peer, const dlt_peer_exc
         if (id == peer) continue;
         if (!s.exchange_enabled) continue;
         if (s.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;
+        if (s.is_incoming) continue;  // Don't share ephemeral ports from incoming connections
         if (s.connected_since == fc::time_point()) continue;
         auto uptime = (now - s.connected_since).count() / 1000000;
         if (uptime < _peer_exchange_min_uptime_sec) continue;
@@ -2464,6 +2498,23 @@ void dlt_p2p_node::accept_loop() {
             } catch (...) {
                 state.endpoint = fc::ip::endpoint();
             }
+
+            // Per-IP dedup: if we already have an active connection from this
+            // IP address, reject the duplicate to prevent broadcast amplification.
+            // The existing connection may be outbound (port 2001) or a prior
+            // incoming connection on a different ephemeral port.
+            fc::ip::address incoming_ip = state.endpoint.get_address();
+            peer_id existing = find_active_peer_by_ip(incoming_ip);
+            if (existing != INVALID_PEER_ID) {
+                dlog("Rejecting duplicate incoming connection from ${ip} "
+                     "(already connected as peer ${existing})",
+                     ("ip", incoming_ip)("existing", existing));
+                _peer_states.erase(pid);
+                _connections.erase(pid);
+                sock->close();
+                continue;
+            }
+
             state.lifecycle_state = DLT_PEER_LIFECYCLE_HANDSHAKING;
             state.state_entered_time = fc::time_point::now();
             state.connected_since = fc::time_point::now();

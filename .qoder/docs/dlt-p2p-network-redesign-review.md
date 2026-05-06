@@ -282,3 +282,18 @@ Original just called `transition_to_sync()` and re-requested blocks. Fixed to: (
 - **14b**: Upgraded GAP 5 to P0 in severity summary — the plan rates mempool DoS protection as P0.
 - **14c**: Upgraded GAP 6 heading from P1 to P0 — fork resolution is non-functional.
 - **14d**: Upgraded minor observation #2 from "semantically imprecise" to functional bug — `head_block_num = 0` corrupts `peer_head_num` in the receiver.
+
+### Fix 15: Per-IP connection deduplication — broadcast spam prevention (P0)
+
+**Files**: `libraries/network/dlt_p2p_node.cpp`, `libraries/network/include/graphene/network/dlt_p2p_node.hpp`
+
+**Root cause**: When Node A connects outbound to Node B (port 2001) and Node B also connects outbound to Node A (port 2001), both sides also accept the other's inbound connection. Each connection gets a separate `peer_state` entry with a different `peer_id`. The `send_to_all_our_fork_peers()` broadcast function sends to ALL exchange-enabled active entries individually — so one block gets sent N times to the same physical node. With reconnect storms or multiple retries, this accumulates to 4-6 entries per node pair.
+
+Additionally, `on_dlt_peer_exchange_request()` shared `s.endpoint` for ALL peers including incoming connections with ephemeral ports (e.g., `62.231.188.129:44712`). Other nodes tried connecting to these dead ports, creating ghost entries that multiplied the problem across the network.
+
+**Fix** (5 changes):
+1. Added `find_active_peer_by_ip()` helper — scans `_peer_states` for any CONNECTING/HANDSHAKING/SYNCING/ACTIVE peer with matching IP address.
+2. `accept_loop()` — rejects incoming connections from IPs that already have an active peer entry (closes socket, cleans up partial state).
+3. `connect_to_peer()` — skips outbound connection if target IP already has an active entry, preventing cross-direction duplication.
+4. `send_to_all_our_fork_peers()` — belt-and-suspenders IP dedup: tracks `std::set<fc::ip::address>` of IPs already sent to, skipping duplicates.
+5. `on_dlt_peer_exchange_request()` — skips `is_incoming` peers to prevent ephemeral port propagation through the network.
