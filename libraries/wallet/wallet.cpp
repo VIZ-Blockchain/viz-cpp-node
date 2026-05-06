@@ -12,7 +12,6 @@
 #include <graphene/wallet/api_documentation.hpp>
 #include <graphene/wallet/reflect_util.hpp>
 #include <graphene/wallet/remote_node_api.hpp>
-#include <graphene/plugins/follow/follow_operations.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -215,9 +214,7 @@ namespace graphene { namespace wallet {
                     _remote_database_api( con.get_remote_api< remote_database_api >( 0, "database_api" ) ),
                     _remote_operation_history( con.get_remote_api< remote_operation_history >( 0, "operation_history" ) ),
                     _remote_account_history( con.get_remote_api< remote_account_history >( 0, "account_history" ) ),
-                    _remote_social_network( con.get_remote_api< remote_social_network >( 0, "social_network" ) ),
                     _remote_network_broadcast_api( con.get_remote_api< remote_network_broadcast_api >( 0, "network_broadcast_api" ) ),
-                    _remote_follow( con.get_remote_api< remote_follow >( 0, "follow" ) ),
                     _remote_private_message( con.get_remote_api< remote_private_message>( 0, "private_message" ) ),
                     _remote_account_by_key( con.get_remote_api< remote_account_by_key>( 0, "account_by_key" ) ) ,
                     _remote_witness_api( con.get_remote_api< remote_witness_api >( 0, "witness_api" ) )
@@ -887,9 +884,7 @@ namespace graphene { namespace wallet {
                 fc::api< remote_database_api >          _remote_database_api;
                 fc::api< remote_operation_history >     _remote_operation_history;
                 fc::api< remote_account_history >       _remote_account_history;
-                fc::api< remote_social_network >        _remote_social_network;
                 fc::api< remote_network_broadcast_api>  _remote_network_broadcast_api;
-                fc::api< remote_follow >                _remote_follow;
                 fc::api< remote_private_message >       _remote_private_message;
                 fc::api< remote_account_by_key >        _remote_account_by_key;
                 fc::api< remote_witness_api >           _remote_witness_api;
@@ -2149,41 +2144,6 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
             } catch ( ... ) {
                 return result;
             }
-        }
-
-        annotated_signed_transaction wallet_api::follow(
-                const string& follower,
-                const string& following,
-                const set<string>& what,
-                const bool broadcast) {
-            string _following = following;
-
-            auto follwer_account = get_account( follower );
-            FC_ASSERT( _following.size() );
-            if( _following[0] != '@' || _following[0] != '#' ) {
-                _following = '@' + _following;
-            }
-            if( _following[0] == '@' ) {
-                get_account( _following.substr(1) );
-            }
-            FC_ASSERT( _following.size() > 1 );
-
-            follow::follow_operation fop;
-            fop.follower = follower;
-            fop.following = _following;
-            fop.what = what;
-            follow::follow_plugin_operation op = fop;
-
-            custom_operation jop;
-            jop.id = "follow";
-            jop.json = fc::json::to_string(op);
-            jop.required_regular_auths.insert(follower);
-
-            signed_transaction trx;
-            trx.operations.push_back( jop );
-            trx.validate();
-
-            return my->sign_transaction( trx, broadcast );
         }
 
         annotated_signed_transaction wallet_api::custom(

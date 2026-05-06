@@ -949,22 +949,6 @@ namespace graphene { namespace wallet {
                 get_account_history( string account, uint32_t from, uint32_t limit );
 
 
-            FC_TODO(Supplement API argument description)
-            /**
-             *  Marks one account as following another account. Requires the regular authority of the follower.
-             *
-             *  @param follower
-             *  @param following
-             *  @param what - a set of things to follow: posts, contents, votes, ignore
-             *  @param broadcast true if you wish to broadcast the transaction
-             */
-            annotated_signed_transaction follow(
-                    const string& follower,
-                    const string& following,
-                    const set<string>& what,
-                    const bool broadcast);
-
-
             std::map<string,std::function<string(fc::variant,const fc::variants&)>> get_result_formatters() const;
 
             fc::signal<void(bool)> lock_changed;
