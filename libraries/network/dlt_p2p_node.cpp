@@ -2246,7 +2246,14 @@ void dlt_p2p_node::periodic_mempool_cleanup() {
 
 bool dlt_p2p_node::is_tapos_valid(const signed_transaction& trx) const {
     if (trx.ref_block_num == 0) return true; // no TaPoS
-    return _delegate->is_tapos_block_known(trx.ref_block_num, trx.ref_block_prefix);
+    // Use the same block_summary_object circular buffer check as the chain.
+    // The chain stores block IDs in a 65536-slot circular buffer
+    // (block_num & 0xFFFF) and validates TaPoS by comparing
+    // ref_block_prefix against the stored block_id._hash[1].
+    // Previously this used find_block_id_for_num() which fails for
+    // blocks that have been pruned from the DLT block log (causing
+    // transactions from cli_wallet to be rejected by peer mempools).
+    return _delegate->check_tapos_block_summary(trx.ref_block_num, trx.ref_block_prefix);
 }
 
 bool dlt_p2p_node::is_mempool_full() const {

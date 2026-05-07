@@ -7,6 +7,7 @@
 #include <graphene/chain/database_exceptions.hpp>
 #include <graphene/chain/dlt_block_log.hpp>
 #include <graphene/chain/fork_database.hpp>
+#include <graphene/chain/block_summary_object.hpp>
 
 #include <graphene/plugins/witness/witness.hpp>
 
@@ -339,6 +340,28 @@ public:
     bool is_tapos_block_known(uint32_t ref_block_num, uint32_t ref_block_prefix) const override {
         return chain.db().with_weak_read_lock([&]() {
             return chain.db().find_block_id_for_num(ref_block_num) != block_id_type();
+        });
+    }
+
+    bool check_tapos_block_summary(uint32_t ref_block_num, uint32_t ref_block_prefix) const override {
+        return chain.db().with_weak_read_lock([&]() {
+            // Match the chain's TaPoS validation logic exactly:
+            // The chain uses a 65536-slot circular buffer (block_summary_object)
+            // keyed by ref_block_num (used as a direct index). It compares
+            // ref_block_prefix against block_id._hash[1] of the entry.
+            //
+            // This is more permissive than find_block_id_for_num() for old
+            // blocks whose ref_block_num has wrapped around the circular
+            // buffer — the chain's validate_transaction() already skips
+            // TaPoS for pushed transactions (skip_tapos_check), and the
+            // final TaPoS check happens at block inclusion time.
+            try {
+                const auto& bs = chain.db().get<graphene::chain::block_summary_object>(
+                    graphene::chain::block_summary_id_type(ref_block_num));
+                return ref_block_prefix == bs.block_id._hash[1];
+            } catch (...) {
+                return false;
+            }
         });
     }
 

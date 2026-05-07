@@ -75,6 +75,7 @@ public:
 
     // ── TaPoS / mempool helpers ──────────────────────────────────
     virtual bool           is_tapos_block_known(uint32_t ref_block_num, uint32_t ref_block_prefix) const = 0;
+    virtual bool           check_tapos_block_summary(uint32_t ref_block_num, uint32_t ref_block_prefix) const = 0;
     virtual void           resync_from_lib(bool force_emergency) = 0;
 };
 
