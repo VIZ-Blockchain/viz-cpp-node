@@ -530,11 +530,41 @@ namespace graphene {
                 ilog("webserver cache enabled: ${enabled}, max size: ${size}",
                      ("enabled", my->cache_enabled)("size", my->max_cache_size));
 
-                // Process rpc-endpoint FIRST as a fallback value.
-                // This ensures that when the config file has both rpc-endpoint and
-                // webserver-http-endpoint/webserver-ws-endpoint, the specific endpoints
-                // can override the rpc-endpoint, but rpc-endpoint is not silently ignored.
-                if (options.count("rpc-endpoint")) {
+                // New-style endpoints are primary: webserver-http-endpoint and
+                // webserver-ws-endpoint. rpc-endpoint is ONLY used as a fallback
+                // when NEITHER new endpoint is configured at all.
+                bool has_http = options.count("webserver-http-endpoint") > 0;
+                bool has_ws   = options.count("webserver-ws-endpoint") > 0;
+
+                if (has_http || has_ws) {
+                    // New-style: use specific endpoints, ignore rpc-endpoint entirely.
+                    if (has_http) {
+                        auto http_ep = options.at("webserver-http-endpoint").as<string>();
+                        auto endpoints = appbase::app().resolve_string_to_ip_endpoints(http_ep);
+                        FC_ASSERT(endpoints.size(), "webserver-http-endpoint ${hostname} did not resolve",
+                                  ("hostname", http_ep));
+                        my->http_endpoint = endpoints[0];
+                        auto tcp_endpoint = endpoints[0];
+                        auto ip_port = tcp_endpoint.address().to_string() + ":" + std::to_string(tcp_endpoint.port());
+                        ilog("configured http to listen on ${ep}", ("ep", ip_port));
+                    }
+
+                    if (has_ws) {
+                        auto ws_ep = options.at("webserver-ws-endpoint").as<string>();
+                        auto endpoints = appbase::app().resolve_string_to_ip_endpoints(ws_ep);
+                        FC_ASSERT(endpoints.size(), "webserver-ws-endpoint ${hostname} did not resolve",
+                                  ("hostname", ws_ep));
+                        my->ws_endpoint = endpoints[0];
+                        auto tcp_endpoint = endpoints[0];
+                        auto ip_port = tcp_endpoint.address().to_string() + ":" + std::to_string(tcp_endpoint.port());
+                        ilog("configured ws to listen on ${ep}", ("ep", ip_port));
+                    }
+
+                    if (options.count("rpc-endpoint")) {
+                        wlog("rpc-endpoint is ignored because webserver-http-endpoint and/or webserver-ws-endpoint are set");
+                    }
+                } else if (options.count("rpc-endpoint")) {
+                    // Legacy fallback: no new endpoints configured, use rpc-endpoint for both.
                     auto endpoint = options.at("rpc-endpoint").as<string>();
                     auto endpoints = appbase::app().resolve_string_to_ip_endpoints(endpoint);
                     FC_ASSERT(endpoints.size(), "rpc-endpoint ${hostname} did not resolve", ("hostname", endpoint));
@@ -547,28 +577,6 @@ namespace graphene {
                     ilog("configured http to listen on ${ep} (from rpc-endpoint)", ("ep", ip_port));
                     ilog("configured ws to listen on ${ep} (from rpc-endpoint)", ("ep", ip_port));
                     wlog("rpc-endpoint is deprecated in favor of webserver-http-endpoint and webserver-ws-endpoint");
-                }
-
-                if (options.count("webserver-http-endpoint")) {
-                    auto http_endpoint = options.at("webserver-http-endpoint").as<string>();
-                    auto endpoints = appbase::app().resolve_string_to_ip_endpoints(http_endpoint);
-                    FC_ASSERT(endpoints.size(), "webserver-http-endpoint ${hostname} did not resolve",
-                              ("hostname", http_endpoint));
-                    my->http_endpoint = endpoints[0];
-                    auto tcp_endpoint = endpoints[0];
-                    auto ip_port = tcp_endpoint.address().to_string() + ":" + std::to_string(tcp_endpoint.port());
-                    ilog("configured http to listen on ${ep}", ("ep", ip_port));
-                }
-
-                if (options.count("webserver-ws-endpoint")) {
-                    auto ws_endpoint = options.at("webserver-ws-endpoint").as<string>();
-                    auto endpoints = appbase::app().resolve_string_to_ip_endpoints(ws_endpoint);
-                    FC_ASSERT(endpoints.size(), "ws-server-endpoint ${hostname} did not resolve",
-                              ("hostname", ws_endpoint));
-                    my->ws_endpoint = endpoints[0];
-                    auto tcp_endpoint = endpoints[0];
-                    auto ip_port = tcp_endpoint.address().to_string() + ":" + std::to_string(tcp_endpoint.port());
-                    ilog("configured ws to listen on ${ep}", ("ep", ip_port));
                 }
             }
 
