@@ -3176,8 +3176,13 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
                 detail.find("No route to host") != std::string::npos ||
                 detail.find("Connection timed out") != std::string::npos ||
                 detail.find("Host is unreachable") != std::string::npos;
+            bool is_benign_close =
+                detail.find("Bad file descriptor") != std::string::npos;
 
-            if (is_transient) {
+            if (is_benign_close) {
+                dlog(DLT_LOG_DGRAY "Peer ${ep} read canceled (socket already closed)" DLT_LOG_RESET,
+                     ("ep", ep_str_rl));
+            } else if (is_transient) {
                 ilog(DLT_LOG_DGRAY "Peer ${ep} disconnected: ${msg}" DLT_LOG_RESET,
                      ("ep", ep_str_rl)("msg", std::string(e.what())));
             } else {
