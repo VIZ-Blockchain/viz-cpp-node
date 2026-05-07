@@ -526,7 +526,33 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
                 on_dlt_get_block_range(peer, msg.as<dlt_get_block_range_message>());
                 break;
             case dlt_block_range_reply_message_type:
-                on_dlt_block_range_reply(peer, msg.as<dlt_block_range_reply_message>());
+                try {
+                    on_dlt_block_range_reply(peer, msg.as<dlt_block_range_reply_message>());
+                } catch (const fc::exception& e) {
+                    // Deserialization of range reply failed (corrupted block data
+                    // from peer's dlt_block_log, protocol mismatch, etc.)
+                    // The message was fully read from TCP — stream is still aligned.
+                    // Fall back to single-block requests to isolate the bad block.
+                    auto ep_it_rr = _peer_states.find(peer);
+                    if (ep_it_rr != _peer_states.end()) {
+                        auto& rr_state = ep_it_rr->second;
+                        rr_state.range_fallback_mode = true;
+                        wlog(DLT_LOG_ORANGE "Range reply deserialization failed from ${ep}, switching to single-block mode" DLT_LOG_RESET,
+                             ("ep", rr_state.endpoint));
+                        // Start single-block fetch from our head
+                        if (_node_status == DLT_NODE_STATUS_SYNC) {
+                            uint32_t fallback_start = _delegate->get_head_block_num();
+                            uint32_t our_lib = _delegate->get_lib_block_num();
+                            if (our_lib > 0 && our_lib < fallback_start) {
+                                fallback_start = our_lib;
+                            }
+                            dlt_get_block_message single_req;
+                            single_req.block_num = fallback_start;
+                            single_req.prev_block_id = _delegate->get_head_block_id();
+                            send_message(peer, message(single_req));
+                        }
+                    }
+                }
                 break;
             case dlt_get_block_message_type:
                 on_dlt_get_block(peer, msg.as<dlt_get_block_message>());
@@ -946,9 +972,32 @@ void dlt_p2p_node::on_dlt_get_block_range(peer_id peer, const dlt_get_block_rang
     dlt_block_range_reply_message reply;
     uint32_t our_latest = _delegate->get_dlt_latest_block();
 
+    // Leave 64KB headroom for the reply wrapper fields
+    // (last_block_next_available, is_last, vector overhead)
+    static constexpr uint32_t REPLY_SIZE_HEADROOM = 64 * 1024;
+    uint32_t budget = (MAX_MESSAGE_SIZE > REPLY_SIZE_HEADROOM)
+                     ? MAX_MESSAGE_SIZE - REPLY_SIZE_HEADROOM : MAX_MESSAGE_SIZE;
+
     for (uint32_t n = req.start_block_num; n <= req.end_block_num && n <= our_latest; ++n) {
         auto block = _delegate->read_block_by_num(n);
         if (block.valid()) {
+            // Check if adding this block would exceed the message size budget.
+            // pack_size is expensive but we only call it per-block here.
+            uint32_t block_size = static_cast<uint32_t>(fc::raw::pack_size(*block));
+            uint32_t current_size = static_cast<uint32_t>(fc::raw::pack_size(reply));
+            if (current_size + block_size > budget && !reply.blocks.empty()) {
+                // This block would push us over the limit — stop here and
+                // report that more blocks are available.
+                uint32_t last_num = reply.blocks.back().block_num();
+                reply.last_block_next_available = n;
+                reply.is_last = false;
+                ilog(DLT_LOG_DGRAY "Range reply size limit reached after ${c} blocks (#${f}-#${l}), continuing from #${n}" DLT_LOG_RESET,
+                     ("c", reply.blocks.size())("f", reply.blocks.front().block_num())
+                     ("l", last_num)("n", n));
+                send_message(peer, message(reply));
+                record_packet_result(peer, true);
+                return;
+            }
             reply.blocks.push_back(std::move(*block));
         }
     }
@@ -1287,6 +1336,22 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
     state.expected_next_block = std::max(state.expected_next_block, block_num + 1);
 
     record_packet_result(peer, true);
+
+    // Single-block fallback continuation: when range_fallback_mode is
+    // set (range deserialization failed), keep requesting blocks one
+    // at a time instead of switching to range requests.
+    if (state.range_fallback_mode && _node_status == DLT_NODE_STATUS_SYNC) {
+        if (reply.next_available > 0) {
+            dlt_get_block_message next_req;
+            next_req.block_num = reply.next_available;
+            next_req.prev_block_id = _delegate->get_head_block_id();
+            send_message(peer, message(next_req));
+        } else if (reply.is_last) {
+            // Caught up to this peer
+            state.range_fallback_mode = false;
+            transition_to_forward();
+        }
+    }
 }
 
 void dlt_p2p_node::on_dlt_not_available(peer_id peer, const dlt_not_available_message& msg) {

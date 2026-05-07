@@ -75,6 +75,7 @@ struct dlt_peer_state {
     // Misc
     uint32_t                     pending_sync_start = 0;   // what block range we asked for
     uint32_t                     pending_sync_end = 0;
+    bool                         range_fallback_mode = false; // single-block mode after range deserialization error
 
     // ── Helper: check if lifecycle state has timed out ───────────
     bool has_lifecycle_timeout() const {
