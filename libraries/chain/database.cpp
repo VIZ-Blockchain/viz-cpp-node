@@ -1962,8 +1962,8 @@ namespace graphene { namespace chain {
                                  branches.first.back()->data.id() == branches.second.back()->data.id());
 
                             if (is_cascade_linear) {
-                                dlog(DLT_LOG_DGRAY "_push_next cascade \u2014 applying ${n} blocks from fork_db "
-                                     "(db_head=#${dh}, fork_db_head=#${fh})" DLT_LOG_RESET,
+                                dlog(DB_LOG_DGRAY "_push_next cascade \u2014 applying ${n} blocks from fork_db "
+                                     "(db_head=#${dh}, fork_db_head=#${fh})" DB_LOG_RESET,
                                      ("n", branches.first.size() - 1)("dh", head_block_num())
                                      ("fh", fb_head->data.block_num()));
 
