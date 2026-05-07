@@ -46,7 +46,17 @@ namespace graphene {
                     const auto max_block_age = args.args->at(1).as<uint32_t>();
                     FC_ASSERT(!check_max_block_age(max_block_age));
                 }
-                pimpl->_chain.accept_transaction(trx);
+
+                // Always broadcast to P2P peers even if chain acceptance fails.
+                // This fixes the bug where cli_wallet transactions would not
+                // propagate to other peers when accept_transaction throws
+                // (e.g. duplicate transaction already in pending queue).
+                try {
+                    pimpl->_chain.accept_transaction(trx);
+                } catch (const fc::exception& e) {
+                    dlog("accept_transaction failed for ${id}: ${e}, still broadcasting to P2P",
+                         ("id", trx.id())("e", e.to_detail_string()));
+                }
                 pimpl->_p2p.broadcast_transaction(trx);
 
                 return broadcast_transaction_return();
@@ -73,7 +83,16 @@ namespace graphene {
                     pimpl->_callback_expirations[trx.expiration].push_back(trx.id());
                 }
 
-                pimpl->_chain.accept_transaction(trx);
+                // Always broadcast to P2P peers even if chain acceptance fails.
+                // This fixes the bug where cli_wallet transactions would not
+                // propagate to other peers when accept_transaction throws
+                // (e.g. duplicate transaction already in pending queue).
+                try {
+                    pimpl->_chain.accept_transaction(trx);
+                } catch (const fc::exception& e) {
+                    dlog("accept_transaction failed for ${id}: ${e}, still broadcasting to P2P",
+                         ("id", trx.id())("e", e.to_detail_string()));
+                }
                 pimpl->_p2p.broadcast_transaction(trx);
                 transfer.complete();
 
@@ -115,8 +134,16 @@ namespace graphene {
                     pimpl->_callback_expirations[trx.expiration].push_back(trx.id());
                 }
 
-
-                pimpl->_chain.accept_transaction(trx);
+                // Always broadcast to P2P peers even if chain acceptance fails.
+                // This fixes the bug where cli_wallet transactions would not
+                // propagate to other peers when accept_transaction throws
+                // (e.g. duplicate transaction already in pending queue).
+                try {
+                    pimpl->_chain.accept_transaction(trx);
+                } catch (const fc::exception& e) {
+                    dlog("accept_transaction failed for ${id}: ${e}, still broadcasting to P2P",
+                         ("id", trx.id())("e", e.to_detail_string()));
+                }
                 pimpl->_p2p.broadcast_transaction(trx);
                 transfer.complete();
 
