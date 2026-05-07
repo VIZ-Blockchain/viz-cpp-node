@@ -1943,6 +1943,10 @@ namespace graphene { namespace chain {
                 if (fb_head && fb_head->data.block_num() > new_block.block_num()) {
                     if (fb_head->data.block_num() > head_block_num() &&
                         _fork_db.is_known_block(head_block_id())) {
+                        // Save original head before cascade so we can
+                        // roll back on partial failure.
+                        uint32_t original_head = head_block_num();
+
                         try {
                             auto branches = _fork_db.fetch_branch_from(
                                 fb_head->data.id(), head_block_id());
@@ -1956,10 +1960,6 @@ namespace graphene { namespace chain {
                                  branches.second.size() == 1 &&
                                  branches.second.back()->data.id() == head_block_id() &&
                                  branches.first.back()->data.id() == branches.second.back()->data.id());
-
-                            // Save original head before cascade so we can
-                            // roll back on partial failure.
-                            uint32_t original_head = head_block_num();
 
                             if (is_cascade_linear) {
                                 ilog("P39: _push_next cascade — applying ${n} blocks from fork_db "
