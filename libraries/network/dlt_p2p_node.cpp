@@ -1121,7 +1121,12 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
         // P36: In FORWARD mode, an out-of-order block indicates a gap.
         // Trigger gap fill to quickly request the missing blocks from
         // exchange-enabled peers instead of oscillating SYNC↔FORWARD.
-        if (_node_status == DLT_NODE_STATUS_FORWARD && block_num > _delegate->get_head_block_num()) {
+        // P40 fix: Only request gap fill when there's a REAL gap (at least
+        // one block missing between our head and the received block).
+        // When block_num == head + 1, there's no gap — the block links
+        // directly to our head. The "out of order" is just stale
+        // expected_next_block tracking from receiving blocks via other peers.
+        if (_node_status == DLT_NODE_STATUS_FORWARD && block_num > _delegate->get_head_block_num() + 1) {
             request_gap_fill();
         }
 
