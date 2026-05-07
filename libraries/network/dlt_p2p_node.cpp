@@ -819,7 +819,23 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
     // competing fork accumulate as unlinkable in fork_db forever.
     // If the block is the same as ours, accept_block returns ALREADY_KNOWN
     // with no side effects.
+    //
+    // LIB fallback: When significantly behind a peer (gap > threshold),
+    // start from LIB instead of head. If our head diverged from the
+    // network (e.g. our witness produced blocks the network rejected),
+    // requesting from head only gets ALREADY_KNOWN for head, then all
+    // subsequent blocks go to fork_db as unlinkable. LIB is guaranteed
+    // on the majority fork, giving the chain a chance to switch forks.
     uint32_t start = our_head;
+    uint32_t gap = (peer_latest > our_head) ? (peer_latest - our_head) : 0;
+    if (gap > FORWARD_FALLBEHIND_THRESHOLD) {
+        uint32_t our_lib = _delegate->get_lib_block_num();
+        if (our_lib > 0 && our_lib < our_head) {
+            ilog(DLT_LOG_ORANGE "Large gap (${g} blocks behind peer ${ep}), starting sync from LIB #${lib} instead of head #${head}" DLT_LOG_RESET,
+                 ("g", gap)("ep", it->second.endpoint)("lib", our_lib)("head", our_head));
+            start = our_lib;
+        }
+    }
 
     // Don't request blocks below the peer's DLT range — those blocks
     // are pruned and the peer can't serve them.  Clamp start to the
@@ -966,6 +982,7 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
     }
 
     bool any_block_applied = false;
+    bool any_fork_db_only = false;
     auto& state = it->second;
 
     ilog(DLT_LOG_GREEN "Received block range #${first}-#${last} (${count} blocks) from ${ep}" DLT_LOG_RESET,
@@ -1036,6 +1053,7 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
             dlog(DLT_LOG_DGRAY "Block #${n} from ${ep} is already on our chain (duplicate)" DLT_LOG_RESET,
                  ("n", block.block_num())("ep", state.endpoint));
         } else if (result == dlt_block_accept_result::FORK_DB_ONLY) {
+            any_fork_db_only = true;
             dlog("Stored block #${n} in fork_db (not yet applied) from ${ep}",
                  ("n", block.block_num())("ep", state.endpoint));
         } else if (result == dlt_block_accept_result::DEAD_FORK) {
@@ -1065,14 +1083,27 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
 
     record_packet_result(peer, any_block_applied);
 
-    // If SYNC and last block, transition to FORWARD — but only if we
-    // actually applied at least one block.  A range full of dead-fork
-    // rejects should NOT end sync mode.
-    if (_node_status == DLT_NODE_STATUS_SYNC && any_block_applied) {
-        if (reply.is_last) {
-            transition_to_forward();
-        } else if (reply.last_block_next_available > 0) {
-            // Continue fetching
+    // If SYNC, continue fetching or transition to FORWARD.
+    // When blocks were applied, follow the normal transition logic.
+    // When blocks only went to fork_db (competing fork case), continue
+    // fetching so fork_db accumulates the full competing chain and can
+    // evaluate a fork switch.  A range full of dead-fork rejects
+    // (no applied, no fork_db) should NOT end sync mode.
+    if (_node_status == DLT_NODE_STATUS_SYNC) {
+        if (any_block_applied) {
+            if (reply.is_last) {
+                transition_to_forward();
+            } else if (reply.last_block_next_available > 0) {
+                // Continue fetching
+                it->second.peer_dlt_earliest = reply.last_block_next_available;
+                request_blocks_from_peer(peer);
+            }
+        } else if (any_fork_db_only && reply.last_block_next_available > 0) {
+            // Blocks went to fork_db but weren't applied — competing fork.
+            // Continue fetching so fork_db accumulates the full competing
+            // chain and can evaluate a fork switch.
+            ilog(DLT_LOG_ORANGE "Range stored in fork_db only (competing fork?), continuing fetch from #${n}" DLT_LOG_RESET,
+                 ("n", reply.last_block_next_available));
             it->second.peer_dlt_earliest = reply.last_block_next_available;
             request_blocks_from_peer(peer);
         }
