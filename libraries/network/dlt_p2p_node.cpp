@@ -515,9 +515,43 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
 
     // Block processing pause check
     if (_block_processing_paused) {
-        // Only allow hello/hello_reply during pause
-        if (msg.msg_type != dlt_hello_message_type && msg.msg_type != dlt_hello_reply_message_type) {
-            return true;  // silently drop during pause, stream is still aligned
+        switch (msg.msg_type) {
+            // Always allow hello messages for peer state maintenance
+            case dlt_hello_message_type:
+            case dlt_hello_reply_message_type:
+                break; // fall through to normal processing
+
+            // Allow fork status to keep peer_head_num up to date
+            case dlt_fork_status_message_type:
+                break; // fall through to normal processing
+
+            // Buffer block-carrying messages for processing after pause
+            case dlt_block_reply_message_type:
+                try {
+                    auto reply = msg.as<dlt_block_reply_message>();
+                    _paused_block_queue.push_back(std::move(reply.block));
+                } catch (...) {}
+                return true;
+
+            case dlt_block_range_reply_message_type:
+                try {
+                    auto reply = msg.as<dlt_block_range_reply_message>();
+                    for (auto& b : reply.blocks)
+                        _paused_block_queue.push_back(std::move(b));
+                } catch (...) {}
+                return true;
+
+            case dlt_gap_fill_reply_type:
+                try {
+                    auto reply = msg.as<dlt_gap_fill_reply>();
+                    for (auto& b : reply.blocks)
+                        _paused_block_queue.push_back(std::move(b));
+                } catch (...) {}
+                return true;
+
+            // Drop everything else (transactions, peer exchange, etc.)
+            default:
+                return true;
         }
     }
 
@@ -1993,30 +2027,93 @@ void dlt_p2p_node::pause_block_processing() {
     ilog(DLT_LOG_ORANGE "DLT P2P: block processing paused" DLT_LOG_RESET);
 }
 
+void dlt_p2p_node::drain_paused_block_queue() {
+    if (_paused_block_queue.empty()) return;
+
+    // Sort by block number so blocks are applied in chain order.
+    // They may arrive out of order from multiple peers.
+    std::sort(_paused_block_queue.begin(), _paused_block_queue.end(),
+        [](const graphene::protocol::signed_block& a,
+           const graphene::protocol::signed_block& b) {
+            return a.block_num() < b.block_num();
+        });
+
+    ilog(DLT_LOG_GREEN "Draining ${n} queued blocks from pause" DLT_LOG_RESET,
+         ("n", _paused_block_queue.size()));
+
+    for (auto& block : _paused_block_queue) {
+        if (_block_processing_paused) break; // re-paused during drain
+
+        dlt_block_accept_result result;
+        try {
+            result = _delegate->accept_block(block, false);
+        } catch (const graphene::network::deferred_resize_exception&) {
+            wlog("Deferred resize on queued block #${n}, stopping drain", ("n", block.block_num()));
+            break;
+        } catch (...) {
+            continue;
+        }
+
+        if (result == dlt_block_accept_result::ACCEPTED) {
+            _last_block_received_time = fc::time_point::now();
+            _last_network_block_time = fc::time_point::now();
+
+            ilog(DLT_LOG_BWHITE "Got queued block #${n} with ${tx} transaction(s) by witness ${w}" DLT_LOG_RESET,
+                 ("n", block.block_num())("tx", block.transactions.size())("w", block.witness));
+
+            on_block_applied(block, /*caused_fork_switch=*/false);
+        }
+    }
+
+    _paused_block_queue.clear();
+}
+
 void dlt_p2p_node::resume_block_processing() {
     _block_processing_paused = false;
     ilog("DLT P2P: block processing resumed");
 
-    // After resuming from a pause (typically during snapshot creation),
-    // blocks that arrived while paused were silently dropped.
-    //
-    // ALWAYS set the catchup flag, even if no gap is immediately
-    // visible.  During the pause, block_reply messages were dropped
-    // before they could update peer_head_num, so our peer head data
-    // may be stale.  The periodic_task will clear the flag once it
-    // confirms no peer is actually ahead of us.
-    //
-    // Without this, the emergency master could produce a block on a
-    // stale head before the periodic gap detection catches up.
+    // Set catchup flag immediately so the witness plugin defers
+    // production until we finish draining queued blocks.
     _catchup_after_pause = true;
 
     if (!_delegate) return;
 
-    // Proactively send a hello to all peers to refresh their head
-    // info.  During the pause, fork_status messages were dropped so
-    // our view of peer_head_num may be stale.  This triggers a
-    // hello exchange that updates peer_head_num immediately.
-    {
+    // Drain queued blocks on the P2P thread to avoid threading
+    // issues (accept_block / push_block must run where P2P
+    // operations are safe).  The snapshot thread calls this
+    // method; _thread->async() posts work to the P2P fiber.
+    if (!_paused_block_queue.empty()) {
+        if (_thread) {
+            _thread->async([this]() {
+                drain_paused_block_queue();
+
+                // After draining, check if we are still behind peers.
+                // If not, clear the catchup flag so production resumes.
+                uint32_t our_head = _delegate->get_head_block_num();
+                bool any_ahead = false;
+                for (const auto& _pi : _peer_states) {
+                    const auto& s = _pi.second;
+                    if ((s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
+                         s.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) &&
+                        s.peer_head_num > our_head) {
+                        any_ahead = true;
+                        break;
+                    }
+                }
+                if (!any_ahead) {
+                    _catchup_after_pause = false;
+                    ilog(DLT_LOG_GREEN "Post-pause queue drain complete, no gap remaining (head=#${h})" DLT_LOG_RESET,
+                         ("h", our_head));
+                } else {
+                    ilog(DLT_LOG_ORANGE "Post-pause queue drain complete, but peers still ahead (head=#${h}). Requesting gap fill." DLT_LOG_RESET,
+                         ("h", our_head));
+                    // Gap fill / sync will be triggered by periodic_task()
+                }
+            });
+        }
+    } else {
+        // No queued blocks — send hello to refresh peer info and let
+        // periodic_task() decide if a gap exists.
         dlt_hello_message hello = build_hello_message();
         message hello_msg(hello);
         for (auto& _peer_item : _peer_states) {
@@ -2024,45 +2121,6 @@ void dlt_p2p_node::resume_block_processing() {
             if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
                 state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) {
                 send_message(_peer_item.first, hello_msg);
-            }
-        }
-    }
-
-    uint32_t our_head = _delegate->get_head_block_num();
-    bool need_catchup = false;
-
-    for (const auto& _peer_item : _peer_states) {
-        const auto& state = _peer_item.second;
-        if ((state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
-             state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) &&
-            state.exchange_enabled &&
-            state.peer_head_num > our_head) {
-            need_catchup = true;
-            break;
-        }
-    }
-
-    if (need_catchup) {
-        ilog(DLT_LOG_ORANGE "DLT P2P: gap detected after block processing pause "
-             "(head=#${h}), requesting missing blocks from peers" DLT_LOG_RESET,
-             ("h", our_head));
-
-        // P36: Try gap fill first for small gaps (up to GAP_FILL_MAX_BLOCKS)
-        // before falling back to full SYNC mode.
-        if (_node_status == DLT_NODE_STATUS_FORWARD) {
-            request_gap_fill();
-            // If gap fill is in progress, don't transition to SYNC yet
-            if (_gap_fill_in_progress) return;
-            transition_to_sync();
-        }
-
-        for (auto& _peer_item : _peer_states) {
-            auto& id = _peer_item.first;
-            auto& state = _peer_item.second;
-            if (state.exchange_enabled && state.peer_head_num > our_head &&
-                (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
-                 state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING)) {
-                request_blocks_from_peer(id);
             }
         }
     }
@@ -2893,16 +2951,17 @@ void dlt_p2p_node::periodic_task() {
     request_gap_fill();     // P36 fix: fill gaps in FORWARD mode via exchange
     periodic_peer_exchange();
 
-    // Clear stale catchup-after-pause flag when we are in FORWARD
-    // mode and no peer is ahead of us.  The flag was set
-    // unconditionally in resume_block_processing() because
-    // peer_head_num may have been stale after the pause.  Now that
-    // hello exchanges have refreshed peer data, we can confirm
-    // whether a gap actually exists.  If not, clear the flag so
-    // the witness plugin resumes production.
-    if (_catchup_after_pause && _node_status == DLT_NODE_STATUS_FORWARD && _delegate) {
-        bool any_ahead = false;
+    // Post-pause catchup: drain queued blocks and/or clear the flag
+    // when caught up.
+    if (_catchup_after_pause && _delegate) {
+        // If there are still queued blocks, drain them first
+        if (!_paused_block_queue.empty()) {
+            drain_paused_block_queue();
+        }
+
+        // After drain (or if queue was empty), check if we're still behind
         uint32_t our_head = _delegate->get_head_block_num();
+        bool any_ahead = false;
         for (const auto& _pi : _peer_states) {
             const auto& s = _pi.second;
             if ((s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
@@ -2914,8 +2973,8 @@ void dlt_p2p_node::periodic_task() {
         }
         if (!any_ahead) {
             _catchup_after_pause = false;
-            ilog(DLT_LOG_GREEN "Post-pause catchup: no gap detected after peer refresh, "
-                 "clearing flag (head=#${h})" DLT_LOG_RESET, ("h", our_head));
+            ilog(DLT_LOG_GREEN "Post-pause catchup complete, no gap remaining (head=#${h})" DLT_LOG_RESET,
+                 ("h", our_head));
         }
     }
 

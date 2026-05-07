@@ -4,10 +4,10 @@
 
 When the snapshot plugin creates a snapshot, it **pauses P2P block processing** to
 prevent concurrent database modifications.  During this pause, incoming blocks from
-peers are **silently dropped** — they are not buffered.  After the pause ends, the
-P2P layer detects the gap and fetches missing blocks from peers.  The witness plugin
-must defer block production until the gap is filled to avoid producing competing
-blocks on a stale head.
+peers are **buffered in a queue** instead of being dropped.  After the pause ends,
+the P2P layer drains the queue (applying all buffered blocks), then checks whether
+peers are still ahead.  The witness plugin defers block production until all queued
+blocks are applied and any remaining gap is filled.
 
 ## Sequence Diagram: Snapshot Pause Lifecycle
 
@@ -22,35 +22,27 @@ sequenceDiagram
     SP->>SP: on_applied_block() triggers snapshot
     SP->>P2P: pause_block_processing()
     Note over P2P: _block_processing_paused = true
+    Note over P2P: _catchup_after_pause stays false
 
     Peer->>P2P: Block N+1 (from delegate)
-    P2P-->>P2P: DROPPED (pause active)
+    P2P->>P2P: QUEUED in _paused_block_queue
     Peer->>P2P: Block N+2 (from delegate)
-    P2P-->>P2P: DROPPED (pause active)
+    P2P->>P2P: QUEUED in _paused_block_queue
 
     Note over W: Production loop fires (250ms)
-    W->>W: maybe_produce_block()
-    Note over W: No gate blocks production<br/>if it was emergency master's turn
+    Note over W: DB read lock held by snapshot<br/>generate_block() needs write lock → blocked
 
-    SP->>SP: create_snapshot() completes
+    SP->>SP: create_snapshot() DB read completes
     SP->>P2P: resume_block_processing()
     Note over P2P: _block_processing_paused = false
-    Note over P2P: _catchup_after_pause = true<br/>(peers are ahead)
-    P2P->>Peer: gap fill / sync request
-    Note over P2P: Returns immediately (async)
+    Note over P2P: _catchup_after_pause = true
+    Note over P2P: Posts drain to P2P thread
 
-    Note over W: Production loop fires (250ms)
-    W->>W: maybe_produce_block()
-    W->>P2P: is_catching_up_after_pause()?
-    P2P-->>W: true
-    W-->>W: return not_synced (deferred)
-
-    Peer->>P2P: Block N+1 (re-fetched)
-    P2P->>P2P: accept_block() → applied
-    Peer->>P2P: Block N+2 (re-fetched)
-    P2P->>P2P: accept_block() → applied
-
-    Note over P2P: transition_to_forward()
+    Note over P2P: P2P thread: drain_paused_block_queue()
+    P2P->>P2P: Sort queue by block_num
+    P2P->>P2P: accept_block(N+1) → applied
+    P2P->>P2P: accept_block(N+2) → applied
+    P2P->>P2P: Check peers: no one ahead
     Note over P2P: _catchup_after_pause = false
 
     Note over W: Production loop fires
@@ -65,14 +57,18 @@ sequenceDiagram
 flowchart TD
     A["Block message received from peer"] --> B{"_block_processing_paused?"}
     B -->|Yes| C{"Message type?"}
-    C -->|hello/hello_reply| D["Process normally"]
-    C -->|block_reply, range_reply,<br/>gap_fill_reply, transaction| E["Silently drop<br/>(return true)"]
-    B -->|No| F["Normal processing:<br/>accept_block() → push_block()"]
-    F --> G{"Block accepted?"}
-    G -->|ACCEPTED| H["on_block_applied()<br/>retransmit to fork peers"]
-    G -->|FORK_DB_ONLY| I["Store in fork_db<br/>(competing fork)"]
-    G -->|DEAD_FORK| J["Soft-ban peer"]
-    G -->|REJECTED| K["Log + track rejections"]
+    C -->|hello/hello_reply/fork_status| D["Process normally<br/>(keeps peer_head_num updated)"]
+    C -->|block_reply, range_reply,<br/>gap_fill_reply| E["Deserialize and push<br/>to _paused_block_queue"]
+    C -->|other: transaction,<br/>peer exchange, etc.| F["Drop (return true)"]
+    B -->|No| G{"Queue has pending blocks?<br/>(leftover from recent pause)"}
+    G -->|Yes| H["drain_paused_block_queue()\nfirst"]
+    G -->|No| I["Normal processing:<br/>accept_block() → push_block()"]
+    H --> I
+    I --> J{"Block accepted?"}
+    J -->|ACCEPTED| K["on_block_applied()<br/>retransmit to fork peers"]
+    J -->|FORK_DB_ONLY| L["Store in fork_db<br/>(competing fork)"]
+    J -->|DEAD_FORK| M["Soft-ban peer"]
+    J -->|REJECTED| N["Log + track rejections"]
 ```
 
 ## Witness Production Workflow (With Catchup Gate)
@@ -104,10 +100,14 @@ flowchart TD
 stateDiagram-v2
     [*] --> Normal: Node running
     Normal --> Paused: pause_block_processing()
-    Paused --> Catchup: resume_block_processing()<br/>peers ahead → _catchup_after_pause=true
-    Paused --> Normal: resume_block_processing()<br/>no gap detected
-    Catchup --> SyncMode: transition_to_sync()<br/>or gap fill request
-    SyncMode --> Normal: transition_to_forward()<br/>_catchup_after_pause=false
+    Paused --> Queuing: Block arrives
+    Queuing --> Queuing: Next block queued
+    Queuing --> Draining: resume_block_processing()
+    Note right of Draining: _catchup_after_pause = true
+    Draining --> DrainComplete: Queue empty
+    DrainComplete --> Normal: No peers ahead → flag cleared
+    DrainComplete --> GapFill: Peers still ahead
+    GapFill --> Normal: transition_to_forward()<br/>_catchup_after_pause=false
 ```
 
 ## Key Files
@@ -123,7 +123,7 @@ stateDiagram-v2
 
 ## The Bug (Before Fix)
 
-Without the catchup gate, the following race occurred on the emergency master:
+Without the block queue and catchup gate, the following race occurred on the emergency master:
 
 1. Snapshot starts → P2P paused
 2. Other delegates produce blocks N+1, N+2 → **dropped** by P2P
@@ -132,12 +132,21 @@ Without the catchup gate, the following race occurred on the emergency master:
 5. Gap fill response arrives with the real block N+1 from the delegate → **fork conflict**
 6. Other nodes see two competing blocks → fork switch chaos
 
-The fix adds a `_catchup_after_pause` flag that is set **unconditionally** in
-`resume_block_processing()` (because peer_head_num may be stale after the pause),
-and cleared either:
-- by `transition_to_forward()` when a real gap is detected and filled, or
-- by `periodic_task()` when we're in FORWARD mode and no peer is actually ahead
-  (confirms the snapshot was too fast for any blocks to arrive).
+## The Fix
 
-Additionally, `resume_block_processing()` proactively sends a hello to all
-peers to refresh their head info, so the gap is detected as quickly as possible.
+**Block queue**: During the pause, block-carrying messages (block_reply, block_range_reply,
+gap_fill_reply) are deserialized and pushed into `_paused_block_queue`. Hello and fork_status
+messages are still processed normally to keep `peer_head_num` up to date.
+
+**Queue drain**: When `resume_block_processing()` is called, it posts `drain_paused_block_queue()`
+to the P2P thread. The drain sorts queued blocks by block_num, applies each via
+`accept_block()`, and then checks whether peers are still ahead.
+
+**Catchup gate**: The `_catchup_after_pause` flag is set when `resume_block_processing()`
+runs and cleared when:
+- The drain completes and no peer is ahead (immediate path), or
+- `transition_to_forward()` runs after a SYNC gap fill (delayed path), or
+- `periodic_task()` confirms no gap exists (5s fallback)
+
+The witness plugin checks `is_catching_up_after_pause()` in `maybe_produce_block()` and
+defers production while the flag is set.

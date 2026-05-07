@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <algorithm>
 
 namespace graphene {
 namespace network {
@@ -338,11 +339,16 @@ private:
     // ── Block processing pause ───────────────────────────────────
     bool                            _block_processing_paused = false;
 
-    // Set by resume_block_processing() when peers are ahead of our head
-    // (blocks were lost during the pause).  Cleared by
-    // transition_to_forward() once we catch up.  The witness plugin
-    // reads this via is_catching_up_after_pause() to defer block
-    // production until the gap is filled.
+    // Blocks received during a pause are buffered here instead of
+    // being dropped.  When the pause ends, drain_paused_block_queue()
+    // applies them in order before the witness plugin is allowed to
+    // produce new blocks.
+    std::vector<graphene::protocol::signed_block> _paused_block_queue;
+    void                            drain_paused_block_queue();
+
+    // True while queued blocks are being applied or a gap still
+    // exists after draining.  The witness plugin checks this via
+    // is_catching_up_after_pause() to defer block production.
     bool                            _catchup_after_pause = false;
 
     // ── Diagnostics ───────────────────────────────────────────────
