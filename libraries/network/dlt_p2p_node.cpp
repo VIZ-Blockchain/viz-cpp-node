@@ -848,7 +848,7 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
              ("a", our_head + 1)("b", peer_earliest - 1)("h", our_head)("ep", it->second.endpoint)("c", peer_earliest));
 
         // Check if any other peer can serve the missing blocks
-        bool peer_with_gap_blocks = false;
+        peer_id bridging_peer = peer_id();
         for (const auto& _pi : _peer_states) {
             if (_pi.first == peer) continue;
             const auto& ps = _pi.second;
@@ -857,18 +857,18 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
             uint32_t ps_latest = std::max(ps.peer_dlt_latest, ps.peer_head_num);
             if (ps.peer_dlt_earliest > 0 && ps.peer_dlt_earliest <= start &&
                 ps_latest > our_head) {
-                peer_with_gap_blocks = true;
+                bridging_peer = _pi.first;
                 ilog(DLT_LOG_GREEN "Peer ${ep2} can bridge gap (DLT range ${e}-${l})" DLT_LOG_RESET,
                      ("ep2", ps.endpoint)("e", ps.peer_dlt_earliest)("l", ps.peer_dlt_latest));
                 break;
             }
         }
 
-        if (peer_with_gap_blocks) {
-            // Another peer can fill the gap — skip this peer for now and
-            // try it later after the gap is filled.
-            ilog(DLT_LOG_ORANGE "Deferring sync from ${ep} — other peer can bridge gap" DLT_LOG_RESET,
-                 ("ep", it->second.endpoint));
+        if (bridging_peer != peer_id()) {
+            // Another peer can fill the gap — actively request from it.
+            ilog(DLT_LOG_ORANGE "Deferring sync from ${ep} — requesting from bridge peer ${ep2} instead" DLT_LOG_RESET,
+                 ("ep", it->second.endpoint)("ep2", _peer_states[bridging_peer].endpoint));
+            request_blocks_from_peer(bridging_peer);
             return;
         }
 
@@ -1095,7 +1095,6 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
                 transition_to_forward();
             } else if (reply.last_block_next_available > 0) {
                 // Continue fetching
-                it->second.peer_dlt_earliest = reply.last_block_next_available;
                 request_blocks_from_peer(peer);
             }
         } else if (any_fork_db_only && reply.last_block_next_available > 0) {
@@ -1104,7 +1103,6 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
             // chain and can evaluate a fork switch.
             ilog(DLT_LOG_ORANGE "Range stored in fork_db only (competing fork?), continuing fetch from #${n}" DLT_LOG_RESET,
                  ("n", reply.last_block_next_available));
-            it->second.peer_dlt_earliest = reply.last_block_next_available;
             request_blocks_from_peer(peer);
         }
     }
