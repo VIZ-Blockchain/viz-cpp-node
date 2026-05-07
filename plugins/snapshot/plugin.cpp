@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <atomic>
 #include <tuple>
+#include <functional>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -803,7 +804,7 @@ public:
     fc::time_point sync_ended_at;  // when is_syncing last transitioned to false
     std::atomic<bool> cancel_snapshot_requested{false};  // cancellation flag for in-progress snapshot
 
-    void create_snapshot(const fc::path& output_path);
+    void create_snapshot(const fc::path& output_path, std::function<void()> after_db_read = nullptr);
     void load_snapshot(const fc::path& input_path);
 
     void on_applied_block(const graphene::protocol::signed_block& b);
@@ -994,7 +995,7 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     return state;
 }
 
-void snapshot_plugin::plugin_impl::create_snapshot(const fc::path& output_path) {
+void snapshot_plugin::plugin_impl::create_snapshot(const fc::path& output_path, std::function<void()> after_db_read) {
     cancel_snapshot_requested.store(false, std::memory_order_relaxed);
     ilog(CLOG_GREEN "Creating snapshot at ${path}..." CLOG_RESET, ("path", output_path.string()));
 
@@ -1040,6 +1041,12 @@ void snapshot_plugin::plugin_impl::create_snapshot(const fc::path& output_path) 
 
     auto read_elapsed = double((fc::time_point::now() - read_start).count()) / 1000000.0;
     ilog(CLOG_GREEN "Snapshot DB read completed in ${t} sec, lock released" CLOG_RESET, ("t", read_elapsed));
+
+    // Resume P2P block processing if callback provided — the DB read lock
+    // is released and compression/file-I/O operate on cached data only.
+    if (after_db_read) {
+        after_db_read();
+    }
 
     // Check if snapshot was cancelled during serialization
     if (cancel_snapshot_requested.load(std::memory_order_relaxed)) {
@@ -1721,8 +1728,17 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
                 p2p_plug->pause_block_processing();
             }
 
+            bool p2p_resumed = false;
             try {
-                create_snapshot(output);
+                create_snapshot(output, [&p2p_resumed, p2p_plug]() {
+                    // Resume P2P after DB read completes — compression and
+                    // file I/O operate on cached in-memory data and don't
+                    // need P2P paused.
+                    if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                        p2p_plug->resume_block_processing();
+                        p2p_resumed = true;
+                    }
+                });
                 cleanup_old_snapshots();
             } catch (const fc::exception& e) {
                 elog("Failed to create ${label} snapshot: ${e}", ("label", label)("e", e.to_detail_string()));
@@ -1732,7 +1748,9 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
                 elog("Failed to create ${label} snapshot: unknown exception", ("label", label));
             }
 
-            if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+            // Safety resume: if create_snapshot threw before reaching the
+            // callback (e.g. during DB read), P2P is still paused.
+            if (!p2p_resumed && p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
                 p2p_plug->resume_block_processing();
             }
         }, "async_snapshot");
