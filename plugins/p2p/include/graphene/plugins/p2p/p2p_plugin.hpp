@@ -109,6 +109,14 @@ namespace graphene {
                  */
                 fc::time_point get_last_network_block_time() const;
 
+                /**
+                 * Returns true when the P2P layer is fetching blocks that were
+                 * missed during a block-processing pause (snapshot creation).
+                 * The witness plugin should defer block production while this
+                 * is true to avoid producing on a stale head.
+                 */
+                bool is_catching_up_after_pause() const;
+
             private:
                 std::unique_ptr<detail::p2p_plugin_impl> my;
             };

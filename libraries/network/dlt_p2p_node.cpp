@@ -2025,6 +2025,13 @@ void dlt_p2p_node::resume_block_processing() {
              "(head=#${h}), requesting missing blocks from peers" DLT_LOG_RESET,
              ("h", our_head));
 
+        // Mark that we are catching up after a pause so the witness
+        // plugin defers block production until the gap is filled.
+        // Without this, the emergency master produces blocks on a
+        // stale head, creating a fork that conflicts with the blocks
+        // that arrived during the pause and were silently dropped.
+        _catchup_after_pause = true;
+
         // P36: Try gap fill first for small gaps (up to GAP_FILL_MAX_BLOCKS)
         // before falling back to full SYNC mode.
         if (_node_status == DLT_NODE_STATUS_FORWARD) {
@@ -2058,6 +2065,14 @@ void dlt_p2p_node::transition_to_forward() {
     _sync_stagnation_retries = 0;
     _last_forward_head_num = 0;   // P37: reset so check_forward_stagnation initializes
     _last_forward_progress_time = fc::time_point();
+
+    // We caught up to all peers — clear the post-pause catchup flag
+    // so the witness plugin resumes normal block production.
+    if (_catchup_after_pause) {
+        _catchup_after_pause = false;
+        ilog(DLT_LOG_GREEN "Post-pause catchup complete, clearing flag" DLT_LOG_RESET);
+    }
+
     ilog(DLT_LOG_GREEN "=== DLT P2P: transitioning to FORWARD mode ===" DLT_LOG_RESET);
 
     // Emit peer stats immediately upon entering FORWARD mode

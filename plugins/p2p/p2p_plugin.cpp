@@ -643,6 +643,10 @@ fc::time_point p2p_plugin::get_last_network_block_time() const {
     return my->node ? my->node->get_last_network_block_time() : fc::time_point();
 }
 
+bool p2p_plugin::is_catching_up_after_pause() const {
+    return my->node ? my->node->is_catching_up_after_pause() : false;
+}
+
 } // namespace p2p
 } // namespace plugins
 } // namespace graphene
