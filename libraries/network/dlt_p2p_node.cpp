@@ -1825,6 +1825,12 @@ void dlt_p2p_node::broadcast_block(const signed_block& block) {
     reply.next_available = 0;
     reply.is_last = true;
     send_to_all_our_fork_peers(message(reply), INVALID_PEER_ID, block.id());
+
+    // Track our own block application: clean mempool of included
+    // transactions, advance fork state, and update all peers'
+    // expected_next_block so the next incoming block from any peer
+    // is not falsely flagged as "out of order".
+    on_block_applied(block, /*caused_fork_switch=*/false);
 }
 
 void dlt_p2p_node::broadcast_block_post_validation(
@@ -2420,6 +2426,20 @@ void dlt_p2p_node::on_block_applied(const signed_block& block, bool caused_fork_
 
     // DLT block log pruning check
     periodic_dlt_prune_check();
+
+    // Advance stale expected_next_block for all peers.
+    // When a block is applied (from any source: own production, network
+    // peer A, gap fill), other peers' expected_next_block may still be
+    // at the old value, causing false "out of order" warnings when those
+    // peers send the next block. Advancing here keeps per-peer tracking
+    // consistent with our actual chain head.
+    uint32_t next = block.block_num() + 1;
+    for (auto& item : _peer_states) {
+        if (item.second.expected_next_block != 0 &&
+            item.second.expected_next_block < next) {
+            item.second.expected_next_block = next;
+        }
+    }
 }
 
 void dlt_p2p_node::track_fork_state(const signed_block& block) {
