@@ -20,7 +20,9 @@
 #include <websocketpp/config/asio_client.hpp>
 #include <websocketpp/client.hpp>
 #include <websocketpp/logger/stub.hpp>
+#ifndef _WIN32
 #include <websocketpp/logger/syslog.hpp>
+#endif
 
 #include <thread>
 #include <memory>

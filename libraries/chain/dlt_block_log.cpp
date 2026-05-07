@@ -5,6 +5,7 @@
 #include <boost/iostreams/device/mapped_file.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/thread/shared_mutex.hpp>
+#include <boost/thread/locks.hpp>
 
 namespace graphene { namespace chain {
     namespace detail {

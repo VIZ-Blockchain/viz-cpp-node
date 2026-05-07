@@ -41,6 +41,10 @@
 #include <cerrno>
 #include <cstring>
 
+#ifdef _WIN32
+#include <signal.h>
+#endif
+
 #define VIRTUAL_SCHEDULE_LAP_LENGTH  ( fc::uint128_t(uint64_t(-1)) )
 #define VIRTUAL_SCHEDULE_LAP_LENGTH2 ( fc::uint128_t::max_value() )
 
@@ -97,6 +101,7 @@ namespace graphene { namespace chain {
             return v;
         }
 
+#ifndef _WIN32
         class signal_guard {
             struct sigaction old_hup_action, old_int_action, old_term_action;
 
@@ -188,6 +193,20 @@ namespace graphene { namespace chain {
         inline sig_atomic_t signal_guard::get_is_interrupted() noexcept {
             return is_interrupted;
         }
+#else // _WIN32
+        // Windows stub: signal handling not available
+        class signal_guard {
+            static volatile std::sig_atomic_t is_interrupted;
+            bool is_restored = true;
+        public:
+            inline signal_guard() {}
+            inline ~signal_guard() {}
+            void setup() {}
+            void restore() {}
+            static inline std::sig_atomic_t get_is_interrupted() noexcept { return is_interrupted; }
+        };
+        volatile std::sig_atomic_t signal_guard::is_interrupted = false;
+#endif
 
         class database_impl {
         public:
