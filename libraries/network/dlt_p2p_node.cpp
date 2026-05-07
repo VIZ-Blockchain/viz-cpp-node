@@ -1259,7 +1259,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
     if (state.expected_next_block != 0 && block_num != state.expected_next_block) {
         // Block we already have (duplicate from another peer): don't punish
         if (block_num < state.expected_next_block && _delegate->is_block_known(reply.block.id())) {
-            dlog("Ignoring duplicate block #${n} from ${ep} (already applied, head=${h})",
+            dlog(DLT_LOG_DGRAY "Ignoring duplicate block #${n} from ${ep} (already applied, head=${h})" DLT_LOG_RESET,
                  ("n", block_num)("ep", state.endpoint)("h", _delegate->get_head_block_num()));
             record_packet_result(peer, true);
             return;
