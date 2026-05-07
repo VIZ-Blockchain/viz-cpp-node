@@ -1719,8 +1719,22 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         if (!snapshot_thread) {
             snapshot_thread = std::make_unique<fc::thread>("async_snapshot");
         }
+
+        // Pause P2P block processing SYNCHRONOUSLY before launching the async
+        // task.  This lambda runs inside on_applied_block →
+        // flush_pending_block_notifications → with_weak_read_lock, so no
+        // concurrent push_block can hold the write lock right now.  Pausing
+        // here guarantees that when the async snapshot thread acquires the
+        // strong read lock, no push_block can race between our return and
+        // the async thread startup (the p48 deadlock: ~110s write-lock
+        // starvation caused by a 3ms scheduling gap).
+        auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+        if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+            p2p_plug->pause_block_processing();
+        }
+
         ilog(CLOG_GREEN "Scheduling async ${label} snapshot: ${p}" CLOG_RESET, ("label", label)("p", output.string()));
-        snapshot_future = snapshot_thread->async([this, output, label]() {
+        snapshot_future = snapshot_thread->async([this, output, label, p2p_plug]() {
             // RAII guard to ensure snapshot_in_progress is always reset
             struct flag_guard {
                 std::atomic<bool>& flag;
@@ -1728,12 +1742,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             };
             flag_guard guard{snapshot_in_progress};
 
-            // Pause P2P block processing during snapshot serialization to ensure
-            // memory objects remain consistent while we read them.
-            auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
-            if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
-                p2p_plug->pause_block_processing();
-            }
+            // P2P is already paused synchronously by the caller (see above).
 
             bool p2p_resumed = false;
             try {
