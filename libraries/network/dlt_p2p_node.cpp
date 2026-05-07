@@ -1073,9 +1073,23 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
                      ("n", block.block_num())("ep", state.endpoint));
                 continue;
             }
-            // Unknown out-of-order block — might be a fork, try to apply
-            wlog(DLT_LOG_RED "Block #${n} from ${ep} out of order (expected #${e})" DLT_LOG_RESET,
-                 ("n", block.block_num())("ep", state.endpoint)("e", state.expected_next_block));
+            // Out-of-order check: when multiple peers send us the same blocks,
+            // one peer's reply may arrive after we already advanced past that block.
+            // After fix 8.1+8.2, expected_next_block is advanced by on_block_applied()
+            // for ALL block sources, so stale tracking should be rare.  When it still
+            // happens (narrow race), demote to debug if the block links directly to
+            // our head (block_num == head + 1) — it's not a real gap or fork issue.
+            uint32_t head_num = _delegate->get_head_block_num();
+            if (block.block_num() <= head_num) {
+                dlog(DLT_LOG_DGRAY "Block #${n} from ${ep} at or behind head #${h} (expected #${e}) — stale tracking" DLT_LOG_RESET,
+                     ("n", block.block_num())("ep", state.endpoint)("h", head_num)("e", state.expected_next_block));
+            } else if (block.block_num() == head_num + 1) {
+                dlog(DLT_LOG_DGRAY "Block #${n} from ${ep} matches head+1 but expected #${e} — stale tracking" DLT_LOG_RESET,
+                     ("n", block.block_num())("ep", state.endpoint)("e", state.expected_next_block));
+            } else {
+                wlog(DLT_LOG_RED "Block #${n} from ${ep} out of order (expected #${e}, head=#${h})" DLT_LOG_RESET,
+                     ("n", block.block_num())("ep", state.endpoint)("e", state.expected_next_block)("h", head_num));
+            }
             // Fall through — fork_db or push_block will handle it
         }
 
@@ -1217,9 +1231,22 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
             return;
         }
 
-        // Block from the past we don't know — might be a competing fork, try to apply
-        wlog(DLT_LOG_RED "Block #${n} from ${ep} out of order (expected #${e})" DLT_LOG_RESET,
-             ("n", block_num)("ep", state.endpoint)("e", state.expected_next_block));
+        // Out-of-order log: after fix 8.1+8.2, expected_next_block is advanced
+        // by on_block_applied() for ALL block sources.  When still stale (narrow
+        // race), demote to debug if block_num <= head or block_num == head + 1 —
+        // the block is not truly out of order, just the per-peer tracker lagging.
+        // Only warn at wlog level for genuine gaps (block_num > head + 1).
+        uint32_t head_num = _delegate->get_head_block_num();
+        if (block_num <= head_num) {
+            dlog(DLT_LOG_DGRAY "Block #${n} from ${ep} at or behind head #${h} (expected #${e}) — stale tracking" DLT_LOG_RESET,
+                 ("n", block_num)("ep", state.endpoint)("h", head_num)("e", state.expected_next_block));
+        } else if (block_num == head_num + 1) {
+            dlog(DLT_LOG_DGRAY "Block #${n} from ${ep} matches head+1 but expected #${e} — stale tracking" DLT_LOG_RESET,
+                 ("n", block_num)("ep", state.endpoint)("e", state.expected_next_block));
+        } else {
+            wlog(DLT_LOG_RED "Block #${n} from ${ep} out of order (expected #${e}, head=#${h})" DLT_LOG_RESET,
+                 ("n", block_num)("ep", state.endpoint)("e", state.expected_next_block)("h", head_num));
+        }
         // P36: In FORWARD mode, an out-of-order block indicates a gap.
         // Trigger gap fill to quickly request the missing blocks from
         // exchange-enabled peers instead of oscillating SYNC↔FORWARD.
