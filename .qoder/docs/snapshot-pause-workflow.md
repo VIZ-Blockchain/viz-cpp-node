@@ -132,6 +132,12 @@ Without the catchup gate, the following race occurred on the emergency master:
 5. Gap fill response arrives with the real block N+1 from the delegate → **fork conflict**
 6. Other nodes see two competing blocks → fork switch chaos
 
-The fix adds a `_catchup_after_pause` flag that is set when `resume_block_processing()`
-detects a gap, and cleared when `transition_to_forward()` confirms catchup.  The
-witness plugin checks this flag before producing and defers if it is set.
+The fix adds a `_catchup_after_pause` flag that is set **unconditionally** in
+`resume_block_processing()` (because peer_head_num may be stale after the pause),
+and cleared either:
+- by `transition_to_forward()` when a real gap is detected and filled, or
+- by `periodic_task()` when we're in FORWARD mode and no peer is actually ahead
+  (confirms the snapshot was too fast for any blocks to arrive).
+
+Additionally, `resume_block_processing()` proactively sends a hello to all
+peers to refresh their head info, so the gap is detected as quickly as possible.
