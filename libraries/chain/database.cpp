@@ -1957,6 +1957,10 @@ namespace graphene { namespace chain {
                                  branches.second.back()->data.id() == head_block_id() &&
                                  branches.first.back()->data.id() == branches.second.back()->data.id());
 
+                            // Save original head before cascade so we can
+                            // roll back on partial failure.
+                            uint32_t original_head = head_block_num();
+
                             if (is_cascade_linear) {
                                 ilog("P39: _push_next cascade — applying ${n} blocks from fork_db "
                                      "(db_head=#${dh}, fork_db_head=#${fh})",
@@ -1986,9 +1990,22 @@ namespace graphene { namespace chain {
                             wlog("P39: Failed to apply _push_next cascade blocks: ${e}",
                                  ("e", e.what()));
                             // Don't throw — the original block was applied
-                            // successfully.  Reset fork_db to database head so
-                            // subsequent blocks aren't rejected as "too old".
+                            // successfully.  Roll back any cascade blocks
+                            // that were applied before the failure, then
+                            // reset fork_db to database head so subsequent
+                            // blocks aren't rejected as "too old".
                             auto head_blk = fetch_block_by_id(head_block_id());
+                            // Pop cascade blocks that were applied but
+                            // not caught by the undo stack (session.push
+                            // already committed them).  Pop back to the
+                            // original head before the cascade started.
+                            auto lib_num = get_dynamic_global_properties().last_irreversible_block_num;
+                            while (head_block_num() > original_head &&
+                                   head_block_num() > lib_num) {
+                                ilog("P39 cascade recovery: popping head #${h} (restoring to #${t})",
+                                     ("h", head_block_num())("t", original_head));
+                                pop_block();
+                            }
                             _fork_db.reset();
                             if (head_blk) {
                                 _fork_db.start_block(*head_blk);
@@ -2351,8 +2368,14 @@ namespace graphene { namespace chain {
             // holding any lock on the vector (notifications may take seconds).
             auto pending = std::move(_pending_block_notifications);
             _pending_block_notifications.clear();
+            // Wrap each notification in a read lock so plugins see
+            // consistent state.  Without this, a concurrent push_block
+            // could acquire the write lock and modify objects while
+            // plugins are reading them in applied_block callbacks.
             for (const auto& blk : pending) {
-                notify_applied_block(blk);
+                with_weak_read_lock([&]() {
+                    notify_applied_block(blk);
+                });
             }
         }
 
@@ -5124,6 +5147,22 @@ namespace graphene { namespace chain {
                     const dynamic_global_property_object &dgp = get_dynamic_global_properties();
                     if (has_hardfork(CHAIN_HARDFORK_12) && dgp.emergency_consensus_active) {
                         if (witness.owner != scheduled_witness) {
+                            // Relax strict slot-to-witness mapping, but still
+                            // require the witness to be IN the current schedule.
+                            // This prevents arbitrary key holders from producing
+                            // blocks in random slots while allowing competing
+                            // forks with different shuffles to interoperate.
+                            const witness_schedule_object &wso = get_witness_schedule_object();
+                            bool in_schedule = false;
+                            for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                                if (wso.current_shuffled_witnesses[i] == witness.owner) {
+                                    in_schedule = true;
+                                    break;
+                                }
+                            }
+                            FC_ASSERT(in_schedule,
+                                "Emergency mode: block from witness ${w} not in current schedule",
+                                ("w", witness.owner));
                             dlog("Emergency mode: accepting block from ${bw} at slot scheduled for ${sw} "
                                  "(slot_num=${slot}, block=#${num})",
                                  ("bw", next_block.witness)("sw", scheduled_witness)

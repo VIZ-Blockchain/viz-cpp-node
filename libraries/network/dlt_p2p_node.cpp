@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <random>
 #include <chrono>
+#include <thread>
+#include <functional>
 
 namespace graphene {
 namespace network {
@@ -326,7 +328,8 @@ void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason, bo
 
     // Add jitter (±25%)
     uint32_t jitter_range = state.reconnect_backoff_sec / 2;
-    uint32_t jitter = (jitter_range > 0) ? (rand() % jitter_range) - (jitter_range / 2) : 0;
+    thread_local std::mt19937 rng(std::hash<std::thread::id>{}(std::this_thread::get_id()) ^ uint32_t(fc::time_point::now().sec_since_epoch()));
+    uint32_t jitter = (jitter_range > 0) ? (rng() % jitter_range) - (jitter_range / 2) : 0;
     state.next_reconnect_attempt = fc::time_point::now() + fc::seconds(state.reconnect_backoff_sec + jitter);
 
     wlog(DLT_LOG_DGRAY "Disconnected from peer ${ep}: ${reason} (backoff=${b}s)" DLT_LOG_RESET,
@@ -1042,6 +1045,12 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
         state.expected_next_block = std::max(state.expected_next_block, block.block_num() + 1);
     }
     state.pending_block_batch_time = fc::time_point();
+
+    // If the peer was banned during the loop (e.g. dead-fork block),
+    // skip all post-loop state updates and block requests.
+    if (state.lifecycle_state == DLT_PEER_LIFECYCLE_BANNED) {
+        return;
+    }
 
     record_packet_result(peer, any_block_applied);
 
@@ -2568,7 +2577,8 @@ void dlt_p2p_node::periodic_peer_exchange() {
 
     if (candidates.empty()) return;
 
-    size_t idx = rand() % candidates.size();
+    thread_local std::mt19937 peer_rng(std::hash<std::thread::id>{}(std::this_thread::get_id()) ^ uint32_t(fc::time_point::now().sec_since_epoch()));
+    size_t idx = peer_rng() % candidates.size();
     send_message(candidates[idx], message(dlt_peer_exchange_request()));
 }
 

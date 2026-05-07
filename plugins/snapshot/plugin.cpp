@@ -854,7 +854,7 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     { \
         if (cancel_snapshot_requested.load(std::memory_order_relaxed)) { \
             wlog("Snapshot cancelled during serialization (before ${type})", ("type", name)); \
-            return state; \
+            FC_THROW_EXCEPTION(fc::canceled_exception, "Snapshot cancelled during serialization (before ${type})", ("type", name)); \
         } \
         auto _now = fc::time_point::now(); \
         if ((_now - last_progress).count() > 5000000LL) { \
@@ -889,7 +889,7 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
 
     if (cancel_snapshot_requested.load(std::memory_order_relaxed)) {
         wlog("Snapshot cancelled during serialization (before transaction)");
-        return state;
+        FC_THROW_EXCEPTION(fc::canceled_exception, "Snapshot cancelled during serialization (before transaction)");
     }
 
     // IMPORTANT objects
@@ -907,9 +907,16 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     // duplicate transactions, so we must export confirmed entries.
     {
         fc::flat_set<transaction_id_type> pending_ids;
+        // Snapshot _pending_tx IDs before iterating — push_transaction
+        // (weak_write_lock) can modify _pending_tx concurrently with
+        // our strong_read_lock.  Copying IDs first avoids iterating
+        // a mutating container.
+        std::vector<transaction_id_type> pending_tx_ids;
+        pending_tx_ids.reserve(db._pending_tx.size());
         for (const auto& ptx : db._pending_tx) {
-            pending_ids.insert(ptx.id());
+            pending_tx_ids.push_back(ptx.id());
         }
+        pending_ids.insert(pending_tx_ids.begin(), pending_tx_ids.end());
 
         fc::variants arr;
         const auto& idx = db.get_index<transaction_index>().indices();
@@ -934,7 +941,7 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(escrow_index, escrow_object, "escrow")
     if (cancel_snapshot_requested.load(std::memory_order_relaxed)) {
         wlog("Snapshot cancelled during serialization (before proposal)");
-        return state;
+        FC_THROW_EXCEPTION(fc::canceled_exception, "Snapshot cancelled during serialization (before proposal)");
     }
     // proposal_object has bip::flat_set with shared allocators — custom export
     {

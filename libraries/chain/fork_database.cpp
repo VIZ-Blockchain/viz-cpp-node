@@ -196,14 +196,18 @@ namespace graphene {
                 auto first_branch_itr = _index.get<block_id>().find(first);
                 if (first_branch_itr == _index.get<block_id>().end()) {
                     wlog("fetch_branch_from: first block not in fork_db index");
-                    return result;
+                    FC_THROW_EXCEPTION(fc::assert_exception,
+                        "fetch_branch_from: first block ${id} not found in fork_db",
+                        ("id", first));
                 }
                 auto first_branch = *first_branch_itr;
 
                 auto second_branch_itr = _index.get<block_id>().find(second);
                 if (second_branch_itr == _index.get<block_id>().end()) {
                     wlog("fetch_branch_from: second block not in fork_db index");
-                    return result;
+                    FC_THROW_EXCEPTION(fc::assert_exception,
+                        "fetch_branch_from: second block ${id} not found in fork_db",
+                        ("id", second));
                 }
                 auto second_branch = *second_branch_itr;
 
@@ -214,7 +218,9 @@ namespace graphene {
                     first_branch = first_branch->prev.lock();
                     if (!first_branch) {
                         wlog("fetch_branch_from: broken prev chain on first branch");
-                        return result;
+                        FC_THROW_EXCEPTION(fc::assert_exception,
+                            "fetch_branch_from: broken prev chain on first branch (block ${id})",
+                            ("id", first));
                     }
                 }
                 while (second_branch->data.block_num() >
@@ -223,7 +229,9 @@ namespace graphene {
                     second_branch = second_branch->prev.lock();
                     if (!second_branch) {
                         wlog("fetch_branch_from: broken prev chain on second branch");
-                        return result;
+                        FC_THROW_EXCEPTION(fc::assert_exception,
+                            "fetch_branch_from: broken prev chain on second branch (block ${id})",
+                            ("id", second));
                     }
                 }
                 while (first_branch->data.previous !=
@@ -233,12 +241,14 @@ namespace graphene {
                     first_branch = first_branch->prev.lock();
                     if (!first_branch || !second_branch) {
                         wlog("fetch_branch_from: broken prev chain during common ancestor search");
-                        return result;
+                        FC_THROW_EXCEPTION(fc::assert_exception,
+                            "fetch_branch_from: broken prev chain during common ancestor search");
                     }
                     second_branch = second_branch->prev.lock();
                     if (!second_branch) {
                         wlog("fetch_branch_from: broken prev chain on second branch during ancestor search");
-                        return result;
+                        FC_THROW_EXCEPTION(fc::assert_exception,
+                            "fetch_branch_from: broken prev chain on second branch during ancestor search");
                     }
                 }
                 if (first_branch && second_branch) {
