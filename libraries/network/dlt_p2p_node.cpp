@@ -788,7 +788,7 @@ void dlt_p2p_node::on_dlt_hello(peer_id peer, const dlt_hello_message& hello) {
              ("ep", state.endpoint)("hn", hello.head_block_num));
     }
 
-    ilog(DLT_LOG_WHITE "Received DLT hello from ${ep}: head=#${hn} lib=#${ln} fork=${f} node=${ns} exchange=${ex}" DLT_LOG_RESET,
+    dlog(DLT_LOG_DGRAY "Received DLT hello from ${ep}: head=#${hn} lib=#${ln} fork=${f} node=${ns} exchange=${ex}" DLT_LOG_RESET,
          ("ep", state.endpoint)("hn", hello.head_block_num)("ln", hello.lib_block_num)
          ("f", (int)hello.fork_status)("ns", (int)hello.node_status)("ex", reply.exchange_enabled));
 }
