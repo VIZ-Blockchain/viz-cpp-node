@@ -812,7 +812,14 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
         return;
     }
 
-    uint32_t start = our_head + 1;
+    // P49 fix: Start from our_head (not our_head+1) so the peer's version
+    // of our head block is fetched. If two witnesses signed different blocks
+    // at the same height, the peer may have the competing version. Without
+    // this, the sync range skips the divergence point and blocks from the
+    // competing fork accumulate as unlinkable in fork_db forever.
+    // If the block is the same as ours, accept_block returns ALREADY_KNOWN
+    // with no side effects.
+    uint32_t start = our_head;
 
     // Don't request blocks below the peer's DLT range — those blocks
     // are pruned and the peer can't serve them.  Clamp start to the
@@ -822,7 +829,7 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
         // P19 fix: Detect unbridgeable gap. If no peer has the missing
         // blocks, we need a snapshot. Try to find a peer that can bridge.
         ilog(DLT_LOG_ORANGE "Gap detected: blocks ${a}-${b} missing (our head=#${h}, peer ${ep} DLT starts at ${c})" DLT_LOG_RESET,
-             ("a", start)("b", peer_earliest - 1)("h", our_head)("ep", it->second.endpoint)("c", peer_earliest));
+             ("a", our_head + 1)("b", peer_earliest - 1)("h", our_head)("ep", it->second.endpoint)("c", peer_earliest));
 
         // Check if any other peer can serve the missing blocks
         bool peer_with_gap_blocks = false;
@@ -851,7 +858,7 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
 
         // No peer can bridge the gap — we may need a snapshot.
         wlog(DLT_LOG_RED "No peer has blocks ${a}-${b}. Snapshot may be required to continue sync." DLT_LOG_RESET,
-             ("a", start)("b", peer_earliest - 1));
+             ("a", our_head + 1)("b", peer_earliest - 1));
 
         // Still attempt clamped request — the blocks might be linkable
         // via fork_db or boundary link, even if they don't directly
