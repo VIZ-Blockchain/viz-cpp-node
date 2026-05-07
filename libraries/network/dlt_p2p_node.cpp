@@ -1481,6 +1481,13 @@ void dlt_p2p_node::on_dlt_peer_exchange_rate_limited(peer_id peer, const dlt_pee
     auto ep = (it != _peer_states.end()) ? std::string(it->second.endpoint) : std::to_string(peer);
     ilog(DLT_LOG_DGRAY "Peer ${ep} rate-limited our exchange request, wait ${w}s" DLT_LOG_RESET,
          ("ep", ep)("w", msg.wait_seconds));
+
+    // Record the rate-limit locally so periodic_peer_exchange() stops
+    // sending requests to this peer until the cooldown expires.
+    if (it != _peer_states.end()) {
+        it->second.last_peer_exchange_request_time = fc::time_point::now();
+    }
+
     record_packet_result(peer, true);
 }
 
