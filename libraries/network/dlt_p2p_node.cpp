@@ -496,15 +496,15 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
     }
 }
 
-void dlt_p2p_node::on_message(peer_id peer, const message& msg) {
+bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
     auto it = _peer_states.find(peer);
-    if (it == _peer_states.end()) return;
+    if (it == _peer_states.end()) return true;  // peer already gone, not a desync issue
 
     // Block processing pause check
     if (_block_processing_paused) {
         // Only allow hello/hello_reply during pause
         if (msg.msg_type != dlt_hello_message_type && msg.msg_type != dlt_hello_reply_message_type) {
-            return;
+            return true;  // silently drop during pause, stream is still aligned
         }
     }
 
@@ -573,10 +573,14 @@ void dlt_p2p_node::on_message(peer_id peer, const message& msg) {
         auto ep_msg = (ep_it_msg != _peer_states.end()) ? std::string(ep_it_msg->second.endpoint) : std::to_string(peer);
         wlog("Error processing message type ${t} from peer ${ep}: ${e}",
              ("t", msg.msg_type)("ep", ep_msg)("e", e.to_detail_string()));
-        // Don't punish peers for deserialization errors — these are typically
-        // wire corruption or version mismatches, not malicious behavior.
-        // Lifecycle timeouts and oversized-message checks handle truly bad peers.
+        // Deserialization failures leave the TCP stream desynchronized —
+        // the read cursor is at an unknown offset relative to the next
+        // real message boundary.  Continuing would interpret payload
+        // bytes as headers, producing garbage (e.g. oversized-message)
+        // and eventual cascading disconnects.  Close immediately.
+        return false;
     }
+    return true;
 }
 
 // ── Hello handlers ───────────────────────────────────────────────────
@@ -2858,7 +2862,15 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
                 msg.msg_type = hdr.msg_type;
                 msg.data = std::move(data);
 
-                on_message(peer, msg);
+                // Dispatch and check for stream desync.
+                // on_message returns false when a deserialization error
+                // left the TCP read cursor at an unknown offset —
+                // no recovery possible, disconnect immediately.
+                bool msg_ok = on_message(peer, msg);
+                if (!msg_ok || !_running) {
+                    handle_disconnect(peer, "deserialization error");
+                    return;
+                }
             }
         } catch (const fc::canceled_exception&) {
             // Normal cancellation during shutdown

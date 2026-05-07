@@ -149,7 +149,7 @@ private:
     void start_read_loop(peer_id peer);
 
     // ── Message handlers ─────────────────────────────────────────
-    void on_message(peer_id peer, const message& msg);
+    bool on_message(peer_id peer, const message& msg);
 
     void on_dlt_hello(peer_id peer, const dlt_hello_message& hello);
     void on_dlt_hello_reply(peer_id peer, const dlt_hello_reply_message& reply);
