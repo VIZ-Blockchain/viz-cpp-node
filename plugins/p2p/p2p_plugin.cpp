@@ -158,13 +158,20 @@ public:
             if (applied) {
                 return dlt_block_accept_result::ACCEPTED;
             }
-            // push_block returned false but it may have been because the block
-            // is already on our chain (duplicate from another peer), NOT because
-            // it was stored in fork_db.  Check which case we're in.
-            if (chain.db().is_known_block(block.id())) {
-                // Already on our chain — just a duplicate from another peer.
-                return dlt_block_accept_result::ALREADY_KNOWN;
+            // push_block returned false: block was not applied. Determine why.
+            // Do NOT use is_known_block() — it searches fork_db's _unlinked_index
+            // where blocks just deferred by _push_block (competing fork with
+            // missing parent) are stored. Those blocks are NOT on our main chain
+            // and must be reported as FORK_DB_ONLY, not ALREADY_KNOWN.
+            // Use find_block_id_for_num (main chain only) instead.
+            if (block.block_num() <= chain.db().head_block_num()) {
+                auto main_chain_id = chain.db().find_block_id_for_num(block.block_num());
+                if (main_chain_id == block.id()) {
+                    return dlt_block_accept_result::ALREADY_KNOWN;
+                }
             }
+            // Not on our main chain — block is in fork_db (linked or unlinked)
+            // but didn't become head. P2P layer should track it as FORK_DB_ONLY.
             // push_block returned false: block was pushed to fork_db but
             // didn't become the new head (e.g. it's on a competing fork
             // that is not yet the best).  Still a valid block worth
@@ -199,13 +206,18 @@ public:
                     if (head_blk) {
                         db.get_fork_db().start_block(*head_blk);
                     }
-                    // Retry the push with reset fork_db
+                    // Retry the push with reset fork_db.
+                    // Use find_block_id_for_num (main chain only) to avoid
+                    // false ALREADY_KNOWN from fork_db's _unlinked_index.
                     bool applied = db.push_block(block, skip);
                     if (applied) {
                         return dlt_block_accept_result::ACCEPTED;
                     }
-                    if (db.is_known_block(block.id())) {
-                        return dlt_block_accept_result::ALREADY_KNOWN;
+                    if (block.block_num() <= db.head_block_num()) {
+                        auto main_chain_id = db.find_block_id_for_num(block.block_num());
+                        if (main_chain_id == block.id()) {
+                            return dlt_block_accept_result::ALREADY_KNOWN;
+                        }
                     }
                     return dlt_block_accept_result::FORK_DB_ONLY;
                 } catch (const graphene::chain::block_too_old_exception&) {
