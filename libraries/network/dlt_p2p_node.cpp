@@ -1377,12 +1377,29 @@ void dlt_p2p_node::on_dlt_peer_exchange_rate_limited(peer_id peer, const dlt_pee
 // ── Transaction handler ──────────────────────────────────────────────
 
 void dlt_p2p_node::on_dlt_transaction(peer_id peer, const dlt_transaction_message& msg) {
+    auto it = _peer_states.find(peer);
+    auto ep = (it != _peer_states.end()) ? std::string(it->second.endpoint) : std::to_string(peer);
+
     bool accepted = add_to_mempool(msg.trx, /*from_peer=*/true, peer);
-    if (accepted) {
-        auto it = _peer_states.find(peer);
-        auto ep = (it != _peer_states.end()) ? std::string(it->second.endpoint) : std::to_string(peer);
-        dlog(DLT_LOG_DGRAY "Got transaction ${id} from peer ${ep}" DLT_LOG_RESET,
+    if (!accepted) {
+        // Dedup or validation failure — already in mempool or invalid TaPoS/expiry/size
+        dlog(DLT_LOG_DGRAY "Transaction ${id} from peer ${ep} rejected by mempool" DLT_LOG_RESET,
              ("id", msg.trx.id())("ep", ep));
+        return;
+    }
+
+    dlog(DLT_LOG_DGRAY "Got transaction ${id} from peer ${ep}" DLT_LOG_RESET,
+         ("id", msg.trx.id())("ep", ep));
+
+    // Push to chain database so the local witness can include it in a block.
+    // Without this, P2P-received transactions only exist in the P2P mempool
+    // and never enter the chain's pending transaction queue.
+    if (_delegate) {
+        bool chain_accepted = _delegate->accept_transaction(msg.trx);
+        if (!chain_accepted) {
+            dlog(DLT_LOG_DGRAY "Transaction ${id} from peer ${ep} rejected by chain (already known or invalid)" DLT_LOG_RESET,
+                 ("id", msg.trx.id())("ep", ep));
+        }
     }
 }
 
