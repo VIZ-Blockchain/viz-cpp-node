@@ -7,8 +7,10 @@
 #include <fc/io/raw.hpp>
 
 #include <cstdint>
+#include <algorithm>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace graphene {
 namespace network {
@@ -76,6 +78,24 @@ struct dlt_peer_state {
     uint32_t                     pending_sync_start = 0;   // what block range we asked for
     uint32_t                     pending_sync_end = 0;
     bool                         range_fallback_mode = false; // single-block mode after range deserialization error
+
+    // Block echo suppression: ring buffer of recent block IDs this peer
+    // is known to have.  Updated when we send a block to the peer or when
+    // the peer sends us a block.  Prevents retransmitting a block to a
+    // peer that already has it.
+    static constexpr size_t        KNOWN_BLOCKS_WINDOW = 20;
+    std::vector<block_id_type>     known_blocks;
+
+    bool has_block(const block_id_type& id) const {
+        return std::find(known_blocks.begin(), known_blocks.end(), id) != known_blocks.end();
+    }
+
+    void record_known_block(const block_id_type& id) {
+        if (known_blocks.size() >= KNOWN_BLOCKS_WINDOW) {
+            known_blocks.erase(known_blocks.begin());
+        }
+        known_blocks.push_back(id);
+    }
 
     // ── Helper: check if lifecycle state has timed out ───────────
     bool has_lifecycle_timeout() const {

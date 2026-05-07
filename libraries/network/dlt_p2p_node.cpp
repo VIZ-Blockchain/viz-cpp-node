@@ -449,13 +449,14 @@ void dlt_p2p_node::send_message(peer_id peer, const message& msg) {
     }
 }
 
-void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclude) {
+void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclude, const block_id_type& block_id) {
     // Per-IP dedup: send to each unique IP only once, even if multiple
     // peer entries exist for the same IP (belt-and-suspenders safety net).
     std::set<fc::ip::address> sent_to_ips;
 
     // Diagnostic: count eligible vs skipped peers
-    uint32_t eligible = 0, skipped_not_exchange = 0, skipped_not_active = 0;
+    uint32_t eligible = 0, skipped_not_exchange = 0, skipped_not_active = 0, skipped_echo = 0;
+    const bool is_block_broadcast = (block_id != block_id_type());
 
     // fix: collect target peers first to avoid iterator invalidation
     // when send_message -> handle_disconnect erases incoming peers.
@@ -475,6 +476,11 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
             skipped_not_exchange++;
             continue;
         }
+        // Echo suppression: skip peers already known to have this block
+        if (is_block_broadcast && state.has_block(block_id)) {
+            skipped_echo++;
+            continue;
+        }
         fc::ip::address ip = state.endpoint.get_address();
         if (sent_to_ips.count(ip)) continue;  // already sent to this IP
         sent_to_ips.insert(ip);
@@ -483,12 +489,19 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
     }
     for (auto id : targets) {
         send_message(id, msg);
+        // Record that this peer now has this block
+        if (is_block_broadcast) {
+            auto it = _peer_states.find(id);
+            if (it != _peer_states.end()) {
+                it->second.record_known_block(block_id);
+            }
+        }
     }
 
     // diagnostic: log relay stats for block messages
     if (msg.msg_type == dlt_block_reply_message_type) {
-        dlog(DLT_LOG_DGRAY "Relay block_reply to ${e} peers (${nx} skipped: no_exchange, ${na} skipped: not_active)" DLT_LOG_RESET,
-             ("e", eligible)("nx", skipped_not_exchange)("na", skipped_not_active));
+        dlog(DLT_LOG_DGRAY "Relay block_reply to ${e} peers (${nx} skipped: no_exchange, ${na} skipped: not_active, ${ne} skipped: echo)" DLT_LOG_RESET,
+             ("e", eligible)("nx", skipped_not_exchange)("na", skipped_not_active)("ne", skipped_echo));
     }
     if (msg.msg_type == dlt_transaction_message_type) {
         dlog(DLT_LOG_DGRAY "Relay transaction to ${e} peers (${nx} skipped: no_exchange, ${na} skipped: not_active)" DLT_LOG_RESET,
@@ -1313,10 +1326,15 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
             state.fork_alignment = true;
         }
 
+        // Record that the sender has this block (for echo suppression).
+        // If we later receive this same block from another peer, we won't
+        // retransmit it back to the original sender.
+        state.record_known_block(reply.block.id());
+
         // Retransmit to our-fork peers
         dlog(DLT_LOG_DGRAY "Retransmitting block #${n} by ${w} to fork peers (excluding ${ep})" DLT_LOG_RESET,
              ("n", reply.block.block_num())("w", reply.block.witness)("ep", state.endpoint));
-        send_to_all_our_fork_peers(message(dlt_block_reply_message(reply)), peer);
+        send_to_all_our_fork_peers(message(dlt_block_reply_message(reply)), peer, reply.block.id());
 
         // P26 fix: Check if we've caught up to all peers via single-block replies
         check_sync_catchup();
@@ -1806,7 +1824,7 @@ void dlt_p2p_node::broadcast_block(const signed_block& block) {
     reply.block = block;
     reply.next_available = 0;
     reply.is_last = true;
-    send_to_all_our_fork_peers(message(reply));
+    send_to_all_our_fork_peers(message(reply), INVALID_PEER_ID, block.id());
 }
 
 void dlt_p2p_node::broadcast_block_post_validation(

@@ -26,12 +26,14 @@ The transition from SYNC → FORWARD happens via `transition_to_forward()` (see 
 All broadcasting in forward mode funnels through a single method:
 
 ```cpp
-// dlt_p2p_node.cpp:358
-void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclude = INVALID_PEER_ID) {
+// dlt_p2p_node.cpp
+void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclude = INVALID_PEER_ID, const block_id_type& block_id = block_id_type()) {
     for (auto& [id, state] : _peer_states) {
         if (id == exclude) continue;
         if (state.exchange_enabled && state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE) {
+            if (block_id != block_id_type() && state.has_block(block_id)) continue;  // echo suppression
             send_message(id, msg);
+            if (block_id != block_id_type()) state.record_known_block(block_id);
         }
     }
 }
@@ -45,6 +47,58 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
 | `lifecycle_state == ACTIVE` | Peer lifecycle FSM | Peer has completed handshake and is in normal operation |
 
 **`exclude` parameter:** When relaying a message received from a peer, that peer's ID is passed as `exclude` to avoid echoing the message back.
+
+**`block_id` parameter (echo suppression):** When broadcasting or relaying a block, the block's ID is passed as `block_id`. The function checks each peer's `known_blocks` ring buffer — if the peer already has this block, the send is skipped and the peer is counted in the `skipped_echo` diagnostic. After a successful send, the block ID is recorded in the peer's `known_blocks`.
+
+---
+
+## Block Echo Suppression
+
+### Problem
+
+In a multi-peer mesh, a block can echo back to the node that produced it:
+
+```
+1. Master A generates block #N, broadcasts to B, V, G
+2. V receives #N first, accepts it, retransmits to B and G (standard relay)
+3. B receives #N from V, accepts it, retransmits to A and G
+4. A receives its own block #N back from B — wasted bandwidth + log noise
+```
+
+The `exclude` parameter only filters the **direct sender**. It cannot filter peer B, which received the block from V (not from A) and relayed it to A.
+
+### Solution: Per-Peer `known_blocks` Ring Buffer
+
+Each peer state maintains a small ring buffer of recent block IDs that the peer is **known to have**:
+
+```cpp
+// dlt_p2p_peer_state.hpp
+static constexpr size_t KNOWN_BLOCKS_WINDOW = 20;  // ~60 seconds of blocks at 3s/block
+std::vector<block_id_type> known_blocks;
+
+bool has_block(const block_id_type& id) const;
+void record_known_block(const block_id_type& id);
+```
+
+A peer is recorded as having a block in two situations:
+
+| Signal | Why it means the peer has the block |
+|--------|-------------------------------------|
+| **We sent the block to the peer** | `send_to_all_our_fork_peers` records the block ID after each successful send |
+| **The peer sent the block to us** | `on_dlt_block_reply` records the block ID from the incoming message |
+
+Before sending a block to a peer, `send_to_all_our_fork_peers` checks `has_block()`. If the peer already has it, the send is skipped.
+
+### Scope
+
+Echo suppression only applies to **block_reply** messages (the primary broadcast vector in FORWARD mode). Transactions, fork_status messages, and other P2P messages are not affected — the `block_id` parameter defaults to `block_id_type()` (null) for those calls.
+
+### Diagnostics
+
+The relay log line now includes echo-filtered count:
+```
+Relay block_reply to 3 peers (0 skipped: no_exchange, 0 skipped: not_active, 1 skipped: echo)
+```
 
 ---
 
@@ -66,23 +120,25 @@ void dlt_p2p_node::broadcast_block(const signed_block& block) {
     reply.block = block;
     reply.next_available = 0;
     reply.is_last = true;
-    send_to_all_our_fork_peers(message(reply));  // NO exclude — send to EVERYONE
+    send_to_all_our_fork_peers(message(reply), INVALID_PEER_ID, block.id());  // NO exclude, WITH echo suppression
 }
 ```
 
-The block goes to **all** ACTIVE peers with `exchange_enabled=true`. There is no self-filtering — the producing node broadcasts its own block to all fork-aligned peers unconditionally.
+The block goes to **all** ACTIVE peers with `exchange_enabled=true`, **except** peers that already have this block (echo suppression).
 
 ### Relaying Received Blocks
 
 When a block arrives from a peer (via `on_dlt_block_reply`), the node applies it and **retransmits** to all other fork-aligned peers:
 
 ```cpp
-// dlt_p2p_node.cpp:965
-// Retransmit to our-fork peers
-send_to_all_our_fork_peers(message(dlt_block_reply_message(reply)), peer);
+// dlt_p2p_node.cpp
+// Record that sender has this block (echo suppression)
+state.record_known_block(reply.block.id());
+// Retransmit to our-fork peers (with echo suppression)
+send_to_all_our_fork_peers(message(dlt_block_reply_message(reply)), peer, reply.block.id());
 ```
 
-The `peer` (sender) is excluded to prevent echo. All other ACTIVE fork-aligned peers receive the relay.
+The `peer` (sender) is excluded via the `exclude` parameter. Additionally, peers that already have this block in their `known_blocks` are skipped via echo suppression. The sender's `known_blocks` is updated so that if this block is later received from another peer, it won't be sent back to the original sender.
 
 ### Block Post-Validation Broadcast
 
@@ -337,14 +393,14 @@ When `_block_processing_paused == true` (snapshot in progress), periodic tasks s
 
 ## Summary: Who Gets What in Forward Mode
 
-| Event | Sent to | Excluded |
-|-------|---------|----------|
-| Node produces a block | All ACTIVE peers with `exchange_enabled=true` | *none* |
-| Node originates a transaction | All ACTIVE peers with `exchange_enabled=true` | *none* |
-| Node receives a block from peer X | All ACTIVE peers with `exchange_enabled=true` | X |
-| Node receives a transaction from peer X | All ACTIVE peers with `exchange_enabled=true` | X |
-| Peer has `exchange_enabled=false` | *nothing* | — |
-| Node is in SYNC mode | *nothing* (only range requests) | — |
+| Event | Sent to | Excluded | Echo Filtered |
+|-------|---------|----------|---------------|
+| Node produces a block | All ACTIVE peers with `exchange_enabled=true` | *none* | Peers that already have the block (from a previous relay) |
+| Node originates a transaction | All ACTIVE peers with `exchange_enabled=true` | *none* | N/A |
+| Node receives a block from peer X | All ACTIVE peers with `exchange_enabled=true` | X | Peers that already have the block |
+| Node receives a transaction from peer X | All ACTIVE peers with `exchange_enabled=true` | X | N/A |
+| Peer has `exchange_enabled=false` | *nothing* | — | — |
+| Node is in SYNC mode | *nothing* (only range requests) | — | — |
 
 ---
 
@@ -369,7 +425,7 @@ Between these events, the peer's actual chain head may advance significantly (e.
 | `libraries/network/dlt_p2p_node.cpp` | `broadcast_block()`, `broadcast_transaction()`, `send_to_all_our_fork_peers()`, `transition_to_forward()`, `check_sync_catchup()`, `check_forward_behind()`, `add_to_mempool()` |
 | `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | `dlt_p2p_node` class declaration, `dlt_node_status` enum |
 | `libraries/network/include/graphene/network/dlt_p2p_messages.hpp` | `dlt_block_reply_message`, `dlt_transaction_message`, `dlt_message_type_enum` |
-| `libraries/network/include/graphene/network/dlt_p2p_peer_state.hpp` | `dlt_peer_state` (contains `exchange_enabled`, `fork_alignment`) |
+| `libraries/network/include/graphene/network/dlt_p2p_peer_state.hpp` | `dlt_peer_state` (contains `exchange_enabled`, `fork_alignment`, `known_blocks` for echo suppression) |
 | `plugins/p2p/p2p_plugin.cpp` | `dlt_delegate::accept_block()`, `p2p_plugin::broadcast_block()`, `p2p_plugin::broadcast_transaction()` |
 | `plugins/witness/witness.cpp` | Calls `p2p().broadcast_block()` after block production |
 

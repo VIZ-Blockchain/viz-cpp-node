@@ -138,7 +138,7 @@ private:
 
     // ── Message send ─────────────────────────────────────────────
     void send_message(peer_id peer, const message& msg);
-    void send_to_all_our_fork_peers(const message& msg, peer_id exclude = INVALID_PEER_ID);
+    void send_to_all_our_fork_peers(const message& msg, peer_id exclude = INVALID_PEER_ID, const block_id_type& block_id = block_id_type());
 
     // ── Connection management ────────────────────────────────────
     void connect_to_peer(const fc::ip::endpoint& ep);
