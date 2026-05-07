@@ -110,10 +110,12 @@ namespace graphene {
                 fc::time_point get_last_network_block_time() const;
 
                 /**
-                 * Returns true when the P2P layer is fetching blocks that were
-                 * missed during a block-processing pause (snapshot creation).
-                 * The witness plugin should defer block production while this
-                 * is true to avoid producing on a stale head.
+                 * Returns true when block production should be deferred:
+                 * either during a block-processing pause (snapshot creation
+                 * holding DB read lock) or while catching up after the
+                 * pause ends (draining queued blocks / gap fill).
+                 * The witness plugin checks this to avoid write-lock
+                 * deadlock or producing on a stale head.
                  */
                 bool is_catching_up_after_pause() const;
 

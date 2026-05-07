@@ -22,7 +22,7 @@ sequenceDiagram
     SP->>SP: on_applied_block() triggers snapshot
     SP->>P2P: pause_block_processing()
     Note over P2P: _block_processing_paused = true
-    Note over P2P: _catchup_after_pause stays false
+    Note over P2P: is_catching_up_after_pause() = true
 
     Peer->>P2P: Block N+1 (from delegate)
     P2P->>P2P: QUEUED in _paused_block_queue
@@ -30,7 +30,10 @@ sequenceDiagram
     P2P->>P2P: QUEUED in _paused_block_queue
 
     Note over W: Production loop fires (250ms)
-    Note over W: DB read lock held by snapshot<br/>generate_block() needs write lock → blocked
+    W->>P2P: is_catching_up_after_pause()?
+    P2P-->>W: true (_block_processing_paused)
+    W-->>W: return not_synced (deferred)
+    Note over W: generate_block() NOT called<br/>No write lock attempt
 
     SP->>SP: create_snapshot() DB read completes
     SP->>P2P: resume_block_processing()
@@ -123,16 +126,33 @@ stateDiagram-v2
 
 ## The Bug (Before Fix)
 
-Without the block queue and catchup gate, the following race occurred on the emergency master:
+Two interrelated bugs:
 
+**Bug 1 — Write lock deadlock**: The emergency master's witness production loop
+(250ms tick) bypasses all sync checks. During snapshot creation, the snapshot thread
+holds a strong DB read lock for 30–120s. The production loop called `generate_block()`
+→ `push_block()` → write lock → **deadlocked** behind the read lock, producing
+11+ second write lock timeouts (readers=0, waiter spinning).
+
+**Bug 2 — Fork on stale head**: Without the block queue, blocks arriving during the
+pause were silently dropped. After resume, the emergency master produced a block on a
+stale head before gap-fill could deliver the real blocks from delegates, creating a
+fork that other nodes had to resolve.
+
+Sequence:
 1. Snapshot starts → P2P paused
 2. Other delegates produce blocks N+1, N+2 → **dropped** by P2P
-3. Snapshot finishes → `resume_block_processing()` requests gap fill → **returns immediately**
-4. Witness production loop (250ms tick) → "My turn, fork_db empty at head+1" → **produces block N+1 with emergency key**
-5. Gap fill response arrives with the real block N+1 from the delegate → **fork conflict**
+3. Emergency master production loop → `generate_block()` → **write lock timeout** (11s+)
+4. Snapshot finishes → `resume_block_processing()` requests gap fill → returns immediately
+5. Emergency master produces block N+1 with emergency key → **fork conflict**
 6. Other nodes see two competing blocks → fork switch chaos
 
 ## The Fix
+
+**Production gate during pause**: `is_catching_up_after_pause()` returns true when
+either `_block_processing_paused` OR `_catchup_after_pause` is set. This prevents the
+witness plugin from calling `generate_block()` while the snapshot holds the DB read
+lock (avoids write-lock deadlock) AND during post-pause catchup (avoids stale-head fork).
 
 **Block queue**: During the pause, block-carrying messages (block_reply, block_range_reply,
 gap_fill_reply) are deserialized and pushed into `_paused_block_queue`. Hello and fork_status
@@ -142,7 +162,7 @@ messages are still processed normally to keep `peer_head_num` up to date.
 to the P2P thread. The drain sorts queued blocks by block_num, applies each via
 `accept_block()`, and then checks whether peers are still ahead.
 
-**Catchup gate**: The `_catchup_after_pause` flag is set when `resume_block_processing()`
+**Catchup flag lifecycle**: `_catchup_after_pause` is set when `resume_block_processing()`
 runs and cleared when:
 - The drain completes and no peer is ahead (immediate path), or
 - `transition_to_forward()` runs after a SYNC gap fill (delayed path), or

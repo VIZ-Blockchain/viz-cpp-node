@@ -130,11 +130,12 @@ public:
     dlt_fork_status get_fork_status() const { return _fork_status; }
     bool is_on_majority_fork() const;
 
-    // True when the node has just resumed from a block-processing pause
-    // (snapshot creation) and is fetching blocks that arrived during
-    // the pause.  The witness plugin checks this to avoid producing
-    // blocks on a stale head while the gap is being filled.
-    bool is_catching_up_after_pause() const { return _catchup_after_pause; }
+    // True when block production should be deferred: either during
+    // a block-processing pause (snapshot creation holding DB read lock)
+    // or while catching up after the pause ends (draining queued
+    // blocks).  The witness plugin checks this to avoid producing
+    // blocks that would conflict with the read lock or stale head.
+    bool is_catching_up_after_pause() const { return _block_processing_paused || _catchup_after_pause; }
 
     // ── Called by plugin when a block is applied to chain ────────
     void on_block_applied(const signed_block& block, bool caused_fork_switch);

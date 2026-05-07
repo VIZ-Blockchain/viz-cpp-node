@@ -585,18 +585,16 @@ namespace graphene {
                     // Emergency master: bypass sync check to avoid deadlock.
                 }
 
-                // === POST-PAUSE CATCHUP GATE ===
-                // After a snapshot pause, blocks that arrived during the pause
-                // were silently dropped by the P2P layer.  The P2P node sets
-                // a catchup flag when it detects peers are ahead and starts
-                // fetching the missing blocks.  We must NOT produce blocks
-                // until the gap is filled — otherwise we produce on a stale
-                // head, creating a fork that conflicts with the blocks that
-                // are about to arrive from peers.
+                // === SNAPSHOT PAUSE / POST-PAUSE CATCHUP GATE ===
+                // Defer block production when P2P block processing is paused
+                // (snapshot creation holding DB read lock) or while catching
+                // up after the pause (draining queued blocks).  Producing
+                // during pause deadlocks on the write lock; producing after
+                // pause but before drain creates a fork on a stale head.
                 //
-                // This gate applies to ALL witness types (emergency and normal)
-                // because the race condition affects any block producer.
-                // The flag is cleared by transition_to_forward() once caught up.
+                // This gate applies to ALL witness types (emergency and normal).
+                // The flag is cleared when: pause ends + drain completes +
+                // no peer is ahead (see drain_paused_block_queue / periodic_task).
                 try {
                     if (p2p().is_catching_up_after_pause()) {
                         wlog("Deferring block production: P2P is catching up after "
