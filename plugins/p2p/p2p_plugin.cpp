@@ -286,7 +286,13 @@ public:
             chain.db().push_transaction(trx);
             return true;
         } catch (const fc::exception& e) {
-            dlog("Error accepting transaction: ${e}", ("e", e.to_detail_string()));
+            // Extract just the error message without full stack trace for cleaner debug output
+            std::string error_msg = e.what();
+            // Truncate long messages to keep logs readable
+            if (error_msg.length() > 150) {
+                error_msg = error_msg.substr(0, 147) + "...";
+            }
+            dlog(DLT_LOG_DGRAY "Tx rejected: ${msg}" DLT_LOG_RESET, ("msg", error_msg));
             return false;
         }
     }
