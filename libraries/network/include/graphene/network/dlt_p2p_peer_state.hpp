@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <algorithm>
+#include <deque>
 #include <set>
 #include <string>
 #include <vector>
@@ -85,6 +86,16 @@ struct dlt_peer_state {
     // peer that already has it.
     static constexpr size_t        KNOWN_BLOCKS_WINDOW = 20;
     std::vector<block_id_type>     known_blocks;
+
+    // Send queue: serialized wire frames waiting to be written to this
+    // peer's socket.  When a fiber is already writing to the socket
+    // (tracked by _peer_sending in dlt_p2p_node), new messages are
+    // appended here.  The active writer drains the queue after each
+    // successful write.
+    std::deque<std::vector<char>>  send_queue;
+    static constexpr size_t        SEND_QUEUE_MAX_DEPTH = 100;
+    uint32_t                       send_queue_total = 0;   // lifetime queued (stats)
+    uint32_t                       send_queue_dropped = 0; // lifetime dropped (stats)
 
     bool has_block(const block_id_type& id) const {
         return std::find(known_blocks.begin(), known_blocks.end(), id) != known_blocks.end();

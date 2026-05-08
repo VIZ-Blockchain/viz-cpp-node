@@ -156,6 +156,12 @@ private:
     void accept_loop();
     void start_read_loop(peer_id peer);
 
+    // ── Send queue drain ─────────────────────────────────────────
+    // Writes one wire frame to the peer's socket, then drains any
+    // queued frames.  Called from send_message when no send is in
+    // progress, or recursively after each successful write.
+    void drain_send_queue(peer_id peer, std::vector<char> buf);
+
     // ── Message handlers ─────────────────────────────────────────
     bool on_message(peer_id peer, const message& msg);
 

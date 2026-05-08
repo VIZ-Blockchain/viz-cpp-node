@@ -308,8 +308,9 @@ void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason, bo
         _connections.erase(conn_it);
     }
 
-    // Clear send guard (may be stale if a write was in progress)
+    // Clear send guard and drain any queued messages
     _peer_sending.erase(peer);
+    state.send_queue.clear();
 
     // Incoming peers (from accept_loop) have ephemeral random ports —
     // there is no P2P server to reconnect to. Remove them immediately
@@ -434,11 +435,7 @@ void dlt_p2p_node::send_message(peer_id peer, const message& msg) {
     auto it = _connections.find(peer);
     if (it == _connections.end() || !it->second) return;
 
-    // Serialize the complete wire frame into a single contiguous buffer
-    // so we only need one write loop instead of two.  This eliminates
-    // the yield point between header and data that could allow another
-    // fiber to interleave its own write to the same socket.
-    //
+    // Serialize the complete wire frame into a single contiguous buffer.
     // Wire format: [8-byte header (size + msg_type)][payload bytes]
     // Do NOT use fc::raw::pack(msg) which adds a varint length prefix.
     static constexpr size_t HDR_SIZE = sizeof(message_header); // 8 bytes
@@ -446,7 +443,7 @@ void dlt_p2p_node::send_message(peer_id peer, const message& msg) {
     std::vector<char> buf(total);
     {
         message_header hdr;
-        hdr.size    = static_cast<uint32_t>(msg.data.size());
+        hdr.size     = static_cast<uint32_t>(msg.data.size());
         hdr.msg_type = msg.msg_type;
         std::memcpy(buf.data(), &hdr, HDR_SIZE);
         if (!msg.data.empty()) {
@@ -454,30 +451,58 @@ void dlt_p2p_node::send_message(peer_id peer, const message& msg) {
         }
     }
 
-    // Per-peer send guard: prevent concurrent fiber writes to the same
-    // socket.  tcp_socket::writesome() calls boost::asio::write_some()
-    // which returns after writing *some* bytes, then .wait() yields the
-    // fiber.  During that yield another fiber could call send_message()
-    // for the same peer, interleaving bytes and corrupting the stream.
-    // The guard makes the second caller skip (drop the message) rather
-    // than corrupt the stream.
+    // Per-peer send serialization: if a fiber is already writing to this
+    // peer's socket (_peer_sending is set), enqueue the buffer instead.
+    // The active writer will drain the queue after finishing its write.
     if (_peer_sending.count(peer)) {
-        dlog(DLT_LOG_DGRAY "Dropping message type ${t} to peer ${ep}: send already in progress" DLT_LOG_RESET,
-             ("t", msg.msg_type)("ep", peer));
+        auto state_it = _peer_states.find(peer);
+        if (state_it != _peer_states.end()) {
+            auto& state = state_it->second;
+            if (state.send_queue.size() < dlt_peer_state::SEND_QUEUE_MAX_DEPTH) {
+                state.send_queue.push_back(std::move(buf));
+                ++state.send_queue_total;
+            } else {
+                ++state.send_queue_dropped;
+                dlog(DLT_LOG_DGRAY "Send queue full, dropping message type ${t} to peer ${ep}" DLT_LOG_RESET,
+                     ("t", msg.msg_type)("ep", state.endpoint));
+            }
+        }
         return;
     }
+
+    // No send in progress — claim the peer and start draining.
     _peer_sending.insert(peer);
+    drain_send_queue(peer, std::move(buf));
+}
+
+void dlt_p2p_node::drain_send_queue(peer_id peer, std::vector<char> buf) {
+    auto conn_it = _connections.find(peer);
+    if (conn_it == _connections.end() || !conn_it->second) {
+        _peer_sending.erase(peer);
+        return;
+    }
+    auto& sock = conn_it->second;
 
     try {
-        // Write the entire buffer in a loop — writesome() may return
-        // after writing only a subset of the requested bytes (partial
-        // write).  Loop until every byte is on the wire.
-        const char* ptr = buf.data();
-        size_t remaining = total;
-        while (remaining > 0) {
-            size_t written = it->second->writesome(ptr, remaining);
-            ptr       += written;
-            remaining -= written;
+        while (true) {
+            // Write the current buffer to the socket in a loop —
+            // writesome() may return after writing only a subset of
+            // the requested bytes (partial write).
+            const char* ptr = buf.data();
+            size_t remaining = buf.size();
+            while (remaining > 0) {
+                size_t written = sock->writesome(ptr, remaining);
+                ptr       += written;
+                remaining -= written;
+            }
+
+            // Check for queued messages
+            auto state_it = _peer_states.find(peer);
+            if (state_it == _peer_states.end() || state_it->second.send_queue.empty()) {
+                break; // nothing more to send
+            }
+            buf = std::move(state_it->second.send_queue.front());
+            state_it->second.send_queue.pop_front();
         }
     } catch (const fc::exception& e) {
         auto ep_it_send = _peer_states.find(peer);
@@ -2857,12 +2882,14 @@ void dlt_p2p_node::log_peer_stats() {
         }
         const char* peer_node_str = (state.peer_node_status == DLT_NODE_STATUS_SYNC) ? "SYNC" : "FWD";
 
-        ilog("${C}  ${ep} | ${ls} | exch=${ex} | head=${ph} lib=${pl} | range=${pe}-${pt} | peer_fork=${pf} peer_node=${pn} | spam=${s} | ${fl}${R}",
+        ilog("${C}  ${ep} | ${ls} | exch=${ex} | head=${ph} lib=${pl} | range=${pe}-${pt} | peer_fork=${pf} peer_node=${pn} | spam=${s} | ${fl}${sq}${R}",
              ("C", C)("ep", ep)("ls", ls)("ex", exch_str)
              ("ph", state.peer_head_num)("pl", state.peer_lib_num)
              ("pe", state.peer_dlt_earliest)("pt", state.peer_dlt_latest)
              ("pf", peer_fork_str)("pn", peer_node_str)
-             ("s", state.spam_strikes)("fl", flags)("R", R));
+             ("s", state.spam_strikes)("fl", flags)
+             ("sq", (state.send_queue.empty() && state.send_queue_dropped == 0) ? std::string() : " sq=" + std::to_string(state.send_queue.size()) + "/qd=" + std::to_string(state.send_queue_dropped))
+             ("R", R));
     }
 
     ilog("${C}=== End DLT P2P Stats ===${R}", ("C", C)("R", R));
