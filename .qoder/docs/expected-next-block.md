@@ -89,7 +89,7 @@ if (state.expected_next_block != 0 && block.block_num() != state.expected_next_b
 
 Same 3-tier log structure as 3.1 (Fix 8.3), plus additional logic:
 
-- **Gap fill trigger (P36/P40):** If FORWARD mode and `block_num > head + 1`, request gap fill. If `block_num == head + 1`, there's no real gap — it's just stale `expected_next_block`.
+- **Gap fill trigger (P36/P40/P54):** If `block_num > head + 1`, request gap fill. Works in both SYNC and FORWARD modes. If `block_num == head + 1`, there's no real gap - it's just stale `expected_next_block`.
 - **Competing fork detection:** If the block's `previous` hash differs from our head at the same height, request the competing parent block.
 
 ---

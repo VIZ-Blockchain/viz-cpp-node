@@ -408,7 +408,7 @@ Peers whose `exchange_enabled=false` (fork not aligned) receive nothing. This is
 
 ### SYNC-Mode Nodes
 
-While in SYNC mode, a node does NOT broadcast blocks or relay transactions to peers. The only outbound traffic is block range requests (`dlt_get_block_range_message`).
+While in SYNC mode, a node does NOT broadcast blocks or relay transactions to peers. The only outbound traffic is block range requests (`dlt_get_block_range_message`) and gap fill requests (`dlt_gap_fill_request`). Gap fill works in both SYNC and FORWARD modes — in SYNC mode, it provides an alternative path to request missing blocks when `request_blocks_from_peer()` cannot bridge a gap (e.g., blocks below the syncing peer's DLT range). Large gaps are served in 100-block chunks.
 
 ### Block Processing Paused
 
@@ -439,7 +439,7 @@ When `_block_processing_paused == true` (snapshot in progress), periodic tasks s
 | Node receives a block from peer X | All ACTIVE peers with `exchange_enabled=true` | X | Peers that already have the block |
 | Node receives a transaction from peer X | All ACTIVE peers with `exchange_enabled=true` | X | N/A |
 | Peer has `exchange_enabled=false` | *nothing* | — | — |
-| Node is in SYNC mode | *nothing* (only range requests) | — | — |
+| Node is in SYNC mode | *nothing* (only range requests and gap fill) | - | - |
 
 ---
 

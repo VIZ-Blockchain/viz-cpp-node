@@ -418,6 +418,7 @@ Post-implementation issues observed in production (4-node DLT emergency consensu
 | P40 | ~~HIGH~~ **Fixed** | FORWARD transition not announced to peers + exchange status not visible in stats |
 | P41 | ~~HIGH~~ **Fixed** | Stale peer state on reconnect: exchange_enabled, spam_strikes, peer_head_num leak from old session |
 | P53 | ~~HIGH~~ **Fixed** | Peer isolation oscillation: emergency_peer_reset() clears bans/backoffs after 60s isolation |
+| P54 | ~~HIGH~~ **Fixed** | Gap fill disabled in SYNC mode + large gaps silently ignored: mode-agnostic gap fill + chunked requests |
 
 Full analysis in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md#new-problems-discovered-post-implementation).
 
@@ -582,4 +583,24 @@ Gap fill is triggered in three places:
 
 **Fix 2 — Isolation-aware `check_forward_stagnation()`:** When the head is stuck AND zero active peers exist, the function does NOT transition to SYNC (useless without peers). Instead, it starts the same 60s isolation timer and calls `emergency_peer_reset()` when it expires.
 
-**Fix 3 — `emergency_peer_reset()` method:** Iterates all `_peer_states`: clears all soft bans (BANNED → DISCONNECTED, resets `spam_strikes`), resets all DISCONNECTED peer backoffs to `INITIAL_RECONNECT_BACKOFF_SEC` with `next_reconnect_attempt = now` (immediate). Also clears `_sync_stagnation_retries` and `_isolation_detected_time`.
+**Fix 3 - `emergency_peer_reset()` method:** Iterates all `_peer_states`: clears all soft bans (BANNED to DISCONNECTED, resets `spam_strikes`), resets all DISCONNECTED peer backoffs to `INITIAL_RECONNECT_BACKOFF_SEC` with `next_reconnect_attempt = now` (immediate). Also clears `_sync_stagnation_retries` and `_isolation_detected_time`.
+
+### P54: Gap Fill Disabled in SYNC Mode + Large Gaps Silently Ignored
+
+**Files:** `libraries/network/dlt_p2p_node.cpp`
+
+**Root cause (2 bugs):**
+
+1. **`request_gap_fill()` gated to FORWARD mode only.** The function had `if (_node_status != DLT_NODE_STATUS_FORWARD) return;` at the top, so when a node was stuck in SYNC mode with a growing gap (e.g., head=79737668, network at 79738507, gap=839), gap fill never fired. Blocks arrived via broadcast, were stored in fork_db as unlinkable, and the gap kept growing.
+
+2. **Gaps > `GAP_FILL_MAX_BLOCKS` (100) silently ignored.** When `gap > 100`, the function returned with no log, no request, and no fallback. Combined with Bug 1, even after a SYNC to FORWARD transition, the gap (still >100) would prevent gap fill from doing anything.
+
+Additionally, the peer candidate loop only considered `DLT_PEER_LIFECYCLE_ACTIVE` peers, but in SYNC mode the best candidate is typically in `DLT_PEER_LIFECYCLE_SYNCING` state (set by `request_blocks_from_peer`).
+
+**Fix 1 - Remove FORWARD-only guard:** Gap fill now works in both SYNC and FORWARD modes. In SYNC mode, when `request_blocks_from_peer()` cannot bridge a gap (blocks below the syncing peer's DLT range), gap fill provides an alternative path.
+
+**Fix 2 - Chunked requests for large gaps:** Instead of silently returning when `gap > GAP_FILL_MAX_BLOCKS`, the function now requests the first 100 blocks. Subsequent chunks are requested on the next periodic call after the current chunk completes or times out.
+
+**Fix 3 - Include SYNCING peers:** The peer candidate loop now includes `DLT_PEER_LIFECYCLE_SYNCING` peers alongside `DLT_PEER_LIFECYCLE_ACTIVE`.
+
+**Fix 4 - Mode-agnostic out-of-order trigger:** In `on_dlt_block_reply()`, the gap fill trigger for out-of-order blocks no longer requires FORWARD mode. Any mode with a real gap triggers gap fill.
