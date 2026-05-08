@@ -2323,6 +2323,7 @@ void dlt_p2p_node::transition_to_sync() {
     if (_node_status == DLT_NODE_STATUS_SYNC) return;
     _node_status = DLT_NODE_STATUS_SYNC;
     _sync_stagnation_retries = 0;
+    _last_block_received_time = fc::time_point::now();
     ilog(DLT_LOG_ORANGE "=== DLT P2P: transitioning to SYNC mode ===" DLT_LOG_RESET);
 }
 
@@ -2521,10 +2522,33 @@ void dlt_p2p_node::check_forward_stagnation() {
 
         // We have active peers but head is stuck — normal stagnation path
         _isolation_detected_time = fc::time_point();  // clear isolation if peers are back
+
+        // Only transition to SYNC if at least one peer is ahead of us.
+        // If no peer is ahead, SYNC mode has nothing to offer — we'd just
+        // oscillate back to FORWARD on the next tick via check_sync_catchup().
+        bool has_peer_ahead = false;
+        for (const auto& pi : _peer_states) {
+            const auto& s = pi.second;
+            if ((s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
+                 s.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) &&
+                s.peer_head_num > our_head) {
+                has_peer_ahead = true;
+                break;
+            }
+        }
+
+        if (!has_peer_ahead) {
+            ilog(DLT_LOG_ORANGE "FORWARD stagnation: head stuck at #${h} for ${s}s, but no peer ahead — resetting stagnation timer" DLT_LOG_RESET,
+                 ("h", our_head)("s", FORWARD_STAGNATION_SEC));
+            _last_forward_head_num = our_head;
+            _last_forward_progress_time = fc::time_point::now();
+            return;
+        }
+
         wlog(DLT_LOG_ORANGE "FORWARD stagnation: head stuck at #${h} for ${s}s — transitioning to SYNC" DLT_LOG_RESET,
              ("h", our_head)("s", FORWARD_STAGNATION_SEC));
         transition_to_sync();
-        // Request blocks from all exchange-enabled peers
+        // Request blocks from all exchange-enabled peers that are ahead
         for (auto& pi : _peer_states) {
             auto& s = pi.second;
             if (s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE &&
