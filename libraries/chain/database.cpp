@@ -1543,9 +1543,11 @@ namespace graphene { namespace chain {
                                  ("n", new_block.block_num())("p", parent_block->block_num()));
                             try {
                                 _fork_db.push_block(*parent_block);
-                            } catch (...) {
-                                // fork_db push failed — parent already present
-                                // or other non-fatal issue; safe to continue.
+                            } catch (const fc::assert_exception&) {
+                                // Parent already in fork_db or duplicate — safe to
+                                // continue.  Only catch assert_exception (covers
+                                // duplicate insert and index conflicts).  Memory
+                                // errors and corruption must propagate.
                             }
                             // Fall through to normal push logic below
                         } else {

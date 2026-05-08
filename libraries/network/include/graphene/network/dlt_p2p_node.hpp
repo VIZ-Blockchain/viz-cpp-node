@@ -357,6 +357,11 @@ private:
     // ── Block processing pause ───────────────────────────────────
     bool                            _block_processing_paused = false;
 
+    // Maximum number of blocks to buffer while P2P processing is
+    // paused (e.g. during snapshot creation).  Prevents unbounded
+    // memory growth on slow disks where a pause can last minutes.
+    static constexpr size_t         PAUSED_QUEUE_MAX = 1000;
+
     // Blocks received during a pause are buffered here instead of
     // being dropped.  When the pause ends, drain_paused_block_queue()
     // applies them in order before the witness plugin is allowed to

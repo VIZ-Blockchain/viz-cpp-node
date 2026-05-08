@@ -595,24 +595,37 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
             case dlt_block_reply_message_type:
                 try {
                     auto reply = msg.as<dlt_block_reply_message>();
-                    _paused_block_queue.push_back(std::move(reply.block));
-                } catch (...) {}
+                    if (_paused_block_queue.size() < PAUSED_QUEUE_MAX)
+                        _paused_block_queue.push_back(std::move(reply.block));
+                } catch (const fc::exception& e) {
+                    wlog("Failed to buffer block during pause: ${e}", ("e", e.what()));
+                }
                 return true;
 
             case dlt_block_range_reply_message_type:
                 try {
                     auto reply = msg.as<dlt_block_range_reply_message>();
-                    for (auto& b : reply.blocks)
+                    for (auto& b : reply.blocks) {
+                        if (_paused_block_queue.size() >= PAUSED_QUEUE_MAX)
+                            break;
                         _paused_block_queue.push_back(std::move(b));
-                } catch (...) {}
+                    }
+                } catch (const fc::exception& e) {
+                    wlog("Failed to buffer block range during pause: ${e}", ("e", e.what()));
+                }
                 return true;
 
             case dlt_gap_fill_reply_type:
                 try {
                     auto reply = msg.as<dlt_gap_fill_reply>();
-                    for (auto& b : reply.blocks)
+                    for (auto& b : reply.blocks) {
+                        if (_paused_block_queue.size() >= PAUSED_QUEUE_MAX)
+                            break;
                         _paused_block_queue.push_back(std::move(b));
-                } catch (...) {}
+                    }
+                } catch (const fc::exception& e) {
+                    wlog("Failed to buffer gap-fill block during pause: ${e}", ("e", e.what()));
+                }
                 return true;
 
             // Drop everything else (transactions, peer exchange, etc.)
