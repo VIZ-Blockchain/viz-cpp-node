@@ -28,6 +28,8 @@ constexpr uint32_t dlt_p2p_node::GAP_FILL_MAX_BLOCKS;
 constexpr uint32_t dlt_p2p_node::GAP_FILL_COOLDOWN_SEC;
 constexpr uint32_t dlt_p2p_node::GAP_FILL_TIMEOUT_SEC;
 constexpr uint32_t dlt_p2p_node::FORWARD_STAGNATION_SEC;
+constexpr uint32_t dlt_p2p_node::ISOLATION_RESET_SEC;
+constexpr uint32_t dlt_p2p_node::GAP_REJECT_BLACKLIST_SEC;
 
 // ── Construction / destruction ───────────────────────────────────────
 
