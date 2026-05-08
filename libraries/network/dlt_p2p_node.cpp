@@ -1909,16 +1909,22 @@ void dlt_p2p_node::request_gap_fill() {
     // For large gaps, request only the first GAP_FILL_MAX_BLOCKS blocks.
     // Subsequent chunks will be requested on the next periodic call
     // after this chunk completes or times out.
-    uint32_t request_ceiling = std::min(gap_ceiling, our_head + GAP_FILL_MAX_BLOCKS);
+    //
+    // Include our_head to detect competing fork at our tip (same logic as
+    // P49 fix in request_blocks_from_peer). If our witness produced a block
+    // at our_head that the network rejected, the peer's version is needed
+    // so fork_db can link subsequent blocks. If it's the same as ours,
+    // accept_block returns ALREADY_KNOWN with no side effects.
+    uint32_t request_ceiling = std::min(gap_ceiling, our_head + GAP_FILL_MAX_BLOCKS - 1);
 
     // Build request for the missing blocks (capped to chunk size)
     dlt_gap_fill_request req;
-    for (uint32_t n = our_head + 1; n <= request_ceiling; ++n) {
+    for (uint32_t n = our_head; n <= request_ceiling; ++n) {
         req.block_nums.push_back(n);
     }
 
     ilog(DLT_LOG_GREEN "Requesting gap fill for blocks ${s}-${e} (${n} blocks, total_gap=${g}) (highest_seen=${hs})" DLT_LOG_RESET,
-         ("s", our_head + 1)("e", request_ceiling)("n", req.block_nums.size())("g", gap)("hs", _highest_seen_block_num));
+         ("s", our_head)("e", request_ceiling)("n", req.block_nums.size())("g", gap)("hs", _highest_seen_block_num));
 
     _gap_fill_in_progress = true;
     _gap_fill_start_time = fc::time_point::now();
