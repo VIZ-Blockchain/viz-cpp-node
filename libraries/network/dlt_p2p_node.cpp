@@ -1285,7 +1285,9 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
         return;
     }
 
-    record_packet_result(peer, any_block_applied);
+    // fork_db-only means the peer sent valid blocks we can't apply yet
+    // (competing fork accumulating, or large-gap sync from LIB) — not spam.
+    record_packet_result(peer, any_block_applied || any_fork_db_only);
 
     // If SYNC, continue fetching or transition to FORWARD.
     // When blocks were applied, follow the normal transition logic.
