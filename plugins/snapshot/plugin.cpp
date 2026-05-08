@@ -2667,6 +2667,7 @@ void snapshot_plugin::plugin_impl::accept_loop() {
         } catch (const fc::exception& e) {
             if (server_running) {
                 elog("Snapshot server: accept error: ${e}", ("e", e.to_detail_string()));
+                fc::usleep(fc::seconds(1));
             }
         } catch (const std::exception& e) {
             // CRITICAL: Without this catch, any std::exception (e.g. std::bad_alloc
@@ -2675,10 +2676,12 @@ void snapshot_plugin::plugin_impl::accept_loop() {
             // accept() — clients get connection timeouts with no error in the log.
             if (server_running) {
                 elog("Snapshot server: accept error (std::exception): ${e}", ("e", e.what()));
+                fc::usleep(fc::seconds(1));
             }
         } catch (...) {
             if (server_running) {
                 elog("Snapshot server: unknown accept error");
+                fc::usleep(fc::seconds(1));
             }
         }
     }
