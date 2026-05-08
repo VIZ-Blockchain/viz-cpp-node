@@ -258,7 +258,7 @@ void dlt_p2p_node::transition_to_forward() {
 |---------|----------|------------|
 | **Peer ahead in hello_reply** | `on_dlt_hello_reply()` | `peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD` while in FORWARD mode |
 | **Periodic fallbehind check** | `check_forward_behind()` | Any active peer is ahead by > `FORWARD_FALLBEHIND_THRESHOLD` (2) blocks |
-| **FORWARD stagnation** | `check_forward_stagnation()` | Head stuck for 30s with active peers → SYNC (P37). Isolated (no active peers) → emergency reset after 60s (P53) |
+| **FORWARD stagnation** | `check_forward_stagnation()` | Head stuck for 30s with active peers and at least one peer ahead → SYNC (P37). No peer ahead → reset stagnation timer, stay in FORWARD (P55). Isolated (no active peers) → emergency reset after 60s (P53) |
 
 ---
 
@@ -397,6 +397,31 @@ On the next `periodic_task()` tick (5 seconds), `periodic_reconnect_check()` wil
 | `check_sync_catchup()` | Returns early (does not claim caught up). Starts isolation timer or calls `emergency_peer_reset()` after 60s. |
 | `check_forward_stagnation()` | Returns early (does not transition to SYNC). Starts isolation timer or calls `emergency_peer_reset()` after 60s. |
 | `emergency_peer_reset()` | Clears bans, resets backoffs, enables immediate reconnection. |
+
+---
+
+## FORWARD Stagnation When No Peer Is Ahead (P55)
+
+A second oscillation pattern was observed when the head is stuck but no connected peer has a higher block number:
+
+```
+1. Head stuck at block N, all 5 peers also at block N → check_forward_stagnation() after 30s → SYNC
+2. In SYNC, sync_stagnation_check() fires immediately (stale timer, see below)
+3. check_sync_catchup() sees our_head >= all peers → FORWARD
+4. Repeat — SYNC never actually requests or processes any blocks
+```
+
+**Two root causes:**
+
+1. `transition_to_sync()` did not reset `_last_block_received_time`, so the sync stagnation timer inherited the stale timestamp from the last block received in FORWARD mode (~30s ago). `sync_stagnation_check()` fired on the very next periodic tick.
+
+2. `check_forward_stagnation()` transitioned to SYNC even when no peer was ahead. With no peer to sync from, SYNC mode was useless — `check_sync_catchup()` immediately returned to FORWARD.
+
+**Fixes:**
+
+1. `transition_to_sync()` now resets `_last_block_received_time = fc::time_point::now()`, giving the sync phase a full 30s window.
+
+2. `check_forward_stagnation()` now checks for peers ahead before transitioning to SYNC. If no peer has `peer_head_num > our_head`, the function resets the stagnation timer and stays in FORWARD instead of oscillating.
 
 ---
 

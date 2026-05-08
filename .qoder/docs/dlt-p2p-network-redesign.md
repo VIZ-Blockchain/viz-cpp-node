@@ -604,3 +604,19 @@ Additionally, the peer candidate loop only considered `DLT_PEER_LIFECYCLE_ACTIVE
 **Fix 3 - Include SYNCING peers:** The peer candidate loop now includes `DLT_PEER_LIFECYCLE_SYNCING` peers alongside `DLT_PEER_LIFECYCLE_ACTIVE`.
 
 **Fix 4 - Mode-agnostic out-of-order trigger:** In `on_dlt_block_reply()`, the gap fill trigger for out-of-order blocks no longer requires FORWARD mode. Any mode with a real gap triggers gap fill.
+
+### P55: SYNC↔FORWARD Oscillation When No Peer Is Ahead
+
+**Files:** `libraries/network/dlt_p2p_node.cpp`
+
+**Root cause (2 bugs):**
+
+1. **`transition_to_sync()` did not reset `_last_block_received_time`.** When `check_forward_stagnation()` triggered a FORWARD→SYNC transition after 30s without head progress, the sync stagnation timer inherited a stale `_last_block_received_time` (set when the last block was received in FORWARD mode, ~30s ago). On the very next periodic tick (~5s later), `sync_stagnation_check()` saw the timestamp was already 35s old (> `SYNC_STAGNATION_SEC` 30s) and immediately triggered a stagnation retry.
+
+2. **`check_forward_stagnation()` transitioned to SYNC even when no peer was ahead.** When head was stuck at block N and all connected peers also reported head=N, transitioning to SYNC mode was pointless — there was nothing to sync. `check_sync_catchup()` would immediately detect `our_head >= all peers` on the next tick and transition back to FORWARD, completing the oscillation loop in a single tick cycle.
+
+**Observed behavior:** Node at block #79740459 with 5 active peers all at #79740459. At 444006ms, `check_forward_stagnation` transitions to SYNC. At 449006ms (next tick), `sync_stagnation_check` fires retry 1/3 and `check_sync_catchup` transitions back to FORWARD. No actual sync attempt occurs.
+
+**Fix 1 — Reset stagnation timer on SYNC entry:** `transition_to_sync()` now sets `_last_block_received_time = fc::time_point::now()`. This gives the sync phase a full 30s window to receive blocks before stagnation detection kicks in.
+
+**Fix 2 — Peer-ahead guard in `check_forward_stagnation()`:** Before transitioning to SYNC, the function now checks whether at least one active/SYNCING peer has `peer_head_num > our_head`. If no peer is ahead, SYNC mode cannot help, so the function logs the situation and resets the stagnation timer (`_last_forward_head_num` and `_last_forward_progress_time`) instead of oscillating.
