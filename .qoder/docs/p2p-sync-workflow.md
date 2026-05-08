@@ -314,6 +314,8 @@ Then `resync()` also clears global sync state:
 
 Without clearing `_received_sync_items` and `_new_received_sync_items`, `have_already_received_sync_item()` would skip re-requesting blocks that arrived but failed to link (e.g., unlinkable blocks during a gap), leaving permanent gaps — especially critical in DLT emergency mode. Without resetting `_most_recent_blocks_accepted`, `process_backlog_of_sync_blocks()` would skip blocks that were accepted before the gap but need re-evaluation after resync.
 
+> **Note:** The DLT P2P node (`dlt_p2p_node.cpp`) has an analogous mechanism called `emergency_peer_reset()` (P53 fix) that handles peer isolation — when all peers are disconnected/banned for 60+ seconds, it clears soft bans, resets backoffs, and forces immediate reconnection. See [DLT Forward Mode — Peer Isolation Recovery](./dlt-forward-mode.md#peer-isolation-recovery) for details.
+
 ---
 
 ## Connection Retry & Seed Reconnection

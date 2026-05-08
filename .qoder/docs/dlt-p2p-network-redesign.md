@@ -131,7 +131,8 @@ All FC_REFLECT macros defined for serialization.
 - `on_dlt_block_range_reply()` — validates prev_hash, applies blocks, transitions to FORWARD when `is_last`
 - `on_dlt_get_block()` / `on_dlt_block_reply()` — single-block fetch variant
 - `sync_stagnation_check()` — 30s no-block timeout, 3 retries, then FORWARD with warning
-- `check_sync_catchup()` — compares our head against all peers' heads, transitions to FORWARD if caught up (P26 fix)
+- `check_sync_catchup()` — compares our head against all peers' heads, transitions to FORWARD if caught up (P26 fix). Guards against isolation with 60s emergency reset (P53 fix).
+- `emergency_peer_reset()` — clears soft bans and resets backoffs when all peers are isolated for 60s (P53 fix)
 - `transition_to_forward()` — revalidates provisional mempool entries, re-evaluates `exchange_enabled` for all peers (P25 fix)
 
 **Mempool** (separate from chain's `_pending_tx`):
@@ -416,6 +417,7 @@ Post-implementation issues observed in production (4-node DLT emergency consensu
 | P39 | ~~CRITICAL~~ **Fixed** | `_push_next` cascade blocks not applied to database + gap fill requires exchange peers |
 | P40 | ~~HIGH~~ **Fixed** | FORWARD transition not announced to peers + exchange status not visible in stats |
 | P41 | ~~HIGH~~ **Fixed** | Stale peer state on reconnect: exchange_enabled, spam_strikes, peer_head_num leak from old session |
+| P53 | ~~HIGH~~ **Fixed** | Peer isolation oscillation: emergency_peer_reset() clears bans/backoffs after 60s isolation |
 
 Full analysis in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md#new-problems-discovered-post-implementation).
 
@@ -568,3 +570,15 @@ Gap fill is triggered in three places:
 - `fork_alignment`, `peer_fork_status`, `peer_node_status`, `expected_next_block` are all stale.
 
 **Fix — Full state reset on reconnect:** `connect_to_peer()` now saves only cross-session fields (`reconnect_backoff_sec`, `last_connection_duration`, `node_id`) and then resets the entire `dlt_peer_state` via `state = dlt_peer_state()`. All per-session fields start fresh. The hello handshake re-establishes `exchange_enabled`, `peer_head_num`, etc. from scratch.
+
+### P53: Peer Isolation Oscillation — Emergency Peer Reset
+
+**Files:** `libraries/network/dlt_p2p_node.cpp`, `libraries/network/include/graphene/network/dlt_p2p_node.hpp`
+
+**Root cause:** After a snapshot pause, all peers could be in DISCONNECTED state with high backoffs (up to 3600s). `check_sync_catchup()` treated zero active peers as vacuously "all caught up" → transitioned to FORWARD. Then `check_forward_stagnation()` detected 30s without progress → transitioned to SYNC. Then `check_sync_catchup()` again saw zero peers → FORWARD. This oscillation loop prevented the node from ever reconnecting.
+
+**Fix 1 — Isolation guard in `check_sync_catchup()`:** When zero active peers exist, the function returns early without claiming caught up. It tracks `_isolation_detected_time` and after 60 seconds (`ISOLATION_RESET_SEC`) calls `emergency_peer_reset()`.
+
+**Fix 2 — Isolation-aware `check_forward_stagnation()`:** When the head is stuck AND zero active peers exist, the function does NOT transition to SYNC (useless without peers). Instead, it starts the same 60s isolation timer and calls `emergency_peer_reset()` when it expires.
+
+**Fix 3 — `emergency_peer_reset()` method:** Iterates all `_peer_states`: clears all soft bans (BANNED → DISCONNECTED, resets `spam_strikes`), resets all DISCONNECTED peer backoffs to `INITIAL_RECONNECT_BACKOFF_SEC` with `next_reconnect_attempt = now` (immediate). Also clears `_sync_stagnation_retries` and `_isolation_detected_time`.

@@ -234,12 +234,14 @@ void dlt_p2p_node::transition_to_forward() {
 | Trigger | Location | Condition |
 |---------|----------|------------|
 | **Block range complete** | `on_dlt_block_range_reply()` | `is_last == true` AND `any_block_applied == true` (P20 guard) |
-| **Sync catchup** | `check_sync_catchup()` | `our_head >= all_active_peer_heads` |
+| **Sync catchup** | `check_sync_catchup()` | `our_head >= all_active_peer_heads` AND at least one active peer exists |
 | **Stagnation timeout** | `sync_stagnation_check()` | 30s no-block, 3 retries exhausted → FORWARD with warning |
 
 `check_sync_catchup()` is called from two places (P26 fix):
 - `on_dlt_block_reply()` — after accepting a single block
 - `periodic_task()` — every ~5 seconds
+
+**Isolation guard (P53 fix):** `check_sync_catchup()` does NOT claim "caught up" when zero active peers exist. With no peers to compare against, the node cannot determine whether it has actually caught up. Instead, it tracks isolation via `_isolation_detected_time` and after 60 seconds calls `emergency_peer_reset()` to force reconnection. See [Peer Isolation Recovery](#peer-isolation-recovery) below.
 
 ### What Happens on Transition
 
@@ -256,6 +258,7 @@ void dlt_p2p_node::transition_to_forward() {
 |---------|----------|------------|
 | **Peer ahead in hello_reply** | `on_dlt_hello_reply()` | `peer_head_num > our_head + FORWARD_FALLBEHIND_THRESHOLD` while in FORWARD mode |
 | **Periodic fallbehind check** | `check_forward_behind()` | Any active peer is ahead by > `FORWARD_FALLBEHIND_THRESHOLD` (2) blocks |
+| **FORWARD stagnation** | `check_forward_stagnation()` | Head stuck for 30s with active peers → SYNC (P37). Isolated (no active peers) → emergency reset after 60s (P53) |
 
 ---
 
@@ -361,6 +364,42 @@ The threshold is `FORWARD_FALLBEHIND_THRESHOLD = 2` (3+ blocks behind = ~9s at 3
 
 ---
 
+## Peer Isolation Recovery (P53)
+
+### Problem
+
+When all peers are disconnected or banned (e.g., after a snapshot pause), the node becomes **isolated** — no active peer connections exist. This caused a SYNC↔FORWARD oscillation loop:
+
+```
+1. All peers DISC → check_sync_catchup() sees 0 active peers → all_caught_up=true → FORWARD
+2. In FORWARD with no connections → check_forward_stagnation() after 30s → SYNC
+3. In SYNC with no connections → check_sync_catchup() sees 0 active → FORWARD
+4. Repeat forever, head never advances, backoffs never expire (up to 3600s)
+```
+
+The root cause: `check_sync_catchup()` treated zero active peers as "caught up" (vacuously true for the `all_caught_up` check), and `check_forward_stagnation()` transitioned to SYNC without any peer to request blocks from.
+
+### Solution: Isolation Detection + Emergency Reset
+
+A new field `_isolation_detected_time` tracks when isolation was first detected. After 60 seconds (`ISOLATION_RESET_SEC`) of continuous isolation, `emergency_peer_reset()` fires:
+
+1. **Clears all soft bans** — BANNED peers are moved to DISCONNECTED state, `ban_reason` and `spam_strikes` are reset.
+2. **Resets all backoffs** — Every DISCONNECTED peer gets `reconnect_backoff_sec = INITIAL_RECONNECT_BACKOFF_SEC` (30s) and `next_reconnect_attempt = now` (immediate).
+3. **Resets stagnation counters** — `_sync_stagnation_retries` is cleared.
+4. **Clears isolation timer** — `_isolation_detected_time` is reset so the timer can re-trigger if isolation recurs.
+
+On the next `periodic_task()` tick (5 seconds), `periodic_reconnect_check()` will attempt immediate reconnection to all peers.
+
+### Where Isolation Is Handled
+
+| Function | Behavior When Isolated |
+|----------|----------------------|
+| `check_sync_catchup()` | Returns early (does not claim caught up). Starts isolation timer or calls `emergency_peer_reset()` after 60s. |
+| `check_forward_stagnation()` | Returns early (does not transition to SYNC). Starts isolation timer or calls `emergency_peer_reset()` after 60s. |
+| `emergency_peer_reset()` | Clears bans, resets backoffs, enables immediate reconnection. |
+
+---
+
 ## What Does NOT Get Forwarded
 
 ### Peers on a Different Fork
@@ -422,7 +461,7 @@ Between these events, the peer's actual chain head may advance significantly (e.
 
 | File | Content |
 |------|---------|
-| `libraries/network/dlt_p2p_node.cpp` | `broadcast_block()`, `broadcast_transaction()`, `send_to_all_our_fork_peers()`, `transition_to_forward()`, `check_sync_catchup()`, `check_forward_behind()`, `add_to_mempool()` |
+| `libraries/network/dlt_p2p_node.cpp` | `broadcast_block()`, `broadcast_transaction()`, `send_to_all_our_fork_peers()`, `transition_to_forward()`, `check_sync_catchup()`, `check_forward_behind()`, `check_forward_stagnation()`, `emergency_peer_reset()`, `add_to_mempool()` |
 | `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | `dlt_p2p_node` class declaration, `dlt_node_status` enum |
 | `libraries/network/include/graphene/network/dlt_p2p_messages.hpp` | `dlt_block_reply_message`, `dlt_transaction_message`, `dlt_message_type_enum` |
 | `libraries/network/include/graphene/network/dlt_p2p_peer_state.hpp` | `dlt_peer_state` (contains `exchange_enabled`, `fork_alignment`, `known_blocks` for echo suppression) |
