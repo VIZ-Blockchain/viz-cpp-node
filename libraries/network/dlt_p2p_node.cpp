@@ -1520,9 +1520,11 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
             next_req.prev_block_id = _delegate->get_head_block_id();
             send_message(peer, message(next_req));
         } else if (reply.is_last) {
-            // Caught up to this peer
+            // Caught up to this peer — use check_sync_catchup() instead of
+            // transition_to_forward() directly so we don't enter FORWARD when
+            // no block was actually applied (e.g. all ALREADY_KNOWN replies).
             state.range_fallback_mode = false;
-            transition_to_forward();
+            check_sync_catchup();
         }
     }
 }
@@ -2411,15 +2413,20 @@ void dlt_p2p_node::check_sync_catchup() {
     if (our_head == 0) return;  // nothing to catch up to
 
     // Count active peers and check if our head is at or ahead of them.
+    // known_head_peers counts only peers that have reported a non-zero head.
+    // Empty peers (head=0 from hello, e.g. new nodes with no blocks) are
+    // skipped for the "ahead" check but still count toward active_peer_count
+    // so isolation logic works correctly.
     uint32_t active_peer_count = 0;
+    uint32_t known_head_peers = 0;
     bool has_peer_ahead = false;
     for (const auto& _peer_item : _peer_states) {
         const auto& state = _peer_item.second;
         if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE &&
             state.lifecycle_state != DLT_PEER_LIFECYCLE_SYNCING) continue;
         active_peer_count++;
-        // Only consider peers that have reported their head block number
-        if (state.peer_head_num == 0) continue;
+        if (state.peer_head_num == 0) continue;  // empty peer — no head info
+        known_head_peers++;
         if (our_head < state.peer_head_num) {
             has_peer_ahead = true;
             break;
@@ -2445,10 +2452,13 @@ void dlt_p2p_node::check_sync_catchup() {
     // We have active peers — clear isolation tracking
     _isolation_detected_time = fc::time_point();
 
-    // Only transition to FORWARD if we have active peers AND none are ahead
-    if (!has_peer_ahead) {
-        ilog(DLT_LOG_GREEN "Sync catchup detected: our head (#${h}) >= all peers, transitioning to FORWARD" DLT_LOG_RESET,
-             ("h", our_head));
+    // Only transition to FORWARD if at least one peer reported its head AND
+    // none of those peers is ahead of us.  Requiring known_head_peers > 0
+    // prevents a false "caught up" when all connected peers are empty nodes
+    // (e.g. slaveC with head=0) — they give us no evidence about network state.
+    if (known_head_peers > 0 && !has_peer_ahead) {
+        ilog(DLT_LOG_GREEN "Sync catchup detected: our head (#${h}) >= all ${k} known-head peers, transitioning to FORWARD" DLT_LOG_RESET,
+             ("h", our_head)("k", known_head_peers));
         transition_to_forward();
     }
 }
