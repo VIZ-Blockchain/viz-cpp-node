@@ -248,6 +248,21 @@ public:
             // not have enough context for blocks near the head even though
             // they're from the same chain.
             if (block.block_num() <= chain.db().head_block_num()) {
+                // Check if the parent block is on our main chain.  During sync
+                // from LIB, the sync start block's parent is on the main chain
+                // but absent from fork_db.  If the parent exists on our chain,
+                // this is a legitimate fork — not a dead fork.
+                if (block.previous != block_id_type()) {
+                    auto parent_on_chain = chain.db().fetch_block_by_id(block.previous);
+                    if (parent_on_chain) {
+                        wlog("Block #${n} parent on main chain but not in fork_db — treating as FORK_DB_ONLY instead of DEAD_FORK",
+                             ("n", block.block_num()));
+                        try {
+                            chain.db().get_fork_db().push_block(block);
+                        } catch (...) {}
+                        return dlt_block_accept_result::FORK_DB_ONLY;
+                    }
+                }
                 auto time_since_startup = fc::time_point::now() - _startup_time;
                 bool in_grace_period = time_since_startup.count() < 60 * 1000000; // 60s
                 uint32_t distance = chain.db().head_block_num() - block.block_num();

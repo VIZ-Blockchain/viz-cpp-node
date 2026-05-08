@@ -1522,19 +1522,39 @@ namespace graphene { namespace chain {
                         return false;
                     }
                     // Block is at or before head but on a different fork.
-                    // If the block's parent is not in the fork_db, we can never
-                    // link it (the fork diverged before the fork_db's window).
-                    // Throw unlinkable_block_exception so the P2P layer can
-                    // soft-ban the peer sending blocks from this dead fork.
-                    // This is NOT a micro-fork: micro-fork blocks have parents
-                    // that ARE in fork_db and fall through to normal push logic.
+                    // If the block's parent is not in fork_db, check whether it
+                    // is on the main chain.  When syncing from LIB, blocks near
+                    // LIB may have parents on the main chain but absent from
+                    // fork_db.  Seed fork_db with the parent in that case so the
+                    // block can be processed normally.  If the parent is neither
+                    // in fork_db nor on the main chain, this is a genuine dead
+                    // fork — throw so the P2P layer can soft-ban the peer.
                     if (new_block.previous != block_id_type() &&
                         !_fork_db.is_known_block(new_block.previous)) {
-                        wlog("Rejecting block ${n} from a different fork: parent not in fork_db (head=${h})",
-                             ("n", new_block.block_num())("h", head_block_num()));
-                        FC_THROW_EXCEPTION(unlinkable_block_exception,
-                                           "Block from a different fork whose parent is not in fork_db (block ${n}, head=${h})",
-                                           ("n", new_block.block_num())("h", head_block_num()));
+                        // Parent not in fork_db — but it may still be on our
+                        // main chain.  During sync from LIB, the starting blocks
+                        // have parents that are on the main chain but absent from
+                        // fork_db (which only tracks blocks near head).  If the
+                        // parent exists on our chain, seed fork_db with it so the
+                        // block can be processed normally (potential fork switch).
+                        auto parent_block = fetch_block_by_id(new_block.previous);
+                        if (parent_block) {
+                            wlog("Block #${n} parent not in fork_db but on main chain — seeding fork_db with parent #${p}",
+                                 ("n", new_block.block_num())("p", parent_block->block_num()));
+                            try {
+                                _fork_db.push_block(*parent_block);
+                            } catch (...) {
+                                // fork_db push failed — parent already present
+                                // or other non-fatal issue; safe to continue.
+                            }
+                            // Fall through to normal push logic below
+                        } else {
+                            wlog("Rejecting block ${n} from a different fork: parent not in fork_db and not on main chain (head=${h})",
+                                 ("n", new_block.block_num())("h", head_block_num()));
+                            FC_THROW_EXCEPTION(unlinkable_block_exception,
+                                               "Block from a different fork whose parent is not in fork_db (block ${n}, head=${h})",
+                                               ("n", new_block.block_num())("h", head_block_num()));
+                        }
                     }
                     // Parent IS in fork_db — fall through to normal push logic
                     // which may trigger a fork switch (if the other fork has
