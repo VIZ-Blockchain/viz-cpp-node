@@ -525,8 +525,9 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
     std::set<fc::ip::address> sent_to_ips;
 
     // Diagnostic: count eligible vs skipped peers
-    uint32_t eligible = 0, skipped_not_exchange = 0, skipped_not_active = 0, skipped_echo = 0;
+    uint32_t eligible = 0, skipped_not_exchange = 0, skipped_not_active = 0, skipped_echo = 0, skipped_peer_syncing = 0;
     const bool is_block_broadcast = (block_id != block_id_type());
+    const bool is_tx_broadcast = (msg.msg_type == dlt_transaction_message_type);
 
     // fix: collect target peers first to avoid iterator invalidation
     // when send_message -> handle_disconnect erases incoming peers.
@@ -544,6 +545,16 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
         }
         if (!state.exchange_enabled) {
             skipped_not_exchange++;
+            continue;
+        }
+        // Skip transaction broadcast to peers still in SYNC mode: they cannot
+        // validate TaPoS for recent txs (their block_summary buffer holds
+        // older blocks at the referenced slots), so the trx is wasted
+        // bandwidth. Blocks and other message types still flow normally so
+        // the peer can finish catching up. peer_node_status is set from the
+        // peer's hello (line 843) and refreshed via fork_status (line 1543).
+        if (is_tx_broadcast && state.peer_node_status == DLT_NODE_STATUS_SYNC) {
+            skipped_peer_syncing++;
             continue;
         }
         // Echo suppression: skip peers already known to have this block
@@ -574,8 +585,8 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
              ("e", eligible)("nx", skipped_not_exchange)("na", skipped_not_active)("ne", skipped_echo));
     }
     if (msg.msg_type == dlt_transaction_message_type) {
-        dlog(DLT_LOG_DGRAY "Relay transaction to ${e} peers (${nx} skipped: no_exchange, ${na} skipped: not_active)" DLT_LOG_RESET,
-             ("e", eligible)("nx", skipped_not_exchange)("na", skipped_not_active));
+        dlog(DLT_LOG_DGRAY "Relay transaction to ${e} peers (${nx} skipped: no_exchange, ${na} skipped: not_active, ${ns} skipped: peer_syncing)" DLT_LOG_RESET,
+             ("e", eligible)("nx", skipped_not_exchange)("na", skipped_not_active)("ns", skipped_peer_syncing));
     }
 }
 
@@ -1742,11 +1753,15 @@ void dlt_p2p_node::on_dlt_gap_fill_request(peer_id peer, const dlt_gap_fill_requ
     if (!reply.blocks.empty()) {
         ilog(DLT_LOG_GREEN "Serving gap fill: ${n} blocks to ${ep}" DLT_LOG_RESET,
              ("n", reply.blocks.size())("ep", it->second.endpoint));
-        send_message(peer, message(reply));
     } else {
         ilog(DLT_LOG_ORANGE "Gap fill request from ${ep}: no blocks available" DLT_LOG_RESET,
              ("ep", it->second.endpoint));
     }
+    // Always send the reply, even when empty: the requester clears
+    // _gap_fill_in_progress on receipt and can switch peer/strategy
+    // immediately, instead of waiting GAP_FILL_TIMEOUT_SEC for a stuck
+    // request to time out and then retrying the same peer in a loop.
+    send_message(peer, message(reply));
 
     record_packet_result(peer, true);
 }
@@ -2604,9 +2619,18 @@ bool dlt_p2p_node::add_to_mempool(const signed_transaction& trx, bool from_peer,
         return false;
     }
 
-    // Check TaPoS validity
+    // Check TaPoS validity.
+    // Do NOT strike the sender on TaPoS failure: TaPoS validity is a function
+    // of OUR chain state (block_summary_object circular buffer), not the
+    // sender's behavior. When we are behind, recently-issued txs reference
+    // blocks past our head whose ref_block_num slot still holds an older
+    // block — the prefix check fails through no fault of the sender. Striking
+    // here caused a feedback loop where a slave node soft-banned the very peer
+    // that had the blocks it needed to catch up. Genuinely-bad packets
+    // (expiry past, oversized, far-future expiration) still strike above.
     if (!is_tapos_valid(trx)) {
-        if (from_peer && sender != INVALID_PEER_ID) record_packet_result(sender, false);
+        dlog(DLT_LOG_DGRAY "TaPoS-invalid trx ${id} from peer ${s} (we may be behind) — not striking" DLT_LOG_RESET,
+             ("id", trx_id)("s", sender));
         return false;
     }
 
