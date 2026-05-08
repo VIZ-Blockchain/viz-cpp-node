@@ -148,10 +148,13 @@ public:
     dlt_block_accept_result accept_block(const signed_block& block, bool sync_mode) override {
         uint32_t skip = graphene::chain::database::skip_nothing;
         if (sync_mode) {
-            // During bulk sync, skip expensive checks that are redundant
-            // for blocks we trust from our fork peers
-            skip = graphene::chain::database::skip_witness_signature
-                 | graphene::chain::database::skip_transaction_signatures;
+            // During bulk sync, skip per-transaction signature verification.
+            // Transactions inside a block are already committed by the
+            // witness who produced it — their individual signatures are
+            // redundant once the witness block signature itself is verified.
+            // Witness signature MUST always be checked to prevent a
+            // malicious peer from injecting forged blocks.
+            skip = graphene::chain::database::skip_transaction_signatures;
         }
         try {
             bool applied = chain.db().push_block(block, skip);
