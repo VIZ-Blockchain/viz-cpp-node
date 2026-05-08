@@ -1847,7 +1847,13 @@ void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply&
         }
     }
 
-    record_packet_result(peer, any_applied);
+    // A non-empty gap fill reply means the peer served us faithfully.
+    // DEAD_FORK already calls soft_ban_peer() directly (above).
+    // REJECTED blocks are tracked by _gap_rejected_count / blacklist.
+    // Penalising here for FORK_DB_ONLY/ALREADY_KNOWN is a false positive
+    // that causes the slave to ban a good peer after 10 rounds where all
+    // blocks land in fork_db or are already known (p57 mutual-ban fix).
+    record_packet_result(peer, true);
 }
 
 void dlt_p2p_node::request_gap_fill() {
@@ -1918,12 +1924,19 @@ void dlt_p2p_node::request_gap_fill() {
         // may be in SYNCING lifecycle (set by request_blocks_from_peer).
         if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE &&
             state.lifecycle_state != DLT_PEER_LIFECYCLE_SYNCING) continue;
-        // Track any active/syncing peer as fallback
-        if (any_active_peer == INVALID_PEER_ID && state.peer_head_num > our_head) {
+        // Skip peers whose DLT log explicitly starts after the first block we
+        // need (our_head + 1). They will always return an empty reply, wasting
+        // the 15s gap-fill timeout each round.
+        // peer_dlt_earliest == 0 means unknown — still worth trying (p57 fix).
+        bool can_serve_gap = (state.peer_dlt_earliest == 0 ||
+                              state.peer_dlt_earliest <= our_head + 1);
+        // Track any active/syncing peer that can serve our gap as fallback
+        if (can_serve_gap && any_active_peer == INVALID_PEER_ID &&
+            state.peer_head_num > our_head) {
             any_active_peer = _pi.first;
         }
         if (!state.exchange_enabled) continue;
-        if (state.peer_head_num > max_peer_head) {
+        if (can_serve_gap && state.peer_head_num > max_peer_head) {
             max_peer_head = state.peer_head_num;
             best_peer = _pi.first;
         }
