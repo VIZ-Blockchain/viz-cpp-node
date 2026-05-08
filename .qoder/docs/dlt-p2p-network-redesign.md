@@ -100,8 +100,8 @@ This matches the old `message_oriented_connection` format without 16-byte paddin
 | `dlt_peer_exchange_rate_limited_type` | 5112 | `dlt_peer_exchange_rate_limited` — wait_seconds |
 | `dlt_transaction_message_type` | 5113 | `dlt_transaction_message` — signed_transaction |
 | `dlt_soft_ban_message_type` | 5114 | `dlt_soft_ban_message` — ban_duration_sec, reason (sent before disconnecting a banned peer) |
-| `dlt_gap_fill_request_type` | 5115 | `dlt_gap_fill_request` — block_nums (exchange-only, FORWARD mode gap fill) |
-| `dlt_gap_fill_reply_type` | 5116 | `dlt_gap_fill_reply` — blocks (exchange-only, FORWARD mode gap fill) |
+| `dlt_gap_fill_request_type` | 5115 | `dlt_gap_fill_request` — block_nums (gap fill in both SYNC and FORWARD modes) |
+| `dlt_gap_fill_reply_type` | 5116 | `dlt_gap_fill_reply` — blocks (gap fill in both SYNC and FORWARD modes) |
 
 Enums: `dlt_node_status` (SYNC/FORWARD), `dlt_fork_status` (NORMAL/LOOKING_RESOLUTION/MINORITY), `dlt_peer_lifecycle_state` (6 states).
 
@@ -496,15 +496,16 @@ Full analysis in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md#new-
 
 Protocol:
 - Only exchanged between exchange-enabled peers (`on_dlt_gap_fill_request` rejects non-exchange peers)
-- Maximum 100 blocks per request (`GAP_FILL_MAX_BLOCKS`)
+- Maximum 100 blocks per request (`GAP_FILL_MAX_BLOCKS`); larger gaps are served in 100-block chunks
 - 5-second cooldown between requests (`GAP_FILL_COOLDOWN_SEC`)
-- Only used in FORWARD mode for gaps ≤100 blocks (larger gaps use SYNC mode)
+- Works in both SYNC and FORWARD modes (not FORWARD-only)
+- SYNCING lifecycle peers are also eligible as candidates (not just ACTIVE)
 - Requesting peer selects the exchange-enabled peer with the highest head block
 - Requested blocks must be within the serving peer's DLT log range
 
 Gap fill is triggered in three places:
-1. `on_dlt_block_reply()` — when an out-of-order block is detected in FORWARD mode
-2. `periodic_task()` — proactive gap detection every 5s cycle
+1. `on_dlt_block_reply()` — when an out-of-order block is detected (any mode)
+2. `periodic_task()` — proactive gap detection every 5s cycle (any mode)
 3. `resume_block_processing()` — after snapshot pause, tries gap fill before falling back to SYNC
 
 ### P37: Gap Fill Never Triggers — Stale peer_head_num + No FORWARD Stagnation Detection

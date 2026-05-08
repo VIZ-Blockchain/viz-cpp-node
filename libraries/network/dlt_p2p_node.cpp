@@ -1347,15 +1347,15 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
             wlog(DLT_LOG_RED "Block #${n} from ${ep} out of order (expected #${e}, head=#${h})" DLT_LOG_RESET,
                  ("n", block_num)("ep", state.endpoint)("e", state.expected_next_block)("h", head_num));
         }
-        // P36: In FORWARD mode, an out-of-order block indicates a gap.
-        // Trigger gap fill to quickly request the missing blocks from
-        // exchange-enabled peers instead of oscillating SYNC↔FORWARD.
+        // P36: An out-of-order block indicates a gap. Trigger gap fill
+        // to quickly request the missing blocks from exchange-enabled peers
+        // instead of oscillating SYNC↔FORWARD.
         // P40 fix: Only request gap fill when there's a REAL gap (at least
         // one block missing between our head and the received block).
         // When block_num == head + 1, there's no gap — the block links
         // directly to our head. The "out of order" is just stale
         // expected_next_block tracking from receiving blocks via other peers.
-        if (_node_status == DLT_NODE_STATUS_FORWARD && block_num > _delegate->get_head_block_num() + 1) {
+        if (block_num > _delegate->get_head_block_num() + 1) {
             request_gap_fill();
         }
 
@@ -1856,7 +1856,10 @@ void dlt_p2p_node::request_gap_fill() {
     uint32_t our_head = _delegate->get_head_block_num();
     if (our_head == 0) return;
 
-    if (_node_status != DLT_NODE_STATUS_FORWARD) return;
+    // Gap fill works in both FORWARD and SYNC modes.
+    // In SYNC mode, when request_blocks_from_peer() can't bridge a gap
+    // (blocks below the syncing peer's DLT range), gap fill provides an
+    // alternative path by asking exchange-enabled peers for specific blocks.
 
     // P37 fix: Use _highest_seen_block_num as the upper bound for
     // gap detection, NOT just peer_head_num.  When broadcast blocks
@@ -1869,7 +1872,7 @@ void dlt_p2p_node::request_gap_fill() {
     // peer_head_num hasn't caught up.
     //
     // P39 fix: Prefer exchange-enabled peers (they're confirmed on our
-    // fork), but fall back to ANY active peer.  The serving side
+    // fork), but fall back to ANY active or syncing peer.  The serving side
     // validates the request independently — refusing if not exchange-enabled.
     // Requiring exchange_enabled on the requesting side was too strict:
     // right after SYNC→FORWARD transition, no peer may have exchange=true
@@ -1879,8 +1882,11 @@ void dlt_p2p_node::request_gap_fill() {
     peer_id any_active_peer = INVALID_PEER_ID;  // P39 fallback
     for (const auto& _pi : _peer_states) {
         const auto& state = _pi.second;
-        if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;
-        // Track any active peer as fallback
+        // Include SYNCING peers — in SYNC mode the best candidate
+        // may be in SYNCING lifecycle (set by request_blocks_from_peer).
+        if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE &&
+            state.lifecycle_state != DLT_PEER_LIFECYCLE_SYNCING) continue;
+        // Track any active/syncing peer as fallback
         if (any_active_peer == INVALID_PEER_ID && state.peer_head_num > our_head) {
             any_active_peer = _pi.first;
         }
@@ -1899,16 +1905,20 @@ void dlt_p2p_node::request_gap_fill() {
     if (gap_ceiling <= our_head) return;  // truly no gap
 
     uint32_t gap = gap_ceiling - our_head;
-    if (gap > GAP_FILL_MAX_BLOCKS) return;  // gap too large, use SYNC instead
 
-    // Build request for the missing blocks
+    // For large gaps, request only the first GAP_FILL_MAX_BLOCKS blocks.
+    // Subsequent chunks will be requested on the next periodic call
+    // after this chunk completes or times out.
+    uint32_t request_ceiling = std::min(gap_ceiling, our_head + GAP_FILL_MAX_BLOCKS);
+
+    // Build request for the missing blocks (capped to chunk size)
     dlt_gap_fill_request req;
-    for (uint32_t n = our_head + 1; n <= gap_ceiling; ++n) {
+    for (uint32_t n = our_head + 1; n <= request_ceiling; ++n) {
         req.block_nums.push_back(n);
     }
 
-    ilog(DLT_LOG_GREEN "Requesting gap fill for blocks ${s}-${e} (${n} blocks) (highest_seen=${hs})" DLT_LOG_RESET,
-         ("s", our_head + 1)("e", gap_ceiling)("n", req.block_nums.size())("hs", _highest_seen_block_num));
+    ilog(DLT_LOG_GREEN "Requesting gap fill for blocks ${s}-${e} (${n} blocks, total_gap=${g}) (highest_seen=${hs})" DLT_LOG_RESET,
+         ("s", our_head + 1)("e", request_ceiling)("n", req.block_nums.size())("g", gap)("hs", _highest_seen_block_num));
 
     _gap_fill_in_progress = true;
     _gap_fill_start_time = fc::time_point::now();
@@ -3096,7 +3106,7 @@ void dlt_p2p_node::periodic_task() {
     check_sync_catchup();   // P26 fix: periodic catch-up detection
     check_forward_behind(); // P27 fix: detect falling behind in FORWARD mode
     check_forward_stagnation(); // P37 fix: detect head stuck in FORWARD mode
-    request_gap_fill();     // P36 fix: fill gaps in FORWARD mode via exchange
+    request_gap_fill();     // P36 fix: fill gaps via exchange-enabled peers
     periodic_peer_exchange();
 
     // Post-pause catchup: drain queued blocks and/or clear the flag
