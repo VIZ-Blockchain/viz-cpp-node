@@ -349,6 +349,11 @@ private:
     static constexpr uint32_t       FORWARD_STAGNATION_SEC = 30; ///< Seconds without head progress → SYNC
     void                            check_forward_stagnation();
 
+    // ── Peer isolation recovery ─────────────────────────────────────
+    fc::time_point                  _isolation_detected_time;  ///< When we first noticed all peers disconnected
+    static constexpr uint32_t       ISOLATION_RESET_SEC = 60;  ///< Seconds of isolation before emergency reset
+    void                            emergency_peer_reset();
+
     // ── Block processing pause ───────────────────────────────────
     bool                            _block_processing_paused = false;
 

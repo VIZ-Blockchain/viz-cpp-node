@@ -2348,26 +2348,78 @@ void dlt_p2p_node::check_sync_catchup() {
     uint32_t our_head = _delegate->get_head_block_num();
     if (our_head == 0) return;  // nothing to catch up to
 
-    // Check if our head is at or ahead of ALL active peers' heads.
-    // If so, we've caught up and should transition to FORWARD.
-    bool all_caught_up = true;
+    // Count active peers and check if our head is at or ahead of them.
+    uint32_t active_peer_count = 0;
+    bool has_peer_ahead = false;
     for (const auto& _peer_item : _peer_states) {
         const auto& state = _peer_item.second;
         if (state.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE &&
             state.lifecycle_state != DLT_PEER_LIFECYCLE_SYNCING) continue;
+        active_peer_count++;
         // Only consider peers that have reported their head block number
         if (state.peer_head_num == 0) continue;
         if (our_head < state.peer_head_num) {
-            all_caught_up = false;
+            has_peer_ahead = true;
             break;
         }
     }
 
-    if (all_caught_up) {
+    // Isolation: no active peers at all — cannot claim "caught up".
+    // Track when isolation started and reset peers after ISOLATION_RESET_SEC.
+    if (active_peer_count == 0) {
+        if (_isolation_detected_time == fc::time_point()) {
+            _isolation_detected_time = fc::time_point::now();
+            wlog(DLT_LOG_ORANGE "Sync isolation: no active peers, head=#${h}. Will reset peers in ${t}s" DLT_LOG_RESET,
+                 ("h", our_head)("t", ISOLATION_RESET_SEC));
+        } else {
+            auto iso_elapsed = fc::time_point::now() - _isolation_detected_time;
+            if (iso_elapsed.count() > ISOLATION_RESET_SEC * 1000000) {
+                emergency_peer_reset();
+            }
+        }
+        return;  // never claim caught up while isolated
+    }
+
+    // We have active peers — clear isolation tracking
+    _isolation_detected_time = fc::time_point();
+
+    // Only transition to FORWARD if we have active peers AND none are ahead
+    if (!has_peer_ahead) {
         ilog(DLT_LOG_GREEN "Sync catchup detected: our head (#${h}) >= all peers, transitioning to FORWARD" DLT_LOG_RESET,
              ("h", our_head));
         transition_to_forward();
     }
+}
+
+// ── Emergency peer reset ─────────────────────────────────────────────
+
+void dlt_p2p_node::emergency_peer_reset() {
+    wlog(DLT_LOG_RED "Emergency peer reset: all peers disconnected/banned, resetting backoffs and clearing bans" DLT_LOG_RESET);
+
+    for (auto& _peer_item : _peer_states) {
+        auto& state = _peer_item.second;
+
+        if (state.lifecycle_state == DLT_PEER_LIFECYCLE_BANNED) {
+            ilog(DLT_LOG_GREEN "  Clearing soft-ban for ${ep} (was: ${r})" DLT_LOG_RESET,
+                 ("ep", state.endpoint)("r", state.ban_reason));
+            state.ban_reason.clear();
+            state.ban_duration_sec = 0;
+            state.spam_strikes = 0;
+            state.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
+            state.disconnected_since = fc::time_point::now();
+        }
+
+        if (state.lifecycle_state == DLT_PEER_LIFECYCLE_DISCONNECTED) {
+            state.reconnect_backoff_sec = dlt_peer_state::INITIAL_RECONNECT_BACKOFF_SEC;
+            state.next_reconnect_attempt = fc::time_point::now();  // immediate
+            state.spam_strikes = 0;
+            ilog(DLT_LOG_GREEN "  Reset backoff for ${ep} -> ${b}s, immediate reconnect" DLT_LOG_RESET,
+                 ("ep", state.endpoint)("b", state.reconnect_backoff_sec));
+        }
+    }
+
+    _sync_stagnation_retries = 0;
+    _isolation_detected_time = fc::time_point();  // reset so it can trigger again later
 }
 
 void dlt_p2p_node::check_forward_behind() {
@@ -2425,6 +2477,34 @@ void dlt_p2p_node::check_forward_stagnation() {
     // Head hasn't advanced — check how long we've been stuck
     auto elapsed = fc::time_point::now() - _last_forward_progress_time;
     if (elapsed.count() > FORWARD_STAGNATION_SEC * 1000000) {
+        // Check if we're isolated (no active connections)
+        uint32_t active_count = 0;
+        for (const auto& pi : _peer_states) {
+            const auto& s = pi.second;
+            if (s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
+                s.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) {
+                active_count++;
+            }
+        }
+
+        if (active_count == 0) {
+            // Isolated: track when isolation started and reset after ISOLATION_RESET_SEC
+            if (_isolation_detected_time == fc::time_point()) {
+                _isolation_detected_time = fc::time_point::now();
+                wlog(DLT_LOG_ORANGE "FORWARD isolation: head stuck at #${h} for ${s}s, no active peers. Will reset in ${t}s" DLT_LOG_RESET,
+                     ("h", our_head)("s", FORWARD_STAGNATION_SEC)("t", ISOLATION_RESET_SEC));
+            } else {
+                auto iso_elapsed = fc::time_point::now() - _isolation_detected_time;
+                if (iso_elapsed.count() > ISOLATION_RESET_SEC * 1000000) {
+                    transition_to_sync();
+                    emergency_peer_reset();
+                }
+            }
+            return;  // don't oscillate to SYNC without a plan
+        }
+
+        // We have active peers but head is stuck — normal stagnation path
+        _isolation_detected_time = fc::time_point();  // clear isolation if peers are back
         wlog(DLT_LOG_ORANGE "FORWARD stagnation: head stuck at #${h} for ${s}s — transitioning to SYNC" DLT_LOG_RESET,
              ("h", our_head)("s", FORWARD_STAGNATION_SEC));
         transition_to_sync();
