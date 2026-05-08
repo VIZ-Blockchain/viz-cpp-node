@@ -280,6 +280,12 @@ private:
     std::map<peer_id, fc::tcp_socket_ptr> _connections;
     fc::tcp_server                  _tcp_server;
 
+    // ── Per-peer send serialization ────────────────────────────────
+    // Prevents concurrent fiber writes to the same socket.
+    // When a fiber's writesome() yields (async write), another
+    // fiber must not interleave writes to the same peer.
+    std::set<peer_id>               _peer_sending;
+
     // ── Fiber tracking ────────────────────────────────────────────
     fc::thread*                     _thread = nullptr;
     bool                            _running = false;

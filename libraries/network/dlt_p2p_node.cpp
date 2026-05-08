@@ -9,6 +9,7 @@
 #include <fc/thread/thread.hpp>
 
 #include <algorithm>
+#include <cstring>
 #include <random>
 #include <chrono>
 #include <thread>
@@ -155,6 +156,7 @@ void dlt_p2p_node::close() {
     }
     _connections.clear();
     _peer_states.clear();
+    _peer_sending.clear();
     ilog("DLT P2P node closed");
 }
 
@@ -306,6 +308,9 @@ void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason, bo
         _connections.erase(conn_it);
     }
 
+    // Clear send guard (may be stale if a write was in progress)
+    _peer_sending.erase(peer);
+
     // Incoming peers (from accept_loop) have ephemeral random ports —
     // there is no P2P server to reconnect to. Remove them immediately
     // instead of putting them in the DISCONNECTED reconnection cycle.
@@ -429,24 +434,60 @@ void dlt_p2p_node::send_message(peer_id peer, const message& msg) {
     auto it = _connections.find(peer);
     if (it == _connections.end() || !it->second) return;
 
-    try {
-        // Write wire format: [8-byte header][data bytes]
-        // Do NOT use fc::raw::pack(msg) which adds varint length prefix to data vector
+    // Serialize the complete wire frame into a single contiguous buffer
+    // so we only need one write loop instead of two.  This eliminates
+    // the yield point between header and data that could allow another
+    // fiber to interleave its own write to the same socket.
+    //
+    // Wire format: [8-byte header (size + msg_type)][payload bytes]
+    // Do NOT use fc::raw::pack(msg) which adds a varint length prefix.
+    static constexpr size_t HDR_SIZE = sizeof(message_header); // 8 bytes
+    const size_t total = HDR_SIZE + msg.data.size();
+    std::vector<char> buf(total);
+    {
         message_header hdr;
-        hdr.size = static_cast<uint32_t>(msg.data.size());
+        hdr.size    = static_cast<uint32_t>(msg.data.size());
         hdr.msg_type = msg.msg_type;
-
-        it->second->writesome(reinterpret_cast<const char*>(&hdr), sizeof(message_header));
+        std::memcpy(buf.data(), &hdr, HDR_SIZE);
         if (!msg.data.empty()) {
-            it->second->writesome(msg.data.data(), msg.data.size());
+            std::memcpy(buf.data() + HDR_SIZE, msg.data.data(), msg.data.size());
         }
-        it->second->flush();
+    }
+
+    // Per-peer send guard: prevent concurrent fiber writes to the same
+    // socket.  tcp_socket::writesome() calls boost::asio::write_some()
+    // which returns after writing *some* bytes, then .wait() yields the
+    // fiber.  During that yield another fiber could call send_message()
+    // for the same peer, interleaving bytes and corrupting the stream.
+    // The guard makes the second caller skip (drop the message) rather
+    // than corrupt the stream.
+    if (_peer_sending.count(peer)) {
+        dlog(DLT_LOG_DGRAY "Dropping message type ${t} to peer ${ep}: send already in progress" DLT_LOG_RESET,
+             ("t", msg.msg_type)("ep", peer));
+        return;
+    }
+    _peer_sending.insert(peer);
+
+    try {
+        // Write the entire buffer in a loop — writesome() may return
+        // after writing only a subset of the requested bytes (partial
+        // write).  Loop until every byte is on the wire.
+        const char* ptr = buf.data();
+        size_t remaining = total;
+        while (remaining > 0) {
+            size_t written = it->second->writesome(ptr, remaining);
+            ptr       += written;
+            remaining -= written;
+        }
     } catch (const fc::exception& e) {
         auto ep_it_send = _peer_states.find(peer);
         auto ep_send = (ep_it_send != _peer_states.end()) ? std::string(ep_it_send->second.endpoint) : std::to_string(peer);
         wlog("Failed to send to peer ${ep}: ${e}", ("ep", ep_send)("e", e.to_detail_string()));
+        _peer_sending.erase(peer);
         handle_disconnect(peer, "send failed");
+        return;
     }
+    _peer_sending.erase(peer);
 }
 
 void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclude, const block_id_type& block_id) {
