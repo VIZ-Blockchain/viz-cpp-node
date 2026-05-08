@@ -193,13 +193,80 @@ section covering P36-P49.
 
 ---
 
+---
+
+### BUG-E: Spam strike on fork_db-only range response causes false soft-ban of master peer
+
+**File:** [dlt_p2p_node.cpp:1288](libraries/network/dlt_p2p_node.cpp#L1288)
+
+```cpp
+record_packet_result(peer, any_block_applied);   // BUG: penalises legit fork_db batches
+```
+
+During a large-gap sync (`head=79740486`, `peer_head=79746356`, gap=5854), the node syncs
+from LIB using `request_blocks_from_peer`. The peer is on the majority fork; the node's
+head diverged. Every range response has `any_block_applied=false` (all blocks go to
+`fork_db` as competing-fork candidates). After 10 such responses `spam_strikes` reaches
+`SPAM_STRIKE_THRESHOLD` → soft-ban for 3600s.
+
+The same `on_dlt_block_range_r` handler explicitly continues fetching for `fork_db`-only
+batches (line 1304-1310, "competing fork? — continue fetch") while simultaneously
+punishing the peer for sending them. Self-contradictory.
+
+**Observed log:**
+```
+Soft-banning peer 185.146.232.170:2001 for 3600s (reason: spam strike threshold exceeded)
+```
+
+**Severity:** HIGH — the node's only sync peer gets banned mid-sync; gap never fills.
+
+---
+
+### BUG-F: DLT snapshot node cannot accept competing fork starting at snapshot LIB block
+
+**Files:** [database.cpp:355-376](libraries/chain/database.cpp#L355), [database.cpp:1518-1522](libraries/chain/database.cpp#L1518), [fork_database.cpp](libraries/chain/fork_database.cpp)
+
+After importing a DLT snapshot at block N (e.g. 79740482):
+1. DLT block log starts at N+1; block N is **not stored** anywhere `fetch_block_by_id`
+   can reach (no main block_log in DLT mode; DLT log starts at N+1; fork_db seeded
+   with head-only via `start_block`).
+2. Fork_db seeded top-down: only the head block (N+4) is inserted via `start_block`
+   with `prev=null`; blocks N+1…N+3 are absent from fork_db entirely.
+3. Master peer is on the majority fork diverging at block N+1.
+4. Master sends sync range starting at N: block N arrives → `ALREADY_KNOWN`
+   (same ID) → silently discarded. Block N+1_master (parent=N.id) arrives:
+   - `is_known_block(N.id)` → **false** (N not in fork_db)
+   - `fetch_block_by_id(N.id)` → **null** (not in any log)
+   - → DEAD_FORK. Rejected forever.
+5. Fork switch never triggers; node stays stuck at N+4 while master advances.
+
+**Observed log:**
+```
+Rejecting block 79740483 from a different fork: parent not in fork_db and not on main chain (head=79740486)
+Range stored in fork_db only (competing fork?), continuing fetch from #79740682
+```
+*(continues indefinitely, head never advances)*
+
+**Root causes (two independent failures):**
+- DLT seeding builds no `prev` chain; `fetch_branch_from` would crash walking the slave
+  branch past the null `prev` on the `start_block` root.
+- Snapshot block N is unreachable via `fetch_block_by_id`, so `_push_block` cannot seed
+  fork_db with it when N+1_master arrives.
+
+**Severity:** CRITICAL — node with a diverged head after snapshot is permanently stuck;
+gap never fills regardless of how many peers are connected.
+
+---
+
 ## Summary
 
 ```
-BUG-A  [HIGH]   range_fallback_mode transition_to_forward() not guarded by any_block_applied  → FIXED
-BUG-B  [LOW]    Empty peer gets exchange_enabled=true → receives broadcast blocks it can't use  (accepted as-is)
-BUG-C  [LOW]    Range-overlap in check_fork_alignment can silently fail at rolling window boundary  (accepted as-is)
-BUG-D  [MEDIUM] check_sync_catchup ignores peers with peer_head_num==0 → false "caught up"   → FIXED
+BUG-A  [HIGH]     range_fallback_mode transition_to_forward() not guarded → FIXED (2026-05-08)
+BUG-B  [LOW]      Empty peer gets exchange_enabled=true → broadcast waste   (accepted as-is)
+BUG-C  [LOW]      check_fork_alignment range-overlap silent fail at window boundary (accepted as-is)
+BUG-D  [MEDIUM]   check_sync_catchup ignores peer_head_num==0 peers → FIXED (2026-05-08)
+BUG-E  [HIGH]     fork_db-only range response counted as spam → soft-ban    → FIXED (2026-05-08)
+BUG-F  [CRITICAL] DLT snapshot: competing fork starting at LIB permanently rejected → FIXED (2026-05-08)
 
 DOCS   [INFO]   P32-P49 implemented in code but not documented in dlt-4-node-sync-scenarios.md
 ```
@@ -213,3 +280,42 @@ Replaced `transition_to_forward()` with `check_sync_catchup()` in the `range_fal
 **BUG-D** — [dlt_p2p_node.cpp:2420-2462](libraries/network/dlt_p2p_node.cpp#L2420-L2462)
 
 Added `known_head_peers` counter alongside `active_peer_count`. Empty peers (`peer_head_num==0`) still count toward `active_peer_count` (so isolation detection works) but do not increment `known_head_peers`. The final transition guard now requires `known_head_peers > 0 && !has_peer_ahead`: a node surrounded only by empty peers will never claim "caught up" and stays in SYNC until the stagnation / snapshot-plugin recovery path fires.
+
+**BUG-E** — [dlt_p2p_node.cpp:1290](libraries/network/dlt_p2p_node.cpp#L1290)
+
+Changed `record_packet_result(peer, any_block_applied)` to
+`record_packet_result(peer, any_block_applied || any_fork_db_only)`.
+
+A peer that sends valid blocks landing in fork_db (normal during competing-fork or
+LIB-based sync) provides useful data and must not be penalised. The existing continuation
+path at line 1304 already recognises this ("competing fork — keep fetching"), making the
+spam penalty a direct contradiction. With the fix, spam strikes only accumulate when the
+peer sends batches that produce neither applied blocks nor fork_db entries (true spam or
+dead-fork responses).
+
+**BUG-F** — [database.cpp](libraries/chain/database.cpp), [fork_database.cpp](libraries/chain/fork_database.cpp), [fork_database.hpp](libraries/chain/include/graphene/chain/fork_database.hpp)
+
+Three coordinated changes:
+
+1. **DLT mode startup seeding** ([database.cpp:~355](libraries/chain/database.cpp#L355)):
+   Replaced single-block `start_block(head)` with bottom-up seeding. Scans the DLT
+   block log for the oldest block within a 100-block window, uses `start_block` on it,
+   then pushes each successive block in order up to the head. Result: the slave's recent
+   chain (e.g. N+1…N+4) is in fork_db with correct `prev` pointers so
+   `fetch_branch_from` can walk the slave branch during fork switch.
+
+2. **ALREADY_KNOWN path** ([database.cpp:1518](libraries/chain/database.cpp#L1518)):
+   When block N arrives as ALREADY_KNOWN and is not yet in fork_db, call
+   `_fork_db.insert_as_base(new_block)`. The peer sent us the full block data — this
+   is the only opportunity to seed fork_db with the snapshot LIB block whose data is
+   absent from every log file.
+
+3. **`fork_database::insert_as_base` + `_repair_child_prev_links`**
+   ([fork_database.cpp](libraries/chain/fork_database.cpp)):
+   `insert_as_base(b)` inserts block `b` into `_index` without requiring its parent to
+   be present (it is a known-chain anchor). Calls `_push_next` to link any blocks in
+   `_unlinked_index` waiting for this parent, then calls `_repair_child_prev_links` which
+   finds child blocks already in `_index` (inserted via `start_block` with null `prev`)
+   and sets their `prev` pointer. This reconnects the slave chain so
+   `fetch_branch_from` can traverse it: both the slave branch and the master's
+   competing branch now walk back to block N as their common ancestor.

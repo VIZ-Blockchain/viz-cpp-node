@@ -347,31 +347,75 @@ namespace graphene { namespace chain {
                                  "Skipping block log validation.",
                                  ("n", head_block_num()));
 
-                            // Seed fork_db from dlt_block_log or chain state so P2P sync
-                            // works immediately. Without this, fork_db is empty and:
-                            //   - is_known_block() returns false for our head block
-                            //   - P2P synopsis generation fails
-                            //   - Sync blocks can't link (no parent in fork_db)
+                            // Seed fork_db bottom-up from the oldest available DLT block
+                            // within a seeding window so that all blocks from oldest to
+                            // head have correct prev-chain linkage.  This allows
+                            // fetch_branch_from to walk both branches during a fork switch.
+                            //
+                            // Single-block (head-only) seeding leaves 79740483..485 out of
+                            // fork_db.  When a competing fork arrives starting at 79740483,
+                            // fetch_branch_from crashes walking the slave branch past the
+                            // null prev on the start_block root.
+                            //
+                            // The snapshot block itself (e.g. 79740482) is typically absent
+                            // from the DLT log; it is handled at runtime via insert_as_base()
+                            // in _push_block's ALREADY_KNOWN path when the peer re-sends it.
                             if (head_block_num() > 0) {
-                                auto dlt_head = _dlt_block_log.head();
-                                if (dlt_head && dlt_head->block_num() >= head_block_num()) {
-                                    auto head_from_dlt = _dlt_block_log.read_block_by_num(head_block_num());
-                                    if (head_from_dlt && head_from_dlt->id() == head_block_id()) {
-                                        _fork_db.start_block(*head_from_dlt);
-                                        ilog("DLT mode: fork_db seeded from dlt_block_log at block ${n}", ("n", head_block_num()));
+                                const uint32_t FORK_DB_SEED_DEPTH = 100;
+                                uint32_t h = head_block_num();
+                                uint32_t seed_start = h > FORK_DB_SEED_DEPTH
+                                    ? h - FORK_DB_SEED_DEPTH + 1 : 1;
+
+                                // Find the oldest DLT block in the seeding window.
+                                uint32_t actual_start = 0;
+                                for (uint32_t n = seed_start; n <= h; ++n) {
+                                    if (_dlt_block_log.read_block_by_num(n).valid()) {
+                                        actual_start = n;
+                                        break;
                                     }
                                 }
+
+                                if (actual_start > 0) {
+                                    auto root_blk = _dlt_block_log.read_block_by_num(actual_start);
+                                    if (root_blk.valid()) {
+                                        _fork_db.start_block(*root_blk);
+                                        uint32_t seeded = 1;
+                                        for (uint32_t n = actual_start + 1; n <= h; ++n) {
+                                            auto blk = _dlt_block_log.read_block_by_num(n);
+                                            if (!blk.valid()) break;
+                                            try {
+                                                _fork_db.push_block(*blk);
+                                                ++seeded;
+                                            } catch (const fc::exception& e) {
+                                                wlog("DLT mode: fork_db seeding stopped at ${n}: ${r}",
+                                                     ("n", n)("r", e.what()));
+                                                break;
+                                            }
+                                        }
+                                        // Verify fork_db head matches database head.
+                                        if (!_fork_db.head() ||
+                                            _fork_db.head()->id != head_block_id()) {
+                                            wlog("DLT mode: fork_db head mismatch after seeding "
+                                                 "(expected=${exp} got=${got}), resetting",
+                                                 ("exp", head_block_id())
+                                                 ("got", _fork_db.head()
+                                                     ? _fork_db.head()->id
+                                                     : block_id_type()));
+                                            _fork_db.reset();
+                                        } else {
+                                            ilog("DLT mode: fork_db seeded bottom-up "
+                                                 "${n} blocks (${s}-${e})",
+                                                 ("n", seeded)("s", actual_start)
+                                                 ("e", actual_start + seeded - 1));
+                                        }
+                                    }
+                                }
+
                                 if (!_fork_db.head()) {
-                                    // dlt_block_log doesn't cover head block yet (normal after fresh
-                                    // snapshot import). Construct a minimal fork_db entry from the
-                                    // head_block_id. We can't reconstruct the full signed_block, but
-                                    // we can create a fork_item with enough data for P2P to work.
-                                    // The early rejection check in _push_block() allows blocks whose
-                                    // previous == head_block_id(), which is sufficient for the first
-                                    // sync block to be accepted.
-                                    ilog("DLT mode: dlt_block_log does not cover head block ${n}, "
-                                         "fork_db will be empty until first block is applied",
-                                         ("n", head_block_num()));
+                                    ilog("DLT mode: fork_db empty after seeding "
+                                         "(DLT log does not reach head #${n}); "
+                                         "fork_db fills once first block is applied",
+                                         ("n", h));
                                 }
                             }
                         }
@@ -1519,6 +1563,18 @@ namespace graphene { namespace chain {
                     block_id_type existing_id = find_block_id_for_num(new_block.block_num());
                     if (existing_id == new_block.id()) {
                         dlog(DB_LOG_DGRAY "Ignoring block ${n} that is already on our chain" DB_LOG_RESET, ("n", new_block.block_num()));
+                        // Seed fork_db with this block as a competing-fork anchor.
+                        // After DLT snapshot import the snapshot block is absent from
+                        // the DLT block log, so fetch_block_by_id() cannot find it.
+                        // When a peer later sends a competing fork starting at
+                        // block_num+1, that block's parent (this block) is not in
+                        // fork_db → dead-fork rejection.  Adding it here — while we
+                        // have the full signed_block from the peer — fixes that.
+                        // _repair_child_prev_links reconnects the start_block root
+                        // so fetch_branch_from can walk the full slave chain.
+                        if (!_fork_db.is_known_block(new_block.id())) {
+                            _fork_db.insert_as_base(new_block);
+                        }
                         return false;
                     }
                     // Block is at or before head but on a different fork.

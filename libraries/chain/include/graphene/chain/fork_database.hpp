@@ -62,6 +62,17 @@ namespace graphene {
 
             void start_block(signed_block b);
 
+            /**
+             * Insert a block that is known to be on our main chain as a fork_db
+             * anchor, without requiring its parent to already be in fork_db.
+             * Used when an ALREADY_KNOWN block arrives from a peer during sync:
+             * the block data is available right then, seeding fork_db so competing
+             * forks starting at this block's children can link correctly.
+             * Also repairs null prev pointers on child blocks already in the index
+             * (e.g., a block inserted via start_block that should link here).
+             */
+            void insert_as_base(signed_block b);
+
             void remove(block_id_type b);
 
             /**
@@ -154,6 +165,10 @@ namespace graphene {
             void _push_block(const item_ptr &b);
 
             void _push_next(const item_ptr &newly_inserted);
+
+            // Fix null prev pointers on _index blocks that should link to parent
+            // (blocks inserted via start_block have prev=null; this reconnects them).
+            void _repair_child_prev_links(const item_ptr &parent);
 
             uint32_t _max_size = 2400;
 

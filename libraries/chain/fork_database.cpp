@@ -27,6 +27,40 @@ namespace graphene {
             _head = item;
         }
 
+        void fork_database::insert_as_base(signed_block b) {
+            auto &id_index = _index.get<block_id>();
+            auto existing = id_index.find(b.id());
+            if (existing != id_index.end()) {
+                // Already in linked index — still repair any child blocks whose
+                // prev pointer is null (inserted via start_block before we knew
+                // this ancestor).
+                _repair_child_prev_links(*existing);
+                return;
+            }
+            auto item = std::make_shared<fork_item>(std::move(b));
+            // Insert without parent-chain check — this block is confirmed on our
+            // main chain, we just don't have its parent in fork_db (e.g., the
+            // snapshot LIB block whose data is absent from the DLT block log).
+            _index.insert(item);
+            // Link any blocks in _unlinked_index that were waiting for this parent.
+            _push_next(item);
+            // Repair null prev pointers on child blocks already in _index
+            // (e.g., the block inserted via start_block that should follow this one).
+            _repair_child_prev_links(item);
+        }
+
+        void fork_database::_repair_child_prev_links(const item_ptr &parent) {
+            auto &num_idx = _index.get<block_num>();
+            auto it = num_idx.lower_bound(parent->num + 1);
+            auto end = num_idx.upper_bound(parent->num + 1);
+            for (; it != end; ++it) {
+                const item_ptr &candidate = *it;
+                if (candidate->data.previous == parent->id && !candidate->prev.lock()) {
+                    candidate->prev = parent;
+                }
+            }
+        }
+
 /**
  * Pushes the block into the fork database and caches it if it doesn't link
  *
