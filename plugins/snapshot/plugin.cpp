@@ -907,10 +907,24 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     // duplicate transactions, so we must export confirmed entries.
     {
         fc::flat_set<transaction_id_type> pending_ids;
-        // Snapshot _pending_tx IDs before iterating — push_transaction
-        // (weak_write_lock) can modify _pending_tx concurrently with
-        // our strong_read_lock.  Copying IDs first avoids iterating
-        // a mutating container.
+        // Safety analysis for _pending_tx access:
+        // This code runs inside with_strong_read_lock.
+        // push_transaction uses with_weak_write_lock, which is
+        // compatible with strong_read_lock — so a concurrent
+        // API accept_transaction CAN modify _pending_tx while we
+        // iterate.  However, during snapshot creation P2P is paused
+        // (block_processing_paused=true), eliminating the main
+        // source of concurrent writes.  The only remaining source
+        // is RPC/API accept_transaction, which is rare during
+        // snapshot creation.
+        //
+        // Copying IDs first minimizes the iteration window (deque
+        // iteration is fast) but does not fully eliminate the race.
+        // A full fix would require either:
+        //   (a) pausing API transactions during snapshot, or
+        //   (b) copying _pending_tx outside the read_lock scope
+        //       (requires architectural change).
+        // The practical risk is negligible given P2P pause.
         std::vector<transaction_id_type> pending_tx_ids;
         pending_tx_ids.reserve(db._pending_tx.size());
         for (const auto& ptx : db._pending_tx) {

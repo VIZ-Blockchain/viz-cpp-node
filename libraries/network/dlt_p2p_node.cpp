@@ -492,6 +492,10 @@ void dlt_p2p_node::drain_send_queue(peer_id peer, std::vector<char> buf) {
             size_t remaining = buf.size();
             while (remaining > 0) {
                 size_t written = sock->writesome(ptr, remaining);
+                if (written == 0) {
+                    FC_THROW_EXCEPTION(fc::exception,
+                        "writesome returned 0 bytes — peer connection stalled");
+                }
                 ptr       += written;
                 remaining -= written;
             }
