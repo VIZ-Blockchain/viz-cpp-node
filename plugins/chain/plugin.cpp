@@ -815,6 +815,13 @@ namespace chain {
     }
 
     void plugin::attempt_auto_recovery() {
+        static std::atomic<bool> recovery_in_progress{false};
+        bool expected = false;
+        if (!recovery_in_progress.compare_exchange_strong(expected, true)) {
+            wlog("Auto-recovery already in progress, skipping duplicate attempt");
+            return;
+        }
+
         wlog("=== IMMEDIATE AUTO-RECOVERY: shared memory corruption detected ===");
 
         // 1. Find latest snapshot
@@ -866,7 +873,18 @@ namespace chain {
     }
 
     void plugin::accept_transaction(const protocol::signed_transaction &trx) {
-        my->accept_transaction(trx);
+        try {
+            my->accept_transaction(trx);
+        } catch (const graphene::chain::shared_memory_corruption_exception& e) {
+            elog("Shared memory corruption detected during transaction validation: ${e}", ("e", e.to_detail_string()));
+            if (my->auto_recover_from_snapshot) {
+                attempt_auto_recovery();
+            } else {
+                elog("Auto-recovery disabled. Restart with --replay-from-snapshot --snapshot-auto-latest");
+                appbase::app().quit();
+            }
+            throw;
+        }
     }
 
     bool plugin::block_is_on_preferred_chain(const protocol::block_id_type &block_id) {

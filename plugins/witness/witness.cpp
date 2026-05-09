@@ -459,6 +459,8 @@ namespace graphene {
                         // ilog("Not producing block because it isn't my turn");
                         fork_collision_defer_count_ = 0;
                         _slot_zero_streak = 0;  // P18: reset on valid non-stall result
+                        // Emergency master: the EMRG-DIAG log in maybe_produce_block fires
+                        // per-slot details; nothing extra needed here.
                         break;
                     case block_production_condition::not_time_yet:
                         // This log-record is commented, because it outputs very often
@@ -920,6 +922,26 @@ namespace graphene {
                 if (db._debug_block_production) ilog("DEBUG_CRASH: slot=${s}", ("s", slot));
                 if (slot == 0) {
                     capture("next_time", db.get_slot_time(1));
+                    // Emergency master diagnostic: log when we are stuck at slot=0 and
+                    // real time is well past the expected next slot (i.e. we should have
+                    // a slot available but get_slot_at_time says 0 — NTP or head-time anomaly)
+                    if (_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end()) {
+                        const auto &_dgp2 = db.get_dynamic_global_properties();
+                        if (_dgp2.emergency_consensus_active) {
+                            static fc::time_point _last_slot0_log;
+                            auto _now2 = fc::time_point::now();
+                            if ((_now2 - _last_slot0_log).count() > 10000000) { // log every 10s max
+                                _last_slot0_log = _now2;
+                                wlog("EMRG-DIAG slot=0: head=#${h} head_time=${ht} now=${now} next_slot=${ns} aslot=${a} num_sched=${ns2}",
+                                    ("h", _dgp2.head_block_number)
+                                    ("ht", db.head_block_time())
+                                    ("now", now_fine)
+                                    ("ns", db.get_slot_time(1))
+                                    ("a", _dgp2.current_aslot)
+                                    ("ns2", db.get_witness_schedule_object().num_scheduled_witnesses));
+                            }
+                        }
+                    }
                     return block_production_condition::not_time_yet;
                 }
 
@@ -939,6 +961,26 @@ namespace graphene {
                 // we must control the witness scheduled to produce the next block.
                 if (_witnesses.find(scheduled_witness) == _witnesses.end()) {
                     capture("scheduled_witness", scheduled_witness);
+                    // Emergency master diagnostic: log when committee is configured but
+                    // get_scheduled_witness returned a different name — reveals schedule misalignment
+                    if (_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end()) {
+                        const auto &_dgp3 = db.get_dynamic_global_properties();
+                        if (_dgp3.emergency_consensus_active) {
+                            static fc::time_point _last_nmt_log;
+                            auto _now3 = fc::time_point::now();
+                            if ((_now3 - _last_nmt_log).count() > 3000000) { // log every 3s max (once per slot)
+                                _last_nmt_log = _now3;
+                                const auto &_wso3 = db.get_witness_schedule_object();
+                                wlog("EMRG-DIAG not_my_turn: slot=${s} scheduled=${sw} head=#${h} aslot=${a} num_sched=${ns} aslot_mod=${am}",
+                                    ("s", slot)
+                                    ("sw", scheduled_witness)
+                                    ("h", _dgp3.head_block_number)
+                                    ("a", _dgp3.current_aslot)
+                                    ("ns", _wso3.num_scheduled_witnesses)
+                                    ("am", _dgp3.current_aslot % _wso3.num_scheduled_witnesses));
+                            }
+                        }
+                    }
                     return block_production_condition::not_my_turn;
                 }
 
@@ -971,7 +1013,18 @@ namespace graphene {
 
                 // Check if witness has zero/null signing key (intentionally disabled for block production)
                 if (scheduled_key == graphene::protocol::public_key_type()) {
-                    // Don't log - witness is configured but has zero key on chain (monitoring only)
+                    if (scheduled_witness == CHAIN_EMERGENCY_WITNESS_ACCOUNT &&
+                        _witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end()) {
+                        static fc::time_point _last_zerokey_log;
+                        auto _now_zk = fc::time_point::now();
+                        if ((_now_zk - _last_zerokey_log).count() > 3000000) {
+                            _last_zerokey_log = _now_zk;
+                            wlog("EMRG-DIAG zero-key: committee scheduled at slot=${s} but signing_key is ZERO on chain! "
+                                 "head=#${h} aslot=${a}",
+                                 ("s", slot)("h", db.head_block_num())
+                                 ("a", db.get_dynamic_global_properties().current_aslot));
+                        }
+                    }
                     return block_production_condition::not_my_turn;
                 }
 
@@ -1105,6 +1158,11 @@ namespace graphene {
                 op_guard.release();
 
                 if (db._debug_block_production) ilog("DEBUG_CRASH: calling generate_block for ${w}", ("w", scheduled_witness));
+                if (scheduled_witness == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                    wlog("EMRG-DIAG producing: slot=${s} scheduled_time=${st} head=#${h} aslot=${a}",
+                         ("s", slot)("st", scheduled_time)("h", db.head_block_num())
+                         ("a", db.get_dynamic_global_properties().current_aslot));
+                }
                 int retry = 0;
                 do {
                     try {
