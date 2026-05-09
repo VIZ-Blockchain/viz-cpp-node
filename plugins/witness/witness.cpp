@@ -1028,24 +1028,22 @@ namespace graphene {
                             }
                         }
                     }
-                    // NTP drift check: if our clock is >1s behind the next slot, something
-                    // is wrong (NTP jumped backward, or OS clock is drifting).
+                    // NTP drift check: warn if local clock is >250ms behind NTP time.
+                    // A slow local clock causes get_slot_at_time() to return slot=0 even
+                    // when the network is expecting our block, making us miss slots silently.
                     {
-                        auto next_slot_time = db.get_slot_time(1);
-                        int64_t behind_us = (fc::time_point(next_slot_time) - fc::time_point::now()).count();
-                        if (behind_us > 1000000) { // >1s behind next slot
+                        int64_t ntp_us = 0;
+                        try { ntp_us = graphene::time::ntp_error().count(); } catch (...) {}
+                        if (ntp_us > 250000) { // local clock >250ms behind NTP
                             static fc::time_point _last_ntp_drift_log;
                             auto _now_nd = fc::time_point::now();
                             if ((_now_nd - _last_ntp_drift_log).count() > 10000000) {
                                 _last_ntp_drift_log = _now_nd;
-                                int64_t ntp_us = 0;
-                                try { ntp_us = graphene::time::ntp_error().count(); } catch (...) {}
-                                wlog("NTP DRIFT: clock is ${b}ms behind next slot ${ns} "
-                                     "(now=${now} head_time=${ht} head=#${h} ntp_offset=${n}us). "
-                                     "Production may miss slots if drift exceeds 250ms lookahead.",
-                                     ("b", behind_us / 1000)("ns", next_slot_time)
-                                     ("now", now_fine)("ht", db.head_block_time())
-                                     ("h", db.head_block_num())("n", ntp_us));
+                                auto next_slot_time = db.get_slot_time(1);
+                                wlog("NTP DRIFT: local clock is ${n}ms behind NTP — may miss slots! "
+                                     "(now=${now} next_slot=${ns} head=#${h})",
+                                     ("n", ntp_us / 1000)("now", now_fine)
+                                     ("ns", next_slot_time)("h", db.head_block_num()));
                             }
                         }
                     }
