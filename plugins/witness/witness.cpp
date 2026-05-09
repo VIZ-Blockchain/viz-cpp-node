@@ -1085,6 +1085,20 @@ namespace graphene {
                                  ("s", slot)("h", db.head_block_num())
                                  ("a", db.get_dynamic_global_properties().current_aslot));
                         }
+                    } else if (_witnesses.count(scheduled_witness)) {
+                        // Our configured witness is scheduled but its on-chain signing_key is zero.
+                        // This means the chain blanked the key due to too many missed blocks
+                        // (database.cpp update_global_dynamic_data).  Production is permanently
+                        // blocked until the operator sends an update_witness transaction.
+                        static fc::time_point _last_zerokey_regular_log;
+                        auto _now_zkr = fc::time_point::now();
+                        if ((_now_zkr - _last_zerokey_regular_log).count() > 60000000) {
+                            _last_zerokey_regular_log = _now_zkr;
+                            elog("Witness ${w} scheduled at slot=${s} but signing_key is ZERO on chain! "
+                                 "Key was blanked due to too many missed blocks. "
+                                 "Send update_witness transaction to re-enable. head=#${h}",
+                                 ("w", scheduled_witness)("s", slot)("h", db.head_block_num()));
+                        }
                     }
                     return block_production_condition::not_my_turn;
                 }

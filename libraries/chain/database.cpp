@@ -5520,8 +5520,10 @@ namespace graphene { namespace chain {
                             // On emergency start, zero signing_key so ONLY committee produces.
                             // Operators must manually re-enable witnesses via update_witness tx.
                             const auto &witness_idx = get_index<witness_index>().indices().get<by_id>();
+                            uint32_t blanked_count = 0;
                             for (auto witr = witness_idx.begin(); witr != witness_idx.end(); ++witr) {
                                 if (witr->owner == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
+                                if (witr->signing_key != public_key_type()) blanked_count++;
                                 modify(*witr, [&](witness_object &w) {
                                     w.signing_key = public_key_type();
                                     w.penalty_percent = 0;
@@ -5529,6 +5531,9 @@ namespace graphene { namespace chain {
                                     w.current_run = 0;
                                 });
                             }
+                            elog("Emergency consensus started: blanked signing_key for ${n} witnesses. "
+                                 "Operators must send update_witness tx to re-enable after emergency ends.",
+                                 ("n", blanked_count));
 
                             // Remove all pending penalty expiration objects
                             const auto &penalty_idx = get_index<witness_penalty_expire_index>().indices().get<by_id>();
