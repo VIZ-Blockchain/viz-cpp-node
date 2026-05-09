@@ -464,9 +464,15 @@ void dlt_p2p_node::send_message(peer_id peer, const message& msg) {
                 state.send_queue.push_back(std::move(buf));
                 ++state.send_queue_total;
             } else {
-                ++state.send_queue_dropped;
-                dlog(DLT_LOG_DGRAY "Send queue full, dropping message type ${t} to peer ${ep}" DLT_LOG_RESET,
-                     ("t", msg.msg_type)("ep", state.endpoint));
+                // Queue is at max depth — peer can't consume data fast enough.
+                // Capture info before handle_disconnect potentially erases the state.
+                std::string ep = std::string(state.endpoint);
+                uint32_t dropped = state.send_queue_dropped;
+                wlog("Send queue full (depth=${d}, previously dropped=${n}, msg_type=${t}), "
+                     "disconnecting slow peer ${ep}",
+                     ("d", dlt_peer_state::SEND_QUEUE_MAX_DEPTH)("n", dropped)
+                     ("t", msg.msg_type)("ep", ep));
+                handle_disconnect(peer, "send queue full");
             }
         }
         return;
