@@ -380,6 +380,7 @@ private:
     bool                            _catchup_after_pause = false;
 
     // ── Diagnostics ───────────────────────────────────────────────
+    fc::time_point                  _node_start_time;
     uint32_t                        _stats_log_counter = 0;
     uint32_t                        _stats_log_interval_sec = 300;  // default 5 minutes
     uint32_t                        _status_log_counter = 0;       // 1-minute node status heartbeat

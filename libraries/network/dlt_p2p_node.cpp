@@ -77,6 +77,7 @@ void dlt_p2p_node::set_witness_diag_provider(std::function<std::string()> fn) {
 
 void dlt_p2p_node::start() {
     _running = true;
+    _node_start_time = fc::time_point::now();
 
     try {
         if (_listen_endpoint.port() != 0) {
@@ -3020,10 +3021,17 @@ void dlt_p2p_node::log_peer_stats() {
     uint32_t our_head = _delegate ? _delegate->get_head_block_num() : 0;
     uint32_t our_lib  = _delegate ? _delegate->get_lib_block_num() : 0;
 
-    ilog("${C}=== DLT P2P Stats | status=${st} fork=${fk} head=${h} lib=${lib} peers=${n} conn=${c} paused=${p} ===${R}",
+    int64_t uptime_sec = (_node_start_time.sec_since_epoch() > 0)
+        ? (fc::time_point::now() - _node_start_time).count() / 1000000
+        : 0;
+    int up_h = (int)(uptime_sec / 3600);
+    int up_m = (int)((uptime_sec % 3600) / 60);
+    int up_s = (int)(uptime_sec % 60);
+    ilog("${C}=== DLT P2P Stats | status=${st} fork=${fk} head=${h} lib=${lib} peers=${n} conn=${c} paused=${p} uptime=${uh}h${um}m${us}s ===${R}",
          ("C", C)("st", status_str)("fk", fork_str)("h", our_head)("lib", our_lib)
          ("n", _peer_states.size())("c", _connections.size())
-         ("p", _block_processing_paused ? "YES" : "no")("R", R));
+         ("p", _block_processing_paused ? "YES" : "no")
+         ("uh", up_h)("um", up_m)("us", up_s)("R", R));
 
     // Per-peer details
     // NOTE: peer_head_num is from the last hello/fork_status exchange or
