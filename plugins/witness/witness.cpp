@@ -571,21 +571,25 @@ namespace graphene {
                         break;
                 }
 
-                // Emergency master watchdog: elog if we've produced before but have gone
-                // silent for >60s while production is still enabled.  Catches any blocking
-                // condition that slips past the per-case logs above.
-                if (_ever_produced && _production_enabled
-                    && _witnesses.count(CHAIN_EMERGENCY_WITNESS_ACCOUNT)) {
+                // Production watchdog: elog if we've produced before but have gone
+                // silent for too long while production is still enabled.
+                // Emergency master threshold: 60s (before 315s blanking at 105 missed blocks).
+                // Regular witness threshold: 180s (before 600s blanking at 200 missed blocks).
+                // Fires every 30s once triggered so the operator has multiple chances to react.
+                if (_ever_produced && _production_enabled) {
                     auto silent_for = fc::time_point::now() - _last_production_time;
-                    if (silent_for.count() > 60000000) {
+                    bool is_emrg_master = _witnesses.count(CHAIN_EMERGENCY_WITNESS_ACCOUNT) > 0;
+                    int64_t threshold_us = is_emrg_master ? 60000000 : 180000000;
+                    if (silent_for.count() > threshold_us) {
                         static fc::time_point _last_watchdog_log;
                         auto _now_wdog = fc::time_point::now();
                         if ((_now_wdog - _last_watchdog_log).count() > 30000000) {
                             _last_watchdog_log = _now_wdog;
                             bool catching_up = false;
                             try { catching_up = p2p().is_catching_up_after_pause(); } catch (...) {}
-                            elog("WITNESS-WATCHDOG: emergency master silent for ${s}s! "
+                            elog("WITNESS-WATCHDOG: ${t} silent for ${s}s! "
                                  "last_result=${r} head=#${h} catching_up=${c}",
+                                 ("t", is_emrg_master ? "emergency master" : "witness")
                                  ("s", silent_for.count() / 1000000)
                                  ("r", (int)result)
                                  ("h", database().head_block_num())
