@@ -379,6 +379,14 @@ private:
     // is_catching_up_after_pause() to defer block production.
     bool                            _catchup_after_pause = false;
 
+    // ── Incoming IP blocklist ─────────────────────────────────────
+    // IPs that sent oversized/malformed messages are blocked temporarily
+    // so they cannot reconnect and repeat the attack.
+    std::map<uint32_t, fc::time_point>  _blocked_ips;
+    static constexpr uint32_t           BLOCKED_IP_DURATION_SEC = 3600; // 1 hour
+    void                                block_incoming_ip(uint32_t ip, const std::string& reason);
+    bool                                is_ip_blocked(uint32_t ip);
+
     // ── Diagnostics ───────────────────────────────────────────────
     fc::time_point                  _node_start_time;
     uint32_t                        _stats_log_counter = 0;

@@ -73,6 +73,23 @@ void dlt_p2p_node::set_witness_diag_provider(std::function<std::string()> fn) {
     _witness_diag_provider = std::move(fn);
 }
 
+void dlt_p2p_node::block_incoming_ip(uint32_t ip, const std::string& reason) {
+    fc::time_point unblock_at = fc::time_point::now() + fc::seconds(BLOCKED_IP_DURATION_SEC);
+    _blocked_ips[ip] = unblock_at;
+    wlog(DLT_LOG_ORANGE "Blocking IP ${ip} for ${d}s: ${r}" DLT_LOG_RESET,
+         ("ip", std::string(fc::ip::address(ip)))("d", BLOCKED_IP_DURATION_SEC)("r", reason));
+}
+
+bool dlt_p2p_node::is_ip_blocked(uint32_t ip) {
+    auto it = _blocked_ips.find(ip);
+    if (it == _blocked_ips.end()) return false;
+    if (fc::time_point::now() >= it->second) {
+        _blocked_ips.erase(it);
+        return false;
+    }
+    return true;
+}
+
 // ── Lifecycle ────────────────────────────────────────────────────────
 
 void dlt_p2p_node::start() {
@@ -3324,6 +3341,17 @@ void dlt_p2p_node::accept_loop() {
             // The existing connection may be outbound (port 2001) or a prior
             // incoming connection on a different ephemeral port.
             fc::ip::address incoming_ip = state.endpoint.get_address();
+
+            // Blocklist check: reject IPs that recently sent oversized/malformed data.
+            if (is_ip_blocked((uint32_t)incoming_ip)) {
+                dlog("Rejecting blocked IP ${ip} (sent oversized/malformed message)",
+                     ("ip", incoming_ip));
+                _peer_states.erase(pid);
+                _connections.erase(pid);
+                sock->close();
+                continue;
+            }
+
             peer_id existing = find_active_peer_by_ip(incoming_ip);
             if (existing != INVALID_PEER_ID) {
                 dlog("Rejecting duplicate incoming connection from ${ip} "
@@ -3397,9 +3425,17 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
                 // Validate message size
                 if (hdr.size > MAX_MESSAGE_SIZE) {
                     auto ep_it = _peer_states.find(peer);
-                    auto ep_str = (ep_it != _peer_states.end()) ? std::string(ep_it->second.endpoint) : std::to_string(peer);
-                    wlog(DLT_LOG_DGRAY "Oversized message (${s} bytes) from peer ${ep}, disconnecting" DLT_LOG_RESET,
-                         ("s", hdr.size)("ep", ep_str));
+                    std::string ep_str;
+                    uint32_t peer_ip = 0;
+                    if (ep_it != _peer_states.end()) {
+                        ep_str = std::string(ep_it->second.endpoint);
+                        peer_ip = (uint32_t)ep_it->second.endpoint.get_address();
+                    } else {
+                        ep_str = std::to_string(peer);
+                    }
+                    wlog(DLT_LOG_ORANGE "Oversized message (${s} bytes, max=${m}) from peer ${ep} — blocking IP for ${d}s" DLT_LOG_RESET,
+                         ("s", hdr.size)("m", MAX_MESSAGE_SIZE)("ep", ep_str)("d", BLOCKED_IP_DURATION_SEC));
+                    if (peer_ip) block_incoming_ip(peer_ip, "oversized message (" + std::to_string(hdr.size) + " bytes)");
                     handle_disconnect(peer, "oversized message", true);
                     return;
                 }
