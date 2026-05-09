@@ -600,20 +600,49 @@ namespace graphene {
                         auto _now_wdog = fc::time_point::now();
                         if ((_now_wdog - _last_watchdog_log).count() > 30000000) {
                             _last_watchdog_log = _now_wdog;
+                            auto& db_wd = database();
                             bool catching_up = false;
                             try { catching_up = p2p().is_catching_up_after_pause(); } catch (...) {}
                             std::string witness_names;
                             for (const auto& w : _witnesses) { if (!witness_names.empty()) witness_names += ","; witness_names += w; }
                             int64_t ntp_us = 0;
                             try { ntp_us = graphene::time::ntp_error().count(); } catch (...) {}
+
+                            // Who does the chain expect to produce right now?
+                            std::string scheduled_now = "?";
+                            bool we_are_scheduled = false;
+                            try {
+                                fc::time_point_sec now_sec = graphene::time::now() + fc::microseconds(250000);
+                                uint32_t cur_slot = db_wd.get_slot_at_time(now_sec);
+                                if (cur_slot > 0) {
+                                    scheduled_now = db_wd.get_scheduled_witness(cur_slot);
+                                    we_are_scheduled = _witnesses.count(scheduled_now) > 0;
+                                } else {
+                                    // Between slots: show who gets the NEXT slot
+                                    scheduled_now = "between_slots/" + db_wd.get_scheduled_witness(1);
+                                }
+                            } catch (...) {}
+
+                            int64_t head_age_s = (fc::time_point::now() - fc::time_point(db_wd.head_block_time())).count() / 1000000;
+
                             elog("WITNESS-WATCHDOG: ${t} silent for ${s}s! "
-                                 "witnesses=${w} slot_result=${sr} catching_up=${c} head=#${h} ntp_offset=${n}us",
+                                 "witnesses=${w} keys=${k} prod=${pe} minority_recovering=${mr} "
+                                 "slot_result=${sr} catching_up=${c} "
+                                 "head=#${h} head_age=${ha}s scheduled_now=${sw} we_are_scheduled=${ws} "
+                                 "slot0_streak=${sz} ntp_offset=${n}us",
                                  ("t", is_emrg_master ? "emergency master" : "witness")
                                  ("s", silent_for.count() / 1000000)
                                  ("w", witness_names)
+                                 ("k", _private_keys.size())
+                                 ("pe", _production_enabled)
+                                 ("mr", _minority_fork_recovering)
                                  ("sr", _last_slot_result)
                                  ("c", catching_up)
-                                 ("h", database().head_block_num())
+                                 ("h", db_wd.head_block_num())
+                                 ("ha", head_age_s)
+                                 ("sw", scheduled_now)
+                                 ("ws", we_are_scheduled)
+                                 ("sz", _slot_zero_streak)
                                  ("n", ntp_us));
                         }
                     }
