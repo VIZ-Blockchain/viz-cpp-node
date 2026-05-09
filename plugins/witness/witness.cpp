@@ -139,6 +139,9 @@ namespace graphene {
                 // so the watchdog can fire if the emergency master goes silent.
                 bool _ever_produced = false;
                 fc::time_point _last_production_time;
+                // Last result from a slot > 0 iteration (not_time_yet filtered out so
+                // the watchdog shows a meaningful failure code, not between-slot noise).
+                int _last_slot_result = -1;
             };
 
             void witness_plugin::set_program_options(
@@ -427,6 +430,16 @@ namespace graphene {
                     next_microseconds += 250000 ;
                 }
 
+                // Sanity check: in normal operation next_microseconds is always ≤500ms.
+                // A larger value means NTP time jumped backward, which delays the loop
+                // and can cause missed slots.
+                if (next_microseconds > 500000) {
+                    int64_t ntp_us = 0;
+                    try { ntp_us = graphene::time::ntp_error().count(); } catch (...) {}
+                    wlog("SCHEDULE WARNING: production loop sleeping ${d}ms (expected ≤500ms). "
+                         "NTP may have jumped backward. ntp_offset=${n}us",
+                         ("d", next_microseconds / 1000)("n", ntp_us));
+                }
                 production_timer_.expires_from_now( posix_time::microseconds(next_microseconds) );
                 production_timer_.async_wait( [this](const system::error_code &) { block_production_loop(); } );
             }
@@ -453,6 +466,8 @@ namespace graphene {
                 }
 
                 if (database()._debug_block_production) ilog("DEBUG_CRASH: maybe_produce_block returned ${r}", ("r", (int)result));
+                if (result != block_production_condition::not_time_yet)
+                    _last_slot_result = (int)result;
                 switch (result) {
                     case block_production_condition::produced:
                         ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w} with ${tx} transactions\033[0m", (capture));
@@ -587,13 +602,19 @@ namespace graphene {
                             _last_watchdog_log = _now_wdog;
                             bool catching_up = false;
                             try { catching_up = p2p().is_catching_up_after_pause(); } catch (...) {}
+                            std::string witness_names;
+                            for (const auto& w : _witnesses) { if (!witness_names.empty()) witness_names += ","; witness_names += w; }
+                            int64_t ntp_us = 0;
+                            try { ntp_us = graphene::time::ntp_error().count(); } catch (...) {}
                             elog("WITNESS-WATCHDOG: ${t} silent for ${s}s! "
-                                 "last_result=${r} head=#${h} catching_up=${c}",
+                                 "witnesses=${w} slot_result=${sr} catching_up=${c} head=#${h} ntp_offset=${n}us",
                                  ("t", is_emrg_master ? "emergency master" : "witness")
                                  ("s", silent_for.count() / 1000000)
-                                 ("r", (int)result)
+                                 ("w", witness_names)
+                                 ("sr", _last_slot_result)
+                                 ("c", catching_up)
                                  ("h", database().head_block_num())
-                                 ("c", catching_up));
+                                 ("n", ntp_us));
                         }
                     }
                 }
@@ -1007,6 +1028,27 @@ namespace graphene {
                             }
                         }
                     }
+                    // NTP drift check: if our clock is >1s behind the next slot, something
+                    // is wrong (NTP jumped backward, or OS clock is drifting).
+                    {
+                        auto next_slot_time = db.get_slot_time(1);
+                        int64_t behind_us = (fc::time_point(next_slot_time) - fc::time_point::now()).count();
+                        if (behind_us > 1000000) { // >1s behind next slot
+                            static fc::time_point _last_ntp_drift_log;
+                            auto _now_nd = fc::time_point::now();
+                            if ((_now_nd - _last_ntp_drift_log).count() > 10000000) {
+                                _last_ntp_drift_log = _now_nd;
+                                int64_t ntp_us = 0;
+                                try { ntp_us = graphene::time::ntp_error().count(); } catch (...) {}
+                                wlog("NTP DRIFT: clock is ${b}ms behind next slot ${ns} "
+                                     "(now=${now} head_time=${ht} head=#${h} ntp_offset=${n}us). "
+                                     "Production may miss slots if drift exceeds 250ms lookahead.",
+                                     ("b", behind_us / 1000)("ns", next_slot_time)
+                                     ("now", now_fine)("ht", db.head_block_time())
+                                     ("h", db.head_block_num())("n", ntp_us));
+                            }
+                        }
+                    }
                     return block_production_condition::not_time_yet;
                 }
 
@@ -1132,6 +1174,18 @@ namespace graphene {
 
                 if (llabs((scheduled_time - now).count()) > fc::milliseconds(500).count()) {
                     capture("scheduled_time", scheduled_time)("now", now);
+                    {
+                        static fc::time_point _last_lag_log;
+                        auto _now_lag = fc::time_point::now();
+                        if ((_now_lag - _last_lag_log).count() > 60000000) {
+                            _last_lag_log = _now_lag;
+                            wlog("Block production LAG: our slot for ${w} at ${st} but now=${now} "
+                                 "(delta=${d}ms). Production loop fired too late for this slot. "
+                                 "head=#${h}",
+                                 ("w", scheduled_witness)("st", scheduled_time)("now", now)
+                                 ("d", (scheduled_time - now).count() / 1000)("h", db.head_block_num()));
+                        }
+                    }
                     return block_production_condition::lag;
                 }
 
