@@ -102,6 +102,11 @@ public:
     void set_peer_exchange_limits(uint32_t max_per_reply, uint32_t max_per_subnet, uint32_t min_uptime_sec);
     void set_stats_log_interval(uint32_t seconds);
 
+    // Registers a callback that returns a compact witness-state string.
+    // Called during FORWARD stagnation logs so the P2P layer can include
+    // witness production state without taking a plugin dependency.
+    void set_witness_diag_provider(std::function<std::string()> fn);
+
     // ── Lifecycle ────────────────────────────────────────────────
     void start();
     void close();
@@ -379,6 +384,7 @@ private:
     uint32_t                        _stats_log_interval_sec = 300;  // default 5 minutes
     uint32_t                        _status_log_counter = 0;       // 1-minute node status heartbeat
     bool                            _first_node_status_logged = false;  // trigger peer stats at 1 min
+    std::function<std::string()>    _witness_diag_provider;  // set by p2p_plugin; queried in stagnation logs
 
     // ── Color-coded logging macros ─────────────────────────────
     // Must be #define (not constexpr) so they concatenate with

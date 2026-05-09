@@ -134,6 +134,11 @@ namespace graphene {
                 // not_time_yet returns to detect NTP/clock issues.
                 uint32_t _slot_zero_streak = 0;
                 fc::time_point _slot_zero_streak_start;
+
+                // Production watchdog: tracks when we last produced a block
+                // so the watchdog can fire if the emergency master goes silent.
+                bool _ever_produced = false;
+                fc::time_point _last_production_time;
             };
 
             void witness_plugin::set_program_options(
@@ -389,6 +394,28 @@ namespace graphene {
                 }
             }
 
+            std::string witness_plugin::get_production_diagnostics() const {
+                try {
+                    if (!pimpl) return "witness=no_pimpl";
+                    std::string s = "prod_enabled=";
+                    s += pimpl->_production_enabled ? "1" : "0";
+                    s += " catching_up=";
+                    try { s += pimpl->p2p().is_catching_up_after_pause() ? "1" : "0"; } catch (...) { s += "?"; }
+                    try { s += " head=#" + std::to_string(pimpl->database().head_block_num()); } catch (...) {}
+                    if (pimpl->_ever_produced) {
+                        auto ago = (fc::time_point::now() - pimpl->_last_production_time).count() / 1000000;
+                        s += " last_prod=" + std::to_string(ago) + "s_ago";
+                    } else {
+                        s += " last_prod=never";
+                    }
+                    s += " minority_rcv=";
+                    s += pimpl->_minority_fork_recovering ? "1" : "0";
+                    return "witness[" + s + "]";
+                } catch (...) {
+                    return "witness=err";
+                }
+            }
+
             void witness_plugin::impl::schedule_production_loop() {
                 //Schedule for the next 250ms tick regardless of chain state
                 // With +250ms look-ahead in maybe_produce_block(), the tick at
@@ -431,6 +458,8 @@ namespace graphene {
                         ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w} with ${tx} transactions\033[0m", (capture));
                         fork_collision_defer_count_ = 0;
                         _slot_zero_streak = 0;  // P18: reset stall counter on success
+                        _ever_produced = true;
+                        _last_production_time = fc::time_point::now();
                         if (_minority_fork_recovering) {
                             auto elapsed = fc::time_point::now() - _minority_fork_recovery_start;
                             ilog("MINORITY FORK RECOVERY COMPLETE: production resumed after ${e}s",
@@ -449,6 +478,15 @@ namespace graphene {
                                      ("st", rdb.get_slot_time(1))
                                      ("now", graphene::time::now())
                                      ("e", elapsed.count() / 1000000));
+                            }
+                        } else {
+                            static fc::time_point _last_not_synced_log;
+                            auto _now_ns = fc::time_point::now();
+                            if ((_now_ns - _last_not_synced_log).count() > 10000000) {
+                                _last_not_synced_log = _now_ns;
+                                wlog("Block production deferred: not_synced (head=#${h}, catching_up=${c})",
+                                     ("h", database().head_block_num())
+                                     ("c", p2p().is_catching_up_after_pause()));
                             }
                         }
                         fork_collision_defer_count_ = 0;
@@ -531,6 +569,29 @@ namespace graphene {
                     case block_production_condition::minority_fork:
                         elog("Not producing block: minority fork detected, resyncing from P2P network");
                         break;
+                }
+
+                // Emergency master watchdog: elog if we've produced before but have gone
+                // silent for >60s while production is still enabled.  Catches any blocking
+                // condition that slips past the per-case logs above.
+                if (_ever_produced && _production_enabled
+                    && _witnesses.count(CHAIN_EMERGENCY_WITNESS_ACCOUNT)) {
+                    auto silent_for = fc::time_point::now() - _last_production_time;
+                    if (silent_for.count() > 60000000) {
+                        static fc::time_point _last_watchdog_log;
+                        auto _now_wdog = fc::time_point::now();
+                        if ((_now_wdog - _last_watchdog_log).count() > 30000000) {
+                            _last_watchdog_log = _now_wdog;
+                            bool catching_up = false;
+                            try { catching_up = p2p().is_catching_up_after_pause(); } catch (...) {}
+                            elog("WITNESS-WATCHDOG: emergency master silent for ${s}s! "
+                                 "last_result=${r} head=#${h} catching_up=${c}",
+                                 ("s", silent_for.count() / 1000000)
+                                 ("r", (int)result)
+                                 ("h", database().head_block_num())
+                                 ("c", catching_up));
+                        }
+                    }
                 }
 
                 if (database()._debug_block_production) ilog("DEBUG_CRASH: scheduling next production loop");

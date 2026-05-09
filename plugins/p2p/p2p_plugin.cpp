@@ -580,6 +580,18 @@ void p2p_plugin::plugin_startup() {
                                             my->peer_exchange_min_uptime_sec);
         my->node->set_stats_log_interval(my->stats_interval_sec);
 
+        // Wire up witness diagnostic provider so FORWARD stagnation logs include
+        // production state without the network library taking a plugin dependency.
+        my->node->set_witness_diag_provider([]() -> std::string {
+            try {
+                auto* wp = appbase::app().find_plugin<
+                    graphene::plugins::witness_plugin::witness_plugin>();
+                if (wp && wp->get_state() == appbase::abstract_plugin::started)
+                    return wp->get_production_diagnostics();
+            } catch (...) {}
+            return "";
+        });
+
         // Start (accept loop + periodic task run as internal fibers)
         my->node->start();
     }).wait();

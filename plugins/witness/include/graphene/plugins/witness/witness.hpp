@@ -74,6 +74,11 @@ namespace graphene {
                 /// regardless of whether the committee is in the current schedule.
                 bool is_emergency_key_configured() const;
 
+                /// Returns a compact diagnostic string with key production-state flags.
+                /// Called by the P2P layer when FORWARD stagnation fires with no peer ahead,
+                /// so the stagnation log shows why the master isn't filling the gap itself.
+                std::string get_production_diagnostics() const;
+
             private:
                 struct impl;
                 std::unique_ptr<impl> pimpl;

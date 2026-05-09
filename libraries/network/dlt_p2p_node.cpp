@@ -69,6 +69,10 @@ void dlt_p2p_node::set_stats_log_interval(uint32_t seconds) {
     _stats_log_interval_sec = std::max(seconds, uint32_t(30));  // minimum 30s
 }
 
+void dlt_p2p_node::set_witness_diag_provider(std::function<std::string()> fn) {
+    _witness_diag_provider = std::move(fn);
+}
+
 // ── Lifecycle ────────────────────────────────────────────────────────
 
 void dlt_p2p_node::start() {
@@ -2603,8 +2607,12 @@ void dlt_p2p_node::check_forward_stagnation() {
         }
 
         if (!has_peer_ahead) {
-            ilog(DLT_LOG_ORANGE "FORWARD stagnation: head stuck at #${h} for ${s}s, but no peer ahead — resetting stagnation timer" DLT_LOG_RESET,
-                 ("h", our_head)("s", FORWARD_STAGNATION_SEC));
+            std::string witness_diag;
+            if (_witness_diag_provider) {
+                try { witness_diag = " | " + _witness_diag_provider(); } catch (...) {}
+            }
+            ilog(DLT_LOG_ORANGE "FORWARD stagnation: head stuck at #${h} for ${s}s, but no peer ahead — resetting stagnation timer${wd}" DLT_LOG_RESET,
+                 ("h", our_head)("s", FORWARD_STAGNATION_SEC)("wd", witness_diag));
             _last_forward_head_num = our_head;
             _last_forward_progress_time = fc::time_point::now();
             return;
