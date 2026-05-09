@@ -652,9 +652,19 @@ void p2p_plugin::reconnect_seeds() {
 }
 
 void p2p_plugin::pause_block_processing() {
-    my->p2p_thread.async([this]() {
+    // Always called from the P2P thread (on_applied_block →
+    // flush_pending_block_notifications → with_weak_read_lock).
+    // Using async().wait() here yields the current fiber while that read
+    // lock is still held.  A second P2P fiber that already passed the
+    // _block_processing_paused check can then call push_block, which
+    // blocks on the write lock (held-off by our read lock) via a native
+    // timed_lock — freezing the OS thread and preventing the posted fiber
+    // from ever running.  Deadlock: read lock never released → write lock
+    // never acquired → OS thread never unfreezes → posted fiber never runs.
+    // Direct call is safe: _block_processing_paused is only accessed on the
+    // P2P thread and we are already on it.
+    if (my && my->node)
         my->node->pause_block_processing();
-    }).wait();
 }
 
 void p2p_plugin::resume_block_processing() {
