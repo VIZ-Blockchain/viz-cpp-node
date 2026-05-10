@@ -1012,7 +1012,8 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
             for (auto& _peer_item : _peer_states) {
             auto& s = _peer_item.second;
                 uint32_t s_latest = std::max(s.peer_dlt_latest, s.peer_head_num);
-                if (s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE && s_latest > our_head) {
+                if ((s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
+                     s.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) && s_latest > our_head) {
                     all_caught_up = false;
                     break;
                 }
@@ -1236,6 +1237,20 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
     }
 
     state.pending_block_batch_time = fc::time_point::now();
+
+    // If this range starts at head+1 but expected_next_block was advanced
+    // ahead by single-block broadcasts from the same peer, reset tracking so
+    // we don't generate spurious "stale tracking" messages for every block in
+    // the batch.  Single-block broadcasts can race with range replies and push
+    // expected_next_block to a value that doesn't match the range's start.
+    if (!reply.blocks.empty() && state.expected_next_block != 0) {
+        uint32_t first_num = reply.blocks.front().block_num();
+        uint32_t head_at_start = _delegate->get_head_block_num();
+        if (first_num == head_at_start + 1 && first_num != state.expected_next_block) {
+            state.expected_next_block = 0;
+        }
+    }
+
     for (const auto& block : reply.blocks) {
         if (_block_processing_paused) break;
 
