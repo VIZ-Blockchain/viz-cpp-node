@@ -1208,6 +1208,27 @@ void dlt_p2p_node::on_dlt_get_block_range(peer_id peer, const dlt_get_block_rang
     record_packet_result(peer, true);
 }
 
+// Fiber-aware serialization wrapper around accept_block.
+// Per-peer read loops run as separate FC fibers on the same OS thread.
+// If fiber A holds the chainbase write lock (inside push_block) and yields
+// at a cooperative point (e.g. fc::thread::async in update_lib's signal),
+// fiber B wakes up and tries accept_block → push_block → write lock →
+// waiter_tid == writer_tid deadlock.  Spinning here with fc::usleep yields
+// fiber B back to the scheduler so fiber A can finish and release the lock.
+dlt_block_accept_result dlt_p2p_node::call_accept_block(
+        const graphene::protocol::signed_block& block, bool sync_mode) {
+    while (_accept_block_in_progress) fc::usleep(fc::microseconds(100));
+    _accept_block_in_progress = true;
+    try {
+        auto result = _delegate->accept_block(block, sync_mode);
+        _accept_block_in_progress = false;
+        return result;
+    } catch (...) {
+        _accept_block_in_progress = false;
+        throw;
+    }
+}
+
 void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_reply_message& reply) {
     auto it = _peer_states.find(peer);
     if (it == _peer_states.end()) return;
@@ -1291,7 +1312,7 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
 
         dlt_block_accept_result result;
         try {
-            result = _delegate->accept_block(block, /*sync_mode=*/(_node_status == DLT_NODE_STATUS_SYNC));
+            result = call_accept_block(block, /*sync_mode=*/(_node_status == DLT_NODE_STATUS_SYNC));
         } catch (const graphene::network::deferred_resize_exception&) {
             // Transient local out-of-memory: stop processing this range,
             // don't punish the peer, and trigger resync after resize.
@@ -1490,7 +1511,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
 
     dlt_block_accept_result result;
     try {
-        result = _delegate->accept_block(reply.block, false);
+        result = call_accept_block(reply.block, false);
     } catch (const graphene::network::deferred_resize_exception&) {
         // Transient local out-of-memory: not the peer's fault.
         // The missed block will be re-fetched after the deferred resize
@@ -1864,7 +1885,7 @@ void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply&
 
         dlt_block_accept_result result;
         try {
-            result = _delegate->accept_block(block, /*sync_mode=*/false);
+            result = call_accept_block(block, /*sync_mode=*/false);
         } catch (const graphene::network::deferred_resize_exception&) {
             wlog("Deferred resize during gap fill, stopping");
             break;
@@ -2245,7 +2266,7 @@ void dlt_p2p_node::drain_paused_block_queue() {
 
         dlt_block_accept_result result;
         try {
-            result = _delegate->accept_block(block, false);
+            result = call_accept_block(block, false);
         } catch (const graphene::network::deferred_resize_exception&) {
             wlog("Deferred resize on queued block #${n}, stopping drain", ("n", block.block_num()));
             break;
@@ -2527,6 +2548,21 @@ void dlt_p2p_node::check_sync_catchup() {
     // prevents a false "caught up" when all connected peers are empty nodes
     // (e.g. slaveC with head=0) — they give us no evidence about network state.
     if (known_head_peers > 0 && !has_peer_ahead) {
+        // Don't transition to FORWARD when we have blocks in fork_db that we
+        // haven't been able to apply yet (e.g. we're on a wrong fork and the
+        // canonical chain blocks are accumulating in fork_db ahead of us).
+        // In that state the peers' known heads happen to be <= our fork head,
+        // but _highest_seen_block_num reflects the real network tip.
+        // Transitioning to FWD here would cause request_gap_fill to fail with
+        // "no peer available" and immediately cycle back to SYNC, resetting
+        // the stagnation timer each time and delaying fork-switch recovery by
+        // many minutes (p68 scenario).  Stay in SYNC so the stagnation check
+        // can fire at the right time and request the full alternative chain.
+        if (_highest_seen_block_num > our_head + FORWARD_FALLBEHIND_THRESHOLD) {
+            dlog("Staying in SYNC: highest seen block #${h} is ${d} blocks ahead of our head #${o} — unlinked fork_db blocks pending",
+                 ("h", _highest_seen_block_num)("d", _highest_seen_block_num - our_head)("o", our_head));
+            return;
+        }
         ilog(DLT_LOG_GREEN "Sync catchup detected: our head (#${h}) >= all ${k} known-head peers, transitioning to FORWARD" DLT_LOG_RESET,
              ("h", our_head)("k", known_head_peers));
         transition_to_forward();

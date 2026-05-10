@@ -370,6 +370,17 @@ private:
     // ── Block processing pause ───────────────────────────────────
     bool                            _block_processing_paused = false;
 
+    // Serializes accept_block calls across per-peer FC fibers.  Two fibers
+    // on the same OS thread can both call accept_block concurrently if one
+    // yields (e.g. during the snapshot-thread async post inside update_lib).
+    // The OS-level chainbase write lock is not fiber-aware: both fibers share
+    // the same thread ID, so the second fiber deadlocks waiting for a lock
+    // the first fiber already holds on the same OS thread.
+    // This flag + fc::usleep spin acts as a fiber-aware mutex — the waiting
+    // fiber yields cooperatively, allowing the first fiber to complete.
+    bool                            _accept_block_in_progress = false;
+    dlt_block_accept_result         call_accept_block(const graphene::protocol::signed_block& block, bool sync_mode);
+
     // Maximum number of blocks to buffer while P2P processing is
     // paused (e.g. during snapshot creation).  Prevents unbounded
     // memory growth on slow disks where a pause can last minutes.
