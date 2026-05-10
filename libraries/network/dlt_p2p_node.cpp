@@ -1915,9 +1915,24 @@ void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply&
         } else if (result == dlt_block_accept_result::FORK_DB_ONLY) {
             dlog("Gap fill block #${n} stored in fork_db", ("n", block.block_num()));
         } else if (result == dlt_block_accept_result::DEAD_FORK) {
-            wlog(DLT_LOG_RED "Gap fill: peer ${ep} sent dead-fork block #${n}" DLT_LOG_RESET,
-                 ("ep", it->second.endpoint)("n", block.block_num()));
-            soft_ban_peer(peer, "dead-fork block in gap fill");
+            // P69 fix: If the peer has a longer chain our locally produced blocks
+            // (e.g. emergency witness blocks) are on the losing fork — the dead-fork
+            // block is the peer's legitimate version of that slot.  Re-sync from LIB
+            // so fork_db can reconnect the winning chain.  Only ban when the peer's
+            // chain is shorter-or-equal (the genuine misbehavior case).
+            uint32_t our_head_now   = _delegate->get_head_block_num();
+            uint32_t peer_latest    = std::max(it->second.peer_dlt_latest, it->second.peer_head_num);
+            if (peer_latest > our_head_now) {
+                wlog(DLT_LOG_ORANGE "Gap fill: dead-fork block #${n} from peer ${ep} (peer=#${p} > our head #${h})"
+                     " — our fork is losing, re-syncing from LIB instead of banning" DLT_LOG_RESET,
+                     ("n", block.block_num())("ep", it->second.endpoint)("p", peer_latest)("h", our_head_now));
+                transition_to_sync();
+                request_blocks_from_peer(peer);
+            } else {
+                wlog(DLT_LOG_RED "Gap fill: peer ${ep} sent dead-fork block #${n}" DLT_LOG_RESET,
+                     ("ep", it->second.endpoint)("n", block.block_num()));
+                soft_ban_peer(peer, "dead-fork block in gap fill");
+            }
             break;
         } else {
             wlog(DLT_LOG_RED "Gap fill: rejected block #${n} from ${ep}" DLT_LOG_RESET,
