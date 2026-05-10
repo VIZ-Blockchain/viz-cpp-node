@@ -459,7 +459,7 @@ void dlt_p2p_node::periodic_lifecycle_timeout_check() {
     std::vector<peer_id> timed_out;
     for (const auto& _peer_item : _peer_states) {
         if (_peer_item.second.has_lifecycle_timeout()) {
-            wlog("Peer ${ep} timed out in state ${s}",
+            dlog(DLT_LOG_DGRAY "Peer ${ep} timed out in state ${s}" DLT_LOG_RESET,
                  ("ep", _peer_item.second.endpoint)("s", (int)_peer_item.second.lifecycle_state));
             timed_out.push_back(_peer_item.first);
         }
