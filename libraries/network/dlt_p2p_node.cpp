@@ -528,6 +528,15 @@ void dlt_p2p_node::drain_send_queue(peer_id peer, std::vector<char> buf) {
     }
     auto& sock = conn_it->second;
 
+    // Cache endpoint before entering the try block — handle_disconnect may
+    // remove the peer from _peer_states before the catch block runs, making
+    // the endpoint lookup fail and falling back to the numeric peer id.
+    std::string peer_ep;
+    {
+        auto ep_it = _peer_states.find(peer);
+        peer_ep = (ep_it != _peer_states.end()) ? std::string(ep_it->second.endpoint) : std::to_string(peer);
+    }
+
     try {
         while (true) {
             // Write the current buffer to the socket in a loop —
@@ -554,9 +563,7 @@ void dlt_p2p_node::drain_send_queue(peer_id peer, std::vector<char> buf) {
             state_it->second.send_queue.pop_front();
         }
     } catch (const fc::exception& e) {
-        auto ep_it_send = _peer_states.find(peer);
-        auto ep_send = (ep_it_send != _peer_states.end()) ? std::string(ep_it_send->second.endpoint) : std::to_string(peer);
-        wlog("Failed to send to peer ${ep}: ${e}", ("ep", ep_send)("e", e.to_detail_string()));
+        wlog("Failed to send to peer ${ep}: ${e}", ("ep", peer_ep)("e", e.to_detail_string()));
         _peer_sending.erase(peer);
         handle_disconnect(peer, "send failed");
         return;
