@@ -1057,7 +1057,7 @@ namespace graphene {
                             auto _now2 = fc::time_point::now();
                             if ((_now2 - _last_slot0_log).count() > 10000000) { // log every 10s max
                                 _last_slot0_log = _now2;
-                                wlog("EMRG-DIAG slot=0: head=#${h} head_time=${ht} now=${now} next_slot=${ns} aslot=${a} num_sched=${ns2}",
+                                dlog("EMRG-DIAG slot=0: head=#${h} head_time=${ht} now=${now} next_slot=${ns} aslot=${a} num_sched=${ns2}",
                                     ("h", _dgp2.head_block_number)
                                     ("ht", db.head_block_time())
                                     ("now", now_fine)
@@ -1115,7 +1115,7 @@ namespace graphene {
                             if ((_now3 - _last_nmt_log).count() > 3000000) { // log every 3s max (once per slot)
                                 _last_nmt_log = _now3;
                                 const auto &_wso3 = db.get_witness_schedule_object();
-                                wlog("EMRG-DIAG not_my_turn: slot=${s} scheduled=${sw} head=#${h} aslot=${a} num_sched=${ns} aslot_mod=${am}",
+                                dlog("EMRG-DIAG not_my_turn: slot=${s} scheduled=${sw} head=#${h} aslot=${a} num_sched=${ns} aslot_mod=${am}",
                                     ("s", slot)
                                     ("sw", scheduled_witness)
                                     ("h", _dgp3.head_block_number)
@@ -1163,7 +1163,7 @@ namespace graphene {
                         auto _now_zk = fc::time_point::now();
                         if ((_now_zk - _last_zerokey_log).count() > 3000000) {
                             _last_zerokey_log = _now_zk;
-                            wlog("EMRG-DIAG zero-key: committee scheduled at slot=${s} but signing_key is ZERO on chain! "
+                            dlog("EMRG-DIAG zero-key: committee scheduled at slot=${s} but signing_key is ZERO on chain! "
                                  "head=#${h} aslot=${a}",
                                  ("s", slot)("h", db.head_block_num())
                                  ("a", db.get_dynamic_global_properties().current_aslot));
@@ -1344,7 +1344,7 @@ namespace graphene {
 
                 if (db._debug_block_production) ilog("DEBUG_CRASH: calling generate_block for ${w}", ("w", scheduled_witness));
                 if (scheduled_witness == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
-                    wlog("EMRG-DIAG producing: slot=${s} scheduled_time=${st} head=#${h} aslot=${a}",
+                    dlog("EMRG-DIAG producing: slot=${s} scheduled_time=${st} head=#${h} aslot=${a}",
                          ("s", slot)("st", scheduled_time)("h", db.head_block_num())
                          ("a", db.get_dynamic_global_properties().current_aslot));
                 }
