@@ -847,7 +847,9 @@ constexpr uint32_t snapshot_plugin::plugin_impl::WATCHDOG_CHECK_INTERVAL_SEC;
 fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     fc::mutable_variant_object state;
 
-    // Helper macro to export an index (with progress logging)
+    // Helper macro to export an index with per-section and per-object timing.
+    // Logs elapsed time per section and warns if any single fc::to_variant call
+    // takes more than 200ms (helps pinpoint occasional hang, see p63 incident).
     auto serialize_start = fc::time_point::now();
     fc::time_point last_progress = serialize_start;
     #define EXPORT_INDEX(index_type, obj_type, name) \
@@ -856,22 +858,27 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
             wlog("Snapshot cancelled during serialization (before ${type})", ("type", name)); \
             FC_THROW_EXCEPTION(fc::canceled_exception, "Snapshot cancelled during serialization (before ${type})", ("type", name)); \
         } \
-        auto _now = fc::time_point::now(); \
-        if ((_now - last_progress).count() > 5000000LL) { \
-            auto _elapsed = double((_now - serialize_start).count()) / 1000000.0; \
-            ilog(CLOG_GREEN "Snapshot serialization in progress... ${t}s elapsed, next: ${type}" CLOG_RESET, \
-                 ("t", _elapsed)("type", name)); \
-            last_progress = _now; \
-        } \
+        auto _section_start = fc::time_point::now(); \
+        ilog(CLOG_GREEN "Snapshot: begin ${type}" CLOG_RESET, ("type", name)); \
         fc::variants arr; \
         const auto& idx = db.get_index<index_type>().indices(); \
-        for (auto itr = idx.begin(); itr != idx.end(); ++itr) { \
+        uint32_t _obj_n = 0; \
+        for (auto itr = idx.begin(); itr != idx.end(); ++itr, ++_obj_n) { \
+            auto _obj_start = fc::time_point::now(); \
             fc::variant v; \
             fc::to_variant(*itr, v); \
             arr.push_back(std::move(v)); \
+            auto _obj_us = (fc::time_point::now() - _obj_start).count(); \
+            if (_obj_us > 200000LL) { \
+                wlog("Snapshot: slow to_variant #${n} in ${type}: ${ms}ms", \
+                     ("n", _obj_n)("type", name)("ms", _obj_us / 1000)); \
+            } \
         } \
         state[name] = std::move(arr); \
-        ilog(CLOG_GREEN "Exported ${n} ${type} objects" CLOG_RESET, ("n", state[name].get_array().size())("type", name)); \
+        auto _section_ms = (fc::time_point::now() - _section_start).count() / 1000; \
+        ilog(CLOG_GREEN "Snapshot: exported ${n} ${type} in ${ms}ms" CLOG_RESET, \
+             ("n", state[name].get_array().size())("type", name)("ms", _section_ms)); \
+        last_progress = fc::time_point::now(); \
     }
 
     // CRITICAL objects
@@ -1026,11 +1033,13 @@ void snapshot_plugin::plugin_impl::create_snapshot(const fc::path& output_path, 
     // and file I/O operate on the captured data and need no lock.
     snapshot_header header;
     fc::mutable_variant_object state;
+    uint32_t snapshot_head_block_num = 0;
     auto read_start = fc::time_point::now();
 
     db.with_strong_read_lock([&]() {
         uint32_t lib = db.last_non_undoable_block_num();
         uint32_t head = db.head_block_num();
+        snapshot_head_block_num = head;
 
         header.version = SNAPSHOT_FORMAT_VERSION;
         header.chain_id = db.get_chain_id();
@@ -1050,23 +1059,30 @@ void snapshot_plugin::plugin_impl::create_snapshot(const fc::path& output_path, 
                 header.object_counts[itr->key()] = static_cast<uint32_t>(itr->value().get_array().size());
             }
         }
-
-        // Add the head block for fork_db seeding
-        auto head_block = db.fetch_block_by_number(head);
-        if (head_block.valid()) {
-            fc::variant block_var;
-            fc::to_variant(*head_block, block_var);
-            state["fork_db_head_block"] = std::move(block_var);
-        }
     });
 
     auto read_elapsed = double((fc::time_point::now() - read_start).count()) / 1000000.0;
     ilog(CLOG_GREEN "Snapshot DB read completed in ${t} sec, lock released" CLOG_RESET, ("t", read_elapsed));
 
-    // Resume P2P block processing if callback provided — the DB read lock
-    // is released and compression/file-I/O operate on cached data only.
+    // Resume P2P immediately after lock release — block fetch below is disk I/O only.
     if (after_db_read) {
         after_db_read();
+    }
+
+    // fetch_block_by_number reads from block_log (disk), not from chainbase —
+    // no need to hold the read lock for this.
+    {
+        auto fetch_start = fc::time_point::now();
+        auto head_block = db.fetch_block_by_number(snapshot_head_block_num);
+        auto fetch_ms = (fc::time_point::now() - fetch_start).count() / 1000;
+        if (fetch_ms > 200000LL) {
+            wlog("Snapshot: fetch_block_by_number(${n}) took ${ms}ms", ("n", snapshot_head_block_num)("ms", fetch_ms / 1000));
+        }
+        if (head_block.valid()) {
+            fc::variant block_var;
+            fc::to_variant(*head_block, block_var);
+            state["fork_db_head_block"] = std::move(block_var);
+        }
     }
 
     // Check if snapshot was cancelled during serialization
