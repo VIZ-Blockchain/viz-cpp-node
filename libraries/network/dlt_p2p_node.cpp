@@ -304,6 +304,18 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
 }
 
 void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason, bool skip_backoff_increase) {
+    // cancel_and_wait below yields the current fiber.  During that yield,
+    // drain_send_queue may resume from a canceled writesome() and call
+    // handle_disconnect again for the same peer.  Without this guard the
+    // reentrant call erases the peer from _peer_states, leaving the first
+    // call's iterator and state reference dangling → UB → silent crash.
+    if (!_disconnect_in_progress.insert(peer).second)
+        return;
+    struct Guard {
+        std::set<peer_id>& s; peer_id p;
+        ~Guard() { s.erase(p); }
+    } _guard{_disconnect_in_progress, peer};
+
     auto it = _peer_states.find(peer);
     if (it == _peer_states.end()) return;
 
@@ -318,7 +330,10 @@ void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason, bo
         }
     }
 
-    // Cancel read fiber
+    // Cancel read fiber — cancel_and_wait yields, allowing drain_send_queue
+    // to resume on this thread.  The reentrancy guard above ensures that
+    // reentrant handle_disconnect call returns immediately without touching
+    // _peer_states, so state/it remain valid when we resume here.
     auto fiber_it = _read_fibers.find(peer);
     if (fiber_it != _read_fibers.end()) {
         try { if (fiber_it->second.valid()) fiber_it->second.cancel_and_wait(__FUNCTION__); } catch (...) {}

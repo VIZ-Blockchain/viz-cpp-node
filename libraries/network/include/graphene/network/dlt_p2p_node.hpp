@@ -297,6 +297,14 @@ private:
     // fiber must not interleave writes to the same peer.
     std::set<peer_id>               _peer_sending;
 
+    // ── handle_disconnect reentrancy guard ───────────────────────
+    // cancel_and_wait inside handle_disconnect yields the fiber.
+    // drain_send_queue may resume during that yield and call
+    // handle_disconnect again for the same peer.  This set prevents
+    // the reentrant call from erasing _peer_states while the first
+    // call still holds live iterators into it.
+    std::set<peer_id>               _disconnect_in_progress;
+
     // ── Fiber tracking ────────────────────────────────────────────
     fc::thread*                     _thread = nullptr;
     bool                            _running = false;
