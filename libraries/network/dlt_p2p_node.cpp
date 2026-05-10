@@ -3392,9 +3392,11 @@ void dlt_p2p_node::accept_loop() {
 
             peer_id existing = find_active_peer_by_ip(incoming_ip);
             if (existing != INVALID_PEER_ID) {
-                dlog("Rejecting duplicate incoming connection from ${ip} "
-                     "(already connected as peer ${existing})",
-                     ("ip", incoming_ip)("existing", existing));
+                auto ex_it = _peer_states.find(existing);
+                auto ex_ep = (ex_it != _peer_states.end()) ? ex_it->second.endpoint : fc::ip::endpoint();
+                dlog(DLT_LOG_DGRAY "Rejecting duplicate incoming connection from ${ip} "
+                     "(already connected as peer ${existing} at ${ex_ep})" DLT_LOG_RESET,
+                     ("ip", state.endpoint)("existing", existing)("ex_ep", ex_ep));
                 _peer_states.erase(pid);
                 _connections.erase(pid);
                 sock->close();
