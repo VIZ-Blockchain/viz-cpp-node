@@ -603,6 +603,8 @@ namespace graphene {
                             auto& db_wd = database();
                             bool catching_up = false;
                             try { catching_up = p2p().is_catching_up_after_pause(); } catch (...) {}
+                            bool dlt_syncing = false;
+                            try { dlt_syncing = chain().is_syncing(); } catch (...) {}
                             std::string witness_names;
                             for (const auto& w : _witnesses) { if (!witness_names.empty()) witness_names += ","; witness_names += w; }
                             int64_t ntp_us = 0;
@@ -627,7 +629,7 @@ namespace graphene {
 
                             elog("WITNESS-WATCHDOG: ${t} silent for ${s}s! "
                                  "witnesses=${w} keys=${k} prod=${pe} minority_recovering=${mr} "
-                                 "slot_result=${sr} catching_up=${c} "
+                                 "slot_result=${sr} dlt_syncing=${ds} catching_up=${c} "
                                  "head=#${h} head_age=${ha}s scheduled_now=${sw} we_are_scheduled=${ws} "
                                  "slot0_streak=${sz} ntp_offset=${n}us",
                                  ("t", is_emrg_master ? "emergency master" : "witness")
@@ -637,6 +639,7 @@ namespace graphene {
                                  ("pe", _production_enabled)
                                  ("mr", _minority_fork_recovering)
                                  ("sr", _last_slot_result)
+                                 ("ds", dlt_syncing)
                                  ("c", catching_up)
                                  ("h", db_wd.head_block_num())
                                  ("ha", head_age_s)
