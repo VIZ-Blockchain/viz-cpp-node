@@ -613,6 +613,10 @@ namespace graphene {
                             // Who does the chain expect to produce right now?
                             std::string scheduled_now = "?";
                             bool we_are_scheduled = false;
+                            // How many of our witnesses appear anywhere in the full shuffled schedule?
+                            uint32_t our_slots_in_schedule = 0;
+                            // Which of our witnesses have zero on-chain signing key (blanked by emergency consensus)?
+                            std::string blanked_keys;
                             try {
                                 fc::time_point_sec now_sec = graphene::time::now() + fc::microseconds(250000);
                                 uint32_t cur_slot = db_wd.get_slot_at_time(now_sec);
@@ -623,6 +627,24 @@ namespace graphene {
                                     // Between slots: show who gets the NEXT slot
                                     scheduled_now = "between_slots/" + db_wd.get_scheduled_witness(1);
                                 }
+
+                                // Scan full shuffled schedule for our witnesses
+                                const auto &wso_wd = db_wd.get_witness_schedule_object();
+                                for (int i = 0; i < wso_wd.num_scheduled_witnesses; i++) {
+                                    if (_witnesses.count(wso_wd.current_shuffled_witnesses[i]) > 0)
+                                        our_slots_in_schedule++;
+                                }
+
+                                // Check on-chain signing keys for our witnesses
+                                const auto &wit_idx = db_wd.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
+                                for (const auto& w_name : _witnesses) {
+                                    auto w_itr = wit_idx.find(w_name);
+                                    if (w_itr != wit_idx.end() &&
+                                        w_itr->signing_key == graphene::protocol::public_key_type()) {
+                                        if (!blanked_keys.empty()) blanked_keys += ",";
+                                        blanked_keys += w_name;
+                                    }
+                                }
                             } catch (...) {}
 
                             int64_t head_age_s = (fc::time_point::now() - fc::time_point(db_wd.head_block_time())).count() / 1000000;
@@ -631,6 +653,7 @@ namespace graphene {
                                  "witnesses=${w} keys=${k} prod=${pe} minority_recovering=${mr} "
                                  "slot_result=${sr} dlt_syncing=${ds} catching_up=${c} "
                                  "head=#${h} head_age=${ha}s scheduled_now=${sw} we_are_scheduled=${ws} "
+                                 "in_schedule=${is}/${total} blanked_keys=[${bk}] "
                                  "slot0_streak=${sz} ntp_offset=${n}us",
                                  ("t", is_emrg_master ? "emergency master" : "witness")
                                  ("s", silent_for.count() / 1000000)
@@ -645,6 +668,9 @@ namespace graphene {
                                  ("ha", head_age_s)
                                  ("sw", scheduled_now)
                                  ("ws", we_are_scheduled)
+                                 ("is", our_slots_in_schedule)
+                                 ("total", _witnesses.size())
+                                 ("bk", blanked_keys)
                                  ("sz", _slot_zero_streak)
                                  ("n", ntp_us));
                         }
@@ -1031,6 +1057,7 @@ namespace graphene {
                 // pointers while we read witness schedule, slot time, etc.
                 // The guard is released before generate_block() which has its own.
                 if (db._debug_block_production) ilog("DEBUG_CRASH: creating op_guard");
+                fc::time_point _guard_enter = fc::time_point::now();
                 auto op_guard = db.make_operation_guard();
                 if (db._debug_block_production) ilog("DEBUG_CRASH: op_guard ok");
 
@@ -1040,6 +1067,26 @@ namespace graphene {
                 // loop to silently miss all blocks until the watchdog fires.
                 now_fine = graphene::time::now();
                 now = now_fine + fc::microseconds(250000);
+
+                // Detect op_guard stall crossing a slot boundary.
+                // A stall of 3+ seconds shifts 'now' into the next witness's slot,
+                // causing not_my_turn even when our slot just passed — silent miss.
+                {
+                    int64_t _guard_ms = (fc::time_point::now() - _guard_enter).count() / 1000;
+                    if (_guard_ms > 100) {
+                        uint32_t _slot_before = db.get_slot_at_time(now_fine + fc::microseconds(250000) - fc::microseconds(_guard_ms * 1000));
+                        std::string _wit_before = _slot_before > 0 ? db.get_scheduled_witness(_slot_before) : "none";
+                        bool _our_slot_lost = _slot_before > 0 && _witnesses.count(_wit_before) > 0;
+                        if (_our_slot_lost) {
+                            elog("WITNESS-SLOT-LOST: op_guard stall ${d}ms crossed slot boundary! "
+                                 "missed slot for ${w} — now points to next slot after refresh. head=#${h}",
+                                 ("d", _guard_ms)("w", _wit_before)("h", db.head_block_num()));
+                        } else {
+                            wlog("WITNESS-GUARD-STALL: op_guard blocked ${d}ms (slot before=${sb} witness=${w}). head=#${h}",
+                                 ("d", _guard_ms)("sb", _slot_before)("w", _wit_before)("h", db.head_block_num()));
+                        }
+                    }
+                }
 
                 // is anyone scheduled to produce now or one second in the future?
                 if (db._debug_block_production) ilog("DEBUG_CRASH: get_slot_at_time");
