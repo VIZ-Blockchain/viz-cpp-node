@@ -1034,6 +1034,13 @@ namespace graphene {
                 auto op_guard = db.make_operation_guard();
                 if (db._debug_block_production) ilog("DEBUG_CRASH: op_guard ok");
 
+                // Re-capture 'now' after acquiring op_guard: if make_operation_guard()
+                // blocked on a DB resize, the original 'now' (captured at function entry)
+                // is stale and get_slot_at_time() would return 0, causing the production
+                // loop to silently miss all blocks until the watchdog fires.
+                now_fine = graphene::time::now();
+                now = now_fine + fc::microseconds(250000);
+
                 // is anyone scheduled to produce now or one second in the future?
                 if (db._debug_block_production) ilog("DEBUG_CRASH: get_slot_at_time");
                 uint32_t slot = db.get_slot_at_time(now);
