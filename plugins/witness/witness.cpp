@@ -1327,6 +1327,21 @@ namespace graphene {
                 // and with_strong_write_lock().
                 op_guard.release();
 
+                // Re-check snapshot pause: the gate at ~line 719 passed before the
+                // snapshot could have started (race window ~1 block interval).
+                // If the snapshot began since then, _block_processing_paused is now
+                // true and generate_block would immediately contend on the read lock
+                // held by the snapshot thread, causing 2-11s write-lock starvation
+                // (p67 incident).  Returning not_time_yet here costs one missed slot
+                // (3 s) — far cheaper than the full snapshot read hold time.
+                try {
+                    if (p2p().is_catching_up_after_pause()) {
+                        dlog("Snapshot started between production checks for slot ${s}, skipping produce",
+                             ("s", slot));
+                        return block_production_condition::not_time_yet;
+                    }
+                } catch (...) {}
+
                 if (db._debug_block_production) ilog("DEBUG_CRASH: calling generate_block for ${w}", ("w", scheduled_witness));
                 if (scheduled_witness == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
                     wlog("EMRG-DIAG producing: slot=${s} scheduled_time=${st} head=#${h} aslot=${a}",
