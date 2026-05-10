@@ -405,7 +405,7 @@ void dlt_p2p_node::periodic_reconnect_check() {
 
             // Attempt reconnection if backoff elapsed
             if (now >= state.next_reconnect_attempt && _connections.size() < _max_connections) {
-                ilog(DLT_LOG_DGRAY "Reconnecting to peer ${ep} (backoff=${b}s)" DLT_LOG_RESET,
+                dlog(DLT_LOG_DGRAY "Reconnecting to peer ${ep} (backoff=${b}s)" DLT_LOG_RESET,
                      ("ep", it->endpoint)("b", state.reconnect_backoff_sec));
                 connect_to_peer(it->endpoint);
             }
