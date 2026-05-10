@@ -30,6 +30,7 @@ constexpr uint32_t dlt_p2p_node::GAP_FILL_TIMEOUT_SEC;
 constexpr uint32_t dlt_p2p_node::FORWARD_STAGNATION_SEC;
 constexpr uint32_t dlt_p2p_node::ISOLATION_RESET_SEC;
 constexpr uint32_t dlt_p2p_node::GAP_REJECT_BLACKLIST_SEC;
+constexpr uint32_t dlt_p2p_node::BLOCKED_IP_DURATION_SEC;
 
 // ── Construction / destruction ───────────────────────────────────────
 
