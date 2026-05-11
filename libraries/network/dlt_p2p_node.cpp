@@ -205,17 +205,6 @@ dlt_p2p_node::peer_id dlt_p2p_node::find_active_peer_by_ip(const fc::ip::address
 void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
     if (_connections.size() >= _max_connections) return;
 
-    // Per-IP dedup: skip if we already have an active connection to this IP.
-    // This prevents cross-direction duplication (outbound + inbound to same node)
-    // which causes broadcast amplification.
-    fc::ip::address target_ip = ep.get_address();
-    peer_id existing_ip_conn = find_active_peer_by_ip(target_ip);
-    if (existing_ip_conn != INVALID_PEER_ID) {
-        dlog(DLT_LOG_DGRAY "Skipping connect to ${ep} (already connected to this IP as peer ${pid})" DLT_LOG_RESET,
-             ("ep", ep)("pid", existing_ip_conn));
-        return;
-    }
-
     // Check for existing entry — reuse DISCONNECTED, skip if active/handshaking
     peer_id pid = 0;
     bool found_existing = false;
@@ -230,6 +219,21 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
             pid = item.first;
             found_existing = true;
             break;
+        }
+    }
+
+    // Per-IP dedup: skip if we already have an active connection to this IP.
+    // This prevents cross-direction duplication (outbound + inbound to same node)
+    // which causes broadcast amplification.
+    // EXCEPTION: Allow reconnect if the target peer itself is DISCONNECTED,
+    // even if another connection to the same IP exists (different port).
+    if (!found_existing) {
+        fc::ip::address target_ip = ep.get_address();
+        peer_id existing_ip_conn = find_active_peer_by_ip(target_ip);
+        if (existing_ip_conn != INVALID_PEER_ID) {
+            dlog(DLT_LOG_DGRAY "Skipping connect to ${ep} (already connected to this IP as peer ${pid})" DLT_LOG_RESET,
+                 ("ep", ep)("pid", existing_ip_conn));
+            return;
         }
     }
 
