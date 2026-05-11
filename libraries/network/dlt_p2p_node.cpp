@@ -2368,18 +2368,21 @@ bool dlt_p2p_node::is_on_majority_fork() const {
 // ── Node status transitions ──────────────────────────────────────────
 
 void dlt_p2p_node::transition_to_forward() {
+    // Clear the post-pause catchup flag BEFORE the early return check.
+    // This ensures witness production can resume even if we're already
+    // in FORWARD mode when this is called (e.g., from periodic sync checks).
+    // Without this, _catchup_after_pause stays true forever after the first
+    // transition, blocking witness production indefinitely.
+    if (_catchup_after_pause) {
+        _catchup_after_pause = false;
+        ilog(DLT_LOG_GREEN "Post-pause catchup complete, clearing flag (witness production may resume)" DLT_LOG_RESET);
+    }
+
     if (_node_status == DLT_NODE_STATUS_FORWARD) return;
     _node_status = DLT_NODE_STATUS_FORWARD;
     _sync_stagnation_retries = 0;
     _last_forward_head_num = 0;   // P37: reset so check_forward_stagnation initializes
     _last_forward_progress_time = fc::time_point();
-
-    // We caught up to all peers — clear the post-pause catchup flag
-    // so the witness plugin resumes normal block production.
-    if (_catchup_after_pause) {
-        _catchup_after_pause = false;
-        ilog(DLT_LOG_GREEN "Post-pause catchup complete, clearing flag" DLT_LOG_RESET);
-    }
 
     ilog(DLT_LOG_GREEN "=== DLT P2P: transitioning to FORWARD mode ===" DLT_LOG_RESET);
 
