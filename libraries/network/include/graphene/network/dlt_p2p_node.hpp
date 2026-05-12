@@ -101,6 +101,10 @@ public:
     void set_mempool_limits(uint32_t max_tx, uint32_t max_bytes, uint32_t max_tx_size, uint32_t max_expiration_hours);
     void set_peer_exchange_limits(uint32_t max_per_reply, uint32_t max_per_subnet, uint32_t min_uptime_sec);
     void set_stats_log_interval(uint32_t seconds);
+    // When enabled, the node only connects to configured seed nodes and rejects
+    // all inbound connections from non-seed IPs.  Peer exchange is suppressed
+    // both outbound (no requests sent) and inbound (empty reply returned).
+    void set_isolated_peers(bool isolated);
 
     // Registers a callback that returns a compact witness-state string.
     // Called during FORWARD stagnation logs so the P2P layer can include
@@ -332,6 +336,7 @@ private:
     uint32_t                        _peer_exchange_max_per_reply = 10;
     uint32_t                        _peer_exchange_max_per_subnet = 2;
     uint32_t                        _peer_exchange_min_uptime_sec = 600;
+    bool                            _isolated_peers = false;
 
     // ── Anti-spam ────────────────────────────────────────────────
     static constexpr uint32_t       SPAM_STRIKE_THRESHOLD = 10;

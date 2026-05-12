@@ -436,6 +436,7 @@ public:
     uint32_t peer_exchange_max_per_subnet = 2;
     uint32_t peer_exchange_min_uptime_sec = 600;
     uint32_t stats_interval_sec = 300;
+    bool isolated_peers = false;
 
     chain::plugin& chain;
 
@@ -479,7 +480,11 @@ void p2p_plugin::set_program_options(
         ("dlt-peer-exchange-min-uptime-sec", boost::program_options::value<uint32_t>()->default_value(600),
             "Min connection uptime (seconds) before sharing a peer in exchange replies.")
         ("dlt-stats-interval-sec", boost::program_options::value<uint32_t>()->default_value(300),
-            "Interval in seconds between P2P peer stats log output (default 300 = 5 min).");
+            "Interval in seconds between P2P peer stats log output (default 300 = 5 min).")
+        ("p2p-isolated-peers", boost::program_options::bool_switch()->default_value(false),
+            "Restrict P2P to configured seed nodes only: reject inbound connections from "
+            "unknown IPs and suppress peer exchange. Useful for nodes that must only talk "
+            "to a fixed set of peers.");
 }
 
 void p2p_plugin::plugin_initialize(const boost::program_options::variables_map& options) {
@@ -550,6 +555,9 @@ void p2p_plugin::plugin_initialize(const boost::program_options::variables_map& 
     if (options.count("dlt-stats-interval-sec")) {
         my->stats_interval_sec = options.at("dlt-stats-interval-sec").as<uint32_t>();
     }
+    if (options.count("p2p-isolated-peers")) {
+        my->isolated_peers = options.at("p2p-isolated-peers").as<bool>();
+    }
 }
 
 void p2p_plugin::plugin_startup() {
@@ -579,6 +587,7 @@ void p2p_plugin::plugin_startup() {
                                             my->peer_exchange_max_per_subnet,
                                             my->peer_exchange_min_uptime_sec);
         my->node->set_stats_log_interval(my->stats_interval_sec);
+        my->node->set_isolated_peers(my->isolated_peers);
 
         // Wire up witness diagnostic provider so FORWARD stagnation logs include
         // production state without the network library taking a plugin dependency.

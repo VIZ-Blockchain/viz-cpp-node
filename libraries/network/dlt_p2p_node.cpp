@@ -70,6 +70,12 @@ void dlt_p2p_node::set_stats_log_interval(uint32_t seconds) {
     _stats_log_interval_sec = std::max(seconds, uint32_t(30));  // minimum 30s
 }
 
+void dlt_p2p_node::set_isolated_peers(bool isolated) {
+    _isolated_peers = isolated;
+    if (isolated)
+        ilog("DLT P2P: isolated-peers mode enabled — only seed connections allowed");
+}
+
 void dlt_p2p_node::set_witness_diag_provider(std::function<std::string()> fn) {
     _witness_diag_provider = std::move(fn);
 }
@@ -1682,6 +1688,11 @@ void dlt_p2p_node::on_dlt_peer_exchange_request(peer_id peer, const dlt_peer_exc
     if (it == _peer_states.end()) return;
     auto& state = it->second;
 
+    if (_isolated_peers) {
+        send_message(peer, message(dlt_peer_exchange_reply{}));
+        return;
+    }
+
     // Rate-limit check
     if (state.is_peer_exchange_rate_limited()) {
         auto elapsed = fc::time_point::now() - state.last_peer_exchange_request_time;
@@ -1723,6 +1734,7 @@ void dlt_p2p_node::on_dlt_peer_exchange_request(peer_id peer, const dlt_peer_exc
 }
 
 void dlt_p2p_node::on_dlt_peer_exchange_reply(peer_id peer, const dlt_peer_exchange_reply& reply) {
+    if (_isolated_peers) return;
     for (auto& info : reply.peers) {
         // Filter out self
         if (info.node_id == _node_id) continue;
@@ -3246,6 +3258,7 @@ void dlt_p2p_node::periodic_dlt_prune_check() {
 // ── Peer exchange periodic ───────────────────────────────────────────
 
 void dlt_p2p_node::periodic_peer_exchange() {
+    if (_isolated_peers) return;
     if (_node_status != DLT_NODE_STATUS_FORWARD) return;
 
     // Pick a random active peer to request exchange from
@@ -3459,6 +3472,22 @@ void dlt_p2p_node::accept_loop() {
                 _connections.erase(pid);
                 sock->close();
                 continue;
+            }
+
+            // Isolated-peers: only accept inbound from configured seed IPs.
+            if (_isolated_peers) {
+                bool is_seed = false;
+                for (const auto& seed_ep : _seed_nodes) {
+                    if (seed_ep.get_address() == incoming_ip) { is_seed = true; break; }
+                }
+                if (!is_seed) {
+                    dlog(DLT_LOG_DGRAY "Isolated-peers: rejecting inbound from non-seed ${ip}" DLT_LOG_RESET,
+                         ("ip", state.endpoint));
+                    _peer_states.erase(pid);
+                    _connections.erase(pid);
+                    sock->close();
+                    continue;
+                }
             }
 
             state.lifecycle_state = DLT_PEER_LIFECYCLE_HANDSHAKING;
