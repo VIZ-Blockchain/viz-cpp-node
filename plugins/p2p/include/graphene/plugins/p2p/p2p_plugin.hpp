@@ -78,6 +78,7 @@ namespace graphene {
                  * Get the number of currently active P2P connections.
                  */
                 uint32_t get_connections_count() const;
+                bool is_isolated_peers() const;
 
                 /**
                  * Force-reconnect all configured seed nodes.

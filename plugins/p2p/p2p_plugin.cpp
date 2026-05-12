@@ -666,6 +666,10 @@ uint32_t p2p_plugin::get_connections_count() const {
     return my->node ? my->node->get_connection_count() : 0;
 }
 
+bool p2p_plugin::is_isolated_peers() const {
+    return my->isolated_peers;
+}
+
 void p2p_plugin::reconnect_seeds() {
     my->p2p_thread.async([this]() {
         my->node->reconnect_seeds();
