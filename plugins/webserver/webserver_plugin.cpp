@@ -424,6 +424,13 @@ namespace graphene {
                 thread_pool_ios.post([con, this]() {
                     auto body = con->get_request_body();
 
+                    if (body.empty()) {
+                        con->set_body("empty request body");
+                        con->set_status(websocketpp::http::status_code::bad_request);
+                        try { con->send_http_response(); } catch (...) {}
+                        return;
+                    }
+
                     // Parse JSON once for all cache operations
                     fc::variant parsed;
                     try {
