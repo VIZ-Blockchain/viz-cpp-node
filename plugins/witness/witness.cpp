@@ -150,6 +150,15 @@ namespace graphene {
                 // Last result from a slot > 0 iteration (not_time_yet filtered out so
                 // the watchdog shows a meaningful failure code, not between-slot noise).
                 int _last_slot_result = -1;
+
+                // Track last applied block number to detect missed blocks.
+                // Updated in the applied_block signal handler.
+                uint64_t _last_applied_block_num = 0;
+
+                // applied_block signal handler: detects when incoming blocks
+                // reveal missed slots, and if our witness was scheduled for
+                // any of them, dumps full plugin state for diagnosis.
+                void on_block_applied(const graphene::chain::signed_block &block);
             };
 
             void witness_plugin::set_program_options(
@@ -288,6 +297,14 @@ namespace graphene {
                     if (!pimpl->_witnesses.empty()) {
                         ilog("Launching block production for ${n} witnesses.", ("n", pimpl->_witnesses.size()));
                         pimpl->p2p().set_block_production(true);
+
+                        // Connect to applied_block signal to detect missed slots
+                        // that belong to our witnesses and log diagnostic state.
+                        pimpl->_last_applied_block_num = d.head_block_num();
+                        d.applied_block.connect([this](const graphene::chain::signed_block &block) {
+                            pimpl->on_block_applied(block);
+                        });
+
                         if (pimpl->_production_enabled) {
                             if (d.head_block_num() == 0) {
                                 new_chain_banner(d);
@@ -424,6 +441,107 @@ namespace graphene {
                     return "witness[" + s + "]";
                 } catch (...) {
                     return "witness=err";
+                }
+            }
+
+            void witness_plugin::impl::on_block_applied(const graphene::chain::signed_block &block) {
+                try {
+                    uint64_t block_num = block.block_num();
+                    uint64_t prev_num = _last_applied_block_num;
+                    _last_applied_block_num = block_num;
+
+                    // No gap, first block, or production not active — nothing to check
+                    if (prev_num == 0 || block_num <= prev_num + 1 || !_production_enabled) {
+                        return;
+                    }
+
+                    uint32_t missed_count = static_cast<uint32_t>(block_num - prev_num - 1);
+
+                    // By the time applied_block fires, current_aslot has already been
+                    // updated: new_aslot = old_aslot + missed_count + 1.
+                    // The missed slots had absolute slot indices:
+                    //   old_aslot + 1, old_aslot + 2, ..., old_aslot + missed_count
+                    // So: old_aslot = current_aslot - missed_count - 1
+                    // Missed slot i (0-based): abs_slot = current_aslot - missed_count + i
+                    const auto &dgp = database().get_dynamic_global_properties();
+                    const auto &wso = database().get_witness_schedule_object();
+                    uint64_t cur_aslot = dgp.current_aslot;
+                    uint32_t num_witnesses = wso.num_scheduled_witnesses;
+
+                    // Check each missed slot to see if our witness was scheduled
+                    bool our_witness_missed = false;
+                    std::string missed_witnesses_list;
+                    for (uint32_t i = 0; i < missed_count && i < 100; ++i) {
+                        uint64_t abs_slot = cur_aslot - missed_count + i;
+                        const std::string &wname = wso.current_shuffled_witnesses[abs_slot % num_witnesses];
+                        if (!missed_witnesses_list.empty()) missed_witnesses_list += ",";
+                        missed_witnesses_list += wname;
+                        if (_witnesses.count(wname) > 0) {
+                            our_witness_missed = true;
+                        }
+                    }
+
+                    if (!our_witness_missed) {
+                        // Not our problem — other witnesses missed their slots
+                        return;
+                    }
+
+                    // Our witness missed a slot! Dump full diagnostic state.
+                    fc::time_point_sec now_ts = graphene::time::now();
+                    int64_t ntp_us = 0;
+                    try { ntp_us = graphene::time::ntp_error().count(); } catch (...) {}
+
+                    bool catching_up = false;
+                    try { catching_up = p2p().is_catching_up_after_pause(); } catch (...) {}
+                    bool dlt_syncing = false;
+                    try { dlt_syncing = chain().is_syncing(); } catch (...) {}
+
+                    std::string witness_names;
+                    for (const auto &w : _witnesses) {
+                        if (!witness_names.empty()) witness_names += ",";
+                        witness_names += w;
+                    }
+
+                    fc::time_point_sec next_slot = database().get_slot_time(1);
+                    std::string next_scheduled = database().get_scheduled_witness(1);
+
+                    // Check on-chain signing key status for our witnesses
+                    std::string key_status;
+                    const auto &wit_idx = database().get_index<graphene::chain::witness_index>()
+                        .indices().get<graphene::chain::by_name>();
+                    for (const auto &wname : _witnesses) {
+                        auto witr = wit_idx.find(wname);
+                        if (!key_status.empty()) key_status += " ";
+                        if (witr != wit_idx.end()) {
+                            bool key_blank = (witr->signing_key == graphene::protocol::public_key_type());
+                            key_status += wname + ":key=" + (key_blank ? "BLANK" : "ok")
+                                + ":last_conf=" + std::to_string(witr->last_confirmed_block_num);
+                        } else {
+                            key_status += wname + ":NOT_FOUND";
+                        }
+                    }
+
+                    elog("MISSED-SLOT-OUR-WITNESS: block #${bn} arrived, ${missed} slot(s) missed between #${prev} and #${bn}. "
+                         "Missed witnesses: [${mw}]. OUR witness was scheduled! "
+                         "State: prod_enabled=${pe} ever_produced=${ep} minority_recovering=${mr} "
+                         "last_slot_result=${sr} not_my_turn_streak=${nmts} slot0_streak=${sz} "
+                         "dlt_syncing=${ds} catching_up=${cu} head=#${h} aslot=${a} num_sched=${ns} "
+                         "ntp_offset=${ntp}us now=${now} next_slot_time=${nst} next_scheduled=${nsw} "
+                         "witnesses=[${wn}] keys=[${ks}]",
+                         ("bn", block_num)("missed", missed_count)("prev", prev_num)
+                         ("mw", missed_witnesses_list)
+                         ("pe", _production_enabled)("ep", _ever_produced)
+                         ("mr", _minority_fork_recovering)
+                         ("sr", _last_slot_result)("nmts", _not_my_turn_streak)
+                         ("sz", _slot_zero_streak)
+                         ("ds", dlt_syncing)("cu", catching_up)
+                         ("h", dgp.head_block_number)("a", cur_aslot)
+                         ("ns", num_witnesses)
+                         ("ntp", ntp_us)("now", now_ts)
+                         ("nst", next_slot)("nsw", next_scheduled)
+                         ("wn", witness_names)("ks", key_status));
+                } catch (...) {
+                    // Non-critical diagnostic — never disrupt block processing
                 }
             }
 
@@ -631,7 +749,7 @@ namespace graphene {
                             try { dlt_syncing120 = chain().is_syncing(); } catch (...) {}
                             const auto &wso120 = database().get_witness_schedule_object();
                             std::string shuffled_top3;
-                            for (int i = 0; i < std::min(3, wso120.num_scheduled_witnesses); i++) {
+                            for (int i = 0; i < std::min<int>(3, wso120.num_scheduled_witnesses); i++) {
                                 if (!shuffled_top3.empty()) shuffled_top3 += ",";
                                 shuffled_top3 += wso120.current_shuffled_witnesses[i];
                             }
