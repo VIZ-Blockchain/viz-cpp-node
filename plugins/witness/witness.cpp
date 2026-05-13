@@ -135,6 +135,14 @@ namespace graphene {
                 uint32_t _slot_zero_streak = 0;
                 fc::time_point _slot_zero_streak_start;
 
+                // Track consecutive not_my_turn results to detect when our witness
+                // is in the schedule but slots keep belonging to other witnesses.
+                // Helps diagnose "silent miss" issues where the witness should have
+                // produced but didn't (schedule misalignment, timing issues, etc).
+                uint32_t _not_my_turn_streak = 0;
+                fc::time_point _not_my_turn_streak_start;
+                std::string _last_scheduled_witness; // last witness that got the slot
+
                 // Production watchdog: tracks when we last produced a block
                 // so the watchdog can fire if the emergency master goes silent.
                 bool _ever_produced = false;
@@ -473,6 +481,7 @@ namespace graphene {
                         ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w} with ${tx} transactions\033[0m", (capture));
                         fork_collision_defer_count_ = 0;
                         _slot_zero_streak = 0;  // P18: reset stall counter on success
+                        _not_my_turn_streak = 0; // reset not_my_turn tracking
                         _ever_produced = true;
                         _last_production_time = fc::time_point::now();
                         if (_minority_fork_recovering) {
@@ -506,6 +515,7 @@ namespace graphene {
                         }
                         fork_collision_defer_count_ = 0;
                         _slot_zero_streak = 0;  // P18: reset on valid non-stall result
+                        _not_my_turn_streak = 0; // reset not_my_turn tracking
                         break;
                     case block_production_condition::not_my_turn:
                         // This log-record is commented, because it outputs very often
@@ -514,6 +524,26 @@ namespace graphene {
                         _slot_zero_streak = 0;  // P18: reset on valid non-stall result
                         // Emergency master: the EMRG-DIAG log in maybe_produce_block fires
                         // per-slot details; nothing extra needed here.
+
+                        // Track consecutive not_my_turn to detect schedule misalignment
+                        _not_my_turn_streak++;
+                        if (_not_my_turn_streak == 1) {
+                            _not_my_turn_streak_start = fc::time_point::now();
+                        }
+                        if (_not_my_turn_streak == 500) {
+                            // ~125s with slot>0 but not our witness — investigate
+                            auto elapsed = fc::time_point::now() - _not_my_turn_streak_start;
+                            wlog("NOT_MY_TURN STREAK: ${n} consecutive slots (${s}s) went to other witnesses. "
+                                 "Last scheduled: ${sw}. Our witnesses: ${ow}. "
+                                 "Check: is our witness still in shuffled schedule?",
+                                 ("n", _not_my_turn_streak)("s", elapsed.count() / 1000000)
+                                 ("sw", _last_scheduled_witness)
+                                 ("ow", [_witnesses = _witnesses]() {
+                                     std::string s;
+                                     for (const auto& w : _witnesses) { if (!s.empty()) s += ","; s += w; }
+                                     return s;
+                                 }()));
+                        }
                         break;
                     case block_production_condition::not_time_yet:
                         // This log-record is commented, because it outputs very often
@@ -537,26 +567,83 @@ namespace graphene {
                         }
                         if (_slot_zero_streak == 1) {
                             _slot_zero_streak_start = fc::time_point::now();
+                            // First detection: capture immediate diagnostic context
+                            auto _now_init = graphene::time::now();
+                            auto _hbt_init = database().head_block_time();
+                            auto _nst_init = database().get_slot_time(1);
+                            int64_t _drift_us = 0;
+                            try { _drift_us = graphene::time::ntp_error().count(); } catch (...) {}
+                            wlog("SLOT=0 STREAK START: now=${now} <= head_block_time=${hbt} (drift=${d}us). "
+                                 "next_slot_time=${nst}, head_block_num=${h}. Production stalled.",
+                                 ("now", _now_init)("hbt", _hbt_init)("d", _drift_us)
+                                 ("nst", _nst_init)("h", database().head_block_num()));
                         }
                         if (_slot_zero_streak == 10) {
-                            // ~3s at 250ms schedule interval — likely NTP drift
-                            wlog("slot=0 streak: ${n} consecutive not_time_yet results. "
-                                 "head_block_time=${hbt}, now=${now}, next_slot_time=${nst}. "
-                                 "Forcing NTP resync.",
-                                 ("n", _slot_zero_streak)
-                                 ("hbt", database().head_block_time())
-                                 ("now", graphene::time::now())
-                                 ("nst", database().get_slot_time(1)));
+                            // ~2.5s at 250ms schedule interval — NTP drift detected
+                            auto _now10 = graphene::time::now();
+                            auto _hbt10 = database().head_block_time();
+                            auto _nst10 = database().get_slot_time(1);
+                            int64_t _drift10 = 0;
+                            try { _drift10 = graphene::time::ntp_error().count(); } catch (...) {}
+                            int64_t _gap_ms = (_nst10 - _now10).count() / 1000;
+                            wlog("slot=0 streak: ${n} consecutive not_time_yet (${s}s elapsed). "
+                                 "now=${now}, head_block_time=${hbt}, next_slot_time=${nst}. "
+                                 "Time to next slot: ${g}ms. NTP drift: ${d}us. "
+                                 "head_age=${ha}ms. Forcing NTP resync.",
+                                 ("n", _slot_zero_streak)("s", (_now10 - _slot_zero_streak_start).count() / 1000000)
+                                 ("now", _now10)("hbt", _hbt10)("nst", _nst10)("g", _gap_ms)
+                                 ("d", _drift10)("ha", (_now10 - fc::time_point(_hbt10)).count() / 1000));
                             graphene::time::update_ntp_time();
+                        }
+                        if (_slot_zero_streak == 60) {
+                            // ~15s — prolonged stall, investigate root cause
+                            auto _now60 = graphene::time::now();
+                            auto _hbt60 = database().head_block_time();
+                            auto _nst60 = database().get_slot_time(1);
+                            int64_t _drift60 = 0;
+                            try { _drift60 = graphene::time::ntp_error().count(); } catch (...) {}
+                            int64_t _future_ms = (fc::time_point(_hbt60) - _now60).count() / 1000;
+                            bool catching_up = false;
+                            try { catching_up = p2p().is_catching_up_after_pause(); } catch (...) {}
+                            bool dlt_syncing = false;
+                            try { dlt_syncing = chain().is_syncing(); } catch (...) {}
+                            elog("SLOT=0 PROLONGED STALL: ${n} consecutive not_time_yet (${s}s). "
+                                 "head_block_time=${hbt} is ${f}ms AHEAD of now=${now}! "
+                                 "next_slot_time=${nst}, NTP drift=${d}us. "
+                                 "catching_up=${c}, dlt_syncing=${ds}, head=#${h}. "
+                                 "Check: was a block with future timestamp applied?",
+                                 ("n", _slot_zero_streak)("s", (_now60 - _slot_zero_streak_start).count() / 1000000)
+                                 ("hbt", _hbt60)("f", _future_ms)("now", _now60)("nst", _nst60)
+                                 ("d", _drift60)("c", catching_up)("ds", dlt_syncing)
+                                 ("h", database().head_block_num()));
                         }
                         if (_slot_zero_streak == 120) {
                             // ~30s — serious stall, head_block_time may be in the future
-                            auto elapsed = fc::time_point::now() - _slot_zero_streak_start;
-                            elog("CRITICAL: slot=0 stall for ${s}s! head_block_time=${hbt} is in the future "
-                                 "relative to NTP time. Network is stalled. "
-                                 "Consider checking NTP sync or system clock.",
-                                 ("s", elapsed.count() / 1000000)
-                                 ("hbt", database().head_block_time()));
+                            auto _now120 = graphene::time::now();
+                            auto _hbt120 = database().head_block_time();
+                            auto _nst120 = database().get_slot_time(1);
+                            int64_t _drift120 = 0;
+                            try { _drift120 = graphene::time::ntp_error().count(); } catch (...) {}
+                            int64_t _future120_ms = (fc::time_point(_hbt120) - _now120).count() / 1000;
+                            bool catching_up120 = false;
+                            try { catching_up120 = p2p().is_catching_up_after_pause(); } catch (...) {}
+                            bool dlt_syncing120 = false;
+                            try { dlt_syncing120 = chain().is_syncing(); } catch (...) {}
+                            const auto &wso120 = database().get_witness_schedule_object();
+                            std::string shuffled_top3;
+                            for (int i = 0; i < std::min(3, wso120.num_scheduled_witnesses); i++) {
+                                if (!shuffled_top3.empty()) shuffled_top3 += ",";
+                                shuffled_top3 += wso120.current_shuffled_witnesses[i];
+                            }
+                            elog("CRITICAL: slot=0 stall for ${s}s! head_block_time=${hbt} is ${f}ms in the future "
+                                 "relative to NTP time (now=${now}). next_slot_time=${nst}, NTP drift=${d}us. "
+                                 "Network is stalled. catching_up=${c}, dlt_syncing=${ds}, head=#${h}. "
+                                 "shuffled_witnesses[0..2]=[${sw}]. "
+                                 "ACTION REQUIRED: Check NTP sync, system clock, or restart node.",
+                                 ("s", (_now120 - _slot_zero_streak_start).count() / 1000000)
+                                 ("hbt", _hbt120)("f", _future120_ms)("now", _now120)("nst", _nst120)
+                                 ("d", _drift120)("c", catching_up120)("ds", dlt_syncing120)
+                                 ("h", database().head_block_num())("sw", shuffled_top3));
                         }
                         break;
                     case block_production_condition::no_private_key:
@@ -654,7 +741,8 @@ namespace graphene {
                                  "slot_result=${sr} dlt_syncing=${ds} catching_up=${c} "
                                  "head=#${h} head_age=${ha}s scheduled_now=${sw} we_are_scheduled=${ws} "
                                  "in_schedule=${is}/${total} blanked_keys=[${bk}] "
-                                 "slot0_streak=${sz} ntp_offset=${n}us",
+                                 "slot0_streak=${sz} not_my_turn_streak=${nmt} last_scheduled=${nmtw} "
+                                 "ntp_offset=${n}us",
                                  ("t", is_emrg_master ? "emergency master" : "witness")
                                  ("s", silent_for.count() / 1000000)
                                  ("w", witness_names)
@@ -672,6 +760,8 @@ namespace graphene {
                                  ("total", _witnesses.size())
                                  ("bk", blanked_keys)
                                  ("sz", _slot_zero_streak)
+                                 ("nmt", _not_my_turn_streak)
+                                 ("nmtw", _last_scheduled_witness)
                                  ("n", ntp_us));
                         }
                     }
@@ -1152,6 +1242,7 @@ namespace graphene {
                 // we must control the witness scheduled to produce the next block.
                 if (_witnesses.find(scheduled_witness) == _witnesses.end()) {
                     capture("scheduled_witness", scheduled_witness);
+                    _last_scheduled_witness = scheduled_witness; // track for diagnostic
                     // Emergency master diagnostic: log when committee is configured but
                     // get_scheduled_witness returned a different name — reveals schedule misalignment
                     if (_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end()) {
