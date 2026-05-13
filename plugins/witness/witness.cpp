@@ -901,6 +901,81 @@ namespace graphene {
                                  ("nmt", _not_my_turn_streak)
                                  ("nmtw", _last_scheduled_witness)
                                  ("n", ntp_us));
+
+                            // === WATCHDOG PRODUCTION RECOVERY ===
+                            // Brute-force recovery: if production is silent but
+                            // the node is clearly operational (head advancing,
+                            // FORWARD mode, peers connected), force-reset every
+                            // flag that could silently block production.  This
+                            // covers any safety gate that may have gotten stuck
+                            // due to race conditions, stale state, or edge
+                            // cases we haven't diagnosed.
+                            //
+                            // Conditions for recovery:
+                            //   - Head is recent (external blocks arriving)
+                            //   - Not in active P2P sync
+                            //   - At least some peers connected
+                            //   - We have witnesses with valid keys in schedule
+                            bool head_advancing = (head_age_s >= 0 && head_age_s < 30);
+                            bool has_peers = false;
+                            try { has_peers = p2p().get_connections_count() > 0; } catch (...) {}
+                            bool has_active_keys = (our_slots_in_schedule > 0 && blanked_keys.size() < witness_names.size());
+
+                            if (head_advancing && !dlt_syncing && !catching_up && has_peers && has_active_keys) {
+                                bool did_recover = false;
+
+                                // Force-enable production regardless of current state
+                                if (!_production_enabled) {
+                                    _production_enabled = true;
+                                    did_recover = true;
+                                    elog("WATCHDOG-RECOVERY: force-enabled _production_enabled");
+                                }
+
+                                // Clear minority fork recovery state
+                                if (_minority_fork_recovering) {
+                                    _minority_fork_recovering = false;
+                                    did_recover = true;
+                                    elog("WATCHDOG-RECOVERY: cleared _minority_fork_recovering");
+                                }
+
+                                // Force-clear P2P catchup flag
+                                try {
+                                    if (p2p().is_catching_up_after_pause()) {
+                                        p2p().clear_catchup_flag();
+                                        did_recover = true;
+                                        elog("WATCHDOG-RECOVERY: force-cleared P2P catching_up_after_pause flag");
+                                    }
+                                } catch (...) {}
+
+                                // Force-clear chain syncing flag
+                                try {
+                                    if (chain().is_syncing()) {
+                                        chain().clear_syncing();
+                                        did_recover = true;
+                                        elog("WATCHDOG-RECOVERY: force-cleared chain syncing flag");
+                                    }
+                                } catch (...) {}
+
+                                // Reset streak counters that may affect logic
+                                _not_my_turn_streak = 0;
+                                _slot_zero_streak = 0;
+
+                                if (did_recover) {
+                                    elog("WATCHDOG-RECOVERY: production forcibly restored after ${s}s silence "
+                                         "(head=#${h}, head_age=${ha}s, peers=${p}, in_schedule=${is})",
+                                         ("s", silent_for.count() / 1000000)
+                                         ("h", db_wd.head_block_num())
+                                         ("ha", head_age_s)
+                                         ("p", has_peers)
+                                         ("is", our_slots_in_schedule));
+                                }
+                            } else {
+                                elog("WATCHDOG-RECOVERY: skipped — conditions not met "
+                                     "(head_advancing=${ha} dlt_syncing=${ds} catching_up=${cu} "
+                                     "has_peers=${hp} has_active_keys=${hk})",
+                                     ("ha", head_advancing)("ds", dlt_syncing)("cu", catching_up)
+                                     ("hp", has_peers)("hk", has_active_keys));
+                            }
                         }
                     }
                 }

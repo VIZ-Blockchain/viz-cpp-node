@@ -120,6 +120,14 @@ namespace graphene {
                  */
                 bool is_catching_up_after_pause() const;
 
+                /**
+                 * Force-clear the catchup-after-pause flag.
+                 * Used by the witness watchdog recovery to unblock
+                 * production when the flag is stuck due to race
+                 * conditions or edge cases.
+                 */
+                void clear_catchup_flag();
+
             private:
                 std::unique_ptr<detail::p2p_plugin_impl> my;
             };

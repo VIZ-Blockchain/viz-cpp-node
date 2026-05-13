@@ -706,6 +706,10 @@ bool p2p_plugin::is_catching_up_after_pause() const {
     return my->node ? my->node->is_catching_up_after_pause() : false;
 }
 
+void p2p_plugin::clear_catchup_flag() {
+    if (my->node) my->node->clear_catchup_after_pause();
+}
+
 } // namespace p2p
 } // namespace plugins
 } // namespace graphene

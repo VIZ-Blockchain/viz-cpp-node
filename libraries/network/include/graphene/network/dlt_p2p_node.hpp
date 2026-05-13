@@ -146,6 +146,10 @@ public:
     // blocks that would conflict with the read lock or stale head.
     bool is_catching_up_after_pause() const { return _block_processing_paused || _catchup_after_pause; }
 
+    // Force-clear the post-pause catchup flag.  Used by the
+    // witness watchdog recovery to unstick production.
+    void clear_catchup_after_pause() { _catchup_after_pause = false; }
+
     // ── Called by plugin when a block is applied to chain ────────
     void on_block_applied(const signed_block& block, bool caused_fork_switch);
 
