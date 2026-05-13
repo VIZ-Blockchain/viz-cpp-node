@@ -170,3 +170,77 @@ runs and cleared when:
 
 The witness plugin checks `is_catching_up_after_pause()` in `maybe_produce_block()` and
 defers production while the flag is set.
+
+---
+
+## Bug 3 — currently_syncing not cleared on SYNC→FORWARD (p72, 570 s silence)
+
+### Observed symptom
+
+After a scheduled snapshot the node produced no blocks for **570 seconds** despite
+`_catchup_after_pause` being cleared at 10:54:40.  WATCHDOG fired at 11:04:01 and
+production resumed immediately after it called `chain.clear_syncing()`.
+
+### Root cause
+
+`currently_syncing` in the chain plugin (`plugin_impl::currently_syncing`) is set to
+`true` by every `accept_block(sync_mode=true)` call — i.e. every block fetched during
+SYNC mode.  It self-clears **only** when the next `accept_block(sync_mode=false)` runs
+(the first FORWARD-mode block).
+
+The chain of events in p72:
+
+```
+10:54:38  pause_block_processing()          _block_processing_paused=true
+10:54:40  resume_block_processing()         _catchup_after_pause=true
+10:54:40  drain_paused_block_queue()        sync_mode=false → currently_syncing=false ✓
+10:54:40  drain: no peers ahead             _catchup_after_pause=false ✓
+          ← at this point both flags are clear, production should resume
+
+~10:54:41 periodic_task(): peers still ahead by 1-2 blocks
+          check_forward_behind() → transition_to_sync()
+          Fetch missing blocks: call_accept_block(sync_mode=true)
+          → currently_syncing.store(true)
+          Sync completes → transition_to_forward()
+          → currently_syncing NOT cleared  ← BUG
+
+10:54:41–11:04:01  witness loop:
+          is_syncing()=true → return not_synced (rate-limited, silent)
+          not_my_turn_streak stays at 0–2 (resets on not_synced)
+
+11:04:01  WATCHDOG fires → chain.clear_syncing()
+          → currently_syncing=false → production resumes
+```
+
+The circular deadlock: `currently_syncing=true` blocks our witnesses; our witnesses are
+the only remaining producers; no FORWARD block arrives to self-clear the flag.
+
+### Why the WATCHDOG evidence confirms this
+
+- `slot_result=2` (`not_my_turn`) at watchdog time — just switched away from `not_synced`
+- `not_my_turn_streak=2` — very short; had been returning `not_synced` (resets the streak)
+  for almost all of the 570 s
+- `prod=true`, `minority_recovering=false` — `_production_enabled` was fine; the block on
+  `_catchup_after_pause` was gone; only `is_syncing()` was blocking production
+
+### Fix
+
+`clear_syncing()` added to `dlt_p2p_delegate` and called from `transition_to_forward()`
+**before** the early-return guard, so it fires on every SYNC→FORWARD transition
+(and is a no-op when `currently_syncing` is already false):
+
+```cpp
+// dlt_p2p_node.cpp — transition_to_forward()
+if (_delegate) _delegate->clear_syncing();   // ← added
+if (_node_status == DLT_NODE_STATUS_FORWARD) return;
+```
+
+`dlt_delegate::clear_syncing()` in `p2p_plugin.cpp` delegates to `chain.clear_syncing()`.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | `clear_syncing()` pure virtual in `dlt_p2p_delegate` |
+| `plugins/p2p/p2p_plugin.cpp` | `dlt_delegate::clear_syncing()` → `chain.clear_syncing()` |
+| `libraries/network/dlt_p2p_node.cpp` | `transition_to_forward()` calls `_delegate->clear_syncing()` |
