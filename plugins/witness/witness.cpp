@@ -1048,8 +1048,17 @@ namespace graphene {
                                          "producing anyway to recover stalled network",
                                          ("p", uint32_t(prate / CHAIN_1_PERCENT)));
                                 } else {
-                                    capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
-                                    return block_production_condition::low_participation;
+                                    // Do not return low_participation here: the participation
+                                    // rate is a heuristic that triggers false positives when
+                                    // multiple witnesses are offline (blanked keys, missed
+                                    // blocks).  The minority fork detection below performs a
+                                    // precise check by examining fork_db for actual network
+                                    // isolation.  Returning here prevents that check from ever
+                                    // running, causing a self-reinforcing deadlock when this
+                                    // node holds majority witnesses.
+                                    wlog("Low witness participation (${p}%) but deferring to "
+                                         "minority fork detection for accurate isolation check",
+                                         ("p", uint32_t(prate / CHAIN_1_PERCENT)));
                                 }
                             }
                         }
