@@ -685,16 +685,27 @@ namespace graphene {
                         }
                         if (_slot_zero_streak == 1) {
                             _slot_zero_streak_start = fc::time_point::now();
-                            // First detection: capture immediate diagnostic context
+                        }
+                        // Threshold 3 (~750ms): first logged warning. Threshold 1 is too
+                        // noisy — blocks naturally arrive with timestamps slightly ahead
+                        // of our NTP clock, triggering a false streak-start every ~3s.
+                        // At threshold 3, the gap is large enough to be worth investigating.
+                        if (_slot_zero_streak == 3) {
                             auto _now_init = graphene::time::now();
                             auto _hbt_init = database().head_block_time();
                             auto _nst_init = database().get_slot_time(1);
                             int64_t _drift_us = 0;
                             try { _drift_us = graphene::time::ntp_error().count(); } catch (...) {}
-                            wlog("SLOT=0 STREAK START: now=${now} <= head_block_time=${hbt} (drift=${d}us). "
-                                 "next_slot_time=${nst}, head_block_num=${h}. Production stalled.",
-                                 ("now", _now_init)("hbt", _hbt_init)("d", _drift_us)
-                                 ("nst", _nst_init)("h", database().head_block_num()));
+                            int64_t _gap_ms = (_nst_init - _now_init).count() / 1000;
+                            std::string _next_w3 = database().get_scheduled_witness(1);
+                            bool _ours3 = _witnesses.count(_next_w3) > 0;
+                            wlog("SLOT=0 STREAK: ${n} consecutive not_time_yet. "
+                                 "now=${now} head_block_time=${hbt} (drift=${d}us) "
+                                 "next_slot=${nst} (gap=${g}ms) next_witness=${nw} is_ours=${o} head=#${h}.",
+                                 ("n", _slot_zero_streak)("now", _now_init)("hbt", _hbt_init)
+                                 ("d", _drift_us)("nst", _nst_init)("g", _gap_ms)
+                                 ("nw", _next_w3)("o", _ours3)
+                                 ("h", database().head_block_num()));
                         }
                         if (_slot_zero_streak == 10) {
                             // ~2.5s at 250ms schedule interval — NTP drift detected
@@ -704,13 +715,16 @@ namespace graphene {
                             int64_t _drift10 = 0;
                             try { _drift10 = graphene::time::ntp_error().count(); } catch (...) {}
                             int64_t _gap_ms = (_nst10 - _now10).count() / 1000;
+                            std::string _next_w10 = database().get_scheduled_witness(1);
+                            bool _ours10 = _witnesses.count(_next_w10) > 0;
                             wlog("slot=0 streak: ${n} consecutive not_time_yet (${s}s elapsed). "
                                  "now=${now}, head_block_time=${hbt}, next_slot_time=${nst}. "
                                  "Time to next slot: ${g}ms. NTP drift: ${d}us. "
-                                 "head_age=${ha}ms. Forcing NTP resync.",
+                                 "head_age=${ha}ms. next_witness=${nw} is_ours=${o}. Forcing NTP resync.",
                                  ("n", _slot_zero_streak)("s", (_now10 - _slot_zero_streak_start).count() / 1000000)
                                  ("now", _now10)("hbt", _hbt10)("nst", _nst10)("g", _gap_ms)
-                                 ("d", _drift10)("ha", (_now10 - fc::time_point(_hbt10)).count() / 1000));
+                                 ("d", _drift10)("ha", (_now10 - fc::time_point(_hbt10)).count() / 1000)
+                                 ("nw", _next_w10)("o", _ours10));
                             graphene::time::update_ntp_time();
                         }
                         if (_slot_zero_streak == 60) {
@@ -725,13 +739,16 @@ namespace graphene {
                             try { catching_up = p2p().is_catching_up_after_pause(); } catch (...) {}
                             bool dlt_syncing = false;
                             try { dlt_syncing = chain().is_syncing(); } catch (...) {}
+                            std::string _next_w60 = database().get_scheduled_witness(1);
+                            bool _ours60 = _witnesses.count(_next_w60) > 0;
                             elog("SLOT=0 PROLONGED STALL: ${n} consecutive not_time_yet (${s}s). "
                                  "head_block_time=${hbt} is ${f}ms AHEAD of now=${now}! "
-                                 "next_slot_time=${nst}, NTP drift=${d}us. "
+                                 "next_slot_time=${nst} next_witness=${nw} is_ours=${o}, NTP drift=${d}us. "
                                  "catching_up=${c}, dlt_syncing=${ds}, head=#${h}. "
                                  "Check: was a block with future timestamp applied?",
                                  ("n", _slot_zero_streak)("s", (_now60 - _slot_zero_streak_start).count() / 1000000)
                                  ("hbt", _hbt60)("f", _future_ms)("now", _now60)("nst", _nst60)
+                                 ("nw", _next_w60)("o", _ours60)
                                  ("d", _drift60)("c", catching_up)("ds", dlt_syncing)
                                  ("h", database().head_block_num()));
                         }
@@ -753,13 +770,16 @@ namespace graphene {
                                 if (!shuffled_top3.empty()) shuffled_top3 += ",";
                                 shuffled_top3 += wso120.current_shuffled_witnesses[i];
                             }
+                            std::string _next_w120 = database().get_scheduled_witness(1);
+                            bool _ours120 = _witnesses.count(_next_w120) > 0;
                             elog("CRITICAL: slot=0 stall for ${s}s! head_block_time=${hbt} is ${f}ms in the future "
-                                 "relative to NTP time (now=${now}). next_slot_time=${nst}, NTP drift=${d}us. "
+                                 "relative to NTP time (now=${now}). next_slot_time=${nst} next_witness=${nw} is_ours=${o}, NTP drift=${d}us. "
                                  "Network is stalled. catching_up=${c}, dlt_syncing=${ds}, head=#${h}. "
                                  "shuffled_witnesses[0..2]=[${sw}]. "
                                  "ACTION REQUIRED: Check NTP sync, system clock, or restart node.",
                                  ("s", (_now120 - _slot_zero_streak_start).count() / 1000000)
                                  ("hbt", _hbt120)("f", _future120_ms)("now", _now120)("nst", _nst120)
+                                 ("nw", _next_w120)("o", _ours120)
                                  ("d", _drift120)("c", catching_up120)("ds", dlt_syncing120)
                                  ("h", database().head_block_num())("sw", shuffled_top3));
                         }
