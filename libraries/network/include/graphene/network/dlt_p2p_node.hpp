@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <atomic>
 #include <algorithm>
 
 namespace graphene {
@@ -377,7 +378,8 @@ private:
     void                            emergency_peer_reset();
 
     // ── Block processing pause ───────────────────────────────────
-    bool                            _block_processing_paused = false;
+    // Atomic: written by snapshot/P2P thread, read by witness thread (th_0)
+    std::atomic<bool>               _block_processing_paused{false};
 
     // Serializes accept_block calls across per-peer FC fibers.  Two fibers
     // on the same OS thread can both call accept_block concurrently if one
@@ -405,7 +407,9 @@ private:
     // True while queued blocks are being applied or a gap still
     // exists after draining.  The witness plugin checks this via
     // is_catching_up_after_pause() to defer block production.
-    bool                            _catchup_after_pause = false;
+    // Atomic: written by snapshot/P2P thread and watchdog (th_0),
+    // read by witness production loop (th_0).
+    std::atomic<bool>               _catchup_after_pause{false};
 
     // ── Incoming IP blocklist ─────────────────────────────────────
     // IPs that sent oversized/malformed messages are blocked temporarily
