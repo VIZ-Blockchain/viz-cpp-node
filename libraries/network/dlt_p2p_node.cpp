@@ -2394,6 +2394,14 @@ void dlt_p2p_node::transition_to_forward() {
         ilog(DLT_LOG_GREEN "Post-pause catchup complete, clearing flag (witness production may resume)" DLT_LOG_RESET);
     }
 
+    // Clear chain's currently_syncing flag so the witness plugin can produce.
+    // call_accept_block(sync_mode=true) during SYNC sets currently_syncing=true;
+    // it only self-clears when the next accept_block(sync_mode=false) runs.
+    // If our witnesses are the only producers and they're blocked by
+    // is_syncing()→not_synced, no FORWARD block ever arrives to clear it —
+    // indefinite deadlock.  Must clear here on every SYNC→FORWARD transition.
+    if (_delegate) _delegate->clear_syncing();
+
     if (_node_status == DLT_NODE_STATUS_FORWARD) return;
     _node_status = DLT_NODE_STATUS_FORWARD;
     _sync_stagnation_retries = 0;

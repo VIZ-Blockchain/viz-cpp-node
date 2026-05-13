@@ -79,6 +79,15 @@ public:
     virtual bool           is_tapos_block_known(uint32_t ref_block_num, uint32_t ref_block_prefix) const = 0;
     virtual bool           check_tapos_block_summary(uint32_t ref_block_num, uint32_t ref_block_prefix) const = 0;
     virtual void           resync_from_lib(bool force_emergency) = 0;
+
+    // Called on every SYNC→FORWARD transition so the chain plugin's
+    // currently_syncing flag is cleared.  P2P sets currently_syncing=true
+    // via call_accept_block(sync_mode=true) during bulk sync; without this
+    // call the flag stays true after sync ends until the next FORWARD-mode
+    // block arrives.  If our witnesses are the only remaining producers and
+    // are themselves blocked by is_syncing()→not_synced, that arrival never
+    // happens — causing indefinite silent production deadlock (p72: 570 s gap).
+    virtual void           clear_syncing() = 0;
 };
 
 /**

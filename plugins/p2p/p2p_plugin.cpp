@@ -405,6 +405,10 @@ public:
         // This is handled at the plugin level, not delegate
     }
 
+    void clear_syncing() override {
+        chain.clear_syncing();
+    }
+
     chain::plugin& chain;
     fc::time_point _startup_time;  ///< P22: startup timestamp for dead-fork grace period
 };
