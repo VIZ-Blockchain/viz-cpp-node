@@ -1123,17 +1123,18 @@ namespace graphene {
                                          "producing anyway to recover stalled network",
                                          ("p", uint32_t(prate / CHAIN_1_PERCENT)));
                                 } else {
-                                    // Do not return low_participation here: the participation
-                                    // rate is a heuristic that triggers false positives when
-                                    // multiple witnesses are offline (blanked keys, missed
-                                    // blocks).  The minority fork detection below performs a
-                                    // precise check by examining fork_db for actual network
-                                    // isolation.  Returning here prevents that check from ever
-                                    // running, causing a self-reinforcing deadlock when this
-                                    // node holds majority witnesses.
-                                    wlog("Low witness participation (${p}%) but deferring to "
-                                         "minority fork detection for accurate isolation check",
-                                         ("p", uint32_t(prate / CHAIN_1_PERCENT)));
+                                    // Network partition guard: if participation is below 33%
+                                    // this node is likely in a minority network segment.
+                                    // Producing here risks two partitions simultaneously
+                                    // building chains — each seeing only the other segment's
+                                    // witnesses as absent, neither triggering minority_fork
+                                    // detection below (which requires ALL recent fork_db
+                                    // blocks to be ours).  Stopping production is the safe
+                                    // choice; use enable-stale-production=true to override
+                                    // when you know the low participation is caused by
+                                    // offline witnesses rather than a partition.
+                                    capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
+                                    return block_production_condition::low_participation;
                                 }
                             }
                         }

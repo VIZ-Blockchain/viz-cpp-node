@@ -82,8 +82,11 @@ flowchart TD
     Sync -->|Yes, not emergency master| Ret1["return not_synced"]
     Sync -->|No / emergency master| Gate{"p2p.is_catching_up_after_pause()?"}
     Gate -->|Yes| Ret2["return not_synced<br/>(defer production)"]
-    Gate -->|No| HF12{"Hardfork 12 checks"}
-    HF12 --> Slot{"get_slot_at_time()"}
+    Gate -->|No| HF12{"Hardfork 12 checks<br/>(prate, emergency)"}
+    HF12 -->|prate < 33% AND no stale-production override| RetLP["return low_participation<br/>⚠ partition guard"]
+    HF12 -->|prate >= 33% or override| MinFork{"Minority fork check:<br/>last 21 fork_db blocks<br/>all from our witnesses?"}
+    MinFork -->|Yes — isolated| RetMF["resync_from_lib()<br/>return minority_fork"]
+    MinFork -->|No| Slot{"get_slot_at_time()"}
     Slot -->|slot == 0| Ret3["return not_time_yet"]
     Slot -->|slot > 0| Witness{"Our witness scheduled?"}
     Witness -->|No| Ret4["return not_my_turn"]
@@ -96,6 +99,28 @@ flowchart TD
     Produce --> Broadcast["p2p.broadcast_block()"]
     Broadcast --> Done["return produced"]
 ```
+
+### Note: two complementary partition guards
+
+`low_participation` and `minority_fork` are **not interchangeable** — they protect against
+different failure modes and must both be active:
+
+| Guard | Trigger | Scenario it stops |
+|-------|---------|-------------------|
+| `low_participation` | `prate < 33%` (< 7 of 21 witnesses active) | Node in a small isolated segment — stops it from building a chain alone |
+| `minority_fork` | Last 21 fork_db blocks are ALL from our witnesses | Node is producing in isolation despite appearing to have enough witnesses locally |
+
+**Why `low_participation` must not be removed:**
+If a network partitions into two datacenters and one segment holds fewer than 7 of the
+21 scheduled witnesses, it sees participation drop below 33% within ~85 missed slots
+(~4 minutes).  Without this guard that segment would keep building a competing chain
+that neither side recognises as a minority fork, because `minority_fork` only fires when
+**all** recent fork_db blocks are from our witnesses — possible only once the other
+segment's blocks are completely absent from our fork_db.
+
+The operator escape hatch for legitimate outages (many witnesses offline but network
+not partitioned) is `enable-stale-production = true`, which bypasses the `low_participation`
+check explicitly.  See `consensus-emergency-params.md` for the full workflow.
 
 ## Post-Pause Catchup State Machine
 
