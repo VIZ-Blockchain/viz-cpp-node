@@ -925,169 +925,170 @@ namespace graphene {
 
                     if (should_be_producing) {
                         auto silent_for = fc::time_point::now() - _last_production_time;
-                    bool is_emrg_master = _witnesses.count(CHAIN_EMERGENCY_WITNESS_ACCOUNT) > 0;
-                    int64_t threshold_us = is_emrg_master ? 60000000 : 180000000;
-                    if (silent_for.count() > threshold_us) {
-                        // === AUTO-ENABLE DEBUG LOGGING ON FIRST WATCHDOG FIRE ===
-                        // When the watchdog detects that production has stopped unexpectedly,
-                        // automatically enable verbose DEBUG_CRASH logging to capture
-                        // detailed execution flow on every subsequent production tick.
-                        // This helps diagnose why blocks are not being produced.
-                        if (!_watchdog_debug_enabled) {
-                            _watchdog_debug_enabled = true;
-                            database()._debug_block_production = true;
-                            elog("WATCHDOG: Auto-enabled _debug_block_production for detailed diagnostic logging");
-                        }
+                        bool is_emrg_master = _witnesses.count(CHAIN_EMERGENCY_WITNESS_ACCOUNT) > 0;
+                        int64_t threshold_us = is_emrg_master ? 60000000 : 180000000;
+                        if (silent_for.count() > threshold_us) {
+                            // === AUTO-ENABLE DEBUG LOGGING ON FIRST WATCHDOG FIRE ===
+                            // When the watchdog detects that production has stopped unexpectedly,
+                            // automatically enable verbose DEBUG_CRASH logging to capture
+                            // detailed execution flow on every subsequent production tick.
+                            // This helps diagnose why blocks are not being produced.
+                            if (!_watchdog_debug_enabled) {
+                                _watchdog_debug_enabled = true;
+                                database()._debug_block_production = true;
+                                elog("WATCHDOG: Auto-enabled _debug_block_production for detailed diagnostic logging");
+                            }
 
-                        static fc::time_point _last_watchdog_log;
-                        auto _now_wdog = fc::time_point::now();
-                        if ((_now_wdog - _last_watchdog_log).count() > 30000000) {
-                            _last_watchdog_log = _now_wdog;
-                            auto& db_wd = database();
-                            bool catching_up = false;
-                            try { catching_up = p2p().is_catching_up_after_pause(); } catch (...) {}
-                            bool dlt_syncing = false;
-                            try { dlt_syncing = chain().is_syncing(); } catch (...) {}
-                            std::string witness_names;
-                            for (const auto& w : _witnesses) { if (!witness_names.empty()) witness_names += ","; witness_names += w; }
-                            int64_t ntp_us = 0;
-                            try { ntp_us = graphene::time::ntp_error().count(); } catch (...) {}
+                            static fc::time_point _last_watchdog_log;
+                            auto _now_wdog = fc::time_point::now();
+                            if ((_now_wdog - _last_watchdog_log).count() > 30000000) {
+                                _last_watchdog_log = _now_wdog;
+                                auto& db_wd = database();
+                                bool catching_up = false;
+                                try { catching_up = p2p().is_catching_up_after_pause(); } catch (...) {}
+                                bool dlt_syncing = false;
+                                try { dlt_syncing = chain().is_syncing(); } catch (...) {}
+                                std::string witness_names;
+                                for (const auto& w : _witnesses) { if (!witness_names.empty()) witness_names += ","; witness_names += w; }
+                                int64_t ntp_us = 0;
+                                try { ntp_us = graphene::time::ntp_error().count(); } catch (...) {}
 
-                            // Who does the chain expect to produce right now?
-                            std::string scheduled_now = "?";
-                            bool we_are_scheduled = false;
-                            // How many of our witnesses appear anywhere in the full shuffled schedule?
-                            uint32_t our_slots_in_schedule = 0;
-                            // Which of our witnesses have zero on-chain signing key (blanked by emergency consensus)?
-                            std::string blanked_keys;
-                            try {
-                                fc::time_point_sec now_sec = graphene::time::now() + fc::microseconds(250000);
-                                uint32_t cur_slot = db_wd.get_slot_at_time(now_sec);
-                                if (cur_slot > 0) {
-                                    scheduled_now = db_wd.get_scheduled_witness(cur_slot);
-                                    we_are_scheduled = _witnesses.count(scheduled_now) > 0;
+                                // Who does the chain expect to produce right now?
+                                std::string scheduled_now = "?";
+                                bool we_are_scheduled = false;
+                                // How many of our witnesses appear anywhere in the full shuffled schedule?
+                                uint32_t our_slots_in_schedule = 0;
+                                // Which of our witnesses have zero on-chain signing key (blanked by emergency consensus)?
+                                std::string blanked_keys;
+                                try {
+                                    fc::time_point_sec now_sec = graphene::time::now() + fc::microseconds(250000);
+                                    uint32_t cur_slot = db_wd.get_slot_at_time(now_sec);
+                                    if (cur_slot > 0) {
+                                        scheduled_now = db_wd.get_scheduled_witness(cur_slot);
+                                        we_are_scheduled = _witnesses.count(scheduled_now) > 0;
+                                    } else {
+                                        // Between slots: show who gets the NEXT slot
+                                        scheduled_now = "between_slots/" + db_wd.get_scheduled_witness(1);
+                                    }
+
+                                    // Scan full shuffled schedule for our witnesses
+                                    const auto &wso_wd = db_wd.get_witness_schedule_object();
+                                    for (int i = 0; i < wso_wd.num_scheduled_witnesses; i++) {
+                                        if (_witnesses.count(wso_wd.current_shuffled_witnesses[i]) > 0)
+                                            our_slots_in_schedule++;
+                                    }
+
+                                    // Check on-chain signing keys for our witnesses
+                                    const auto &wit_idx = db_wd.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
+                                    for (const auto& w_name : _witnesses) {
+                                        auto w_itr = wit_idx.find(w_name);
+                                        if (w_itr != wit_idx.end() &&
+                                            w_itr->signing_key == graphene::protocol::public_key_type()) {
+                                            if (!blanked_keys.empty()) blanked_keys += ",";
+                                            blanked_keys += w_name;
+                                        }
+                                    }
+                                } catch (...) {}
+
+                                int64_t head_age_s = (fc::time_point::now() - fc::time_point(db_wd.head_block_time())).count() / 1000000;
+
+                                elog("WITNESS-WATCHDOG: ${t} silent for ${s}s! "
+                                    "witnesses=${w} keys=${k} skip_flags=${sf} minority_recovering=${mr} "
+                                    "slot_result=${sr} dlt_syncing=${ds} catching_up=${c} "
+                                    "head=#${h} head_age=${ha}s scheduled_now=${sw} we_are_scheduled=${ws} "
+                                    "in_schedule=${is}/${total} blanked_keys=[${bk}] "
+                                    "slot0_streak=${sz} not_my_turn_streak=${nmt} last_scheduled=${nmtw} "
+                                    "ntp_offset=${n}us slot_hijacks=${shj} debug_logging=${dl}",
+                                    ("t", is_emrg_master ? "emergency master" : "witness")
+                                    ("s", silent_for.count() / 1000000)
+                                    ("w", witness_names)
+                                    ("k", _private_keys.size())
+                                    ("sf", _production_skip_flags)
+                                    ("mr", _minority_fork_recovering)
+                                    ("sr", _last_slot_result)
+                                    ("ds", dlt_syncing)
+                                    ("c", catching_up)
+                                    ("h", db_wd.head_block_num())
+                                    ("ha", head_age_s)
+                                    ("sw", scheduled_now)
+                                    ("ws", we_are_scheduled)
+                                    ("is", our_slots_in_schedule)
+                                    ("total", _witnesses.size())
+                                    ("bk", blanked_keys)
+                                    ("sz", _slot_zero_streak)
+                                    ("nmt", _not_my_turn_streak)
+                                    ("nmtw", _last_scheduled_witness)
+                                    ("n", ntp_us)
+                                    ("shj", _slot_hijack_count)
+                                    ("dl", _watchdog_debug_enabled));
+
+                                // === WATCHDOG PRODUCTION RECOVERY ===
+                                // Brute-force recovery: if production is silent but
+                                // the node is clearly operational (head advancing,
+                                // FORWARD mode, peers connected), force-reset every
+                                // flag that could silently block production.  This
+                                // covers any safety gate that may have gotten stuck
+                                // due to race conditions, stale state, or edge
+                                // cases we haven't diagnosed.
+                                //
+                                // Conditions for recovery:
+                                //   - Head is recent (external blocks arriving)
+                                //   - Not in active P2P sync
+                                //   - At least some peers connected
+                                //   - We have witnesses with valid keys in schedule
+                                bool head_advancing = (head_age_s >= 0 && head_age_s < 30);
+                                bool has_peers = false;
+                                try { has_peers = p2p().get_connections_count() > 0; } catch (...) {}
+                                bool has_active_keys = (our_slots_in_schedule > 0 && blanked_keys.size() < witness_names.size());
+
+                                if (head_advancing && !dlt_syncing && !catching_up && has_peers && has_active_keys) {
+                                    bool did_recover = false;
+
+                                    // Clear minority fork recovery state
+                                    if (_minority_fork_recovering) {
+                                        _minority_fork_recovering = false;
+                                        did_recover = true;
+                                        elog("WATCHDOG-RECOVERY: cleared _minority_fork_recovering");
+                                    }
+
+                                    // Force-clear P2P catchup flag
+                                    try {
+                                        if (p2p().is_catching_up_after_pause()) {
+                                            p2p().clear_catchup_flag();
+                                            did_recover = true;
+                                            elog("WATCHDOG-RECOVERY: force-cleared P2P catching_up_after_pause flag");
+                                        }
+                                    } catch (...) {}
+
+                                    // Force-clear chain syncing flag
+                                    try {
+                                        if (chain().is_syncing()) {
+                                            chain().clear_syncing();
+                                            did_recover = true;
+                                            elog("WATCHDOG-RECOVERY: force-cleared chain syncing flag");
+                                        }
+                                    } catch (...) {}
+
+                                    // Reset streak counters that may affect logic
+                                    _not_my_turn_streak = 0;
+                                    _slot_zero_streak = 0;
+
+                                    if (did_recover) {
+                                        elog("WATCHDOG-RECOVERY: production forcibly restored after ${s}s silence "
+                                            "(head=#${h}, head_age=${ha}s, peers=${p}, in_schedule=${is})",
+                                            ("s", silent_for.count() / 1000000)
+                                            ("h", db_wd.head_block_num())
+                                            ("ha", head_age_s)
+                                            ("p", has_peers)
+                                            ("is", our_slots_in_schedule));
+                                    }
                                 } else {
-                                    // Between slots: show who gets the NEXT slot
-                                    scheduled_now = "between_slots/" + db_wd.get_scheduled_witness(1);
+                                    elog("WATCHDOG-RECOVERY: skipped — conditions not met "
+                                        "(head_advancing=${ha} dlt_syncing=${ds} catching_up=${cu} "
+                                        "has_peers=${hp} has_active_keys=${hk})",
+                                        ("ha", head_advancing)("ds", dlt_syncing)("cu", catching_up)
+                                        ("hp", has_peers)("hk", has_active_keys));
                                 }
-
-                                // Scan full shuffled schedule for our witnesses
-                                const auto &wso_wd = db_wd.get_witness_schedule_object();
-                                for (int i = 0; i < wso_wd.num_scheduled_witnesses; i++) {
-                                    if (_witnesses.count(wso_wd.current_shuffled_witnesses[i]) > 0)
-                                        our_slots_in_schedule++;
-                                }
-
-                                // Check on-chain signing keys for our witnesses
-                                const auto &wit_idx = db_wd.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
-                                for (const auto& w_name : _witnesses) {
-                                    auto w_itr = wit_idx.find(w_name);
-                                    if (w_itr != wit_idx.end() &&
-                                        w_itr->signing_key == graphene::protocol::public_key_type()) {
-                                        if (!blanked_keys.empty()) blanked_keys += ",";
-                                        blanked_keys += w_name;
-                                    }
-                                }
-                            } catch (...) {}
-
-                            int64_t head_age_s = (fc::time_point::now() - fc::time_point(db_wd.head_block_time())).count() / 1000000;
-
-                            elog("WITNESS-WATCHDOG: ${t} silent for ${s}s! "
-                                 "witnesses=${w} keys=${k} skip_flags=${sf} minority_recovering=${mr} "
-                                 "slot_result=${sr} dlt_syncing=${ds} catching_up=${c} "
-                                 "head=#${h} head_age=${ha}s scheduled_now=${sw} we_are_scheduled=${ws} "
-                                 "in_schedule=${is}/${total} blanked_keys=[${bk}] "
-                                 "slot0_streak=${sz} not_my_turn_streak=${nmt} last_scheduled=${nmtw} "
-                                 "ntp_offset=${n}us slot_hijacks=${shj} debug_logging=${dl}",
-                                 ("t", is_emrg_master ? "emergency master" : "witness")
-                                 ("s", silent_for.count() / 1000000)
-                                 ("w", witness_names)
-                                 ("k", _private_keys.size())
-                                 ("sf", _production_skip_flags)
-                                 ("mr", _minority_fork_recovering)
-                                 ("sr", _last_slot_result)
-                                 ("ds", dlt_syncing)
-                                 ("c", catching_up)
-                                 ("h", db_wd.head_block_num())
-                                 ("ha", head_age_s)
-                                 ("sw", scheduled_now)
-                                 ("ws", we_are_scheduled)
-                                 ("is", our_slots_in_schedule)
-                                 ("total", _witnesses.size())
-                                 ("bk", blanked_keys)
-                                 ("sz", _slot_zero_streak)
-                                 ("nmt", _not_my_turn_streak)
-                                 ("nmtw", _last_scheduled_witness)
-                                 ("n", ntp_us)
-                                 ("shj", _slot_hijack_count)
-                                 ("dl", _watchdog_debug_enabled));
-
-                            // === WATCHDOG PRODUCTION RECOVERY ===
-                            // Brute-force recovery: if production is silent but
-                            // the node is clearly operational (head advancing,
-                            // FORWARD mode, peers connected), force-reset every
-                            // flag that could silently block production.  This
-                            // covers any safety gate that may have gotten stuck
-                            // due to race conditions, stale state, or edge
-                            // cases we haven't diagnosed.
-                            //
-                            // Conditions for recovery:
-                            //   - Head is recent (external blocks arriving)
-                            //   - Not in active P2P sync
-                            //   - At least some peers connected
-                            //   - We have witnesses with valid keys in schedule
-                            bool head_advancing = (head_age_s >= 0 && head_age_s < 30);
-                            bool has_peers = false;
-                            try { has_peers = p2p().get_connections_count() > 0; } catch (...) {}
-                            bool has_active_keys = (our_slots_in_schedule > 0 && blanked_keys.size() < witness_names.size());
-
-                            if (head_advancing && !dlt_syncing && !catching_up && has_peers && has_active_keys) {
-                                bool did_recover = false;
-
-                                // Clear minority fork recovery state
-                                if (_minority_fork_recovering) {
-                                    _minority_fork_recovering = false;
-                                    did_recover = true;
-                                    elog("WATCHDOG-RECOVERY: cleared _minority_fork_recovering");
-                                }
-
-                                // Force-clear P2P catchup flag
-                                try {
-                                    if (p2p().is_catching_up_after_pause()) {
-                                        p2p().clear_catchup_flag();
-                                        did_recover = true;
-                                        elog("WATCHDOG-RECOVERY: force-cleared P2P catching_up_after_pause flag");
-                                    }
-                                } catch (...) {}
-
-                                // Force-clear chain syncing flag
-                                try {
-                                    if (chain().is_syncing()) {
-                                        chain().clear_syncing();
-                                        did_recover = true;
-                                        elog("WATCHDOG-RECOVERY: force-cleared chain syncing flag");
-                                    }
-                                } catch (...) {}
-
-                                // Reset streak counters that may affect logic
-                                _not_my_turn_streak = 0;
-                                _slot_zero_streak = 0;
-
-                                if (did_recover) {
-                                    elog("WATCHDOG-RECOVERY: production forcibly restored after ${s}s silence "
-                                         "(head=#${h}, head_age=${ha}s, peers=${p}, in_schedule=${is})",
-                                         ("s", silent_for.count() / 1000000)
-                                         ("h", db_wd.head_block_num())
-                                         ("ha", head_age_s)
-                                         ("p", has_peers)
-                                         ("is", our_slots_in_schedule));
-                                }
-                            } else {
-                                elog("WATCHDOG-RECOVERY: skipped — conditions not met "
-                                     "(head_advancing=${ha} dlt_syncing=${ds} catching_up=${cu} "
-                                     "has_peers=${hp} has_active_keys=${hk})",
-                                     ("ha", head_advancing)("ds", dlt_syncing)("cu", catching_up)
-                                     ("hp", has_peers)("hk", has_active_keys));
                             }
                         }
                     }
