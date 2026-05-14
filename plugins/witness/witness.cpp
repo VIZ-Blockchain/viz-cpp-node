@@ -151,6 +151,14 @@ namespace graphene {
                 // the watchdog shows a meaningful failure code, not between-slot noise).
                 int _last_slot_result = -1;
 
+                // Slot hijack detection: counts consecutive blocks where committee
+                // filled a slot that was assigned to our witness in the shuffled
+                // schedule.  In DLT emergency mode the emergency master may blank
+                // our signing key and produce committee blocks in our slots; this
+                // counter makes the condition visible in watchdog diagnostics.
+                uint32_t _slot_hijack_count = 0;
+                uint32_t _slot_hijack_height = 0; // last block height where hijack was detected
+
                 // Track last applied block number to detect missed blocks.
                 // Updated in the applied_block signal handler.
                 uint64_t _last_applied_block_num = 0;
@@ -438,6 +446,8 @@ namespace graphene {
                     }
                     s += " minority_rcv=";
                     s += pimpl->_minority_fork_recovering ? "1" : "0";
+                    s += " slot_hijacks=";
+                    s += std::to_string(pimpl->_slot_hijack_count);
                     return "witness[" + s + "]";
                 } catch (...) {
                     return "witness=err";
@@ -449,6 +459,65 @@ namespace graphene {
                     uint64_t block_num = block.block_num();
                     uint64_t prev_num = _last_applied_block_num;
                     _last_applied_block_num = block_num;
+
+                    // === SLOT-HIJACK DETECTION (runs for every block) ===
+                    // In DLT emergency mode, the emergency master may blank our witness's
+                    // signing_key and fill our scheduled slots with committee blocks.  This
+                    // detection runs for every incoming block and checks whether the slot
+                    // that was just filled was assigned to our witness but produced by someone
+                    // else (committee / emergency account).  The counter is included in
+                    // watchdog diagnostics so the operator can see the hijack pattern.
+                    if (database()._dlt_mode && _production_enabled && !_witnesses.empty()
+                        && prev_num > 0 && block_num == prev_num + 1) {
+                        const auto& dgp_sj = database().get_dynamic_global_properties();
+                        if (dgp_sj.emergency_consensus_active) {
+                            const auto& wso_sj = database().get_witness_schedule_object();
+                            uint32_t nsw_sj = wso_sj.num_scheduled_witnesses;
+                            if (nsw_sj > 0 && !wso_sj.current_shuffled_witnesses.empty()) {
+                                // The block we just applied covered slot (current_aslot - 1).
+                                // Check which witness was scheduled for that slot.
+                                uint64_t slot_idx = (dgp_sj.current_aslot - 1) % nsw_sj;
+                                const std::string& expected_witness =
+                                    wso_sj.current_shuffled_witnesses[slot_idx];
+                                bool was_our_slot = _witnesses.count(expected_witness) > 0;
+
+                                if (was_our_slot && block.witness != expected_witness) {
+                                    // Committee (or another witness) produced at our slot.
+                                    _slot_hijack_count++;
+                                    _slot_hijack_height = static_cast<uint32_t>(block_num);
+                                    // Log the first 3 hijacks, then once per minute.
+                                    // This gives the operator clear early warning without
+                                    // flooding the log during prolonged exclusion.
+                                    static fc::time_point _last_hijack_log;
+                                    auto _now_sj = fc::time_point::now();
+                                    if (_slot_hijack_count <= 3 ||
+                                        (_now_sj - _last_hijack_log).count() > 60000000) {
+                                        _last_hijack_log = _now_sj;
+                                        elog("SLOT-HIJACK: block #%u by '%s' but slot was assigned "
+                                             "to our witness '%s' (hijack #%u). "
+                                             "Emergency master is producing in our slots — "
+                                             "our witness may be considered offline. "
+                                             "head=#%u aslot=%u num_sched=%u",
+                                             block_num, block.witness.c_str(),
+                                             expected_witness.c_str(),
+                                             _slot_hijack_count,
+                                             dgp_sj.head_block_number,
+                                             static_cast<uint64_t>(dgp_sj.current_aslot),
+                                             nsw_sj);
+                                    }
+                                } else if (was_our_slot && block.witness == expected_witness) {
+                                    // Our witness produced — reset hijack counter.
+                                    if (_slot_hijack_count > 0) {
+                                        wlog("SLOT-HIJACK-RESOLVED: our witness '%s' produced "
+                                             "block #%u after %u hijacked slot(s).",
+                                             expected_witness.c_str(), block_num,
+                                             _slot_hijack_count);
+                                    }
+                                    _slot_hijack_count = 0;
+                                }
+                            }
+                        }
+                    }
 
                     // No gap, first block, or production not active — nothing to check
                     if (prev_num == 0 || block_num <= prev_num + 1 || !_production_enabled) {
@@ -600,6 +669,7 @@ namespace graphene {
                         fork_collision_defer_count_ = 0;
                         _slot_zero_streak = 0;  // P18: reset stall counter on success
                         _not_my_turn_streak = 0; // reset not_my_turn tracking
+                        _slot_hijack_count = 0;  // reset hijack counter on successful production
                         _ever_produced = true;
                         _last_production_time = fc::time_point::now();
                         if (_minority_fork_recovering) {
@@ -880,7 +950,7 @@ namespace graphene {
                                  "head=#${h} head_age=${ha}s scheduled_now=${sw} we_are_scheduled=${ws} "
                                  "in_schedule=${is}/${total} blanked_keys=[${bk}] "
                                  "slot0_streak=${sz} not_my_turn_streak=${nmt} last_scheduled=${nmtw} "
-                                 "ntp_offset=${n}us",
+                                 "ntp_offset=${n}us slot_hijacks=${shj}",
                                  ("t", is_emrg_master ? "emergency master" : "witness")
                                  ("s", silent_for.count() / 1000000)
                                  ("w", witness_names)
@@ -900,7 +970,8 @@ namespace graphene {
                                  ("sz", _slot_zero_streak)
                                  ("nmt", _not_my_turn_streak)
                                  ("nmtw", _last_scheduled_witness)
-                                 ("n", ntp_us));
+                                 ("n", ntp_us)
+                                 ("shj", _slot_hijack_count));
 
                             // === WATCHDOG PRODUCTION RECOVERY ===
                             // Brute-force recovery: if production is silent but
