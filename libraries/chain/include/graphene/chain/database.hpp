@@ -155,7 +155,7 @@ namespace graphene { namespace chain {
              * replaying blockchain history. When this method exits successfully, the database will be open.
              */
             void reindex(const fc::path &data_dir, const fc::path &shared_mem_dir, uint32_t from_block_num, uint64_t shared_file_size = (
-                    1024l * 1024l * 1024l * 8l));
+                    1024l * 1024l * 1024l * 8Ull));
 
             /**
              * @brief Rebuild object graph from dlt_block_log after snapshot import
