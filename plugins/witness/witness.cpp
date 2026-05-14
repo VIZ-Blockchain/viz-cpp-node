@@ -1,5 +1,6 @@
 
 #include <graphene/plugins/witness/witness.hpp>
+#include <graphene/plugins/snapshot/plugin.hpp>
 
 #include <graphene/chain/database_exceptions.hpp>
 #include <graphene/chain/account_object.hpp>
@@ -348,6 +349,12 @@ namespace graphene {
                     ilog("shutting downing production timer");
                     pimpl->production_timer_.cancel();
                 }
+            }
+
+            void witness_plugin::plugin_for_each_dependency(plugin_processor&& l) {
+                l(appbase::app().register_plugin<graphene::plugins::chain::plugin>());
+                l(appbase::app().register_plugin<graphene::plugins::p2p::p2p_plugin>());
+                l(appbase::app().register_plugin<graphene::plugins::snapshot::snapshot_plugin>());
             }
 
             witness_plugin::witness_plugin() {}

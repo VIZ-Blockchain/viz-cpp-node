@@ -6,7 +6,6 @@
 #include <appbase/application.hpp>
 #include <graphene/plugins/chain/plugin.hpp>
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
-#include <graphene/plugins/snapshot/plugin.hpp>
 #include <memory>
 
 namespace graphene {
@@ -36,7 +35,9 @@ namespace graphene {
 
             class witness_plugin final : public appbase::plugin<witness_plugin> {
             public:
-                APPBASE_PLUGIN_REQUIRES((chain::plugin) (p2p::p2p_plugin) (snapshot::snapshot_plugin))
+                // Dependency list: chain, p2p, snapshot.
+                // Implemented in witness.cpp to avoid exposing snapshot headers to p2p (which includes witness.hpp).
+                virtual void plugin_for_each_dependency(std::function<void(appbase::abstract_plugin&)>&& l) override;
 
                 constexpr static const char *plugin_name = "witness";
 
