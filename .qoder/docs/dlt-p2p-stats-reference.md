@@ -283,6 +283,28 @@ After the ban expires, the peer state resets to DISCONNECTED and normal reconnec
 - Blocks received during pause are queued and will be processed when resumed
 - If pause persists unexpectedly, check for stuck snapshot operations
 
+### Scenario 6: Peer Exchange Rate-Limiting in Logs
+
+**Log message:** `Peer <ep> rate-limited our exchange request, wait <w>s`
+
+**What it means:** Our node sent a `dlt_peer_exchange_request` to a peer, but that peer responded with a `dlt_peer_exchange_rate_limited` message because less than 600 seconds (10 minutes) have passed since the last exchange request we sent to that peer.
+
+**Mechanism:**
+- Each peer tracks `last_peer_exchange_request_time` per remote peer.
+- When a `dlt_peer_exchange_request` arrives, the receiving peer checks `is_peer_exchange_rate_limited()` — if fewer than `PEER_EXCHANGE_COOLDOWN_SEC` (600s / 10 min) have elapsed since the last request, it responds with `dlt_peer_exchange_rate_limited{wait_seconds}` instead of a peer list.
+- On our side, receiving this response updates our own `last_peer_exchange_request_time`, which prevents `periodic_peer_exchange()` from selecting this peer for future requests until the cooldown expires.
+- This is a two-sided mechanism: both nodes independently enforce the same 600-second cooldown.
+
+**Why this exists:**
+- Prevents excessive peer discovery traffic on stable networks
+- Reduces unnecessary message overhead when peer topology is not changing
+- Complements the `dlt-peer-exchange-min-uptime-sec` (600s) filter which ensures only stable peers are shared
+
+**What to do:**
+- This is normal, expected behavior — no action required
+- The message appears at most once per peer per 10-minute window
+- If this message appears very frequently for many peers, it may indicate that the periodic exchange interval is configured too aggressively
+
 ---
 
 ## Quick Reference
@@ -314,7 +336,7 @@ After the ban expires, the peer state resets to DISCONNECTED and normal reconnec
 | `BAN_DURATION_SEC` | 3600 | Default ban duration (1 hour) |
 | `INITIAL_RECONNECT_BACKOFF_SEC` | 30 | Initial reconnection delay |
 | `MAX_RECONNECT_BACKOFF_SEC` | 3600 | Maximum reconnection delay (1 hour) |
-| `PEER_EXCHANGE_COOLDOWN_SEC` | 600 | Minimum interval between peer exchange requests (10 min) |
+| `PEER_EXCHANGE_COOLDOWN_SEC` | 600 | Minimum interval between peer exchange requests to the same peer (10 min) — both requesting and serving sides enforce this cooldown; a rate-limited response carries `wait_seconds` indicating remaining cooldown time |
 | `SEND_QUEUE_MAX_DEPTH` | 100 | Maximum queued messages per peer |
 | `KNOWN_BLOCKS_WINDOW` | 20 | Block ID ring buffer size for echo suppression |
 | `CONNECTING_TIMEOUT` | 5s | Timeout for TCP connection establishment |
