@@ -58,9 +58,11 @@ struct dlt_peer_state {
     std::string                  ban_reason;              // why we (or they) were banned
     uint32_t                     ban_duration_sec = 0;    // actual ban duration (may differ from BAN_DURATION_SEC for remote bans)
 
-    // Peer exchange rate-limiting
-    fc::time_point               last_peer_exchange_request_time;
-    static constexpr uint32_t    PEER_EXCHANGE_COOLDOWN_SEC = 600; // 10 min
+    // Peer exchange rate-limiting (sliding window)
+    uint32_t                     peer_exchange_request_count = 0;
+    fc::time_point               peer_exchange_window_start;
+    static constexpr uint32_t    PEER_EXCHANGE_MAX_REQUESTS = 3;
+    static constexpr uint32_t    PEER_EXCHANGE_WINDOW_SEC = 300; // 5 min
 
     // Block ordering validation
     uint32_t                     expected_next_block = 0;
@@ -121,11 +123,32 @@ struct dlt_peer_state {
         }
     }
 
-    // ── Helper: check if peer exchange is rate-limited ───────────
+    // ── Helper: check if peer exchange is rate-limited (sliding window) ──
     bool is_peer_exchange_rate_limited() const {
-        if (last_peer_exchange_request_time == fc::time_point()) return false;
-        return (fc::time_point::now() - last_peer_exchange_request_time).count()
-               < PEER_EXCHANGE_COOLDOWN_SEC * 1000000;
+        if (peer_exchange_window_start == fc::time_point()) return false;
+        auto elapsed = (fc::time_point::now() - peer_exchange_window_start).count();
+        if (elapsed >= PEER_EXCHANGE_WINDOW_SEC * 1000000) return false;
+        return peer_exchange_request_count >= PEER_EXCHANGE_MAX_REQUESTS;
+    }
+
+    // ── Helper: record a peer exchange request (increments window counter) ──
+    void record_peer_exchange_request() {
+        auto now = fc::time_point::now();
+        if (peer_exchange_window_start == fc::time_point() ||
+            (now - peer_exchange_window_start).count() >= PEER_EXCHANGE_WINDOW_SEC * 1000000) {
+            peer_exchange_request_count = 1;
+            peer_exchange_window_start = now;
+        } else {
+            peer_exchange_request_count++;
+        }
+    }
+
+    // ── Helper: remaining seconds in rate-limit window ──────────────
+    uint32_t peer_exchange_wait_seconds() const {
+        if (peer_exchange_window_start == fc::time_point()) return 0;
+        auto elapsed = static_cast<uint32_t>(
+            (fc::time_point::now() - peer_exchange_window_start).count() / 1000000);
+        return (elapsed < PEER_EXCHANGE_WINDOW_SEC) ? (PEER_EXCHANGE_WINDOW_SEC - elapsed) : 0;
     }
 
     // ── Helper: check if pending block batch has timed out ───────

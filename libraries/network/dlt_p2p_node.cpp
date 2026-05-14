@@ -19,7 +19,8 @@ namespace graphene {
 namespace network {
 
 // ── Static constexpr out-of-line definitions (required for C++14 ODR-use) ─
-constexpr uint32_t dlt_peer_state::PEER_EXCHANGE_COOLDOWN_SEC;
+constexpr uint32_t dlt_peer_state::PEER_EXCHANGE_MAX_REQUESTS;
+constexpr uint32_t dlt_peer_state::PEER_EXCHANGE_WINDOW_SEC;
 constexpr uint32_t dlt_peer_state::PENDING_BATCH_TIMEOUT_SEC;
 constexpr uint32_t dlt_peer_state::INITIAL_RECONNECT_BACKOFF_SEC;
 constexpr uint32_t dlt_peer_state::MAX_RECONNECT_BACKOFF_SEC;
@@ -1693,16 +1694,13 @@ void dlt_p2p_node::on_dlt_peer_exchange_request(peer_id peer, const dlt_peer_exc
         return;
     }
 
-    // Rate-limit check
+    // Rate-limit check (sliding window: 3 requests per 5 min)
     if (state.is_peer_exchange_rate_limited()) {
-        auto elapsed = fc::time_point::now() - state.last_peer_exchange_request_time;
-        uint32_t wait = dlt_peer_state::PEER_EXCHANGE_COOLDOWN_SEC -
-                        static_cast<uint32_t>(elapsed.count() / 1000000);
-        send_message(peer, message(dlt_peer_exchange_rate_limited{wait}));
+        send_message(peer, message(dlt_peer_exchange_rate_limited{state.peer_exchange_wait_seconds()}));
         return;
     }
 
-    state.last_peer_exchange_request_time = fc::time_point::now();
+    state.record_peer_exchange_request();
 
     // Collect "our fork" peers (exchange_enabled, active, min uptime)
     dlt_peer_exchange_reply reply;
@@ -1765,9 +1763,10 @@ void dlt_p2p_node::on_dlt_peer_exchange_rate_limited(peer_id peer, const dlt_pee
          ("ep", ep)("w", msg.wait_seconds));
 
     // Record the rate-limit locally so periodic_peer_exchange() stops
-    // sending requests to this peer until the cooldown expires.
+    // sending requests to this peer until the window expires.
     if (it != _peer_states.end()) {
-        it->second.last_peer_exchange_request_time = fc::time_point::now();
+        it->second.peer_exchange_request_count = dlt_peer_state::PEER_EXCHANGE_MAX_REQUESTS;
+        it->second.peer_exchange_window_start = fc::time_point::now();
     }
 
     record_packet_result(peer, true);

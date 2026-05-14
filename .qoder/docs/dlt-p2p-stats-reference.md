@@ -287,13 +287,13 @@ After the ban expires, the peer state resets to DISCONNECTED and normal reconnec
 
 **Log message:** `Peer <ep> rate-limited our exchange request, wait <w>s`
 
-**What it means:** Our node sent a `dlt_peer_exchange_request` to a peer, but that peer responded with a `dlt_peer_exchange_rate_limited` message because less than 600 seconds (10 minutes) have passed since the last exchange request we sent to that peer.
+**What it means:** Our node sent a `dlt_peer_exchange_request` to a peer, but that peer responded with a `dlt_peer_exchange_rate_limited` message because the remote peer has already served 3 exchange requests from us within the last 5-minute window.
 
 **Mechanism:**
-- Each peer tracks `last_peer_exchange_request_time` per remote peer.
-- When a `dlt_peer_exchange_request` arrives, the receiving peer checks `is_peer_exchange_rate_limited()` — if fewer than `PEER_EXCHANGE_COOLDOWN_SEC` (600s / 10 min) have elapsed since the last request, it responds with `dlt_peer_exchange_rate_limited{wait_seconds}` instead of a peer list.
-- On our side, receiving this response updates our own `last_peer_exchange_request_time`, which prevents `periodic_peer_exchange()` from selecting this peer for future requests until the cooldown expires.
-- This is a two-sided mechanism: both nodes independently enforce the same 600-second cooldown.
+- Each peer tracks `peer_exchange_request_count` and `peer_exchange_window_start` per remote peer.
+- When a `dlt_peer_exchange_request` arrives, the receiving peer checks `is_peer_exchange_rate_limited()` — if 3 or more requests were received within the 5-minute window (`PEER_EXCHANGE_WINDOW_SEC`), it responds with `dlt_peer_exchange_rate_limited{wait_seconds}` instead of a peer list.
+- On our side, receiving this response marks us as rate-limited locally (`peer_exchange_request_count = MAX`), which prevents `periodic_peer_exchange()` from selecting this peer for future requests until the window expires.
+- This is a two-sided mechanism: both nodes independently enforce the same sliding window (3 requests per 5 minutes).
 
 **Why this exists:**
 - Prevents excessive peer discovery traffic on stable networks
@@ -302,8 +302,8 @@ After the ban expires, the peer state resets to DISCONNECTED and normal reconnec
 
 **What to do:**
 - This is normal, expected behavior — no action required
-- The message appears at most once per peer per 10-minute window
-- If this message appears very frequently for many peers, it may indicate that the periodic exchange interval is configured too aggressively
+- The message appears at most after the 4th request within a 5-minute window per peer
+- If this message appears very frequently for many peers, it may indicate that the periodic exchange interval is configured too aggressively or the network has very few unique peers
 
 ---
 
@@ -336,7 +336,8 @@ After the ban expires, the peer state resets to DISCONNECTED and normal reconnec
 | `BAN_DURATION_SEC` | 3600 | Default ban duration (1 hour) |
 | `INITIAL_RECONNECT_BACKOFF_SEC` | 30 | Initial reconnection delay |
 | `MAX_RECONNECT_BACKOFF_SEC` | 3600 | Maximum reconnection delay (1 hour) |
-| `PEER_EXCHANGE_COOLDOWN_SEC` | 600 | Minimum interval between peer exchange requests to the same peer (10 min) — both requesting and serving sides enforce this cooldown; a rate-limited response carries `wait_seconds` indicating remaining cooldown time |
+| `PEER_EXCHANGE_MAX_REQUESTS` | 3 | Maximum peer exchange requests allowed per peer within the sliding window |
+| `PEER_EXCHANGE_WINDOW_SEC` | 300 | Peer exchange sliding window duration (5 min) — both requesting and serving sides enforce this; a rate-limited response carries `wait_seconds` indicating remaining window time |
 | `SEND_QUEUE_MAX_DEPTH` | 100 | Maximum queued messages per peer |
 | `KNOWN_BLOCKS_WINDOW` | 20 | Block ID ring buffer size for echo suppression |
 | `CONNECTING_TIMEOUT` | 5s | Timeout for TCP connection establishment |
