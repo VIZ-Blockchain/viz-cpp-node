@@ -157,7 +157,7 @@ All FC_REFLECT macros defined for serialization.
   - `send_to_all_our_fork_peers()` — belt-and-suspenders IP dedup in broadcast: tracks `std::set<fc::ip::address>` of IPs already sent to, skipping duplicates
 
 **Peer exchange** (rate-limited):
-- `on_dlt_peer_exchange_request()` — 10-min cooldown per peer, subnet diversity filter, min uptime 600s, **skips `is_incoming` peers to prevent ephemeral port propagation**
+- `on_dlt_peer_exchange_request()` — sliding window rate limit (3 requests per 5 min per peer), subnet diversity filter, min uptime 600s, **skips `is_incoming` peers to prevent ephemeral port propagation**
 - `on_dlt_peer_exchange_reply()` — adds to known peers, connects if under max_connections
 - Subnet diversity via `/24` prefix comparison
 
@@ -310,7 +310,8 @@ Full details in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md).
 
 `static constexpr` members that are ODR-used (e.g., `MAX_RECONNECT_BACKOFF_SEC`) now have out-of-line definitions in `dlt_p2p_node.cpp`:
 ```cpp
-constexpr uint32_t dlt_peer_state::PEER_EXCHANGE_COOLDOWN_SEC;
+constexpr uint32_t dlt_peer_state::PEER_EXCHANGE_MAX_REQUESTS;
+constexpr uint32_t dlt_peer_state::PEER_EXCHANGE_WINDOW_SEC;
 constexpr uint32_t dlt_peer_state::PENDING_BATCH_TIMEOUT_SEC;
 constexpr uint32_t dlt_peer_state::INITIAL_RECONNECT_BACKOFF_SEC;
 constexpr uint32_t dlt_peer_state::MAX_RECONNECT_BACKOFF_SEC;
