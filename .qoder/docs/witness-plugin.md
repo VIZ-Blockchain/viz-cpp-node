@@ -49,19 +49,19 @@ The witness plugin is responsible for block production in the VIZ blockchain. It
 ## Plugin Dependencies
 
 ```cpp
-APPBASE_PLUGIN_REQUIRES((chain::plugin) (p2p::p2p_plugin))
+APPBASE_PLUGIN_REQUIRES((chain::plugin) (p2p::p2p_plugin) (snapshot::snapshot_plugin))
 ```
 
 The witness plugin requires:
 - **chain::plugin**: Access to database, fork_db, witness schedule, block generation
 - **p2p::p2p_plugin**: Block broadcast, sync status, peer connections, snapshot pause detection
+- **snapshot::snapshot_plugin**: Query snapshot creation status via `is_snapshot_in_progress()`
 
 ---
 
 ## Internal State Variables
 
 ### Production Control
-- `_production_enabled` (bool): Whether production is currently enabled
 - `_production_skip_flags` (uint32_t): Flags passed to `generate_block()` (e.g., `skip_undo_history_check`)
 - `_required_witness_participation` (uint32_t): Participation threshold from config
 - `_private_keys` (map<public_key, private_key>): Loaded private keys for signing
@@ -100,7 +100,7 @@ The witness plugin requires:
 **Actions:**
 1. Create `impl` instance
 2. Load witness names from `--witness` option into `_witnesses` set
-3. Load `--enable-stale-production` flag → `_production_enabled`
+3. Load `--enable-stale-production` flag → sets `skip_undo_history_check` in `_production_skip_flags` if true
 4. Load `--required-participation` → `_required_witness_participation`
 5. Parse `--private-key` WIF strings → `_private_keys` map
 6. Parse `--emergency-private-key` WIF strings → `_private_keys` map
@@ -124,9 +124,8 @@ The witness plugin requires:
    - Call `p2p().set_block_production(true)` to enable P2P block production mode
    - Connect to `database::applied_block` signal → `on_block_applied()` handler
    - Set `_last_applied_block_num = database.head_block_num()`
-   - If `_production_enabled` (from stale-production flag):
+   - If `skip_undo_history_check` set in `_production_skip_flags` (from `--enable-stale-production`):
      - If `head_block_num() == 0`: Print new chain banner
-     - Set `skip_undo_history_check` flag in `_production_skip_flags`
    - **Start production loop**: `schedule_production_loop()`
 5. If no witnesses configured: Log error message
 
@@ -187,16 +186,30 @@ This aligns production ticks to 250ms boundaries with a +250ms lookahead in `may
 - `not_time_yet`: **Track `_slot_zero_streak`** only if `now <= head_block_time()` (NTP behind chain). Warnings at 3 (750ms), 10 (2.5s, force NTP resync), 60 (15s), 120 (30s, critical)
 - `no_private_key`, `low_participation`, `lag`, `consecutive`, `exception_producing_block`, `fork_collision`, `minority_fork`: Log appropriate messages
 
-**Watchdog:** If `_ever_produced && _production_enabled` and silence exceeds threshold:
+**Watchdog:** If `_ever_produced` and `should_be_producing` (derived from live state) and silence exceeds threshold:
+
+```cpp
+bool should_be_producing = false;
+const auto& dgp_watch = database().get_dynamic_global_properties();
+if (!_minority_fork_recovering && !_witnesses.empty()) {
+    if (dgp_watch.emergency_consensus_active) {
+        should_be_producing = (_witnesses.count(CHAIN_EMERGENCY_WITNESS_ACCOUNT) > 0);
+    } else {
+        uint32_t prate_watch = database().witness_participation_rate();
+        should_be_producing = (prate_watch >= 33 * CHAIN_1_PERCENT);
+    }
+}
+```
+
 - Emergency master: 60s threshold
 - Regular witness: 180s threshold
 - Logs every 30s once triggered
 - **WATCHDOG-RECOVERY**: If conditions met (head advancing < 30s, not syncing, has peers, has active keys):
-  - Force-enable `_production_enabled`
   - Clear `_minority_fork_recovering`
   - Clear P2P catchup flag: `p2p().clear_catchup_flag()`
   - Clear chain syncing flag: `chain().clear_syncing()`
   - Reset streak counters
+  - Production resumes automatically on next tick (no cached flag to set)
 
 ---
 
@@ -247,25 +260,31 @@ if (db._dlt_mode && chain().is_syncing()) {
 ##### Step 3: Snapshot Pause / Post-Pause Catchup Gate (Line ~1118)
 
 ```cpp
-try {
-    if (p2p().is_catching_up_after_pause()) {
-        return block_production_condition::not_synced;
-    }
-} catch (...) {}
+// Check snapshot plugin directly for snapshot_in_progress flag
+if (snapshot().is_snapshot_in_progress()) {
+    wlog("Deferring block production: snapshot creation in progress");
+    return not_synced;
+}
+
+if (p2p().is_catching_up_after_pause()) {
+    wlog("Deferring block production: P2P is catching up after snapshot pause");
+    return not_synced;
+}
 ```
 
 **What it checks:**
-- `p2p().is_catching_up_after_pause()`: **YES, calls P2P plugin**
-- Returns true if `_block_processing_paused || _catchup_after_pause`
+- `snapshot().is_snapshot_in_progress()`: **YES, calls snapshot plugin** — `snapshot_in_progress` atomic flag (relaxed load)
+- `p2p().is_catching_up_after_pause()`: **YES, calls P2P plugin** — returns true if `_block_processing_paused || _catchup_after_pause`
 
-**Why:**
-- During snapshot creation, P2P block processing is paused (DB read lock held)
-- Producing during pause → write lock deadlock
-- Producing after pause but before drain → fork on stale head
+**Why two checks:**
+1. **Snapshot in progress**: snapshot plugin holds DB read lock; producing would cause write-lock starvation
+2. **P2P catchup after pause**: snapshot finished, but queued blocks haven't drained yet; producing on stale head → fork
 
 **Applies to:** ALL witness types (emergency and normal)
 
-**Flag cleared when:** Pause ends + drain completes + no peer ahead
+**Flag cleared when:**
+- `snapshot_in_progress`: Cleared by snapshot plugin on completion
+- `_catchup_after_pause`: Cleared when drain completes + no peer ahead
 
 ---
 
@@ -288,16 +307,13 @@ if (db.has_hardfork(CHAIN_HARDFORK_12)) {
 ```cpp
 bool we_are_emergency_master =
     _witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end();
-if (we_are_emergency_master) {
-    _production_enabled = true;  // Auto-bypass stale + participation checks
-} else if (!_production_enabled) {
-    // Slave node: still need sync check
-    if (db.get_slot_time(1) >= now) {
-        _production_enabled = true;
-    } else {
+if (!we_are_emergency_master) {
+    // Slave node: must sync first before producing
+    if (db.get_slot_time(1) < now) {
         return block_production_condition::not_synced;
     }
 }
+// Emergency master proceeds unconditionally — no cached flag, state queried fresh every tick
 ```
 
 **Why:** Master MUST produce to avoid deadlock. Slave nodes must still sync first.
@@ -311,26 +327,20 @@ uint32_t prate = db.witness_participation_rate();
 if (prate >= 33 * CHAIN_1_PERCENT) {
     // HEALTHY NETWORK
     _production_skip_flags &= ~skip_undo_history_check;  // Re-enable minority fork detection
-    if (!_production_enabled) {
-        if (db.get_slot_time(1) >= now) {
-            _production_enabled = true;
-        } else {
-            return not_synced;
-        }
+    // Check sync status directly (no cached flag — queried fresh every tick)
+    if (db.get_slot_time(1) < now) {
+        return not_synced;
     }
     // No participation check needed (already >= 33%)
 } else {
     // DISTRESSED NETWORK (< 33%)
-    if (!_production_enabled) {
-        if (_production_skip_flags & skip_undo_history_check) {
-            // enable-stale-production=true: operator override
-            _production_enabled = true;
-        } else if (db.get_slot_time(1) >= now) {
-            _production_enabled = true;
-        } else {
+    if (!(_production_skip_flags & skip_undo_history_check)) {
+        // No stale-production override: require sync
+        if (db.get_slot_time(1) < now) {
             return not_synced;
         }
     }
+    // enable-stale-production=true: operator override, proceed regardless of sync status
     if (prate < _required_witness_participation) {
         if (_production_skip_flags & skip_undo_history_check) {
             // Operator override: produce anyway to bootstrap stalled network
@@ -343,19 +353,16 @@ if (prate >= 33 * CHAIN_1_PERCENT) {
 
 **Why 33% threshold:** Below this, node likely in minority network segment. Producing risks two partitions building chains simultaneously.
 
-**enable-stale-production override:** If set, bypasses participation check to allow operator to recover fully stalled network.
+**enable-stale-production override:** If set, bypasses participation and sync checks to allow operator to recover fully stalled network.
 
 ---
 
 **Sub-case 4c: Pre-HF12 Legacy**
 
 ```cpp
-if (!_production_enabled) {
-    if (db.get_slot_time(1) >= now) {
-        _production_enabled = true;
-    } else {
-        return not_synced;
-    }
+// Check sync status directly (no cached flag)
+if (db.get_slot_time(1) < now) {
+    return not_synced;
 }
 // No participation check here (done later before block generation)
 ```
@@ -394,7 +401,6 @@ if (!dgp.emergency_consensus_active) {
             // enable-stale-production: continue
         } else {
             p2p().resync_from_lib();
-            _production_enabled = false;
             _minority_fork_recovering = true;
             return minority_fork;
         }
@@ -429,7 +435,6 @@ if (dgp.emergency_consensus_active && db._dlt_mode) {
         // Slave DLT node: run fork_db isolation scan
         // If last 21 blocks all from our witnesses → isolated from master
         p2p().resync_from_lib(true /*force_emergency*/);
-        _production_enabled = false;
         _minority_fork_recovering = true;
         return minority_fork;
     }
@@ -643,7 +648,7 @@ return produced;
 #### Slot Hijack Detection (Runs for every block)
 
 ```cpp
-if (database()._dlt_mode && _production_enabled && !_witnesses.empty()
+if (database()._dlt_mode && !_witnesses.empty()
     && prev_num > 0 && block_num == prev_num + 1) {
     const auto& dgp = database().get_dynamic_global_properties();
     if (dgp.emergency_consensus_active) {
@@ -668,7 +673,7 @@ if (database()._dlt_mode && _production_enabled && !_witnesses.empty()
 #### Missed Slot Detection
 
 ```cpp
-if (block_num > prev_num + 1 && _production_enabled) {
+if (block_num > prev_num + 1) {
     uint32_t missed_count = block_num - prev_num - 1;
 
     // Calculate which witnesses were scheduled for missed slots
@@ -744,7 +749,7 @@ if (block_num > prev_num + 1 && _production_enabled) {
 
 **Returns:** Compact diagnostic string with key production-state flags
 
-**Format:** `witness[prod_enabled=1 catching_up=0 head=#123 last_prod=45s_ago minority_rcv=0 slot_hijacks=2]`
+**Format:** `witness[skip_flags=0x0 catching_up=0 head=#123 last_prod=45s_ago minority_rcv=0 slot_hijacks=2]`
 
 **Used by:** P2P layer when FORWARD stagnation fires with no peer ahead, so stagnation log shows why master isn't filling gap.
 
@@ -858,6 +863,27 @@ if (block_num > prev_num + 1 && _production_enabled) {
 
 ---
 
+### Snapshot Plugin: Direct API `snapshot().is_snapshot_in_progress()`
+
+**Called in:**
+1. Step 3 (snapshot pause gate) — first check before P2P catchup check
+
+**What it checks:** `snapshot_plugin::snapshot_in_progress` atomic flag (relaxed load)
+
+**Implementation:**
+```cpp
+bool snapshot_plugin::is_snapshot_in_progress() const {
+    if (!my) return false;
+    return my->snapshot_in_progress.load(std::memory_order_relaxed);
+}
+```
+
+**Set by:** Snapshot plugin when serialization starts
+
+**Cleared by:** Snapshot plugin on completion
+
+---
+
 ### Snapshot Plugin: Indirect check via `is_witness_scheduled_soon()`
 
 **Called by:** Snapshot plugin in `on_applied_block()` before scheduling snapshot
@@ -913,9 +939,9 @@ if (block_num > prev_num + 1 && _production_enabled) {
 - **Action:** Skip production (return `not_time_yet`)
 
 ### 5. Production Watchdog
-- **Trigger:** No production for 60s (emergency) or 180s (regular)
+- **Trigger:** No production for 60s (emergency) or 180s (regular); `should_be_producing` true (derived from live DB state)
 - **Conditions:** Head advancing, not syncing, has peers, has active keys
-- **Action:** Force-reset all flags that could block production
+- **Action:** Clear blocking conditions (`_minority_fork_recovering`, P2P catchup, chain syncing); production resumes automatically on next tick
 
 ### 6. NTP Stall Detection
 - **Trigger:** `slot=0` streak (NTP behind chain time)
@@ -1008,7 +1034,7 @@ if (block_num > prev_num + 1 && _production_enabled) {
 
 - **Chain plugin:** `plugins/chain/plugin.cpp`, `plugins/chain/include/graphene/plugins/chain/plugin.hpp`
 - **P2P plugin:** `plugins/p2p/p2p_plugin.cpp`, `plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp`
-- **Snapshot plugin:** `plugins/snapshot/plugin.cpp`
+- **Snapshot plugin:** `plugins/snapshot/plugin.cpp`, `plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp`
 - **Witness guard plugin:** `plugins/witness_guard/witness_guard.cpp`
 - **DLT P2P node:** `libraries/network/dlt_p2p_node.cpp`, `libraries/network/include/graphene/network/dlt_p2p_node.hpp`
 - **Database:** `libraries/chain/database.cpp` (emergency consensus, hardfork logic, block generation)
