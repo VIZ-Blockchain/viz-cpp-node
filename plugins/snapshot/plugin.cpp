@@ -3930,4 +3930,9 @@ const std::vector<std::string>& snapshot_plugin::get_trusted_snapshot_peers() co
     return my ? my->trusted_snapshot_peers : empty;
 }
 
+bool snapshot_plugin::is_snapshot_in_progress() const {
+    if (!my) return false;
+    return my->snapshot_in_progress.load(std::memory_order_relaxed);
+}
+
 } } } // graphene::plugins::snapshot

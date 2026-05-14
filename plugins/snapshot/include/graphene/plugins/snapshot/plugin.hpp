@@ -87,6 +87,11 @@ namespace graphene { namespace plugins { namespace snapshot {
         /// Used by the P2P plugin to apply reduced soft-ban duration for trusted peers
         const std::vector<std::string>& get_trusted_snapshot_peers() const;
 
+        /// Returns true if a snapshot creation is currently in progress.
+        /// Used by the witness plugin to defer block production during
+        /// snapshot serialization (avoids write-lock contention).
+        bool is_snapshot_in_progress() const;
+
     private:
         class plugin_impl;
         std::unique_ptr<plugin_impl> my;

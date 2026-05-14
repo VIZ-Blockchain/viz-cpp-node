@@ -6,6 +6,7 @@
 #include <appbase/application.hpp>
 #include <graphene/plugins/chain/plugin.hpp>
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
+#include <graphene/plugins/snapshot/plugin.hpp>
 #include <memory>
 
 namespace graphene {
@@ -35,7 +36,7 @@ namespace graphene {
 
             class witness_plugin final : public appbase::plugin<witness_plugin> {
             public:
-                APPBASE_PLUGIN_REQUIRES((chain::plugin) (p2p::p2p_plugin))
+                APPBASE_PLUGIN_REQUIRES((chain::plugin) (p2p::p2p_plugin) (snapshot::snapshot_plugin))
 
                 constexpr static const char *plugin_name = "witness";
 

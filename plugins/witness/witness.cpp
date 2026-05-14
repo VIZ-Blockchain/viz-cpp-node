@@ -64,6 +64,7 @@ namespace graphene {
                 impl():
                     p2p_(appbase::app().get_plugin<graphene::plugins::p2p::p2p_plugin>()),
                     chain_(appbase::app().get_plugin<graphene::plugins::chain::plugin>()),
+                    snapshot_(appbase::app().get_plugin<graphene::plugins::snapshot::snapshot_plugin>()),
                     production_timer_(appbase::app().get_io_service()) {
                 }
 
@@ -93,9 +94,19 @@ namespace graphene {
                     return p2p_;
                 };
 
+                graphene::plugins::snapshot::snapshot_plugin& snapshot() {
+                    return snapshot_;
+                }
+
+                graphene::plugins::snapshot::snapshot_plugin& snapshot() const {
+                    return snapshot_;
+                }
+
                 graphene::plugins::p2p::p2p_plugin& p2p_;
 
                 graphene::plugins::chain::plugin& chain_;
+
+                graphene::plugins::snapshot::snapshot_plugin& snapshot_;
 
                 void schedule_production_loop();
 
@@ -112,7 +123,6 @@ namespace graphene {
                 fc::time_point hash_start_time_;
 
                 uint32_t _production_skip_flags = graphene::chain::database::skip_nothing;
-                bool _production_enabled = false;
                 asio::deadline_timer production_timer_;
 
                 std::map<public_key_type, fc::ecc::private_key> _private_keys;
@@ -150,6 +160,11 @@ namespace graphene {
                 // Last result from a slot > 0 iteration (not_time_yet filtered out so
                 // the watchdog shows a meaningful failure code, not between-slot noise).
                 int _last_slot_result = -1;
+
+                // Watchdog debug mode: set to true when the watchdog first fires,
+                // enabling verbose DEBUG_CRASH logs automatically to help diagnose
+                // why production stopped. Never reset — once enabled, stays on.
+                bool _watchdog_debug_enabled = false;
 
                 // Slot hijack detection: counts consecutive blocks where committee
                 // filled a slot that was assigned to our witness in the shuffled
@@ -225,7 +240,9 @@ namespace graphene {
                     edump((pimpl->_witnesses));
 
                     if(options.count("enable-stale-production")){
-                        pimpl->_production_enabled = options["enable-stale-production"].as<bool>();
+                        if (options["enable-stale-production"].as<bool>()) {
+                            pimpl->_production_skip_flags |= graphene::chain::database::skip_undo_history_check;
+                        }
                     }
 
                     if(options.count("required-participation")){
@@ -313,11 +330,10 @@ namespace graphene {
                             pimpl->on_block_applied(block);
                         });
 
-                        if (pimpl->_production_enabled) {
+                        if (pimpl->_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
                             if (d.head_block_num() == 0) {
                                 new_chain_banner(d);
                             }
-                            pimpl->_production_skip_flags |= graphene::chain::database::skip_undo_history_check;
                         }
                         pimpl->schedule_production_loop();
                     } else
@@ -433,8 +449,8 @@ namespace graphene {
             std::string witness_plugin::get_production_diagnostics() const {
                 try {
                     if (!pimpl) return "witness=no_pimpl";
-                    std::string s = "prod_enabled=";
-                    s += pimpl->_production_enabled ? "1" : "0";
+                    std::string s = "prod_skip_flags=";
+                    s += std::to_string(pimpl->_production_skip_flags);
                     s += " catching_up=";
                     try { s += pimpl->p2p().is_catching_up_after_pause() ? "1" : "0"; } catch (...) { s += "?"; }
                     try { s += " head=#" + std::to_string(pimpl->database().head_block_num()); } catch (...) {}
@@ -467,11 +483,11 @@ namespace graphene {
                     // that was just filled was assigned to our witness but produced by someone
                     // else (committee / emergency account).  The counter is included in
                     // watchdog diagnostics so the operator can see the hijack pattern.
-                    if (database()._dlt_mode && _production_enabled && !_witnesses.empty()
-                        && prev_num > 0 && block_num == prev_num + 1) {
-                        const auto& dgp_sj = database().get_dynamic_global_properties();
-                        if (dgp_sj.emergency_consensus_active) {
-                            const auto& wso_sj = database().get_witness_schedule_object();
+                    const auto& dgp_hijack = database().get_dynamic_global_properties();
+                    if (database()._dlt_mode && !_witnesses.empty()
+                        && prev_num > 0 && block_num == prev_num + 1
+                        && dgp_hijack.emergency_consensus_active) {
+                        const auto& wso_sj = database().get_witness_schedule_object();
                             uint32_t nsw_sj = wso_sj.num_scheduled_witnesses;
                             if (nsw_sj > 0 && !wso_sj.current_shuffled_witnesses.empty()) {
                                 // The block we just applied covered slot (current_aslot - 1).
@@ -519,8 +535,8 @@ namespace graphene {
                         }
                     }
 
-                    // No gap, first block, or production not active — nothing to check
-                    if (prev_num == 0 || block_num <= prev_num + 1 || !_production_enabled) {
+                    // No gap, first block, or emergency mode not active — nothing to check
+                    if (prev_num == 0 || block_num <= prev_num + 1) {
                         return;
                     }
 
@@ -592,14 +608,14 @@ namespace graphene {
 
                     elog("MISSED-SLOT-OUR-WITNESS: block #${bn} arrived, ${missed} slot(s) missed between #${prev} and #${bn}. "
                          "Missed witnesses: [${mw}]. OUR witness was scheduled! "
-                         "State: prod_enabled=${pe} ever_produced=${ep} minority_recovering=${mr} "
+                         "State: ever_produced=${ep} minority_recovering=${mr} "
                          "last_slot_result=${sr} not_my_turn_streak=${nmts} slot0_streak=${sz} "
                          "dlt_syncing=${ds} catching_up=${cu} head=#${h} aslot=${a} num_sched=${ns} "
                          "ntp_offset=${ntp}us now=${now} next_slot_time=${nst} next_scheduled=${nsw} "
                          "witnesses=[${wn}] keys=[${ks}]",
                          ("bn", block_num)("missed", missed_count)("prev", prev_num)
                          ("mw", missed_witnesses_list)
-                         ("pe", _production_enabled)("ep", _ever_produced)
+                         ("ep", _ever_produced)
                          ("mr", _minority_fork_recovering)
                          ("sr", _last_slot_result)("nmts", _not_my_turn_streak)
                          ("sz", _slot_zero_streak)
@@ -886,11 +902,43 @@ namespace graphene {
                 // Emergency master threshold: 60s (before 315s blanking at 105 missed blocks).
                 // Regular witness threshold: 180s (before 600s blanking at 200 missed blocks).
                 // Fires every 30s once triggered so the operator has multiple chances to react.
-                if (_ever_produced && _production_enabled) {
-                    auto silent_for = fc::time_point::now() - _last_production_time;
+                if (_ever_produced) {
+                    // Check if production should be active by querying actual state
+                    bool should_be_producing = false;
+                    try {
+                        const auto& dgp_watch = database().get_dynamic_global_properties();
+                        // Production should be active if:
+                        // - Not in minority fork recovery
+                        // - Witnesses are configured
+                        // - Either emergency master OR network is healthy (participation >= 33%)
+                        if (!_minority_fork_recovering && !_witnesses.empty()) {
+                            if (dgp_watch.emergency_consensus_active) {
+                                // Emergency mode: should produce if we have emergency key
+                                should_be_producing = (_witnesses.count(CHAIN_EMERGENCY_WITNESS_ACCOUNT) > 0);
+                            } else {
+                                // Normal mode: should produce if participation is healthy
+                                uint32_t prate_watch = database().witness_participation_rate();
+                                should_be_producing = (prate_watch >= 33 * CHAIN_1_PERCENT);
+                            }
+                        }
+                    } catch (...) {}
+
+                    if (should_be_producing) {
+                        auto silent_for = fc::time_point::now() - _last_production_time;
                     bool is_emrg_master = _witnesses.count(CHAIN_EMERGENCY_WITNESS_ACCOUNT) > 0;
                     int64_t threshold_us = is_emrg_master ? 60000000 : 180000000;
                     if (silent_for.count() > threshold_us) {
+                        // === AUTO-ENABLE DEBUG LOGGING ON FIRST WATCHDOG FIRE ===
+                        // When the watchdog detects that production has stopped unexpectedly,
+                        // automatically enable verbose DEBUG_CRASH logging to capture
+                        // detailed execution flow on every subsequent production tick.
+                        // This helps diagnose why blocks are not being produced.
+                        if (!_watchdog_debug_enabled) {
+                            _watchdog_debug_enabled = true;
+                            database()._debug_block_production = true;
+                            elog("WATCHDOG: Auto-enabled _debug_block_production for detailed diagnostic logging");
+                        }
+
                         static fc::time_point _last_watchdog_log;
                         auto _now_wdog = fc::time_point::now();
                         if ((_now_wdog - _last_watchdog_log).count() > 30000000) {
@@ -945,17 +993,17 @@ namespace graphene {
                             int64_t head_age_s = (fc::time_point::now() - fc::time_point(db_wd.head_block_time())).count() / 1000000;
 
                             elog("WITNESS-WATCHDOG: ${t} silent for ${s}s! "
-                                 "witnesses=${w} keys=${k} prod=${pe} minority_recovering=${mr} "
+                                 "witnesses=${w} keys=${k} skip_flags=${sf} minority_recovering=${mr} "
                                  "slot_result=${sr} dlt_syncing=${ds} catching_up=${c} "
                                  "head=#${h} head_age=${ha}s scheduled_now=${sw} we_are_scheduled=${ws} "
                                  "in_schedule=${is}/${total} blanked_keys=[${bk}] "
                                  "slot0_streak=${sz} not_my_turn_streak=${nmt} last_scheduled=${nmtw} "
-                                 "ntp_offset=${n}us slot_hijacks=${shj}",
+                                 "ntp_offset=${n}us slot_hijacks=${shj} debug_logging=${dl}",
                                  ("t", is_emrg_master ? "emergency master" : "witness")
                                  ("s", silent_for.count() / 1000000)
                                  ("w", witness_names)
                                  ("k", _private_keys.size())
-                                 ("pe", _production_enabled)
+                                 ("sf", _production_skip_flags)
                                  ("mr", _minority_fork_recovering)
                                  ("sr", _last_slot_result)
                                  ("ds", dlt_syncing)
@@ -971,7 +1019,8 @@ namespace graphene {
                                  ("nmt", _not_my_turn_streak)
                                  ("nmtw", _last_scheduled_witness)
                                  ("n", ntp_us)
-                                 ("shj", _slot_hijack_count));
+                                 ("shj", _slot_hijack_count)
+                                 ("dl", _watchdog_debug_enabled));
 
                             // === WATCHDOG PRODUCTION RECOVERY ===
                             // Brute-force recovery: if production is silent but
@@ -994,13 +1043,6 @@ namespace graphene {
 
                             if (head_advancing && !dlt_syncing && !catching_up && has_peers && has_active_keys) {
                                 bool did_recover = false;
-
-                                // Force-enable production regardless of current state
-                                if (!_production_enabled) {
-                                    _production_enabled = true;
-                                    did_recover = true;
-                                    elog("WATCHDOG-RECOVERY: force-enabled _production_enabled");
-                                }
 
                                 // Clear minority fork recovery state
                                 if (_minority_fork_recovering) {
@@ -1115,6 +1157,19 @@ namespace graphene {
                 // This gate applies to ALL witness types (emergency and normal).
                 // The flag is cleared when: pause ends + drain completes +
                 // no peer is ahead (see drain_paused_block_queue / periodic_task).
+                //
+                // Check snapshot plugin directly for snapshot_in_progress flag.
+                try {
+                    if (snapshot().is_snapshot_in_progress()) {
+                        wlog("Deferring block production: snapshot creation in progress "
+                             "(head=#${h}). Waiting for snapshot to complete.",
+                             ("h", db.head_block_num()));
+                        return block_production_condition::not_synced;
+                    }
+                } catch (...) {
+                    // snapshot plugin may not be available
+                }
+
                 try {
                     if (p2p().is_catching_up_after_pause()) {
                         wlog("Deferring block production: P2P is catching up after "
@@ -1140,17 +1195,7 @@ namespace graphene {
                         // collisions and minority forks (p32.log).
                         bool we_are_emergency_master =
                             _witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end();
-                        if (we_are_emergency_master) {
-                            _production_enabled = true;
-                        } else if (!_production_enabled) {
-                            // Slave node in emergency mode: still need sync check
-                            if (db.get_slot_time(1) >= now) {
-                                _production_enabled = true;
-                            } else {
-                                return block_production_condition::not_synced;
-                            }
-                        }
-                        if (_witnesses.empty()) {
+                        if (!we_are_emergency_master && _witnesses.empty()) {
                             elog("EMERGENCY MODE ACTIVE but no witnesses configured! "
                                  "Block production impossible. Add --emergency-private-key to config.");
                         }
@@ -1163,28 +1208,11 @@ namespace graphene {
                             // Clear the stale-production skip flag so that minority fork
                             // detection is re-enabled now that the network is healthy.
                             _production_skip_flags &= ~graphene::chain::database::skip_undo_history_check;
-                            if (!_production_enabled) {
-                                if (db.get_slot_time(1) >= now) {
-                                    _production_enabled = true;
-                                } else {
-                                    return block_production_condition::not_synced;
-                                }
-                            }
                             // Participation is already >= 33%, no need to check again
                         } else {
                             // DISTRESSED NETWORK (participation < 33%, not yet emergency):
                             // Honor manual config overrides -- operator may be trying to
                             // accelerate recovery before the 1-hour timeout.
-                            if (!_production_enabled) {
-                                if (_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
-                                    // enable-stale-production=true -> skip sync check
-                                    _production_enabled = true;
-                                } else if (db.get_slot_time(1) >= now) {
-                                    _production_enabled = true;
-                                } else {
-                                    return block_production_condition::not_synced;
-                                }
-                            }
                             if (prate < _required_witness_participation) {
                                 if (_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
                                     // enable-stale-production=true: operator override, produce anyway
@@ -1211,14 +1239,7 @@ namespace graphene {
                         }
                     }
                 } else {
-                    // Pre-hardfork 12: use legacy behavior with config-based overrides
-                    if (!_production_enabled) {
-                        if (db.get_slot_time(1) >= now) {
-                            _production_enabled = true;
-                        } else {
-                            return block_production_condition::not_synced;
-                        }
-                    }
+                    // Pre-hardfork 12: no participation check here (done later)
                 }
 
                 //try get block post validation list for each witness
@@ -1343,7 +1364,6 @@ namespace graphene {
                                      "Resetting to LIB and resyncing from P2P network.",
                                      ("n", blocks_checked));
                                 p2p().resync_from_lib();
-                                _production_enabled = false;
                                 _minority_fork_recovering = true;
                                 _minority_fork_recovery_start = fc::time_point::now();
                                 return block_production_condition::minority_fork;
@@ -1423,7 +1443,6 @@ namespace graphene {
                                      "Resetting to LIB and resyncing from P2P network.",
                                      ("n", blocks_checked));
                                 p2p().resync_from_lib(true /*force_emergency*/);
-                                _production_enabled = false;
                                 _minority_fork_recovering = true;
                                 _minority_fork_recovery_start = fc::time_point::now();
                                 return block_production_condition::minority_fork;
@@ -1759,13 +1778,23 @@ namespace graphene {
                 // and with_strong_write_lock().
                 op_guard.release();
 
-                // Re-check snapshot pause: the gate at ~line 719 passed before the
+                // Re-check snapshot pause: the gate at ~line 1133 passed before the
                 // snapshot could have started (race window ~1 block interval).
                 // If the snapshot began since then, _block_processing_paused is now
                 // true and generate_block would immediately contend on the read lock
                 // held by the snapshot thread, causing 2-11s write-lock starvation
                 // (p67 incident).  Returning not_time_yet here costs one missed slot
                 // (3 s) — far cheaper than the full snapshot read hold time.
+                //
+                // Check snapshot plugin directly for snapshot_in_progress flag.
+                try {
+                    if (snapshot().is_snapshot_in_progress()) {
+                        dlog("Snapshot started between production checks for slot ${s}, skipping produce",
+                             ("s", slot));
+                        return block_production_condition::not_time_yet;
+                    }
+                } catch (...) {}
+
                 try {
                     if (p2p().is_catching_up_after_pause()) {
                         dlog("Snapshot started between production checks for slot ${s}, skipping produce",
@@ -1817,7 +1846,6 @@ namespace graphene {
                         elog("unlinkable_block_exception during block generation: fork_db broken. "
                              "Rolling back to LIB and resyncing from P2P network.");
                         p2p().resync_from_lib(dgp.emergency_consensus_active /*force_emergency*/);
-                        _production_enabled = false;
                         _minority_fork_recovering = true;
                         _minority_fork_recovery_start = fc::time_point::now();
                         return block_production_condition::minority_fork;
