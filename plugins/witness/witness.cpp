@@ -1524,7 +1524,12 @@ namespace graphene {
                     {
                         int64_t ntp_us = 0;
                         try { ntp_us = graphene::time::ntp_error().count(); } catch (...) {}
-                        if (ntp_us > 250000) { // local clock >250ms behind NTP
+                         #if defined(_WIN32)
+constexpr int64_t NTP_WARN_THRESHOLD_US = 2000000; // 2s pe Windows
+#else
+constexpr int64_t NTP_WARN_THRESHOLD_US = 250000;  // 250ms pe Linux/macOS
+#endif
+if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                             static fc::time_point _last_ntp_drift_log;
                             auto _now_nd = fc::time_point::now();
                             if ((_now_nd - _last_ntp_drift_log).count() > 10000000) {
