@@ -194,11 +194,17 @@ void dlt_p2p_node::close() {
 
 // ── Connection management ────────────────────────────────────────────
 
-// ── Per-IP dedup: find any existing active connection from the same IP ─
-dlt_p2p_node::peer_id dlt_p2p_node::find_active_peer_by_ip(const fc::ip::address& addr) const {
+// ── Per-node-id dedup: find any existing active connection to the same node ─
+// We identify nodes by the node_id they advertise in their hello message.
+// This correctly handles multiple nodes behind the same NAT (same IP, different
+// ports) — each node has a unique keypair, so only true duplicates are rejected.
+// Returns INVALID_PEER_ID for zero node_id (old peer that didn't send one).
+dlt_p2p_node::peer_id dlt_p2p_node::find_active_peer_by_node_id(const node_id_t& nid) const {
+    static const node_id_t zero_id;
+    if (nid == zero_id) return INVALID_PEER_ID;
     for (const auto& item : _peer_states) {
         const auto& state = item.second;
-        if (state.endpoint.get_address() == addr &&
+        if (state.node_id == nid &&
             (state.lifecycle_state == DLT_PEER_LIFECYCLE_CONNECTING ||
              state.lifecycle_state == DLT_PEER_LIFECYCLE_HANDSHAKING ||
              state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING ||
@@ -234,7 +240,7 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
     // which causes broadcast amplification.
     // EXCEPTION: Allow reconnect if the target peer itself is DISCONNECTED,
     // even if another connection to the same IP exists (different port).
-    if (!found_existing) {
+   /* if (!found_existing) {
         fc::ip::address target_ip = ep.get_address();
         peer_id existing_ip_conn = find_active_peer_by_ip(target_ip);
         if (existing_ip_conn != INVALID_PEER_ID) {
@@ -242,7 +248,11 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
                  ("ep", ep)("pid", existing_ip_conn));
             return;
         }
-    }
+    }*/
+   // NOTE: We no longer skip outbound connections based on IP address alone.
+    // Multiple nodes behind the same NAT share the same public IP but have
+    // different P2P ports and unique node_ids.  Deduplication happens post-hello
+    // in on_dlt_hello() where we compare node_id values.
 
     if (!found_existing) {
         pid = _next_peer_id++;
@@ -591,7 +601,14 @@ void dlt_p2p_node::drain_send_queue(peer_id peer, std::vector<char> buf) {
 void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclude, const block_id_type& block_id) {
     // Per-IP dedup: send to each unique IP only once, even if multiple
     // peer entries exist for the same IP (belt-and-suspenders safety net).
-    std::set<fc::ip::address> sent_to_ips;
+     // Dedup by node_id: send to each unique node only once, even if multiple
+    // peer entries exist for the same node (e.g. duplicate connections still
+    // being cleaned up).  We do NOT dedup by IP address — multiple distinct
+    // nodes can share the same NAT IP and each deserves its own copy.
+    // Falls back to endpoint dedup for peers without a node_id (old protocol).
+    std::set<node_id_t>        sent_to_node_ids;
+    std::set<fc::ip::endpoint> sent_to_endpoints;
+    static const node_id_t zero_id;
 
     // Diagnostic: count eligible vs skipped peers
     uint32_t eligible = 0, skipped_not_exchange = 0, skipped_not_active = 0, skipped_echo = 0, skipped_peer_syncing = 0;
@@ -631,9 +648,16 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
             skipped_echo++;
             continue;
         }
-        fc::ip::address ip = state.endpoint.get_address();
-        if (sent_to_ips.count(ip)) continue;  // already sent to this IP
-        sent_to_ips.insert(ip);
+        // Dedup: skip if we already queued a send to the same node.
+        // Use node_id when available (correctly handles NAT), fall back to
+        // full endpoint (IP:port) for old peers without a node_id.
+        if (state.node_id != zero_id) {
+            if (sent_to_node_ids.count(state.node_id)) continue;
+            sent_to_node_ids.insert(state.node_id);
+        } else {
+            if (sent_to_endpoints.count(state.endpoint)) continue;
+            sent_to_endpoints.insert(state.endpoint);
+        }
         targets.push_back(id);
         eligible++;
     }
@@ -834,6 +858,7 @@ dlt_hello_message dlt_p2p_node::build_hello_message() const {
     hello.has_emergency_key = _delegate->has_emergency_private_key();
     hello.fork_status = _fork_status;
     hello.node_status = _node_status;
+    hello.node_id = _node_id;  // identify ourselves so NAT peers can dedup by node, not IP
     return hello;
 }
 
@@ -908,6 +933,30 @@ void dlt_p2p_node::on_dlt_hello(peer_id peer, const dlt_hello_message& hello) {
     if (their_major != our_major) {
         wlog("Peer ${ep} has different protocol version (${theirs} vs ${ours}), disabling exchange",
              ("ep", state.endpoint)("theirs", their_major)("ours", our_major));
+    }
+    
+// Persist node_id — used for dedup and peer-exchange identity.
+    state.node_id = hello.node_id;
+
+    // ── Post-hello node_id dedup ────────────────────────────────────────────
+    // Now that we know the remote node's identity, check if we already have an
+    // active connection to the exact same node.  This correctly handles:
+    //   • A node reconnecting before the old connection was cleaned up
+    //   • Simultaneous inbound + outbound to the same node
+    // It does NOT fire for two different nodes sharing the same NAT IP, because
+    // each node generates a unique keypair (node_id).
+    static const node_id_t zero_id;
+    if (hello.node_id != zero_id) {
+        peer_id dup = find_active_peer_by_node_id(hello.node_id);
+        if (dup != INVALID_PEER_ID && dup != peer) {
+            auto dup_it = _peer_states.find(dup);
+            auto dup_ep = (dup_it != _peer_states.end()) ? dup_it->second.endpoint : fc::ip::endpoint();
+            dlog(DLT_LOG_DGRAY "Closing duplicate connection from ${ep} "
+                 "(same node_id already active as peer ${dup} at ${dep})" DLT_LOG_RESET,
+                 ("ep", state.endpoint)("dup", dup)("dep", dup_ep));
+            handle_disconnect(peer, "duplicate node_id");
+            return;
+        }
     }
 
     // Store peer's chain state
@@ -3486,7 +3535,7 @@ void dlt_p2p_node::accept_loop() {
                 continue;
             }
 
-            peer_id existing = find_active_peer_by_ip(incoming_ip);
+           /* peer_id existing = find_active_peer_by_ip(incoming_ip);
             if (existing != INVALID_PEER_ID) {
                 auto ex_it = _peer_states.find(existing);
                 auto ex_ep = (ex_it != _peer_states.end()) ? ex_it->second.endpoint : fc::ip::endpoint();
@@ -3497,7 +3546,12 @@ void dlt_p2p_node::accept_loop() {
                 _connections.erase(pid);
                 sock->close();
                 continue;
-            }
+            }*/
+             // NOTE: We do NOT reject here based on IP address alone.
+            // Multiple nodes behind the same NAT share the same public IP but
+            // have different P2P ports and unique node_ids.  Deduplication of
+            // truly-duplicate connections (same node reconnecting) is done
+            // post-hello in on_dlt_hello() by comparing node_id values.
 
             // Isolated-peers: only accept inbound from configured seed IPs.
             if (_isolated_peers) {

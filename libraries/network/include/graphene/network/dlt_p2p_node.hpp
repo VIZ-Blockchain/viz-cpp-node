@@ -273,7 +273,7 @@ private:
     bool is_same_subnet(const fc::ip::address& a, const fc::ip::address& b) const;
 
     // ── Per-IP dedup ─────────────────────────────────────────────
-    peer_id find_active_peer_by_ip(const fc::ip::address& addr) const;
+    peer_id find_active_peer_by_node_id(const node_id_t& nid) const;
 
 private:
     dlt_p2p_delegate*               _delegate = nullptr;
