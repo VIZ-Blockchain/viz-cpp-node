@@ -1,5 +1,8 @@
 # Defines VIZ library target.
 project(VIZ)
+if(MINGW)
+    link_libraries(bcrypt)
+endif()
 cmake_minimum_required(VERSION 3.16)
 
 set(CHAIN_NAME "VIZ")
