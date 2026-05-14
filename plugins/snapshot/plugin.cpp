@@ -3626,16 +3626,17 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     }
 
     // Register snapshot loading callback on the chain plugin.
-    // This ensures the snapshot is loaded DURING chain plugin startup,
-    // BEFORE on_sync() fires and P2P starts syncing.
-    if (!my->snapshot_path.empty()) {
+    // Always registered so that attempt_auto_recovery() can use it at runtime,
+    // even when the node started without --snapshot/--snapshot-auto-latest.
+    // The snapshot path is passed as an argument by do_snapshot_load().
+    // initialize_hardforks() is called by do_snapshot_load() after this callback returns.
+    {
         auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
-        chain_plug.snapshot_load_callback = [this, &chain_plug]() {
-            ilog("Loading state from snapshot: ${p}", ("p", my->snapshot_path));
+        chain_plug.snapshot_load_callback = [this, &chain_plug](const fc::path& snap_path) {
+            ilog("Loading state from snapshot: ${p}", ("p", snap_path));
             auto start = fc::time_point::now();
             try {
-                my->load_snapshot(fc::path(my->snapshot_path));
-                my->db.initialize_hardforks();
+                my->load_snapshot(snap_path);
             } catch (...) {
                 elog("Snapshot load failed — wiping corrupted shared memory before restart");
                 try {

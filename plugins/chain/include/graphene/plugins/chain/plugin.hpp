@@ -109,7 +109,8 @@ namespace graphene {
                 // Callback for snapshot loading. Set by the snapshot plugin during initialize().
                 // Called by the chain plugin during startup() BEFORE on_sync(),
                 // so that the snapshot state is loaded before P2P starts syncing.
-                std::function<void()> snapshot_load_callback;
+                // The path of the snapshot file to load is passed as an argument.
+                std::function<void(const fc::path&)> snapshot_load_callback;
 
                 // Callback for snapshot creation. Set by the snapshot plugin during initialize().
                 // Called by the chain plugin during startup() AFTER full DB load (including replay),

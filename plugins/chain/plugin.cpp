@@ -712,7 +712,7 @@ namespace chain {
         // snapshot head block, not from genesis.
         if (snapshot_load_callback) {
             try {
-                snapshot_load_callback();
+                snapshot_load_callback(fc::path(my->snapshot_path));
             } catch (const fc::exception& e) {
                 elog("FATAL: Failed to load snapshot: ${e}", ("e", e.to_detail_string()));
                 if (!is_recovery) {
@@ -739,11 +739,12 @@ namespace chain {
             throw std::runtime_error("Snapshot plugin not configured");
         }
 
+        my->db.initialize_hardforks();
+
         // Recovery mode: replay dlt_block_log on top of snapshot
         if (is_recovery) {
             uint32_t snapshot_head = my->db.head_block_num();
-            ilog("Snapshot loaded at block ${n}. Initializing hardforks...", ("n", snapshot_head));
-            my->db.initialize_hardforks();
+            ilog("Snapshot loaded at block ${n}.", ("n", snapshot_head));
 
             // Replay blocks from dlt_block_log if available
             const auto& dlt_head = my->db.get_dlt_block_log().head();
