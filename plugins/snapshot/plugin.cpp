@@ -1765,10 +1765,15 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
 
         ilog(CLOG_GREEN "Scheduling async ${label} snapshot: ${p}" CLOG_RESET, ("label", label)("p", output.string()));
         snapshot_future = snapshot_thread->async([this, output, label, p2p_plug]() {
-            // RAII guard to ensure snapshot_in_progress is always reset
+            // Guard clears snapshot_in_progress on scope exit.
+            // release() disables the destructor once the DB read lock drops —
+            // compression and file I/O below don't block the write lock,
+            // so the witness can produce as soon as the lock is released.
             struct flag_guard {
                 std::atomic<bool>& flag;
-                ~flag_guard() { flag = false; }
+                bool released = false;
+                void release() { released = true; flag.store(false, std::memory_order_release); }
+                ~flag_guard() { if (!released) flag.store(false, std::memory_order_release); }
             };
             flag_guard guard{snapshot_in_progress};
 
@@ -1776,14 +1781,16 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
 
             bool p2p_resumed = false;
             try {
-                create_snapshot(output, [&p2p_resumed, p2p_plug]() {
-                    // Resume P2P after DB read completes — compression and
-                    // file I/O operate on cached in-memory data and don't
-                    // need P2P paused.
+                create_snapshot(output, [&p2p_resumed, &guard, p2p_plug]() {
+                    // DB read lock just dropped — resume P2P and unblock the witness.
+                    // Compression and file I/O that follow don't hold any DB lock.
                     if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
                         p2p_plug->resume_block_processing();
                         p2p_resumed = true;
                     }
+                    guard.release();
+                    ilog("Snapshot DB read complete — block production unblocked, "
+                         "compression/file-write continuing in background");
                 });
                 cleanup_old_snapshots();
             } catch (const fc::exception& e) {
@@ -1794,11 +1801,13 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
                 elog("Failed to create ${label} snapshot: unknown exception", ("label", label));
             }
 
-            // Safety resume: if create_snapshot threw before reaching the
-            // callback (e.g. during DB read), P2P is still paused.
+            // Safety resume: if create_snapshot threw before the callback
+            // (e.g. during DB read), P2P is still paused and flag still set.
             if (!p2p_resumed && p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
                 p2p_plug->resume_block_processing();
             }
+            // flag_guard destructor: no-op if callback ran (guard.released==true),
+            // clears flag on exception path (guard.released==false).
         }, "async_snapshot");
     };
 
