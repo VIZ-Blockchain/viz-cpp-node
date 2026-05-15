@@ -497,9 +497,9 @@ namespace graphene {
                         const auto& wso_sj = database().get_witness_schedule_object();
                         uint32_t nsw_sj = wso_sj.num_scheduled_witnesses;
                         if (nsw_sj > 0) {
-                            // The block we just applied covered slot (current_aslot - 1).
-                            // Check which witness was scheduled for that slot.
-                            uint64_t slot_idx = (dgp_hijack.current_aslot - 1) % nsw_sj;
+                            // apply_block increments current_aslot to the applied block's slot
+                            // before this callback fires, so current_aslot IS the applied slot.
+                            uint64_t slot_idx = dgp_hijack.current_aslot % nsw_sj;
                             const std::string& expected_witness =
                                 wso_sj.current_shuffled_witnesses[slot_idx];
                             bool was_our_slot = _witnesses.count(expected_witness) > 0;
