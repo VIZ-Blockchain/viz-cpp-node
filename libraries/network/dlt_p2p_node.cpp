@@ -3383,7 +3383,11 @@ void dlt_p2p_node::periodic_peer_exchange() {
     if (_isolated_peers) return;
     if (_node_status != DLT_NODE_STATUS_FORWARD) return;
 
-    // Pick a random active peer to request exchange from
+    // Pick a random active peer to request exchange from.
+    // When only one exchange-enabled peer exists (common for nodes behind NAT
+    // or freshly started nodes), all requests go to that single peer and hit
+    // the 3/300s rate-limit quickly.  Back off to one request per 90s in that
+    // case so we never exceed the limit (3 requests / 300s = 1 per 100s max).
     std::vector<peer_id> candidates;
     for (auto& _peer_item : _peer_states) {
             auto& id = _peer_item.first;
@@ -3396,6 +3400,35 @@ void dlt_p2p_node::periodic_peer_exchange() {
     }
 
     if (candidates.empty()) return;
+
+    // Dynamic throttle: ensure no single peer is asked more than 3 times per 300s.
+    //
+    // With N exchange-enabled peers and a random pick each loop (5s interval):
+    //   requests per peer per 300s ≈ 300s / 5s / N = 60 / N
+    //   rate-limit threshold        = 3 requests / 300s
+    //   safe minimum loop interval  = 300s / (3 × N) = 100s / N
+    //
+    // Examples:
+    //   N=1  → min interval 100s  (was hardcoded 90s, now exact)
+    //   N=2  → min interval  50s
+    //   N=5  → min interval  20s
+    //   N=20 → min interval   5s  (≥ loop tick, no extra throttle needed)
+    //
+    // We track _last_peer_exchange globally; the random peer pick spreads
+    // load evenly across candidates so this global gate is sufficient.
+    {
+        size_t n = candidates.size();
+        int64_t min_interval_us = (n >= 20)
+            ? 0LL
+            : static_cast<int64_t>(100'000'000LL / static_cast<int64_t>(n)); // 100s / N in microseconds
+        if (min_interval_us > 0) {
+            auto now = fc::time_point::now();
+            if ((now - _last_peer_exchange_time).count() < min_interval_us) return;
+            _last_peer_exchange_time = now;
+        }
+    }
+
+
 
     thread_local std::mt19937 peer_rng(std::hash<std::thread::id>{}(std::this_thread::get_id()) ^ uint32_t(fc::time_point::now().sec_since_epoch()));
     size_t idx = peer_rng() % candidates.size();

@@ -432,6 +432,9 @@ private:
     static constexpr uint32_t           BLOCKED_IP_DURATION_SEC = 3600; // 1 hour
     void                                block_incoming_ip(uint32_t ip, const std::string& reason);
     bool                                is_ip_blocked(uint32_t ip);
+      // Last time a peer exchange request was sent — used by periodic_peer_exchange()
+    // to dynamically throttle based on the number of active peers (see impl).
+    fc::time_point                      _last_peer_exchange_time;
 
     // ── Diagnostics ───────────────────────────────────────────────
     fc::time_point                  _node_start_time;
