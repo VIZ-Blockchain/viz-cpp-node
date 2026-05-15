@@ -1,6 +1,7 @@
 #include <graphene/chain/database_exceptions.hpp>
 #include <graphene/chain/database.hpp>
 #include <graphene/plugins/chain/plugin.hpp>
+#include <graphene/plugins/p2p/p2p_plugin.hpp>
 
 #include <fc/io/json.hpp>
 #include <fc/string.hpp>
@@ -842,16 +843,35 @@ namespace chain {
             return;
         }
 
+        // 2. Pause ALL database consumers BEFORE closing the database.
+        //    Without this, P2P threads push blocks into a database that
+        //    is being wiped and rebuilt, causing the exact corruption
+        //    pattern we see: some objects exist (imported early) while
+        //    others are missing (concurrent access during import).
+        wlog("Auto-recovery: pausing P2P block processing...");
+        try {
+            auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+            if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                p2p_plug->pause_block_processing();
+                wlog("Auto-recovery: P2P block processing paused");
+            }
+        } catch (...) {
+            wlog("Auto-recovery: failed to pause P2P (may not be started yet)");
+        }
+
+        // Mark syncing so witness plugin defers block production during recovery.
+        my->currently_syncing.store(true, std::memory_order_relaxed);
+
         wlog("Auto-recovery: closing database and recovering from snapshot ${p}...", ("p", snap.string()));
 
-        // 2. Close current (corrupted) database
+        // 3. Close current (corrupted) database
         try {
             my->db.close(false); // close without rewind — state is corrupted anyway
         } catch (...) {
             wlog("Auto-recovery: ignoring error during database close (state is corrupted)");
         }
 
-        // 3. Set snapshot path and trigger full recovery (wipe + import + dlt replay)
+        // 4. Set snapshot path and trigger full recovery (wipe + import + dlt replay)
         my->snapshot_path = snap.string();
         auto data_dir = appbase::app().data_dir() / "state";
 
@@ -859,6 +879,19 @@ namespace chain {
             do_snapshot_load(data_dir, true);
             wlog("=== AUTO-RECOVERY COMPLETE: node resumed at block ${n} ===",
                  ("n", my->db.head_block_num()));
+
+            // 5. Resume P2P now that the database is fully rebuilt.
+            //    do_snapshot_load(is_recovery=true) already set LIB = head
+            //    so P2P will request blocks after the snapshot head.
+            try {
+                auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
+                if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                    p2p_plug->resume_block_processing();
+                    wlog("Auto-recovery: P2P block processing resumed");
+                }
+            } catch (...) {
+                wlog("Auto-recovery: failed to resume P2P");
+            }
         } catch (const fc::exception& e) {
             elog("Auto-recovery FAILED during snapshot load: ${e}", ("e", e.to_detail_string()));
             appbase::app().quit();

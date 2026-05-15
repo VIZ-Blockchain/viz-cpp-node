@@ -288,6 +288,15 @@ public:
             wlog("Unlinkable block #${n}, storing in fork_db", ("n", block.block_num()));
             chain.db().get_fork_db().push_block(block);
             return dlt_block_accept_result::FORK_DB_ONLY;
+        } catch (const graphene::chain::shared_memory_corruption_exception& e) {
+            // Shared memory corruption — trigger auto-recovery instead of
+            // silently rejecting the block.  Without this dedicated catch the
+            // exception falls through to the generic fc::exception handler
+            // below, which simply returns REJECTED and the node stays stuck.
+            wlog("Shared memory corruption in P2P accept_block #${n}: ${e}",
+                 ("n", block.block_num())("e", e.to_detail_string()));
+            chain.attempt_auto_recovery();
+            return dlt_block_accept_result::REJECTED;
         } catch (const graphene::chain::deferred_resize_exception&) {
             // Transient out-of-memory — not a bad block, just needs retry.
             // Re-throw as the network-namespace equivalent so the P2P layer
