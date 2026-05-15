@@ -33,7 +33,9 @@ target_link_libraries(
         graphene_p2p_plugin
 )
 target_include_directories(graphene_${CURRENT_TARGET}
-                           PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/../../")
+                           PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/../../"
+                           PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../p2p/include"
+)
 
 install(TARGETS
         graphene_${CURRENT_TARGET}
