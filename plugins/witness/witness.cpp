@@ -554,6 +554,7 @@ namespace graphene {
                     const auto &wso = database().get_witness_schedule_object();
                     uint64_t cur_aslot = dgp.current_aslot;
                     uint32_t num_witnesses = wso.num_scheduled_witnesses;
+                    if (num_witnesses == 0) return;
 
                     // Check each missed slot to see if our witness was scheduled
                     bool our_witness_missed = false;
