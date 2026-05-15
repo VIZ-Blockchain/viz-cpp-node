@@ -706,9 +706,20 @@ void p2p_plugin::pause_block_processing() {
 }
 
 void p2p_plugin::resume_block_processing() {
+    // Set the two atomic flags immediately from the calling thread.
+    // Both are std::atomic<bool> so no P2P-thread dispatch is needed.
+    // _catchup_after_pause must be true before snapshot_in_progress is
+    // cleared so the witness gates stay consistent (no stale-head fork).
+    if (my && my->node)
+        my->node->set_resume_flags();
+
+    // Post logging + drain to the P2P thread without waiting.
+    // _paused_block_queue is P2P-thread-only so the drain runs there.
+    // We do NOT .wait() — flags are already set and the caller can
+    // call guard.release() (clear snapshot_in_progress) immediately.
     my->p2p_thread.async([this]() {
-        my->node->resume_block_processing();
-    }).wait();
+        if (my->node) my->node->run_resume_on_p2p_thread();
+    });
 }
 
 fc::time_point p2p_plugin::get_last_network_block_time() const {

@@ -164,6 +164,19 @@ public:
         _block_processing_paused = false;
     }
 
+    // Set the resume flags atomically from any thread.
+    // Both are std::atomic<bool> so no P2P-thread dispatch is needed.
+    // _catchup_after_pause is set to true so the witness defers until
+    // the drain completes; the caller must schedule run_resume_on_p2p_thread()
+    // on the P2P thread to run the drain.
+    void set_resume_flags() noexcept {
+        _block_processing_paused.store(false, std::memory_order_release);
+        _catchup_after_pause.store(true, std::memory_order_release);
+    }
+
+    // Logging + drain after resume — must run on the P2P thread.
+    void run_resume_on_p2p_thread();
+
     // ── Called by plugin when a block is applied to chain ────────
     void on_block_applied(const signed_block& block, bool caused_fork_switch);
 

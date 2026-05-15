@@ -2318,20 +2318,14 @@ void dlt_p2p_node::drain_paused_block_queue() {
     _paused_block_queue.clear();
 }
 
-void dlt_p2p_node::resume_block_processing() {
-    _block_processing_paused = false;
+void dlt_p2p_node::run_resume_on_p2p_thread() {
     ilog("DLT P2P: block processing resumed");
-
-    // Set catchup flag immediately so the witness plugin defers
-    // production until we finish draining queued blocks.
-    _catchup_after_pause = true;
 
     if (!_delegate) return;
 
-    // Drain queued blocks on the P2P thread to avoid threading
-    // issues (accept_block / push_block must run where P2P
-    // operations are safe).  The snapshot thread calls this
-    // method; _thread->async() posts work to the P2P fiber.
+    // Drain queued blocks on the P2P thread.
+    // _paused_block_queue is P2P-thread-only; accept_block/push_block
+    // must run here.
     if (!_paused_block_queue.empty()) {
         if (_thread) {
             _thread->async([this]() {
@@ -2374,6 +2368,11 @@ void dlt_p2p_node::resume_block_processing() {
             }
         }
     }
+}
+
+void dlt_p2p_node::resume_block_processing() {
+    set_resume_flags();
+    run_resume_on_p2p_thread();
 }
 
 bool dlt_p2p_node::is_on_majority_fork() const {
