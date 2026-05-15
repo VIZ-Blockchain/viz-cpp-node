@@ -82,6 +82,25 @@ void dlt_p2p_node::set_witness_diag_provider(std::function<std::string()> fn) {
 }
 
 void dlt_p2p_node::block_incoming_ip(uint32_t ip, const std::string& reason) {
+    // NAT safety: if multiple active peers share this IP (nodes behind the same NAT),
+    // blocking the IP would kill all of them.  Only block when a single peer is using
+    // this IP — that's the typical single-machine attacker scenario.
+    uint32_t peers_with_ip = 0;
+    for (const auto& item : _peer_states) {
+        const auto& s = item.second;
+        if ((uint32_t)s.endpoint.get_address() == ip &&
+            (s.lifecycle_state == DLT_PEER_LIFECYCLE_CONNECTING  ||
+             s.lifecycle_state == DLT_PEER_LIFECYCLE_HANDSHAKING ||
+             s.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING     ||
+             s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE)) {
+            ++peers_with_ip;
+        }
+    }
+    if (peers_with_ip > 1) {
+        wlog(DLT_LOG_ORANGE "NAT: NOT blocking IP ${ip} (${n} active peers share this IP) — reason was: ${r}" DLT_LOG_RESET,
+             ("ip", std::string(fc::ip::address(ip)))("n", peers_with_ip)("r", reason));
+        return;  // Don't punish NAT peers for one misbehaving connection
+    }
     fc::time_point unblock_at = fc::time_point::now() + fc::seconds(BLOCKED_IP_DURATION_SEC);
     _blocked_ips[ip] = unblock_at;
     wlog(DLT_LOG_ORANGE "Blocking IP ${ip} for ${d}s: ${r}" DLT_LOG_RESET,
@@ -193,6 +212,42 @@ void dlt_p2p_node::close() {
 }
 
 // ── Connection management ────────────────────────────────────────────
+
+// ── Backward-compatible hello deserializer ───────────────────────────────────
+// FC_REFLECT-based deserialization (msg.as<dlt_hello_message>()) expects ALL
+// fields to be present in the byte stream.  Old nodes (protocol_version=1,
+// 62-byte payload) do NOT include the node_id field (added in v2, 33 bytes).
+// Calling msg.as<>() on such a message throws out_of_range_exception ("over by 1"
+// — the first byte of the missing node_id cannot be read).
+//
+// This helper deserializes field-by-field and treats node_id as OPTIONAL:
+// it is read only when the stream still has >= sizeof(node_id_t) bytes left.
+// Unknown trailing bytes (future fields) are silently ignored.
+static dlt_hello_message unpack_hello_compat(const message& msg) {
+    FC_ASSERT(msg.msg_type == dlt_hello_message_type);
+    dlt_hello_message hello;
+    if (msg.data.empty()) return hello;
+    fc::datastream<const char*> ds(msg.data.data(), msg.data.size());
+    fc::raw::unpack(ds, hello.protocol_version);
+    fc::raw::unpack(ds, hello.head_block_id);
+    fc::raw::unpack(ds, hello.head_block_num);
+    fc::raw::unpack(ds, hello.lib_block_id);
+    fc::raw::unpack(ds, hello.lib_block_num);
+    fc::raw::unpack(ds, hello.dlt_earliest_block);
+    fc::raw::unpack(ds, hello.dlt_latest_block);
+    fc::raw::unpack(ds, hello.emergency_active);
+    fc::raw::unpack(ds, hello.has_emergency_key);
+    fc::raw::unpack(ds, hello.fork_status);
+    fc::raw::unpack(ds, hello.node_status);
+    // node_id (sizeof = 33 bytes for compressed secp256k1 key) is optional:
+    //   - absent   → old protocol (v1 peer, 62-byte hello) — treat as zero_id
+    //   - present  → new protocol (v2+ peer, 95-byte hello) — use for NAT dedup
+    if (ds.remaining() >= sizeof(node_id_t)) {
+        fc::raw::unpack(ds, hello.node_id);
+    }
+    // Any remaining bytes are future protocol fields — ignored for forward compat.
+    return hello;
+}
 
 // ── Per-node-id dedup: find any existing active connection to the same node ─
 // We identify nodes by the node_id they advertise in their hello message.
@@ -745,7 +800,9 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
     try {
         switch (msg.msg_type) {
             case dlt_hello_message_type:
-                on_dlt_hello(peer, msg.as<dlt_hello_message>());
+                // unpack_hello_compat handles both v1 (no node_id, 62 bytes) and
+                // v2+ (with node_id, 95 bytes) — avoids out_of_range_exception.
+                on_dlt_hello(peer, unpack_hello_compat(msg));
                 break;
             case dlt_hello_reply_message_type:
                 on_dlt_hello_reply(peer, msg.as<dlt_hello_reply_message>());
@@ -847,7 +904,7 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
 
 dlt_hello_message dlt_p2p_node::build_hello_message() const {
     dlt_hello_message hello;
-    hello.protocol_version = 1;
+    hello.protocol_version = 1;  // keep at 1 for backward compat — node_id is read optionally by unpack_hello_compat
     hello.head_block_id = _delegate->get_head_block_id();
     hello.head_block_num = _delegate->get_head_block_num();
     hello.lib_block_id = _delegate->get_lib_block_id();
@@ -927,15 +984,19 @@ void dlt_p2p_node::on_dlt_hello(peer_id peer, const dlt_hello_message& hello) {
     if (it == _peer_states.end()) return;
     auto& state = it->second;
 
-    // Protocol version check
-    uint16_t our_major = 1; // current protocol version
+    // Protocol version check.
+    // We stay at v1 for wire compatibility — old nodes reject mismatched versions.
+    // node_id (added in this codebase) is parsed optionally by unpack_hello_compat,
+    // so the version number does not need to change.
+    // Log unknown future versions but don't disconnect — be forward-compatible.
+    uint16_t our_major = 1;
     uint16_t their_major = hello.protocol_version;
     if (their_major != our_major) {
-        wlog("Peer ${ep} has different protocol version (${theirs} vs ${ours}), disabling exchange",
+        wlog("Peer ${ep} has unexpected protocol version ${theirs} (ours=${ours}) — continuing anyway",
              ("ep", state.endpoint)("theirs", their_major)("ours", our_major));
     }
-    
-// Persist node_id — used for dedup and peer-exchange identity.
+
+    // Persist node_id — used for dedup and peer-exchange identity.
     state.node_id = hello.node_id;
 
     // ── Post-hello node_id dedup ────────────────────────────────────────────
