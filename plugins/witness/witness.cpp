@@ -497,15 +497,17 @@ namespace graphene {
                         const auto& wso_sj = database().get_witness_schedule_object();
                         uint32_t nsw_sj = wso_sj.num_scheduled_witnesses;
                         if (nsw_sj > 0) {
-                            // The block we just applied covered slot (current_aslot - 1).
-                            // Check which witness was scheduled for that slot.
-                            uint64_t slot_idx = (dgp_hijack.current_aslot - 1) % nsw_sj;
+                            // apply_block increments current_aslot to the applied block's slot
+                            // before this callback fires, so current_aslot IS the applied slot.
+                            uint64_t slot_idx = dgp_hijack.current_aslot % nsw_sj;
                             const std::string& expected_witness =
                                 wso_sj.current_shuffled_witnesses[slot_idx];
                             bool was_our_slot = _witnesses.count(expected_witness) > 0;
+                            // True hijack only if the actual producer is NOT also one of our witnesses.
+                            bool producer_is_ours = _witnesses.count(block.witness) > 0;
 
-                            if (was_our_slot && block.witness != expected_witness) {
-                                // Committee (or another witness) produced at our slot.
+                            if (was_our_slot && !producer_is_ours && block.witness != expected_witness) {
+                                // External witness (committee / emergency) produced at our slot.
                                 _slot_hijack_count++;
                                 _slot_hijack_height = static_cast<uint32_t>(block_num);
                                 // Log the first 3 hijacks, then once per minute.
@@ -523,12 +525,12 @@ namespace graphene {
                                          ("aslot", (uint64_t)dgp_hijack.current_aslot)
                                          ("nsched", nsw_sj));
                                 }
-                            } else if (was_our_slot && block.witness == expected_witness) {
-                                // Our witness produced — reset hijack counter.
+                            } else if (was_our_slot && (block.witness == expected_witness || producer_is_ours)) {
+                                // Our witness (expected or another of ours) produced — reset hijack counter.
                                 if (_slot_hijack_count > 0) {
                                     wlog("SLOT-HIJACK-RESOLVED: our witness '${wit}' produced "
                                          "block #${bn} after ${cnt} hijacked slot(s).",
-                                         ("wit", expected_witness)("bn", block_num)("cnt", _slot_hijack_count));
+                                         ("wit", block.witness)("bn", block_num)("cnt", _slot_hijack_count));
                                 }
                                 _slot_hijack_count = 0;
                             }
@@ -552,6 +554,7 @@ namespace graphene {
                     const auto &wso = database().get_witness_schedule_object();
                     uint64_t cur_aslot = dgp.current_aslot;
                     uint32_t num_witnesses = wso.num_scheduled_witnesses;
+                    if (num_witnesses == 0) return;
 
                     // Check each missed slot to see if our witness was scheduled
                     bool our_witness_missed = false;
