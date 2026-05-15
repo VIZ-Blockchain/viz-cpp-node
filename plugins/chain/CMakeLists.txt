@@ -30,7 +30,7 @@ target_link_libraries(
         fc
         appbase
         graphene::json_rpc
-        graphene_p2p_plugin
+        graphene::p2p
 )
 target_include_directories(graphene_${CURRENT_TARGET}
                            PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/../../"
