@@ -269,3 +269,101 @@ if (_node_status == DLT_NODE_STATUS_FORWARD) return;
 | `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | `clear_syncing()` pure virtual in `dlt_p2p_delegate` |
 | `plugins/p2p/p2p_plugin.cpp` | `dlt_delegate::clear_syncing()` → `chain.clear_syncing()` |
 | `libraries/network/dlt_p2p_node.cpp` | `transition_to_forward()` calls `_delegate->clear_syncing()` |
+
+---
+
+## Bug 4 — resume_block_processing() deadlock via async().wait() under read lock
+
+### Observed symptom
+
+After a snapshot the P2P layer would occasionally stall: the paused block queue never
+drained and production never resumed, requiring a node restart.
+
+### Root cause
+
+`resume_block_processing()` was implemented by posting a task to the P2P thread via
+`async().wait()` — i.e. it **blocked the calling thread** until the P2P thread completed
+the task.
+
+The call chain:
+
+```
+snapshot completes
+  → on_applied_block signal
+      → flush_pending_block_notifications()
+          → with_weak_read_lock()
+              → resume_block_processing()
+                  → async(P2P thread).wait()   ← blocks here
+```
+
+A second P2P fiber that had already passed the `_block_processing_paused` check called
+`push_block()`, which needed a **write lock** on the database.  That write lock was
+blocked by our read lock.  The OS thread was frozen waiting for the write lock; the
+posted async task could never run (it was on the same thread); therefore `wait()` never
+returned.  Deadlock.
+
+### Fix
+
+`resume_block_processing()` split into two phases:
+
+**Phase 1 (immediate, any thread):** `dlt_p2p_node::set_resume_flags()` atomically sets
+`_catchup_after_pause = true` and clears `_block_processing_paused`.  Both are
+`std::atomic<bool>` — no P2P-thread dispatch needed.
+
+**Critical ordering:** `_catchup_after_pause` is set **before** `snapshot_in_progress` is
+cleared.  If reversed, the witness plugin could observe the snapshot complete while the
+catchup flag is still false, misclassify the head as a stale fork, and refuse to produce.
+
+**Phase 2 (async, P2P thread, no wait):** An async post (fire-and-forget) to the P2P
+thread calls `run_resume_on_p2p_thread()` which logs the resume and drains
+`_paused_block_queue`.  The caller does **not** `.wait()` — it returns immediately after
+Phase 1.
+
+```cpp
+void p2p_plugin::resume_block_processing() {
+    // Phase 1: set atomic flags immediately (thread-safe, no dispatch needed)
+    if (my && my->node)
+        my->node->set_resume_flags();  // _catchup_after_pause=true, _block_processing_paused=false
+
+    // Phase 2: post drain to P2P thread (fire-and-forget)
+    my->p2p_thread.async([this]() {
+        if (my->node) my->node->run_resume_on_p2p_thread();
+    });
+    // No .wait() here — caller can proceed and release snapshot_in_progress immediately
+}
+```
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `libraries/network/dlt_p2p_node.cpp` | Block-processing flags changed to `std::atomic<bool>`; `set_resume_flags()` / `run_resume_on_p2p_thread()` added |
+| `plugins/p2p/p2p_plugin.cpp` | `resume_block_processing()` two-phase refactor; `pause_block_processing()` documented as P2P-thread-only direct call |
+
+---
+
+## Bug 5 — snapshot async task does not reset P2P flags on failure path
+
+### Observed symptom
+
+If the snapshot async task encountered an error or was cancelled, `_block_processing_paused`
+and `_catchup_after_pause` could remain in their paused state indefinitely, permanently
+blocking witness production.
+
+### Root cause
+
+The flag reset / `resume_block_processing()` call was only on the happy path of the async
+task.  Error and early-exit branches fell through without resetting.
+
+### Fix
+
+`plugin.cpp` snapshot async task now calls `resume_block_processing()` (via the RAII
+guard pattern) unconditionally — even when the task exits via exception or early return.
+The snapshot path was also passed correctly into the load callback (it was empty before,
+causing the load to fail silently).
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `plugins/snapshot/plugin.cpp` | Snapshot path passed into async load callback; flag reset moved to a scope guard ensuring it fires on all exit paths |
