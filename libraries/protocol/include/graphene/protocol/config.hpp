@@ -2,7 +2,7 @@
 
 #define CHAIN_STARTUP_VERSION                 (version(1, 0, 0))
 #define CHAIN_HARDFORK_STARTUP_VERSION        (hardfork_version(CHAIN_STARTUP_VERSION))
-#define CHAIN_VERSION                         (version(3, 1, 0))
+#define CHAIN_VERSION                         (version(3, 2, 0))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
 #define CHAIN_NAME                            "VIZ"
@@ -179,6 +179,22 @@
 /// Represents the canonical root post parent account
 #define CHAIN_ROOT_POST_PARENT                (account_name_type())
 ///@}
+
+/// HF13: Validator reward sharing constants
+/// Sharing rate is expressed in basis points (0-CHAIN_100_PERCENT = 0%-100%).
+#define CHAIN_VALIDATOR_MAX_SHARING_RATE      CHAIN_100_PERCENT
+
+/// Default epoch length for distributing accumulated stakeholder rewards (1 day).
+#define CHAIN_DEFAULT_DISTRIBUTION_EPOCH_LENGTH  CHAIN_BLOCKS_PER_DAY
+
+/// Minimum epoch length validators can vote for (1 round ≈ 21 blocks).
+#define CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH  uint32_t(CHAIN_MAX_WITNESSES)
+
+/// Minimum TOKEN amount per stakeholder payout at epoch end (1 atomic unit = 0.001 VIZ).
+/// Stakeholder rewards below this threshold are not distributed; the validator retains them.
+/// NOTE: stakeholder rewards are accumulated and distributed in TOKEN, not SHARES.
+/// Stakeholders receive SHARES only after create_vesting() converts their TOKEN at distribution time.
+#define CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT   int64_t(1)
 
 // Deprecated defines
 #define CHAIN_CASHOUT_WINDOW_SECONDS          (60*60*24)  // 1 day

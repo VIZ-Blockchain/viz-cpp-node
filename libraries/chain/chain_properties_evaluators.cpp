@@ -79,6 +79,11 @@ namespace graphene { namespace chain {
             _wprops = p;
         }
 
+        result_type operator()(const chain_properties_hf13& p) const {
+            FC_ASSERT( _db.has_hardfork(CHAIN_HARDFORK_13), "chain_properties_hf13" );
+            _wprops = p;
+        }
+
         template<typename Props>
         result_type operator()(Props&& p) const {
             _wprops = p;
@@ -102,6 +107,19 @@ namespace graphene { namespace chain {
                 o.props.visit(chain_properties_update(_db, w.props));
             });
         }
+    }
+
+    void set_reward_sharing_evaluator::do_apply(const set_reward_sharing_operation& o) {
+        ASSERT_REQ_HF(CHAIN_HARDFORK_13, "set_reward_sharing_operation");
+        _db.get_account(o.owner); // verify account exists
+
+        const auto& idx = _db.get_index<witness_index>().indices().get<by_name>();
+        auto itr = idx.find(o.owner);
+        FC_ASSERT(itr != idx.end(), "Account ${a} is not a registered validator", ("a", o.owner));
+
+        _db.modify(*itr, [&](witness_object& w) {
+            w.sharing_rate = o.sharing_rate;
+        });
     }
 
 } } // graphene::chain

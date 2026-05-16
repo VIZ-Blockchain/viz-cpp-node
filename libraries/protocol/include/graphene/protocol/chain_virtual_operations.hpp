@@ -302,6 +302,22 @@ namespace graphene { namespace protocol {
             account_name_type bidder;
             asset bid;
         };
+
+        // HF13: Validator reward sharing
+        /// Emitted once per stakeholder per validator at each distribution epoch end.
+        struct stakeholder_reward_operation : public virtual_operation {
+            stakeholder_reward_operation() {}
+
+            stakeholder_reward_operation(
+                const account_name_type& v,
+                const account_name_type& stakeholder,
+                const asset& s)
+                : validator(v), stakeholder(stakeholder), shares(s) {}
+
+            account_name_type validator;
+            account_name_type stakeholder;
+            asset shares;   ///< SHARES credited to stakeholder
+        };
 } } //graphene::protocol
 
 FC_REFLECT((graphene::protocol::author_reward_operation), (author)(permlink)(token_payout)(vesting_payout))
@@ -326,3 +342,5 @@ FC_REFLECT((graphene::protocol::account_sale_operation), (account)(price)(buyer)
 FC_REFLECT((graphene::protocol::expire_escrow_ratification_operation), (from)(to)(agent)(escrow_id)(token_amount)(fee)(ratification_deadline))
 FC_REFLECT((graphene::protocol::bid_operation), (account)(bidder)(bid))
 FC_REFLECT((graphene::protocol::outbid_operation), (account)(bidder)(bid))
+// HF13
+FC_REFLECT((graphene::protocol::stakeholder_reward_operation), (validator)(stakeholder)(shares))

@@ -505,6 +505,11 @@ if( options.count(name) ) { \
             impacted.insert(op.to);
             impacted.insert(op.agent);
         }
+
+        void operator()(const stakeholder_reward_operation& op) {
+            impacted.insert(op.validator);
+            impacted.insert(op.stakeholder);
+        }
         //void operator()( const operation& op ){}
     };
 

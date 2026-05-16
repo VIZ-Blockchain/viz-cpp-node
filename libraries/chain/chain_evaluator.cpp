@@ -1179,6 +1179,7 @@ namespace graphene { namespace chain {
                     _db.create<witness_vote_object>([&](witness_vote_object &v) {
                         v.witness = witness.id;
                         v.account = voter.id;
+                        v.vote_created_block = _db.head_block_num();
                     });
 
                     _db.modify(voter, [&](account_object &a) {
@@ -1207,6 +1208,7 @@ namespace graphene { namespace chain {
                     _db.create<witness_vote_object>([&](witness_vote_object &v) {
                         v.witness = witness.id;
                         v.account = voter.id;
+                        v.vote_created_block = _db.head_block_num();
                     });
 
                     _db.modify(voter, [&](account_object &a) {
@@ -1224,6 +1226,7 @@ namespace graphene { namespace chain {
                     _db.create<witness_vote_object>([&](witness_vote_object &v) {
                         v.witness = witness.id;
                         v.account = voter.id;
+                        v.vote_created_block = _db.head_block_num();
                     });
                     _db.adjust_witness_vote(witness, voter.witness_vote_weight());
                     _db.modify(voter, [&](account_object &a) {

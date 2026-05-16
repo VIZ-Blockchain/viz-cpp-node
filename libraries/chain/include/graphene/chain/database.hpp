@@ -472,6 +472,7 @@ namespace graphene { namespace chain {
 
             void process_inflation_recalc();
             void process_funds();
+            void process_validator_epoch_distribution(); ///< HF13: distribute accumulated delegator TOKEN rewards
             void committee_processing();
             void paid_subscribe_processing();
 

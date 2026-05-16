@@ -303,25 +303,37 @@ void witness_guard_plugin::set_program_options(
         bpo::options_description& cfg)
 {
     cfg.add_options()
-        ("witness-guard-enabled",
+        ("validator-guard-enabled",
          bpo::value<bool>()->default_value(true),
-         "Enable witness key auto-restore. "
-         "When true, the plugin monitors configured witnesses and sends "
+         "Enable validator key auto-restore. "
+         "When true, the plugin monitors configured validators and sends "
          "witness_update if the on-chain signing key is reset to null.")
+        ("witness-guard-enabled",  // DEPRECATED alias
+         bpo::value<bool>(),
+         "[DEPRECATED] Use validator-guard-enabled.")
 
-        ("witness-guard-witness",
+        ("validator-guard-validator",
          bpo::value<std::vector<std::string>>()->composing()->multitoken(),
-         "Witness to monitor: name signing_wif active_wif (triplets). Can be specified multiple times.")
+         "Validator to monitor: name signing_wif active_wif (triplets). Can be specified multiple times.")
+        ("witness-guard-witness",  // DEPRECATED alias
+         bpo::value<std::vector<std::string>>()->composing()->multitoken(),
+         "[DEPRECATED] Use validator-guard-validator.")
 
-        ("witness-guard-interval",
+        ("validator-guard-interval",
          bpo::value<uint32_t>()->default_value(20),
-         "How often to check witness signing keys, in blocks (default: 20 ≈ 60s).")
+         "How often to check validator signing keys, in blocks (default: 20 ≈ 60s).")
+        ("witness-guard-interval",  // DEPRECATED alias
+         bpo::value<uint32_t>(),
+         "[DEPRECATED] Use validator-guard-interval.")
 
-        ("witness-guard-disable",
+        ("validator-guard-disable",
          bpo::value<uint32_t>()->default_value(5),
-         "Number of consecutive blocks produced by the same witness from this node "
-         "before automatically disabling that witness (setting signing key to null). "
+         "Number of consecutive blocks produced by the same validator from this node "
+         "before automatically disabling that validator (setting signing key to null). "
          "Set to 0 to disable this feature. (default: 5)")
+        ("witness-guard-disable",  // DEPRECATED alias
+         bpo::value<uint32_t>(),
+         "[DEPRECATED] Use validator-guard-disable.")
         ;
 
     cli.add(cfg);
@@ -334,8 +346,11 @@ void witness_guard_plugin::plugin_initialize(
         ilog("witness_guard: plugin_initialize() begin");
         pimpl = std::make_unique<impl>();
 
-        // enabled flag
-        if (options.count("witness-guard-enabled")) {
+        // enabled flag — prefer validator-guard-enabled, fall back to deprecated witness-guard-enabled
+        if (options.count("validator-guard-enabled")) {
+            pimpl->_enabled = options["validator-guard-enabled"].as<bool>();
+        } else if (options.count("witness-guard-enabled")) {
+            wlog("Config option 'witness-guard-enabled' is deprecated, use 'validator-guard-enabled'.");
             pimpl->_enabled = options["witness-guard-enabled"].as<bool>();
         }
         if (!pimpl->_enabled) {
@@ -355,12 +370,22 @@ void witness_guard_plugin::plugin_initialize(
                  "auto-restore is DISABLED until network participation >= 33%%");
         }
 
-        // check interval (in blocks)
-        pimpl->_check_interval = options["witness-guard-interval"].as<uint32_t>();
+        // check interval (in blocks) — prefer validator-guard-interval
+        if (options.count("witness-guard-interval") && !options.count("validator-guard-interval")) {
+            wlog("Config option 'witness-guard-interval' is deprecated, use 'validator-guard-interval'.");
+            pimpl->_check_interval = options["witness-guard-interval"].as<uint32_t>();
+        } else {
+            pimpl->_check_interval = options["validator-guard-interval"].as<uint32_t>();
+        }
         if (pimpl->_check_interval == 0) pimpl->_check_interval = 1;
 
-        // disable threshold (consecutive blocks by same witness before auto-disable)
-        pimpl->_disable_threshold = options["witness-guard-disable"].as<uint32_t>();
+        // disable threshold — prefer validator-guard-disable
+        if (options.count("witness-guard-disable") && !options.count("validator-guard-disable")) {
+            wlog("Config option 'witness-guard-disable' is deprecated, use 'validator-guard-disable'.");
+            pimpl->_disable_threshold = options["witness-guard-disable"].as<uint32_t>();
+        } else {
+            pimpl->_disable_threshold = options["validator-guard-disable"].as<uint32_t>();
+        }
         if (pimpl->_disable_threshold > 0) {
             ilog("witness_guard: auto-disable enabled — will disable witness after ${n} consecutive blocks",
                  ("n", pimpl->_disable_threshold));
@@ -368,9 +393,19 @@ void witness_guard_plugin::plugin_initialize(
             ilog("witness_guard: auto-disable feature is OFF (witness-guard-disable = 0)");
         }
 
-        // witness configs — each entry is a JSON triplet: ["name", "signing_wif", "active_wif"]
+        // validator configs — each entry is a JSON triplet: ["name", "signing_wif", "active_wif"]
+        // Accept both validator-guard-validator (new) and witness-guard-witness (deprecated).
+        std::vector<std::string> guard_entries;
+        if (options.count("validator-guard-validator"))
+            for (auto& e : options["validator-guard-validator"].as<std::vector<std::string>>())
+                guard_entries.push_back(e);
         if (options.count("witness-guard-witness")) {
-            const auto& entries = options["witness-guard-witness"].as<std::vector<std::string>>();
+            wlog("Config option 'witness-guard-witness' is deprecated, use 'validator-guard-validator'.");
+            for (auto& e : options["witness-guard-witness"].as<std::vector<std::string>>())
+                guard_entries.push_back(e);
+        }
+        if (!guard_entries.empty()) {
+            const auto& entries = guard_entries;
             for (const auto& entry : entries) {
                 try {
                     // Parse each line as a JSON array: ["name", "signing_wif", "active_wif"]

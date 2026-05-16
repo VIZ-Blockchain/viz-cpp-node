@@ -17,7 +17,7 @@ namespace graphene { namespace chain {
     using graphene::protocol::asset;
     using graphene::protocol::asset_symbol_type;
 
-    using chain_properties = graphene::protocol::chain_properties_hf9;
+    using chain_properties = graphene::protocol::chain_properties_hf13;
 
     /**
      *  All witnesses with at least 1% net positive approval and
@@ -101,6 +101,14 @@ namespace graphene { namespace chain {
         ///@}
 
         digest_type last_work;
+
+        // HF13: Validator reward sharing
+        /// Fraction of block reward shared with stakeholders; basis points (0-CHAIN_100_PERCENT).
+        uint16_t sharing_rate = 0;
+        /// Accumulated TOKEN (VIZ) pending distribution to stakeholders at epoch end.
+        /// Stored in TOKEN atomic units; converted to SHARES via create_vesting() at epoch end.
+        /// witness_reward_operation for the validator carries only the validator's own share.
+        share_type pending_stakeholder_reward = 0;
         class witness_schedule_object
                 : public object<witness_schedule_object_type, witness_schedule_object> {
         public:
@@ -147,6 +155,9 @@ namespace graphene { namespace chain {
 
         witness_id_type witness;
         account_id_type account;
+        /// Block number when this vote was cast. Used by HF13 time-weighted epoch distribution.
+        /// Zero for votes cast before HF13 (treated as epoch start = full weight).
+        uint32_t vote_created_block = 0;
     };
 
     class witness_schedule_object
@@ -298,11 +309,12 @@ FC_REFLECT(
     (graphene::chain::witness_object),
     (id)(owner)(created)(url)(votes)(penalty_percent)(counted_votes)(schedule)(virtual_last_update)(virtual_position)(virtual_scheduled_time)(total_missed)
     (last_aslot)(last_confirmed_block_num)(current_run)(last_supported_block_num)(signing_key)(props)
-    (last_work)(running_version)(hardfork_version_vote)(hardfork_time_vote))
+    (last_work)(running_version)(hardfork_version_vote)(hardfork_time_vote)
+    (sharing_rate)(pending_stakeholder_reward))
 
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::witness_object, graphene::chain::witness_index)
 
-FC_REFLECT((graphene::chain::witness_vote_object), (id)(witness)(account))
+FC_REFLECT((graphene::chain::witness_vote_object), (id)(witness)(account)(vote_created_block))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::witness_vote_object, graphene::chain::witness_vote_index)
 FC_REFLECT((graphene::chain::witness_schedule_object),
         (id)(current_virtual_time)(next_shuffle_block_num)(current_shuffled_witnesses)(num_scheduled_witnesses)
