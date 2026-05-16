@@ -202,6 +202,16 @@ std::set<account_name_type> plugin::witness_plugin_impl::lookup_witness_accounts
     return witnesses_by_account_name;
 }
 
+// Preferred-name aliases — forward to the legacy implementations above
+DEFINE_API(plugin, get_active_validators)      { return get_active_witnesses(args); }
+DEFINE_API(plugin, get_validator_schedule)     { return get_witness_schedule(args); }
+DEFINE_API(plugin, get_validators)             { return get_witnesses(args); }
+DEFINE_API(plugin, get_validator_by_account)   { return get_witness_by_account(args); }
+DEFINE_API(plugin, get_validators_by_vote)     { return get_witnesses_by_vote(args); }
+DEFINE_API(plugin, get_validators_by_counted_vote) { return get_witnesses_by_counted_vote(args); }
+DEFINE_API(plugin, get_validator_count)        { return get_witness_count(args); }
+DEFINE_API(plugin, lookup_validator_accounts)  { return lookup_witness_accounts(args); }
+
 void plugin::set_program_options(
     boost::program_options::options_description &cli,
     boost::program_options::options_description &cfg

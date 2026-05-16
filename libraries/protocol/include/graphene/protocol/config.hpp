@@ -196,5 +196,16 @@
 /// Stakeholders receive SHARES only after create_vesting() converts their TOKEN at distribution time.
 #define CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT   int64_t(1)
 
+/// Chainbase schema version — increment whenever the binary layout of any chainbase-managed
+/// object changes (fields added, removed, or resized).  The chain plugin writes this value
+/// to <data_dir>/schema_version on every successful open, and checks it at the next startup.
+/// A mismatch triggers proactive shared_memory wipe + auto-recovery before db.open().
+///
+/// History:
+///   0  — pre-HF13 (implicit, file absent)
+///   13 — HF13: added sharing_rate, pending_stakeholder_reward to witness_object;
+///               added vote_created_block to witness_vote_object
+#define CHAIN_SCHEMA_VERSION                  uint32_t(13)
+
 // Deprecated defines
 #define CHAIN_CASHOUT_WINDOW_SECONDS          (60*60*24)  // 1 day

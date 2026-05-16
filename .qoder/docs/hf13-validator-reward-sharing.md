@@ -243,13 +243,170 @@ distribution time.
 
 ---
 
+## Deployment: Shared Memory Compatibility and Replay
+
+### Why replay is required
+
+HF13 adds three new fields to chainbase-managed objects:
+
+| Object | New field | Default |
+|---|---|---|
+| `witness_object` | `sharing_rate` (`uint16_t`) | `0` |
+| `witness_object` | `pending_stakeholder_reward` (`share_type`) | `0` |
+| `witness_vote_object` | `vote_created_block` (`uint32_t`) | `0` |
+
+Chainbase stores objects as raw binary in a memory-mapped file (`shared_memory.bin`).
+Adding a field changes `sizeof()`, so the old shared memory is **binary-incompatible** with
+the new binary.  If the new binary opens old shared memory, chainbase reads objects at
+incorrect offsets, producing corrupt data and ultimately a `database_revision_exception`
+(revision counter in shared memory will not match `head_block_num`).
+
+**No apply_hardfork migration is needed**: the new fields default to `0`, which is the
+correct pre-HF13 state.  Once the node replays or restores from snapshot, all objects
+are initialised correctly.
+
+---
+
+### Automatic recovery (existing mechanism)
+
+The chain plugin already handles this case.  On `database_revision_exception` at startup,
+it executes one of two recovery paths depending on config:
+
+```
+Startup
+  └─ db.open(shared_memory)
+       └─ EXCEPTION: database_revision_exception
+            │
+            ├─ [auto-recover-from-snapshot = true AND snapshot exists]
+            │    wipe shared_memory
+            │    → import latest snapshot  (state restored to block N)
+            │    → replay dlt_block_log blocks N+1..dlt_head
+            │      (bridges gap between snapshot and last known block)
+            │    → continue P2P sync for remaining blocks
+            │
+            └─ [replay-if-corrupted = true, no snapshot]
+                 → replay from block_log (slow, may take hours)
+```
+
+The dlt_block_log replay step (handled in `snapshot_plugin.cpp:2104–2121`) is automatic:
+after the snapshot is imported, the node calls `db.reindex_from_dlt(snapshot_head + 1)`
+to re-apply any local blocks that are newer than the snapshot.  This minimises P2P sync
+work after upgrade.
+
+**Recommended config for production validators:**
+
+```ini
+# config.ini (or config_witness.ini)
+replay-if-corrupted = true
+replay-from-snapshot = true
+snapshot-auto-latest = true
+snapshot-dir = /path/to/snapshots
+```
+
+With this config, upgrading to the HF13 binary requires no manual intervention:
+1. Stop the node.
+2. Replace the binary.
+3. Start the node — auto-recovery fires, wipes shared memory, loads the latest snapshot,
+   replays `dlt_block_log`, then syncs the remaining blocks via P2P.
+
+---
+
+### Manual recovery procedure
+
+If auto-recovery is not configured, or the recovery path fails, perform the following:
+
+```bash
+# 1. Stop vizd
+systemctl stop vizd
+
+# 2. Delete shared memory (forces clean open on next start)
+rm -f /path/to/witness_node_data_dir/shared_memory.bin
+rm -f /path/to/witness_node_data_dir/shared_memory.meta
+
+# Option A — restore from snapshot + replay dlt_block_log:
+./vizd --replay-from-snapshot /path/to/snapshot-block-XXXXXXXX.json \
+       --data-dir /path/to/witness_node_data_dir
+
+# Option B — full replay from block_log (slow):
+./vizd --replay --data-dir /path/to/witness_node_data_dir
+```
+
+After Option A the node replays `dlt_block_log` automatically (same path as auto-recovery),
+then syncs remaining blocks via P2P.  Typical recovery time with a recent snapshot: a few
+minutes.  Full replay (Option B) may take several hours depending on blockchain height.
+
+---
+
+### How chainbase detects the mismatch
+
+Chainbase does **not** compare `sizeof()` at open time — it opens the memory-mapped file
+and begins reading.  The mismatch surfaces as a revision inconsistency:
+
+```
+database::open()
+  chainbase::database::open(shared_mem_dir)   ← objects read at wrong offsets
+  undo_all()                                   ← traverses corrupt undo state
+  revision() != head_block_num()               ← counter mismatch detected here
+  → throws database_revision_exception
+```
+
+Alternatively, `undo_all()` may trigger a `boost::interprocess::lock_exception` if the
+process crashed while holding a shared-memory mutex (unrelated to HF13, but the same
+recovery path applies).
+
+**Implication**: deleting `shared_memory.bin` before starting is the safest option.  The
+file is always rebuilt from snapshot or block_log; nothing of value is lost.
+
+---
+
+### Proactive schema version check (implemented in HF13)
+
+Rather than waiting for a corrupt read to surface as a `database_revision_exception`,
+the chain plugin now performs a **proactive schema version check** before calling
+`db.open()`:
+
+```
+plugin_startup()
+  │
+  ├─ read <data_dir>/schema_version  (0 if file absent = pre-HF13 node)
+  ├─ compare with CHAIN_SCHEMA_VERSION (compile-time constant, currently 13)
+  │
+  ├─ MISMATCH → wipe shared_memory.bin immediately (no corrupt read occurs)
+  │             write new schema_version to disk
+  │             → fall through to normal db.open()
+  │                → revision=0 ≠ head_block_num → database_revision_exception
+  │                → existing recovery: auto-snapshot or replay
+  │
+  └─ MATCH    → proceed normally
+                 db.open() succeeds → write schema_version (confirm success)
+```
+
+**Key constant** (`config.hpp`):
+```cpp
+// Increment whenever a chainbase-managed object gains, loses, or resizes a field.
+#define CHAIN_SCHEMA_VERSION  uint32_t(13)
+```
+
+**Key file**: `<data_dir>/schema_version` — a plain text file containing a single
+`uint32_t`.  Absent file is treated as version `0` (pre-HF13).
+
+This mechanism is completely transparent: nodes that don't have `schema_version`
+(old deployments upgrading to HF13 for the first time) automatically get `stored=0`,
+mismatch is detected, shared memory is wiped, and recovery proceeds.
+
+See [hardfork-guide.md](hardfork-guide.md) for the rule: **increment
+`CHAIN_SCHEMA_VERSION` in every hardfork that adds, removes, or resizes a field in
+any chainbase-managed object**.
+
+---
+
 ## Files Changed
 
 | File | Change |
 |---|---|
 | `libraries/chain/hardfork.d/13.hf` | New hardfork definition |
 | `libraries/chain/hardfork.d/0-preamble.hf` | `CHAIN_NUM_HARDFORKS` 12 → 13 |
-| `libraries/protocol/include/graphene/protocol/config.hpp` | `CHAIN_VERSION` 3.2.0; `CHAIN_VALIDATOR_MAX_SHARING_RATE`, `CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT` |
+| `libraries/protocol/include/graphene/protocol/config.hpp` | `CHAIN_VERSION` 3.2.0; `CHAIN_VALIDATOR_MAX_SHARING_RATE`, `CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT`, `CHAIN_SCHEMA_VERSION` |
 | `libraries/protocol/include/graphene/protocol/chain_operations.hpp` | `chain_properties_hf13`, `set_reward_sharing_operation` |
 | `libraries/protocol/include/graphene/protocol/chain_virtual_operations.hpp` | `stakeholder_reward_operation` |
 | `libraries/protocol/include/graphene/protocol/operations.hpp` | New ops in variant |
@@ -261,3 +418,4 @@ distribution time.
 | `libraries/chain/chain_evaluator.cpp` | Set `vote_created_block` in all `create<witness_vote_object>` paths |
 | `libraries/chain/database.cpp` | Hardfork registration; evaluator registration; median; `process_funds` split; `process_validator_epoch_distribution` (time-weighted); `_apply_block` call; `apply_hardfork` case |
 | `plugins/account_history/plugin.cpp` | Impacted accounts for `stakeholder_reward_operation` |
+| `plugins/chain/plugin.cpp` | `CHAIN_SCHEMA_VERSION` check + proactive wipe before `db.open()`; `read_schema_version` / `write_schema_version` helpers; `#include <fstream>` |

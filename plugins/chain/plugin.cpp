@@ -6,6 +6,7 @@
 #include <fc/io/json.hpp>
 #include <fc/string.hpp>
 
+#include <fstream>
 #include <iostream>
 #include <graphene/protocol/protocol.hpp>
 #include <graphene/protocol/types.hpp>
@@ -161,6 +162,29 @@ namespace chain {
 
         return block_applied;
     }
+
+    // ---------- schema version helpers ----------
+
+    static fc::path schema_version_path(const bfs::path& data_dir) {
+        return fc::path((data_dir / "schema_version").string());
+    }
+
+    static uint32_t read_schema_version(const bfs::path& data_dir) {
+        auto p = schema_version_path(data_dir);
+        if (!fc::exists(p)) return 0;
+        std::ifstream f(p.str());
+        uint32_t v = 0;
+        f >> v;
+        return v;
+    }
+
+    static void write_schema_version(const bfs::path& data_dir) {
+        auto p = schema_version_path(data_dir);
+        std::ofstream f(p.str());
+        f << CHAIN_SCHEMA_VERSION;
+    }
+
+    // ---------- /schema version helpers ----------
 
     void plugin::plugin_impl::wipe_db(const bfs::path &data_dir, bool wipe_block_log) {
         if (wipe_block_log) {
@@ -565,6 +589,30 @@ namespace chain {
             }
         }
 
+        // ========== Schema version check ==========
+        // Detect chainbase object layout changes before opening shared memory.
+        // If the stored schema version doesn't match CHAIN_SCHEMA_VERSION, the
+        // shared memory is binary-incompatible with this binary.  Wipe it now so
+        // that db.open() starts from a clean state and the existing recovery path
+        // (revision mismatch → auto-snapshot or replay) rebuilds the database.
+        {
+            uint32_t stored = read_schema_version(data_dir);
+            if (stored != CHAIN_SCHEMA_VERSION) {
+                wlog("Chainbase schema version mismatch: stored=${s}, compiled=${c}. "
+                     "Object layout has changed — proactively wiping shared memory.",
+                     ("s", stored)("c", CHAIN_SCHEMA_VERSION));
+                auto shm = my->shared_memory_dir / "shared_memory.bin";
+                if (bfs::exists(shm)) {
+                    chainbase::database::wipe(my->shared_memory_dir);
+                    wlog("Shared memory wiped. Recovery path will rebuild from snapshot or block_log.");
+                }
+                // Write the new schema version immediately so a crash between wipe and
+                // rebuild does not re-trigger an unnecessary wipe on the next start
+                // (the rebuild itself will be triggered by revision mismatch anyway).
+                write_schema_version(data_dir);
+            }
+        }
+
         // ========== Normal startup path ==========
         try {
             ilog("Opening shared memory from ${path}", ("path", my->shared_memory_dir.generic_string()));
@@ -575,6 +623,7 @@ namespace chain {
             if (my->replay) {
                 my->replay_db(data_dir, my->force_replay);
             }
+            write_schema_version(data_dir);
         } catch (const graphene::chain::database_revision_exception &) {
             if (my->auto_recover_from_snapshot && snapshot_load_callback) {
                 wlog("Shared memory corrupted (revision mismatch). Attempting automatic recovery from snapshot...");
