@@ -113,8 +113,11 @@ wit.pending_stakeholder_reward = 0
 
 ### Important notes
 
-- **Vote weight** used: `stakeholder.witness_vote_weight()` — includes own vesting shares plus
-  shares proxied by accounts that delegate their voting to this stakeholder.
+- **Vote weight** used: `stakeholder.witness_vote_fair_weight()` — total stake (own vesting
+  shares + shares proxied by accounts that delegated voting to this stakeholder) divided by
+  `witnesses_voted_for`.  This matches the per-validator weight used in consensus scheduling:
+  a stakeholder who splits their vote across N validators contributes 1/N of their stake to
+  each validator's distribution pool.
 - **Time-weighted distribution**: each stakeholder's weight is multiplied by the number of blocks
   they were actually voting for this validator within the current epoch (see `vote_created_block`
   on `witness_vote_object`).  A stakeholder who joined mid-epoch receives a proportionally smaller

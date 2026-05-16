@@ -3937,7 +3937,9 @@ namespace graphene { namespace chain {
                     auto itr = vote_idx.lower_bound(boost::make_tuple(wit.id, account_id_type()));
                     while (itr != vote_idx.end() && itr->witness == wit.id) {
                         const auto& stakeholder = get(itr->account);
-                        share_type vote_weight = stakeholder.witness_vote_weight();
+                        // Fair weight: total stake divided by number of validators voted for,
+                        // matching the actual per-validator weight used in consensus scheduling.
+                        share_type vote_weight = stakeholder.witness_vote_fair_weight();
                         if (vote_weight > 0) {
                             uint32_t first_block = (itr->vote_created_block > epoch_start_block)
                                 ? itr->vote_created_block : epoch_start_block;
