@@ -586,10 +586,8 @@ namespace chain {
 
         // ========== Schema version check ==========
         // Detect chainbase object layout changes before opening shared memory.
-        // If the stored schema version doesn't match CHAIN_SCHEMA_VERSION, the
-        // shared memory is binary-incompatible with this binary.  Wipe it now so
-        // that db.open() starts from a clean state and the existing recovery path
-        // (revision mismatch → auto-snapshot or replay) rebuilds the database.
+        // When fields are added/removed/resized in any chainbase-managed object,
+        // old shared_memory.bin is binary-incompatible and must be rebuilt.
         {
             uint32_t stored = read_schema_version(data_dir);
             if (stored != CHAIN_SCHEMA_VERSION) {
@@ -599,12 +597,32 @@ namespace chain {
                 auto shm = my->shared_memory_dir / "shared_memory.bin";
                 if (bfs::exists(shm)) {
                     bfs::remove(shm);
-                    wlog("Shared memory wiped. Recovery path will rebuild from snapshot or block_log.");
+                    wlog("Shared memory wiped.");
                 }
-                // Write the new schema version immediately so a crash between wipe and
-                // rebuild does not re-trigger an unnecessary wipe on the next start
-                // (the rebuild itself will be triggered by revision mismatch anyway).
+                // Write new schema version before recovery so that a crash between
+                // wipe and rebuild does not re-wipe on the next start.
                 write_schema_version(data_dir);
+
+                // After a wipe, db.open() would call init_genesis() and produce
+                // head=0 / revision=0 — a consistent state that bypasses the
+                // revision-mismatch recovery path and sends the node into P2P snapshot
+                // download instead of using a local snapshot.
+                // Trigger local snapshot recovery explicitly here.
+                if (my->auto_recover_from_snapshot && snapshot_load_callback) {
+                    fc::path snap = my->find_latest_snapshot();
+                    if (!snap.string().empty()) {
+                        wlog("Schema wipe: found local snapshot ${p}, importing...", ("p", snap.string()));
+                        my->snapshot_path = snap.string();
+                        do_snapshot_load(data_dir, true);
+                        return;
+                    } else {
+                        wlog("Schema wipe: no local snapshots in ${d}, falling through to normal open.",
+                             ("d", my->snapshot_dir));
+                    }
+                }
+                // No local snapshot available — fall through.  The normal open will
+                // succeed with head=0, and the "no state" path will handle P2P sync
+                // or replay-if-corrupted will replay from block_log.
             }
         }
 
