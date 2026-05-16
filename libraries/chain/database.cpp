@@ -3804,8 +3804,10 @@ namespace graphene { namespace chain {
                         cwit.sharing_rate / CHAIN_100_PERCENT).to_uint64();
                     share_type validator_token = witness_reward - stakeholder_token;
 
-                    auto validator_vshares = create_vesting(*witness_account, asset(validator_token, TOKEN_SYMBOL));
-                    push_virtual_operation(witness_reward_operation(cwit.owner, validator_vshares));
+                    if (validator_token > 0) {
+                        auto validator_vshares = create_vesting(*witness_account, asset(validator_token, TOKEN_SYMBOL));
+                        push_virtual_operation(witness_reward_operation(cwit.owner, validator_vshares));
+                    }
 
                     if (stakeholder_token > 0) {
                         modify(cwit, [&](witness_object& w) {

@@ -667,6 +667,19 @@ namespace graphene { namespace wallet {
                 bool broadcast = false
             );
 
+            /**
+             * Set the validator reward sharing rate (HF13).
+             *
+             * @param validator_name The name of the validator (witness) account.
+             * @param sharing_rate Basis points (0 = 0%, 10000 = 100%) of block reward to share with stakeholders (voters).
+             * @param broadcast true if you wish to broadcast the transaction.
+             */
+            annotated_signed_transaction set_reward_sharing(
+                string validator_name,
+                uint16_t sharing_rate,
+                bool broadcast = false
+            );
+
             /** Set the voting proxy for an account.
              *
              * If a user does not wish to take an active part in voting, they can choose
@@ -1457,6 +1470,7 @@ FC_API( graphene::wallet::wallet_api,
                 (update_witness)
                 (update_chain_properties)
                 (versioned_update_chain_properties)
+                (set_reward_sharing)
                 (set_voting_proxy)
                 (vote_for_witness)
                 //(follow)
