@@ -31,6 +31,12 @@
 - Added enhanced peer ahead-of-us detection mechanism with sophisticated DLT mode logic
 - Implemented comprehensive startup block storage diagnostics with gap detection
 - Enhanced minority fork recovery with improved peer interaction handling
+- Replaced bool block-processing flags with `std::atomic<bool>` to allow thread-safe pause/resume from any thread
+- Fixed atomic flag ordering in resume: `_catchup_after_pause` is set before clearing `snapshot_in_progress` to prevent stale-head fork
+- Refactored resume_block_processing() into two-phase design: flags set immediately (Phase 1), drain posted async without wait (Phase 2) to eliminate a fiber deadlock
+- Handle `shared_memory_corruption_exception` in block acceptance path: triggers auto-recovery instead of peer soft-ban
+- Clear `_dlt_syncing` flag on SYNC→FORWARD transition to unblock witness production after sync completes
+- Added node uptime field (`uptime=Xh Ym Zs`) to DLT Status and DLT P2P Stats log lines
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -1778,6 +1784,66 @@ The network layer maintains mixed logging levels for different operational conte
 **Section sources**
 - [p2p_plugin.cpp:151-156](file://plugins/p2p/p2p_plugin.cpp#L151-L156)
 - [p2p_plugin.cpp:168-172](file://plugins/p2p/p2p_plugin.cpp#L168-L172)
+
+## Atomic Block Processing Flags and Two-Phase Resume
+
+Block processing pause/resume is now fully thread-safe using `std::atomic<bool>` flags in `dlt_p2p_node`, allowing the snapshot plugin to call `resume_block_processing()` from any thread without dispatching to the P2P thread.
+
+### Atomic Flag Design
+
+Three relevant flags are now atomic:
+- `_block_processing_paused` — set by the P2P thread during a snapshot-triggered pause.
+- `snapshot_in_progress` (conceptually cleared by the caller via a guard) — controls whether new blocks are accepted.
+- `_catchup_after_pause` — tells the production gate that we just resumed and are catching up.
+
+**Critical ordering**: `_catchup_after_pause` must be set to `true` **before** `snapshot_in_progress` is cleared. If the order were reversed, the witness plugin could observe the snapshot complete but the catchup flag unset, mis-classify the head as a stale fork, and refuse to produce.
+
+This ordering is enforced in `p2p_plugin::resume_block_processing()` via `dlt_p2p_node::set_resume_flags()` (sets both atomics) followed by an async post for the P2P-thread-only drain.
+
+**Section sources**
+- [p2p_plugin.cpp:692-723](file://plugins/p2p/p2p_plugin.cpp#L692-L723)
+- [dlt_p2p_node.cpp](file://libraries/network/dlt_p2p_node.cpp)
+
+### Two-Phase Resume Implementation
+
+`resume_block_processing()` is split into two phases to avoid a deadlock that existed when calling `async().wait()` while holding a read lock:
+
+1. **Phase 1 (immediate, any thread)**: `set_resume_flags()` atomically sets `_catchup_after_pause = true` and clears `_block_processing_paused`. Because both are `std::atomic<bool>`, no P2P thread dispatch is required.
+2. **Phase 2 (async, P2P thread)**: An async post to the P2P thread calls `run_resume_on_p2p_thread()` which logs the resume and drains the `_paused_block_queue`. No `.wait()` is used; the caller proceeds immediately after Phase 1.
+
+**Prior deadlock**: The old implementation dispatched Phase 1 via `async().wait()` while a read lock on the database was held. A second P2P fiber that had already passed the `_block_processing_paused` check would call `push_block()`, which blocked on the write lock (waiting for our read lock). The OS thread froze, the posted fiber never ran — deadlock.
+
+**Section sources**
+- [p2p_plugin.cpp:708-722](file://plugins/p2p/p2p_plugin.cpp#L708-L722)
+
+### Shared Memory Corruption in Block Acceptance
+
+When `dlt_p2p_node` receives a block from the network and calls `push_block()`, it now catches `shared_memory_corruption_exception` separately from other exceptions. On this exception class the node triggers the same auto-recovery path as the chain plugin (reopen with replay), rather than simply soft-banning the peer that delivered the block.
+
+**Section sources**
+- [p2p_plugin.cpp:692-706](file://plugins/p2p/p2p_plugin.cpp#L692-L706)
+- [dlt_p2p_node.cpp](file://libraries/network/dlt_p2p_node.cpp)
+
+### Clear Syncing Flag on SYNC→FORWARD Transition
+
+`dlt_p2p_node` now explicitly clears the `_dlt_syncing` flag when transitioning from SYNC state to FORWARD state. Previously the flag could remain set after the sync completed, causing the witness plugin to see `chain().is_syncing() == true` indefinitely and refuse to produce blocks.
+
+**Section sources**
+- [dlt_p2p_node.cpp](file://libraries/network/dlt_p2p_node.cpp)
+
+## DLT Status Log Uptime Field
+
+The periodic DLT Status log line now includes a node uptime field so operators can immediately see how long the node has been running without checking separate tooling.
+
+**Format**: `uptime=${uh}h${um}m${us}s` appended after the peer counts field.
+
+**Example**: `DLT Status | FORWARD | head=#1234567 lib=#1234500 | dlt_range=1000000-1234567 | peers=8active/10conn | uptime=2h15m43s | ...`
+
+**Implementation**: `_node_start_time` is recorded in the `dlt_p2p_node` constructor. Both the regular status log and the detailed stats log compute elapsed time as `(fc::time_point::now() - _node_start_time).count() / 1000000` seconds.
+
+**Section sources**
+- [dlt_p2p_node.cpp:3126-3133](file://libraries/network/dlt_p2p_node.cpp#L3126-L3133)
+- [dlt_p2p_node.cpp:3163-3169](file://libraries/network/dlt_p2p_node.cpp#L3163-L3169)
 
 ## Dependency Analysis
 

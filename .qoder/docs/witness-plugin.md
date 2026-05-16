@@ -61,11 +61,18 @@ The witness plugin requires:
 
 ## Internal State Variables
 
+### Timer / Thread
+- `production_io_service_` (boost::asio::io_service): **Dedicated** io_service for the production timer — completely separate from the appbase/P2P shared io_service. Declared before `production_timer_` to ensure correct init order.
+- `production_io_work_` (unique_ptr\<io_service::work\>): Keeps the io_service alive while the thread runs.
+- `production_io_thread_` (std::thread): Calls `production_io_service_.run()`. Joined in destructor after `production_io_service_.stop()`.
+- `production_timer_` (boost::asio::deadline_timer): Timer bound to `production_io_service_`.
+
 ### Production Control
 - `_production_skip_flags` (uint32_t): Flags passed to `generate_block()` (e.g., `skip_undo_history_check`)
 - `_required_witness_participation` (uint32_t): Participation threshold from config
 - `_private_keys` (map<public_key, private_key>): Loaded private keys for signing
 - `_witnesses` (set<string>): Configured witness names (includes `CHAIN_EMERGENCY_WITNESS_ACCOUNT` if emergency key configured)
+- `_last_lag_slot_time` (fc::time_point_sec): Scheduled time of the most recent `lag` condition. Zero when no lag is active. Used by `schedule_production_loop()` to skip ahead past the missed slot and avoid rechecking it every 250ms.
 
 ### Fork Detection & Recovery
 - `fork_collision_defer_count_` (uint32_t): Consecutive fork-collision deferrals
@@ -84,6 +91,7 @@ The witness plugin requires:
 - `_ever_produced` (bool): Whether we've ever produced a block
 - `_last_production_time` (fc::time_point): Timestamp of last successful production
 - `_last_slot_result` (int): Last result from slot > 0 iteration (excludes `not_time_yet`)
+- `_watchdog_debug_enabled` (bool): Latching flag — set to `true` on first watchdog fire; never reset. Enables `database()._debug_block_production` automatically for post-hoc diagnosis.
 - `_slot_hijack_count` (uint32_t): Consecutive blocks where committee filled our scheduled slot
 - `_slot_hijack_height` (uint32_t): Last block height where hijack detected
 - `_last_applied_block_num` (uint64_t): Last applied block number (for missed slot detection)
@@ -142,23 +150,42 @@ The witness plugin requires:
 
 ### 2. Production Loop
 
-The production loop runs on a **250ms timer** (`schedule_production_loop()`):
+The production loop runs on a **dedicated `production_io_service_`** (not the shared appbase/P2P io_service) with its own OS thread. This isolation means P2P network activity — peer disconnects, TLS handshakes, send-queue drains — cannot delay the 250ms timer callback and cause missed-slot lag.
 
 ```
-schedule_production_loop()
-  ↓ (250ms timer)
-block_production_loop()
-  ↓
-maybe_produce_block()
-  ↓
-[result handling]
-  ↓
-schedule_production_loop()  // reschedule for next tick
+production_io_thread_ → production_io_service_.run()
+                              ↓
+                    production_timer_.async_wait()
+                              ↓ (250ms boundary)
+                    block_production_loop()
+                              ↓
+                    maybe_produce_block()
+                              ↓
+                    [result handling + lag skip]
+                              ↓
+                    schedule_production_loop()  // reschedule
 ```
 
 #### `schedule_production_loop()`
 
-**Sleep calculation:**
+**Lag skip guard (runs first):**
+```cpp
+if (_last_lag_slot_time != fc::time_point_sec()) {
+    int64_t time_since_lag_ms = (fc::time_point::now()
+        - fc::time_point(_last_lag_slot_time)).count() / 1000;
+    if (time_since_lag_ms < CHAIN_BLOCK_INTERVAL * 1000) {
+        int64_t skip_ms = (CHAIN_BLOCK_INTERVAL * 1000) - time_since_lag_ms;
+        production_timer_.expires_from_now(posix_time::milliseconds(skip_ms));
+        production_timer_.async_wait(...);
+        _last_lag_slot_time = fc::time_point_sec();
+        return result;
+    }
+}
+```
+
+After a `lag` condition the current slot is already missed. Without this guard, the loop would recheck the same slot every 250ms and return `lag` again, spinning at high CPU rate until the full 3s slot interval elapses. The guard skips ahead to the start of the next slot.
+
+**Sleep calculation (normal path):**
 ```cpp
 int64_t next_microseconds = 250000 - (ntp_microseconds % 250000);
 if (next_microseconds < 50000) {
@@ -652,21 +679,29 @@ if (database()._dlt_mode && !_witnesses.empty()
     && prev_num > 0 && block_num == prev_num + 1) {
     const auto& dgp = database().get_dynamic_global_properties();
     if (dgp.emergency_consensus_active) {
-        // Check which witness was scheduled for the slot just filled
-        uint64_t slot_idx = (dgp.current_aslot - 1) % nsw;
+        // Slot index for the block just applied
+        uint64_t slot_idx = dgp.current_aslot % nsw;
         const std::string& expected_witness = wso.current_shuffled_witnesses[slot_idx];
 
-        if (_witnesses.count(expected_witness) > 0 && block.witness != expected_witness) {
-            _slot_hijack_count++;  // Committee filled our slot
+        // True hijack: expected slot is ours AND actual producer is not one of our witnesses
+        if (_witnesses.count(expected_witness) > 0
+            && _witnesses.count(block.witness) == 0) {
+            _slot_hijack_count++;  // Committee / emergency master filled our slot
             // Log first 3 hijacks, then once per minute
-        } else if (block.witness == expected_witness) {
-            _slot_hijack_count = 0;  // Our witness produced — reset
+        } else if (_witnesses.count(block.witness) > 0) {
+            // ANY of our witnesses produced → reset (false-positive guard)
+            if (_slot_hijack_count > 0) {
+                ilog("Hijack counter reset: our witness '${w}' produced...", ...);
+            }
+            _slot_hijack_count = 0;
         }
     }
 }
 ```
 
-**What it detects:** In DLT emergency mode, emergency master may blank our witness's signing_key and fill our scheduled slots with committee blocks.
+**What it detects:** In DLT emergency mode, the emergency master may blank our witness's signing_key and fill our scheduled slots with committee blocks.
+
+**Important:** The reset condition checks `_witnesses.count(block.witness) > 0` — i.e., ANY of our configured witnesses produced the block, not just the slot-assigned one. Without this, a legitimate block from a different one of our witnesses would be mis-counted as a hijack.
 
 ---
 

@@ -3238,10 +3238,18 @@ void dlt_p2p_node::log_node_status() {
     if (_fork_status != DLT_FORK_STATUS_NORMAL) flags += "FORK:" + std::string(fork_str) + " ";
     if (flags.empty()) flags = "ok";
 
-    ilog("${G}DLT Status | ${st} | head=#${h} lib=#${lib} | dlt_range=${de}-${dl} | peers=${a}active/${c}conn | ${fl}${R}",
+    int64_t uptime_sec = (_node_start_time.sec_since_epoch() > 0)
+        ? (fc::time_point::now() - _node_start_time).count() / 1000000
+        : 0;
+    int up_h = (int)(uptime_sec / 3600);
+    int up_m = (int)((uptime_sec % 3600) / 60);
+    int up_s = (int)(uptime_sec % 60);
+
+    ilog("${G}DLT Status | ${st} | head=#${h} lib=#${lib} | dlt_range=${de}-${dl} | peers=${a}active/${c}conn | uptime=${uh}h${um}m${us}s | ${fl}${R}",
          ("G", G)("st", status_str)("h", our_head)("lib", our_lib)
          ("de", dlt_earliest)("dl", dlt_latest)
          ("a", active)("c", connected)
+         ("uh", up_h)("um", up_m)("us", up_s)
          ("fl", flags)("R", R));
 
     // Emit peer stats on the first node status log (1 min after startup)

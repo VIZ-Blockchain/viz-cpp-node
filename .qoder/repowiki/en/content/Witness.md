@@ -35,6 +35,15 @@
 - Added enhanced minority fork detection with automatic recovery mechanisms
 - Integrated emergency consensus detection and recovery procedures
 - Enhanced network connectivity features with improved peer synchronization
+- Isolated production timer on dedicated io_service/thread, preventing P2P I/O from delaying slot callbacks
+- Fixed lag tight loop: tracks missed slot time and skips ahead to avoid rechecking the same slot every 250ms
+- Added production watchdog: fires at 60s (emergency master) or 180s (regular witness) of no block produced
+- Added slot hijack detection: counts consecutive slots where emergency master fills slots assigned to our witness
+- Fixed false-positive hijack: own-witness blocks no longer trigger hijack counter
+- Fixed slot index calculation (current_aslot % num_scheduled_witnesses) for correct schedule position
+- Added not_my_turn streak detection: warns at 500 consecutive iterations (~125s) of schedule misalignment
+- Added on_block_applied missed-slot diagnostic: dumps full plugin state when incoming block reveals our missed slots
+- Refined slot=0 stall detection: only counts real NTP stalls (now ≤ head_block_time), not normal between-slot waits
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -135,6 +144,12 @@ SNAPSHOT --> WITNESS
   - **New**: Provides `is_witness_scheduled_soon()` method to check if any locally-controlled witnesses are scheduled to produce blocks in the upcoming 4 slots.
   - **New**: Implements two-level fork collision resolution system with configurable timeout blocks parameter (--fork-collision-timeout-blocks).
   - **New**: Integrates with enhanced fork database for automatic stale fork pruning after successful block application.
+  - **New**: Runs production timer on a dedicated `boost::asio::io_service` and thread, isolated from P2P network I/O.
+  - **New**: Prevents lag tight loop: records missed slot time and skips ahead to avoid rechecking the same slot every 250ms.
+  - **New**: Production watchdog alerts when no block is produced for 60s (emergency master) or 180s (regular witness); auto-enables verbose debug logging on first fire.
+  - **New**: Slot hijack detection counts consecutive emergency-master-filled slots assigned to our witness in the shuffled schedule.
+  - **New**: not_my_turn streak detection warns after 500 consecutive iterations (~125s) of another witness holding all slots.
+  - **New**: Missed-slot diagnostics via `on_block_applied` signal: detects gaps and dumps full plugin state when our witness missed a slot.
 - Witness Guard Plugin
   - **NEW**: Provides comprehensive witness protection and monitoring capabilities.
   - **NEW**: Implements witness key auto-restore functionality to automatically restore null signing keys.
@@ -723,6 +738,107 @@ The witness plugin now implements a comprehensive debug logging system that prov
 - [database.cpp:4536-4573](file://libraries/chain/database.cpp#L4536-L4573)
 - [database.cpp:5530-5655](file://libraries/chain/database.cpp#L5530-L5655)
 
+### New: Dedicated Production Timer Thread
+The production timer runs on its own `production_io_service_` with a dedicated OS thread, fully isolated from the appbase/P2P shared io_service. This prevents P2P network activity — peer disconnects, TLS handshakes, send-queue drains — from delaying the `async_wait` callback and causing missed-slot lag.
+
+**Implementation**:
+- `production_io_service_` is a private `boost::asio::io_service` declared in `impl`, initialized before `production_timer_`.
+- `production_io_work_` keeps the io_service alive while the thread runs.
+- `production_io_thread_` (`std::thread`) calls `production_io_service_.run()`.
+- Destructor: `production_io_service_.stop()` then `join()` for clean shutdown.
+- All timer operations (`expires_from_now`, `async_wait`) use this dedicated service.
+
+**Benefit**: The 250ms tick fires on its own OS thread with no contention from P2P fiber scheduling. Even under heavy peer churn the production callback is called at the correct wall-clock time.
+
+**Section sources**
+- [witness.cpp:64-83](file://plugins/witness/witness.cpp#L64-L83)
+- [witness.cpp:139-144](file://plugins/witness/witness.cpp#L139-L144)
+- [witness.cpp:374-378](file://plugins/witness/witness.cpp#L374-L378)
+- [witness.cpp:663-685](file://plugins/witness/witness.cpp#L663-L685)
+
+### New: Lag Tight Loop Prevention
+After a `lag` production condition the current slot is already missed. Without a guard the next 250ms tick re-evaluates the same slot and returns `lag` again, spinning in a tight loop until the full 3s slot interval passes.
+
+**Fix**: `_last_lag_slot_time` records the `scheduled_time` of the missed slot. At the top of `schedule_production_loop()` the elapsed time since the lag is computed; if less than one full slot interval (3 s = `CHAIN_BLOCK_INTERVAL * 1000 ms`) has passed, the timer is set to skip the remainder of that slot before resuming normal 250ms scheduling.
+
+**State variable**: `fc::time_point_sec _last_lag_slot_time` (zero when no lag is active).
+
+**Section sources**
+- [witness.cpp:182-186](file://plugins/witness/witness.cpp#L182-L186)
+- [witness.cpp:911-920](file://plugins/witness/witness.cpp#L911-L920)
+- [witness.cpp:945-963](file://plugins/witness/witness.cpp#L945-L963)
+
+### New: Production Watchdog
+The watchdog fires when the node has produced at least one block (`_ever_produced = true`) but has gone silent while production conditions are met. This catches cases where an external factor (e.g., the emergency master blanking our key) silently stops production without returning an explicit error.
+
+**Thresholds**:
+- Emergency master (has `CHAIN_EMERGENCY_WITNESS_ACCOUNT` in `_witnesses`): **60 seconds**.
+- Regular witness: **180 seconds**.
+- Re-fires every **30 seconds** after the first alert.
+
+**Actions on first fire**:
+1. Sets `_watchdog_debug_enabled = true` and enables `database()._debug_block_production` to capture verbose production loop traces automatically.
+2. Logs full diagnostic state: NTP drift, head block, DLT sync status, P2P catchup flag, scheduled witness, how many of our witnesses appear in the shuffled schedule, and which witnesses have blanked on-chain keys.
+
+**Relevant state**:
+- `bool _ever_produced` — set to true on first successful production.
+- `fc::time_point _last_production_time` — updated on every produced block.
+- `int _last_slot_result` — last non-`not_time_yet` result (meaningful failure code for diagnostics).
+- `bool _watchdog_debug_enabled` — latching flag; never reset once set.
+
+**Section sources**
+- [witness.cpp:174-191](file://plugins/witness/witness.cpp#L174-L191)
+- [witness.cpp:965-1065](file://plugins/witness/witness.cpp#L965-L1065)
+
+### New: Slot Hijack Detection
+In DLT emergency consensus mode the emergency master may blank a regular witness's signing key and produce `committee` blocks in that witness's scheduled slots. The hijack counter makes this pattern visible in watchdog diagnostics.
+
+**Detection logic** (runs inside `on_block_applied`):
+1. Skip if emergency consensus is not active.
+2. Compute `slot_idx = dgp.current_aslot % num_scheduled_witnesses`.
+3. Look up the expected witness at `slot_idx` in the shuffled schedule.
+4. If the actual block producer (`block.witness`) is `committee` (or any non-local witness) AND `slot_idx` maps to one of our witnesses → hijack detected.
+5. If the actual producer IS one of our witnesses (any of them) → reset counter (false-positive guard).
+
+**State variables**:
+- `uint32_t _slot_hijack_count` — consecutive hijacked slots since last own production.
+- `uint32_t _slot_hijack_height` — block number of last detected hijack.
+
+**Logging**: First 3 hijacks are always logged; thereafter once per minute to avoid log spam.
+
+**Section sources**
+- [witness.cpp:192-207](file://plugins/witness/witness.cpp#L192-L207)
+- [witness.cpp:486-562](file://plugins/witness/witness.cpp#L486-L562)
+
+### New: Missed Block Diagnostic via on_block_applied Signal
+The witness plugin subscribes to the chain's `applied_block` signal via `on_block_applied()`. When an incoming block reveals that one or more slots were skipped (block number jumped by more than 1 since the last applied block), and any of the missed slots were assigned to one of our witnesses, the handler dumps the full plugin state for diagnosis.
+
+**Triggered by**: gaps between `_last_applied_block_num` and the new block number.
+
+**State variable**: `uint64_t _last_applied_block_num` — updated on every applied block.
+
+**Section sources**
+- [witness.cpp:200-207](file://plugins/witness/witness.cpp#L200-L207)
+- [witness.cpp:470-562](file://plugins/witness/witness.cpp#L470-L562)
+
+### New: not_my_turn Streak Detection
+When the production loop repeatedly returns `not_my_turn` (another witness is scheduled) for an extended period while our witnesses are supposed to be in the schedule, it may indicate schedule misalignment, a forked-off chain, or a configuration error.
+
+**Threshold**: **500 consecutive** `not_my_turn` results ≈ 125 seconds of other witnesses producing uninterrupted.
+
+**On threshold**: Logs a warning with streak count, elapsed time, last scheduled witness name, and our configured witness set.
+
+**Reset**: On any `produced`, `not_synced`, or other non-`not_my_turn` result.
+
+**State variables**:
+- `uint32_t _not_my_turn_streak`
+- `fc::time_point _not_my_turn_streak_start`
+- `std::string _last_scheduled_witness`
+
+**Section sources**
+- [witness.cpp:170-173](file://plugins/witness/witness.cpp#L170-L173)
+- [witness.cpp:754-780](file://plugins/witness/witness.cpp#L754-L780)
+
 ### New: Witness Guard Plugin - Comprehensive Protection and Monitoring
 The witness guard plugin provides comprehensive protection and monitoring capabilities for witness keys and operations.
 
@@ -1171,6 +1287,18 @@ Common issues and resolutions:
 - **New**: Network health monitoring failures
   - Symptom: Witness guard performing operations during unhealthy network conditions.
   - Resolution: Verify network health checks are working; check LIB age monitoring; ensure proper safety checks are in place; review witness guard logs for health check results.
+- **New**: Production watchdog fires unexpectedly
+  - Symptom: `WATCHDOG:` elog appears even though production seems healthy; verbose `DEBUG_CRASH` logging auto-enabled.
+  - Resolution: The watchdog fires when no block has been produced for 60s (emergency master) or 180s (regular witness) while production conditions appear met. Check: is our witness in the shuffled schedule (`our_slots_in_schedule > 0`)? Is the on-chain signing key blanked (`blanked_keys` field in watchdog log)? Is P2P still syncing (`dlt_syncing`)? The watchdog log contains all these fields.
+- **New**: Lag tight loop / high CPU after missed slot
+  - Symptom: After a `lag` condition, node CPU spikes and production loop fires many times per second on the same slot.
+  - Resolution: This was a bug fixed in commit 8fce5f1e. The `_last_lag_slot_time` guard now skips ahead to avoid rechecking the same missed slot. Upgrade to a build that includes this fix.
+- **New**: Slot hijack counter increments for own blocks
+  - Symptom: `hijack #N` messages appear in watchdog diagnostics even when one of our own witnesses produced the block.
+  - Resolution: Fixed in commit 7b589b71. The hijack counter now resets when any of our witnesses (not just the slot-assigned one) produced the block. Upgrade to a build containing this fix.
+- **New**: not_my_turn streak warning
+  - Symptom: `NOT_MY_TURN STREAK: N consecutive slots` warning in logs.
+  - Resolution: Another witness has held all slots for ~125s. Check: (1) Is our witness still in the shuffled schedule? (2) Is there a chain fork where the other side has a different schedule? (3) Has our witness been replaced/disabled on-chain? The log includes `our witnesses` and `last scheduled` fields for quick diagnosis.
 
 **Updated** Added troubleshooting information for fork collision detection, witness scheduling conflicts, the new coordination mechanisms, configuration parameter type issues, comprehensive witness reward creation validation, database corruption scenarios with clear recovery procedures, 250ms interval timing optimization issues, new fork collision timeout configuration, two-level fork resolution system, automatic stale fork pruning, enhanced fork comparison functions, configurable timeout parameters for optimal network behavior, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: recovery mechanism issues through P2P resynchronization, **NEW**: skip_undo_history_check flag management during recovery scenarios, **NEW**: comprehensive debug logging system enabling verbose traces for block production and chain internals with detailed visibility, **NEW**: witness protection and monitoring capabilities with auto-restore and auto-disable features, **NEW**: emergency recovery mechanisms through P2P resynchronization, **NEW**: auto-disable threshold management for preventing witness abuse, **NEW**: emergency consensus integration for continuous protection, **NEW**: network health monitoring for safe operations, **NEW**: pending transaction tracking for reliable restoration, **NEW**: witness guard plugin configuration issues, **NEW**: auto-disable threshold problems, **NEW**: emergency consensus protection failures, **NEW**: network health monitoring failures.
 

@@ -32,6 +32,9 @@
 - Implemented urgent fresh snapshot creation to prevent sync gaps when downloading nodes would have missing blocks
 - Enhanced DLT mode recovery capabilities with intelligent gap detection and automatic snapshot regeneration
 - Improved snapshot validation logic to prevent serving broken snapshots with gaps
+- Fixed snapshot path propagation: snapshot path is now passed correctly into the async load callback (was empty before)
+- Fixed initialization order in snapshot plugin startup to avoid accessing uninitialized state
+- Fixed P2P resume after async snapshot task: `_block_processing_paused` flag and P2P catchup flag are now reliably reset even when the async task completes on a non-P2P thread
 
 ## Table of Contents
 1. [Introduction](#introduction)

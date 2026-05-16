@@ -2,6 +2,37 @@
 
 This document explains the DLT P2P statistics output — what each field means, why it has its current value, and what actions (if any) an operator should take.
 
+There are **two distinct log lines** emitted periodically by `dlt_p2p_node`:
+
+| Log prefix | Frequency | Purpose |
+|---|---|---|
+| `DLT Status \|` | Every ~30s | Compact one-liner for quick health monitoring |
+| `=== DLT P2P Stats \|` | Every ~120s | Detailed stats including per-node fork/peer data |
+
+---
+
+## DLT Status Log (Compact Line)
+
+```
+DLT Status | FORWARD | head=#79881136 lib=#79881130 | dlt_range=79000000-79881136 | peers=6active/8conn | uptime=2h15m43s | flags=...
+```
+
+Emitted every ~30 seconds. Intended for tail/grep monitoring without noise.
+
+### Fields
+
+| Field | Example | Meaning |
+|---|---|---|
+| Mode | `FORWARD` | Node operating mode (`SYNC` or `FORWARD`) |
+| `head=#N` | `head=#79881136` | Current head block number |
+| `lib=#N` | `lib=#79881130` | Last irreversible block number |
+| `dlt_range=A-B` | `dlt_range=79000000-79881136` | Block range stored in DLT block log |
+| `peers=Xactive/Yconn` | `peers=6active/8conn` | Active (exchanging) / total connected peers |
+| `uptime=XhYmZs` | `uptime=2h15m43s` | Time since node startup |
+| `flags=...` | Various | Active operational flags (snapshot, pause, catchup, etc.) |
+
+**`uptime`** is computed as `(now - _node_start_time)` where `_node_start_time` is recorded in the `dlt_p2p_node` constructor. Use this to correlate log events with node age — particularly useful when checking if a production issue started immediately after startup vs. after running for a while.
+
 ---
 
 ## Node-Level Summary (Header Line)
