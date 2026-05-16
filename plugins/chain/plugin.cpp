@@ -820,6 +820,9 @@ namespace chain {
                 } catch (const fc::exception& e) {
                     elog("Failed to replay dlt_block_log: ${e}", ("e", e.to_detail_string()));
                     elog("Node will continue with snapshot state only. P2P sync will fill the gap.");
+                } catch (const std::exception& e) {
+                    elog("Failed to replay dlt_block_log: ${e}", ("e", e.what()));
+                    elog("Node will continue with snapshot state only. P2P sync will fill the gap.");
                 }
             } else {
                 wlog("No dlt_block_log blocks beyond snapshot head. P2P sync will fill the gap.");
