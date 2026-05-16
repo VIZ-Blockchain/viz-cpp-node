@@ -5410,6 +5410,14 @@ namespace graphene { namespace chain {
                             witness_missed.owner != b.witness &&
                             witness_missed.owner != CHAIN_EMERGENCY_WITNESS_ACCOUNT;
 
+                        if (!is_emergency_offline_witness && witness_missed.owner != b.witness) {
+                            ilog("\033[91mMissed block: witness ${w} did not produce block #${n} at ${t} (next: ${next})\033[0m",
+                                 ("w", witness_missed.owner)
+                                 ("n", head_block_num() + i + 1)
+                                 ("t", get_slot_time(i + 1))
+                                 ("next", b.witness));
+                        }
+
                         modify(witness_missed, [&](witness_object &w) {
                             // Only reset current_run for witnesses that actually missed their slot.
                             // In emergency hybrid mode, the committee witness occupies multiple
