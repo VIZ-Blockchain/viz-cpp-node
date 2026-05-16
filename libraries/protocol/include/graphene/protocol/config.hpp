@@ -187,8 +187,11 @@
 /// Default epoch length for distributing accumulated stakeholder rewards (1 day).
 #define CHAIN_DEFAULT_DISTRIBUTION_EPOCH_LENGTH  CHAIN_BLOCKS_PER_DAY
 
-/// Minimum epoch length validators can vote for (1 round ≈ 21 blocks).
-#define CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH  uint32_t(CHAIN_MAX_WITNESSES)
+/// Minimum epoch length validators can vote for (1 hour = 1200 blocks).
+/// 21 blocks (1 round) is too short: epoch distribution runs synchronously in _apply_block
+/// and iterates all validators × all their stakeholders; at 63-second intervals this
+/// would fire too frequently under any realistic validator/stakeholder count.
+#define CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH  uint32_t(CHAIN_BLOCKS_PER_HOUR)
 
 /// Minimum TOKEN amount per stakeholder payout at epoch end (1 atomic unit = 0.001 VIZ).
 /// Stakeholder rewards below this threshold are not distributed; the validator retains them.

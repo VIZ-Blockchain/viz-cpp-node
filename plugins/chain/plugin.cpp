@@ -599,10 +599,6 @@ namespace chain {
                     bfs::remove(shm);
                     wlog("Shared memory wiped.");
                 }
-                // Write new schema version before recovery so that a crash between
-                // wipe and rebuild does not re-wipe on the next start.
-                write_schema_version(data_dir);
-
                 // After a wipe, db.open() would call init_genesis() and produce
                 // head=0 / revision=0 — a consistent state that bypasses the
                 // revision-mismatch recovery path and sends the node into P2P snapshot
@@ -614,15 +610,20 @@ namespace chain {
                         wlog("Schema wipe: found local snapshot ${p}, importing...", ("p", snap.string()));
                         my->snapshot_path = snap.string();
                         do_snapshot_load(data_dir, true);
+                        // Write schema version only after successful recovery.
+                        // If do_snapshot_load throws, version stays at the old value
+                        // so the next restart will retry recovery instead of skipping it.
+                        write_schema_version(data_dir);
                         return;
                     } else {
                         wlog("Schema wipe: no local snapshots in ${d}, falling through to normal open.",
                              ("d", my->snapshot_dir));
                     }
                 }
-                // No local snapshot available — fall through.  The normal open will
-                // succeed with head=0, and the "no state" path will handle P2P sync
-                // or replay-if-corrupted will replay from block_log.
+                // No local snapshot available — fall through.  db.open() will call
+                // init_genesis() (head=0), and write_schema_version at line 639 runs
+                // after successful open.  The "no state" path handles P2P sync or
+                // replay-if-corrupted replays from block_log.
             }
         }
 
