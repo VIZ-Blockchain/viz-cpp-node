@@ -66,10 +66,21 @@ namespace graphene {
                     p2p_(appbase::app().get_plugin<graphene::plugins::p2p::p2p_plugin>()),
                     chain_(appbase::app().get_plugin<graphene::plugins::chain::plugin>()),
                     snapshot_(appbase::app().get_plugin<graphene::plugins::snapshot::snapshot_plugin>()),
-                    production_timer_(appbase::app().get_io_service()) {
+                    production_timer_(production_io_service_) {
+                    // Keep production_io_service_ alive while the thread runs,
+                    // then start the dedicated thread.  This io_service is intentionally
+                    // separate from appbase's shared io_service so that P2P network
+                    // activity (peer disconnects, send-queue drains) cannot delay the
+                    // production timer callback and cause missed-slot lag.
+                    production_io_work_ = std::make_unique<asio::io_service::work>(production_io_service_);
+                    production_io_thread_ = std::thread([this]() { production_io_service_.run(); });
                 }
 
-                ~impl(){}
+                ~impl() {
+                    production_io_service_.stop();
+                    if (production_io_thread_.joinable())
+                        production_io_thread_.join();
+                }
 
                 graphene::chain::database& database() {
                     return chain_.db();
@@ -124,6 +135,12 @@ namespace graphene {
                 fc::time_point hash_start_time_;
 
                 uint32_t _production_skip_flags = graphene::chain::database::skip_nothing;
+
+                // Dedicated io_service for the production timer — must be declared
+                // before production_timer_ so it is initialized first.
+                asio::io_service production_io_service_;
+                std::unique_ptr<asio::io_service::work> production_io_work_;
+                std::thread production_io_thread_;
                 asio::deadline_timer production_timer_;
 
                 std::map<public_key_type, fc::ecc::private_key> _private_keys;
@@ -352,7 +369,12 @@ namespace graphene {
                 graphene::time::shutdown_ntp_time();
                 if (!pimpl->_witnesses.empty()) {
                     ilog("shutting downing production timer");
-                    pimpl->production_timer_.cancel();
+                    // Stop the dedicated io_service so the production thread exits.
+                    // io_service::stop() is thread-safe; it causes run() to return
+                    // after the currently executing handler (if any) completes.
+                    pimpl->production_io_service_.stop();
+                    if (pimpl->production_io_thread_.joinable())
+                        pimpl->production_io_thread_.join();
                 }
             }
 
@@ -921,11 +943,12 @@ namespace graphene {
                 // so the production loop doesn't immediately recheck the same slot and
                 // spin in a tight lag loop.
                 if (_last_lag_slot_time != fc::time_point_sec()) {
-                    int64_t time_since_lag = (fc::time_point::now() - fc::time_point(_last_lag_slot_time)).count() / 1000000;
+                    // Compute elapsed time in milliseconds (count() is microseconds).
+                    int64_t time_since_lag_ms = (fc::time_point::now() - fc::time_point(_last_lag_slot_time)).count() / 1000;
                     // If less than one full slot interval has passed since the lag, skip ahead
                     // to avoid rechecking the same missed slot.
-                    if (time_since_lag < CHAIN_BLOCK_INTERVAL) {
-                        int64_t skip_ms = (CHAIN_BLOCK_INTERVAL * 1000) - time_since_lag;
+                    if (time_since_lag_ms < (int64_t)CHAIN_BLOCK_INTERVAL * 1000) {
+                        int64_t skip_ms = (CHAIN_BLOCK_INTERVAL * 1000) - time_since_lag_ms;
                         if (skip_ms > 0) {
                             if (database()._debug_block_production) {
                                 ilog("DEBUG_CRASH: skipping ${ms}ms to avoid rechecking lagged slot", ("ms", skip_ms));
