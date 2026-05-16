@@ -165,22 +165,17 @@ namespace chain {
 
     // ---------- schema version helpers ----------
 
-    static fc::path schema_version_path(const bfs::path& data_dir) {
-        return fc::path((data_dir / "schema_version").string());
-    }
-
     static uint32_t read_schema_version(const bfs::path& data_dir) {
-        auto p = schema_version_path(data_dir);
-        if (!fc::exists(p)) return 0;
-        std::ifstream f(p.str());
+        auto p = data_dir / "schema_version";
+        if (!bfs::exists(p)) return 0;
+        std::ifstream f(p.string());
         uint32_t v = 0;
         f >> v;
         return v;
     }
 
     static void write_schema_version(const bfs::path& data_dir) {
-        auto p = schema_version_path(data_dir);
-        std::ofstream f(p.str());
+        std::ofstream f((data_dir / "schema_version").string());
         f << CHAIN_SCHEMA_VERSION;
     }
 
@@ -603,7 +598,7 @@ namespace chain {
                      ("s", stored)("c", CHAIN_SCHEMA_VERSION));
                 auto shm = my->shared_memory_dir / "shared_memory.bin";
                 if (bfs::exists(shm)) {
-                    chainbase::database::wipe(my->shared_memory_dir);
+                    bfs::remove(shm);
                     wlog("Shared memory wiped. Recovery path will rebuild from snapshot or block_log.");
                 }
                 // Write the new schema version immediately so a crash between wipe and
