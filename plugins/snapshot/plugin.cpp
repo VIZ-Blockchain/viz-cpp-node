@@ -257,9 +257,9 @@ inline uint32_t import_witnesses(
             obj.hardfork_version_vote = v["hardfork_version_vote"].as<graphene::protocol::hardfork_version>();
             obj.hardfork_time_vote = v["hardfork_time_vote"].as<fc::time_point_sec>();
             // HF13: validator reward sharing (default 0 for pre-HF13 snapshots)
-            if (v.contains("sharing_rate"))
+            if (v.get_object().contains("sharing_rate"))
                 obj.sharing_rate = static_cast<uint16_t>(v["sharing_rate"].as_uint64());
-            if (v.contains("pending_stakeholder_reward"))
+            if (v.get_object().contains("pending_stakeholder_reward"))
                 obj.pending_stakeholder_reward = v["pending_stakeholder_reward"].as<share_type>();
         });
         ++count;
@@ -373,7 +373,7 @@ inline uint32_t import_witness_votes(
             obj.witness = v["witness"].as<witness_id_type>();
             obj.account = v["account"].as<account_id_type>();
             // HF13: flash-voter protection (default 0 for pre-HF13 snapshots)
-            if (v.contains("vote_created_block"))
+            if (v.get_object().contains("vote_created_block"))
                 obj.vote_created_block = static_cast<uint32_t>(v["vote_created_block"].as_uint64());
         });
         ++count;
