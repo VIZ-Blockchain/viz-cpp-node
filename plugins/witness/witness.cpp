@@ -15,6 +15,7 @@
 #include <fc/smart_ref_impl.hpp>
 
 #include <memory>
+#include <mutex>
 #include <thread>
 
 #include <boost/asio.hpp>
@@ -206,6 +207,11 @@ namespace graphene {
                 // Track last applied block number to detect missed blocks.
                 // Updated in the applied_block signal handler.
                 uint64_t _last_applied_block_num = 0;
+
+                // Protects cross-thread diagnostic fields shared between
+                // production_io_thread_ and the P2P thread (on_block_applied /
+                // get_production_diagnostics).  Never held during database() calls.
+                std::mutex _diag_mutex;
 
                 // applied_block signal handler: detects when incoming blocks
                 // reveal missed slots, and if our witness was scheduled for
@@ -496,6 +502,7 @@ namespace graphene {
             std::string witness_plugin::get_production_diagnostics() const {
                 try {
                     if (!pimpl) return "witness=no_pimpl";
+                    std::lock_guard<std::mutex> lk(pimpl->_diag_mutex);
                     std::string s = "prod_skip_flags=";
                     s += std::to_string(pimpl->_production_skip_flags);
                     s += " catching_up=";
@@ -519,6 +526,7 @@ namespace graphene {
 
             void witness_plugin::impl::on_block_applied(const graphene::chain::signed_block &block) {
                 try {
+                    std::lock_guard<std::mutex> _diag_lk(_diag_mutex);
                     uint64_t block_num = block.block_num();
                     uint64_t prev_num = _last_applied_block_num;
                     _last_applied_block_num = block_num;
@@ -720,30 +728,39 @@ namespace graphene {
                 }
 
                 if (database()._debug_block_production) ilog("DEBUG_CRASH: maybe_validate_block returned ${r}", ("r", (int)result));
-                if (result != block_validation_condition::not_time_yet)
+                if (result != block_validation_condition::not_time_yet) {
+                    std::lock_guard<std::mutex> lk(_diag_mutex);
                     _last_slot_result = (int)result;
+                }
                 switch (result) {
                     case block_validation_condition::produced:
                         ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w} with ${tx} transactions\033[0m", (capture));
                         fork_collision_defer_count_ = 0;
-                        _slot_zero_streak = 0;  // P18: reset stall counter on success
-                        _not_my_turn_streak = 0; // reset not_my_turn tracking
-                        _slot_hijack_count = 0;  // reset hijack counter on successful production
-                        _ever_produced = true;
-                        _last_production_time = fc::time_point::now();
-                        // Reset watchdog auto-enabled debug logging after successful
-                        // production. The watchdog enabled verbose logging to diagnose
-                        // the silence; now that production is confirmed working, restore
-                        // the user's original config to prevent indefinite DEBUG_CRASH spam.
+                        // _watchdog_debug_enabled is production-only — no lock needed.
                         if (_watchdog_debug_enabled) {
                             _watchdog_debug_enabled = false;
                             database()._debug_block_production = _debug_block_production_config;
                         }
-                        if (_minority_fork_recovering) {
-                            auto elapsed = fc::time_point::now() - _minority_fork_recovery_start;
-                            ilog("MINORITY FORK RECOVERY COMPLETE: production resumed after ${e}s",
-                                 ("e", elapsed.count() / 1000000));
-                            _minority_fork_recovering = false;
+                        {
+                            // Snapshot minority-fork state before locking so we can log outside the lock.
+                            bool _was_recovering; fc::microseconds _rcv_elapsed;
+                            {
+                                std::lock_guard<std::mutex> lk(_diag_mutex);
+                                _slot_zero_streak = 0;
+                                _not_my_turn_streak = 0;
+                                _slot_hijack_count = 0;
+                                _ever_produced = true;
+                                _last_production_time = fc::time_point::now();
+                                _was_recovering = _minority_fork_recovering;
+                                if (_was_recovering) {
+                                    _rcv_elapsed = fc::time_point::now() - _minority_fork_recovery_start;
+                                    _minority_fork_recovering = false;
+                                }
+                            }
+                            if (_was_recovering) {
+                                ilog("MINORITY FORK RECOVERY COMPLETE: production resumed after ${e}s",
+                                     ("e", _rcv_elapsed.count() / 1000000));
+                            }
                         }
                         break;
                     case block_validation_condition::not_synced:
@@ -769,29 +786,38 @@ namespace graphene {
                             }
                         }
                         fork_collision_defer_count_ = 0;
-                        _slot_zero_streak = 0;  // P18: reset on valid non-stall result
-                        _not_my_turn_streak = 0; // reset not_my_turn tracking
+                        {
+                            std::lock_guard<std::mutex> lk(_diag_mutex);
+                            _slot_zero_streak = 0;
+                            _not_my_turn_streak = 0;
+                        }
                         break;
                     case block_validation_condition::not_my_turn:
                         // This log-record is commented, because it outputs very often
                         // ilog("Not producing block because it isn't my turn");
                         fork_collision_defer_count_ = 0;
-                        _slot_zero_streak = 0;  // P18: reset on valid non-stall result
                         // Emergency master: the EMRG-DIAG log in maybe_validate_block fires
                         // per-slot details; nothing extra needed here.
 
-                        // Track consecutive not_my_turn to detect schedule misalignment
-                        _not_my_turn_streak++;
-                        if (_not_my_turn_streak == 1) {
-                            _not_my_turn_streak_start = fc::time_point::now();
-                        }
-                        if (_not_my_turn_streak == 500) {
-                            // ~125s with slot>0 but not our witness — investigate
+                        // Track consecutive not_my_turn to detect schedule misalignment.
+                        {
+                            uint32_t _nmt_snap;
+                            {
+                                std::lock_guard<std::mutex> lk(_diag_mutex);
+                                _slot_zero_streak = 0;
+                                _not_my_turn_streak++;
+                                if (_not_my_turn_streak == 1)
+                                    _not_my_turn_streak_start = fc::time_point::now();
+                                _nmt_snap = _not_my_turn_streak;
+                            }
+                        if (_nmt_snap == 500) {
+                            // ~125s with slot>0 but not our witness — investigate.
+                            // _not_my_turn_streak_start is production-only; no lock needed.
                             auto elapsed = fc::time_point::now() - _not_my_turn_streak_start;
                             wlog("NOT_MY_TURN STREAK: ${n} consecutive slots (${s}s) went to other witnesses. "
                                  "Last scheduled: ${sw}. Our witnesses: ${ow}. "
                                  "Check: is our witness still in shuffled schedule?",
-                                 ("n", _not_my_turn_streak)("s", elapsed.count() / 1000000)
+                                 ("n", _nmt_snap)("s", elapsed.count() / 1000000)
                                  ("sw", _last_scheduled_witness)
                                  ("ow", [_witnesses = _witnesses]() {
                                      std::string s;
@@ -799,6 +825,7 @@ namespace graphene {
                                      return s;
                                  }()));
                         }
+                        } // not_my_turn scope
                         break;
                     case block_validation_condition::not_time_yet:
                         // This log-record is commented, because it outputs very often
@@ -811,7 +838,8 @@ namespace graphene {
                         // waiting triggers a spurious NTP resync.
                         {
                             auto _now = graphene::time::now();
-                            auto _hbt = database().head_block_time();
+                            auto _hbt = database().head_block_time(); // read before taking lock
+                            std::lock_guard<std::mutex> lk(_diag_mutex);
                             if (_now <= fc::time_point(_hbt)) {
                                 // Real stall: NTP time is behind chain time
                                 _slot_zero_streak++;
@@ -1073,6 +1101,11 @@ namespace graphene {
 
                                 int64_t head_age_s = (fc::time_point::now() - fc::time_point(db_wd.head_block_time())).count() / 1000000;
 
+                                // _slot_hijack_count is written by on_block_applied (P2P thread):
+                                // snapshot under lock before the elog.
+                                uint32_t _shj_snap;
+                                { std::lock_guard<std::mutex> lk(_diag_mutex); _shj_snap = _slot_hijack_count; }
+
                                 elog("WITNESS-WATCHDOG: ${t} silent for ${s}s! "
                                     "witnesses=${w} keys=${k} skip_flags=${sf} minority_recovering=${mr} "
                                     "slot_result=${sr} dlt_syncing=${ds} catching_up=${c} "
@@ -1100,7 +1133,7 @@ namespace graphene {
                                     ("nmt", _not_my_turn_streak)
                                     ("nmtw", _last_scheduled_witness)
                                     ("n", ntp_us)
-                                    ("shj", _slot_hijack_count)
+                                    ("shj", _shj_snap)
                                     ("dl", _watchdog_debug_enabled));
 
                                 // === WATCHDOG PRODUCTION RECOVERY ===
