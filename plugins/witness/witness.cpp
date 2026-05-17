@@ -430,7 +430,7 @@ namespace graphene {
                             continue;
                         }
 
-                        const auto& witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
+                        const auto& witness_by_name = db.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();
                         auto itr = witness_by_name.find(scheduled_witness);
                         if (itr == witness_by_name.end()) {
                             continue;
@@ -476,7 +476,7 @@ namespace graphene {
                             continue;
                         }
 
-                        const auto& witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
+                        const auto& witness_by_name = db.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();
                         auto itr = witness_by_name.find(scheduled_witness);
                         if (itr == witness_by_name.end()) {
                             continue;
@@ -517,9 +517,9 @@ namespace graphene {
                     // Condition 2: the committee account is in the current witness schedule.
                     auto& db = pimpl->database();
                     return db.with_weak_read_lock([&]() -> bool {
-                        const witness_schedule_object& wso = db.get_witness_schedule_object();
-                        for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
-                            if (wso.current_shuffled_witnesses[i] == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                        const validator_schedule_object& wso = db.get_validator_schedule_object();
+                        for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                            if (wso.current_shuffled_validators[i] == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
                                 return true;
                             }
                         }
@@ -589,14 +589,14 @@ namespace graphene {
                     if (database()._dlt_mode && !_witnesses.empty()
                         && prev_num > 0 && block_num == prev_num + 1
                         && dgp_hijack.emergency_consensus_active) {
-                        const auto& wso_sj = database().get_witness_schedule_object();
-                        uint32_t nsw_sj = wso_sj.num_scheduled_witnesses;
+                        const auto& wso_sj = database().get_validator_schedule_object();
+                        uint32_t nsw_sj = wso_sj.num_scheduled_validators;
                         if (nsw_sj > 0) {
                             // apply_block increments current_aslot to the applied block's slot
                             // before this callback fires, so current_aslot IS the applied slot.
                             uint64_t slot_idx = dgp_hijack.current_aslot % nsw_sj;
                             const std::string& expected_witness =
-                                wso_sj.current_shuffled_witnesses[slot_idx];
+                                wso_sj.current_shuffled_validators[slot_idx];
                             bool was_our_slot = _witnesses.count(expected_witness) > 0;
                             // True hijack only if the actual producer is NOT also one of our witnesses.
                             bool producer_is_ours = _witnesses.count(block.witness) > 0;
@@ -646,9 +646,9 @@ namespace graphene {
                     // So: old_aslot = current_aslot - missed_count - 1
                     // Missed slot i (0-based): abs_slot = current_aslot - missed_count + i
                     const auto &dgp = database().get_dynamic_global_properties();
-                    const auto &wso = database().get_witness_schedule_object();
+                    const auto &wso = database().get_validator_schedule_object();
                     uint64_t cur_aslot = dgp.current_aslot;
-                    uint32_t num_witnesses = wso.num_scheduled_witnesses;
+                    uint32_t num_witnesses = wso.num_scheduled_validators;
                     if (num_witnesses == 0) return;
 
                     // Check each missed slot to see if our witness was scheduled
@@ -656,7 +656,7 @@ namespace graphene {
                     std::string missed_witnesses_list;
                     for (uint32_t i = 0; i < missed_count && i < 100; ++i) {
                         uint64_t abs_slot = cur_aslot - missed_count + i;
-                        const std::string &wname = wso.current_shuffled_witnesses[abs_slot % num_witnesses];
+                        const std::string &wname = wso.current_shuffled_validators[abs_slot % num_witnesses];
                         if (!missed_witnesses_list.empty()) missed_witnesses_list += ",";
                         missed_witnesses_list += wname;
                         if (_witnesses.count(wname) > 0) {
@@ -690,7 +690,7 @@ namespace graphene {
 
                     // Check on-chain signing key status for our witnesses
                     std::string key_status;
-                    const auto &wit_idx = database().get_index<graphene::chain::witness_index>()
+                    const auto &wit_idx = database().get_index<graphene::chain::validator_index>()
                         .indices().get<graphene::chain::by_name>();
                     for (const auto &wname : _witnesses) {
                         auto witr = wit_idx.find(wname);
@@ -976,11 +976,11 @@ namespace graphene {
                             try { catching_up120 = p2p().is_catching_up_after_pause(); } catch (...) {}
                             bool dlt_syncing120 = false;
                             try { dlt_syncing120 = chain().is_syncing(); } catch (...) {}
-                            const auto &wso120 = database().get_witness_schedule_object();
+                            const auto &wso120 = database().get_validator_schedule_object();
                             std::string shuffled_top3;
-                            for (int i = 0; i < std::min<int>(3, wso120.num_scheduled_witnesses); i++) {
+                            for (int i = 0; i < std::min<int>(3, wso120.num_scheduled_validators); i++) {
                                 if (!shuffled_top3.empty()) shuffled_top3 += ",";
-                                shuffled_top3 += wso120.current_shuffled_witnesses[i];
+                                shuffled_top3 += wso120.current_shuffled_validators[i];
                             }
                             std::string _next_w120 = database().get_scheduled_witness(1);
                             bool _ours120 = _witnesses.count(_next_w120) > 0;
@@ -1128,14 +1128,14 @@ namespace graphene {
                                     }
 
                                     // Scan full shuffled schedule for our witnesses
-                                    const auto &wso_wd = db_wd.get_witness_schedule_object();
-                                    for (int i = 0; i < wso_wd.num_scheduled_witnesses; i++) {
-                                        if (_witnesses.count(wso_wd.current_shuffled_witnesses[i]) > 0)
+                                    const auto &wso_wd = db_wd.get_validator_schedule_object();
+                                    for (int i = 0; i < wso_wd.num_scheduled_validators; i++) {
+                                        if (_witnesses.count(wso_wd.current_shuffled_validators[i]) > 0)
                                             our_slots_in_schedule++;
                                     }
 
                                     // Check on-chain signing keys for our witnesses
-                                    const auto &wit_idx = db_wd.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
+                                    const auto &wit_idx = db_wd.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();
                                     for (const auto& w_name : _witnesses) {
                                         auto w_itr = wit_idx.find(w_name);
                                         if (w_itr != wit_idx.end() &&
@@ -1417,11 +1417,11 @@ namespace graphene {
                     // that is not in the current schedule cannot contribute to LIB
                     // advancement and broadcasting their post-validation is wasted
                     // bandwidth and CPU.
-                    const witness_schedule_object &wso = db.get_witness_schedule_object();
+                    const validator_schedule_object &wso = db.get_validator_schedule_object();
                     std::set<string> scheduled_witnesses_set;
-                    for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
-                        if (wso.current_shuffled_witnesses[i] != account_name_type()) {
-                            scheduled_witnesses_set.insert(wso.current_shuffled_witnesses[i]);
+                    for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                        if (wso.current_shuffled_validators[i] != account_name_type()) {
+                            scheduled_witnesses_set.insert(wso.current_shuffled_validators[i]);
                         }
                     }
 
@@ -1439,7 +1439,7 @@ namespace graphene {
                         auto block_post_validations = db.get_block_post_validations(witness_account);
                         if (db._debug_block_production) ilog("DEBUG_CRASH: got ${n} post_validations for ${w}", ("n", block_post_validations.size())("w", witness_account));
                         if (block_post_validations.size() > 0) {
-                            const auto &witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
+                            const auto &witness_by_name = db.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();
                             auto w_itr = witness_by_name.find(witness_account);
                             if (w_itr == witness_by_name.end()) {
                                 wlog("Witness ${w} not found in witness index, skipping block post validation", ("w", witness_account));
@@ -1571,9 +1571,9 @@ namespace graphene {
                     // emergency-private-key was configured — see plugin_initialize).
                     bool we_are_master = false;
                     if (_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end()) {
-                        const witness_schedule_object &wso = db.get_witness_schedule_object();
-                        for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
-                            if (wso.current_shuffled_witnesses[i] == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                        const validator_schedule_object &wso = db.get_validator_schedule_object();
+                        for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                            if (wso.current_shuffled_validators[i] == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
                                 we_are_master = true;
                                 break;
                             }
@@ -1675,7 +1675,7 @@ namespace graphene {
                                     ("now", now_fine)
                                     ("ns", db.get_slot_time(1))
                                     ("a", _dgp2.current_aslot)
-                                    ("ns2", db.get_witness_schedule_object().num_scheduled_witnesses));
+                                    ("ns2", db.get_validator_schedule_object().num_scheduled_validators));
                             }
                         }
                     }
@@ -1727,14 +1727,14 @@ namespace graphene {
                             auto _now3 = fc::time_point::now();
                             if ((_now3 - _last_nmt_log).count() > 3000000) { // log every 3s max (once per slot)
                                 _last_nmt_log = _now3;
-                                const auto &_wso3 = db.get_witness_schedule_object();
+                                const auto &_wso3 = db.get_validator_schedule_object();
                                 dlog("EMRG-DIAG not_my_turn: slot=${s} scheduled=${sw} head=#${h} aslot=${a} num_sched=${ns} aslot_mod=${am}",
                                     ("s", slot)
                                     ("sw", scheduled_witness)
                                     ("h", _dgp3.head_block_number)
                                     ("a", _dgp3.current_aslot)
-                                    ("ns", _wso3.num_scheduled_witnesses)
-                                    ("am", _dgp3.current_aslot % _wso3.num_scheduled_witnesses));
+                                    ("ns", _wso3.num_scheduled_validators)
+                                    ("am", _dgp3.current_aslot % _wso3.num_scheduled_validators));
                             }
                         }
                     }
@@ -1742,7 +1742,7 @@ namespace graphene {
                 }
 
                 if (db._debug_block_production) ilog("DEBUG_CRASH: looking up witness in index");
-                const auto &witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
+                const auto &witness_by_name = db.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();
                 auto itr = witness_by_name.find(scheduled_witness);
                 if (db._debug_block_production) ilog("DEBUG_CRASH: witness found=${f}", ("f", itr != witness_by_name.end()));
 

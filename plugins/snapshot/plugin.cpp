@@ -254,10 +254,10 @@ inline uint32_t import_witnesses(
     uint32_t count = 0;
     for (const auto& v : arr) {
         auto id_val = v["id"].as_int64();
-        auto& mutable_idx = db.get_mutable_index<witness_index>();
-        mutable_idx.set_next_id(witness_id_type(id_val));
+        auto& mutable_idx = db.get_mutable_index<validator_index>();
+        mutable_idx.set_next_id(validator_id_type(id_val));
 
-        db.create<witness_object>([&](witness_object& obj) {
+        db.create<validator_object>([&](validator_object& obj) {
             obj.owner = v["owner"].as<account_name_type>();
             obj.created = v["created"].as<fc::time_point_sec>();
             detail::set_shared_string(obj.url, v["url"]);
@@ -271,7 +271,7 @@ inline uint32_t import_witnesses(
             obj.votes = v["votes"].as<share_type>();
             obj.penalty_percent = v["penalty_percent"].as_uint64();
             obj.counted_votes = v["counted_votes"].as<share_type>();
-            obj.schedule = v["schedule"].as<witness_object::witness_schedule_type>();
+            obj.schedule = v["schedule"].as<validator_object::validator_schedule_type>();
             obj.virtual_last_update = v["virtual_last_update"].as<fc::uint128_t>();
             obj.virtual_position = v["virtual_position"].as<fc::uint128_t>();
             obj.virtual_scheduled_time = v["virtual_scheduled_time"].as<fc::uint128_t>();
@@ -393,7 +393,7 @@ inline uint32_t import_witness_votes(
         mutable_idx.set_next_id(witness_vote_id_type(id_val));
 
         db.create<witness_vote_object>([&](witness_vote_object& obj) {
-            obj.witness = v["witness"].as<witness_id_type>();
+            obj.witness = v["witness"].as<validator_id_type>();
             obj.account = v["account"].as<account_id_type>();
             // HF13: flash-voter protection (default 0 for pre-HF13 snapshots)
             if (v.get_object().contains("vote_created_block"))
@@ -408,7 +408,7 @@ inline uint32_t import_witness_schedule(
     graphene::chain::database& db,
     const fc::variants& arr
 ) {
-    FC_ASSERT(arr.size() == 1, "Expected exactly 1 witness_schedule_object");
+    FC_ASSERT(arr.size() == 1, "Expected exactly 1 validator_schedule_object");
     const auto& v_raw = arr[0];
 
     // Patch old field names for backward compat with pre-rename snapshots
@@ -420,8 +420,8 @@ inline uint32_t import_witness_schedule(
     if (v.contains("median_props"))
         v.set("median_props", detail::patch_chain_props_variant(v["median_props"]));
 
-    const auto& wso = db.get<witness_schedule_object>();
-    db.modify(wso, [&](witness_schedule_object& obj) {
+    const auto& wso = db.get<validator_schedule_object>();
+    db.modify(wso, [&](validator_schedule_object& obj) {
         fc::from_variant(fc::variant(v), obj);
     });
     return 1;
@@ -924,11 +924,11 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
 
     // CRITICAL objects
     EXPORT_INDEX(dynamic_global_property_index, dynamic_global_property_object, "dynamic_global_property")
-    EXPORT_INDEX(witness_schedule_index, witness_schedule_object, "witness_schedule")
+    EXPORT_INDEX(validator_schedule_index, validator_schedule_object, "witness_schedule")
     EXPORT_INDEX(hardfork_property_index, hardfork_property_object, "hardfork_property")
     EXPORT_INDEX(account_index, account_object, "account")
     EXPORT_INDEX(account_authority_index, account_authority_object, "account_authority")
-    EXPORT_INDEX(witness_index, witness_object, "witness")
+    EXPORT_INDEX(validator_index, validator_object, "witness")
     EXPORT_INDEX(witness_vote_index, witness_vote_object, "witness_vote")
     EXPORT_INDEX(block_summary_index, block_summary_object, "block_summary")
     EXPORT_INDEX(content_index, content_object, "content")
@@ -1394,7 +1394,7 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             const auto& auth_idx = db.get_index<account_authority_index>().indices();
             while (!auth_idx.empty()) { db.remove(*auth_idx.begin()); }
 
-            const auto& wit_idx = db.get_index<witness_index>().indices();
+            const auto& wit_idx = db.get_index<validator_index>().indices();
             while (!wit_idx.empty()) { db.remove(*wit_idx.begin()); }
 
             const auto& meta_idx = db.get_index<account_metadata_index>().indices();

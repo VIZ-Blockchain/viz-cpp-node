@@ -337,7 +337,7 @@ DEFINE_API(plugin, get_dynamic_global_properties) {
 
 DEFINE_API(plugin, get_chain_properties) {
     return my->database().with_weak_read_lock([&]() {
-        return chain_api_properties(my->database().get_witness_schedule_object().median_props, my->database());
+        return chain_api_properties(my->database().get_validator_schedule_object().median_props, my->database());
     });
 }
 
@@ -383,7 +383,7 @@ std::vector<account_api_object> plugin::api_impl::get_accounts(std::vector<std::
         auto itr = idx.find(name);
         if (itr != idx.end()) {
             results.push_back(account_api_object(*itr, _db));
-            auto vitr = vidx.lower_bound(boost::make_tuple(itr->id, witness_id_type()));
+            auto vitr = vidx.lower_bound(boost::make_tuple(itr->id, validator_id_type()));
             while (vitr != vidx.end() && vitr->account == itr->id) {
                 results.back().witness_votes.insert(_db.get(vitr->witness).owner);
                 ++vitr;

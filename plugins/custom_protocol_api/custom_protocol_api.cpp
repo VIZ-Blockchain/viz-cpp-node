@@ -124,7 +124,7 @@ namespace graphene { namespace plugins { namespace custom_protocol_api {
             if (itr != idx.end()) {
                 result=account_api_object(*itr, db);
 
-                auto vitr = vidx.lower_bound(boost::make_tuple(itr->id, witness_id_type()));
+                auto vitr = vidx.lower_bound(boost::make_tuple(itr->id, validator_id_type()));
                 while (vitr != vidx.end() && vitr->account == itr->id) {
                     result.witness_votes.insert(db.get(vitr->witness).owner);
                     ++vitr;

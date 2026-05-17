@@ -1,7 +1,7 @@
 #include <graphene/api/witness_api_object.hpp>
 
 namespace graphene { namespace api {
-    validator_api_object::validator_api_object(const witness_object &w, const database& db)
+    validator_api_object::validator_api_object(const validator_object &w, const database& db)
         : id(w.id), owner(w.owner), created(w.created),
           url(to_string(w.url)), total_missed(w.total_missed), last_aslot(w.last_aslot),
           last_confirmed_block_num(w.last_confirmed_block_num),

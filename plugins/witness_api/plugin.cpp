@@ -82,7 +82,7 @@ DEFINE_API(plugin, get_witness_by_account) {
 
 
 fc::optional<validator_api_object> plugin::witness_plugin_impl::get_witness_by_account(std::string account_name) const {
-    const auto& idx = database.get_index<witness_index>().indices().get<by_name>();
+    const auto& idx = database.get_index<validator_index>().indices().get<by_name>();
     auto itr = idx.find(account_name);
     if (itr != idx.end()) {
         return validator_api_object(*itr, database);
@@ -107,8 +107,8 @@ std::vector<validator_api_object> plugin::witness_plugin_impl::get_witnesses_by_
     std::vector<validator_api_object> result;
     result.reserve(limit);
 
-    const auto &name_idx = database.get_index<witness_index>().indices().get<by_name>();
-    const auto &vote_idx = database.get_index<witness_index>().indices().get<by_vote_name>();
+    const auto &name_idx = database.get_index<validator_index>().indices().get<by_name>();
+    const auto &vote_idx = database.get_index<validator_index>().indices().get<by_vote_name>();
 
     auto itr = vote_idx.begin();
     if (from.size()) {
@@ -141,8 +141,8 @@ std::vector<validator_api_object> plugin::witness_plugin_impl::get_witnesses_by_
     std::vector<validator_api_object> result;
     result.reserve(limit);
 
-    const auto &name_idx = database.get_index<witness_index>().indices().get<by_name>();
-    const auto &vote_idx = database.get_index<witness_index>().indices().get<by_counted_vote_name>();
+    const auto &name_idx = database.get_index<validator_index>().indices().get<by_name>();
+    const auto &vote_idx = database.get_index<validator_index>().indices().get<by_counted_vote_name>();
 
     auto itr = vote_idx.begin();
     if (from.size()) {
@@ -165,7 +165,7 @@ DEFINE_API(plugin, get_witness_count) {
 }
 
 uint64_t plugin::witness_plugin_impl::get_witness_count() const {
-    return database.get_index<witness_index>().indices().size();
+    return database.get_index<validator_index>().indices().size();
 }
 
 DEFINE_API(plugin, lookup_witness_accounts) {
@@ -182,7 +182,7 @@ std::set<account_name_type> plugin::witness_plugin_impl::lookup_witness_accounts
     uint32_t limit
 ) const {
     FC_ASSERT(limit <= 1000);
-    const auto &witnesses_by_id = database.get_index<witness_index>().indices().get<by_id>();
+    const auto &witnesses_by_id = database.get_index<validator_index>().indices().get<by_id>();
 
     // get all the names and look them all up, sort them, then figure out what
     // records to return.  This could be optimized, but we expect the

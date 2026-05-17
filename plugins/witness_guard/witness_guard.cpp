@@ -67,10 +67,10 @@ struct witness_guard_plugin::impl {
 
     bool check_and_restore_internal();
     void send_witness_update(const std::string& witness_name,
-                             const graphene::chain::witness_object& obj,
+                             const graphene::chain::validator_object& obj,
                              const witness_info& config);
     void send_witness_disable(const std::string& witness_name,
-                              const graphene::chain::witness_object& obj,
+                              const graphene::chain::validator_object& obj,
                               const witness_info& config);
 
     graphene::plugins::chain::plugin&   chain_;
@@ -196,7 +196,7 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
 
 void witness_guard_plugin::impl::send_witness_update(
         const std::string& witness_name,
-        const graphene::chain::witness_object& obj,
+        const graphene::chain::validator_object& obj,
         const witness_info& config)
 {
     try {
@@ -251,7 +251,7 @@ void witness_guard_plugin::impl::send_witness_update(
 
 void witness_guard_plugin::impl::send_witness_disable(
         const std::string& witness_name,
-        const graphene::chain::witness_object& obj,
+        const graphene::chain::validator_object& obj,
         const witness_info& config)
 {
     try {
