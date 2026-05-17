@@ -1715,6 +1715,23 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
             return my->sign_transaction(tx, broadcast);
         }
 
+        annotated_signed_transaction wallet_api::set_reward_sharing(
+            string validator_name,
+            uint16_t sharing_rate,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+
+            signed_transaction tx;
+            set_reward_sharing_operation op;
+            op.owner = validator_name;
+            op.sharing_rate = sharing_rate;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
         annotated_signed_transaction wallet_api::vote_for_witness(string voting_account, string witness_to_vote_for, bool approve, bool broadcast )
         { try {
                 FC_ASSERT( !is_locked() );

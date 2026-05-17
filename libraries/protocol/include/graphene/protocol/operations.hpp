@@ -98,7 +98,12 @@ namespace graphene { namespace protocol {
                 target_account_sale_operation,
                 // virtual operations:
                 bid_operation,
-                outbid_operation
+                outbid_operation,
+
+                // VIZ HF 13: Validator reward sharing
+                set_reward_sharing_operation,
+                // virtual operations:
+                stakeholder_reward_operation
         > operation;
 
         /*void operation_get_required_authorities( const operation& op,

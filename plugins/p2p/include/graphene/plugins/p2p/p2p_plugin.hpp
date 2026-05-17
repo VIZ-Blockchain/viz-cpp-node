@@ -43,6 +43,14 @@ namespace graphene {
                     const std::string &witness_account,
                     const graphene::protocol::signature_type &witness_signature);
 
+                // Fire-and-forget variant: posts the broadcast to the P2P
+                // thread without blocking the caller.  Safe to call from
+                // the production timer thread — the caller never waits
+                // for slow peer I/O to complete.
+                void post_broadcast_block_post_validation(const graphene::protocol::block_id_type block_id,
+                    const std::string &witness_account,
+                    const graphene::protocol::signature_type &witness_signature);
+
                 void broadcast_transaction(const graphene::protocol::signed_transaction &tx);
 
                 /**

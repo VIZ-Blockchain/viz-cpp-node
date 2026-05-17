@@ -6,6 +6,7 @@
 #include <fc/io/json.hpp>
 #include <fc/string.hpp>
 
+#include <fstream>
 #include <iostream>
 #include <graphene/protocol/protocol.hpp>
 #include <graphene/protocol/types.hpp>
@@ -161,6 +162,24 @@ namespace chain {
 
         return block_applied;
     }
+
+    // ---------- schema version helpers ----------
+
+    static uint32_t read_schema_version(const bfs::path& data_dir) {
+        auto p = data_dir / "schema_version";
+        if (!bfs::exists(p)) return 0;
+        std::ifstream f(p.string());
+        uint32_t v = 0;
+        f >> v;
+        return v;
+    }
+
+    static void write_schema_version(const bfs::path& data_dir) {
+        std::ofstream f((data_dir / "schema_version").string());
+        f << CHAIN_SCHEMA_VERSION;
+    }
+
+    // ---------- /schema version helpers ----------
 
     void plugin::plugin_impl::wipe_db(const bfs::path &data_dir, bool wipe_block_log) {
         if (wipe_block_log) {
@@ -565,6 +584,49 @@ namespace chain {
             }
         }
 
+        // ========== Schema version check ==========
+        // Detect chainbase object layout changes before opening shared memory.
+        // When fields are added/removed/resized in any chainbase-managed object,
+        // old shared_memory.bin is binary-incompatible and must be rebuilt.
+        {
+            uint32_t stored = read_schema_version(data_dir);
+            if (stored != CHAIN_SCHEMA_VERSION) {
+                wlog("Chainbase schema version mismatch: stored=${s}, compiled=${c}. "
+                     "Object layout has changed — proactively wiping shared memory.",
+                     ("s", stored)("c", CHAIN_SCHEMA_VERSION));
+                auto shm = my->shared_memory_dir / "shared_memory.bin";
+                if (bfs::exists(shm)) {
+                    bfs::remove(shm);
+                    wlog("Shared memory wiped.");
+                }
+                // After a wipe, db.open() would call init_genesis() and produce
+                // head=0 / revision=0 — a consistent state that bypasses the
+                // revision-mismatch recovery path and sends the node into P2P snapshot
+                // download instead of using a local snapshot.
+                // Trigger local snapshot recovery explicitly here.
+                if (my->auto_recover_from_snapshot && snapshot_load_callback) {
+                    fc::path snap = my->find_latest_snapshot();
+                    if (!snap.string().empty()) {
+                        wlog("Schema wipe: found local snapshot ${p}, importing...", ("p", snap.string()));
+                        my->snapshot_path = snap.string();
+                        do_snapshot_load(data_dir, true);
+                        // Write schema version only after successful recovery.
+                        // If do_snapshot_load throws, version stays at the old value
+                        // so the next restart will retry recovery instead of skipping it.
+                        write_schema_version(data_dir);
+                        return;
+                    } else {
+                        wlog("Schema wipe: no local snapshots in ${d}, falling through to normal open.",
+                             ("d", my->snapshot_dir));
+                    }
+                }
+                // No local snapshot available — fall through.  db.open() will call
+                // init_genesis() (head=0), and write_schema_version at line 639 runs
+                // after successful open.  The "no state" path handles P2P sync or
+                // replay-if-corrupted replays from block_log.
+            }
+        }
+
         // ========== Normal startup path ==========
         try {
             ilog("Opening shared memory from ${path}", ("path", my->shared_memory_dir.generic_string()));
@@ -575,6 +637,7 @@ namespace chain {
             if (my->replay) {
                 my->replay_db(data_dir, my->force_replay);
             }
+            write_schema_version(data_dir);
         } catch (const graphene::chain::database_revision_exception &) {
             if (my->auto_recover_from_snapshot && snapshot_load_callback) {
                 wlog("Shared memory corrupted (revision mismatch). Attempting automatic recovery from snapshot...");
@@ -756,6 +819,9 @@ namespace chain {
                     my->db.reindex_from_dlt(snapshot_head + 1);
                 } catch (const fc::exception& e) {
                     elog("Failed to replay dlt_block_log: ${e}", ("e", e.to_detail_string()));
+                    elog("Node will continue with snapshot state only. P2P sync will fill the gap.");
+                } catch (const std::exception& e) {
+                    elog("Failed to replay dlt_block_log: ${e}", ("e", e.what()));
                     elog("Node will continue with snapshot state only. P2P sync will fill the gap.");
                 }
             } else {

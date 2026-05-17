@@ -28,6 +28,7 @@
 
 ## Update Summary
 **Changes Made**
+- HF13: Implemented validator reward sharing — stakeholder reward distribution, `set_reward_sharing_operation`, `distribution_epoch_length` consensus parameter, `process_validator_epoch_distribution()`, new virtual op `stakeholder_reward_operation`; rewards accumulate as TOKEN and convert to SHARES at epoch end
 - Added comprehensive witness protection and monitoring capabilities with new witness_guard plugin
 - Enhanced emergency recovery mechanisms with auto-disable thresholds and improved network connectivity features
 - Integrated witness key auto-restore functionality with emergency consensus mode support
@@ -994,6 +995,8 @@ class witness_object {
 +running_version
 +hardfork_version_vote
 +hardfork_time_vote
++sharing_rate : uint16_t
++pending_stakeholder_reward : share_type
 }
 class witness_schedule_object {
 +id
@@ -1079,6 +1082,111 @@ Key behaviors:
 - [time.cpp:74-76](file://libraries/time/time.cpp#L74-L76)
 - [ntp.cpp:184-201](file://thirdparty/fc/src/network/ntp.cpp#L184-L201)
 - [ntp.cpp:236-266](file://thirdparty/fc/src/network/ntp.cpp#L236-L266)
+
+## HF13: Validator Reward Sharing
+
+Introduced in Hardfork 13.  Validators can redirect a fraction of their block reward to the
+accounts that voted for them.  Rewards accumulate in **TOKEN (VIZ)** inside the `witness_object`
+and are converted to SHARES only at epoch end via `create_vesting()`.
+
+### New chain parameter: `distribution_epoch_length`
+
+Added to `chain_properties_hf13` (which becomes the `chain_properties` alias used throughout the
+chain library).  Validators vote on this parameter via `versioned_chain_properties_update_operation`.
+
+| Field | Default | Range | Description |
+|---|---|---|---|
+| `distribution_epoch_length` | 28800 (1 day) | [21, ~10.5M] | Blocks between consecutive distribution epochs |
+
+The median across all scheduled validators becomes the consensus value.
+
+### New operation: `set_reward_sharing_operation`
+
+Active authority of `owner` required.  Rejected before HF13.
+
+| Field | Type | Description |
+|---|---|---|
+| `owner` | `account_name_type` | Validator account name |
+| `sharing_rate` | `uint16_t` | Basis points; 0 = 0%, 10000 = 100% |
+
+### Block reward split (`process_funds`)
+
+When `sharing_rate > 0` and HF13 is active:
+
+```
+stakeholder_token = witness_reward * sharing_rate / CHAIN_100_PERCENT
+validator_token   = witness_reward - stakeholder_token
+
+create_vesting(validator_account, validator_token)
+→ witness_reward_operation(validator, validator_shares)   # only validator's share
+
+witness_object.pending_stakeholder_reward += stakeholder_token  # TOKEN, accumulated
+```
+
+If `sharing_rate == 0`, the full reward goes to the validator as before.
+
+### Mid-epoch sharing rate change
+
+The new rate takes effect **immediately** on the next block.  The accumulated
+`pending_stakeholder_reward` is not recalculated retroactively.  Stakeholders receive a proportional
+mix of the old and new rates at epoch end.
+
+### Epoch distribution (`process_validator_epoch_distribution`)
+
+Called at the end of `_apply_block` when `head_block_num % distribution_epoch_length == 0`.
+
+Uses **time-weighted** stakeholder shares.  Each `witness_vote_object` records `vote_created_block` —
+the block at which the vote was cast.  At epoch end:
+
+```
+epoch_start_block = head_block_num - epoch_length + 1
+
+for each stakeholder:
+    first_block     = max(vote_created_block, epoch_start_block)
+    blocks_in_epoch = head_block_num - first_block + 1
+    weighted        = stakeholder.witness_vote_weight() * blocks_in_epoch
+
+stakeholder_token = total_token * weighted[stakeholder] / Σ weighted
+if stakeholder_token < CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT (1 atomic = 0.001 VIZ):
+    skip (dust)
+else:
+    create_vesting(stakeholder_account, stakeholder_token)
+    → stakeholder_reward_operation(validator, stakeholder, stakeholder_shares)
+
+dust → create_vesting(validator_account, dust) + witness_reward_operation
+witness_object.pending_stakeholder_reward = 0
+```
+
+A stakeholder who joined mid-epoch receives a proportionally smaller reward.  Pre-HF13 votes
+(`vote_created_block == 0`) receive full-epoch weight.
+
+**Dust handling**: sharing rewards is entirely the validator's voluntary decision.  A stakeholder
+whose computed share falls below `CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT` has not earned a viable
+payout — the responsibility is theirs.  Unclaimed dust (rounding remainder + skipped sub-threshold
+shares) is therefore **not burned** but returned to the validator via `witness_reward_operation`.
+
+#### Flash-voter protection
+
+Time-weighting prevents the flash-vote attack (vote just before epoch end, capture full pool).
+A stakeholder who votes in the last block of a 1-day epoch (28800 blocks) receives only `1/28800`
+of their stake-proportional share — economically insignificant.
+
+### New virtual operation: `stakeholder_reward_operation`
+
+| Field | Type | Description |
+|---|---|---|
+| `validator` | `account_name_type` | Validator that produced the accumulated rewards |
+| `stakeholder` | `account_name_type` | Stakeholder account receiving the reward |
+| `shares` | `asset` | SHARES credited to the stakeholder |
+
+**Section sources**
+- [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp) — `CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT`, `CHAIN_DEFAULT_DISTRIBUTION_EPOCH_LENGTH`
+- [chain_operations.hpp](file://libraries/protocol/include/graphene/protocol/chain_operations.hpp) — `chain_properties_hf13`, `set_reward_sharing_operation`
+- [chain_virtual_operations.hpp](file://libraries/protocol/include/graphene/protocol/chain_virtual_operations.hpp) — `stakeholder_reward_operation`
+- [witness_objects.hpp](file://libraries/chain/include/graphene/chain/witness_objects.hpp) — `sharing_rate`, `pending_stakeholder_reward` fields
+- [database.cpp](file://libraries/chain/database.cpp) — `process_funds` split, `process_validator_epoch_distribution`
+
+---
 
 ## Dependency Analysis
 - The witness plugin depends on:

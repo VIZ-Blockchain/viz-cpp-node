@@ -42,6 +42,7 @@ using namespace graphene::api;
 using plugins::json_rpc::msg_pack;
 
 
+// Legacy names (kept for backward compatibility)
 DEFINE_API_ARGS(get_active_witnesses,             msg_pack, std::vector<account_name_type>)
 DEFINE_API_ARGS(get_witness_schedule,             msg_pack, graphene::chain::witness_schedule_object)
 DEFINE_API_ARGS(get_witnesses,                    msg_pack, std::vector<optional<witness_api_object> >)
@@ -50,6 +51,16 @@ DEFINE_API_ARGS(get_witnesses_by_vote,            msg_pack, std::vector<witness_
 DEFINE_API_ARGS(get_witnesses_by_counted_vote,    msg_pack, std::vector<witness_api_object>)
 DEFINE_API_ARGS(get_witness_count,                msg_pack, uint64_t)
 DEFINE_API_ARGS(lookup_witness_accounts,          msg_pack, std::set<account_name_type>)
+
+// Preferred names
+DEFINE_API_ARGS(get_active_validators,            msg_pack, std::vector<account_name_type>)
+DEFINE_API_ARGS(get_validator_schedule,           msg_pack, graphene::chain::witness_schedule_object)
+DEFINE_API_ARGS(get_validators,                   msg_pack, std::vector<optional<witness_api_object> >)
+DEFINE_API_ARGS(get_validator_by_account,         msg_pack, optional<witness_api_object>)
+DEFINE_API_ARGS(get_validators_by_vote,           msg_pack, std::vector<witness_api_object>)
+DEFINE_API_ARGS(get_validators_by_counted_vote,   msg_pack, std::vector<witness_api_object>)
+DEFINE_API_ARGS(get_validator_count,              msg_pack, uint64_t)
+DEFINE_API_ARGS(lookup_validator_accounts,        msg_pack, std::set<account_name_type>)
 
 
 class plugin : public appbase::plugin<plugin> {
@@ -81,6 +92,7 @@ public:
     }
 
     DECLARE_API(
+        // Legacy names
         (get_active_witnesses)
         (get_witness_schedule)
         (get_witnesses)
@@ -89,6 +101,15 @@ public:
         (get_witnesses_by_counted_vote)
         (get_witness_count)
         (lookup_witness_accounts)
+        // Preferred names
+        (get_active_validators)
+        (get_validator_schedule)
+        (get_validators)
+        (get_validator_by_account)
+        (get_validators_by_vote)
+        (get_validators_by_counted_vote)
+        (get_validator_count)
+        (lookup_validator_accounts)
     )
 private:
     struct witness_plugin_impl;

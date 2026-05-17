@@ -3145,7 +3145,7 @@ namespace graphene { namespace chain {
                 return;
             }
 
-            chain_properties_hf9 median_props;
+            chain_properties_hf13 median_props;
             auto median = active.size() / 2;
 
             auto calc_median = [&](auto&& param) {
@@ -3190,6 +3190,9 @@ namespace graphene { namespace chain {
                 calc_median(&chain_properties_hf9::subaccount_on_sale_fee);
                 calc_median(&chain_properties_hf9::witness_declaration_fee);
                 calc_median(&chain_properties_hf9::withdraw_intervals);
+            }
+            if(has_hardfork(CHAIN_HARDFORK_13)){
+                calc_median(&chain_properties_hf13::distribution_epoch_length);
             }
 
             modify(wso, [&](witness_schedule_object &_wso) {
@@ -3792,8 +3795,29 @@ namespace graphene { namespace chain {
                               "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected.",
                               ("w", cwit.owner));
                 }
-                auto witness_reward_shares = create_vesting(*witness_account, asset(witness_reward, TOKEN_SYMBOL));
-                push_virtual_operation(witness_reward_operation(cwit.owner,witness_reward_shares));
+                if (has_hardfork(CHAIN_HARDFORK_13) && cwit.sharing_rate > 0) {
+                    // HF13: split witness_reward between validator and stakeholder pool (both in TOKEN).
+                    // Validator receives SHARES immediately via create_vesting.
+                    // Stakeholder portion is accumulated as TOKEN in pending_stakeholder_reward and
+                    // distributed to stakeholders via create_vesting at each epoch end.
+                    share_type stakeholder_token = (fc::uint128_t(witness_reward.value) *
+                        cwit.sharing_rate / CHAIN_100_PERCENT).to_uint64();
+                    share_type validator_token = witness_reward - stakeholder_token;
+
+                    if (validator_token > 0) {
+                        auto validator_vshares = create_vesting(*witness_account, asset(validator_token, TOKEN_SYMBOL));
+                        push_virtual_operation(witness_reward_operation(cwit.owner, validator_vshares));
+                    }
+
+                    if (stakeholder_token > 0) {
+                        modify(cwit, [&](witness_object& w) {
+                            w.pending_stakeholder_reward += stakeholder_token;
+                        });
+                    }
+                } else {
+                    auto witness_reward_shares = create_vesting(*witness_account, asset(witness_reward, TOKEN_SYMBOL));
+                    push_virtual_operation(witness_reward_operation(cwit.owner, witness_reward_shares));
+                }
             }
             else{
                 share_type inflation_rate = int64_t( CHAIN_FIXED_INFLATION );
@@ -3871,6 +3895,95 @@ namespace graphene { namespace chain {
                     auto witness_reward_shares = create_vesting(get_account(cwit.owner), asset(witness_reward, TOKEN_SYMBOL));
                     push_virtual_operation(witness_reward_operation(cwit.owner,witness_reward_shares));
                 }
+            }
+        }
+
+        void database::process_validator_epoch_distribution() {
+            const auto& wso = get_witness_schedule_object();
+            uint32_t epoch_length = wso.median_props.distribution_epoch_length;
+
+            // Only run at epoch boundaries; guard against zero (shouldn't happen).
+            if (epoch_length == 0 || head_block_num() % epoch_length != 0) return;
+
+            // First block of the current epoch (inclusive).
+            // Votes cast at or before this block contributed for the whole epoch.
+            // epoch_length is guaranteed >= CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH > 0.
+            uint32_t epoch_start_block = head_block_num() - epoch_length + 1;
+
+            const auto& vote_idx = get_index<witness_vote_index>().indices().get<by_witness_account>();
+            const auto& widx = get_index<witness_index>().indices().get<by_name>();
+
+            for (const auto& wit : widx) {
+                if (wit.pending_stakeholder_reward == 0) continue;
+
+                const auto* witness_account = find_account(wit.owner);
+                if (!witness_account) continue;
+
+                share_type total_token = wit.pending_stakeholder_reward;
+
+                // Compute time-weighted contributions for every stakeholder.
+                // weighted_contribution[i] = vote_weight * blocks_in_epoch
+                // where blocks_in_epoch counts how many blocks of this epoch the stakeholder was
+                // actually voting for this validator.
+                // Votes cast before epoch_start_block (including pre-HF13 votes with
+                // vote_created_block==0) get full weight (blocks_in_epoch = epoch_length).
+                fc::uint128_t total_weighted = 0;
+                struct stakeholder_entry {
+                    const account_object* account;
+                    fc::uint128_t weighted; // vote_weight * blocks_in_epoch
+                };
+                std::vector<stakeholder_entry> entries;
+                {
+                    auto itr = vote_idx.lower_bound(boost::make_tuple(wit.id, account_id_type()));
+                    while (itr != vote_idx.end() && itr->witness == wit.id) {
+                        const auto& stakeholder = get(itr->account);
+                        // Fair weight: total stake divided by number of validators voted for,
+                        // matching the actual per-validator weight used in consensus scheduling.
+                        share_type vote_weight = stakeholder.witness_vote_fair_weight();
+                        if (vote_weight > 0) {
+                            uint32_t first_block = (itr->vote_created_block > epoch_start_block)
+                                ? itr->vote_created_block : epoch_start_block;
+                            // +1: stakeholder was present on both first_block and head_block_num
+                            uint32_t blocks_in_epoch = head_block_num() - first_block + 1;
+                            fc::uint128_t weighted = fc::uint128_t(vote_weight.value) * blocks_in_epoch;
+                            total_weighted += weighted;
+                            entries.push_back({&stakeholder, weighted});
+                        }
+                        ++itr;
+                    }
+                }
+
+                if (total_weighted == 0) {
+                    // No stakeholders — entire pool returns to validator.
+                    auto dust_shares = create_vesting(*witness_account, asset(total_token, TOKEN_SYMBOL));
+                    push_virtual_operation(witness_reward_operation(wit.owner, dust_shares));
+                    modify(wit, [&](witness_object& w) { w.pending_stakeholder_reward = 0; });
+                    continue;
+                }
+
+                share_type total_distributed_token = 0;
+
+                for (const auto& entry : entries) {
+                    // stakeholder_token = total_token * weighted / total_weighted
+                    share_type stakeholder_token = (fc::uint128_t(total_token.value) *
+                        entry.weighted / total_weighted).to_uint64();
+
+                    if (stakeholder_token.value < CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT) continue;
+
+                    auto stakeholder_shares = create_vesting(*entry.account, asset(stakeholder_token, TOKEN_SYMBOL));
+                    push_virtual_operation(stakeholder_reward_operation(
+                        wit.owner, entry.account->name, stakeholder_shares));
+                    total_distributed_token += stakeholder_token;
+                }
+
+                // Remaining TOKEN (dust from rounding + sub-threshold shares) goes back to the validator.
+                share_type dust_token = total_token - total_distributed_token;
+                if (dust_token > 0) {
+                    auto dust_shares = create_vesting(*witness_account, asset(dust_token, TOKEN_SYMBOL));
+                    push_virtual_operation(witness_reward_operation(wit.owner, dust_shares));
+                }
+
+                modify(wit, [&](witness_object& w) { w.pending_stakeholder_reward = 0; });
             }
         }
 
@@ -4385,6 +4498,7 @@ namespace graphene { namespace chain {
             _my->_evaluator_registry.register_evaluator<use_invite_balance_evaluator>();
             _my->_evaluator_registry.register_evaluator<fixed_award_evaluator>();
             _my->_evaluator_registry.register_evaluator<target_account_sale_evaluator>();
+            _my->_evaluator_registry.register_evaluator<set_reward_sharing_evaluator>();
         }
 
         void database::set_custom_operation_interpreter(const std::string &id, std::shared_ptr<custom_operation_interpreter> registry) {
@@ -5029,6 +5143,9 @@ namespace graphene { namespace chain {
                 }
                 process_funds();
                 if (_debug_block_production) ilog("DEBUG_CRASH: process_funds done");
+                if (has_hardfork(CHAIN_HARDFORK_13)) {
+                    process_validator_epoch_distribution();
+                }
                 process_content_cashout();
                 process_vesting_withdrawals();
 
@@ -5292,6 +5409,14 @@ namespace graphene { namespace chain {
                             _dgp.emergency_consensus_active &&
                             witness_missed.owner != b.witness &&
                             witness_missed.owner != CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+
+                        if (!is_emergency_offline_witness && witness_missed.owner != b.witness) {
+                            ilog("\033[91mMissed block: witness ${w} did not produce block #${n} at ${t} (next: ${next})\033[0m",
+                                 ("w", witness_missed.owner)
+                                 ("n", head_block_num() + i + 1)
+                                 ("t", get_slot_time(i + 1))
+                                 ("next", b.witness));
+                        }
 
                         modify(witness_missed, [&](witness_object &w) {
                             // Only reset current_run for witnesses that actually missed their slot.
@@ -6412,6 +6537,9 @@ namespace graphene { namespace chain {
             _hardfork_times[CHAIN_HARDFORK_12] = fc::time_point_sec(CHAIN_HARDFORK_12_TIME);
             _hardfork_versions[CHAIN_HARDFORK_12] = CHAIN_HARDFORK_12_VERSION;
 
+            _hardfork_times[CHAIN_HARDFORK_13] = fc::time_point_sec(CHAIN_HARDFORK_13_TIME);
+            _hardfork_versions[CHAIN_HARDFORK_13] = CHAIN_HARDFORK_13_VERSION;
+
             const auto &hardforks = get_hardfork_property_object();
             FC_ASSERT(
                 hardforks.last_hardfork <= CHAIN_NUM_HARDFORKS,
@@ -7321,6 +7449,13 @@ namespace graphene { namespace chain {
                     }
                     break;
                 }
+                case CHAIN_HARDFORK_12:
+                    break;
+                case CHAIN_HARDFORK_13:
+                    // Validator reward sharing: new fields sharing_rate and
+                    // pending_stakeholder_reward on witness_object default to 0 (replay
+                    // initialises them), no extra migration needed.
+                    break;
                 default:
                     break;
             }

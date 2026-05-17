@@ -346,6 +346,7 @@ namespace graphene { namespace protocol {
         struct chain_properties_hf4;
         struct chain_properties_hf6;
         struct chain_properties_hf9;
+        struct chain_properties_hf13;
 
         /**
          * Witnesses must vote on how to set certain chain properties to ensure a smooth
@@ -438,6 +439,7 @@ namespace graphene { namespace protocol {
             chain_properties_init& operator=(const chain_properties_hf4& src);
             chain_properties_init& operator=(const chain_properties_hf6& src);
             chain_properties_init& operator=(const chain_properties_hf9& src);
+            chain_properties_init& operator=(const chain_properties_hf13& src);
         };
 
         struct chain_properties_hf4: public chain_properties_init {
@@ -584,6 +586,63 @@ namespace graphene { namespace protocol {
             chain_properties_hf9& operator=(const chain_properties_hf9&) = default;
         };
 
+        struct chain_properties_hf13: public chain_properties_hf9 {
+            /**
+             *  Consensus - Period in blocks between delegator reward distributions.
+             *  Each validator accumulates block rewards during this epoch and
+             *  distributes the delegator share proportionally at epoch end.
+             *  Allowed range: [CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH, CHAIN_BLOCKS_PER_YEAR].
+             */
+            uint32_t distribution_epoch_length = CHAIN_DEFAULT_DISTRIBUTION_EPOCH_LENGTH;
+
+            void validate() const {
+                chain_properties_hf9::validate();
+                FC_ASSERT(distribution_epoch_length >= CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH,
+                    "distribution_epoch_length must be at least ${min} blocks",
+                    ("min", CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH));
+                FC_ASSERT(distribution_epoch_length <= uint32_t(CHAIN_BLOCKS_PER_YEAR),
+                    "distribution_epoch_length must not exceed one year in blocks");
+            }
+
+            chain_properties_hf13& operator=(const chain_properties_init& src) {
+                chain_properties_init::operator=(src);
+                return *this;
+            }
+
+            chain_properties_hf13& operator=(const chain_properties_hf4& src) {
+                chain_properties_hf4::operator=(src);
+                return *this;
+            }
+
+            chain_properties_hf13& operator=(const chain_properties_hf6& src) {
+                chain_properties_hf6::operator=(src);
+                return *this;
+            }
+
+            chain_properties_hf13& operator=(const chain_properties_hf9& src) {
+                chain_properties_hf9::operator=(src);
+                return *this;
+            }
+
+            chain_properties_hf13& operator=(const chain_properties_hf13&) = default;
+        };
+
+        inline chain_properties_init& chain_properties_init::operator=(const chain_properties_hf13& src) {
+            account_creation_fee = src.account_creation_fee;
+            maximum_block_size = src.maximum_block_size;
+            create_account_delegation_ratio = src.create_account_delegation_ratio;
+            create_account_delegation_time = src.create_account_delegation_time;
+            min_delegation = src.min_delegation;
+            min_curation_percent = src.min_curation_percent;
+            max_curation_percent = src.max_curation_percent;
+            bandwidth_reserve_percent = src.bandwidth_reserve_percent;
+            bandwidth_reserve_below = src.bandwidth_reserve_below;
+            flag_energy_additional_cost = src.flag_energy_additional_cost;
+            vote_accounting_min_rshares = src.vote_accounting_min_rshares;
+            committee_request_approve_min_percent = src.committee_request_approve_min_percent;
+            return *this;
+        }
+
         inline chain_properties_init& chain_properties_init::operator=(const chain_properties_hf4& src) {
             account_creation_fee = src.account_creation_fee;
             maximum_block_size = src.maximum_block_size;
@@ -636,7 +695,8 @@ namespace graphene { namespace protocol {
             chain_properties_init,
             chain_properties_hf4,
             chain_properties_hf6,
-            chain_properties_hf9
+            chain_properties_hf9,
+            chain_properties_hf13
         >;
 
         /**
@@ -1107,6 +1167,25 @@ namespace graphene { namespace protocol {
                 a.insert(account);
             }
         };
+
+        // HF13: Validator reward sharing
+        /**
+         *  Validators set the fraction of their block rewards to share with stakeholders
+         *  (accounts that voted for them).  At each distribution epoch end the accumulated
+         *  stakeholder reward pool is split proportionally by time-weighted vote weight.
+         */
+        struct set_reward_sharing_operation : public base_operation {
+            account_name_type owner;
+
+            /// Fraction of block reward forwarded to stakeholders, in basis points (0 = none, 10000 = 100%).
+            uint16_t sharing_rate = 0;
+
+            void validate() const;
+
+            void get_required_active_authorities(flat_set<account_name_type> &a) const {
+                a.insert(owner);
+            }
+        };
 } } // graphene::protocol
 
 
@@ -1128,6 +1207,9 @@ FC_REFLECT_DERIVED(
 FC_REFLECT_DERIVED(
     (graphene::protocol::chain_properties_hf9),((graphene::protocol::chain_properties_hf6)),
     (create_invite_min_balance)(committee_create_request_fee)(create_paid_subscription_fee)(account_on_sale_fee)(subaccount_on_sale_fee)(witness_declaration_fee)(withdraw_intervals))
+FC_REFLECT_DERIVED(
+    (graphene::protocol::chain_properties_hf13),((graphene::protocol::chain_properties_hf9)),
+    (distribution_epoch_length))
 
 FC_REFLECT_TYPENAME((graphene::protocol::versioned_chain_properties))
 
@@ -1186,3 +1268,5 @@ FC_REFLECT((graphene::protocol::buy_account_operation), (buyer)(account)(account
 FC_REFLECT((graphene::protocol::use_invite_balance_operation), (initiator)(receiver)(invite_secret));
 FC_REFLECT((graphene::protocol::fixed_award_operation), (initiator)(receiver)(reward_amount)(max_energy)(custom_sequence)(memo)(beneficiaries));
 FC_REFLECT((graphene::protocol::target_account_sale_operation), (account)(account_seller)(target_buyer)(account_offer_price)(account_on_sale));
+// HF13
+FC_REFLECT((graphene::protocol::set_reward_sharing_operation), (owner)(sharing_rate));

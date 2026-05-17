@@ -256,6 +256,11 @@ inline uint32_t import_witnesses(
             obj.running_version = v["running_version"].as<graphene::protocol::version>();
             obj.hardfork_version_vote = v["hardfork_version_vote"].as<graphene::protocol::hardfork_version>();
             obj.hardfork_time_vote = v["hardfork_time_vote"].as<fc::time_point_sec>();
+            // HF13: validator reward sharing (default 0 for pre-HF13 snapshots)
+            if (v.get_object().contains("sharing_rate"))
+                obj.sharing_rate = static_cast<uint16_t>(v["sharing_rate"].as_uint64());
+            if (v.get_object().contains("pending_stakeholder_reward"))
+                obj.pending_stakeholder_reward = v["pending_stakeholder_reward"].as<share_type>();
         });
         ++count;
     }
@@ -367,6 +372,9 @@ inline uint32_t import_witness_votes(
         db.create<witness_vote_object>([&](witness_vote_object& obj) {
             obj.witness = v["witness"].as<witness_id_type>();
             obj.account = v["account"].as<account_id_type>();
+            // HF13: flash-voter protection (default 0 for pre-HF13 snapshots)
+            if (v.get_object().contains("vote_created_block"))
+                obj.vote_created_block = static_cast<uint32_t>(v["vote_created_block"].as_uint64());
         });
         ++count;
     }
@@ -712,6 +720,7 @@ public:
     // Deferred snapshot creation (to avoid interrupting witness block production)
     bool snapshot_pending = false;        // deferred snapshot flag
     std::string pending_snapshot_path;    // path for deferred snapshot
+    fc::time_point_sec pending_snapshot_safe_after_time; // earliest head_block_time safe to start deferred snapshot
     std::atomic<bool> snapshot_in_progress{false}; // async snapshot creation guard
 
     // Stale snapshot detection: set at startup when the latest snapshot is
@@ -1721,12 +1730,19 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         return;
     }
 
-    // Helper lambda: check if local witness is scheduled to produce soon
+    // Helper lambda: check if local witness is scheduled to produce soon.
+    // When returning true, also stores the slot time of the earliest upcoming
+    // witness production in pending_snapshot_safe_after_time so the deferred
+    // snapshot can wait until after that slot is filled.
     auto is_witness_producing_soon = [&]() -> bool {
         try {
             auto* witness_plug = appbase::app().find_plugin<graphene::plugins::witness_plugin::witness_plugin>();
             if (witness_plug != nullptr && witness_plug->get_state() == appbase::abstract_plugin::started) {
-                return witness_plug->is_witness_scheduled_soon();
+                bool soon = witness_plug->is_witness_scheduled_soon();
+                if (soon) {
+                    pending_snapshot_safe_after_time = witness_plug->get_next_validator_slot_time();
+                }
+                return soon;
             }
         } catch (...) {}
         return false;
@@ -1811,16 +1827,33 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         }, "async_snapshot");
     };
 
-    // Handle deferred (pending) snapshot from a previous block
+    // Handle deferred (pending) snapshot from a previous block.
     // The witness check was already performed once when the snapshot was originally
     // deferred. We do NOT re-check is_witness_producing_soon() here to avoid an
     // infinite deferral loop where the witness is always scheduled soon.
+    //
+    // Instead, we wait for the specific witness slot to be filled: the deferred
+    // snapshot only fires once head_block_time() >= pending_snapshot_safe_after_time,
+    // meaning the witness's block has been produced and applied (or the slot was
+    // missed and the chain moved past it). This prevents the snapshot from starting
+    // while the witness is about to produce.
     if (snapshot_pending && !is_syncing) {
-        fc::path output(pending_snapshot_path);
-        snapshot_pending = false;
-        pending_snapshot_path.clear();
-        ilog(CLOG_GREEN "Creating deferred snapshot now (one-defer limit): ${p}" CLOG_RESET, ("p", output.string()));
-        schedule_async_snapshot(output, "deferred");
+        // If safe_after_time is epoch (lookup failed), fire immediately as fallback.
+        // If head_block_time has reached/passed the witness slot time, the block
+        // at that slot has been applied (or the slot was skipped by a gap).
+        bool safe_to_fire = (pending_snapshot_safe_after_time == fc::time_point_sec()) ||
+                            (db.head_block_time() >= pending_snapshot_safe_after_time);
+        if (safe_to_fire) {
+            fc::path output(pending_snapshot_path);
+            snapshot_pending = false;
+            pending_snapshot_path.clear();
+            pending_snapshot_safe_after_time = fc::time_point_sec();
+            ilog(CLOG_GREEN "Creating deferred snapshot now (witness slot passed): ${p}" CLOG_RESET, ("p", output.string()));
+            schedule_async_snapshot(output, "deferred");
+        } else {
+            dlog("Deferred snapshot waiting for witness slot at ${t} (head_block_time=${h})",
+                 ("t", pending_snapshot_safe_after_time)("h", db.head_block_time()));
+        }
     }
 
     // Check --snapshot-at-block: one-time snapshot at exact block

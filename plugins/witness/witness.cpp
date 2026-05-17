@@ -15,6 +15,7 @@
 #include <fc/smart_ref_impl.hpp>
 
 #include <memory>
+#include <mutex>
 #include <thread>
 
 #include <boost/asio.hpp>
@@ -122,9 +123,9 @@ namespace graphene {
 
                 void schedule_production_loop();
 
-                block_production_condition::block_production_condition_enum block_production_loop();
+                block_validation_condition::block_validation_condition_enum block_validation_loop();
 
-                block_production_condition::block_production_condition_enum maybe_produce_block(fc::mutable_variant_object &capture);
+                block_validation_condition::block_validation_condition_enum maybe_validate_block(fc::mutable_variant_object &capture);
 
                 boost::program_options::variables_map _options;
                 uint32_t _required_witness_participation = 33 * CHAIN_1_PERCENT;
@@ -186,8 +187,14 @@ namespace graphene {
 
                 // Watchdog debug mode: set to true when the watchdog first fires,
                 // enabling verbose DEBUG_CRASH logs automatically to help diagnose
-                // why production stopped. Never reset — once enabled, stays on.
+                // why production stopped. Reset to false when production resumes
+                // so verbose logging does not persist indefinitely.
                 bool _watchdog_debug_enabled = false;
+
+                // Remember the user's --debug-block-production config so the
+                // watchdog can restore the original value after auto-enabling
+                // debug logging for diagnosis.
+                bool _debug_block_production_config = false;
 
                 // Slot hijack detection: counts consecutive blocks where committee
                 // filled a slot that was assigned to our witness in the shuffled
@@ -200,6 +207,11 @@ namespace graphene {
                 // Track last applied block number to detect missed blocks.
                 // Updated in the applied_block signal handler.
                 uint64_t _last_applied_block_num = 0;
+
+                // Protects cross-thread diagnostic fields shared between
+                // production_io_thread_ and the P2P thread (on_block_applied /
+                // get_production_diagnostics).  Never held during database() calls.
+                std::mutex _diag_mutex;
 
                 // applied_block signal handler: detects when incoming blocks
                 // reveal missed slots, and if our witness was scheduled for
@@ -214,9 +226,10 @@ namespace graphene {
 
                 command_line_options.add_options()
                         ("enable-stale-production", bpo::value<bool>()->implicit_value(true) , "Enable block production, even if the chain is stale.")
-                        ("required-participation", bpo::value<uint32_t>()->default_value(33 * CHAIN_1_PERCENT), "Percent of witnesses (0-99) that must be participating in order to produce blocks")
-                        ("witness,w", bpo::value<vector<string>>()->composing()->multitoken(), ("name of witness controlled by this node (e.g. " + witness_id_example + " )").c_str())
-                        ("private-key", bpo::value<vector<string>>()->composing()->multitoken(), "WIF PRIVATE KEY to be used by one or more witnesses")
+                        ("required-participation", bpo::value<uint32_t>()->default_value(33 * CHAIN_1_PERCENT), "Percent of validators (0-99) that must be participating in order to produce blocks")
+                        ("validator,v", bpo::value<vector<string>>()->composing()->multitoken(), ("name of validator controlled by this node (e.g. " + witness_id_example + " )").c_str())
+                        ("witness,w", bpo::value<vector<string>>()->composing()->multitoken(), "[DEPRECATED] Use --validator. Name of validator controlled by this node.")
+                        ("private-key", bpo::value<vector<string>>()->composing()->multitoken(), "WIF PRIVATE KEY to be used by one or more validators")
                         ("emergency-private-key", bpo::value<vector<string>>()->composing()->multitoken(),
                          "WIF PRIVATE KEY for emergency consensus block production. "
                          "Only used when the network enters emergency consensus mode "
@@ -259,7 +272,12 @@ namespace graphene {
 
                     pimpl->total_hashes_.store(0, std::memory_order_relaxed);
                     pimpl->_options = &options;
-                    LOAD_VALUE_SET(options, "witness", pimpl->_witnesses, string)
+                    LOAD_VALUE_SET(options, "validator", pimpl->_witnesses, string)
+                    if (options.count("witness")) {
+                        // Deprecated: --witness is kept for config.ini backward compatibility.
+                        wlog("Config option 'witness' is deprecated, use 'validator' instead.");
+                        LOAD_VALUE_SET(options, "witness", pimpl->_witnesses, string)
+                    }
                     edump((pimpl->_witnesses));
 
                     if(options.count("enable-stale-production")){
@@ -313,7 +331,8 @@ namespace graphene {
                     }
 
                     if (options.count("debug-block-production")) {
-                        pimpl->chain().db()._debug_block_production = options["debug-block-production"].as<bool>();
+                        pimpl->_debug_block_production_config = options["debug-block-production"].as<bool>();
+                        pimpl->chain().db()._debug_block_production = pimpl->_debug_block_production_config;
                         if (pimpl->chain().db()._debug_block_production) {
                             ilog("Debug block production logging ENABLED");
                         }
@@ -388,7 +407,7 @@ namespace graphene {
 
             witness_plugin::~witness_plugin() {}
 
-            bool witness_plugin::is_witness_scheduled_soon() const {
+            bool witness_plugin::is_validator_scheduled_soon() const {
                 try {
                     if (!pimpl || pimpl->_witnesses.empty() || pimpl->_private_keys.empty()) {
                         return false;
@@ -404,8 +423,8 @@ namespace graphene {
                         slot = 1;
                     }
 
-                    // Check 4 upcoming slots (~12 seconds) to cover snapshot creation time (~10s) + safety margin
-                    for (uint32_t s = slot; s <= slot + 3; ++s) {
+                    // Check 5 upcoming slots (~15 seconds) to cover snapshot creation time (~10s) + safety margin
+                    for (uint32_t s = slot; s <= slot + 4; ++s) {
                         string scheduled_witness = db.get_scheduled_witness(s);
                         if (pimpl->_witnesses.find(scheduled_witness) == pimpl->_witnesses.end()) {
                             continue;
@@ -428,11 +447,58 @@ namespace graphene {
                         }
                     }
                 } catch (const fc::exception& e) {
-                    wlog("is_witness_scheduled_soon check failed: ${e}", ("e", e.to_detail_string()));
+                    wlog("is_validator_scheduled_soon check failed: ${e}", ("e", e.to_detail_string()));
                 } catch (...) {
-                    wlog("is_witness_scheduled_soon check failed with unknown exception");
+                    wlog("is_validator_scheduled_soon check failed with unknown exception");
                 }
                 return false;
+            }
+
+            fc::time_point_sec witness_plugin::get_next_validator_slot_time() const {
+                try {
+                    if (!pimpl || pimpl->_witnesses.empty() || pimpl->_private_keys.empty()) {
+                        return fc::time_point_sec();
+                    }
+
+                    auto& db = pimpl->database();
+                    auto op_guard = db.make_operation_guard();
+                    fc::time_point now_fine = graphene::time::now();
+                    fc::time_point_sec now = now_fine + fc::microseconds(250000);
+
+                    uint32_t slot = db.get_slot_at_time(now);
+                    if (slot == 0) {
+                        slot = 1;
+                    }
+
+                    for (uint32_t s = slot; s <= slot + 4; ++s) {
+                        string scheduled_witness = db.get_scheduled_witness(s);
+                        if (pimpl->_witnesses.find(scheduled_witness) == pimpl->_witnesses.end()) {
+                            continue;
+                        }
+
+                        const auto& witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
+                        auto itr = witness_by_name.find(scheduled_witness);
+                        if (itr == witness_by_name.end()) {
+                            continue;
+                        }
+
+                        graphene::protocol::public_key_type scheduled_key = itr->signing_key;
+                        if (scheduled_key == graphene::protocol::public_key_type()) {
+                            continue; // Disabled witness (zero key)
+                        }
+
+                        if (pimpl->_private_keys.find(scheduled_key) != pimpl->_private_keys.end()) {
+                            fc::time_point_sec slot_time = db.get_slot_time(s);
+                            op_guard.release();
+                            return slot_time;
+                        }
+                    }
+                } catch (const fc::exception& e) {
+                    wlog("get_next_validator_slot_time check failed: ${e}", ("e", e.to_detail_string()));
+                } catch (...) {
+                    wlog("get_next_validator_slot_time check failed with unknown exception");
+                }
+                return fc::time_point_sec();
             }
 
             bool witness_plugin::is_emergency_master() const {
@@ -483,6 +549,7 @@ namespace graphene {
             std::string witness_plugin::get_production_diagnostics() const {
                 try {
                     if (!pimpl) return "witness=no_pimpl";
+                    std::lock_guard<std::mutex> lk(pimpl->_diag_mutex);
                     std::string s = "prod_skip_flags=";
                     s += std::to_string(pimpl->_production_skip_flags);
                     s += " catching_up=";
@@ -506,6 +573,7 @@ namespace graphene {
 
             void witness_plugin::impl::on_block_applied(const graphene::chain::signed_block &block) {
                 try {
+                    std::lock_guard<std::mutex> _diag_lk(_diag_mutex);
                     uint64_t block_num = block.block_num();
                     uint64_t prev_num = _last_applied_block_num;
                     _last_applied_block_num = block_num;
@@ -662,7 +730,7 @@ namespace graphene {
 
             void witness_plugin::impl::schedule_production_loop() {
                 //Schedule for the next 250ms tick regardless of chain state
-                // With +250ms look-ahead in maybe_produce_block(), the tick at
+                // With +250ms look-ahead in maybe_validate_block(), the tick at
                 // T_slot - 250ms aligns now exactly to the slot boundary for zero-lag production.
                 // If we would wait less than 50ms, wait for the whole 250ms period.
                 int64_t ntp_microseconds = graphene::time::now().time_since_epoch().count();
@@ -682,15 +750,15 @@ namespace graphene {
                          ("d", next_microseconds / 1000)("n", ntp_us));
                 }
                 production_timer_.expires_from_now( posix_time::microseconds(next_microseconds) );
-                production_timer_.async_wait( [this](const system::error_code &) { block_production_loop(); } );
+                production_timer_.async_wait( [this](const system::error_code &) { block_validation_loop(); } );
             }
 
-            block_production_condition::block_production_condition_enum witness_plugin::impl::block_production_loop() {
-                block_production_condition::block_production_condition_enum result;
+            block_validation_condition::block_validation_condition_enum witness_plugin::impl::block_validation_loop() {
+                block_validation_condition::block_validation_condition_enum result;
                 fc::mutable_variant_object capture;
-                if (database()._debug_block_production) ilog("DEBUG_CRASH: block_production_loop ENTER");
+                if (database()._debug_block_production) ilog("DEBUG_CRASH: block_validation_loop ENTER");
                 try {
-                    result = maybe_produce_block(capture);
+                    result = maybe_validate_block(capture);
                 }
                 catch (const fc::canceled_exception &) {
                     //We're trying to exit. Go ahead and let this one out.
@@ -703,29 +771,46 @@ namespace graphene {
                 }
                 catch (const fc::exception &e) {
                     elog("Got exception while generating block:\n${e}", ("e", e.to_detail_string()));
-                    result = block_production_condition::exception_producing_block;
+                    result = block_validation_condition::exception_validating_block;
                 }
 
-                if (database()._debug_block_production) ilog("DEBUG_CRASH: maybe_produce_block returned ${r}", ("r", (int)result));
-                if (result != block_production_condition::not_time_yet)
+                if (database()._debug_block_production) ilog("DEBUG_CRASH: maybe_validate_block returned ${r}", ("r", (int)result));
+                if (result != block_validation_condition::not_time_yet) {
+                    std::lock_guard<std::mutex> lk(_diag_mutex);
                     _last_slot_result = (int)result;
+                }
                 switch (result) {
-                    case block_production_condition::produced:
+                    case block_validation_condition::produced:
                         ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w} with ${tx} transactions\033[0m", (capture));
                         fork_collision_defer_count_ = 0;
-                        _slot_zero_streak = 0;  // P18: reset stall counter on success
-                        _not_my_turn_streak = 0; // reset not_my_turn tracking
-                        _slot_hijack_count = 0;  // reset hijack counter on successful production
-                        _ever_produced = true;
-                        _last_production_time = fc::time_point::now();
-                        if (_minority_fork_recovering) {
-                            auto elapsed = fc::time_point::now() - _minority_fork_recovery_start;
-                            ilog("MINORITY FORK RECOVERY COMPLETE: production resumed after ${e}s",
-                                 ("e", elapsed.count() / 1000000));
-                            _minority_fork_recovering = false;
+                        // _watchdog_debug_enabled is production-only — no lock needed.
+                        if (_watchdog_debug_enabled) {
+                            _watchdog_debug_enabled = false;
+                            database()._debug_block_production = _debug_block_production_config;
+                        }
+                        {
+                            // Snapshot minority-fork state before locking so we can log outside the lock.
+                            bool _was_recovering; fc::microseconds _rcv_elapsed;
+                            {
+                                std::lock_guard<std::mutex> lk(_diag_mutex);
+                                _slot_zero_streak = 0;
+                                _not_my_turn_streak = 0;
+                                _slot_hijack_count = 0;
+                                _ever_produced = true;
+                                _last_production_time = fc::time_point::now();
+                                _was_recovering = _minority_fork_recovering;
+                                if (_was_recovering) {
+                                    _rcv_elapsed = fc::time_point::now() - _minority_fork_recovery_start;
+                                    _minority_fork_recovering = false;
+                                }
+                            }
+                            if (_was_recovering) {
+                                ilog("MINORITY FORK RECOVERY COMPLETE: production resumed after ${e}s",
+                                     ("e", _rcv_elapsed.count() / 1000000));
+                            }
                         }
                         break;
-                    case block_production_condition::not_synced:
+                    case block_validation_condition::not_synced:
                         if (_minority_fork_recovering) {
                             auto elapsed = fc::time_point::now() - _minority_fork_recovery_start;
                             if (elapsed.count() % 5000000 < 300000) { // log every ~5 seconds
@@ -748,29 +833,38 @@ namespace graphene {
                             }
                         }
                         fork_collision_defer_count_ = 0;
-                        _slot_zero_streak = 0;  // P18: reset on valid non-stall result
-                        _not_my_turn_streak = 0; // reset not_my_turn tracking
+                        {
+                            std::lock_guard<std::mutex> lk(_diag_mutex);
+                            _slot_zero_streak = 0;
+                            _not_my_turn_streak = 0;
+                        }
                         break;
-                    case block_production_condition::not_my_turn:
+                    case block_validation_condition::not_my_turn:
                         // This log-record is commented, because it outputs very often
                         // ilog("Not producing block because it isn't my turn");
                         fork_collision_defer_count_ = 0;
-                        _slot_zero_streak = 0;  // P18: reset on valid non-stall result
-                        // Emergency master: the EMRG-DIAG log in maybe_produce_block fires
+                        // Emergency master: the EMRG-DIAG log in maybe_validate_block fires
                         // per-slot details; nothing extra needed here.
 
-                        // Track consecutive not_my_turn to detect schedule misalignment
-                        _not_my_turn_streak++;
-                        if (_not_my_turn_streak == 1) {
-                            _not_my_turn_streak_start = fc::time_point::now();
-                        }
-                        if (_not_my_turn_streak == 500) {
-                            // ~125s with slot>0 but not our witness — investigate
+                        // Track consecutive not_my_turn to detect schedule misalignment.
+                        {
+                            uint32_t _nmt_snap;
+                            {
+                                std::lock_guard<std::mutex> lk(_diag_mutex);
+                                _slot_zero_streak = 0;
+                                _not_my_turn_streak++;
+                                if (_not_my_turn_streak == 1)
+                                    _not_my_turn_streak_start = fc::time_point::now();
+                                _nmt_snap = _not_my_turn_streak;
+                            }
+                        if (_nmt_snap == 500) {
+                            // ~125s with slot>0 but not our witness — investigate.
+                            // _not_my_turn_streak_start is production-only; no lock needed.
                             auto elapsed = fc::time_point::now() - _not_my_turn_streak_start;
                             wlog("NOT_MY_TURN STREAK: ${n} consecutive slots (${s}s) went to other witnesses. "
                                  "Last scheduled: ${sw}. Our witnesses: ${ow}. "
                                  "Check: is our witness still in shuffled schedule?",
-                                 ("n", _not_my_turn_streak)("s", elapsed.count() / 1000000)
+                                 ("n", _nmt_snap)("s", elapsed.count() / 1000000)
                                  ("sw", _last_scheduled_witness)
                                  ("ow", [_witnesses = _witnesses]() {
                                      std::string s;
@@ -778,8 +872,9 @@ namespace graphene {
                                      return s;
                                  }()));
                         }
+                        } // not_my_turn scope
                         break;
-                    case block_production_condition::not_time_yet:
+                    case block_validation_condition::not_time_yet:
                         // This log-record is commented, because it outputs very often
                         // ilog("Not producing block because slot has not yet arrived");
                         // P18 fix: Detect slot=0 stall caused by NTP drift.
@@ -790,7 +885,8 @@ namespace graphene {
                         // waiting triggers a spurious NTP resync.
                         {
                             auto _now = graphene::time::now();
-                            auto _hbt = database().head_block_time();
+                            auto _hbt = database().head_block_time(); // read before taking lock
+                            std::lock_guard<std::mutex> lk(_diag_mutex);
                             if (_now <= fc::time_point(_hbt)) {
                                 // Real stall: NTP time is behind chain time
                                 _slot_zero_streak++;
@@ -900,15 +996,15 @@ namespace graphene {
                                  ("h", database().head_block_num())("sw", shuffled_top3));
                         }
                         break;
-                    case block_production_condition::no_private_key:
+                    case block_validation_condition::no_private_key:
                         ilog("Not producing block for ${scheduled_witness} because I don't have the private key for ${scheduled_key}",
                              (capture));
                         break;
-                    case block_production_condition::low_participation:
+                    case block_validation_condition::low_participation:
                         elog("Not producing block because node appears to be on a minority fork with only ${pct}% witness participation",
                              (capture));
                         break;
-                    case block_production_condition::lag:
+                    case block_validation_condition::lag:
                         elog("Not producing block because node didn't wake up within 500ms of the slot time.");
                         graphene::time::update_ntp_time();  // Force NTP sync on timing issues
                         // After a lag, the current slot is already missed.  Skip ahead past this
@@ -918,17 +1014,17 @@ namespace graphene {
                         // that is actually in the future (or get slot=0 and wait normally).
                         _last_lag_slot_time = capture["scheduled_time"].as<fc::time_point_sec>();
                         break;
-                    case block_production_condition::consecutive:
+                    case block_validation_condition::consecutive:
                         elog("Not producing block because the last block was generated by the same witness.\nThis node is probably disconnected from the network so block production has been disabled.\nDisable this check with --allow-consecutive option.");
                         break;
-                    case block_production_condition::exception_producing_block:
+                    case block_validation_condition::exception_validating_block:
                         elog("Failure when producing block with no transactions");
                         break;
-                    case block_production_condition::fork_collision:
+                    case block_validation_condition::fork_collision:
                         wlog("Deferred block production due to fork collision; will retry next slot");
                         graphene::time::update_ntp_time();  // Force NTP sync on fork issues
                         break;
-                    case block_production_condition::minority_fork:
+                    case block_validation_condition::minority_fork:
                         elog("Not producing block: minority fork detected, resyncing from P2P network");
                         break;
                 }
@@ -954,7 +1050,7 @@ namespace graphene {
                                 ilog("DEBUG_CRASH: skipping ${ms}ms to avoid rechecking lagged slot", ("ms", skip_ms));
                             }
                             production_timer_.expires_from_now(posix_time::milliseconds(skip_ms));
-                            production_timer_.async_wait([this](const system::error_code &) { block_production_loop(); });
+                            production_timer_.async_wait([this](const system::error_code &) { block_validation_loop(); });
                             _last_lag_slot_time = fc::time_point_sec();
                             return result;
                         }
@@ -1052,6 +1148,11 @@ namespace graphene {
 
                                 int64_t head_age_s = (fc::time_point::now() - fc::time_point(db_wd.head_block_time())).count() / 1000000;
 
+                                // _slot_hijack_count is written by on_block_applied (P2P thread):
+                                // snapshot under lock before the elog.
+                                uint32_t _shj_snap;
+                                { std::lock_guard<std::mutex> lk(_diag_mutex); _shj_snap = _slot_hijack_count; }
+
                                 elog("WITNESS-WATCHDOG: ${t} silent for ${s}s! "
                                     "witnesses=${w} keys=${k} skip_flags=${sf} minority_recovering=${mr} "
                                     "slot_result=${sr} dlt_syncing=${ds} catching_up=${c} "
@@ -1079,7 +1180,7 @@ namespace graphene {
                                     ("nmt", _not_my_turn_streak)
                                     ("nmtw", _last_scheduled_witness)
                                     ("n", ntp_us)
-                                    ("shj", _slot_hijack_count)
+                                    ("shj", _shj_snap)
                                     ("dl", _watchdog_debug_enabled));
 
                                 // === WATCHDOG PRODUCTION RECOVERY ===
@@ -1156,13 +1257,13 @@ namespace graphene {
 
                 if (database()._debug_block_production) ilog("DEBUG_CRASH: scheduling next production loop");
                 schedule_production_loop();
-                if (database()._debug_block_production) ilog("DEBUG_CRASH: block_production_loop EXIT");
+                if (database()._debug_block_production) ilog("DEBUG_CRASH: block_validation_loop EXIT");
                 return result;
             }
 
-            block_production_condition::block_production_condition_enum witness_plugin::impl::maybe_produce_block(fc::mutable_variant_object &capture) {
+            block_validation_condition::block_validation_condition_enum witness_plugin::impl::maybe_validate_block(fc::mutable_variant_object &capture) {
                 auto &db = database();
-                if (db._debug_block_production) ilog("DEBUG_CRASH: maybe_produce_block ENTER");
+                if (db._debug_block_production) ilog("DEBUG_CRASH: maybe_validate_block ENTER");
                 fc::time_point now_fine = graphene::time::now();
                 fc::time_point_sec now = now_fine + fc::microseconds( 250000 );
 
@@ -1203,7 +1304,7 @@ namespace graphene {
                         dgp.emergency_consensus_active &&
                         _witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end();
                     if (!we_are_emergency_master) {
-                        return block_production_condition::not_synced;
+                        return block_validation_condition::not_synced;
                     }
                     // Emergency master: bypass sync check to avoid deadlock.
                 }
@@ -1225,7 +1326,7 @@ namespace graphene {
                         wlog("Deferring block production: snapshot creation in progress "
                              "(head=#${h}). Waiting for snapshot to complete.",
                              ("h", db.head_block_num()));
-                        return block_production_condition::not_synced;
+                        return block_validation_condition::not_synced;
                     }
                 } catch (...) {
                     // snapshot plugin may not be available
@@ -1236,7 +1337,7 @@ namespace graphene {
                         wlog("Deferring block production: P2P is catching up after "
                              "snapshot pause (head=#${h}). Waiting for gap fill.",
                              ("h", db.head_block_num()));
-                        return block_production_condition::not_synced;
+                        return block_validation_condition::not_synced;
                     }
                 } catch (...) {
                     // p2p plugin may not be available during startup
@@ -1294,7 +1395,7 @@ namespace graphene {
                                     // when you know the low participation is caused by
                                     // offline witnesses rather than a partition.
                                     capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
-                                    return block_production_condition::low_participation;
+                                    return block_validation_condition::low_participation;
                                 }
                             }
                         }
@@ -1370,7 +1471,7 @@ namespace graphene {
                                             //sign the enc by witness_priv_key
                                             graphene::protocol::signature_type bpv_signature = witness_priv_key.sign_compact(enc.result());
                                             //ilog("Witness ${w} signed block post validation #${n} ${b} with signature ${s}", ("w", witness_account)("n", block_post_validations[i].block_num)("b", block_post_validations[i].block_id)("s", bpv_signature));
-                                            p2p().broadcast_block_post_validation(block_post_validations[i].block_id, witness_account, bpv_signature);
+                                            p2p().post_broadcast_block_post_validation(block_post_validations[i].block_id, witness_account, bpv_signature);
                                         }
                                     }
                                 }
@@ -1427,7 +1528,7 @@ namespace graphene {
                                 p2p().resync_from_lib();
                                 _minority_fork_recovering = true;
                                 _minority_fork_recovery_start = fc::time_point::now();
-                                return block_production_condition::minority_fork;
+                                return block_validation_condition::minority_fork;
                             }
                         }
                     }
@@ -1506,7 +1607,7 @@ namespace graphene {
                                 p2p().resync_from_lib(true /*force_emergency*/);
                                 _minority_fork_recovering = true;
                                 _minority_fork_recovery_start = fc::time_point::now();
-                                return block_production_condition::minority_fork;
+                                return block_validation_condition::minority_fork;
                             }
                         }
                     } else {
@@ -1602,7 +1703,7 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                             }
                         }
                     }
-                    return block_production_condition::not_time_yet;
+                    return block_validation_condition::not_time_yet;
                 }
 
                 //
@@ -1642,7 +1743,7 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                             }
                         }
                     }
-                    return block_production_condition::not_my_turn;
+                    return block_validation_condition::not_my_turn;
                 }
 
                 if (db._debug_block_production) ilog("DEBUG_CRASH: looking up witness in index");
@@ -1669,7 +1770,7 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                          "head_block_time ${hbt} (head=#${hn}). Slot was already filled.",
                          ("st", scheduled_time)("hbt", db.head_block_time())
                          ("hn", db.head_block_num()));
-                    return block_production_condition::not_time_yet;
+                    return block_validation_condition::not_time_yet;
                 }
 
                 // Check if witness has zero/null signing key (intentionally disabled for block production)
@@ -1700,7 +1801,7 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                                  ("w", scheduled_witness)("s", slot)("h", db.head_block_num()));
                         }
                     }
-                    return block_production_condition::not_my_turn;
+                    return block_validation_condition::not_my_turn;
                 }
 
                 auto private_key_itr = _private_keys.find(scheduled_key);
@@ -1708,7 +1809,7 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                 if (private_key_itr == _private_keys.end()) {
                     capture("scheduled_witness", scheduled_witness);
                     capture("scheduled_key", scheduled_key);
-                    return block_production_condition::no_private_key;
+                    return block_validation_condition::no_private_key;
                 }
 
                 // Pre-HF12 participation check (legacy behavior)
@@ -1721,7 +1822,7 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                                  ("p", uint32_t(prate / CHAIN_1_PERCENT)));
                         } else {
                             capture("pct", uint32_t(prate / CHAIN_1_PERCENT));
-                            return block_production_condition::low_participation;
+                            return block_validation_condition::low_participation;
                         }
                     }
                 }
@@ -1740,7 +1841,7 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                                  ("d", (scheduled_time - now).count() / 1000)("h", db.head_block_num()));
                         }
                     }
-                    return block_production_condition::lag;
+                    return block_validation_condition::lag;
                 }
 
                 // Check if a competing block already exists in the fork database for this block height.
@@ -1812,7 +1913,7 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                                     wlog("Competing fork at height ${h} has more vote weight. "
                                          "Deferring to allow fork switch to stronger chain.",
                                          ("h", db.head_block_num() + 1));
-                                    return block_production_condition::fork_collision;
+                                    return block_validation_condition::fork_collision;
                                 } else {
                                     // Tied or comparison impossible (one tip not in fork_db)
                                     // Defer briefly, timeout will kick in
@@ -1822,7 +1923,7 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                                          ("h", db.head_block_num() + 1)
                                          ("n", fork_collision_defer_count_)
                                          ("max", _fork_collision_timeout_blocks));
-                                    return block_production_condition::fork_collision;
+                                    return block_validation_condition::fork_collision;
                                 }
                             }
                             // Pre-HF12: defer, but timeout still applies on next iteration
@@ -1833,7 +1934,7 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                                      ("h", db.head_block_num() + 1)
                                      ("n", fork_collision_defer_count_)
                                      ("max", _fork_collision_timeout_blocks));
-                                return block_production_condition::fork_collision;
+                                return block_validation_condition::fork_collision;
                             }
                         }
                     }
@@ -1857,7 +1958,7 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                     if (snapshot().is_snapshot_in_progress()) {
                         dlog("Snapshot started between production checks for slot ${s}, skipping produce",
                              ("s", slot));
-                        return block_production_condition::not_time_yet;
+                        return block_validation_condition::not_time_yet;
                     }
                 } catch (...) {}
 
@@ -1865,7 +1966,7 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                     if (p2p().is_catching_up_after_pause()) {
                         dlog("Snapshot started between production checks for slot ${s}, skipping produce",
                              ("s", slot));
-                        return block_production_condition::not_time_yet;
+                        return block_validation_condition::not_time_yet;
                     }
                 } catch (...) {}
 
@@ -1899,12 +2000,12 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                             p2p().reconnect_seeds();
                         }
 
-                        return block_production_condition::produced;
+                        return block_validation_condition::produced;
                     }
                     catch (const graphene::chain::shared_memory_corruption_exception& e) {
                         elog("Shared memory corruption detected during block generation: ${e}", ("e", e.to_detail_string()));
                         chain().attempt_auto_recovery();
-                        return block_production_condition::exception_producing_block;
+                        return block_validation_condition::exception_validating_block;
                     }
                     catch (const graphene::chain::unlinkable_block_exception& e) {
                         // Fork DB broken prev chain — retrying won't help.
@@ -1914,7 +2015,7 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                         p2p().resync_from_lib(dgp.emergency_consensus_active /*force_emergency*/);
                         _minority_fork_recovering = true;
                         _minority_fork_recovery_start = fc::time_point::now();
-                        return block_production_condition::minority_fork;
+                        return block_validation_condition::minority_fork;
                     }
                     catch (fc::exception &e) {
                         elog("${e}", ("e", e.to_detail_string()));
@@ -1924,7 +2025,7 @@ if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
                     }
                 } while (retry < 2);
 
-                return block_production_condition::exception_producing_block;
+                return block_validation_condition::exception_validating_block;
             }
         }
     }

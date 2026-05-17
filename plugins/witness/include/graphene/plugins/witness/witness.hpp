@@ -17,8 +17,8 @@ namespace graphene {
             using graphene::protocol::block_id_type;
             using graphene::chain::signed_block;
 
-            namespace block_production_condition {
-                enum block_production_condition_enum {
+            namespace block_validation_condition {
+                enum block_validation_condition_enum {
                     produced = 0,
                     not_synced = 1,
                     not_my_turn = 2,
@@ -27,11 +27,12 @@ namespace graphene {
                     low_participation = 5,
                     lag = 6,
                     consecutive = 7,
-                    exception_producing_block = 8,
+                    exception_validating_block = 8,
                     fork_collision = 9,
                     minority_fork = 10
                 };
             }
+
 
             class witness_plugin final : public appbase::plugin<witness_plugin> {
             public:
@@ -62,8 +63,17 @@ namespace graphene {
 
                 void plugin_shutdown() override;
 
-                /// Returns true if a locally-controlled witness is scheduled to produce in the next slot
-                bool is_witness_scheduled_soon() const;
+                /// Returns true if a locally-controlled validator is scheduled to produce in the next slot
+                bool is_validator_scheduled_soon() const;
+
+                /// Returns the slot time of the earliest upcoming slot where a locally-controlled
+                /// validator is scheduled and we hold its private key. Returns fc::time_point_sec()
+                /// (epoch) if no such slot exists. Used by the snapshot plugin to defer snapshot
+                /// creation until after the witness has produced its block.
+                fc::time_point_sec get_next_validator_slot_time() const;
+
+                /// Deprecated alias — use is_validator_scheduled_soon().
+                bool is_witness_scheduled_soon() const { return is_validator_scheduled_soon(); }
 
                 /// Returns true if this node is the emergency master: holds the
                 /// emergency-private-key (committee is in _witnesses) AND committee

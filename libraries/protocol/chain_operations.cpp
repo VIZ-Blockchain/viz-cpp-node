@@ -444,4 +444,11 @@ namespace graphene { namespace protocol {
             FC_ASSERT(account_offer_price.amount > 0, "Cannot set account offer price with negative or zero amount");
         }
 
+        void set_reward_sharing_operation::validate() const {
+            validate_account_name(owner);
+            FC_ASSERT(sharing_rate <= CHAIN_VALIDATOR_MAX_SHARING_RATE,
+                "sharing_rate ${r} exceeds maximum ${max}",
+                ("r", sharing_rate)("max", CHAIN_VALIDATOR_MAX_SHARING_RATE));
+        }
+
 } } // graphene::protocol
