@@ -253,7 +253,7 @@ namespace graphene {
                          "Minimum rejection threshold in milliseconds, applied regardless of the percentage rule (default: 5).")
                         ("fork-collision-timeout-blocks", bpo::value<uint32_t>()->default_value(21),
                          "Number of consecutive fork-collision deferrals (block slots) before forcing production. "
-                         "One full witness schedule round is 21 blocks (63 seconds). Default: 21.")
+                         "One full validator schedule round is 21 blocks (63 seconds). Default: 21.")
                         ("debug-block-production", bpo::value<bool>()->default_value(false),
                          "Enable verbose debug logging for block production and chain internals. Default: false.")
                         ;
@@ -354,15 +354,15 @@ namespace graphene {
                     // NTP on restart.
                     graphene::time::update_ntp_time();
 
-                    // Log witness configuration for post-crash diagnostics
-                    ilog("Witness config: ${n} witnesses, ${k} private keys",
+                    // Log validator configuration for post-crash diagnostics
+                    ilog("Validator config: ${n} validators, ${k} private keys",
                          ("n", pimpl->_witnesses.size())("k", pimpl->_private_keys.size()));
                     for (const auto& w : pimpl->_witnesses) {
-                        ilog("  configured witness: ${w}", ("w", w));
+                        ilog("  configured validator: ${w}", ("w", w));
                     }
 
                     if (!pimpl->_witnesses.empty()) {
-                        ilog("Launching block production for ${n} witnesses.", ("n", pimpl->_witnesses.size()));
+                        ilog("Launching block production for ${n} validators.", ("n", pimpl->_witnesses.size()));
                         pimpl->p2p().set_block_production(true);
 
                         // Connect to applied_block signal to detect missed slots
@@ -379,7 +379,7 @@ namespace graphene {
                         }
                         pimpl->schedule_production_loop();
                     } else
-                        elog("No witnesses configured! Please add witness names and private keys to configuration.");
+                        elog("No validators configured! Please add validator names and private keys to configuration.");
                     ilog("validator plugin:  plugin_startup() end");
                 } FC_CAPTURE_AND_RETHROW()
             }
@@ -548,7 +548,7 @@ namespace graphene {
 
             std::string validator_plugin::get_production_diagnostics() const {
                 try {
-                    if (!pimpl) return "witness=no_pimpl";
+                    if (!pimpl) return "validator=no_pimpl";
                     std::lock_guard<std::mutex> lk(pimpl->_diag_mutex);
                     std::string s = "prod_skip_flags=";
                     s += std::to_string(pimpl->_production_skip_flags);
@@ -565,9 +565,9 @@ namespace graphene {
                     s += pimpl->_minority_fork_recovering ? "1" : "0";
                     s += " slot_hijacks=";
                     s += std::to_string(pimpl->_slot_hijack_count);
-                    return "witness[" + s + "]";
+                    return "validator[" + s + "]";
                 } catch (...) {
-                    return "witness=err";
+                    return "validator=err";
                 }
             }
 
@@ -612,7 +612,7 @@ namespace graphene {
                                     (_now_sj - _last_hijack_log).count() > 60000000) {
                                     _last_hijack_log = _now_sj;
                                     elog("SLOT-HIJACK: block #${bn} by '${wit}' but slot was assigned "
-                                         "to our witness '${exp}' (hijack #${cnt}). "
+                                         "to our validator '${exp}' (hijack #${cnt}). "
                                          "head=#${head} aslot=${aslot} num_sched=${nsched}",
                                          ("bn", block_num)("wit", block.validator)("exp", expected_witness)
                                          ("cnt", _slot_hijack_count)
@@ -623,7 +623,7 @@ namespace graphene {
                             } else if (was_our_slot && (block.validator == expected_witness || producer_is_ours)) {
                                 // Our witness (expected or another of ours) produced — reset hijack counter.
                                 if (_slot_hijack_count > 0) {
-                                    wlog("SLOT-HIJACK-RESOLVED: our witness '${wit}' produced "
+                                    wlog("SLOT-HIJACK-RESOLVED: our validator '${wit}' produced "
                                          "block #${bn} after ${cnt} hijacked slot(s).",
                                          ("wit", block.validator)("bn", block_num)("cnt", _slot_hijack_count));
                                 }
@@ -704,13 +704,13 @@ namespace graphene {
                         }
                     }
 
-                    elog("MISSED-SLOT-OUR-WITNESS: block #${bn} arrived, ${missed} slot(s) missed between #${prev} and #${bn}. "
-                         "Missed witnesses: [${mw}]. OUR witness was scheduled! "
+                    elog("MISSED-SLOT-OUR-VALIDATOR: block #${bn} arrived, ${missed} slot(s) missed between #${prev} and #${bn}. "
+                         "Missed validators: [${mw}]. OUR validator was scheduled! "
                          "State: ever_produced=${ep} minority_recovering=${mr} "
                          "last_slot_result=${sr} not_my_turn_streak=${nmts} slot0_streak=${sz} "
                          "dlt_syncing=${ds} catching_up=${cu} head=#${h} aslot=${a} num_sched=${ns} "
                          "ntp_offset=${ntp}us now=${now} next_slot_time=${nst} next_scheduled=${nsw} "
-                         "witnesses=[${wn}] keys=[${ks}]",
+                         "validators=[${wn}] keys=[${ks}]",
                          ("bn", block_num)("missed", missed_count)("prev", prev_num)
                          ("mw", missed_witnesses_list)
                          ("ep", _ever_produced)
@@ -861,9 +861,9 @@ namespace graphene {
                             // ~125s with slot>0 but not our witness — investigate.
                             // _not_my_turn_streak_start is production-only; no lock needed.
                             auto elapsed = fc::time_point::now() - _not_my_turn_streak_start;
-                            wlog("NOT_MY_TURN STREAK: ${n} consecutive slots (${s}s) went to other witnesses. "
-                                 "Last scheduled: ${sw}. Our witnesses: ${ow}. "
-                                 "Check: is our witness still in shuffled schedule?",
+                            wlog("NOT_MY_TURN STREAK: ${n} consecutive slots (${s}s) went to other validators. "
+                                 "Last scheduled: ${sw}. Our validators: ${ow}. "
+                                 "Check: is our validator still in shuffled schedule?",
                                  ("n", _nmt_snap)("s", elapsed.count() / 1000000)
                                  ("sw", _last_scheduled_witness)
                                  ("ow", [_witnesses = _witnesses]() {
@@ -913,7 +913,7 @@ namespace graphene {
                             bool _ours3 = _witnesses.count(_next_w3) > 0;
                             wlog("SLOT=0 STREAK: ${n} consecutive not_time_yet. "
                                  "now=${now} head_block_time=${hbt} (drift=${d}us) "
-                                 "next_slot=${nst} (gap=${g}ms) next_witness=${nw} is_ours=${o} head=#${h}.",
+                                 "next_slot=${nst} (gap=${g}ms) next_validator=${nw} is_ours=${o} head=#${h}.",
                                  ("n", _slot_zero_streak)("now", _now_init)("hbt", _hbt_init)
                                  ("d", _drift_us)("nst", _nst_init)("g", _gap_ms)
                                  ("nw", _next_w3)("o", _ours3)
@@ -932,7 +932,7 @@ namespace graphene {
                             wlog("slot=0 streak: ${n} consecutive not_time_yet (${s}s elapsed). "
                                  "now=${now}, head_block_time=${hbt}, next_slot_time=${nst}. "
                                  "Time to next slot: ${g}ms. NTP drift: ${d}us. "
-                                 "head_age=${ha}ms. next_witness=${nw} is_ours=${o}. Forcing NTP resync.",
+                                 "head_age=${ha}ms. next_validator=${nw} is_ours=${o}. Forcing NTP resync.",
                                  ("n", _slot_zero_streak)("s", (_now10 - _slot_zero_streak_start).count() / 1000000)
                                  ("now", _now10)("hbt", _hbt10)("nst", _nst10)("g", _gap_ms)
                                  ("d", _drift10)("ha", (_now10 - fc::time_point(_hbt10)).count() / 1000)
@@ -955,7 +955,7 @@ namespace graphene {
                             bool _ours60 = _witnesses.count(_next_w60) > 0;
                             elog("SLOT=0 PROLONGED STALL: ${n} consecutive not_time_yet (${s}s). "
                                  "head_block_time=${hbt} is ${f}ms AHEAD of now=${now}! "
-                                 "next_slot_time=${nst} next_witness=${nw} is_ours=${o}, NTP drift=${d}us. "
+                                 "next_slot_time=${nst} next_validator=${nw} is_ours=${o}, NTP drift=${d}us. "
                                  "catching_up=${c}, dlt_syncing=${ds}, head=#${h}. "
                                  "Check: was a block with future timestamp applied?",
                                  ("n", _slot_zero_streak)("s", (_now60 - _slot_zero_streak_start).count() / 1000000)
@@ -985,9 +985,9 @@ namespace graphene {
                             std::string _next_w120 = database().get_scheduled_validator(1);
                             bool _ours120 = _witnesses.count(_next_w120) > 0;
                             elog("CRITICAL: slot=0 stall for ${s}s! head_block_time=${hbt} is ${f}ms in the future "
-                                 "relative to NTP time (now=${now}). next_slot_time=${nst} next_witness=${nw} is_ours=${o}, NTP drift=${d}us. "
+                                 "relative to NTP time (now=${now}). next_slot_time=${nst} next_validator=${nw} is_ours=${o}, NTP drift=${d}us. "
                                  "Network is stalled. catching_up=${c}, dlt_syncing=${ds}, head=#${h}. "
-                                 "shuffled_witnesses[0..2]=[${sw}]. "
+                                 "shuffled_validators[0..2]=[${sw}]. "
                                  "ACTION REQUIRED: Check NTP sync, system clock, or restart node.",
                                  ("s", (_now120 - _slot_zero_streak_start).count() / 1000000)
                                  ("hbt", _hbt120)("f", _future120_ms)("now", _now120)("nst", _nst120)
@@ -997,11 +997,11 @@ namespace graphene {
                         }
                         break;
                     case block_validation_condition::no_private_key:
-                        ilog("Not producing block for ${scheduled_witness} because I don't have the private key for ${scheduled_key}",
+                        ilog("Not producing block for ${scheduled_validator} because I don't have the private key for ${scheduled_key}",
                              (capture));
                         break;
                     case block_validation_condition::low_participation:
-                        elog("Not producing block because node appears to be on a minority fork with only ${pct}% witness participation",
+                        elog("Not producing block because node appears to be on a minority fork with only ${pct}% validator participation",
                              (capture));
                         break;
                     case block_validation_condition::lag:
@@ -1015,7 +1015,7 @@ namespace graphene {
                         _last_lag_slot_time = capture["scheduled_time"].as<fc::time_point_sec>();
                         break;
                     case block_validation_condition::consecutive:
-                        elog("Not producing block because the last block was generated by the same witness.\nThis node is probably disconnected from the network so block production has been disabled.\nDisable this check with --allow-consecutive option.");
+                        elog("Not producing block because the last block was generated by the same validator.\nThis node is probably disconnected from the network so block production has been disabled.\nDisable this check with --allow-consecutive option.");
                         break;
                     case block_validation_condition::exception_validating_block:
                         elog("Failure when producing block with no transactions");
@@ -1153,14 +1153,14 @@ namespace graphene {
                                 uint32_t _shj_snap;
                                 { std::lock_guard<std::mutex> lk(_diag_mutex); _shj_snap = _slot_hijack_count; }
 
-                                elog("WITNESS-WATCHDOG: ${t} silent for ${s}s! "
-                                    "witnesses=${w} keys=${k} skip_flags=${sf} minority_recovering=${mr} "
+                                elog("VALIDATOR-WATCHDOG: ${t} silent for ${s}s! "
+                                    "validators=${w} keys=${k} skip_flags=${sf} minority_recovering=${mr} "
                                     "slot_result=${sr} dlt_syncing=${ds} catching_up=${c} "
                                     "head=#${h} head_age=${ha}s scheduled_now=${sw} we_are_scheduled=${ws} "
                                     "in_schedule=${is}/${total} blanked_keys=[${bk}] "
                                     "slot0_streak=${sz} not_my_turn_streak=${nmt} last_scheduled=${nmtw} "
                                     "ntp_offset=${n}us slot_hijacks=${shj} debug_logging=${dl}",
-                                    ("t", is_emrg_master ? "emergency master" : "witness")
+                                    ("t", is_emrg_master ? "emergency master" : "validator")
                                     ("s", silent_for.count() / 1000000)
                                     ("w", witness_names)
                                     ("k", _private_keys.size())
@@ -1358,7 +1358,7 @@ namespace graphene {
                         bool we_are_emergency_master =
                             _witnesses.find(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) != _witnesses.end();
                         if (!we_are_emergency_master && _witnesses.empty()) {
-                            elog("EMERGENCY MODE ACTIVE but no witnesses configured! "
+                            elog("EMERGENCY MODE ACTIVE but no validators configured! "
                                  "Block production impossible. Add --emergency-private-key to config.");
                         }
                     } else {
@@ -1380,7 +1380,7 @@ namespace graphene {
                                     // enable-stale-production=true: operator override, produce anyway
                                     // to bootstrap/recover a fully stalled network where all nodes
                                     // see low participation and would otherwise deadlock.
-                                    dlog("Witness participation is ${p}% but stale-production is enabled, "
+                                    dlog("Validator participation is ${p}% but stale-production is enabled, "
                                          "producing anyway to recover stalled network",
                                          ("p", uint32_t(prate / CHAIN_1_PERCENT)));
                                 } else {
@@ -1410,7 +1410,7 @@ namespace graphene {
                 if (db._debug_block_production) ilog("DEBUG_CRASH: emergency/participation check done, entering block_post_validation");
                 if(last_block_post_validation_time < now_fine ){
                     last_block_post_validation_time = now;
-                    if (db._debug_block_production) ilog("DEBUG_CRASH: block_post_validation tick, iterating ${n} witnesses", ("n", _witnesses.size()));
+                    if (db._debug_block_production) ilog("DEBUG_CRASH: block_post_validation tick, iterating ${n} validators", ("n", _witnesses.size()));
 
                     // Pre-compute the current scheduled witnesses set so we can skip
                     // configured witnesses that are not actually scheduled.  A witness
@@ -1442,7 +1442,7 @@ namespace graphene {
                             const auto &witness_by_name = db.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();
                             auto w_itr = witness_by_name.find(witness_account);
                             if (w_itr == witness_by_name.end()) {
-                                wlog("Witness ${w} not found in witness index, skipping block post validation", ("w", witness_account));
+                                wlog("Validator ${w} not found in validator index, skipping block post validation", ("w", witness_account));
                                 continue;
                             }
                             graphene::protocol::public_key_type witness_pub_key = w_itr->signing_key;
@@ -1517,12 +1517,12 @@ namespace graphene {
                         if (all_ours && blocks_checked >= CHAIN_MAX_VALIDATORS) {
                             if (_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
                                 // enable-stale-production=true: operator override, continue
-                                dlog("Minority fork detected (last ${n} blocks from our witnesses) "
+                                dlog("Minority fork detected (last ${n} blocks from our validators) "
                                      "but stale production enabled, continuing",
                                      ("n", blocks_checked));
                             } else {
                                 // Wrong fork: trigger recovery
-                                elog("MINORITY FORK DETECTED: last ${n} blocks all from our witnesses. "
+                                elog("MINORITY FORK DETECTED: last ${n} blocks all from our validators. "
                                      "Resetting to LIB and resyncing from P2P network.",
                                      ("n", blocks_checked));
                                 p2p().resync_from_lib();
@@ -1601,7 +1601,7 @@ namespace graphene {
 
                             if (all_ours && blocks_checked >= dlt_minority_threshold) {
                                 elog("DLT EMERGENCY MINORITY FORK DETECTED: last ${n} blocks all from our "
-                                     "witnesses (1+ full rounds). Node is isolated from master. "
+                                     "validators (1+ full rounds). Node is isolated from master. "
                                      "Resetting to LIB and resyncing from P2P network.",
                                      ("n", blocks_checked));
                                 p2p().resync_from_lib(true /*force_emergency*/);
@@ -1643,11 +1643,11 @@ namespace graphene {
                         std::string _wit_before = _slot_before > 0 ? db.get_scheduled_validator(_slot_before) : "none";
                         bool _our_slot_lost = _slot_before > 0 && _witnesses.count(_wit_before) > 0;
                         if (_our_slot_lost) {
-                            elog("WITNESS-SLOT-LOST: op_guard stall ${d}ms crossed slot boundary! "
+                            elog("VALIDATOR-SLOT-LOST: op_guard stall ${d}ms crossed slot boundary! "
                                  "missed slot for ${w} — now points to next slot after refresh. head=#${h}",
                                  ("d", _guard_ms)("w", _wit_before)("h", db.head_block_num()));
                         } else {
-                            wlog("WITNESS-GUARD-STALL: op_guard blocked ${d}ms (slot before=${sb} witness=${w}). head=#${h}",
+                            wlog("VALIDATOR-GUARD-STALL: op_guard blocked ${d}ms (slot before=${sb} validator=${w}). head=#${h}",
                                  ("d", _guard_ms)("sb", _slot_before)("w", _wit_before)("h", db.head_block_num()));
                         }
                     }
@@ -1713,10 +1713,10 @@ namespace graphene {
 
                 if (db._debug_block_production) ilog("DEBUG_CRASH: get_scheduled_validator(${s})", ("s", slot));
                 string scheduled_witness = db.get_scheduled_validator(slot);
-                if (db._debug_block_production) ilog("DEBUG_CRASH: scheduled_witness=${w}", ("w", scheduled_witness));
+                if (db._debug_block_production) ilog("DEBUG_CRASH: scheduled_validator=${w}", ("w", scheduled_witness));
                 // we must control the witness scheduled to produce the next block.
                 if (_witnesses.find(scheduled_witness) == _witnesses.end()) {
-                    capture("scheduled_witness", scheduled_witness);
+                    capture("scheduled_validator", scheduled_witness);
                     _last_scheduled_witness = scheduled_witness; // track for diagnostic
                     // Emergency master diagnostic: log when committee is configured but
                     // get_scheduled_validator returned a different name — reveals schedule misalignment
@@ -1741,10 +1741,10 @@ namespace graphene {
                     return block_validation_condition::not_my_turn;
                 }
 
-                if (db._debug_block_production) ilog("DEBUG_CRASH: looking up witness in index");
+                if (db._debug_block_production) ilog("DEBUG_CRASH: looking up validator in index");
                 const auto &witness_by_name = db.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();
                 auto itr = witness_by_name.find(scheduled_witness);
-                if (db._debug_block_production) ilog("DEBUG_CRASH: witness found=${f}", ("f", itr != witness_by_name.end()));
+                if (db._debug_block_production) ilog("DEBUG_CRASH: validator found=${f}", ("f", itr != witness_by_name.end()));
 
                 fc::time_point_sec scheduled_time = db.get_slot_time(slot);
                 graphene::protocol::public_key_type scheduled_key = itr->signing_key;
@@ -1790,9 +1790,9 @@ namespace graphene {
                         auto _now_zkr = fc::time_point::now();
                         if ((_now_zkr - _last_zerokey_regular_log).count() > 60000000) {
                             _last_zerokey_regular_log = _now_zkr;
-                            elog("Witness ${w} scheduled at slot=${s} but signing_key is ZERO on chain! "
+                            elog("Validator ${w} scheduled at slot=${s} but signing_key is ZERO on chain! "
                                  "Key was blanked due to too many missed blocks. "
-                                 "Send update_witness transaction to re-enable. head=#${h}",
+                                 "Send update_validator transaction to re-enable. head=#${h}",
                                  ("w", scheduled_witness)("s", slot)("h", db.head_block_num()));
                         }
                     }
@@ -1802,7 +1802,7 @@ namespace graphene {
                 auto private_key_itr = _private_keys.find(scheduled_key);
 
                 if (private_key_itr == _private_keys.end()) {
-                    capture("scheduled_witness", scheduled_witness);
+                    capture("scheduled_validator", scheduled_witness);
                     capture("scheduled_key", scheduled_key);
                     return block_validation_condition::no_private_key;
                 }
@@ -1812,7 +1812,7 @@ namespace graphene {
                     uint32_t prate = db.witness_participation_rate();
                     if (prate < _required_witness_participation) {
                         if (_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
-                            dlog("Witness participation is ${p}% but stale-production is enabled, "
+                            dlog("Validator participation is ${p}% but stale-production is enabled, "
                                  "producing anyway to recover stalled network",
                                  ("p", uint32_t(prate / CHAIN_1_PERCENT)));
                         } else {

@@ -1736,7 +1736,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     // read lock (the master generated blocks just 3ms after the
     // snapshot started), so cancellation is unnecessary.
     if (snapshot_in_progress.load(std::memory_order_relaxed)) {
-        dlog(SNAP_LOG_YELLOW "New block #${n} (witness ${w}) received while snapshot in progress \u2014 "
+        dlog(SNAP_LOG_YELLOW "New block #${n} (validator ${w}) received while snapshot in progress \u2014 "
              "block will be processed after snapshot completes" SNAP_LOG_RESET,
              ("n", b.block_num())("w", b.validator));
     }
@@ -1894,10 +1894,10 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             snapshot_pending = false;
             pending_snapshot_path.clear();
             pending_snapshot_safe_after_time = fc::time_point_sec();
-            ilog(CLOG_GREEN "Creating deferred snapshot now (witness slot passed): ${p}" CLOG_RESET, ("p", output.string()));
+            ilog(CLOG_GREEN "Creating deferred snapshot now (validator slot passed): ${p}" CLOG_RESET, ("p", output.string()));
             schedule_async_snapshot(output, "deferred");
         } else {
-            dlog("Deferred snapshot waiting for witness slot at ${t} (head_block_time=${h})",
+            dlog("Deferred snapshot waiting for validator slot at ${t} (head_block_time=${h})",
                  ("t", pending_snapshot_safe_after_time)("h", db.head_block_time()));
         }
     }
@@ -1911,7 +1911,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             output = fc::path(snapshot_dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         }
         if (is_witness_producing_soon()) {
-            ilog(CLOG_GREEN "Deferring snapshot-at-block ${b}: witness scheduled to produce next block" CLOG_RESET, ("b", block_num));
+            ilog(CLOG_GREEN "Deferring snapshot-at-block ${b}: validator scheduled to produce next block" CLOG_RESET, ("b", block_num));
             snapshot_pending = true;
             pending_snapshot_path = output.string();
         } else {
@@ -1928,7 +1928,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         std::string dir = snapshot_dir;
         fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         if (is_witness_producing_soon()) {
-            ilog(CLOG_GREEN "Deferring urgent fresh snapshot at block ${b}: witness scheduled" CLOG_RESET, ("b", block_num));
+            ilog(CLOG_GREEN "Deferring urgent fresh snapshot at block ${b}: validator scheduled" CLOG_RESET, ("b", block_num));
             snapshot_pending = true;
             pending_snapshot_path = output.string();
         } else {
@@ -1942,7 +1942,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         std::string dir = snapshot_dir;
         fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         if (is_witness_producing_soon()) {
-            ilog(CLOG_GREEN "Deferring periodic snapshot at block ${b}: witness scheduled to produce next block" CLOG_RESET, ("b", block_num));
+            ilog(CLOG_GREEN "Deferring periodic snapshot at block ${b}: validator scheduled to produce next block" CLOG_RESET, ("b", block_num));
             snapshot_pending = true;
             pending_snapshot_path = output.string();
         } else {

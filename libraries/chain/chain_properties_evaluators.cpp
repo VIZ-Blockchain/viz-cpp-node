@@ -20,7 +20,7 @@ namespace graphene { namespace chain {
                 const dynamic_global_property_object &dgp = _db.get_dynamic_global_properties();
 
                 FC_ASSERT(owner.balance >=
-                          median_props.validator_declaration_fee, "Account does not have sufficient funds to declare himself as witness: required ${a}.",("a",median_props.validator_declaration_fee));
+                          median_props.validator_declaration_fee, "Account does not have sufficient funds to declare himself as validator: required ${a}.",("a",median_props.validator_declaration_fee));
 
                 _db.adjust_balance(owner, -median_props.validator_declaration_fee);
                 _db.modify(dgp, [&](dynamic_global_property_object &dgp) {

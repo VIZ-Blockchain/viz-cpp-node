@@ -285,7 +285,7 @@ namespace chain {
 
     void plugin::clear_syncing() {
         if (my->currently_syncing.exchange(false, std::memory_order_relaxed)) {
-            ilog("Sync complete: cleared currently_syncing flag (witness block production may resume)");
+            ilog("Sync complete: cleared currently_syncing flag (validator block production may resume)");
             my->sync_start_logged = false;
         }
     }

@@ -1148,7 +1148,7 @@ namespace graphene { namespace chain {
             }
             else{
                 FC_ASSERT(voter.proxy.size() ==
-                          0, "A proxy is currently set, please clear the proxy before voting for a witness.");
+                          0, "A proxy is currently set, please clear the proxy before voting for a validator.");
             }
 
             const auto &witness = _db.get_witness(o.validator);
@@ -1157,15 +1157,15 @@ namespace graphene { namespace chain {
             auto itr = by_account_witness_idx.find(boost::make_tuple(voter.id, witness.id));
 
             if (itr == by_account_witness_idx.end()) {
-                FC_ASSERT(o.approve, "Vote doesn't exist, user must indicate a desire to approve witness.");
+                FC_ASSERT(o.approve, "Vote doesn't exist, user must indicate a desire to approve validator.");
 
                 if(_db.has_hardfork(CHAIN_HARDFORK_4)){
                     FC_ASSERT(voter.validators_voted_for <
-                              CHAIN_MAX_ACCOUNT_VALIDATOR_VOTES, "Account has voted for too many witnesses.");
+                              CHAIN_MAX_ACCOUNT_VALIDATOR_VOTES, "Account has voted for too many validators.");
                 }
                 else{
                     FC_ASSERT(voter.validators_voted_for <
-                              CHAIN_MAX_ACCOUNT_VALIDATOR_VOTES_PRE_HF4, "Account has voted for too many witnesses."); // TODO: Remove after hardfork 2
+                              CHAIN_MAX_ACCOUNT_VALIDATOR_VOTES_PRE_HF4, "Account has voted for too many validators."); // TODO: Remove after hardfork 2
                 }
 
                 if(_db.has_hardfork(CHAIN_HARDFORK_5)){
@@ -1234,7 +1234,7 @@ namespace graphene { namespace chain {
                     });
                 }
             } else {
-                FC_ASSERT(!o.approve, "Vote currently exists, user must indicate a desire to reject witness.");
+                FC_ASSERT(!o.approve, "Vote currently exists, user must indicate a desire to reject validator.");
 
                 if(_db.has_hardfork(CHAIN_HARDFORK_5)){
                     const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
@@ -1567,7 +1567,7 @@ namespace graphene { namespace chain {
             else                                                  // Empty string recovery account defaults to top witness
                 FC_ASSERT(
                         _db.get_index<validator_index>().indices().get<by_vote_name>().begin()->owner ==
-                        o.recovery_account, "Top witness must recover an account with no recovery partner.");
+                        o.recovery_account, "Top validator must recover an account with no recovery partner.");
 
             const auto &recovery_request_idx = _db.get_index<account_recovery_request_index>().indices().get<by_account>();
             auto request = recovery_request_idx.find(o.account_to_recover);

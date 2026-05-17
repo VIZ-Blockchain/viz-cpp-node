@@ -263,7 +263,7 @@ uint32_t plugin::plugin_impl::debug_generate_blocks(
         if( scheduled_key != debug_public_key ) {
             if( edit_if_needed ) {
                 if( logging ) {
-                    wlog( "Modified key for witness ${w}", ("w", scheduled_witness_name) );
+                    wlog( "Modified key for validator ${w}", ("w", scheduled_witness_name) );
                 }
                 debug_update( [=]( graphene::chain::database& db )
                 {

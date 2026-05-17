@@ -113,7 +113,7 @@ std::vector<validator_api_object> plugin::validator_plugin_impl::get_witnesses_b
     auto itr = vote_idx.begin();
     if (from.size()) {
         auto nameitr = name_idx.find(from);
-        FC_ASSERT(nameitr != name_idx.end(), "invalid witness name ${n}", ("n", from));
+        FC_ASSERT(nameitr != name_idx.end(), "invalid validator name ${n}", ("n", from));
         itr = vote_idx.iterator_to(*nameitr);
     }
 
@@ -147,7 +147,7 @@ std::vector<validator_api_object> plugin::validator_plugin_impl::get_witnesses_b
     auto itr = vote_idx.begin();
     if (from.size()) {
         auto nameitr = name_idx.find(from);
-        FC_ASSERT(nameitr != name_idx.end(), "invalid witness name ${n}", ("n", from));
+        FC_ASSERT(nameitr != name_idx.end(), "invalid validator name ${n}", ("n", from));
         itr = vote_idx.iterator_to(*nameitr);
     }
 

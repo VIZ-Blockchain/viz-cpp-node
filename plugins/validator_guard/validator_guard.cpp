@@ -155,7 +155,7 @@ bool validator_guard_plugin::impl::check_and_restore_internal() {
 
         auto itr = idx.find(name);
         if (itr == idx.end()) {
-            wlog("validator_guard: witness '${w}' not found in database", ("w", name));
+            wlog("validator_guard: validator '${w}' not found in database", ("w", name));
             continue;
         }
 
@@ -227,7 +227,7 @@ void validator_guard_plugin::impl::send_witness_update(
             _pending_confirmations.clear();
         }
 
-        ilog("validator_guard: broadcasting witness_update [ID: ${id}] for '${w}' — restoring key to ${k}",
+        ilog("validator_guard: broadcasting validator_update [ID: ${id}] for '${w}' — restoring key to ${k}",
              ("id", tx_id)("w", witness_name)("k", signing_pub));
 
         p2p_.broadcast_transaction(tx);
@@ -236,10 +236,10 @@ void validator_guard_plugin::impl::send_witness_update(
         _restore_pending[witness_name] = expiration;
         _pending_confirmations[tx_id] = { witness_name, expiration };
 
-        ilog("validator_guard: witness_update for '${w}' sent successfully", ("w", witness_name));
+        ilog("validator_guard: validator_update for '${w}' sent successfully", ("w", witness_name));
 
     } catch (const fc::exception& e) {
-        elog("validator_guard: witness_update FAILED for '${w}': ${e}",
+        elog("validator_guard: validator_update FAILED for '${w}': ${e}",
              ("w", witness_name)("e", e.to_detail_string()));
         // Do not mark as pending — retry will happen on the next check cycle
     }
@@ -277,7 +277,7 @@ void validator_guard_plugin::impl::send_witness_disable(
         tx.sign(active_priv, db().get_chain_id());
         const auto tx_id = tx.id();
 
-        ilog("validator_guard: broadcasting witness_update [ID: ${id}] for '${w}' — DISABLING (setting key to null)",
+        ilog("validator_guard: broadcasting validator_update [ID: ${id}] for '${w}' — DISABLING (setting key to null)",
              ("id", tx_id)("w", witness_name));
 
         p2p_.broadcast_transaction(tx);
@@ -285,10 +285,10 @@ void validator_guard_plugin::impl::send_witness_disable(
         // Mark this witness as auto-disabled so we don't auto-restore it
         _auto_disabled_witnesses.insert(witness_name);
 
-        ilog("validator_guard: witness_disable for '${w}' sent successfully", ("w", witness_name));
+        ilog("validator_guard: validator_disable for '${w}' sent successfully", ("w", witness_name));
 
     } catch (const fc::exception& e) {
-        elog("validator_guard: witness_disable FAILED for '${w}': ${e}",
+        elog("validator_guard: validator_disable FAILED for '${w}': ${e}",
              ("w", witness_name)("e", e.to_detail_string()));
     }
 }
@@ -307,7 +307,7 @@ void validator_guard_plugin::set_program_options(
          bpo::value<bool>()->default_value(true),
          "Enable validator key auto-restore. "
          "When true, the plugin monitors configured validators and sends "
-         "witness_update if the on-chain signing key is reset to null.")
+         "validator_update if the on-chain signing key is reset to null.")
         ("witness-guard-enabled",  // DEPRECATED alias
          bpo::value<bool>(),
          "[DEPRECATED] Use validator-guard-enabled.")
@@ -387,10 +387,10 @@ void validator_guard_plugin::plugin_initialize(
             pimpl->_disable_threshold = options["validator-guard-disable"].as<uint32_t>();
         }
         if (pimpl->_disable_threshold > 0) {
-            ilog("validator_guard: auto-disable enabled — will disable witness after ${n} consecutive blocks",
+            ilog("validator_guard: auto-disable enabled — will disable validator after ${n} consecutive blocks",
                  ("n", pimpl->_disable_threshold));
         } else {
-            ilog("validator_guard: auto-disable feature is OFF (witness-guard-disable = 0)");
+            ilog("validator_guard: auto-disable feature is OFF (validator-guard-disable = 0)");
         }
 
         // validator configs — each entry is a JSON triplet: ["name", "signing_wif", "active_wif"]
@@ -421,22 +421,22 @@ void validator_guard_plugin::plugin_initialize(
 
                     pimpl->_witness_configs[name] = { *sign_priv, *active_priv };
 
-                    ilog("validator_guard: monitoring witness '${w}' (signing key: ${k})",
+                    ilog("validator_guard: monitoring validator '${w}' (signing key: ${k})",
                          ("w", name)("k", sign_priv->get_public_key()));
 
                 } catch (const fc::exception& e) {
-                    elog("validator_guard: failed to parse witness entry '${entry}': ${e}",
+                    elog("validator_guard: failed to parse validator entry '${entry}': ${e}",
                          ("entry", entry)("e", e.to_detail_string()));
                 }
             }
         }
 
         if (pimpl->_witness_configs.empty()) {
-            wlog("validator_guard: no witnesses configured for monitoring");
+            wlog("validator_guard: no validators configured for monitoring");
         }
 
         ilog("validator_guard: plugin_initialize() end — "
-             "monitoring ${n} witness(es), interval=${i} blocks",
+             "monitoring ${n} validator(s), interval=${i} blocks",
              ("n", pimpl->_witness_configs.size())("i", pimpl->_check_interval));
 
     } FC_LOG_AND_RETHROW()
@@ -468,7 +468,7 @@ void validator_guard_plugin::plugin_startup() {
                 }
             }
             if (!active_key_has_authority) {
-                elog("validator_guard: WARNING: Configured active key for witness '${w}' "
+                elog("validator_guard: WARNING: Configured active key for validator '${w}' "
                      "does NOT have authority on-chain. Restoration will fail.", ("w", name));
             }
             ++it;
@@ -506,7 +506,7 @@ void validator_guard_plugin::plugin_startup() {
             if (count >= pimpl->_disable_threshold) {
                 // Already auto-disabled? Skip repeated broadcasts
                 if (!pimpl->_auto_disabled_witnesses.count(producer)) {
-                    wlog("validator_guard: witness '${w}' produced ${c} consecutive blocks — "
+                    wlog("validator_guard: validator '${w}' produced ${c} consecutive blocks — "
                          "auto-disabling (threshold=${t})",
                          ("w", producer)("c", count)("t", pimpl->_disable_threshold));
 

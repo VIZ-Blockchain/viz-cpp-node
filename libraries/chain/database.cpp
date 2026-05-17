@@ -448,9 +448,9 @@ namespace graphene { namespace chain {
                     }
 
                     if (schedule_broken) {
-                        wlog("EMERGENCY SCHEDULE RECOVERY: detected empty witness slots "
+                        wlog("EMERGENCY SCHEDULE RECOVERY: detected empty validator slots "
                              "in schedule at startup (head=${h}, emergency=${e}). "
-                             "Filling all slots with committee witness.",
+                             "Filling all slots with committee validator.",
                              ("h", head_block_num())("e", startup_dgp.emergency_consensus_active));
 
                         with_strong_write_lock([&]() {
@@ -1470,11 +1470,11 @@ namespace graphene { namespace chain {
 
                     if (same_parent) {
                         wlog("Block num collision at block ${n}: ${cnt} blocks with SAME parent "
-                             "(possible double-production), time_delta=${td}s, witnesses: ${w}",
+                             "(possible double-production), time_delta=${td}s, validators: ${w}",
                              ("n", height)("cnt", blocks.size())("td", time_delta_sec)("w", witness_time_pairs));
                     } else {
                         wlog("Block num collision at block ${n}: ${cnt} blocks with DIFFERENT parents "
-                             "(fork from divergent chain tips), time_delta=${td}s, witnesses: ${w}",
+                             "(fork from divergent chain tips), time_delta=${td}s, validators: ${w}",
                              ("n", height)("cnt", blocks.size())("td", time_delta_sec)("w", witness_time_pairs));
                     }
 
@@ -2190,7 +2190,7 @@ namespace graphene { namespace chain {
                 const auto* witness_acct = find_account(witness_owner);
                 if (!witness_acct) {
                     auto& acc_idx = get_index<account_index>().indices().get<by_name>();
-                    elog("CRITICAL: Witness ${w} account object MISSING from database! "
+                    elog("CRITICAL: Validator ${w} account object MISSING from database! "
                          "This is impossible state - shared memory may be corrupted. "
                          "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
                          "account_index_size=${idx_size}",
@@ -2199,7 +2199,7 @@ namespace graphene { namespace chain {
                          ("lc", witness_obj.last_confirmed_block_num)
                          ("idx_size", acc_idx.size()));
                     FC_THROW_EXCEPTION(shared_memory_corruption_exception,
-                              "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected.",
+                              "CRITICAL: Validator ${w} account not found in database! Shared memory corruption suspected.",
                               ("w", witness_owner));
                 }
 
@@ -2764,7 +2764,7 @@ namespace graphene { namespace chain {
         void database::update_witness_schedule() {
             if ((head_block_num() % ( CHAIN_MAX_VALIDATORS * CHAIN_BLOCK_VALIDATOR_REPEAT ) ) != 0) return;
 
-            if (_debug_block_production) ilog("DEBUG_CRASH: update_witness_schedule ENTER at block ${b}", ("b", head_block_num()));
+            if (_debug_block_production) ilog("DEBUG_CRASH: update_validator_schedule ENTER at block ${b}", ("b", head_block_num()));
 
             if(has_hardfork(CHAIN_HARDFORK_6)){//remove expired witness penalty
                 const auto &idx = get_index<witness_penalty_expire_index>().indices().get<by_expiration>();
@@ -2865,8 +2865,8 @@ namespace graphene { namespace chain {
                 reset_virtual_schedule_time();
             }
 
-            FC_ASSERT( ( active_witnesses.size() + support_witnesses.size() ) <= CHAIN_MAX_VALIDATORS, "Number of active witnesses does cannot be more CHAIN_MAX_VALIDATORS",
-                    ("active_witnesses.size()", active_witnesses.size())("support_witnesses.size()", support_witnesses.size())("CHAIN_MAX_VALIDATORS", CHAIN_MAX_VALIDATORS));
+            FC_ASSERT( ( active_witnesses.size() + support_witnesses.size() ) <= CHAIN_MAX_VALIDATORS, "Number of active validators cannot be more than CHAIN_MAX_VALIDATORS",
+                    ("active_validators.size()", active_witnesses.size())("support_validators.size()", support_witnesses.size())("CHAIN_MAX_VALIDATORS", CHAIN_MAX_VALIDATORS));
 
             auto majority_version = wso.majority_version;
 
@@ -3069,7 +3069,7 @@ namespace graphene { namespace chain {
                     _wso.next_shuffle_block_num =
                         head_block_num() + _wso.num_scheduled_validators;
 
-                    dlog(DB_LOG_YELLOW "Emergency hybrid schedule: ${r} real witness slots, "
+                    dlog(DB_LOG_YELLOW "Emergency hybrid schedule: ${r} real validator slots, "
                          "${c} committee slots" DB_LOG_RESET,
                          ("r", real_witness_slots)
                          ("c", committee_slots));
@@ -3110,7 +3110,7 @@ namespace graphene { namespace chain {
                     _fork_db.set_emergency_mode(false);
 
                     ilog("EMERGENCY CONSENSUS MODE deactivated at block ${b}. "
-                         "${r} real witnesses active (threshold: ${t}).",
+                         "${r} real validators active (threshold: ${t}).",
                          ("b", head_block_num())
                          ("r", real_witness_slots)
                          ("t", exit_threshold));
@@ -3784,7 +3784,7 @@ namespace graphene { namespace chain {
                 const auto* witness_account = find_account(cwit.owner);
                 if (!witness_account) {
                     auto& acc_idx = get_index<account_index>().indices().get<by_name>();
-                    elog("CRITICAL: Witness ${w} account object MISSING from database! "
+                    elog("CRITICAL: Validator ${w} account object MISSING from database! "
                          "This is impossible state - shared memory may be corrupted. "
                          "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
                          "account_index_size=${idx_size}",
@@ -3792,7 +3792,7 @@ namespace graphene { namespace chain {
                          ("p", cwit.penalty_percent)("lc", cwit.last_confirmed_block_num)
                          ("idx_size", acc_idx.size()));
                     FC_THROW_EXCEPTION(shared_memory_corruption_exception,
-                              "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected.",
+                              "CRITICAL: Validator ${w} account not found in database! Shared memory corruption suspected.",
                               ("w", cwit.owner));
                 }
                 if (has_hardfork(CHAIN_HARDFORK_13) && cwit.sharing_rate > 0) {
@@ -3853,7 +3853,7 @@ namespace graphene { namespace chain {
                     const auto* witness_account = find_account(cwit.owner);
                     if (!witness_account) {
                         auto& acc_idx = get_index<account_index>().indices().get<by_name>();
-                        elog("CRITICAL: Witness ${w} account object MISSING from database (HF4 path)! "
+                        elog("CRITICAL: Validator ${w} account object MISSING from database (HF4 path)! "
                              "This is impossible state - shared memory may be corrupted. "
                              "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
                              "account_index_size=${idx_size}",
@@ -3861,7 +3861,7 @@ namespace graphene { namespace chain {
                              ("p", cwit.penalty_percent)("lc", cwit.last_confirmed_block_num)
                              ("idx_size", acc_idx.size()));
                         FC_THROW_EXCEPTION(shared_memory_corruption_exception,
-                                  "CRITICAL: Witness ${w} account not found in database (HF4 path)! Shared memory corruption suspected.",
+                                  "CRITICAL: Validator ${w} account not found in database (HF4 path)! Shared memory corruption suspected.",
                                   ("w", cwit.owner));
                     }
                     auto witness_reward_shares = create_vesting(*witness_account, asset(witness_reward, TOKEN_SYMBOL));
@@ -5100,8 +5100,8 @@ namespace graphene { namespace chain {
 
                 const auto &witness = get_witness(next_block.validator);
                 FC_ASSERT(witness.running_version >= hardfork_state.current_hardfork_version,
-                        "Block produced by witness that is not running current hardfork",
-                        ("witness", witness)("next_block.validator", next_block.validator)("hardfork_state", hardfork_state)
+                        "Block produced by validator that is not running current hardfork",
+                        ("validator", witness)("next_block.validator", next_block.validator)("hardfork_state", hardfork_state)
                 );
 
                 for (const auto &trx : next_block.transactions) {
@@ -5134,7 +5134,7 @@ namespace graphene { namespace chain {
                 }
                 update_bandwidth_reserve_candidates();
                 update_witness_schedule();
-                if (_debug_block_production) ilog("DEBUG_CRASH: update_witness_schedule done");
+                if (_debug_block_production) ilog("DEBUG_CRASH: update_validator_schedule done");
 
                 if (_debug_block_production) ilog("DEBUG_CRASH: process_funds start");
                 if(has_hardfork(CHAIN_HARDFORK_4)){
@@ -5315,8 +5315,8 @@ namespace graphene { namespace chain {
 
                 if (!(skip & skip_validator_signature)) {
                     FC_ASSERT(witness.signing_key != public_key_type(),
-                              "Witness '${w}' has null signing key — cannot validate block #${n}. "
-                              "The witness disabled their key or the node is on a different fork.",
+                              "Validator '${w}' has null signing key — cannot validate block #${n}. "
+                              "The validator disabled their key or the node is on a different fork.",
                               ("w", next_block.validator)("n", next_block.block_num()));
                     FC_ASSERT(next_block.validate_signee(witness.signing_key));
                 }
@@ -5356,7 +5356,7 @@ namespace graphene { namespace chain {
                                 }
                             }
                             FC_ASSERT(in_schedule,
-                                "Emergency mode: block from witness ${w} not in current schedule",
+                                "Emergency mode: block from validator ${w} not in current schedule",
                                 ("w", witness.owner));
                             dlog("Emergency mode: accepting block from ${bw} at slot scheduled for ${sw} "
                                  "(slot_num=${slot}, block=#${num})",
@@ -5365,8 +5365,8 @@ namespace graphene { namespace chain {
                         }
                     } else {
                         FC_ASSERT(witness.owner ==
-                                  scheduled_witness, "Witness produced block at wrong time",
-                                ("block witness", next_block.validator)("scheduled", scheduled_witness)("slot_num", slot_num));
+                                  scheduled_witness, "Validator produced block at wrong time",
+                                ("block validator", next_block.validator)("scheduled", scheduled_witness)("slot_num", slot_num));
                     }
                 }
 
@@ -5411,7 +5411,7 @@ namespace graphene { namespace chain {
                             witness_missed.owner != CHAIN_EMERGENCY_VALIDATOR_ACCOUNT;
 
                         if (!is_emergency_offline_witness && witness_missed.owner != b.validator) {
-                            ilog("\033[91mMissed block: witness ${w} did not produce block #${n} at ${t} (next: ${next})\033[0m",
+                            ilog("\033[91mMissed block: validator ${w} did not produce block #${n} at ${t} (next: ${next})\033[0m",
                                  ("w", witness_missed.owner)
                                  ("n", head_block_num() + i + 1)
                                  ("t", get_slot_time(i + 1))
@@ -5439,7 +5439,7 @@ namespace graphene { namespace chain {
                                     head_block_num() -
                                     w.last_confirmed_block_num >
                                     CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS) {
-                                    elog("Emergency consensus: Witness ${w} missed ${missed} blocks since last confirmed ${lc} "
+                                    elog("Emergency consensus: Validator ${w} missed ${missed} blocks since last confirmed ${lc} "
                                          "(threshold=${t}), blanking signing_key",
                                          ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
                                          ("lc", w.last_confirmed_block_num)("t", CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS));
@@ -5469,7 +5469,7 @@ namespace graphene { namespace chain {
                                     head_block_num() -
                                     w.last_confirmed_block_num >
                                     CHAIN_MAX_VALIDATOR_MISSED_BLOCKS) {
-                                    elog("Witness ${w} missed too many blocks (${missed} since last confirmed ${lc}), blanking signing_key (was ${k})",
+                                    elog("Validator ${w} missed too many blocks (${missed} since last confirmed ${lc}), blanking signing_key (was ${k})",
                                          ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
                                          ("lc", w.last_confirmed_block_num)("k", w.signing_key));
                                     w.signing_key = public_key_type();
@@ -5656,8 +5656,8 @@ namespace graphene { namespace chain {
                                     w.current_run = 0;
                                 });
                             }
-                            elog("Emergency consensus started: blanked signing_key for ${n} witnesses. "
-                                 "Operators must send update_witness tx to re-enable after emergency ends.",
+                            elog("Emergency consensus started: blanked signing_key for ${n} validators. "
+                                 "Operators must send update_validator tx to re-enable after emergency ends.",
                                  ("n", blanked_count));
 
                             // Remove all pending penalty expiration objects
@@ -5688,7 +5688,7 @@ namespace graphene { namespace chain {
 
                             ilog("EMERGENCY CONSENSUS MODE activated at block ${b}. "
                                 "No blocks for ${sec} seconds since LIB ${lib}. "
-                                "Emergency witness: ${w}",
+                                "Emergency validator: ${w}",
                                 ("b", b.block_num())("sec", seconds_since_lib)
                                 ("lib", _dgp.last_irreversible_block_num)
                                 ("w", CHAIN_EMERGENCY_VALIDATOR_ACCOUNT));
@@ -6730,7 +6730,7 @@ namespace graphene { namespace chain {
                          itr != widx.end();
                          ++itr) {
                         modify(*itr, [&](validator_object &w) {
-                            elog("HF5 witness ${a} was votes: ${n}", ("a", w.owner)("n", w.votes));
+                            elog("HF5 validator ${a} was votes: ${n}", ("a", w.owner)("n", w.votes));
                             w.votes = 0;
                             w.counted_votes = 0;
                         });
@@ -6745,7 +6745,7 @@ namespace graphene { namespace chain {
                         modify(voter, [&](account_object &a) {
                             a.validators_vote_weight = fair_weight;
                         });
-                        elog("HF5 witness ${a} calc votes: ${n}", ("a", witness.owner)("n", fair_weight));
+                        elog("HF5 validator ${a} calc votes: ${n}", ("a", witness.owner)("n", fair_weight));
 
                         adjust_validator_vote(get(witr->witness), fair_weight);
                     }
@@ -6882,7 +6882,7 @@ namespace graphene { namespace chain {
                          itr != widx.end();
                          ++itr) {
                         modify(*itr, [&](validator_object &w) {
-                            elog("HF6 witness ${a} has votes: ${n}", ("a", w.owner)("n", w.votes));
+                            elog("HF6 validator ${a} has votes: ${n}", ("a", w.owner)("n", w.votes));
                             w.votes = 0;
                             w.counted_votes = 0;
                         });
@@ -6897,7 +6897,7 @@ namespace graphene { namespace chain {
                         modify(voter, [&](account_object &a) {
                             a.validators_vote_weight = fair_weight;
                         });
-                        elog("HF6 witness ${a} recalc votes from ${a}: ${n}", ("a", witness.owner)("n", fair_weight));
+                        elog("HF6 validator ${a} recalc votes from ${a}: ${n}", ("a", witness.owner)("n", fair_weight));
 
                         adjust_validator_vote(get(witr->witness), fair_weight);
                     }
@@ -7391,7 +7391,7 @@ namespace graphene { namespace chain {
                                 }
                                 ++vitr;
                             }
-                            elog("HF9 remove empty/spam witness ${a}", ("a", current.owner));
+                            elog("HF9 remove empty/spam validator ${a}", ("a", current.owner));
                             remove(current);
                         }
                     }
