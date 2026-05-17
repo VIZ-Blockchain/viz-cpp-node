@@ -109,7 +109,7 @@ inline fc::variant patch_chain_props_variant(fc::variant v) {
         {"witness_declaration_fee",      "validator_declaration_fee"},
     };
     for (auto& kv : aliases) {
-        if (mvo.contains(kv.first) && !mvo.contains(kv.second))
+        if (mvo.find(kv.first) != mvo.end() && mvo.find(kv.second) == mvo.end())
             mvo.set(kv.second, mvo[kv.first]);
     }
     return fc::variant(std::move(mvo));
@@ -413,11 +413,11 @@ inline uint32_t import_witness_schedule(
 
     // Patch old field names for backward compat with pre-rename snapshots
     fc::mutable_variant_object v(v_raw.get_object());
-    if (v.contains("current_shuffled_witnesses") && !v.contains("current_shuffled_validators"))
+    if (v.find("current_shuffled_witnesses") != v.end() && v.find("current_shuffled_validators") == v.end())
         v.set("current_shuffled_validators", v["current_shuffled_witnesses"]);
-    if (v.contains("num_scheduled_witnesses") && !v.contains("num_scheduled_validators"))
+    if (v.find("num_scheduled_witnesses") != v.end() && v.find("num_scheduled_validators") == v.end())
         v.set("num_scheduled_validators", v["num_scheduled_witnesses"]);
-    if (v.contains("median_props"))
+    if (v.find("median_props") != v.end())
         v.set("median_props", detail::patch_chain_props_variant(v["median_props"]));
 
     const auto& wso = db.get<validator_schedule_object>();
