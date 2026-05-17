@@ -141,7 +141,7 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
     }
 
     const auto& idx = database
-        .get_index<graphene::chain::witness_index>()
+        .get_index<graphene::chain::validator_index>()
         .indices()
         .get<graphene::chain::by_name>();
 
@@ -512,7 +512,7 @@ void witness_guard_plugin::plugin_startup() {
 
                     // Look up the witness object and send disable transaction
                     const auto& idx = pimpl->db()
-                        .get_index<graphene::chain::witness_index>()
+                        .get_index<graphene::chain::validator_index>()
                         .indices()
                         .get<graphene::chain::by_name>();
                     auto itr = idx.find(producer);
@@ -558,7 +558,7 @@ void witness_guard_plugin::plugin_startup() {
         bool scheduled_soon = false;
         if (pimpl->_initial_check_done) {
             for (uint32_t i = 1; i <= 3; ++i) {
-                if (pimpl->_witness_configs.count(pimpl->db().get_scheduled_witness(i))) {
+                if (pimpl->_witness_configs.count(pimpl->db().get_scheduled_validator(i))) {
                     scheduled_soon = true;
                     break;
                 }
