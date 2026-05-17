@@ -10,3 +10,4 @@
 	path = thirdparty/appbase
 	url = https://github.com/VIZ-Blockchain/appbase.git
 	branch = lib-boost-1.71
+	
