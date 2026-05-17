@@ -2792,12 +2792,12 @@ namespace graphene { namespace chain {
 
             /// Add the highest voted witnesses
             flat_set<validator_id_type> selected_voted;
-            selected_voted.reserve(CHAIN_MAX_TOP_WITNESSES);
+            selected_voted.reserve(CHAIN_MAX_TOP_VALIDATORS);
 
             const auto &widx = get_index<validator_index>().indices().get<by_counted_vote_name>();
             for (auto itr = widx.begin();
                  itr != widx.end() &&
-                 selected_voted.size() < CHAIN_MAX_TOP_WITNESSES;
+                 selected_voted.size() < CHAIN_MAX_TOP_VALIDATORS;
                  ++itr) {
                 if (itr->signing_key == public_key_type()) {
                     continue;
