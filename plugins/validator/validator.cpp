@@ -781,7 +781,7 @@ namespace graphene {
                 }
                 switch (result) {
                     case block_validation_condition::produced:
-                        ilog("\033[92mGenerated block #${n} with timestamp ${t} at time ${c} by ${w} with ${tx} transactions\033[0m", (capture));
+                        ilog("\033[92mValidated block #${n} with timestamp ${t} at time ${c} by \033[93m${w}\033[92m with ${tx} transactions\033[0m", (capture));
                         fork_collision_defer_count_ = 0;
                         // _watchdog_debug_enabled is production-only — no lock needed.
                         if (_watchdog_debug_enabled) {
