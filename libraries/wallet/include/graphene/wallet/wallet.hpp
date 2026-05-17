@@ -257,7 +257,7 @@ namespace graphene { namespace wallet {
             /**
              * Returns the list of witnesses producing blocks in the current round (21 Blocks)
              */
-            vector< account_name_type > get_active_witnesses()const;
+            vector< account_name_type > get_active_validators()const;
 
             /**
              * Returns vesting withdraw routes for an account.
@@ -1541,7 +1541,7 @@ FC_API( graphene::wallet::wallet_api,
                 (serialize_transaction)
                 (sign_transaction)
 
-                (get_active_witnesses)
+                (get_active_validators)
                 (get_transaction)
 )
 
