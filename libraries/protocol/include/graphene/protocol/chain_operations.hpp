@@ -446,7 +446,7 @@ namespace graphene { namespace protocol {
             /**
              *  Consensus - Witness reward percent from block inflation
              */
-            int16_t inflation_witness_percent = CHAIN_CONSENSUS_INFLATION_WITNESS_PERCENT;
+            int16_t inflation_validator_percent = CHAIN_CONSENSUS_INFLATION_WITNESS_PERCENT;
 
             /**
              *  Consensus - Inflation ratio between committee and reward fund
@@ -460,8 +460,8 @@ namespace graphene { namespace protocol {
 
             void validate() const {
                 chain_properties_init::validate();
-                FC_ASSERT(inflation_witness_percent >= 0);
-                FC_ASSERT(inflation_witness_percent <= CHAIN_100_PERCENT);
+                FC_ASSERT(inflation_validator_percent >= 0);
+                FC_ASSERT(inflation_validator_percent <= CHAIN_100_PERCENT);
                 FC_ASSERT(inflation_ratio_committee_vs_reward_fund >= 0);
                 FC_ASSERT(inflation_ratio_committee_vs_reward_fund <= CHAIN_100_PERCENT);
                 FC_ASSERT(inflation_recalc_period >= 0);
@@ -485,20 +485,20 @@ namespace graphene { namespace protocol {
             /**
              *  Consensus - Witness who missed the block will receive a penality of a percentage of the votes
              */
-            int16_t witness_miss_penalty_percent = CONSENSUS_WITNESS_MISS_PENALTY_PERCENT;
+            int16_t validator_miss_penalty_percent = CONSENSUS_WITNESS_MISS_PENALTY_PERCENT;
 
             /**
              *  Consensus - Witness who missed the block will receive a penality with duration (in seconds)
              */
-            uint32_t witness_miss_penalty_duration = CONSENSUS_WITNESS_MISS_PENALTY_DURATION;
+            uint32_t validator_miss_penalty_duration = CONSENSUS_WITNESS_MISS_PENALTY_DURATION;
 
             void validate() const {
                 chain_properties_hf4::validate();
                 FC_ASSERT(data_operations_cost_additional_bandwidth >= 0);
-                FC_ASSERT(witness_miss_penalty_percent >= 0);
-                FC_ASSERT(witness_miss_penalty_percent <= CHAIN_100_PERCENT);
-                FC_ASSERT(witness_miss_penalty_duration >= 0);
-                FC_ASSERT(witness_miss_penalty_duration <= (CHAIN_BLOCKS_PER_YEAR * CHAIN_BLOCK_INTERVAL));
+                FC_ASSERT(validator_miss_penalty_percent >= 0);
+                FC_ASSERT(validator_miss_penalty_percent <= CHAIN_100_PERCENT);
+                FC_ASSERT(validator_miss_penalty_duration >= 0);
+                FC_ASSERT(validator_miss_penalty_duration <= (CHAIN_BLOCKS_PER_YEAR * CHAIN_BLOCK_INTERVAL));
             }
 
             chain_properties_hf6& operator=(const chain_properties_init& src) {
@@ -543,7 +543,7 @@ namespace graphene { namespace protocol {
             /**
              *  Consensus - Fee to the network committee for declare account as witness
              */
-            asset witness_declaration_fee = asset(CONSENSUS_WITNESS_DECLARATION_FEE, TOKEN_SYMBOL);
+            asset validator_declaration_fee = asset(CONSENSUS_WITNESS_DECLARATION_FEE, TOKEN_SYMBOL);
 
             /**
              *  Consensus - withdraw intervals (duration defined as CHAIN_VESTING_WITHDRAW_INTERVAL_SECONDS equal 1 day)
@@ -563,8 +563,8 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(account_on_sale_fee.symbol == TOKEN_SYMBOL);
                 FC_ASSERT(subaccount_on_sale_fee.amount > 0);
                 FC_ASSERT(subaccount_on_sale_fee.symbol == TOKEN_SYMBOL);
-                FC_ASSERT(witness_declaration_fee.amount > 0);
-                FC_ASSERT(witness_declaration_fee.symbol == TOKEN_SYMBOL);
+                FC_ASSERT(validator_declaration_fee.amount > 0);
+                FC_ASSERT(validator_declaration_fee.symbol == TOKEN_SYMBOL);
                 FC_ASSERT(withdraw_intervals > 0);
             }
 
@@ -706,7 +706,7 @@ namespace graphene { namespace protocol {
          *  contention. The network will pick the top 21 witnesses for
          *  producing blocks.
          */
-        struct witness_update_operation : public base_operation {
+        struct validator_update_operation : public base_operation {
             account_name_type owner;
             string url;
             public_key_type block_signing_key;
@@ -752,9 +752,9 @@ namespace graphene { namespace protocol {
          *
          * If a proxy is specified then all existing votes are removed.
          */
-        struct account_witness_vote_operation : public base_operation {
+        struct account_validator_vote_operation : public base_operation {
             account_name_type account;
-            account_name_type witness;
+            account_name_type validator;
             bool approve = true;
 
             void validate() const;
@@ -765,7 +765,7 @@ namespace graphene { namespace protocol {
         };
 
 
-        struct account_witness_proxy_operation : public base_operation {
+        struct account_validator_proxy_operation : public base_operation {
             account_name_type account;
             account_name_type proxy;
 
@@ -1200,13 +1200,13 @@ FC_REFLECT(
     (committee_request_approve_min_percent))
 FC_REFLECT_DERIVED(
     (graphene::protocol::chain_properties_hf4),((graphene::protocol::chain_properties_init)),
-    (inflation_witness_percent)(inflation_ratio_committee_vs_reward_fund)(inflation_recalc_period))
+    (inflation_validator_percent)(inflation_ratio_committee_vs_reward_fund)(inflation_recalc_period))
 FC_REFLECT_DERIVED(
     (graphene::protocol::chain_properties_hf6),((graphene::protocol::chain_properties_hf4)),
-    (data_operations_cost_additional_bandwidth)(witness_miss_penalty_percent)(witness_miss_penalty_duration))
+    (data_operations_cost_additional_bandwidth)(validator_miss_penalty_percent)(validator_miss_penalty_duration))
 FC_REFLECT_DERIVED(
     (graphene::protocol::chain_properties_hf9),((graphene::protocol::chain_properties_hf6)),
-    (create_invite_min_balance)(committee_create_request_fee)(create_paid_subscription_fee)(account_on_sale_fee)(subaccount_on_sale_fee)(witness_declaration_fee)(withdraw_intervals))
+    (create_invite_min_balance)(committee_create_request_fee)(create_paid_subscription_fee)(account_on_sale_fee)(subaccount_on_sale_fee)(validator_declaration_fee)(withdraw_intervals))
 FC_REFLECT_DERIVED(
     (graphene::protocol::chain_properties_hf13),((graphene::protocol::chain_properties_hf9)),
     (distribution_epoch_length))
@@ -1230,9 +1230,9 @@ FC_REFLECT((graphene::protocol::transfer_operation), (from)(to)(amount)(memo))
 FC_REFLECT((graphene::protocol::transfer_to_vesting_operation), (from)(to)(amount))
 FC_REFLECT((graphene::protocol::withdraw_vesting_operation), (account)(vesting_shares))
 FC_REFLECT((graphene::protocol::set_withdraw_vesting_route_operation), (from_account)(to_account)(percent)(auto_vest))
-FC_REFLECT((graphene::protocol::witness_update_operation), (owner)(url)(block_signing_key))
-FC_REFLECT((graphene::protocol::account_witness_vote_operation), (account)(witness)(approve))
-FC_REFLECT((graphene::protocol::account_witness_proxy_operation), (account)(proxy))
+FC_REFLECT((graphene::protocol::validator_update_operation), (owner)(url)(block_signing_key))
+FC_REFLECT((graphene::protocol::account_validator_vote_operation), (account)(validator)(approve))
+FC_REFLECT((graphene::protocol::account_validator_proxy_operation), (account)(proxy))
 FC_REFLECT((graphene::protocol::content_operation), (parent_author)(parent_permlink)(author)(permlink)(title)(body)(curation_percent)(json_metadata)(extensions))
 FC_REFLECT((graphene::protocol::vote_operation), (voter)(author)(permlink)(weight))
 FC_REFLECT((graphene::protocol::custom_operation), (required_active_auths)(required_regular_auths)(id)(json))

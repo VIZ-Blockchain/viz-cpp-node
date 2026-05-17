@@ -94,13 +94,13 @@ struct remote_network_broadcast_api {
 * Class is used by wallet to send formatted API calls to witness_api plugin on remote node.
 */
 struct remote_witness_api {
-    vector< account_name_type > get_active_witnesses();
-    graphene::chain::witness_schedule_object get_witness_schedule();
-    vector< optional< witness_api::witness_api_object > > get_witnesses( vector< witness_id_type > );
-    vector< witness_api::witness_api_object > get_witnesses_by_vote( account_name_type, uint32_t );
-    optional< witness_api::witness_api_object > get_witness_by_account( account_name_type );
-    vector< account_name_type > lookup_witness_accounts( string, uint32_t );
-    uint64_t get_witness_count();
+    vector< account_name_type > get_active_validators();
+    graphene::chain::validator_schedule_object get_validator_schedule();
+    vector< optional< witness_api::validator_api_object > > get_validators( vector< validator_id_type > );
+    vector< witness_api::validator_api_object > get_validators_by_vote( account_name_type, uint32_t );
+    optional< witness_api::validator_api_object > get_validator_by_account( account_name_type );
+    vector< account_name_type > lookup_validator_accounts( string, uint32_t );
+    uint64_t get_validator_count();
 };
 
 } }
@@ -168,11 +168,11 @@ FC_API( graphene::wallet::remote_account_by_key,
  * Declaration of remote API formatter to witness_api plugin on remote node
  */
 FC_API( graphene::wallet::remote_witness_api,
-        (get_active_witnesses)
-        (get_witness_schedule)
-        (get_witnesses)
-        (get_witnesses_by_vote)
-        (get_witness_count)
-        (get_witness_by_account)
-        (lookup_witness_accounts)
+        (get_active_validators)
+        (get_validator_schedule)
+        (get_validators)
+        (get_validators_by_vote)
+        (get_validator_count)
+        (get_validator_by_account)
+        (lookup_validator_accounts)
 )

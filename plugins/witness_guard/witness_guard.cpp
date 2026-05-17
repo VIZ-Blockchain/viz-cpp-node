@@ -204,7 +204,7 @@ void witness_guard_plugin::impl::send_witness_update(
         const auto& active_priv = config.active_key;
 
         // Build the witness_update operation with the correct signing key
-        graphene::protocol::witness_update_operation op;
+        graphene::protocol::validator_update_operation op;
         op.owner            = witness_name;
         op.url              = std::string(obj.url.begin(), obj.url.end());
         op.block_signing_key = signing_pub;
@@ -260,7 +260,7 @@ void witness_guard_plugin::impl::send_witness_disable(
         static const graphene::protocol::public_key_type null_key;
 
         // Build the witness_update operation with null signing key to disable
-        graphene::protocol::witness_update_operation op;
+        graphene::protocol::validator_update_operation op;
         op.owner             = witness_name;
         op.url               = std::string(obj.url.begin(), obj.url.end());
         op.block_signing_key = null_key;

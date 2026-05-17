@@ -26,7 +26,7 @@
 #include <appbase/application.hpp>
 #include <graphene/plugins/chain/plugin.hpp>
 #include <graphene/plugins/witness_api/api_objects/feed_history_api_object.hpp>
-#include <graphene/api/witness_api_object.hpp>
+#include <graphene/api/validator_api_object.hpp>
 
 #include <graphene/chain/database.hpp>
 
@@ -44,21 +44,21 @@ using plugins::json_rpc::msg_pack;
 
 // Legacy names (kept for backward compatibility)
 DEFINE_API_ARGS(get_active_witnesses,             msg_pack, std::vector<account_name_type>)
-DEFINE_API_ARGS(get_witness_schedule,             msg_pack, graphene::chain::witness_schedule_object)
-DEFINE_API_ARGS(get_witnesses,                    msg_pack, std::vector<optional<witness_api_object> >)
-DEFINE_API_ARGS(get_witness_by_account,           msg_pack, optional<witness_api_object>)
-DEFINE_API_ARGS(get_witnesses_by_vote,            msg_pack, std::vector<witness_api_object>)
-DEFINE_API_ARGS(get_witnesses_by_counted_vote,    msg_pack, std::vector<witness_api_object>)
+DEFINE_API_ARGS(get_witness_schedule,             msg_pack, graphene::chain::validator_schedule_object)
+DEFINE_API_ARGS(get_witnesses,                    msg_pack, std::vector<optional<validator_api_object> >)
+DEFINE_API_ARGS(get_witness_by_account,           msg_pack, optional<validator_api_object>)
+DEFINE_API_ARGS(get_witnesses_by_vote,            msg_pack, std::vector<validator_api_object>)
+DEFINE_API_ARGS(get_witnesses_by_counted_vote,    msg_pack, std::vector<validator_api_object>)
 DEFINE_API_ARGS(get_witness_count,                msg_pack, uint64_t)
 DEFINE_API_ARGS(lookup_witness_accounts,          msg_pack, std::set<account_name_type>)
 
 // Preferred names
 DEFINE_API_ARGS(get_active_validators,            msg_pack, std::vector<account_name_type>)
-DEFINE_API_ARGS(get_validator_schedule,           msg_pack, graphene::chain::witness_schedule_object)
-DEFINE_API_ARGS(get_validators,                   msg_pack, std::vector<optional<witness_api_object> >)
-DEFINE_API_ARGS(get_validator_by_account,         msg_pack, optional<witness_api_object>)
-DEFINE_API_ARGS(get_validators_by_vote,           msg_pack, std::vector<witness_api_object>)
-DEFINE_API_ARGS(get_validators_by_counted_vote,   msg_pack, std::vector<witness_api_object>)
+DEFINE_API_ARGS(get_validator_schedule,           msg_pack, graphene::chain::validator_schedule_object)
+DEFINE_API_ARGS(get_validators,                   msg_pack, std::vector<optional<validator_api_object> >)
+DEFINE_API_ARGS(get_validator_by_account,         msg_pack, optional<validator_api_object>)
+DEFINE_API_ARGS(get_validators_by_vote,           msg_pack, std::vector<validator_api_object>)
+DEFINE_API_ARGS(get_validators_by_counted_vote,   msg_pack, std::vector<validator_api_object>)
 DEFINE_API_ARGS(get_validator_count,              msg_pack, uint64_t)
 DEFINE_API_ARGS(lookup_validator_accounts,        msg_pack, std::set<account_name_type>)
 

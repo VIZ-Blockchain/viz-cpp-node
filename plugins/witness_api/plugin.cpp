@@ -17,10 +17,10 @@ public:
 
     ~witness_plugin_impl() = default;
 
-    std::vector<optional<witness_api_object>> get_witnesses(const std::vector<witness_object::id_type> &witness_ids) const;
-    fc::optional<witness_api_object> get_witness_by_account(std::string account_name) const;
-    std::vector<witness_api_object> get_witnesses_by_vote(std::string from, uint32_t limit) const;
-    std::vector<witness_api_object> get_witnesses_by_counted_vote(std::string from, uint32_t limit) const;
+    std::vector<optional<validator_api_object>> get_witnesses(const std::vector<validator_object::id_type> &witness_ids) const;
+    fc::optional<validator_api_object> get_witness_by_account(std::string account_name) const;
+    std::vector<validator_api_object> get_witnesses_by_vote(std::string from, uint32_t limit) const;
+    std::vector<validator_api_object> get_witnesses_by_counted_vote(std::string from, uint32_t limit) const;
     uint64_t get_witness_count() const;
     std::set<account_name_type> lookup_witness_accounts(const std::string &lower_bound_name, uint32_t limit) const;
 
@@ -29,7 +29,7 @@ public:
 
 DEFINE_API(plugin, get_active_witnesses) {
     return my->database.with_weak_read_lock([&]() {
-        const auto &wso = my->database.get_witness_schedule_object();
+        const auto &wso = my->database.get_validator_schedule_object();
         size_t n = wso.current_shuffled_witnesses.size();
         vector<account_name_type> result;
         result.reserve(n);
@@ -44,20 +44,20 @@ DEFINE_API(plugin, get_active_witnesses) {
 
 DEFINE_API(plugin, get_witness_schedule) {
     return my->database.with_weak_read_lock([&]() {
-        return my->database.get(witness_schedule_object::id_type());
+        return my->database.get(validator_schedule_object::id_type());
     });
 }
 
-std::vector<optional<witness_api_object>> plugin::witness_plugin_impl::get_witnesses(
-    const std::vector<witness_object::id_type> &witness_ids
+std::vector<optional<validator_api_object>> plugin::witness_plugin_impl::get_witnesses(
+    const std::vector<validator_object::id_type> &witness_ids
 ) const {
-    std::vector<optional<witness_api_object>> result;
+    std::vector<optional<validator_api_object>> result;
     result.reserve(witness_ids.size());
     std::transform(
         witness_ids.begin(), witness_ids.end(), std::back_inserter(result),
-        [&](witness_object::id_type id) -> optional<witness_api_object> {
+        [&](validator_object::id_type id) -> optional<validator_api_object> {
            if (auto o = database.find(id)) {
-               return witness_api_object(*o, database);
+               return validator_api_object(*o, database);
            }
            return {};
         });
@@ -66,7 +66,7 @@ std::vector<optional<witness_api_object>> plugin::witness_plugin_impl::get_witne
 
 DEFINE_API(plugin, get_witnesses) {
     CHECK_ARG_SIZE(1)
-    auto witness_ids = args.args->at(0).as<vector<witness_object::id_type> >();
+    auto witness_ids = args.args->at(0).as<vector<validator_object::id_type> >();
     return my->database.with_weak_read_lock([&]() {
         return my->get_witnesses(witness_ids);
     });
@@ -81,11 +81,11 @@ DEFINE_API(plugin, get_witness_by_account) {
 }
 
 
-fc::optional<witness_api_object> plugin::witness_plugin_impl::get_witness_by_account(std::string account_name) const {
+fc::optional<validator_api_object> plugin::witness_plugin_impl::get_witness_by_account(std::string account_name) const {
     const auto& idx = database.get_index<witness_index>().indices().get<by_name>();
     auto itr = idx.find(account_name);
     if (itr != idx.end()) {
-        return witness_api_object(*itr, database);
+        return validator_api_object(*itr, database);
     }
     return {};
 }
@@ -99,12 +99,12 @@ DEFINE_API(plugin, get_witnesses_by_vote) {
     });
 }
 
-std::vector<witness_api_object> plugin::witness_plugin_impl::get_witnesses_by_vote(
+std::vector<validator_api_object> plugin::witness_plugin_impl::get_witnesses_by_vote(
         std::string from, uint32_t limit
 ) const {
     FC_ASSERT(limit <= 100);
 
-    std::vector<witness_api_object> result;
+    std::vector<validator_api_object> result;
     result.reserve(limit);
 
     const auto &name_idx = database.get_index<witness_index>().indices().get<by_name>();
@@ -133,12 +133,12 @@ DEFINE_API(plugin, get_witnesses_by_counted_vote) {
     });
 }
 
-std::vector<witness_api_object> plugin::witness_plugin_impl::get_witnesses_by_counted_vote(
+std::vector<validator_api_object> plugin::witness_plugin_impl::get_witnesses_by_counted_vote(
         std::string from, uint32_t limit
 ) const {
     FC_ASSERT(limit <= 100);
 
-    std::vector<witness_api_object> result;
+    std::vector<validator_api_object> result;
     result.reserve(limit);
 
     const auto &name_idx = database.get_index<witness_index>().indices().get<by_name>();

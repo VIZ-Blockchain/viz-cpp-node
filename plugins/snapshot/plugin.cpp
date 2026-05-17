@@ -97,6 +97,24 @@ inline void set_shared_authority(shared_authority& dst, const fc::variant& v) {
     }
 }
 
+/// Rename old witness→validator field names in a chain_properties variant for
+/// backward compatibility with snapshots created before the terminology rename.
+inline fc::variant patch_chain_props_variant(fc::variant v) {
+    if (!v.is_object()) return v;
+    fc::mutable_variant_object mvo(v.get_object());
+    static const std::pair<const char*, const char*> aliases[] = {
+        {"inflation_witness_percent",    "inflation_validator_percent"},
+        {"witness_miss_penalty_percent", "validator_miss_penalty_percent"},
+        {"witness_miss_penalty_duration","validator_miss_penalty_duration"},
+        {"witness_declaration_fee",      "validator_declaration_fee"},
+    };
+    for (auto& kv : aliases) {
+        if (mvo.contains(kv.first) && !mvo.contains(kv.second))
+            mvo.set(kv.second, mvo[kv.first]);
+    }
+    return fc::variant(std::move(mvo));
+}
+
 /// Generic import: convert object to variant, then apply fields via from_variant
 /// This works for objects without shared_string/buffer_type members.
 template<typename ObjectType, typename IndexType>
@@ -166,7 +184,12 @@ inline uint32_t import_dynamic_global_properties(
         obj.vote_regeneration_per_day = v["vote_regeneration_per_day"].as_uint64();
         obj.bandwidth_reserve_candidates = v["bandwidth_reserve_candidates"].as_uint64();
         obj.inflation_calc_block_num = v["inflation_calc_block_num"].as_uint64();
-        obj.inflation_witness_percent = static_cast<int16_t>(v["inflation_witness_percent"].as_int64());
+        // Accept both old and new key names for backward compat with pre-rename snapshots
+        obj.inflation_validator_percent = static_cast<int16_t>(
+            v.get_object().contains("inflation_validator_percent")
+                ? v["inflation_validator_percent"].as_int64()
+                : v["inflation_witness_percent"].as_int64()
+        );
         obj.inflation_ratio = static_cast<int16_t>(v["inflation_ratio"].as_int64());
 
         // HF12: forward-compatible handling of emergency consensus fields
@@ -244,7 +267,7 @@ inline uint32_t import_witnesses(
             obj.current_run = v["current_run"].as_uint64();
             obj.last_supported_block_num = v["last_supported_block_num"].as_uint64();
             obj.signing_key = v["signing_key"].as<graphene::protocol::public_key_type>();
-            obj.props = v["props"].as<chain_properties>();
+            obj.props = detail::patch_chain_props_variant(v["props"]).as<chain_properties>();
             obj.votes = v["votes"].as<share_type>();
             obj.penalty_percent = v["penalty_percent"].as_uint64();
             obj.counted_votes = v["counted_votes"].as<share_type>();
@@ -386,11 +409,20 @@ inline uint32_t import_witness_schedule(
     const fc::variants& arr
 ) {
     FC_ASSERT(arr.size() == 1, "Expected exactly 1 witness_schedule_object");
-    const auto& v = arr[0];
+    const auto& v_raw = arr[0];
+
+    // Patch old field names for backward compat with pre-rename snapshots
+    fc::mutable_variant_object v(v_raw.get_object());
+    if (v.contains("current_shuffled_witnesses") && !v.contains("current_shuffled_validators"))
+        v.set("current_shuffled_validators", v["current_shuffled_witnesses"]);
+    if (v.contains("num_scheduled_witnesses") && !v.contains("num_scheduled_validators"))
+        v.set("num_scheduled_validators", v["num_scheduled_witnesses"]);
+    if (v.contains("median_props"))
+        v.set("median_props", detail::patch_chain_props_variant(v["median_props"]));
 
     const auto& wso = db.get<witness_schedule_object>();
     db.modify(wso, [&](witness_schedule_object& obj) {
-        fc::from_variant(v, obj);
+        fc::from_variant(fc::variant(v), obj);
     });
     return 1;
 }

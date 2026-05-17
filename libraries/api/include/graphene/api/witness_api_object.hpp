@@ -7,12 +7,12 @@
 namespace graphene { namespace api {
     using namespace graphene::chain;
 
-    struct witness_api_object {
-        witness_api_object(const witness_object &w, const database& db);
+    struct validator_api_object {
+        validator_api_object(const validator_object &w, const database& db);
 
-        witness_api_object() = default;
+        validator_api_object() = default;
 
-        witness_object::id_type id;
+        validator_object::id_type id;
         account_name_type owner;
         time_point_sec created;
         std::string url;
@@ -40,7 +40,7 @@ namespace graphene { namespace api {
 
 
 FC_REFLECT(
-    (graphene::api::witness_api_object),
+    (graphene::api::validator_api_object),
     (id)(owner)(created)(url)(votes)(penalty_percent)(counted_votes)(virtual_last_update)(virtual_position)(virtual_scheduled_time)
     (total_missed)(last_aslot)(last_confirmed_block_num)(signing_key)(props)
     (last_work)(running_version)(hardfork_version_vote)(hardfork_time_vote)

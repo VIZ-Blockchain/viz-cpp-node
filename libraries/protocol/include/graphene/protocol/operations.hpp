@@ -20,9 +20,9 @@ namespace graphene { namespace protocol {
 
                 account_update_operation,
 
-                witness_update_operation,
-                account_witness_vote_operation,
-                account_witness_proxy_operation,
+                validator_update_operation,
+                account_validator_vote_operation,
+                account_validator_proxy_operation,
 
                 delete_content_operation,//deprecated
                 custom_operation,
@@ -47,7 +47,7 @@ namespace graphene { namespace protocol {
                 curation_reward_operation,
                 content_reward_operation,
                 fill_vesting_withdraw_operation,
-                shutdown_witness_operation,
+                shutdown_validator_operation,
                 hardfork_operation,
                 content_payout_update_operation,
                 content_benefactor_reward_operation,
@@ -63,7 +63,7 @@ namespace graphene { namespace protocol {
                 committee_payout_request_operation,
                 committee_pay_request_operation,
 
-                witness_reward_operation,
+                validator_reward_operation,
 
                 // VIZ Invite operations:
                 create_invite_operation,

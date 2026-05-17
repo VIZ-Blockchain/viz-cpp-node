@@ -618,13 +618,13 @@ namespace graphene { namespace wallet {
              * @param limit the maximum number of witnesss to return (max: 1000)
              * @returns a list of witnesss mapping witness names to witness ids
              */
-            vector< account_name_type > list_witnesses(const string& lowerbound, uint32_t limit);
+            vector< account_name_type > list_validators(const string& lowerbound, uint32_t limit);
 
             /** Returns information about the given witness.
              * @param owner_account the name or id of the witness account owner, or the id of the witness
              * @returns the information about the witness stored in the block chain
              */
-            optional< witness_api::witness_api_object > get_witness(string owner_account);
+            optional< witness_api::validator_api_object > get_validator(string owner_account);
 
             /**
              * Update a witness object owned by the given account.
@@ -634,8 +634,8 @@ namespace graphene { namespace wallet {
              * @param block_signing_key The new block signing public key. The empty string disables block production.
              * @param broadcast true if you wish to broadcast the transaction.
              */
-            annotated_signed_transaction update_witness(
-                string witness_name,
+            annotated_signed_transaction update_validator(
+                string validator_name,
                 string url,
                 public_key_type block_signing_key,
                 bool broadcast = false
@@ -710,10 +710,10 @@ namespace graphene { namespace wallet {
              * @param approve true if the account is voting for the account to be able to be a block produce
              * @param broadcast true if you wish to broadcast the transaction
              */
-            annotated_signed_transaction vote_for_witness(string account_to_vote_with,
-                                                          string witness_to_vote_for,
-                                                          bool approve = true,
-                                                          bool broadcast = false);
+            annotated_signed_transaction vote_for_validator(string account_to_vote_with,
+                                                            string validator_to_vote_for,
+                                                            bool approve = true,
+                                                            bool broadcast = false);
 
             /**
              * Transfer funds from one account to another.
@@ -1449,8 +1449,8 @@ FC_API( graphene::wallet::wallet_api,
                 (database_info)
                 (list_my_accounts)
                 (list_accounts)
-                (list_witnesses)
-                (get_witness)
+                (list_validators)
+                (get_validator)
                 (get_account)
                 (get_block)
                 (get_ops_in_block)
@@ -1467,12 +1467,12 @@ FC_API( graphene::wallet::wallet_api,
                 (update_account_meta)
                 (update_account_memo_key)
                 (delegate_vesting_shares)
-                (update_witness)
+                (update_validator)
                 (update_chain_properties)
                 (versioned_update_chain_properties)
                 (set_reward_sharing)
                 (set_voting_proxy)
-                (vote_for_witness)
+                (vote_for_validator)
                 //(follow)
                 (transfer)
                 (escrow_transfer)

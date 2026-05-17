@@ -24,19 +24,19 @@ namespace graphene { namespace chain {
      *  at least 2 weeks old are able to participate in block
      *  production.
      */
-    class witness_object
-            : public object<witness_object_type, witness_object> {
-        witness_object() = delete;
+    class validator_object
+            : public object<validator_object_type, validator_object> {
+        validator_object() = delete;
 
     public:
-        enum witness_schedule_type {
+        enum validator_schedule_type {
             top,
             support,
             none
         };
 
         template<typename Constructor, typename Allocator>
-        witness_object(Constructor &&c, allocator <Allocator> a)
+        validator_object(Constructor &&c, allocator <Allocator> a)
                 :url(a) {
             c(*this);
         }
@@ -70,7 +70,7 @@ namespace graphene { namespace chain {
         share_type votes;
         uint32_t penalty_percent = 0;
         share_type counted_votes;
-        witness_schedule_type schedule = none; /// How the witness was scheduled the last time it was scheduled
+        validator_schedule_type schedule = none; /// How the witness was scheduled the last time it was scheduled
 
         /**
          * These fields are used for the witness scheduling algorithm which uses
@@ -109,23 +109,23 @@ namespace graphene { namespace chain {
         /// Stored in TOKEN atomic units; converted to SHARES via create_vesting() at epoch end.
         /// witness_reward_operation for the validator carries only the validator's own share.
         share_type pending_stakeholder_reward = 0;
-        class witness_schedule_object
-                : public object<witness_schedule_object_type, witness_schedule_object> {
+        class validator_schedule_object
+                : public object<validator_schedule_object_type, validator_schedule_object> {
         public:
             template<typename Constructor, typename Allocator>
-            witness_schedule_object(Constructor &&c, allocator <Allocator> a) {
+            validator_schedule_object(Constructor &&c, allocator <Allocator> a) {
                 c(*this);
             }
 
-            witness_schedule_object() {
+            validator_schedule_object() {
             }
 
             id_type id;
 
             fc::uint128_t current_virtual_time;
             uint32_t next_shuffle_block_num = 1;
-            fc::array<account_name_type, CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT> current_shuffled_witnesses;
-            uint8_t num_scheduled_witnesses = 1;
+            fc::array<account_name_type, CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT> current_shuffled_validators;
+            uint8_t num_scheduled_validators = 1;
             chain_properties median_props;
             version majority_version;
         };
@@ -153,30 +153,30 @@ namespace graphene { namespace chain {
 
         id_type id;
 
-        witness_id_type witness;
+        validator_id_type witness;
         account_id_type account;
         /// Block number when this vote was cast. Used by HF13 time-weighted epoch distribution.
         /// Zero for votes cast before HF13 (treated as epoch start = full weight).
         uint32_t vote_created_block = 0;
     };
 
-    class witness_schedule_object
-            : public object<witness_schedule_object_type, witness_schedule_object> {
+    class validator_schedule_object
+            : public object<validator_schedule_object_type, validator_schedule_object> {
     public:
         template<typename Constructor, typename Allocator>
-        witness_schedule_object(Constructor &&c, allocator <Allocator> a) {
+        validator_schedule_object(Constructor &&c, allocator <Allocator> a) {
             c(*this);
         }
 
-        witness_schedule_object() {
+        validator_schedule_object() {
         }
 
         id_type id;
 
         fc::uint128_t current_virtual_time;
         uint32_t next_shuffle_block_num = 1;
-        fc::array<account_name_type, CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT> current_shuffled_witnesses;
-        uint8_t num_scheduled_witnesses = 1;
+        fc::array<account_name_type, CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT> current_shuffled_validators;
+        uint8_t num_scheduled_validators = 1;
         chain_properties median_props;
         version majority_version;
     };
@@ -191,43 +191,43 @@ namespace graphene { namespace chain {
         /**
          * @ingroup object_index
          */
-    using witness_index = multi_index_container <
-        witness_object,
+    using validator_index = multi_index_container <
+        validator_object,
         indexed_by<
             ordered_unique<
                 tag<by_id>,
-                member<witness_object, witness_id_type, &witness_object::id>>,
+                member<validator_object, validator_id_type, &validator_object::id>>,
             ordered_non_unique<
                 tag<by_work>,
-                member<witness_object, digest_type, &witness_object::last_work>>,
+                member<validator_object, digest_type, &validator_object::last_work>>,
             ordered_unique<
                 tag<by_name>,
-                member<witness_object, account_name_type, &witness_object::owner>>,
+                member<validator_object, account_name_type, &validator_object::owner>>,
             ordered_unique<
                 tag<by_vote_name>,
                 composite_key<
-                    witness_object,
-                    member<witness_object, share_type, &witness_object::votes>,
-                    member<witness_object, account_name_type, &witness_object::owner>>,
+                    validator_object,
+                    member<validator_object, share_type, &validator_object::votes>,
+                    member<validator_object, account_name_type, &validator_object::owner>>,
                 composite_key_compare<
                     std::greater<share_type>,
                     graphene::protocol::string_less>>,
             ordered_unique<
                 tag<by_counted_vote_name>,
                 composite_key<
-                    witness_object,
-                    member<witness_object, share_type, &witness_object::counted_votes>,
-                    member<witness_object, account_name_type, &witness_object::owner>>,
+                    validator_object,
+                    member<validator_object, share_type, &validator_object::counted_votes>,
+                    member<validator_object, account_name_type, &validator_object::owner>>,
                 composite_key_compare<
                     std::greater<share_type>,
                     graphene::protocol::string_less>>,
             ordered_unique<
                 tag<by_schedule_time>,
                 composite_key<
-                    witness_object,
-                    member<witness_object, fc::uint128_t, &witness_object::virtual_scheduled_time>,
-                    member<witness_object, witness_id_type, &witness_object::id>>>>,
-        allocator<witness_object>>;
+                    validator_object,
+                    member<validator_object, fc::uint128_t, &validator_object::virtual_scheduled_time>,
+                    member<validator_object, validator_id_type, &validator_object::id>>>>,
+        allocator<validator_object>>;
 
     struct by_account_witness;
     struct by_witness_account;
@@ -243,28 +243,28 @@ namespace graphene { namespace chain {
                 composite_key<
                     witness_vote_object,
                     member<witness_vote_object, account_id_type, &witness_vote_object::account>,
-                    member<witness_vote_object, witness_id_type, &witness_vote_object::witness>>,
+                    member<witness_vote_object, validator_id_type, &witness_vote_object::witness>>,
                 composite_key_compare<
                     std::less<account_id_type>,
-                    std::less<witness_id_type>>>,
+                    std::less<validator_id_type>>>,
             ordered_unique<
                 tag<by_witness_account>,
                 composite_key<
                     witness_vote_object,
-                    member<witness_vote_object, witness_id_type, &witness_vote_object::witness>,
+                    member<witness_vote_object, validator_id_type, &witness_vote_object::witness>,
                     member<witness_vote_object, account_id_type, &witness_vote_object::account>>,
                 composite_key_compare<
-                    std::less<witness_id_type>,
+                    std::less<validator_id_type>,
                     std::less<account_id_type>>>>,
         allocator<witness_vote_object>>;
 
-    using witness_schedule_index = multi_index_container <
-        witness_schedule_object,
+    using validator_schedule_index = multi_index_container <
+        validator_schedule_object,
         indexed_by<
             ordered_unique<
                 tag<by_id>,
-                member<witness_schedule_object, witness_schedule_id_type, &witness_schedule_object::id>>>,
-        allocator <witness_schedule_object>>;
+                member<validator_schedule_object, validator_schedule_id_type, &validator_schedule_object::id>>>,
+        allocator <validator_schedule_object>>;
 
     class witness_penalty_expire_object
             : public object<witness_penalty_expire_object_type, witness_penalty_expire_object> {
@@ -303,24 +303,24 @@ namespace graphene { namespace chain {
 
 } }
 
-FC_REFLECT_ENUM(graphene::chain::witness_object::witness_schedule_type, (top)(support)(none))
+FC_REFLECT_ENUM(graphene::chain::validator_object::validator_schedule_type, (top)(support)(none))
 
 FC_REFLECT(
-    (graphene::chain::witness_object),
+    (graphene::chain::validator_object),
     (id)(owner)(created)(url)(votes)(penalty_percent)(counted_votes)(schedule)(virtual_last_update)(virtual_position)(virtual_scheduled_time)(total_missed)
     (last_aslot)(last_confirmed_block_num)(current_run)(last_supported_block_num)(signing_key)(props)
     (last_work)(running_version)(hardfork_version_vote)(hardfork_time_vote)
     (sharing_rate)(pending_stakeholder_reward))
 
-CHAINBASE_SET_INDEX_TYPE(graphene::chain::witness_object, graphene::chain::witness_index)
+CHAINBASE_SET_INDEX_TYPE(graphene::chain::validator_object, graphene::chain::validator_index)
 
 FC_REFLECT((graphene::chain::witness_vote_object), (id)(witness)(account)(vote_created_block))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::witness_vote_object, graphene::chain::witness_vote_index)
-FC_REFLECT((graphene::chain::witness_schedule_object),
-        (id)(current_virtual_time)(next_shuffle_block_num)(current_shuffled_witnesses)(num_scheduled_witnesses)
+FC_REFLECT((graphene::chain::validator_schedule_object),
+        (id)(current_virtual_time)(next_shuffle_block_num)(current_shuffled_validators)(num_scheduled_validators)
                 (median_props)(majority_version)
 )
-CHAINBASE_SET_INDEX_TYPE(graphene::chain::witness_schedule_object, graphene::chain::witness_schedule_index)
+CHAINBASE_SET_INDEX_TYPE(graphene::chain::validator_schedule_object, graphene::chain::validator_schedule_index)
 
 FC_REFLECT((graphene::chain::witness_penalty_expire_object),(id)(witness)(penalty_percent)(expires))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::witness_penalty_expire_object, graphene::chain::witness_penalty_expire_index)

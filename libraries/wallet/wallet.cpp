@@ -274,7 +274,7 @@ namespace graphene { namespace wallet {
                     auto median_props = _remote_database_api->get_chain_properties();
                     fc::mutable_variant_object result(fc::variant(dynamic_props).get_object());
                     result["witness_majority_version"] =
-                        std::string(_remote_witness_api->get_witness_schedule().majority_version);
+                        std::string(_remote_witness_api->get_validator_schedule().majority_version);
                     result["hardfork_version"] =
                         std::string(_remote_database_api->get_hardfork_version());
                     result["head_block_num"] = dynamic_props.head_block_number;
@@ -646,7 +646,7 @@ namespace graphene { namespace wallet {
 
                 signed_transaction set_voting_proxy(string account_to_modify, string proxy, bool broadcast /* = false */) {
                     try {
-                        account_witness_proxy_operation op;
+                        account_validator_proxy_operation op;
                         op.account = account_to_modify;
                         op.proxy = proxy;
 
@@ -657,8 +657,8 @@ namespace graphene { namespace wallet {
                         return sign_transaction( tx, broadcast );
                     } FC_CAPTURE_AND_RETHROW( (account_to_modify)(proxy)(broadcast) ) }
 
-                optional< witness_api::witness_api_object > get_witness( string owner_account ) {
-                    return _remote_witness_api->get_witness_by_account( owner_account );
+                optional< witness_api::validator_api_object > get_witness( string owner_account ) {
+                    return _remote_witness_api->get_validator_by_account( owner_account );
                 }
 
                 void set_transaction_expiration( uint32_t tx_expiration_seconds ) {
@@ -951,8 +951,8 @@ namespace graphene { namespace wallet {
             return my->_remote_database_api->lookup_accounts( lowerbound, limit );
         }
 
-        vector< account_name_type > wallet_api::get_active_witnesses()const {
-            return my->_remote_witness_api->get_active_witnesses();
+        vector< account_name_type > wallet_api::get_active_validators()const {
+            return my->_remote_witness_api->get_active_validators();
         }
 
         brain_key_info wallet_api::suggest_brain_key()const {
@@ -1042,12 +1042,12 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
 }
 */
 
-        vector< account_name_type > wallet_api::list_witnesses(const string& lowerbound, uint32_t limit)
+        vector< account_name_type > wallet_api::list_validators(const string& lowerbound, uint32_t limit)
         {
-            return my->_remote_witness_api->lookup_witness_accounts( lowerbound, limit );
+            return my->_remote_witness_api->lookup_validator_accounts( lowerbound, limit );
         }
 
-        optional< witness_api::witness_api_object > wallet_api::get_witness(string owner_account)
+        optional< witness_api::validator_api_object > wallet_api::get_validator(string owner_account)
         {
             return my->get_witness(owner_account);
         }
@@ -1649,7 +1649,7 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
  *  will be controlable by this wallet.
  */
 
-        annotated_signed_transaction wallet_api::update_witness(
+        annotated_signed_transaction wallet_api::update_validator(
             string witness_account_name,
             string url,
             public_key_type block_signing_key,
@@ -1658,10 +1658,10 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
             FC_ASSERT(!is_locked());
 
             signed_transaction tx;
-            witness_update_operation op;
+            validator_update_operation op;
 
             if (url.empty()) {
-                auto wit = my->_remote_witness_api->get_witness_by_account(witness_account_name);
+                auto wit = my->_remote_witness_api->get_validator_by_account(witness_account_name);
                 if (wit.valid()) {
                     FC_ASSERT(wit->owner == witness_account_name);
                     url = wit->url;
@@ -1732,12 +1732,12 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
             return my->sign_transaction(tx, broadcast);
         }
 
-        annotated_signed_transaction wallet_api::vote_for_witness(string voting_account, string witness_to_vote_for, bool approve, bool broadcast )
+        annotated_signed_transaction wallet_api::vote_for_validator(string voting_account, string witness_to_vote_for, bool approve, bool broadcast )
         { try {
                 FC_ASSERT( !is_locked() );
-                account_witness_vote_operation op;
+                account_validator_vote_operation op;
                 op.account = voting_account;
-                op.witness = witness_to_vote_for;
+                op.validator = witness_to_vote_for;
                 op.approve = approve;
 
                 signed_transaction tx;
