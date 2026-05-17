@@ -363,11 +363,17 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
                 std::string detail = e.to_detail_string();
                 bool is_expected = (detail.find("Connection refused") != std::string::npos)
                                || (detail.find("connection refused") != std::string::npos)
+                               || (detail.find("actively refused") != std::string::npos)       // Windows WSA 10061
                                || (detail.find("Connection timed out") != std::string::npos)
+                               || (detail.find("timed out") != std::string::npos)
                                || (detail.find("Host unreachable") != std::string::npos)
+                               || (detail.find("host unreachable") != std::string::npos)       // Windows WSA 10065
                                || (detail.find("No route to host") != std::string::npos)
+                               || (detail.find("network is unreachable") != std::string::npos) // Windows WSA 10051
                                || (detail.find("End of file") != std::string::npos)
-                               || (detail.find("Operation aborted") != std::string::npos);
+                               || (detail.find("end of file") != std::string::npos)
+                               || (detail.find("Operation aborted") != std::string::npos)
+                               || (detail.find("operation aborted") != std::string::npos);     // Windows WSA 10004
                 if (is_expected)
                     dlog(DLT_LOG_DGRAY "Connect to ${ep} failed: ${w}" DLT_LOG_RESET, ("ep", ep)("w", e.what()));
                 else
@@ -3789,16 +3795,26 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
             const auto& detail = e.to_detail_string();
             bool is_transient =
                 detail.find("Connection reset by peer") != std::string::npos ||
+                detail.find("forcibly closed") != std::string::npos ||           // Windows WSA 10054
                 detail.find("Connection refused") != std::string::npos ||
+                detail.find("actively refused") != std::string::npos ||          // Windows WSA 10061
                 detail.find("Broken pipe") != std::string::npos ||
+                detail.find("connection was aborted") != std::string::npos ||    // Windows WSA 10053
                 detail.find("end of stream") != std::string::npos ||
+                detail.find("End of file") != std::string::npos ||
                 detail.find("Operation aborted") != std::string::npos ||
+                detail.find("operation aborted") != std::string::npos ||         // Windows WSA 10004
                 detail.find("Network is unreachable") != std::string::npos ||
+                detail.find("network is unreachable") != std::string::npos ||    // Windows WSA 10051
                 detail.find("No route to host") != std::string::npos ||
                 detail.find("Connection timed out") != std::string::npos ||
-                detail.find("Host is unreachable") != std::string::npos;
+                detail.find("timed out") != std::string::npos ||
+                detail.find("Host is unreachable") != std::string::npos ||
+                detail.find("host unreachable") != std::string::npos;            // Windows WSA 10065
             bool is_benign_close =
-                detail.find("Bad file descriptor") != std::string::npos;
+                detail.find("Bad file descriptor") != std::string::npos ||
+                detail.find("bad file descriptor") != std::string::npos ||
+                detail.find("invalid argument") != std::string::npos;            // Windows: closed socket reuse
 
             if (is_benign_close) {
                 dlog(DLT_LOG_DGRAY "Peer ${ep} read canceled (socket already closed)" DLT_LOG_RESET,
