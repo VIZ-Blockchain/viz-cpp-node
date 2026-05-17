@@ -295,8 +295,8 @@ void validator_guard_plugin::impl::send_witness_disable(
 
 // ─── plugin lifecycle ────────────────────────────────────────────────────────
 
-validator_guard_plugin::witness_guard_plugin()  = default;
-validator_guard_plugin::~witness_guard_plugin() = default;
+validator_guard_plugin::validator_guard_plugin()  = default;
+validator_guard_plugin::~validator_guard_plugin() = default;
 
 void validator_guard_plugin::set_program_options(
         bpo::options_description& cli,
