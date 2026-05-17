@@ -216,7 +216,7 @@ namespace graphene { namespace wallet {
                     _remote_account_history( con.get_remote_api< remote_account_history >( 0, "account_history" ) ),
                     _remote_network_broadcast_api( con.get_remote_api< remote_network_broadcast_api >( 0, "network_broadcast_api" ) ),
                     _remote_account_by_key( con.get_remote_api< remote_account_by_key>( 0, "account_by_key" ) ) ,
-                    _remote_witness_api( con.get_remote_api< remote_witness_api >( 0, "witness_api" ) )
+                    _remote_validator_api( con.get_remote_api< remote_validator_api >( 0, "validator_api" ) )
                 {
                     init_prototype_ops();
 
@@ -274,7 +274,7 @@ namespace graphene { namespace wallet {
                     auto median_props = _remote_database_api->get_chain_properties();
                     fc::mutable_variant_object result(fc::variant(dynamic_props).get_object());
                     result["witness_majority_version"] =
-                        std::string(_remote_witness_api->get_validator_schedule().majority_version);
+                        std::string(_remote_validator_api->get_validator_schedule().majority_version);
                     result["hardfork_version"] =
                         std::string(_remote_database_api->get_hardfork_version());
                     result["head_block_num"] = dynamic_props.head_block_number;
@@ -657,8 +657,8 @@ namespace graphene { namespace wallet {
                         return sign_transaction( tx, broadcast );
                     } FC_CAPTURE_AND_RETHROW( (account_to_modify)(proxy)(broadcast) ) }
 
-                optional< witness_api::validator_api_object > get_witness( string owner_account ) {
-                    return _remote_witness_api->get_validator_by_account( owner_account );
+                optional< validator_api::validator_api_object > get_witness( string owner_account ) {
+                    return _remote_validator_api->get_validator_by_account( owner_account );
                 }
 
                 void set_transaction_expiration( uint32_t tx_expiration_seconds ) {
@@ -885,7 +885,7 @@ namespace graphene { namespace wallet {
                 fc::api< remote_account_history >       _remote_account_history;
                 fc::api< remote_network_broadcast_api>  _remote_network_broadcast_api;
                 fc::api< remote_account_by_key >        _remote_account_by_key;
-                fc::api< remote_witness_api >           _remote_witness_api;
+                fc::api< remote_validator_api >           _remote_validator_api;
                 uint32_t                                _tx_expiration_seconds = 30;
 
                 flat_map<string, operation>             _prototype_ops;
@@ -952,7 +952,7 @@ namespace graphene { namespace wallet {
         }
 
         vector< account_name_type > wallet_api::get_active_validators()const {
-            return my->_remote_witness_api->get_active_validators();
+            return my->_remote_validator_api->get_active_validators();
         }
 
         brain_key_info wallet_api::suggest_brain_key()const {
@@ -1044,10 +1044,10 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
 
         vector< account_name_type > wallet_api::list_validators(const string& lowerbound, uint32_t limit)
         {
-            return my->_remote_witness_api->lookup_validator_accounts( lowerbound, limit );
+            return my->_remote_validator_api->lookup_validator_accounts( lowerbound, limit );
         }
 
-        optional< witness_api::validator_api_object > wallet_api::get_validator(string owner_account)
+        optional< validator_api::validator_api_object > wallet_api::get_validator(string owner_account)
         {
             return my->get_witness(owner_account);
         }
@@ -1661,7 +1661,7 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
             validator_update_operation op;
 
             if (url.empty()) {
-                auto wit = my->_remote_witness_api->get_validator_by_account(witness_account_name);
+                auto wit = my->_remote_validator_api->get_validator_by_account(witness_account_name);
                 if (wit.valid()) {
                     FC_ASSERT(wit->owner == witness_account_name);
                     url = wit->url;

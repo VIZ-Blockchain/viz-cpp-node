@@ -1,11 +1,11 @@
-set(CURRENT_TARGET witness)
+set(CURRENT_TARGET validator_guard)
 
 list(APPEND CURRENT_TARGET_HEADERS
-     include/graphene/plugins/witness/witness.hpp
+     include/graphene/plugins/validator_guard/validator_guard.hpp
      )
 
 list(APPEND CURRENT_TARGET_SOURCES
-     witness.cpp
+     validator_guard.cpp
      )
 
 if(BUILD_SHARED_LIBRARIES)
@@ -28,21 +28,17 @@ target_link_libraries(
         graphene::chain_plugin
         graphene::p2p
         graphene::protocol
-        graphene::network
         graphene_utilities
         graphene_time
         appbase
 )
+
 target_include_directories(graphene_${CURRENT_TARGET}
-    PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../snapshot/include"
-)
+                           PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 install(TARGETS
         graphene_${CURRENT_TARGET}
-
         RUNTIME DESTINATION bin
         LIBRARY DESTINATION lib
         ARCHIVE DESTINATION lib
         )
-

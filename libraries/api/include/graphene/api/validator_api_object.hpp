@@ -1,6 +1,6 @@
 #pragma once
 
-#include <graphene/chain/witness_objects.hpp>
+#include <graphene/chain/validator_objects.hpp>
 #include <graphene/chain/chain_object_types.hpp>
 #include <graphene/api/chain_api_properties.hpp>
 

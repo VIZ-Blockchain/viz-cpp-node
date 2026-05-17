@@ -25,8 +25,8 @@
 
 #include <appbase/application.hpp>
 #include <graphene/plugins/chain/plugin.hpp>
-#include <graphene/plugins/witness_api/api_objects/feed_history_api_object.hpp>
-#include <graphene/api/witness_api_object.hpp>
+#include <graphene/plugins/validator_api/api_objects/feed_history_api_object.hpp>
+#include <graphene/api/validator_api_object.hpp>
 
 #include <graphene/chain/database.hpp>
 
@@ -34,7 +34,7 @@
 #include <graphene/plugins/json_rpc/plugin.hpp>
 
 
-namespace graphene { namespace plugins { namespace witness_api {
+namespace graphene { namespace plugins { namespace validator_api {
 
 using namespace chain;
 using namespace graphene::protocol;
@@ -65,7 +65,7 @@ DEFINE_API_ARGS(lookup_validator_accounts,        msg_pack, std::set<account_nam
 
 class plugin : public appbase::plugin<plugin> {
 public:
-    constexpr static const char *plugin_name = "witness_api";
+    constexpr static const char *plugin_name = "validator_api";
 
     APPBASE_PLUGIN_REQUIRES(
         (json_rpc::plugin)
@@ -112,9 +112,9 @@ public:
         (lookup_validator_accounts)
     )
 private:
-    struct witness_plugin_impl;
+    struct validator_plugin_impl;
 
-    std::unique_ptr<witness_plugin_impl> my;
+    std::unique_ptr<validator_plugin_impl> my;
 };
 
-} } } // graphene::plugins::witness_api
+} } } // graphene::plugins::validator_api

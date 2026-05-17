@@ -1,6 +1,6 @@
 #pragma once
 
-#include <graphene/chain/witness_objects.hpp>
+#include <graphene/chain/validator_objects.hpp>
 #include <graphene/chain/database.hpp>
 
 namespace graphene { namespace api {

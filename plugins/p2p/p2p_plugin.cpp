@@ -9,7 +9,7 @@
 #include <graphene/chain/fork_database.hpp>
 #include <graphene/chain/block_summary_object.hpp>
 
-#include <graphene/plugins/witness/witness.hpp>
+#include <graphene/plugins/validator/validator.hpp>
 
 #include <fc/network/resolve.hpp>
 #include <fc/thread/thread.hpp>
@@ -84,7 +84,7 @@ public:
     }
 
     bool has_emergency_private_key() const override {
-        auto* wit_plug = appbase::app().find_plugin<graphene::plugins::witness_plugin::witness_plugin>();
+        auto* wit_plug = appbase::app().find_plugin<graphene::plugins::validator_plugin::validator_plugin>();
         if (wit_plug) {
             return wit_plug->is_emergency_key_configured();
         }
@@ -607,7 +607,7 @@ void p2p_plugin::plugin_startup() {
         my->node->set_witness_diag_provider([]() -> std::string {
             try {
                 auto* wp = appbase::app().find_plugin<
-                    graphene::plugins::witness_plugin::witness_plugin>();
+                    graphene::plugins::validator_plugin::validator_plugin>();
                 if (wp && wp->get_state() == appbase::abstract_plugin::started)
                     return wp->get_production_diagnostics();
             } catch (...) {}

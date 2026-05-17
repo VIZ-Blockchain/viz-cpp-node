@@ -1,14 +1,14 @@
 #include <graphene/plugins/snapshot/plugin.hpp>
 #include <graphene/plugins/snapshot/snapshot_types.hpp>
 #include <graphene/plugins/snapshot/snapshot_serializer.hpp>
-#include <graphene/plugins/witness/witness.hpp>
+#include <graphene/plugins/validator/validator.hpp>
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
 #include <graphene/plugins/chain/plugin.hpp>
 
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/global_property_object.hpp>
 #include <graphene/chain/account_object.hpp>
-#include <graphene/chain/witness_objects.hpp>
+#include <graphene/chain/validator_objects.hpp>
 #include <graphene/chain/content_object.hpp>
 #include <graphene/chain/chain_objects.hpp>
 #include <graphene/chain/block_summary_object.hpp>
@@ -509,10 +509,10 @@ inline uint32_t import_block_post_validations(
     uint32_t count = 0;
     for (const auto& v : arr) {
         auto id_val = v["id"].as_int64();
-        auto& mutable_idx = db.get_mutable_index<block_post_validation_index>();
-        mutable_idx.set_next_id(block_post_validation_object_id_type(id_val));
+        auto& mutable_idx = db.get_mutable_index<validator_confirmation_index>();
+        mutable_idx.set_next_id(validator_confirmation_object_id_type(id_val));
 
-        db.create<block_post_validation_object>([&](block_post_validation_object& obj) {
+        db.create<validator_confirmation_object>([&](validator_confirmation_object& obj) {
             fc::from_variant(v, obj);
         });
         ++count;
@@ -935,7 +935,7 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(block_summary_index, block_summary_object, "block_summary")
     EXPORT_INDEX(content_index, content_object, "content")
     EXPORT_INDEX(content_vote_index, content_vote_object, "content_vote")
-    EXPORT_INDEX(block_post_validation_index, block_post_validation_object, "block_post_validation")
+    EXPORT_INDEX(validator_confirmation_index, validator_confirmation_object, "block_post_validation")
 
     if (cancel_snapshot_requested.load(std::memory_order_relaxed)) {
         wlog("Snapshot cancelled during serialization (before transaction)");
@@ -1417,7 +1417,7 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             const auto& cv_idx = db.get_index<content_vote_index>().indices();
             while (!cv_idx.empty()) { db.remove(*cv_idx.begin()); }
 
-            const auto& bpv_idx = db.get_index<block_post_validation_index>().indices();
+            const auto& bpv_idx = db.get_index<validator_confirmation_index>().indices();
             while (!bpv_idx.empty()) { db.remove(*bpv_idx.begin()); }
 
             const auto& tx_idx = db.get_index<transaction_index>().indices();
@@ -1770,7 +1770,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     // snapshot can wait until after that slot is filled.
     auto is_witness_producing_soon = [&]() -> bool {
         try {
-            auto* witness_plug = appbase::app().find_plugin<graphene::plugins::witness_plugin::witness_plugin>();
+            auto* witness_plug = appbase::app().find_plugin<graphene::plugins::validator_plugin::validator_plugin>();
             if (witness_plug != nullptr && witness_plug->get_state() == appbase::abstract_plugin::started) {
                 bool soon = witness_plug->is_witness_scheduled_soon();
                 if (soon) {
@@ -2018,7 +2018,7 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                     // Skip stalled sync recovery entirely.
                     bool we_are_master = false;
                     try {
-                        auto* witness_plug = appbase::app().find_plugin<graphene::plugins::witness_plugin::witness_plugin>();
+                        auto* witness_plug = appbase::app().find_plugin<graphene::plugins::validator_plugin::validator_plugin>();
                         if (witness_plug && witness_plug->get_state() == appbase::abstract_plugin::started) {
                             we_are_master = witness_plug->is_emergency_master();
                         }

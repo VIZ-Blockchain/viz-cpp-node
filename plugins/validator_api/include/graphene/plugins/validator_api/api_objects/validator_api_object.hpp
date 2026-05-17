@@ -1,10 +1,10 @@
 #ifndef CHAIN_WITNESS_API_OBJ_HPP
 #define CHAIN_WITNESS_API_OBJ_HPP
 
-#include <graphene/chain/witness_objects.hpp>
+#include <graphene/chain/validator_objects.hpp>
 #include <graphene/chain/chain_object_types.hpp>
 
-namespace graphene { namespace plugins { namespace witness_api {
+namespace graphene { namespace plugins { namespace validator_api {
 
             using namespace graphene::chain;
             using namespace graphene::protocol;
@@ -47,10 +47,10 @@ namespace graphene { namespace plugins { namespace witness_api {
 
         }
     }
-} // graphene::plugins::witness_api
+} // graphene::plugins::validator_api
 
 
-FC_REFLECT((graphene::plugins::witness_api::witness_api_object),
+FC_REFLECT((graphene::plugins::validator_api::witness_api_object),
            (id)(owner)(created)(url)(votes)(penalty_percent)(counted_votes)
            (virtual_last_update)(virtual_position)(virtual_scheduled_time)
            (total_missed)(last_aslot)(last_confirmed_block_num)(signing_key)(props)

@@ -29,7 +29,7 @@ target_link_libraries(
         graphene::database_api
         graphene::account_history
         graphene::network_broadcast_api
-        graphene::witness_api
+        graphene::validator_api
         fc
         ${readline_libraries}
         ${CMAKE_DL_LIBS}

@@ -1,21 +1,21 @@
-#include <graphene/plugins/witness_api/plugin.hpp>
+#include <graphene/plugins/validator_api/plugin.hpp>
 #include <graphene/chain/operation_notification.hpp>
 
 
 #define CHECK_ARG_SIZE(s) \
    FC_ASSERT( args.args->size() == s, "Expected #s argument(s), was ${n}", ("n", args.args->size()) );
 
-namespace graphene { namespace plugins { namespace witness_api {
+namespace graphene { namespace plugins { namespace validator_api {
 
 using namespace graphene::protocol;
 using namespace graphene::chain;
 
-struct plugin::witness_plugin_impl {
+struct plugin::validator_plugin_impl {
 public:
-    witness_plugin_impl() : database(appbase::app().get_plugin<chain::plugin>().db()) {
+    validator_plugin_impl() : database(appbase::app().get_plugin<chain::plugin>().db()) {
     }
 
-    ~witness_plugin_impl() = default;
+    ~validator_plugin_impl() = default;
 
     std::vector<optional<validator_api_object>> get_witnesses(const std::vector<validator_object::id_type> &witness_ids) const;
     fc::optional<validator_api_object> get_witness_by_account(std::string account_name) const;
@@ -48,7 +48,7 @@ DEFINE_API(plugin, get_witness_schedule) {
     });
 }
 
-std::vector<optional<validator_api_object>> plugin::witness_plugin_impl::get_witnesses(
+std::vector<optional<validator_api_object>> plugin::validator_plugin_impl::get_witnesses(
     const std::vector<validator_object::id_type> &witness_ids
 ) const {
     std::vector<optional<validator_api_object>> result;
@@ -81,7 +81,7 @@ DEFINE_API(plugin, get_witness_by_account) {
 }
 
 
-fc::optional<validator_api_object> plugin::witness_plugin_impl::get_witness_by_account(std::string account_name) const {
+fc::optional<validator_api_object> plugin::validator_plugin_impl::get_witness_by_account(std::string account_name) const {
     const auto& idx = database.get_index<validator_index>().indices().get<by_name>();
     auto itr = idx.find(account_name);
     if (itr != idx.end()) {
@@ -99,7 +99,7 @@ DEFINE_API(plugin, get_witnesses_by_vote) {
     });
 }
 
-std::vector<validator_api_object> plugin::witness_plugin_impl::get_witnesses_by_vote(
+std::vector<validator_api_object> plugin::validator_plugin_impl::get_witnesses_by_vote(
         std::string from, uint32_t limit
 ) const {
     FC_ASSERT(limit <= 100);
@@ -133,7 +133,7 @@ DEFINE_API(plugin, get_witnesses_by_counted_vote) {
     });
 }
 
-std::vector<validator_api_object> plugin::witness_plugin_impl::get_witnesses_by_counted_vote(
+std::vector<validator_api_object> plugin::validator_plugin_impl::get_witnesses_by_counted_vote(
         std::string from, uint32_t limit
 ) const {
     FC_ASSERT(limit <= 100);
@@ -164,7 +164,7 @@ DEFINE_API(plugin, get_witness_count) {
     });
 }
 
-uint64_t plugin::witness_plugin_impl::get_witness_count() const {
+uint64_t plugin::validator_plugin_impl::get_witness_count() const {
     return database.get_index<validator_index>().indices().size();
 }
 
@@ -177,7 +177,7 @@ DEFINE_API(plugin, lookup_witness_accounts) {
     });
 }
 
-std::set<account_name_type> plugin::witness_plugin_impl::lookup_witness_accounts(
+std::set<account_name_type> plugin::validator_plugin_impl::lookup_witness_accounts(
     const std::string &lower_bound_name,
     uint32_t limit
 ) const {
@@ -219,15 +219,15 @@ void plugin::set_program_options(
 }
 
 void plugin::plugin_initialize(const boost::program_options::variables_map &options) {
-    ilog("witness_api plugin: plugin_initialize() begin");
+    ilog("validator_api plugin: plugin_initialize() begin");
 
     try {
-        my = std::make_unique<witness_plugin_impl>();
+        my = std::make_unique<validator_plugin_impl>();
 
         JSON_RPC_REGISTER_API(name());
     } FC_CAPTURE_AND_RETHROW()
 
-    ilog("witness_api plugin: plugin_initialize() end");
+    ilog("validator_api plugin: plugin_initialize() end");
 }
 
 plugin::plugin() = default;
@@ -235,10 +235,10 @@ plugin::plugin() = default;
 plugin::~plugin() = default;
 
 void plugin::plugin_startup() {
-    ilog("witness_api plugin: plugin_startup() begin");
+    ilog("validator_api plugin: plugin_startup() begin");
 
-    ilog("witness_api plugin: plugin_startup() end");
+    ilog("validator_api plugin: plugin_startup() end");
 }
 
 
-} } } // graphene::plugins::witness_api
+} } } // graphene::plugins::validator_api

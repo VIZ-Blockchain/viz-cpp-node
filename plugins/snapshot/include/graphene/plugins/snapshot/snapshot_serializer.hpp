@@ -5,7 +5,7 @@
 
 #include <graphene/chain/global_property_object.hpp>
 #include <graphene/chain/account_object.hpp>
-#include <graphene/chain/witness_objects.hpp>
+#include <graphene/chain/validator_objects.hpp>
 #include <graphene/chain/content_object.hpp>
 #include <graphene/chain/chain_objects.hpp>
 #include <graphene/chain/block_summary_object.hpp>

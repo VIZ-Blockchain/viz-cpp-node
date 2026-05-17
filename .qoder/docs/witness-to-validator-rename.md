@@ -59,14 +59,7 @@ The same pattern holds across other major PoS ecosystems:
 
 ### Deferred to Future PR
 
-| Item | Reason |
-|------|--------|
-| Physical file renames (`witness_objects.hpp` → `validator_objects.hpp`, etc.) | ~40 include sites; batched separately |
-| Plugin directory renames (`plugins/witness/` → `plugins/validator/`, etc.) | Tied to file renames |
-| CMake target renames | Tied to directory renames |
-| Config key renames (`--validator`, `validator-guard-*`) | Tied to plugin renames |
-| API namespace rename (`witness_api` → `validator_api`) | Tied to plugin rename |
-| `block_post_validation_object` → `validator_confirmation_object` | Deferred with file renames |
+Nothing remaining. All renames complete.
 
 ### Explicitly Kept (not renamed)
 
@@ -306,19 +299,20 @@ Even with server-side fallback, clients will receive **responses** with new name
 5. ✅ Build verified.
 6. ✅ `.qoder/` documentation updated.
 
-### Phase 2 — API and config rename (with fallbacks) — Mostly Done
+### Phase 2 — API and config rename (with fallbacks) ✅ Done
 
 1. ✅ Add operation name alias table in `operation_util_impl.cpp` — old JSON names → new names.
 2. ✅ Rename `witness_update_operation` → `validator_update_operation` and the other four operations (Section 5.1). Binary type IDs preserved.
-3. ✅ Add deprecated endpoint aliases in `witness_api_plugin` for all `get_witness_*` methods.
+3. ✅ Add deprecated endpoint aliases in `validator_api` plugin for all `get_witness_*` methods.
 4. ✅ Rename CLI wallet commands; keep old names as deprecated aliases.
-5. ⏳ Rename config keys; add startup warnings for old keys — deferred with plugin directory renames.
-6. ⏳ Rename plugin directories and CMake targets — future PR.
-7. ✅ Rename `witness_object`, `witness_schedule_object`, `witness_api_object` (C++ types; files not renamed yet).
-8. ⏳ Update `config_witness.ini` template to new key names — deferred.
+5. ✅ Config keys updated (`plugin = validator`, `plugin = validator_api`, `plugin = validator_guard`). `--witness` kept as deprecated alias for `--validator` in config.ini backward compat.
+6. ✅ Plugin directories renamed: `plugins/validator/`, `plugins/validator_api/`, `plugins/validator_guard/`. CMake targets updated.
+7. ✅ Rename `witness_object`, `witness_schedule_object`, `witness_api_object` (C++ types and files).
+8. ✅ `config_witness.ini` and all other `config*.ini` updated to new plugin names.
 9. ✅ Rename block header fields: `validator`, `validator_signature`.
 10. ✅ Rename dynamic global property field: `current_validator`.
 11. ✅ Rename skip flag: `skip_validator_signature`.
+12. ✅ Plugin namespaces: `validator_plugin`, `validator_api`, `validator_guard`. `plugin_name` strings updated.
 
 ### Phase 3 — External library updates
 
@@ -346,7 +340,7 @@ Even with server-side fallback, clients will receive **responses** with new name
 | `plugins/account_history/plugin.cpp` | ✅ Done | Operation visitor method names |
 | `libraries/chain/include/graphene/chain/witness_objects.hpp` | ✅ Done | Object type names, field names (file not renamed yet) |
 | `libraries/chain/include/graphene/chain/global_property_object.hpp` | ✅ Done | `current_validator` field + FC_REFLECT |
-| `libraries/chain/include/graphene/chain/chain_objects.hpp` | ⏳ Deferred | `block_post_validation_object` rename |
+| `libraries/chain/include/graphene/chain/chain_objects.hpp` | ✅ Done | `validator_confirmation_object`, `validator_confirmation_index` |
 | `libraries/chain/database.cpp` | ✅ Done | All object and block field references |
 | `libraries/chain/database.hpp` | ✅ Done | `skip_validator_signature` flag |
 | `libraries/protocol/include/graphene/protocol/block_header.hpp` | ✅ Done | `validator`, `validator_signature` fields |
@@ -361,11 +355,23 @@ Even with server-side fallback, clients will receive **responses** with new name
 | `libraries/api/chain_api_properties.cpp` | ✅ Done | Field assignments |
 | `libraries/network/dlt_p2p_node.cpp` | ✅ Done | Block field accesses, `validator_signature` parameter |
 | `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | ✅ Done | `validator_signature` parameter |
+| `plugins/validator/CMakeLists.txt` | ✅ Done | Target `graphene_validator`, new source/header paths |
+| `plugins/validator_api/CMakeLists.txt` | ✅ Done | Target `graphene_validator_api` |
+| `plugins/validator_guard/CMakeLists.txt` | ✅ Done | Target `graphene_validator_guard` |
+| `plugins/p2p/CMakeLists.txt` | ✅ Done | Include path `../validator/include` |
+| `plugins/snapshot/CMakeLists.txt` | ✅ Done | Link `graphene_validator` |
+| `programs/vizd/CMakeLists.txt` | ✅ Done | Links `graphene::validator`, `graphene::validator_api`, `graphene::validator_guard` |
+| `programs/cli_wallet/CMakeLists.txt` | ✅ Done | Link `graphene::validator_api` |
 | `libraries/wallet/wallet.cpp` | ✅ Done | CLI wallet command implementations |
 | `libraries/wallet/include/graphene/wallet/wallet.hpp` | ✅ Done | CLI wallet method declarations |
 | `libraries/wallet/include/graphene/wallet/remote_node_api.hpp` | ✅ Done | Remote API method names |
-| `share/vizd/config/config_witness.ini` | ⏳ Deferred | Config key names |
-| `share/vizd/config/config.ini` | ⏳ Deferred | Plugin names |
+| `share/vizd/config/config_witness.ini` | ✅ Done | Plugin names → `validator`, `validator_api`, `validator_guard` |
+| `share/vizd/config/config.ini` | ✅ Done | Plugin names |
+| `share/vizd/config/config_debug.ini` | ✅ Done | Plugin names |
+| `share/vizd/config/config_debug_mongo.ini` | ✅ Done | Plugin names |
+| `share/vizd/config/config_mongo.ini` | ✅ Done | Plugin names |
+| `share/vizd/config/config_stock_exchange.ini` | ✅ Done | Plugin names |
+| `share/vizd/config/config_testnet.ini` | ✅ Done | Plugin names |
 
 ---
 

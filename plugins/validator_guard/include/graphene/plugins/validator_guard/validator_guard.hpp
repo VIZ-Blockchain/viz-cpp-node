@@ -6,25 +6,25 @@
 
 namespace graphene {
 namespace plugins {
-namespace witness_guard {
+namespace validator_guard {
 
-class witness_guard_plugin final
-        : public appbase::plugin<witness_guard_plugin> {
+class validator_guard_plugin final
+        : public appbase::plugin<validator_guard_plugin> {
 public:
     APPBASE_PLUGIN_REQUIRES(
         (graphene::plugins::chain::plugin)
         (graphene::plugins::p2p::p2p_plugin)
     )
 
-    constexpr static const char *plugin_name = "witness_guard";
+    constexpr static const char *plugin_name = "validator_guard";
 
     static const std::string &name() {
         static std::string name = plugin_name;
         return name;
     }
 
-    witness_guard_plugin();
-    ~witness_guard_plugin();
+    validator_guard_plugin();
+    ~validator_guard_plugin();
 
     void set_program_options(
         boost::program_options::options_description &command_line_options,
@@ -43,6 +43,6 @@ private:
     std::unique_ptr<impl> pimpl;
 };
 
-} // witness_guard
+} // validator_guard
 } // plugins
 } // graphene

@@ -624,7 +624,7 @@ namespace graphene { namespace wallet {
              * @param owner_account the name or id of the witness account owner, or the id of the witness
              * @returns the information about the witness stored in the block chain
              */
-            optional< witness_api::validator_api_object > get_validator(string owner_account);
+            optional< validator_api::validator_api_object > get_validator(string owner_account);
 
             /**
              * Update a witness object owned by the given account.

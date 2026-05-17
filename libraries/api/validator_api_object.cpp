@@ -1,4 +1,4 @@
-#include <graphene/api/witness_api_object.hpp>
+#include <graphene/api/validator_api_object.hpp>
 
 namespace graphene { namespace api {
     validator_api_object::validator_api_object(const validator_object &w, const database& db)

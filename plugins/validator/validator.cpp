@@ -1,12 +1,12 @@
 
-#include <graphene/plugins/witness/witness.hpp>
+#include <graphene/plugins/validator/validator.hpp>
 #include <graphene/plugins/snapshot/plugin.hpp>
 
 #include <graphene/chain/database_exceptions.hpp>
 #include <graphene/chain/account_object.hpp>
 #include <graphene/chain/chain_objects.hpp>
 #include <graphene/chain/chain_object_types.hpp>
-#include <graphene/chain/witness_objects.hpp>
+#include <graphene/chain/validator_objects.hpp>
 #include <graphene/chain/hardfork.hpp>
 #include <graphene/time/time.hpp>
 
@@ -56,13 +56,13 @@ T dejsonify(const string &s) {
 
 namespace graphene {
     namespace plugins {
-        namespace witness_plugin {
+        namespace validator_plugin {
 
             namespace asio = boost::asio;
             namespace posix_time = boost::posix_time;
             namespace system = boost::system;
 
-            struct witness_plugin::impl final {
+            struct validator_plugin::impl final {
                 impl():
                     p2p_(appbase::app().get_plugin<graphene::plugins::p2p::p2p_plugin>()),
                     chain_(appbase::app().get_plugin<graphene::plugins::chain::plugin>()),
@@ -219,7 +219,7 @@ namespace graphene {
                 void on_block_applied(const graphene::chain::signed_block &block);
             };
 
-            void witness_plugin::set_program_options(
+            void validator_plugin::set_program_options(
                     boost::program_options::options_description &command_line_options,
                     boost::program_options::options_description &config_file_options) {
                     string witness_id_example = "initwitness";
@@ -265,10 +265,10 @@ namespace graphene {
             using std::pair;
             using std::string;
 
-            void witness_plugin::plugin_initialize(const boost::program_options::variables_map &options) {
+            void validator_plugin::plugin_initialize(const boost::program_options::variables_map &options) {
                 try {
-                    ilog("witness plugin:  plugin_initialize() begin");
-                    pimpl = std::make_unique<witness_plugin::impl>();
+                    ilog("validator plugin:  plugin_initialize() begin");
+                    pimpl = std::make_unique<validator_plugin::impl>();
 
                     pimpl->total_hashes_.store(0, std::memory_order_relaxed);
                     pimpl->_options = &options;
@@ -338,13 +338,13 @@ namespace graphene {
                         }
                     }
 
-                    ilog("witness plugin:  plugin_initialize() end");
+                    ilog("validator plugin:  plugin_initialize() end");
                 } FC_LOG_AND_RETHROW()
             }
 
-            void witness_plugin::plugin_startup() {
+            void validator_plugin::plugin_startup() {
                 try {
-                    ilog("witness plugin:  plugin_startup() begin");
+                    ilog("validator plugin:  plugin_startup() begin");
                     auto &d = pimpl->database();
                     //Start NTP time client
                     graphene::time::now();
@@ -380,11 +380,11 @@ namespace graphene {
                         pimpl->schedule_production_loop();
                     } else
                         elog("No witnesses configured! Please add witness names and private keys to configuration.");
-                    ilog("witness plugin:  plugin_startup() end");
+                    ilog("validator plugin:  plugin_startup() end");
                 } FC_CAPTURE_AND_RETHROW()
             }
 
-            void witness_plugin::plugin_shutdown() {
+            void validator_plugin::plugin_shutdown() {
                 graphene::time::shutdown_ntp_time();
                 if (!pimpl->_witnesses.empty()) {
                     ilog("shutting downing production timer");
@@ -397,17 +397,17 @@ namespace graphene {
                 }
             }
 
-            void witness_plugin::plugin_for_each_dependency(plugin_processor&& l) {
+            void validator_plugin::plugin_for_each_dependency(plugin_processor&& l) {
                 l(appbase::app().register_plugin<graphene::plugins::chain::plugin>());
                 l(appbase::app().register_plugin<graphene::plugins::p2p::p2p_plugin>());
                 l(appbase::app().register_plugin<graphene::plugins::snapshot::snapshot_plugin>());
             }
 
-            witness_plugin::witness_plugin() {}
+            validator_plugin::validator_plugin() {}
 
-            witness_plugin::~witness_plugin() {}
+            validator_plugin::~validator_plugin() {}
 
-            bool witness_plugin::is_validator_scheduled_soon() const {
+            bool validator_plugin::is_validator_scheduled_soon() const {
                 try {
                     if (!pimpl || pimpl->_witnesses.empty() || pimpl->_private_keys.empty()) {
                         return false;
@@ -454,7 +454,7 @@ namespace graphene {
                 return false;
             }
 
-            fc::time_point_sec witness_plugin::get_next_validator_slot_time() const {
+            fc::time_point_sec validator_plugin::get_next_validator_slot_time() const {
                 try {
                     if (!pimpl || pimpl->_witnesses.empty() || pimpl->_private_keys.empty()) {
                         return fc::time_point_sec();
@@ -501,7 +501,7 @@ namespace graphene {
                 return fc::time_point_sec();
             }
 
-            bool witness_plugin::is_emergency_master() const {
+            bool validator_plugin::is_emergency_master() const {
                 try {
                     if (!pimpl || pimpl->_witnesses.empty()) {
                         return false;
@@ -533,7 +533,7 @@ namespace graphene {
                 return false;
             }
 
-            bool witness_plugin::is_emergency_key_configured() const {
+            bool validator_plugin::is_emergency_key_configured() const {
                 try {
                     if (!pimpl || pimpl->_witnesses.empty()) {
                         return false;
@@ -546,7 +546,7 @@ namespace graphene {
                 }
             }
 
-            std::string witness_plugin::get_production_diagnostics() const {
+            std::string validator_plugin::get_production_diagnostics() const {
                 try {
                     if (!pimpl) return "witness=no_pimpl";
                     std::lock_guard<std::mutex> lk(pimpl->_diag_mutex);
@@ -571,7 +571,7 @@ namespace graphene {
                 }
             }
 
-            void witness_plugin::impl::on_block_applied(const graphene::chain::signed_block &block) {
+            void validator_plugin::impl::on_block_applied(const graphene::chain::signed_block &block) {
                 try {
                     std::lock_guard<std::mutex> _diag_lk(_diag_mutex);
                     uint64_t block_num = block.block_num();
@@ -728,7 +728,7 @@ namespace graphene {
                 }
             }
 
-            void witness_plugin::impl::schedule_production_loop() {
+            void validator_plugin::impl::schedule_production_loop() {
                 //Schedule for the next 250ms tick regardless of chain state
                 // With +250ms look-ahead in maybe_validate_block(), the tick at
                 // T_slot - 250ms aligns now exactly to the slot boundary for zero-lag production.
@@ -753,7 +753,7 @@ namespace graphene {
                 production_timer_.async_wait( [this](const system::error_code &) { block_validation_loop(); } );
             }
 
-            block_validation_condition::block_validation_condition_enum witness_plugin::impl::block_validation_loop() {
+            block_validation_condition::block_validation_condition_enum validator_plugin::impl::block_validation_loop() {
                 block_validation_condition::block_validation_condition_enum result;
                 fc::mutable_variant_object capture;
                 if (database()._debug_block_production) ilog("DEBUG_CRASH: block_validation_loop ENTER");
@@ -1261,7 +1261,7 @@ namespace graphene {
                 return result;
             }
 
-            block_validation_condition::block_validation_condition_enum witness_plugin::impl::maybe_validate_block(fc::mutable_variant_object &capture) {
+            block_validation_condition::block_validation_condition_enum validator_plugin::impl::maybe_validate_block(fc::mutable_variant_object &capture) {
                 auto &db = database();
                 if (db._debug_block_production) ilog("DEBUG_CRASH: maybe_validate_block ENTER");
                 fc::time_point now_fine = graphene::time::now();
@@ -1435,8 +1435,8 @@ namespace graphene {
                         }
 
                         bool ignore_witness = false;
-                        if (db._debug_block_production) ilog("DEBUG_CRASH: get_block_post_validations for ${w}", ("w", witness_account));
-                        auto block_post_validations = db.get_block_post_validations(witness_account);
+                        if (db._debug_block_production) ilog("DEBUG_CRASH: get_validator_confirmations for ${w}", ("w", witness_account));
+                        auto block_post_validations = db.get_validator_confirmations(witness_account);
                         if (db._debug_block_production) ilog("DEBUG_CRASH: got ${n} post_validations for ${w}", ("n", block_post_validations.size())("w", witness_account));
                         if (block_post_validations.size() > 0) {
                             const auto &witness_by_name = db.get_index<graphene::chain::validator_index>().indices().get<graphene::chain::by_name>();

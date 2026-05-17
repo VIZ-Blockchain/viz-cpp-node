@@ -49,10 +49,10 @@ This distinction is the most important rule for library developers.
 | API method names (`get_active_validators`, etc.) | **Done** | Yes — JSON-RPC calls |
 | Chain object types (`validator_object`, etc.) | **Done** | Yes — API response type names |
 | CLI wallet commands (`get_active_validators`, etc.) | **Done** | Yes — if using CLI wallet |
-| Physical file renames (`.hpp`/`.cpp`) | Pending — future PR | No — internal build only |
-| Plugin directory and CMake target renames | Pending — future PR | Yes — config `plugin =` keys |
-| Config key renames (`--validator`, etc.) | Pending — future PR | Yes — node operator config |
-| API namespace (`witness_api` → `validator_api`) | Pending — future PR | Yes — JSON-RPC `"api"` field |
+| Physical file renames (`.hpp`/`.cpp`, directories) | **Done** | No — internal build only |
+| Plugin directory and CMake target renames | **Done** | No — internal build |
+| Config key renames (`plugin = validator`, etc.) | **Done** | Yes — node operators must update `config.ini` |
+| API namespace (`validator_api`) | **Done** | Yes — JSON-RPC `"api"` field (see Section 2) |
 
 ---
 
@@ -172,13 +172,24 @@ const OP_TYPE_ID = [
 
 ### API Namespace
 
-The JSON-RPC namespace (`"api"` field) is currently **`"witness_api"`** and will be renamed to **`"validator_api"`** when the plugin directory is renamed. Until then, all calls — including new `get_validator_*` methods — must use `"witness_api"`:
+**Done.** The JSON-RPC namespace is now **`"validator_api"`**. Old clients still using `"witness_api"` will fail — they must update:
 
 ```json
-{ "api": "witness_api", "method": "get_active_validators", "params": [] }
+{ "api": "validator_api", "method": "get_active_validators", "params": [] }
 ```
 
-There is no `"validator_api"` alias at this time. The namespace change will require a fallback strategy identical to the method-name fallback (try `validator_api`, fall back to `witness_api`).
+Implementation pattern for dual support during library migration:
+
+```js
+async function callApi(method, params) {
+    try {
+        return await rpc({ api: 'validator_api', method, params });
+    } catch (e) {
+        // Fallback for old nodes not yet upgraded
+        return await rpc({ api: 'witness_api', method, params });
+    }
+}
+```
 
 ### Methods to Rename
 

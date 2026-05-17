@@ -564,7 +564,7 @@ namespace graphene { namespace chain {
 
             void create_block_post_validation(uint32_t block_num, block_id_type block_id, const account_name_type &witness_account);
 
-            std::array<block_post_validation_object, CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT> get_block_post_validations(const account_name_type &witness_account);
+            std::array<validator_confirmation_object, CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT> get_validator_confirmations(const account_name_type &witness_account);
 
             void apply_block_post_validation(block_id_type block_id, const account_name_type &witness_account);
 

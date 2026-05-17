@@ -1,8 +1,8 @@
-#include <graphene/plugins/witness_guard/witness_guard.hpp>
+#include <graphene/plugins/validator_guard/validator_guard.hpp>
 
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/account_object.hpp>
-#include <graphene/chain/witness_objects.hpp>
+#include <graphene/chain/validator_objects.hpp>
 #include <graphene/chain/chain_object_types.hpp>
 #include <graphene/protocol/chain_operations.hpp>
 #include <graphene/utilities/key_conversion.hpp>
@@ -18,13 +18,13 @@
 
 namespace graphene {
 namespace plugins {
-namespace witness_guard {
+namespace validator_guard {
 
 namespace bpo = boost::program_options;
 
 // ─── impl ────────────────────────────────────────────────────────────────────
 
-struct witness_guard_plugin::impl {
+struct validator_guard_plugin::impl {
     impl()
         : chain_(appbase::app().get_plugin<graphene::plugins::chain::plugin>())
         , p2p_(appbase::app().get_plugin<graphene::plugins::p2p::p2p_plugin>())
@@ -80,7 +80,7 @@ struct witness_guard_plugin::impl {
 // ─── check_and_restore ───────────────────────────────────────────────────────
 // Checks all monitored witnesses and restores signing keys when needed.
 // Returns true if the node is in sync and the full check was performed.
-bool witness_guard_plugin::impl::check_and_restore_internal() {
+bool validator_guard_plugin::impl::check_and_restore_internal() {
     auto& database = db();
 
     // Skip auto-restore when stale production is enabled AND the network is
@@ -92,12 +92,12 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
         if (!dgp.emergency_consensus_active) {
             uint32_t prate = database.witness_participation_rate();
             if (prate >= 33 * CHAIN_1_PERCENT) {
-                ilog("witness_guard: network is healthy (participation ${p}%), "
+                ilog("validator_guard: network is healthy (participation ${p}%), "
                      "auto-clearing stale production override",
                      ("p", prate / CHAIN_1_PERCENT));
                 _stale_production_config = false;
             } else {
-                dlog("witness_guard: stale production enabled and network not yet healthy, "
+                dlog("validator_guard: stale production enabled and network not yet healthy, "
                      "auto-restore disabled");
                 return false;
             }
@@ -111,7 +111,7 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
     const auto head_time = database.head_block_time();
     const auto now       = fc::time_point_sec(graphene::time::now());
     if (head_time < now - fc::seconds(CHAIN_BLOCK_INTERVAL * 2)) {
-        dlog("witness_guard: node not in sync, skipping check");
+        dlog("validator_guard: node not in sync, skipping check");
         return false;
     }
 
@@ -123,7 +123,7 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
     if (lib_block) {
         const auto lib_time = lib_block->timestamp;
         if (now - lib_time > fc::seconds(200)) {
-            wlog("witness_guard: POTENTIAL LONG FORK DETECTED! LIB #${n} is ${sec}s old. Skipping restoration.",
+            wlog("validator_guard: POTENTIAL LONG FORK DETECTED! LIB #${n} is ${sec}s old. Skipping restoration.",
                  ("n", lib_num)("sec", (now - lib_time).to_seconds()));
             return false;
         }
@@ -155,7 +155,7 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
 
         auto itr = idx.find(name);
         if (itr == idx.end()) {
-            wlog("witness_guard: witness '${w}' not found in database", ("w", name));
+            wlog("validator_guard: witness '${w}' not found in database", ("w", name));
             continue;
         }
 
@@ -171,7 +171,7 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
         // If this witness was auto-disabled by the consecutive-block guard,
         // do NOT auto-restore it — the operator must investigate and restart
         if (_auto_disabled_witnesses.count(name)) {
-            dlog("witness_guard: '${w}' was auto-disabled (consecutive block limit), "
+            dlog("validator_guard: '${w}' was auto-disabled (consecutive block limit), "
                  "skipping auto-restore", ("w", name));
             continue;
         }
@@ -179,10 +179,10 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
         // A restore transaction is already in flight; wait for it to land or expire
         if (_restore_pending.count(name)) {
             if (now <= _restore_pending[name]) continue;
-            ilog("witness_guard: previous restore for '${w}' expired, retrying", ("w", name));
+            ilog("validator_guard: previous restore for '${w}' expired, retrying", ("w", name));
         }
 
-        ilog("witness_guard: '${w}' has null signing key on-chain — initiating restore",
+        ilog("validator_guard: '${w}' has null signing key on-chain — initiating restore",
              ("w", name));
         send_witness_update(name, *itr, config);
     }
@@ -194,7 +194,7 @@ bool witness_guard_plugin::impl::check_and_restore_internal() {
 // Builds, signs, and broadcasts a witness_update transaction that restores
 // the on-chain signing key for the given witness.
 
-void witness_guard_plugin::impl::send_witness_update(
+void validator_guard_plugin::impl::send_witness_update(
         const std::string& witness_name,
         const graphene::chain::validator_object& obj,
         const witness_info& config)
@@ -223,11 +223,11 @@ void witness_guard_plugin::impl::send_witness_update(
 
         // Prevent unbounded growth of the confirmation tracker
         if (_pending_confirmations.size() > 1000) {
-            wlog("witness_guard: _pending_confirmations limit reached, clearing old entries");
+            wlog("validator_guard: _pending_confirmations limit reached, clearing old entries");
             _pending_confirmations.clear();
         }
 
-        ilog("witness_guard: broadcasting witness_update [ID: ${id}] for '${w}' — restoring key to ${k}",
+        ilog("validator_guard: broadcasting witness_update [ID: ${id}] for '${w}' — restoring key to ${k}",
              ("id", tx_id)("w", witness_name)("k", signing_pub));
 
         p2p_.broadcast_transaction(tx);
@@ -236,10 +236,10 @@ void witness_guard_plugin::impl::send_witness_update(
         _restore_pending[witness_name] = expiration;
         _pending_confirmations[tx_id] = { witness_name, expiration };
 
-        ilog("witness_guard: witness_update for '${w}' sent successfully", ("w", witness_name));
+        ilog("validator_guard: witness_update for '${w}' sent successfully", ("w", witness_name));
 
     } catch (const fc::exception& e) {
-        elog("witness_guard: witness_update FAILED for '${w}': ${e}",
+        elog("validator_guard: witness_update FAILED for '${w}': ${e}",
              ("w", witness_name)("e", e.to_detail_string()));
         // Do not mark as pending — retry will happen on the next check cycle
     }
@@ -249,7 +249,7 @@ void witness_guard_plugin::impl::send_witness_update(
 // Builds, signs, and broadcasts a witness_update transaction that sets the
 // on-chain signing key to null, effectively disabling block production.
 
-void witness_guard_plugin::impl::send_witness_disable(
+void validator_guard_plugin::impl::send_witness_disable(
         const std::string& witness_name,
         const graphene::chain::validator_object& obj,
         const witness_info& config)
@@ -277,7 +277,7 @@ void witness_guard_plugin::impl::send_witness_disable(
         tx.sign(active_priv, db().get_chain_id());
         const auto tx_id = tx.id();
 
-        ilog("witness_guard: broadcasting witness_update [ID: ${id}] for '${w}' — DISABLING (setting key to null)",
+        ilog("validator_guard: broadcasting witness_update [ID: ${id}] for '${w}' — DISABLING (setting key to null)",
              ("id", tx_id)("w", witness_name));
 
         p2p_.broadcast_transaction(tx);
@@ -285,20 +285,20 @@ void witness_guard_plugin::impl::send_witness_disable(
         // Mark this witness as auto-disabled so we don't auto-restore it
         _auto_disabled_witnesses.insert(witness_name);
 
-        ilog("witness_guard: witness_disable for '${w}' sent successfully", ("w", witness_name));
+        ilog("validator_guard: witness_disable for '${w}' sent successfully", ("w", witness_name));
 
     } catch (const fc::exception& e) {
-        elog("witness_guard: witness_disable FAILED for '${w}': ${e}",
+        elog("validator_guard: witness_disable FAILED for '${w}': ${e}",
              ("w", witness_name)("e", e.to_detail_string()));
     }
 }
 
 // ─── plugin lifecycle ────────────────────────────────────────────────────────
 
-witness_guard_plugin::witness_guard_plugin()  = default;
-witness_guard_plugin::~witness_guard_plugin() = default;
+validator_guard_plugin::witness_guard_plugin()  = default;
+validator_guard_plugin::~witness_guard_plugin() = default;
 
-void witness_guard_plugin::set_program_options(
+void validator_guard_plugin::set_program_options(
         bpo::options_description& cli,
         bpo::options_description& cfg)
 {
@@ -339,11 +339,11 @@ void witness_guard_plugin::set_program_options(
     cli.add(cfg);
 }
 
-void witness_guard_plugin::plugin_initialize(
+void validator_guard_plugin::plugin_initialize(
         const bpo::variables_map& options)
 {
     try {
-        ilog("witness_guard: plugin_initialize() begin");
+        ilog("validator_guard: plugin_initialize() begin");
         pimpl = std::make_unique<impl>();
 
         // enabled flag — prefer validator-guard-enabled, fall back to deprecated witness-guard-enabled
@@ -354,7 +354,7 @@ void witness_guard_plugin::plugin_initialize(
             pimpl->_enabled = options["witness-guard-enabled"].as<bool>();
         }
         if (!pimpl->_enabled) {
-            ilog("witness_guard: disabled via config, skipping initialization");
+            ilog("validator_guard: disabled via config, skipping initialization");
             return;
         }
 
@@ -366,7 +366,7 @@ void witness_guard_plugin::plugin_initialize(
             pimpl->_stale_production_config = options["enable-stale-production"].as<bool>();
         }
         if (pimpl->_stale_production_config) {
-            wlog("witness_guard: enable-stale-production detected — "
+            wlog("validator_guard: enable-stale-production detected — "
                  "auto-restore is DISABLED until network participation >= 33%%");
         }
 
@@ -387,10 +387,10 @@ void witness_guard_plugin::plugin_initialize(
             pimpl->_disable_threshold = options["validator-guard-disable"].as<uint32_t>();
         }
         if (pimpl->_disable_threshold > 0) {
-            ilog("witness_guard: auto-disable enabled — will disable witness after ${n} consecutive blocks",
+            ilog("validator_guard: auto-disable enabled — will disable witness after ${n} consecutive blocks",
                  ("n", pimpl->_disable_threshold));
         } else {
-            ilog("witness_guard: auto-disable feature is OFF (witness-guard-disable = 0)");
+            ilog("validator_guard: auto-disable feature is OFF (witness-guard-disable = 0)");
         }
 
         // validator configs — each entry is a JSON triplet: ["name", "signing_wif", "active_wif"]
@@ -421,32 +421,32 @@ void witness_guard_plugin::plugin_initialize(
 
                     pimpl->_witness_configs[name] = { *sign_priv, *active_priv };
 
-                    ilog("witness_guard: monitoring witness '${w}' (signing key: ${k})",
+                    ilog("validator_guard: monitoring witness '${w}' (signing key: ${k})",
                          ("w", name)("k", sign_priv->get_public_key()));
 
                 } catch (const fc::exception& e) {
-                    elog("witness_guard: failed to parse witness entry '${entry}': ${e}",
+                    elog("validator_guard: failed to parse witness entry '${entry}': ${e}",
                          ("entry", entry)("e", e.to_detail_string()));
                 }
             }
         }
 
         if (pimpl->_witness_configs.empty()) {
-            wlog("witness_guard: no witnesses configured for monitoring");
+            wlog("validator_guard: no witnesses configured for monitoring");
         }
 
-        ilog("witness_guard: plugin_initialize() end — "
+        ilog("validator_guard: plugin_initialize() end — "
              "monitoring ${n} witness(es), interval=${i} blocks",
              ("n", pimpl->_witness_configs.size())("i", pimpl->_check_interval));
 
     } FC_LOG_AND_RETHROW()
 }
 
-void witness_guard_plugin::plugin_startup() {
-    ilog("witness_guard: plugin_startup() begin");
+void validator_guard_plugin::plugin_startup() {
+    ilog("validator_guard: plugin_startup() begin");
 
     if (!pimpl->_enabled || pimpl->_witness_configs.empty()) {
-        ilog("witness_guard: nothing to monitor, plugin inactive");
+        ilog("validator_guard: nothing to monitor, plugin inactive");
         return;
     }
     // Verify on-chain authority for every configured witness.
@@ -468,12 +468,12 @@ void witness_guard_plugin::plugin_startup() {
                 }
             }
             if (!active_key_has_authority) {
-                elog("witness_guard: WARNING: Configured active key for witness '${w}' "
+                elog("validator_guard: WARNING: Configured active key for witness '${w}' "
                      "does NOT have authority on-chain. Restoration will fail.", ("w", name));
             }
             ++it;
         } catch (const fc::exception& e) {
-            elog("witness_guard: account '${w}' not found on chain, removing from monitor list", ("w", name));
+            elog("validator_guard: account '${w}' not found on chain, removing from monitor list", ("w", name));
             it = pimpl->_witness_configs.erase(it);
         }
     }
@@ -506,7 +506,7 @@ void witness_guard_plugin::plugin_startup() {
             if (count >= pimpl->_disable_threshold) {
                 // Already auto-disabled? Skip repeated broadcasts
                 if (!pimpl->_auto_disabled_witnesses.count(producer)) {
-                    wlog("witness_guard: witness '${w}' produced ${c} consecutive blocks — "
+                    wlog("validator_guard: witness '${w}' produced ${c} consecutive blocks — "
                          "auto-disabling (threshold=${t})",
                          ("w", producer)("c", count)("t", pimpl->_disable_threshold));
 
@@ -547,7 +547,7 @@ void witness_guard_plugin::plugin_startup() {
                     const auto w_name = it->second.first;
                     pimpl->_restore_pending.erase(w_name);
                     pimpl->_pending_confirmations.erase(it);
-                    ilog("witness_guard: CONFIRMED restoration for '${w}' in block #${n} [TX: ${id}]",
+                    ilog("validator_guard: CONFIRMED restoration for '${w}' in block #${n} [TX: ${id}]",
                          ("w", w_name)("n", b.block_num())("id", id));
                 }
             }
@@ -583,16 +583,16 @@ void witness_guard_plugin::plugin_startup() {
     }
 );
 
-    ilog("witness_guard: plugin_startup() end — active");
+    ilog("validator_guard: plugin_startup() end — active");
 }
 
-void witness_guard_plugin::plugin_shutdown() {
+void validator_guard_plugin::plugin_shutdown() {
     if (pimpl && pimpl->_applied_block_connection.connected()) {
         pimpl->_applied_block_connection.disconnect();
     }
-    ilog("witness_guard: plugin_shutdown()");
+    ilog("validator_guard: plugin_shutdown()");
 }
 
-} // witness_guard
+} // validator_guard
 } // plugins
 } // graphene

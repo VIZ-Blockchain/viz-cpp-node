@@ -4546,7 +4546,7 @@ namespace graphene { namespace chain {
             add_core_index<paid_subscription_index>(*this);
             add_core_index<paid_subscribe_index>(*this);
             add_core_index<witness_penalty_expire_index>(*this);
-            add_core_index<block_post_validation_index>(*this);
+            add_core_index<validator_confirmation_index>(*this);
 
             _plugin_index_signal();
         }
@@ -5708,7 +5708,7 @@ namespace graphene { namespace chain {
                     return;
                 }
 
-                const auto& validation_list = get_index<block_post_validation_index>().indices().get<by_id>();
+                const auto& validation_list = get_index<validator_confirmation_index>().indices().get<by_id>();
                 if(!validation_list.empty()){
                     const dynamic_global_property_object &dpo = get_dynamic_global_properties();
                     const validator_schedule_object &wso = get_validator_schedule_object();
@@ -5903,7 +5903,7 @@ namespace graphene { namespace chain {
                     return;
                 }
 
-                const auto& validation_list = get_index<block_post_validation_index>().indices().get<by_id>();
+                const auto& validation_list = get_index<validator_confirmation_index>().indices().get<by_id>();
                 if(!validation_list.empty()){
                     auto itr = validation_list.begin();
                     bool find = false;
@@ -5915,7 +5915,7 @@ namespace graphene { namespace chain {
                         const auto& current = *itr;
                         if(current.block_id == block_id){
                             find_block_num = current.block_num;
-                            modify(current, [&](block_post_validation_object &o) {
+                            modify(current, [&](validator_confirmation_object &o) {
                                 //remove witness from shuffled witnesses
                                 for (size_t j = 0; j< CHAIN_MAX_WITNESSES; j++) {
                                     if(o.current_shuffled_witnesses[j] == witness_account){
@@ -6081,10 +6081,10 @@ namespace graphene { namespace chain {
         }
 
         //get block post validation objects for witness
-        //return array of block_post_validation_object event if it is empty
-        std::array<block_post_validation_object, CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT> database::get_block_post_validations(const account_name_type &witness_account){
-            std::array<block_post_validation_object, CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT> result;
-            const auto& validation_list = get_index<block_post_validation_index>().indices().get<by_id>();
+        //return array of validator_confirmation_object event if it is empty
+        std::array<validator_confirmation_object, CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT> database::get_validator_confirmations(const account_name_type &witness_account){
+            std::array<validator_confirmation_object, CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT> result;
+            const auto& validation_list = get_index<validator_confirmation_index>().indices().get<by_id>();
             auto itr = validation_list.begin();
             size_t i = 0;
             while(itr != validation_list.end() && i < CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT)
@@ -6097,7 +6097,7 @@ namespace graphene { namespace chain {
                 for (size_t j = 0; j < CHAIN_MAX_WITNESSES && !matched; j++) {
                     if(current.current_shuffled_witnesses[j] == witness_account){
                         if(current.current_shuffled_witnesses_validations[j] == false){//need validate
-                            result[i] = block_post_validation_object(current);
+                            result[i] = validator_confirmation_object(current);
                             ++i;
                             matched = true;
                         }
@@ -6106,7 +6106,7 @@ namespace graphene { namespace chain {
             }
             //fill result with empty objects to return array with fixed size
             for(; i < CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT; i++){
-                result[i] = block_post_validation_object();
+                result[i] = validator_confirmation_object();
             }
             return result;
         }
@@ -6117,7 +6117,7 @@ namespace graphene { namespace chain {
         void database::create_block_post_validation(uint32_t block_num, block_id_type block_id, const account_name_type& witness_account){
             const dynamic_global_property_object &dpo = get_dynamic_global_properties();
             //remove blocks if they height is less than last irreversible block
-            const auto& validation_list = get_index<block_post_validation_index>().indices().get<by_id>();
+            const auto& validation_list = get_index<validator_confirmation_index>().indices().get<by_id>();
             auto itr1 = validation_list.begin();
             while(itr1 != validation_list.end())
             {
@@ -6128,7 +6128,7 @@ namespace graphene { namespace chain {
                 }
             }
             //remove old blocks from post validation list if it is full
-            const auto& validation_list2 = get_index<block_post_validation_index>().indices().get<by_id>();
+            const auto& validation_list2 = get_index<validator_confirmation_index>().indices().get<by_id>();
             size_t max_block_post_validation_size = 0;
             auto first=validation_list2.begin();
             for (auto itr = validation_list2.begin();
@@ -6142,7 +6142,7 @@ namespace graphene { namespace chain {
                 }
             }
             //create new block in post validation list
-            create<block_post_validation_object>([&](block_post_validation_object& o) {
+            create<validator_confirmation_object>([&](validator_confirmation_object& o) {
                 o.block_num = block_num;
                 o.block_id = block_id_type(block_id);
                 const validator_schedule_object &wso = get_validator_schedule_object();

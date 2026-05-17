@@ -10,7 +10,7 @@
 
 namespace graphene {
     namespace plugins {
-        namespace witness_plugin {
+        namespace validator_plugin {
 
             using std::string;
             using protocol::public_key_type;
@@ -34,22 +34,22 @@ namespace graphene {
             }
 
 
-            class witness_plugin final : public appbase::plugin<witness_plugin> {
+            class validator_plugin final : public appbase::plugin<validator_plugin> {
             public:
                 // Dependency list: chain, p2p, snapshot.
-                // Implemented in witness.cpp to avoid exposing snapshot headers to p2p (which includes witness.hpp).
+                // Implemented in validator.cpp to avoid exposing snapshot headers to p2p (which includes validator.hpp).
                 virtual void plugin_for_each_dependency(std::function<void(appbase::abstract_plugin&)>&& l) override;
 
-                constexpr static const char *plugin_name = "witness";
+                constexpr static const char *plugin_name = "validator";
 
                 static const std::string &name() {
                     static std::string name = plugin_name;
                     return name;
                 }
 
-                witness_plugin();
+                validator_plugin();
 
-                ~witness_plugin();
+                ~validator_plugin();
 
 
                 void set_program_options(boost::program_options::options_description &command_line_options,
@@ -99,4 +99,4 @@ namespace graphene {
 
         }
     }
-} //graphene::witness_plugin
+} //graphene::validator_plugin

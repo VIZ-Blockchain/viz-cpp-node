@@ -29,7 +29,7 @@ target_link_libraries (
     graphene_chain
     graphene_chain_plugin
     graphene_protocol
-    graphene_witness
+    graphene_validator
     graphene_p2p
     appbase
     graphene_json_rpc

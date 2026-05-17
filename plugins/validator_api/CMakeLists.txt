@@ -1,8 +1,8 @@
-set(CURRENT_TARGET witness_api)
+set(CURRENT_TARGET validator_api)
 
 list(APPEND CURRENT_TARGET_HEADERS
-    include/graphene/plugins/witness_api/plugin.hpp
-    include/graphene/plugins/witness_api/api_objects/feed_history_api_object.hpp
+    include/graphene/plugins/validator_api/plugin.hpp
+    include/graphene/plugins/validator_api/api_objects/feed_history_api_object.hpp
 )
 
 list(APPEND CURRENT_TARGET_SOURCES
