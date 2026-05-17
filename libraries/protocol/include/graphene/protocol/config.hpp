@@ -2,7 +2,7 @@
 
 #define CHAIN_STARTUP_VERSION                 (version(1, 0, 0))
 #define CHAIN_HARDFORK_STARTUP_VERSION        (hardfork_version(CHAIN_STARTUP_VERSION))
-#define CHAIN_VERSION                         (version(3, 1, 0))
+#define CHAIN_VERSION                         (version(3, 2, 0))
 #define CHAIN_HARDFORK_VERSION                (hardfork_version(CHAIN_VERSION))
 
 #define CHAIN_NAME                            "VIZ"
@@ -30,6 +30,7 @@
 #define CHAIN_BLOCKS_PER_DAY                  (24*60*60/CHAIN_BLOCK_INTERVAL)
 #define CHAIN_BLOCKS_PER_HOUR                 (60*60/CHAIN_BLOCK_INTERVAL)
 #define CHAIN_MAX_WITNESS_MISSED_BLOCKS       200 // ~10 min after first missed block for top witness
+#define CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS (5 * CHAIN_MAX_WITNESSES) // in emergency mode, blank key after 5 full rounds of missed scheduled slots (~5 min)
 
 #define CHAIN_INITIATOR_NAME                 "viz"
 // Private key: 5JabcrvaLnBTCkCVFX5r4rmeGGfuJuVp4NAKRNLTey6pxhRQmf4
@@ -111,11 +112,6 @@
 /// this many seconds since the last irreversible block.
 #define CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC    3600  // 1 hour
 
-/// Minimum wall-clock time (seconds) after node startup before emergency
-/// consensus mode may be activated. This gives the node time to sync
-/// with peers before considering the network stalled.
-#define CHAIN_EMERGENCY_STARTUP_DELAY_SEC         600  // 10 minutes
-
 /// The witness account name that produces blocks during emergency mode
 #define CHAIN_EMERGENCY_WITNESS_ACCOUNT          CHAIN_COMMITTEE_ACCOUNT  // "committee"
 
@@ -183,6 +179,36 @@
 /// Represents the canonical root post parent account
 #define CHAIN_ROOT_POST_PARENT                (account_name_type())
 ///@}
+
+/// HF13: Validator reward sharing constants
+/// Sharing rate is expressed in basis points (0-CHAIN_100_PERCENT = 0%-100%).
+#define CHAIN_VALIDATOR_MAX_SHARING_RATE      CHAIN_100_PERCENT
+
+/// Default epoch length for distributing accumulated stakeholder rewards (1 day).
+#define CHAIN_DEFAULT_DISTRIBUTION_EPOCH_LENGTH  CHAIN_BLOCKS_PER_DAY
+
+/// Minimum epoch length validators can vote for (1 hour = 1200 blocks).
+/// 21 blocks (1 round) is too short: epoch distribution runs synchronously in _apply_block
+/// and iterates all validators × all their stakeholders; at 63-second intervals this
+/// would fire too frequently under any realistic validator/stakeholder count.
+#define CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH  uint32_t(CHAIN_BLOCKS_PER_HOUR)
+
+/// Minimum TOKEN amount per stakeholder payout at epoch end (1 atomic unit = 0.001 VIZ).
+/// Stakeholder rewards below this threshold are not distributed; the validator retains them.
+/// NOTE: stakeholder rewards are accumulated and distributed in TOKEN, not SHARES.
+/// Stakeholders receive SHARES only after create_vesting() converts their TOKEN at distribution time.
+#define CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT   int64_t(1)
+
+/// Chainbase schema version — increment whenever the binary layout of any chainbase-managed
+/// object changes (fields added, removed, or resized).  The chain plugin writes this value
+/// to <data_dir>/schema_version on every successful open, and checks it at the next startup.
+/// A mismatch triggers proactive shared_memory wipe + auto-recovery before db.open().
+///
+/// History:
+///   0  — pre-HF13 (implicit, file absent)
+///   13 — HF13: added sharing_rate, pending_stakeholder_reward to witness_object;
+///               added vote_created_block to witness_vote_object
+#define CHAIN_SCHEMA_VERSION                  uint32_t(13)
 
 // Deprecated defines
 #define CHAIN_CASHOUT_WINDOW_SECONDS          (60*60*24)  // 1 day

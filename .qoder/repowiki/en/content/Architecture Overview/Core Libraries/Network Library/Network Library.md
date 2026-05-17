@@ -20,12 +20,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced Node Management section to document the new virtual `resync()` method for improved extensibility
-- Updated Programmatic Synchronization Control section with comprehensive details about the resync functionality
-- Added documentation for the `simulated_network` class's resync implementation
-- Updated dependency analysis to reflect the new virtual method structure
-- Enhanced troubleshooting guidance with resync usage scenarios
-- Added documentation for enhanced peer connection logging with color support (orange/red)
+- Enhanced synchronization logging section to document new CLOG_GRAY ANSI color code for gray-colored log output
+- Updated logging verbosity documentation to reflect systematic replacement of fc_ilog with fc_dlog throughout sync process
+- Added documentation for enhanced logging in fetch_sync_items_loop, blockchain item inventory handling, sync status updates, and sync start procedures with enhanced visibility
+- Updated troubleshooting guidance with new logging patterns and gray color coding
+- Enhanced logging system documentation with comprehensive fc_dlog vs fc_ilog usage patterns
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -37,15 +36,16 @@
 7. [Peer Information Handling and IP Extraction](#peer-information-handling-and-ip-extraction)
 8. [Programmatic Synchronization Control](#programmatic-synchronization-control)
 9. [Enhanced Peer Connection Logging](#enhanced-peer-connection-logging)
-10. [Dependency Analysis](#dependency-analysis)
-11. [Performance Considerations](#performance-considerations)
-12. [Troubleshooting Guide](#troubleshooting-guide)
-13. [Conclusion](#conclusion)
+10. [Enhanced Synchronization Logging System](#enhanced-synchronization-logging-system)
+11. [Dependency Analysis](#dependency-analysis)
+12. [Performance Considerations](#performance-considerations)
+13. [Troubleshooting Guide](#troubleshooting-guide)
+14. [Conclusion](#conclusion)
 
 ## Introduction
 This document describes the Network Library that implements peer-to-peer communication and network protocol for the VIZ node. It covers the node management layer, peer connection orchestration, standard network messages, secure transport, peer address management, and message serialization. The library provides a robust foundation for blockchain synchronization, transaction broadcasting, and block propagation across a distributed network.
 
-**Updated** Enhanced with comprehensive peer statistics logging system including latency tracking, blocking status reporting, periodic statistics collection, improved peer information handling with reliable IP address extraction and reduced conversion overhead. Added programmatic synchronization control through the new `resync()` method for improved network recovery from various network states. The virtual `resync()` method provides extensibility for derived classes to customize synchronization restart behavior. Enhanced peer connection logging now supports color-coded output for better visibility of network events.
+**Updated** Enhanced with comprehensive peer statistics logging system including latency tracking, blocking status reporting, periodic statistics collection, improved peer information handling with reliable IP address extraction and reduced conversion overhead. Added programmatic synchronization control through the new `resync()` method for improved network recovery from various network states. The virtual `resync()` method provides extensibility for derived classes to customize synchronization restart behavior. Enhanced peer connection logging now supports color-coded output for better visibility of network events. **Enhanced synchronization logging system with new CLOG_GRAY ANSI color code and systematic fc_dlog usage throughout sync process for improved log verbosity and clarity.**
 
 ## Project Structure
 The network library is organized into cohesive modules:
@@ -59,6 +59,7 @@ The network library is organized into cohesive modules:
 - **Peer statistics and metrics collection system with improved IP address extraction**
 - **P2P plugin integration for peer monitoring and statistics with color-coded logging**
 - **Programmatic synchronization control for network recovery with virtual method extensibility**
+- **Enhanced synchronization logging system with CLOG_GRAY color coding and fc_dlog usage patterns**
 
 ```mermaid
 graph TB
@@ -76,6 +77,9 @@ P2P["p2p_plugin.cpp"]
 RESYNC["Virtual resync() Method"]
 SIMNET["simulated_network"]
 COLOR["Color Logging Support"]
+SYNCLOG["Enhanced Synchronization Logging"]
+GRAY["CLOG_GRAY ANSI Color Code"]
+FCDLOG["fc_dlog Usage Patterns"]
 end
 N --> PC
 N --> PD
@@ -96,6 +100,10 @@ P2P --> STATS
 P2P --> RESYNC
 P2P --> COLOR
 SIMNET --> RESYNC
+SYNCLOG --> N
+SYNCLOG --> PC
+GRAY --> SYNCLOG
+FCDLOG --> SYNCLOG
 ```
 
 **Diagram sources**
@@ -134,6 +142,7 @@ SIMNET --> RESYNC
 - **P2P Plugin: Integrates peer monitoring, statistics collection, and network diagnostics with enhanced error handling and color-coded logging.**
 - **Programmatic Synchronization Control: Enables manual restart of synchronization with all connected peers for network recovery scenarios through virtual method extensibility.**
 - **Enhanced Logging: Supports color-coded output for better visibility of network events and peer connection states.**
+- **Enhanced Synchronization Logging: Provides systematic fc_dlog usage with CLOG_GRAY color coding for improved synchronization process visibility.**
 
 **Section sources**
 - [node.hpp:182-304](file://libraries/network/include/graphene/network/node.hpp#L182-L304)
@@ -176,6 +185,7 @@ Stats->>P2P : "enhanced IP address extraction"
 Note over Node,P2P : "Virtual resync method support"
 P2P->>Node : "resync()"
 Node->>Node : "start_synchronizing()"
+Note over Node : "Enhanced sync logging with CLOG_GRAY"
 ```
 
 **Diagram sources**
@@ -196,6 +206,7 @@ The Node class is the central coordinator for peer discovery, connection orchest
 - Manage advanced parameters and peer advertising controls
 - **Collect and report peer statistics and call performance metrics with improved IP address extraction**
 - **Programmatic synchronization control through the virtual resync() method for extensible behavior**
+- **Enhanced synchronization logging with systematic fc_dlog usage and CLOG_GRAY color coding**
 
 Key responsibilities:
 - Peer pool management and connection limits
@@ -205,6 +216,7 @@ Key responsibilities:
 - Firewall detection and NAT traversal helpers
 - **Statistics collection and reporting for network performance analysis with reliable peer information handling**
 - **Programmatic synchronization restart for network recovery scenarios through virtual method override capability**
+- **Comprehensive synchronization process logging with enhanced verbosity and color coding**
 
 ```mermaid
 classDiagram
@@ -718,6 +730,75 @@ The enhanced logging system provides several advantages:
 - [p2p_plugin.cpp:16-19](file://plugins/p2p/p2p_plugin.cpp#L16-L19)
 - [p2p_plugin.cpp:169-171](file://plugins/p2p/p2p_plugin.cpp#L169-L171)
 
+## Enhanced Synchronization Logging System
+
+**Updated Section** The network library now features an enhanced synchronization logging system with new CLOG_GRAY ANSI color code and systematic replacement of fc_ilog with fc_dlog throughout the sync process for improved log verbosity and clarity.
+
+### CLOG_GRAY ANSI Color Code Implementation
+The synchronization system introduces a new ANSI color code specifically for gray-colored log output:
+
+- **CLOG_GRAY Definition**: `#define CLOG_GRAY "\033[90m"` for dark gray text color
+- **CLOG_RESET Definition**: `#define CLOG_RESET "\033[0m"` for resetting text color
+- **ANSI Escape Sequences**: Standard color codes compatible with most modern terminals
+- **Usage Pattern**: Embedded within log messages to provide visual hierarchy
+
+### Systematic fc_dlog Usage Patterns
+The synchronization system has undergone systematic replacement of fc_ilog with fc_dlog for enhanced logging verbosity:
+
+#### Fetch Synchronization Items Loop
+- **Enhanced Item Status Logging**: Uses fc_dlog with CLOG_GRAY for detailed item availability status
+- **Peer Condition Monitoring**: Logs peer inhibition status and idle conditions with color coding
+- **Request Volume Tracking**: Monitors and logs the number of peers actively requesting blocks
+
+#### Blockchain Item Inventory Handling
+- **Comprehensive Response Logging**: Uses fc_dlog with CLOG_GRAY for detailed inventory response analysis
+- **Block Range Information**: Logs block number ranges and remaining item counts with color coding
+- **Validation Diagnostics**: Enhanced logging of validation results and error conditions
+
+#### Sync Status Updates
+- **Progress Tracking**: Uses fc_dlog for detailed synchronization progress updates
+- **Peer Communication**: Logs peer-specific synchronization status with color coding
+- **Resource Management**: Monitors and logs resource allocation during synchronization
+
+#### Sync Start Procedures
+- **Initialization Logging**: Uses fc_dlog for comprehensive startup procedure logging
+- **Configuration Validation**: Logs configuration validation results with detailed status
+- **Resource Preparation**: Monitors and logs resource preparation for synchronization
+
+### Enhanced Logging Verbosity
+The new logging system provides significantly improved verbosity:
+
+- **Detailed Peer Analysis**: Comprehensive logging of peer conditions and capabilities
+- **Item Tracking**: Enhanced tracking and logging of synchronization items
+- **Performance Metrics**: Detailed logging of performance metrics and optimization opportunities
+- **Error Diagnostics**: Enhanced error logging with contextual information
+
+### Color-Coded Log Categories
+The synchronization logging system categorizes information using color coding:
+
+- **Gray Text (CLOG_GRAY)**: Background synchronization processes and status updates
+- **Green Text**: Successful operations and positive outcomes
+- **Yellow Text**: Warning conditions and potential issues
+- **Red Text**: Critical errors and failure conditions
+- **Blue Text**: Debug information and detailed technical data
+
+### Benefits of Enhanced Synchronization Logging
+The new logging system provides several advantages:
+
+- **Improved Visibility**: Color coding makes synchronization processes easier to understand
+- **Better Debugging**: Enhanced verbosity helps identify synchronization issues quickly
+- **Performance Monitoring**: Detailed logging enables performance optimization
+- **Operator Efficiency**: Clear visual hierarchy helps operators monitor network health
+- **Troubleshooting Support**: Comprehensive logging aids in diagnosing complex synchronization issues
+
+**Section sources**
+- [node.cpp:81-81](file://libraries/network/node.cpp#L81-L81)
+- [node.cpp:1187-1194](file://libraries/network/node.cpp#L1187-L1194)
+- [node.cpp:1200-1202](file://libraries/network/node.cpp#L1200-L1202)
+- [node.cpp:2651-2663](file://libraries/network/node.cpp#L2651-L2663)
+- [node.cpp:2772-2779](file://libraries/network/node.cpp#L2772-L2779)
+- [node.cpp:2790-2796](file://libraries/network/node.cpp#L2790-L2796)
+
 ## Dependency Analysis
 The network components depend on each other in a layered fashion:
 - Node depends on PeerConnection, PeerDatabase, and CoreMessages
@@ -729,6 +810,8 @@ The network components depend on each other in a layered fashion:
 - **P2P plugin integrates with statistics system for enhanced peer monitoring**
 - **Resync functionality integrates with Node synchronization system and supports virtual method extensibility**
 - **Color logging integrates with P2P plugin for enhanced console output visualization**
+- **Enhanced synchronization logging integrates with Node synchronization system and uses CLOG_GRAY color coding**
+- **Systematic fc_dlog usage integrates throughout sync process for improved logging verbosity**
 
 ```mermaid
 graph LR
@@ -750,6 +833,10 @@ P2P["p2p_plugin.cpp"] --> Stats
 P2P --> Resync
 P2P --> Color["Color Logging"]
 SimNet["simulated_network"] --> Resync
+SyncLog["Enhanced Synchronization Logging"] --> Node
+SyncLog --> PeerConn
+Gray["CLOG_GRAY Color Code"] --> SyncLog
+FCDLog["fc_dlog Usage Patterns"] --> SyncLog
 ```
 
 **Diagram sources**
@@ -784,6 +871,8 @@ SimNet["simulated_network"] --> Resync
 - **Resync efficiency**: Programmatic resync restarts only active connections, minimizing disruption to healthy peers.
 - **Virtual method overhead**: Virtual dispatch adds minimal overhead while providing extensibility benefits.
 - **Color logging overhead**: ANSI color codes add minimal overhead while significantly improving log readability.
+- **Enhanced sync logging overhead**: New CLOG_GRAY color coding and fc_dlog usage adds minimal overhead while dramatically improving synchronization visibility.
+- **Logging verbosity optimization**: Systematic fc_dlog usage provides better performance than fc_ilog in debug mode.
 
 ## Troubleshooting Guide
 Common issues and diagnostics:
@@ -800,6 +889,8 @@ Common issues and diagnostics:
 - **Synchronization stalls**: Use `resync()` method to manually restart synchronization with all peers.
 - **Virtual method conflicts**: Ensure derived classes properly override `resync()` when extending functionality.
 - **Color logging issues**: Verify terminal supports ANSI color codes for proper log output formatting.
+- **Enhanced sync logging issues**: Verify CLOG_GRAY color code compatibility and fc_dlog macro definitions.
+- **Logging verbosity problems**: Check debug level configuration for fc_dlog vs fc_ilog usage patterns.
 
 Operational controls:
 - Disable peer advertising for debugging isolated networks.
@@ -812,6 +903,8 @@ Operational controls:
 - **Manual resync control**: Use `resync()` method for operator-driven synchronization restarts.
 - **Extensibility patterns**: Leverage virtual method design for custom synchronization behaviors in derived classes.
 - **Color logging configuration**: Ensure terminal supports ANSI color codes for optimal log visualization.
+- **Enhanced sync logging configuration**: Verify CLOG_GRAY color code and fc_dlog usage patterns are properly configured.
+- **Logging verbosity tuning**: Adjust debug level settings to control fc_dlog vs fc_ilog logging intensity.
 
 **Section sources**
 - [peer_database.hpp:39-45](file://libraries/network/include/graphene/network/peer_database.hpp#L39-L45)
@@ -823,4 +916,4 @@ Operational controls:
 ## Conclusion
 The Network Library provides a comprehensive, secure, and scalable foundation for peer-to-peer communication. Its modular design separates concerns between node orchestration, peer lifecycle management, protocol messaging, secure transport, and peer topology maintenance. With built-in performance controls, diagnostic capabilities, and extensible message types, it supports efficient blockchain synchronization and robust network operation.
 
-**Updated** The enhanced peer statistics logging system significantly improves network observability by providing detailed latency tracking, blocking status reporting, and comprehensive peer metrics. The critical bug fix in peer information handling ensures reliable IP address extraction with reduced conversion overhead, preventing crashes and improving overall network stability. The integration with the P2P plugin provides comprehensive monitoring capabilities for operators and developers working with the VIZ blockchain network. The new virtual `resync()` method adds powerful programmatic control for network recovery, enabling manual restart of synchronization with all connected peers and improved resilience against various network states and synchronization failures. The virtual method design provides extensibility for derived classes to customize synchronization behavior while maintaining a consistent interface across the network library ecosystem. The enhanced peer connection logging with color support significantly improves the debugging and monitoring experience by providing visual distinction for different types of network events and messages.
+**Updated** The enhanced peer statistics logging system significantly improves network observability by providing detailed latency tracking, blocking status reporting, and comprehensive peer metrics. The critical bug fix in peer information handling ensures reliable IP address extraction with reduced conversion overhead, preventing crashes and improving overall network stability. The integration with the P2P plugin provides comprehensive monitoring capabilities for operators and developers working with the VIZ blockchain network. The new virtual `resync()` method adds powerful programmatic control for network recovery, enabling manual restart of synchronization with all connected peers and improved resilience against various network states and synchronization failures. The virtual method design provides extensibility for derived classes to customize synchronization behavior while maintaining a consistent interface across the network library ecosystem. The enhanced peer connection logging with color support significantly improves the debugging and monitoring experience by providing visual distinction for different types of network events and messages. **The new enhanced synchronization logging system with CLOG_GRAY ANSI color code and systematic fc_dlog usage dramatically improves synchronization process visibility, providing detailed insights into peer conditions, item availability, and synchronization progress while maintaining minimal performance overhead.**

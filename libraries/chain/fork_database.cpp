@@ -27,6 +27,40 @@ namespace graphene {
             _head = item;
         }
 
+        void fork_database::insert_as_base(signed_block b) {
+            auto &id_index = _index.get<block_id>();
+            auto existing = id_index.find(b.id());
+            if (existing != id_index.end()) {
+                // Already in linked index — still repair any child blocks whose
+                // prev pointer is null (inserted via start_block before we knew
+                // this ancestor).
+                _repair_child_prev_links(*existing);
+                return;
+            }
+            auto item = std::make_shared<fork_item>(std::move(b));
+            // Insert without parent-chain check — this block is confirmed on our
+            // main chain, we just don't have its parent in fork_db (e.g., the
+            // snapshot LIB block whose data is absent from the DLT block log).
+            _index.insert(item);
+            // Link any blocks in _unlinked_index that were waiting for this parent.
+            _push_next(item);
+            // Repair null prev pointers on child blocks already in _index
+            // (e.g., the block inserted via start_block that should follow this one).
+            _repair_child_prev_links(item);
+        }
+
+        void fork_database::_repair_child_prev_links(const item_ptr &parent) {
+            auto &num_idx = _index.get<block_num>();
+            auto it = num_idx.lower_bound(parent->num + 1);
+            auto end = num_idx.upper_bound(parent->num + 1);
+            for (; it != end; ++it) {
+                const item_ptr &candidate = *it;
+                if (candidate->data.previous == parent->id && !candidate->prev.lock()) {
+                    candidate->prev = parent;
+                }
+            }
+        }
+
 /**
  * Pushes the block into the fork database and caches it if it doesn't link
  *
@@ -194,11 +228,21 @@ namespace graphene {
                 // back to the most recent common ancestor.
                 pair<branch_type, branch_type> result;
                 auto first_branch_itr = _index.get<block_id>().find(first);
-                FC_ASSERT(first_branch_itr != _index.get<block_id>().end());
+                if (first_branch_itr == _index.get<block_id>().end()) {
+                    wlog("fetch_branch_from: first block not in fork_db index");
+                    FC_THROW_EXCEPTION(fc::assert_exception,
+                        "fetch_branch_from: first block ${id} not found in fork_db",
+                        ("id", first));
+                }
                 auto first_branch = *first_branch_itr;
 
                 auto second_branch_itr = _index.get<block_id>().find(second);
-                FC_ASSERT(second_branch_itr != _index.get<block_id>().end());
+                if (second_branch_itr == _index.get<block_id>().end()) {
+                    wlog("fetch_branch_from: second block not in fork_db index");
+                    FC_THROW_EXCEPTION(fc::assert_exception,
+                        "fetch_branch_from: second block ${id} not found in fork_db",
+                        ("id", second));
+                }
                 auto second_branch = *second_branch_itr;
 
 
@@ -206,22 +250,40 @@ namespace graphene {
                        second_branch->data.block_num()) {
                     result.first.push_back(first_branch);
                     first_branch = first_branch->prev.lock();
-                    FC_ASSERT(first_branch);
+                    if (!first_branch) {
+                        wlog("fetch_branch_from: broken prev chain on first branch");
+                        FC_THROW_EXCEPTION(fc::assert_exception,
+                            "fetch_branch_from: broken prev chain on first branch (block ${id})",
+                            ("id", first));
+                    }
                 }
                 while (second_branch->data.block_num() >
                        first_branch->data.block_num()) {
                     result.second.push_back(second_branch);
                     second_branch = second_branch->prev.lock();
-                    FC_ASSERT(second_branch);
+                    if (!second_branch) {
+                        wlog("fetch_branch_from: broken prev chain on second branch");
+                        FC_THROW_EXCEPTION(fc::assert_exception,
+                            "fetch_branch_from: broken prev chain on second branch (block ${id})",
+                            ("id", second));
+                    }
                 }
                 while (first_branch->data.previous !=
                        second_branch->data.previous) {
                     result.first.push_back(first_branch);
                     result.second.push_back(second_branch);
                     first_branch = first_branch->prev.lock();
-                    FC_ASSERT(first_branch);
+                    if (!first_branch || !second_branch) {
+                        wlog("fetch_branch_from: broken prev chain during common ancestor search");
+                        FC_THROW_EXCEPTION(fc::assert_exception,
+                            "fetch_branch_from: broken prev chain during common ancestor search");
+                    }
                     second_branch = second_branch->prev.lock();
-                    FC_ASSERT(second_branch);
+                    if (!second_branch) {
+                        wlog("fetch_branch_from: broken prev chain on second branch during ancestor search");
+                        FC_THROW_EXCEPTION(fc::assert_exception,
+                            "fetch_branch_from: broken prev chain on second branch during ancestor search");
+                    }
                 }
                 if (first_branch && second_branch) {
                     result.first.push_back(first_branch);

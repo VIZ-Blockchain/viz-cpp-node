@@ -9,14 +9,17 @@
 - [fork_database.cpp](file://libraries/chain/fork_database.cpp)
 - [database.hpp](file://libraries/chain/include/graphene/chain/database.hpp)
 - [database.cpp](file://libraries/chain/database.cpp)
+- [node.cpp](file://libraries/network/node.cpp)
+- [plugin.cpp](file://plugins/chain/plugin.cpp)
+- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced witness account validation section with comprehensive pre-check mechanisms
-- Added documentation for graceful handling of missing witness accounts using find_account()
-- Updated witness production validation workflow to prevent exceptions during block generation
-- Improved error handling documentation for shared memory corruption scenarios
+- Enhanced logging system documentation for sync blocks with info level logging and console color formatting
+- Updated sync block and normal block push logs from debug to info level for better production visibility
+- Added documentation for console color formatting in block processing logs
+- Improved logging visibility for production environments
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -24,10 +27,11 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
+6. [Logging System Enhancements](#logging-system-enhancements)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
 
 ## Introduction
 This document explains the Block Processing and Validation system responsible for accepting incoming blocks, validating their integrity and consensus compliance, applying state changes, and maintaining blockchain consistency. It focuses on:
@@ -38,6 +42,7 @@ This document explains the Block Processing and Validation system responsible fo
 - Block replay for synchronization and state reconstruction
 - Integration with fork database, witness scheduling, and state persistence
 - Block size limits, transaction ordering, and consensus enforcement
+- Enhanced logging system with production-ready visibility
 
 ## Project Structure
 The block processing pipeline spans several core modules:
@@ -45,6 +50,7 @@ The block processing pipeline spans several core modules:
 - Fork database: manages canonical chain and forks for reorganization decisions
 - Block log: persistent append-only storage enabling fast replay and random access
 - Block summary and witness schedule: support consensus checks and participation metrics
+- Network layer: handles block propagation and synchronization with enhanced logging
 
 ```mermaid
 graph TB
@@ -53,6 +59,11 @@ DB["database.hpp/.cpp"]
 FD["fork_database.hpp/.cpp"]
 BL["block_log.hpp/.cpp"]
 BS["block_summary_object.hpp"]
+end
+subgraph "Network Layer"
+NET["node.cpp"]
+P2P["p2p_plugin.cpp"]
+CHAIN["chain plugin.cpp"]
 end
 subgraph "Protocol"
 PB["signed_block (protocol)"]
@@ -63,6 +74,9 @@ DB --> BL
 DB --> BS
 DB --> PB
 DB --> TX
+NET --> DB
+P2P --> NET
+CHAIN --> DB
 ```
 
 **Diagram sources**
@@ -70,23 +84,31 @@ DB --> TX
 - [fork_database.hpp:53-122](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L122)
 - [block_log.hpp:38-71](file://libraries/chain/include/graphene/chain/block_log.hpp#L38-L71)
 - [block_summary_object.hpp:19-42](file://libraries/chain/include/graphene/chain/block_summary_object.hpp#L19-L42)
+- [node.cpp:3354-3366](file://libraries/network/node.cpp#L3354-L3366)
+- [p2p_plugin.cpp:152-157](file://plugins/p2p/p2p_plugin.cpp#L152-L157)
+- [plugin.cpp:104-121](file://plugins/chain/plugin.cpp#L104-L121)
 
 **Section sources**
 - [database.hpp:36-200](file://libraries/chain/include/graphene/chain/database.hpp#L36-L200)
 - [fork_database.hpp:53-122](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L122)
 - [block_log.hpp:38-71](file://libraries/chain/include/graphene/chain/block_log.hpp#L38-L71)
 - [block_summary_object.hpp:19-42](file://libraries/chain/include/graphene/chain/block_summary_object.hpp#L19-L42)
+- [node.cpp:3354-3366](file://libraries/network/node.cpp#L3354-L3366)
+- [p2p_plugin.cpp:152-157](file://plugins/p2p/p2p_plugin.cpp#L152-L157)
+- [plugin.cpp:104-121](file://plugins/chain/plugin.cpp#L104-L121)
 
 ## Core Components
 - Block log: Append-only, memory-mapped storage with an auxiliary index for O(1) random access by block number. Supports reading head, reading by position, and reconstructing the index if inconsistent.
 - Fork database: Maintains a linked tree of candidate blocks, supports pushing blocks, fetching branches, and selecting the heaviest chain head.
 - Database: Implements validate_block(), push_block(), and apply_block() to enforce consensus rules, apply state changes, and persist blocks.
+- Network layer: Handles block propagation, synchronization, and enhanced logging with console color formatting.
 
 Key responsibilities:
 - validate_block(): Validates Merkle root, block size, and optionally witness signature and schedule alignment
 - push_block(): Coordinates fork selection, reorganization, and state application
 - apply_block(): Applies all transactions and operations, updates dynamic properties, and creates block summaries
 - block_log: Provides deterministic replay and persistence
+- Enhanced logging: Provides production-ready visibility with info level logging and console color formatting
 
 **Section sources**
 - [block_log.hpp:38-71](file://libraries/chain/include/graphene/chain/block_log.hpp#L38-L71)
@@ -95,18 +117,28 @@ Key responsibilities:
 - [fork_database.cpp:33-90](file://libraries/chain/fork_database.cpp#L33-L90)
 - [database.hpp:193-196](file://libraries/chain/include/graphene/chain/database.hpp#L193-L196)
 - [database.cpp:737-792](file://libraries/chain/database.cpp#L737-L792)
+- [node.cpp:3354-3366](file://libraries/network/node.cpp#L3354-L3366)
+- [p2p_plugin.cpp:152-157](file://plugins/p2p/p2p_plugin.cpp#L152-L157)
+- [plugin.cpp:104-121](file://plugins/chain/plugin.cpp#L104-L121)
 
 ## Architecture Overview
-The block processing flow integrates validation, fork management, state application, and persistence.
+The block processing flow integrates validation, fork management, state application, persistence, and enhanced logging with console color formatting.
 
 ```mermaid
 sequenceDiagram
 participant Net as "Network/P2P"
+participant P2P as "p2p_plugin.cpp"
+participant Chain as "chain plugin.cpp"
 participant DB as "database.cpp"
 participant FD as "fork_database.cpp"
 participant BL as "block_log.cpp"
-Net->>DB : "push_block(signed_block)"
-DB->>DB : "validate_block(skip)"
+Net->>P2P : "handle_block(sync_mode, block)"
+P2P->>P2P : "ilog(CLOG_WHITE ... sync/normal block)"
+P2P->>Chain : "accept_block(block, sync_mode)"
+Chain->>Chain : "ilog(sync_start/end messages)"
+Chain->>DB : "validate_block(skip)"
+DB->>DB : "_validate_block(...)"
+Chain->>DB : "push_block(block, skip)"
 DB->>FD : "push_block(new_block)"
 alt "Fork switch required"
 DB->>DB : "pop_block() until fork split"
@@ -114,13 +146,17 @@ DB->>DB : "apply_block() for each fork branch"
 end
 DB->>DB : "apply_block(new_block)"
 DB->>BL : "append(signed_block)"
-DB-->>Net : "result (fork_switched?)"
+P2P->>Net : "ilog(successful/not applied)"
+Net-->>Net : "result (fork_switched?)"
 ```
 
 **Diagram sources**
+- [p2p_plugin.cpp:142-174](file://plugins/p2p/p2p_plugin.cpp#L142-L174)
+- [plugin.cpp:103-142](file://plugins/chain/plugin.cpp#L103-L142)
 - [database.cpp:800-925](file://libraries/chain/database.cpp#L800-L925)
 - [fork_database.cpp:33-90](file://libraries/chain/fork_database.cpp#L33-L90)
 - [block_log.cpp:253-257](file://libraries/chain/block_log.cpp#L253-L257)
+- [node.cpp:3354-3366](file://libraries/network/node.cpp#L3354-L3366)
 
 ## Detailed Component Analysis
 
@@ -382,6 +418,64 @@ Next --> |Done| REnd(["Complete"])
 - [database.cpp:270-300](file://libraries/chain/database.cpp#L270-L300)
 - [database.cpp:250-257](file://libraries/chain/database.cpp#L250-L257)
 
+## Logging System Enhancements
+
+**Updated** Enhanced logging system for sync blocks with info level logging and console color formatting
+
+The logging system has been significantly enhanced to provide better production visibility with info level logging and console color formatting. These improvements ensure that block processing activities are visible in production environments without overwhelming debug-level verbosity.
+
+### Sync Block Logging with Info Level Visibility
+
+The network layer now provides enhanced logging for sync block operations with info level granularity:
+
+- **Successful sync block acceptance**: `ilog("Successfully pushed sync block ${num} (id:${id})")` - Provides confirmation when sync blocks are successfully processed
+- **Sync block rejection**: `ilog("Sync block #${num} not applied (already on chain, micro-fork, or parent unknown ahead)")` - Documents why sync blocks are not applied
+- **Sync mode transitions**: `ilog("\033[92m>>> Syncing Blockchain started from block #${n} (head: ${head})\033[0m")` and `ilog("\033[92mSync mode ended: received normal block #${n} (head: ${head}), sync_start_logged reset\033[0m")` - Tracks sync mode lifecycle
+
+These logs are upgraded from debug to info level, making them visible in production configurations without requiring debug logging to be enabled.
+
+### Console Color Formatting for Block Processing
+
+The P2P plugin implements comprehensive console color formatting for block processing visibility:
+
+- **Color constants**: `CLOG_WHITE`, `CLOG_GRAY`, `CLOG_RESET` define ANSI color codes for terminal output
+- **Sync block notifications**: `ilog(CLOG_WHITE "Chain pushing sync block #${block_num} (head: ${head}, gap: ${gap})" CLOG_RESET)` - White text for sync blocks
+- **Normal block notifications**: `ilog(CLOG_WHITE "Chain pushing normal block #${block_num} (head: ${head}, gap: ${gap})" CLOG_RESET)` - White text for normal blocks
+- **Transaction processing**: `ilog(CLOG_WHITE "Got ${t} transactions on block ${b} by ${w} -- latency: ${l} ms" CLOG_RESET)` - White text for transaction counts
+
+The color formatting enhances readability in terminal environments, allowing operators to quickly distinguish between sync blocks, normal blocks, and transaction processing information.
+
+### Production-Ready Logging Strategy
+
+The enhanced logging system follows a production-ready strategy:
+
+- **Info level logging**: Critical block processing events are logged at info level for production visibility
+- **Console color formatting**: Terminal output uses color codes for improved readability
+- **Structured information**: Logs include block numbers, timestamps, witness information, and performance metrics
+- **Minimal noise**: Debug-level verbose logging is reduced while maintaining essential operational information
+
+```mermaid
+flowchart TD
+LogStart(["Block Processing Event"]) --> CheckType{"Block Type?"}
+CheckType --> |Sync Block| SyncLog["ilog(info level)"]
+CheckType --> |Normal Block| NormalLog["ilog(info level)"]
+SyncLog --> ColorFormat["Console Color Formatting"]
+NormalLog --> ColorFormat
+ColorFormat --> StructInfo["Structured Information"]
+StructInfo --> ProdVisibility["Production Visibility"]
+```
+
+**Diagram sources**
+- [node.cpp:3354-3366](file://libraries/network/node.cpp#L3354-L3366)
+- [plugin.cpp:104-121](file://plugins/chain/plugin.cpp#L104-L121)
+- [p2p_plugin.cpp:152-157](file://plugins/p2p/p2p_plugin.cpp#L152-L157)
+
+**Section sources**
+- [node.cpp:3354-3366](file://libraries/network/node.cpp#L3354-L3366)
+- [plugin.cpp:104-121](file://plugins/chain/plugin.cpp#L104-L121)
+- [p2p_plugin.cpp:152-157](file://plugins/p2p/p2p_plugin.cpp#L152-L157)
+- [p2p_plugin.cpp:16:19](file://plugins/p2p/p2p_plugin.cpp#L16-L19)
+
 ## Dependency Analysis
 The following diagram shows module-level dependencies among the core components involved in block processing.
 
@@ -394,17 +488,26 @@ DB --> DH["database.hpp"]
 FD --> FH["fork_database.hpp"]
 BL --> BH["block_log.hpp"]
 BS --> BH
+NET["node.cpp"] --> DB
+P2P["p2p_plugin.cpp"] --> NET
+CHAIN["chain plugin.cpp"] --> DB
 ```
 
 **Diagram sources**
 - [database.hpp:3-8](file://libraries/chain/include/graphene/chain/database.hpp#L3-L8)
 - [fork_database.hpp:3-18](file://libraries/chain/include/graphene/chain/fork_database.hpp#L3-L18)
 - [block_log.hpp:3-9](file://libraries/chain/include/graphene/chain/block_log.hpp#L3-L9)
+- [node.cpp:3354-3366](file://libraries/network/node.cpp#L3354-L3366)
+- [p2p_plugin.cpp:152-157](file://plugins/p2p/p2p_plugin.cpp#L152-L157)
+- [plugin.cpp:104-121](file://plugins/chain/plugin.cpp#L104-L121)
 
 **Section sources**
 - [database.hpp:3-8](file://libraries/chain/include/graphene/chain/database.hpp#L3-L8)
 - [fork_database.hpp:3-18](file://libraries/chain/include/graphene/chain/fork_database.hpp#L3-L18)
 - [block_log.hpp:3-9](file://libraries/chain/include/graphene/chain/block_log.hpp#L3-L9)
+- [node.cpp:3354-3366](file://libraries/network/node.cpp#L3354-L3366)
+- [p2p_plugin.cpp:152-157](file://plugins/p2p/p2p_plugin.cpp#L152-L157)
+- [plugin.cpp:104-121](file://plugins/chain/plugin.cpp#L104-L121)
 
 ## Performance Considerations
 - Memory-mapped IO: The block log uses memory-mapped files for efficient random access and streaming reads/writes.
@@ -413,6 +516,7 @@ BS --> BH
 - Undo sessions: State changes are wrapped in undo sessions to support rollback on errors and efficient reversion during forks.
 - Pending transactions: During block generation, transactions are re-applied to reflect time-dependent semantics and respect block size limits.
 - **Enhanced witness validation**: Pre-check mechanisms using find_account() avoid exception overhead and improve block production reliability.
+- **Enhanced logging**: Info level logging provides production visibility without debug-level overhead, while console color formatting improves terminal readability.
 
 ## Troubleshooting Guide
 Common issues and remedies:
@@ -421,6 +525,7 @@ Common issues and remedies:
 - Excessive memory usage during replay: The database reserves memory and resizes shared memory if allocation fails mid-replay. Monitor logs for forced resizing events.
 - Invalid witness schedule: If a block's timestamp slot does not align with the scheduled witness, validation fails. Verify time synchronization and witness schedules.
 - **Missing witness accounts**: Enhanced pre-check mechanisms now detect missing witness accounts gracefully, logging critical details and preventing node crashes. Such issues typically indicate shared memory corruption requiring node restart with replay.
+- **Enhanced logging visibility**: Production environments can now monitor block processing through info level logs without debug configuration, while console color formatting improves terminal readability for operators.
 
 **Section sources**
 - [block_log.cpp:134-193](file://libraries/chain/block_log.cpp#L134-L193)
@@ -428,10 +533,15 @@ Common issues and remedies:
 - [database.cpp:804-823](file://libraries/chain/database.cpp#L804-L823)
 - [database.cpp:3724-3748](file://libraries/chain/database.cpp#L3724-L3748)
 - [database.cpp:1294-1311](file://libraries/chain/database.cpp#L1294-L1311)
+- [node.cpp:3354-3366](file://libraries/network/node.cpp#L3354-L3366)
+- [plugin.cpp:104-121](file://plugins/chain/plugin.cpp#L104-L121)
+- [p2p_plugin.cpp:152-157](file://plugins/p2p/p2p_plugin.cpp#L152-L157)
 
 ## Conclusion
 The Block Processing and Validation system integrates robust storage (block log), fork management (fork database), and strict consensus validation (database) to ensure blockchain consistency. The validate_block() and push_block() methods coordinate header checks, witness scheduling, Merkle roots, and block size limits. The system supports efficient replay for synchronization and maintains witness participation metrics to enforce consensus.
 
 **Enhanced witness account validation** provides improved reliability during block production by performing preliminary verification using find_account() calls instead of relying on get_account() which would throw exceptions. This change ensures graceful handling of missing witness accounts and prevents node crashes, while maintaining comprehensive error reporting for debugging shared memory corruption scenarios.
 
-Proper use of skip flags, memory mapping, and undo sessions yields strong performance and reliability, making the system resilient to various operational challenges while maintaining strict consensus enforcement.
+**Enhanced logging system** provides production-ready visibility with info level logging for sync blocks and normal blocks, upgraded from debug level for better production monitoring. Console color formatting improves terminal readability with white text for block processing notifications and structured information including block numbers, witness information, and performance metrics.
+
+Proper use of skip flags, memory mapping, and undo sessions yields strong performance and reliability, making the system resilient to various operational challenges while maintaining strict consensus enforcement. The enhanced logging system ensures that block processing activities are visible in production environments without overwhelming debug-level verbosity, supporting effective monitoring and troubleshooting of blockchain operations.

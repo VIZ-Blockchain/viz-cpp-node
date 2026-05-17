@@ -24,25 +24,19 @@ target_link_libraries(
         graphene::witness
         graphene::witness_api
         graphene::database_api
-        graphene::test_api_plugin
-        graphene::social_network
-        graphene::tags
         graphene::operation_history
         graphene::account_by_key
         graphene::account_history
-        graphene::private_message
         graphene::auth_util
-        graphene::debug_node
         graphene::raw_block
         graphene::block_info
         graphene::json_rpc
-        graphene::follow
         graphene::committee_api
         graphene::invite_api
         graphene::paid_subscription_api
         graphene::custom_protocol_api
         graphene::snapshot
-        ${MONGO_LIB}
+        graphene::witness_guard
         graphene_protocol
         fc
         ${CMAKE_DL_LIBS}

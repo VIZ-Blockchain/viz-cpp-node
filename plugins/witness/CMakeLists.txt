@@ -34,7 +34,9 @@ target_link_libraries(
         appbase
 )
 target_include_directories(graphene_${CURRENT_TARGET}
-                           PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../snapshot/include"
+)
 
 install(TARGETS
         graphene_${CURRENT_TARGET}

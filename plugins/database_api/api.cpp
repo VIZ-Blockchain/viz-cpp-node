@@ -1,6 +1,5 @@
 #include <graphene/plugins/database_api/plugin.hpp>
 
-#include <graphene/plugins/follow/plugin.hpp>
 
 #include <graphene/protocol/get_config.hpp>
 
@@ -33,7 +32,7 @@ struct block_applied_callback_info {
     cont::iterator it;
 
     void connect(
-        boost::signals2::signal<void(const signed_block &)> &sig,
+        boost::signals2::signal<void(const signed_block &), graphene::chain::applied_block_timing_combiner> &sig,
         cont &free_cont,
         block_applied_callback cb
     ) {

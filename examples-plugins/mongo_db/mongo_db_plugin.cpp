@@ -97,7 +97,14 @@ namespace mongo_db {
                 auto &db = pimpl_->database();
 
                 db.applied_block.connect([&](const signed_block &b) {
+                    auto cb_start = fc::time_point::now();
                     pimpl_->on_block(b);
+                    auto cb_ms = (fc::time_point::now() - cb_start).count() / 1000;
+                    if (cb_ms > 100) {
+                        wlog("mongo_db on_block took ${ms}ms (block #${n}) — "
+                             "write lock held, blocking P2P/RPC",
+                             ("ms", cb_ms)("n", b.block_num()));
+                    }
                 });
 
                 db.post_apply_operation.connect([&](const operation_notification &o) {

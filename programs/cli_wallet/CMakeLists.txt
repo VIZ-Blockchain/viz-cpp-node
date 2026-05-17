@@ -28,9 +28,6 @@ target_link_libraries(
         graphene_wallet
         graphene::database_api
         graphene::account_history
-        graphene::social_network
-        graphene::private_message
-        graphene::follow
         graphene::network_broadcast_api
         graphene::witness_api
         fc

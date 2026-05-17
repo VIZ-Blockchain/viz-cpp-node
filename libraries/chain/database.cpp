@@ -1,6 +1,7 @@
 #include <openssl/md5.h>
 
 #include <boost/iostreams/device/mapped_file.hpp>
+#include <boost/interprocess/exceptions.hpp>
 
 #include <graphene/protocol/chain_operations.hpp>
 
@@ -27,6 +28,11 @@
 
 #include <fc/container/deque.hpp>
 
+// ANSI escape for dark-grey console log color (matches DLT_LOG_DGRAY in network lib)
+#define DB_LOG_DGRAY  "\033[90m"
+#define DB_LOG_YELLOW "\033[93m"
+#define DB_LOG_RESET  "\033[0m"
+
 #include <fc/io/fstream.hpp>
 #include <fc/io/json.hpp>
 
@@ -34,6 +40,10 @@
 #include <csignal>
 #include <cerrno>
 #include <cstring>
+
+#ifdef _WIN32
+#include <signal.h>
+#endif
 
 #define VIRTUAL_SCHEDULE_LAP_LENGTH  ( fc::uint128_t(uint64_t(-1)) )
 #define VIRTUAL_SCHEDULE_LAP_LENGTH2 ( fc::uint128_t::max_value() )
@@ -91,6 +101,7 @@ namespace graphene { namespace chain {
             return v;
         }
 
+#ifndef _WIN32
         class signal_guard {
             struct sigaction old_hup_action, old_int_action, old_term_action;
 
@@ -182,6 +193,20 @@ namespace graphene { namespace chain {
         inline sig_atomic_t signal_guard::get_is_interrupted() noexcept {
             return is_interrupted;
         }
+#else // _WIN32
+        // Windows stub: signal handling not available
+        class signal_guard {
+            static volatile std::sig_atomic_t is_interrupted;
+            bool is_restored = true;
+        public:
+            inline signal_guard() {}
+            inline ~signal_guard() {}
+            void setup() {}
+            void restore() {}
+            static inline std::sig_atomic_t get_is_interrupted() noexcept { return is_interrupted; }
+        };
+        volatile std::sig_atomic_t signal_guard::is_interrupted = false;
+#endif
 
         class database_impl {
         public:
@@ -205,7 +230,6 @@ namespace graphene { namespace chain {
 
         void database::open(const fc::path &data_dir, const fc::path &shared_mem_dir, uint64_t initial_supply, uint64_t shared_file_size, uint32_t chainbase_flags) {
             try {
-                _node_startup_time = fc::time_point::now();
                 auto start = fc::time_point::now();
                 wlog("Start opening database. Please wait, don't break application...");
 
@@ -232,9 +256,25 @@ namespace graphene { namespace chain {
                     _dlt_block_log.open(data_dir / "dlt_block_log");
 
                     // Rewind all undo state. This should return us to the state at the last irreversible block.
-                    with_strong_write_lock([&]() {
-                        undo_all();
-                    });
+                    // Wrap in a try-catch for boost::interprocess::lock_exception:
+                    // After a hard crash, the previous process may have died while holding
+                    // shared-memory internal mutexes (e.g., inside managed_mapped_file allocator).
+                    // When undo_all() touches those allocations, boost throws lock_exception.
+                    // Convert it to database_revision_exception so the chain plugin's existing
+                    // recovery path (snapshot reload / replay) handles it instead of std::terminate.
+                    try {
+                        with_strong_write_lock([&]() {
+                            undo_all();
+                        });
+                    } catch (const boost::interprocess::lock_exception& e) {
+                        wlog("Shared memory lock exception during undo_all(): ${e}. "
+                             "The previous process may have crashed while holding a lock. "
+                             "Throwing revision mismatch to trigger recovery path.",
+                             ("e", e.what()));
+                        FC_THROW_EXCEPTION(database_revision_exception,
+                            "Shared memory lock corrupted (previous crash): ${what}",
+                            ("what", e.what()));
+                    }
 
                     if (revision() != head_block_num()) {
                         with_strong_read_lock([&]() {
@@ -250,12 +290,55 @@ namespace graphene { namespace chain {
                     }
 
                     if (head_block_num()) {
+                        // Validate DLT block log consistency before seeding fork_db.
+                        // After a crash, the DLT block log index/data files can become
+                        // truncated (e.g., only 1 block when database has thousands).
+                        // Using corrupted DLT data for fork_db seeding causes cascading
+                        // P2P failures (dead forks, sync stalls, crash loops).
+                        if (!_dlt_block_log.is_consistent_with(head_block_num())) {
+                            elog("DLT block log is corrupted (db_head=${db_h}). "
+                                 "Resetting DLT block log to prevent cascading failures. "
+                                 "P2P sync will rebuild it.",
+                                 ("db_h", head_block_num()));
+                            _dlt_block_log.reset();
+                        }
+
                         auto head_block = _block_log.read_block_by_num(head_block_num());
                         if (head_block.valid()) {
                             // Block_log has the head block
                             FC_ASSERT(head_block->id() == head_block_id(),
                                 "Chain state does not match block log. Please reindex blockchain.");
                             _fork_db.start_block(*head_block);
+
+                            // P22 fix: Seed fork_db with recent blocks (up to 100)
+                            // so that incoming sync blocks from peers near our head
+                            // can find their parent chain. After restart, fork_db only
+                            // has the head block; if peers send blocks a few behind
+                            // head (e.g., because their DLT range overlaps), those
+                            // blocks get rejected as "dead fork" because their parent
+                            // isn't in fork_db.
+                            const uint32_t FORK_DB_SEED_DEPTH = 100;
+                            uint32_t seed_start = head_block_num() > FORK_DB_SEED_DEPTH
+                                ? head_block_num() - FORK_DB_SEED_DEPTH + 1
+                                : 1;
+                            uint32_t seeded = 0;
+                            for (uint32_t n = seed_start; n < head_block_num(); ++n) {
+                                auto blk = _block_log.read_block_by_num(n);
+                                if (blk.valid()) {
+                                    _fork_db.push_block(*blk);
+                                    ++seeded;
+                                } else if (_dlt_block_log.is_open()) {
+                                    blk = _dlt_block_log.read_block_by_num(n);
+                                    if (blk.valid()) {
+                                        _fork_db.push_block(*blk);
+                                        ++seeded;
+                                    }
+                                }
+                            }
+                            if (seeded > 0) {
+                                ilog("fork_db seeded with ${n} recent blocks (${first}-${last}) for P2P sync resilience",
+                                     ("n", seeded)("first", seed_start)("last", head_block_num() - 1));
+                            }
 
                         } else {
                             // DLT mode: block_log is empty but chainbase has state (loaded from snapshot).
@@ -264,31 +347,75 @@ namespace graphene { namespace chain {
                                  "Skipping block log validation.",
                                  ("n", head_block_num()));
 
-                            // Seed fork_db from dlt_block_log or chain state so P2P sync
-                            // works immediately. Without this, fork_db is empty and:
-                            //   - is_known_block() returns false for our head block
-                            //   - P2P synopsis generation fails
-                            //   - Sync blocks can't link (no parent in fork_db)
+                            // Seed fork_db bottom-up from the oldest available DLT block
+                            // within a seeding window so that all blocks from oldest to
+                            // head have correct prev-chain linkage.  This allows
+                            // fetch_branch_from to walk both branches during a fork switch.
+                            //
+                            // Single-block (head-only) seeding leaves 79740483..485 out of
+                            // fork_db.  When a competing fork arrives starting at 79740483,
+                            // fetch_branch_from crashes walking the slave branch past the
+                            // null prev on the start_block root.
+                            //
+                            // The snapshot block itself (e.g. 79740482) is typically absent
+                            // from the DLT log; it is handled at runtime via insert_as_base()
+                            // in _push_block's ALREADY_KNOWN path when the peer re-sends it.
                             if (head_block_num() > 0) {
-                                auto dlt_head = _dlt_block_log.head();
-                                if (dlt_head && dlt_head->block_num() >= head_block_num()) {
-                                    auto head_from_dlt = _dlt_block_log.read_block_by_num(head_block_num());
-                                    if (head_from_dlt && head_from_dlt->id() == head_block_id()) {
-                                        _fork_db.start_block(*head_from_dlt);
-                                        ilog("DLT mode: fork_db seeded from dlt_block_log at block ${n}", ("n", head_block_num()));
+                                const uint32_t FORK_DB_SEED_DEPTH = 100;
+                                uint32_t h = head_block_num();
+                                uint32_t seed_start = h > FORK_DB_SEED_DEPTH
+                                    ? h - FORK_DB_SEED_DEPTH + 1 : 1;
+
+                                // Find the oldest DLT block in the seeding window.
+                                uint32_t actual_start = 0;
+                                for (uint32_t n = seed_start; n <= h; ++n) {
+                                    if (_dlt_block_log.read_block_by_num(n).valid()) {
+                                        actual_start = n;
+                                        break;
                                     }
                                 }
+
+                                if (actual_start > 0) {
+                                    auto root_blk = _dlt_block_log.read_block_by_num(actual_start);
+                                    if (root_blk.valid()) {
+                                        _fork_db.start_block(*root_blk);
+                                        uint32_t seeded = 1;
+                                        for (uint32_t n = actual_start + 1; n <= h; ++n) {
+                                            auto blk = _dlt_block_log.read_block_by_num(n);
+                                            if (!blk.valid()) break;
+                                            try {
+                                                _fork_db.push_block(*blk);
+                                                ++seeded;
+                                            } catch (const fc::exception& e) {
+                                                wlog("DLT mode: fork_db seeding stopped at ${n}: ${r}",
+                                                     ("n", n)("r", e.what()));
+                                                break;
+                                            }
+                                        }
+                                        // Verify fork_db head matches database head.
+                                        if (!_fork_db.head() ||
+                                            _fork_db.head()->id != head_block_id()) {
+                                            wlog("DLT mode: fork_db head mismatch after seeding "
+                                                 "(expected=${exp} got=${got}), resetting",
+                                                 ("exp", head_block_id())
+                                                 ("got", _fork_db.head()
+                                                     ? _fork_db.head()->id
+                                                     : block_id_type()));
+                                            _fork_db.reset();
+                                        } else {
+                                            ilog("DLT mode: fork_db seeded bottom-up "
+                                                 "${n} blocks (${s}-${e})",
+                                                 ("n", seeded)("s", actual_start)
+                                                 ("e", actual_start + seeded - 1));
+                                        }
+                                    }
+                                }
+
                                 if (!_fork_db.head()) {
-                                    // dlt_block_log doesn't cover head block yet (normal after fresh
-                                    // snapshot import). Construct a minimal fork_db entry from the
-                                    // head_block_id. We can't reconstruct the full signed_block, but
-                                    // we can create a fork_item with enough data for P2P to work.
-                                    // The early rejection check in _push_block() allows blocks whose
-                                    // previous == head_block_id(), which is sufficient for the first
-                                    // sync block to be accepted.
-                                    ilog("DLT mode: dlt_block_log does not cover head block ${n}, "
-                                         "fork_db will be empty until first block is applied",
-                                         ("n", head_block_num()));
+                                    ilog("DLT mode: fork_db empty after seeding "
+                                         "(DLT log does not reach head #${n}); "
+                                         "fork_db fills once first block is applied",
+                                         ("n", h));
                                 }
                             }
                         }
@@ -300,6 +427,62 @@ namespace graphene { namespace chain {
                 with_strong_read_lock([&]() {
                     init_hardforks(); // Writes to local state, but reads from db
                 });
+
+                // === HARDFORK 12: EMERGENCY SCHEDULE RECOVERY ===
+                // If the node shut down (or crashed) during emergency mode while
+                // update_witness_schedule() had zeroed the schedule but before the
+                // hybrid override could fill it with committee, the schedule may
+                // contain empty (null) witness names.  Since commit(LIB) may have
+                // already made these changes permanent, the normal undo rollback
+                // cannot fix this.  Detect and repair it here on startup.
+                if (head_block_num() > 0) {
+                    const dynamic_global_property_object &startup_dgp = get_dynamic_global_properties();
+                    const witness_schedule_object &startup_wso = get_witness_schedule_object();
+
+                    bool schedule_broken = false;
+                    for (int i = 0; i < startup_wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                        if (startup_wso.current_shuffled_witnesses[i] == account_name_type()) {
+                            schedule_broken = true;
+                            break;
+                        }
+                    }
+
+                    if (schedule_broken) {
+                        wlog("EMERGENCY SCHEDULE RECOVERY: detected empty witness slots "
+                             "in schedule at startup (head=${h}, emergency=${e}). "
+                             "Filling all slots with committee witness.",
+                             ("h", head_block_num())("e", startup_dgp.emergency_consensus_active));
+
+                        with_strong_write_lock([&]() {
+                            // Ensure emergency mode is active
+                            if (!startup_dgp.emergency_consensus_active) {
+                                modify(startup_dgp, [&](dynamic_global_property_object &_dgp) {
+                                    _dgp.emergency_consensus_active = true;
+                                    _dgp.emergency_consensus_start_block = head_block_num();
+                                });
+                                _fork_db.set_emergency_mode(true);
+                                wlog("EMERGENCY SCHEDULE RECOVERY: re-activated emergency consensus mode");
+                            }
+
+                            // Fill all schedule slots with committee
+                            modify(startup_wso, [&](witness_schedule_object &_wso) {
+                                for (int i = 0; i < CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT; i++) {
+                                    _wso.current_shuffled_witnesses[i] = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                                }
+                                _wso.num_scheduled_witnesses = CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT;
+                                _wso.next_shuffle_block_num = head_block_num() + _wso.num_scheduled_witnesses;
+                            });
+
+                            wlog("EMERGENCY SCHEDULE RECOVERY: schedule repaired, all ${n} slots set to committee",
+                                 ("n", CHAIN_MAX_WITNESSES));
+                        });
+                    } else if (startup_dgp.emergency_consensus_active) {
+                        // Schedule is valid but emergency mode is active — restore fork_db flag
+                        _fork_db.set_emergency_mode(true);
+                        ilog("Emergency consensus mode is active at startup (head=${h})",
+                             ("h", head_block_num()));
+                    }
+                }
 
             }
             FC_CAPTURE_LOG_AND_RETHROW((data_dir)(shared_mem_dir)(shared_file_size))
@@ -313,7 +496,6 @@ namespace graphene { namespace chain {
             uint32_t chainbase_flags
         ) {
             try {
-                _node_startup_time = fc::time_point::now();
                 auto start = fc::time_point::now();
                 wlog("Opening database for snapshot import. Please wait...");
 
@@ -447,7 +629,7 @@ namespace graphene { namespace chain {
 
                 auto start = fc::time_point::now();
 
-                const auto& dlt_head = _dlt_block_log.head();
+                auto dlt_head = _dlt_block_log.head();
                 CHAIN_ASSERT(dlt_head, block_log_exception,
                     "No blocks in dlt_block_log. Cannot reindex from empty DLT log.");
 
@@ -458,6 +640,22 @@ namespace graphene { namespace chain {
                     wlog("DLT replay: requested from_block ${from} is before dlt_block_log start ${start}, adjusting",
                          ("from", from_block_num)("start", dlt_start));
                     from_block_num = dlt_start;
+
+                    // Verify the first DLT block actually chains from our current head.
+                    // If there is a gap (snapshot head < dlt_start - 1), the first DLT
+                    // block's "previous" hash won't match head_block_id() and apply_block
+                    // would throw.  Detect this early and bail out gracefully.
+                    auto first_block = _dlt_block_log.read_block_by_num(dlt_start);
+                    if (first_block && first_block->previous != head_block_id()) {
+                        wlog("DLT replay: first available block ${n} does not link to current head "
+                             "(head_id=${hid}, block.previous=${prev}). "
+                             "Gap of ${gap} blocks cannot be filled from dlt_block_log, skipping replay.",
+                             ("n", dlt_start)
+                             ("hid", head_block_id())
+                             ("prev", first_block->previous)
+                             ("gap", dlt_start - head_block_num() - 1));
+                        return;
+                    }
                 }
 
                 if (from_block_num > dlt_last) {
@@ -626,29 +824,35 @@ namespace graphene { namespace chain {
             ilog("Resize barrier: pausing all database operations...");
             begin_resize_barrier();
 
-            size_t target = _pending_resize_target;
-            _pending_resize = false;
-            _pending_resize_target = 0;
+            try {
+                size_t target = _pending_resize_target;
+                _pending_resize = false;
+                _pending_resize_target = 0;
 
-            uint64_t max_mem_before = max_memory();
-            uint64_t free_mem_before = free_memory();
-            uint64_t used_mem_before = max_mem_before - free_mem_before;
+                uint64_t max_mem_before = max_memory();
+                uint64_t free_mem_before = free_memory();
+                uint64_t used_mem_before = max_mem_before - free_mem_before;
 
-            ilog("\033[33mApplying deferred shared memory resize: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
-                 ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem_before / (1024 * 1024))
-                 ("mem", target / (1024 * 1024)));
-            resize(target);
+                ilog("\033[33mApplying deferred shared memory resize: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
+                     ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem_before / (1024 * 1024))
+                     ("mem", target / (1024 * 1024)));
+                resize(target);
 
-            uint64_t free_mem = free_memory();
-            uint64_t reserved_mem = reserved_memory();
-            uint64_t used_mem_after = target - free_mem;
-            if (free_mem > reserved_mem) {
-                free_mem -= reserved_mem;
+                uint64_t free_mem = free_memory();
+                uint64_t reserved_mem = reserved_memory();
+                uint64_t used_mem_after = target - free_mem;
+                if (free_mem > reserved_mem) {
+                    free_mem -= reserved_mem;
+                }
+                uint32_t free_mb = uint32_t(free_mem / (1024 * 1024));
+                ilog("\033[33mDeferred shared memory grow complete: actual data ${used_after}M / new ${max_after}M (free ${free}M)\033[0m",
+                     ("used_after", used_mem_after / (1024 * 1024))("max_after", target / (1024 * 1024))("free", free_mb));
+                _last_free_gb_printed = free_mb / 1024;
+            } catch (...) {
+                end_resize_barrier();
+                ilog("Resize barrier: all database operations resumed (after resize failure).");
+                throw;
             }
-            uint32_t free_mb = uint32_t(free_mem / (1024 * 1024));
-            ilog("\033[33mDeferred shared memory grow complete: actual data ${used_after}M / new ${max_after}M (free ${free}M)\033[0m",
-                 ("used_after", used_mem_after / (1024 * 1024))("max_after", target / (1024 * 1024))("free", free_mb));
-            _last_free_gb_printed = free_mb / 1024;
 
             end_resize_barrier();
             ilog("Resize barrier: all database operations resumed.");
@@ -828,6 +1032,31 @@ namespace graphene { namespace chain {
             return bid;
         }
 
+        uint32_t database::earliest_available_block_num() const {
+            // In non-DLT mode, block_log contains all irreversible blocks from genesis.
+            if (!_dlt_mode) {
+                auto blog_head = _block_log.head();
+                if (blog_head) {
+                    return 1; // block_log always starts from block 1
+                }
+                // No block_log — check fork_db
+                return head_block_num(); // only head in fork_db
+            }
+
+            // DLT mode: blocks come from dlt_block_log and fork_db.
+            // After snapshot import, dlt_block_log may have only the head block.
+            uint32_t earliest = head_block_num();
+
+            // Check dlt_block_log range
+            uint32_t dlt_start = _dlt_block_log.start_block_num();
+            if (dlt_start > 0 && dlt_start < earliest) {
+                earliest = dlt_start;
+            }
+
+            // fork_db blocks are typically at/above head, so they don't lower the floor.
+            return earliest;
+        }
+
         optional<signed_block> database::fetch_block_by_id(const block_id_type &id) const {
             try {
                 auto b = _fork_db.fetch_block(id);
@@ -860,10 +1089,25 @@ namespace graphene { namespace chain {
                 if (results.size() == 1) {
                     b = results[0]->data;
                 } else {
-                    b = _block_log.read_block_by_num(block_num);
-                    // DLT rolling block_log fallback
+                    // fork_db by-number index returned 0 or >1 results.
+                    // Walk the main branch from fork_db head — this
+                    // handles the case where set_max_size() pruned the
+                    // by-number index (e.g. when fork_db's _head
+                    // advanced past database head via pushed-but-
+                    // unapplied broadcast blocks) but the block is
+                    // still reachable via the prev-pointer chain.
+                    if (_fork_db.head()) {
+                        auto fitem = _fork_db.walk_main_branch_to_num(block_num);
+                        if (fitem) {
+                            b = fitem->data;
+                        }
+                    }
                     if (!b.valid()) {
-                        b = _dlt_block_log.read_block_by_num(block_num);
+                        b = _block_log.read_block_by_num(block_num);
+                        // DLT rolling block_log fallback
+                        if (!b.valid()) {
+                            b = _dlt_block_log.read_block_by_num(block_num);
+                        }
                     }
                 }
 
@@ -1130,33 +1374,53 @@ namespace graphene { namespace chain {
             // the shared memory segment during the remap.
             apply_pending_resize();
 
+            // Defer applied_block notifications until after the write lock is
+            // released.  Plugin callbacks (MongoDB, operation_history, etc.)
+            // can take seconds — holding the write lock during that time
+            // blocks P2P and RPC threads (p32.log: 13.8s lock hold).
+            _defer_block_notifications = true;
+
             bool result = false;
-            with_strong_write_lock([&]() {
-                detail::without_pending_transactions(*this, skip, std::move(_pending_tx), [&]() {
-                    try {
-                        result = _push_block(new_block, skip);
-                        check_free_memory(false, new_block.block_num());
-                    } catch (const fc::exception &e) {
-                        auto msg = std::string(e.what());
-                        // TODO: there is no easy way to catch boost::interprocess::bad_alloc
-                        if (msg.find("boost::interprocess::bad_alloc") == msg.npos) {
-                            throw e;
+            try {
+                with_strong_write_lock([&]() {
+                    detail::without_pending_transactions(*this, skip, std::move(_pending_tx), [&]() {
+                        try {
+                            result = _push_block(new_block, skip);
+                            check_free_memory(false, new_block.block_num());
+                        } catch (const fc::exception &e) {
+                            auto msg = std::string(e.what());
+                            // TODO: there is no easy way to catch boost::interprocess::bad_alloc
+                            if (msg.find("boost::interprocess::bad_alloc") == msg.npos) {
+                                throw;  // preserve derived exception type (e.g. unlinkable_block_exception)
+                            }
+                            // Out of shared memory. Schedule a deferred resize.
+                            // Throw a specific exception so the P2P layer can distinguish
+                            // this transient condition from a permanently invalid block.
+                            // apply_pending_resize() at the top of the next push_block() call
+                            // will perform the resize safely before any database access, and
+                            // the missed block will be re-received during normal sync.
+                            wlog("Received bad_alloc exception. Scheduling deferred resize.");
+                            set_reserved_memory(free_memory());
+                            _resize(new_block.block_num()); // deferred (immediate=false by default)
+                            FC_THROW_EXCEPTION(deferred_resize_exception,
+                                "Shared memory exhausted on block ${block}, resize deferred. Retry next block.",
+                                ("block", new_block.block_num()));
                         }
-                        // Out of shared memory. Schedule a deferred resize.
-                        // Throw a specific exception so the P2P layer can distinguish
-                        // this transient condition from a permanently invalid block.
-                        // apply_pending_resize() at the top of the next push_block() call
-                        // will perform the resize safely before any database access, and
-                        // the missed block will be re-received during normal sync.
-                        wlog("Received bad_alloc exception. Scheduling deferred resize.");
-                        set_reserved_memory(free_memory());
-                        _resize(new_block.block_num()); // deferred (immediate=false by default)
-                        FC_THROW_EXCEPTION(deferred_resize_exception,
-                            "Shared memory exhausted on block ${block}, resize deferred. Retry next block.",
-                            ("block", new_block.block_num()));
-                    }
+                    });
                 });
-            });
+            } catch (...) {
+                // Exception during push_block: discard pending notifications
+                // (they are for blocks that were rolled back by the undo stack).
+                _defer_block_notifications = false;
+                _pending_block_notifications.clear();
+                throw;
+            }
+
+            // Write lock released — deliver deferred notifications now.
+            // P2P and RPC threads can proceed concurrently while plugins
+            // process the block at their own pace.
+            _defer_block_notifications = false;
+            flush_pending_block_notifications();
 
             //fc::time_point end_time = fc::time_point::now();
             //fc::microseconds dt = end_time - begin_time;
@@ -1229,12 +1493,16 @@ namespace graphene { namespace chain {
 
                 auto branches = _fork_db.fetch_branch_from(branch_a_tip, branch_b_tip);
 
-                auto compute_branch_weight = [&](const fork_database::branch_type& branch) -> share_type {
+                auto compute_branch_info = [&](const fork_database::branch_type& branch) -> std::pair<share_type, bool> {
                     flat_set<account_name_type> seen_witnesses;
                     share_type total_weight = 0;
+                    bool has_emergency = false;
                     for (const auto& item : branch) {
                         const auto& wit_name = item->data.witness;
-                        if (wit_name == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
+                        if (wit_name == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                            has_emergency = true;
+                            continue;
+                        }
                         if (seen_witnesses.insert(wit_name).second) {
                             try {
                                 const auto& wit_obj = get_witness(wit_name);
@@ -1242,11 +1510,27 @@ namespace graphene { namespace chain {
                             } catch (...) {}
                         }
                     }
-                    return total_weight;
+                    return {total_weight, has_emergency};
                 };
 
-                share_type weight_a = compute_branch_weight(branches.first);
-                share_type weight_b = compute_branch_weight(branches.second);
+                auto branch_info_a = compute_branch_info(branches.first);
+                auto weight_a = branch_info_a.first;
+                auto emergency_a = branch_info_a.second;
+                auto branch_info_b = compute_branch_info(branches.second);
+                auto weight_b = branch_info_b.first;
+                auto emergency_b = branch_info_b.second;
+
+                // In emergency consensus mode, the emergency committee witness
+                // represents the collective authority of the committee.  Since
+                // the committee account has no vote weight, directly assign its
+                // chain as the main fork: if one branch has emergency committee
+                // blocks and the other doesn't, the emergency branch wins
+                // unconditionally.  If both or neither have emergency blocks,
+                // fall through to the normal vote-weight comparison.
+                if (get_dynamic_global_properties().emergency_consensus_active) {
+                    if (emergency_a && !emergency_b) return 1;   // branch_a has emergency → heavier
+                    if (!emergency_a && emergency_b) return -1;  // branch_b has emergency → heavier
+                }
 
                 // Longer chain gets +10% bonus on its vote weight.
                 // Each block produced is a consensus "vote" — witnesses on the longer
@@ -1278,23 +1562,57 @@ namespace graphene { namespace chain {
                 if (new_block.block_num() <= head_block_num()) {
                     block_id_type existing_id = find_block_id_for_num(new_block.block_num());
                     if (existing_id == new_block.id()) {
-                        ilog("Ignoring block ${n} that is already on our chain", ("n", new_block.block_num()));
+                        dlog(DB_LOG_DGRAY "Ignoring block ${n} that is already on our chain" DB_LOG_RESET, ("n", new_block.block_num()));
+                        // Seed fork_db with this block as a competing-fork anchor.
+                        // After DLT snapshot import the snapshot block is absent from
+                        // the DLT block log, so fetch_block_by_id() cannot find it.
+                        // When a peer later sends a competing fork starting at
+                        // block_num+1, that block's parent (this block) is not in
+                        // fork_db → dead-fork rejection.  Adding it here — while we
+                        // have the full signed_block from the peer — fixes that.
+                        // _repair_child_prev_links reconnects the start_block root
+                        // so fetch_branch_from can walk the full slave chain.
+                        if (!_fork_db.is_known_block(new_block.id())) {
+                            _fork_db.insert_as_base(new_block);
+                        }
                         return false;
                     }
                     // Block is at or before head but on a different fork.
-                    // If the block's parent is not in the fork_db, we can never
-                    // link it (the fork diverged before the fork_db's window).
-                    // Throw unlinkable_block_exception so the P2P layer can
-                    // soft-ban the peer sending blocks from this dead fork.
-                    // This is NOT a micro-fork: micro-fork blocks have parents
-                    // that ARE in fork_db and fall through to normal push logic.
+                    // If the block's parent is not in fork_db, check whether it
+                    // is on the main chain.  When syncing from LIB, blocks near
+                    // LIB may have parents on the main chain but absent from
+                    // fork_db.  Seed fork_db with the parent in that case so the
+                    // block can be processed normally.  If the parent is neither
+                    // in fork_db nor on the main chain, this is a genuine dead
+                    // fork — throw so the P2P layer can soft-ban the peer.
                     if (new_block.previous != block_id_type() &&
                         !_fork_db.is_known_block(new_block.previous)) {
-                        wlog("Rejecting block ${n} from a different fork: parent not in fork_db (head=${h})",
-                             ("n", new_block.block_num())("h", head_block_num()));
-                        FC_THROW_EXCEPTION(unlinkable_block_exception,
-                                           "Block from a different fork whose parent is not in fork_db (block ${n}, head=${h})",
-                                           ("n", new_block.block_num())("h", head_block_num()));
+                        // Parent not in fork_db — but it may still be on our
+                        // main chain.  During sync from LIB, the starting blocks
+                        // have parents that are on the main chain but absent from
+                        // fork_db (which only tracks blocks near head).  If the
+                        // parent exists on our chain, seed fork_db with it so the
+                        // block can be processed normally (potential fork switch).
+                        auto parent_block = fetch_block_by_id(new_block.previous);
+                        if (parent_block) {
+                            wlog("Block #${n} parent not in fork_db but on main chain — seeding fork_db with parent #${p}",
+                                 ("n", new_block.block_num())("p", parent_block->block_num()));
+                            try {
+                                _fork_db.push_block(*parent_block);
+                            } catch (const fc::assert_exception&) {
+                                // Parent already in fork_db or duplicate — safe to
+                                // continue.  Only catch assert_exception (covers
+                                // duplicate insert and index conflicts).  Memory
+                                // errors and corruption must propagate.
+                            }
+                            // Fall through to normal push logic below
+                        } else {
+                            wlog("Rejecting block ${n} from a different fork: parent not in fork_db and not on main chain (head=${h})",
+                                 ("n", new_block.block_num())("h", head_block_num()));
+                            FC_THROW_EXCEPTION(unlinkable_block_exception,
+                                               "Block from a different fork whose parent is not in fork_db (block ${n}, head=${h})",
+                                               ("n", new_block.block_num())("h", head_block_num()));
+                        }
                     }
                     // Parent IS in fork_db — fall through to normal push logic
                     // which may trigger a fork switch (if the other fork has
@@ -1321,29 +1639,107 @@ namespace graphene { namespace chain {
                 //   - This covers the critical sync case: the very first block after
                 //     head must always be accepted for sync to make progress.
                 //
-                // For other blocks, we check _fork_db.is_known_block() (not
-                // database::is_known_block) because in DLT mode the full
-                // is_known_block() returns false for blocks whose data isn't on
-                // disk, even though they may exist in fork_db.
+                // We intentionally do NOT check _fork_db.is_known_block() here.
+                // is_known_block() returns true for blocks in _unlinked_index,
+                // which are NOT actually linked to the chain.  When a dead-fork
+                // block D+1 is deferred to _unlinked_index, its child D+2 will
+                // find its parent via is_known_block() → expect_unlinkable stays
+                // false → the exception propagates uncaught → DEFERRED_RESIZE
+                // cascade → crash.  By omitting the check, any block whose
+                // parent differs from head_id AND is not the immediate successor
+                // will have expect_unlinkable=true, safely deferring it.
+                //
+                // Track whether this block is expected to be unlinkable.
+                // When true, fork_db.push_block() will throw unlinkable_block_exception
+                // (expected) — we catch it below and return false instead of letting
+                // it propagate to the P2P layer which would trigger a sync restart,
+                // clearing any in-progress sync and preventing forward progress.
+                bool expect_unlinkable = false;
+
                 if (new_block.block_num() > head_block_num() &&
                     new_block.previous != block_id_type() &&
-                    new_block.previous != head_block_id() &&
-                    !_fork_db.is_known_block(new_block.previous)) {
-                    // Parent block is completely unknown — block can never link.
-                    dlog("Rejecting unlinkable block ${n} (parent unknown, head=${h})",
-                         ("n", new_block.block_num())("h", head_block_num()));
-                    return false;
+                    new_block.previous != head_block_id()) {
+                    // Parent block does not directly extend our head.
+                    // For blocks close to head (small gap), let them through to
+                    // fork_db which stores them in _unlinked_index.  When the
+                    // missing parent arrives, fork_db._push_next() will
+                    // automatically link the whole chain.  This handles the
+                    // common case of a single missed broadcast block.
+                    //
+                    // For blocks far from head (gap > 100), reject immediately
+                    // to avoid memory bloat from dead-fork blocks.
+                    uint32_t gap = new_block.block_num() - head_block_num();
+                    if (gap > 100) {
+                        dlog("Rejecting unlinkable block ${n} (parent unknown, head=${h}, gap=${g})",
+                             ("n", new_block.block_num())("h", head_block_num())("g", gap));
+                        return false;
+                    }
+                    dlog(DB_LOG_DGRAY "Deferring unlinkable block ${n} to fork_db unlinked index (parent unknown, head=${h}, gap=${g})" DB_LOG_RESET,
+                         ("n", new_block.block_num())("h", head_block_num())("g", gap));
+                    expect_unlinkable = true;
                 }
 
 
                 if (!(skip & skip_fork_db)) {
-                    shared_ptr<fork_item> new_head = _fork_db.push_block(new_block);
+                    // Ensure fork_db contains the current database head block
+                    // so the new block can link to it.  After snapshot import,
+                    // stale sync recovery, or fork_db trimming, the head block
+                    // may be absent from fork_db.  Without this seed, any block
+                    // whose previous == head_block_id() would throw
+                    // unlinkable_block_exception inside fork_db::_push_block()
+                    // ("block does not link to known chain"), silently rejecting
+                    // valid next-blocks and preventing head advancement.
+                    // This also fixes witness nodes that generate their own
+                    // blocks: generate_block() sets pending_block.previous =
+                    // head_block_id(), and without the seed the self-generated
+                    // block would fail to push into fork_db.
+                    if (new_block.previous == head_block_id() &&
+                        !_fork_db.is_known_block(head_block_id())) {
+                        auto head_blk = fetch_block_by_id(head_block_id());
+                        if (head_blk) {
+                            wlog("Seeding fork_db with current database head #${h} "
+                                 "(was missing, required for block linkage)",
+                                 ("h", head_block_num()));
+                            _fork_db.start_block(*head_blk);
+                        }
+                    }
+
+                    shared_ptr<fork_item> new_head;
+                    try {
+                        new_head = _fork_db.push_block(new_block);
+                    } catch (const unlinkable_block_exception& e) {
+                        if (expect_unlinkable) {
+                            // Expected: the block has been stored in fork_db's
+                            // _unlinked_index.  Return false silently so the P2P
+                            // layer does NOT restart sync — the ongoing sync (or
+                            // the next one) will deliver the missing parent, and
+                            // fork_db._push_next() will link this block then.
+                            //
+                            // Previously the exception propagated up to the P2P
+                            // layer which called start_synchronizing_with_peer(),
+                            // resetting the sync queue and killing any in-progress
+                            // fetch.  This caused a loop: broadcast block → exception
+                            // → sync restart → synopsis exchange → peer says
+                            // "up-to-date" → next broadcast block → repeat.
+                            return false;
+                        }
+                        throw;
+                    }
                     _maybe_warn_multiple_production(new_head->num);
-                    //If the head block from the longest chain does not build off of the current head, we need to switch forks.
-                    if (new_head->data.previous != head_block_id()) {
+
+                    // If the block we just pushed directly extends our database head,
+                    // it is a simple linear extension regardless of what fork_db thinks
+                    // is the longest chain. This handles the case where fork_db's _head
+                    // points to a stale higher block from previous sync cycles (stale
+                    // sync recovery does not reset fork_db), but the block we're pushing
+                    // is the correct next block after our actual chain head.
+                    if (new_block.previous == head_block_id()) {
+                        // Fall through to apply_block below
+                    } else if (new_head->data.previous != head_block_id()) {
                         //If the newly pushed block is the same height as head, we get head back in new_head
                         //Only switch forks if new_head is actually higher than head
                         bool should_switch = false;
+                        try {
                         if (has_hardfork(CHAIN_HARDFORK_12)) {
                             // HF12: Vote-weighted chain comparison with +10% longer-chain bonus
                             if (new_head->data.block_num() >= head_block_num() &&
@@ -1361,6 +1757,31 @@ namespace graphene { namespace chain {
                             // Pre-HF12: simple longest-chain rule
                             should_switch = (new_head->data.block_num() > head_block_num());
                         }
+                        } catch (const fc::exception& e) {
+                            // compare_fork_branches -> fetch_branch_from can fail with
+                            // an assertion when the fork_db prev-pointer chain is broken
+                            // (e.g., a previous failed sync cycle removed a block that
+                            // is still referenced by a child's weak_ptr).  Without
+                            // recovery, fork_db._head stays at the stale high block and
+                            // every subsequent sync block triggers the same assertion,
+                            // creating an infinite restart loop.
+                            //
+                            // Recovery: reset fork_db to contain only the current
+                            // database head block, clearing all orphaned / broken chains.
+                            // Then throw unlinkable_block_exception so the P2P layer
+                            // restarts sync cleanly.
+                            wlog("Fork branch comparison failed (broken prev chain in fork_db): ${e}. "
+                                 "Resetting fork_db to database head #${h}.",
+                                 ("e", e.what())("h", head_block_num()));
+                            auto head_blk = fetch_block_by_id(head_block_id());
+                            _fork_db.reset();
+                            if (head_blk) {
+                                _fork_db.start_block(*head_blk);
+                            }
+                            FC_THROW_EXCEPTION(unlinkable_block_exception,
+                                "fork switch failed: broken prev chain in fork_db, reset to head #${h}",
+                                ("h", head_block_num()));
+                        }
                         if (should_switch) {
                             // wlog( "Switching to fork: ${id}", ("id",new_head->data.id()) );
                             // Ensure the current head block exists in the fork DB before attempting fork switch.
@@ -1375,18 +1796,94 @@ namespace graphene { namespace chain {
                                 FC_THROW_EXCEPTION(unlinkable_block_exception,
                                                    "current head block not in fork database, cannot switch forks");
                             }
-                            auto branches = _fork_db.fetch_branch_from(new_head->data.id(), head_block_id());
-
-                            // pop blocks until we hit the forked block
-                            while (head_block_id() !=
-                                   branches.second.back()->data.previous) {
-                                pop_block();
+                            pair<fork_database::branch_type, fork_database::branch_type> branches;
+                            try {
+                                branches = _fork_db.fetch_branch_from(new_head->data.id(), head_block_id());
+                            } catch (const fc::exception& e) {
+                                // Broken prev-pointer chain — same recovery as above.
+                                wlog("fetch_branch_from failed during fork switch (broken prev chain): ${e}. "
+                                     "Resetting fork_db to database head #${h}.",
+                                     ("e", e.what())("h", head_block_num()));
+                                auto head_blk = fetch_block_by_id(head_block_id());
+                                _fork_db.reset();
+                                if (head_blk) {
+                                    _fork_db.start_block(*head_blk);
+                                }
+                                FC_THROW_EXCEPTION(unlinkable_block_exception,
+                                    "fork switch failed: broken prev chain in fork_db, reset to head #${h}",
+                                    ("h", head_block_num()));
                             }
 
-                            // push all blocks on the new fork
+                            // fetch_branch_from() always appends the common ancestor
+                            // to BOTH branches.  For a linear extension (no actual
+                            // fork), the common ancestor IS the current database head
+                            // AND the same block in both branches:
+                            //   branches.first  = [new_tip, ..., HEAD]
+                            //   branches.second = [HEAD]
+                            // We must NOT pop the common ancestor in this case — in
+                            // DLT mode the undo stack is empty (committed) so undo()
+                            // is a no-op, causing an infinite pop loop and crash.
+                            //
+                            // For a real 1-block fork (e.g. two different blocks at
+                            // the same height), branches.second also has size 1 and
+                            // back()->id == head_block_id(), BUT branches.first.back()
+                            // is a DIFFERENT block (the competing block).  We must
+                            // pop and re-apply in that case.
+                            bool is_linear_extension =
+                                (!branches.second.empty() &&
+                                 branches.second.size() == 1 &&
+                                 branches.second.back()->data.id() == head_block_id() &&
+                                 branches.first.back()->data.id() == branches.second.back()->data.id());
+
+                            ilog("Fork switch: new_head=#${nh}, db_head=#${dh}, branches.first=${f}, branches.second=${s}, linear=${lin}",
+                                 ("nh", new_head->data.block_num())("dh", head_block_num())
+                                 ("f", branches.first.size())("s", branches.second.size())
+                                 ("lin", is_linear_extension));
+
+                            // Pop blocks from the old fork back to the common ancestor.
+                            // For a linear extension the common ancestor IS the head —
+                            // nothing to pop.  For an actual fork, pop all old-fork
+                            // blocks AND the common ancestor (it will be re-applied
+                            // from branches.first).
+                            if (!is_linear_extension && !branches.second.empty()) {
+                                // Guard: in DLT mode, committed undo sessions make
+                                // pop_block() a no-op (undo() has nothing to undo for
+                                // committed blocks).  head_block_id() never changes,
+                                // causing an infinite loop or hitting fork_db's
+                                // FC_ASSERT("popping head block would leave fork DB empty").
+                                // Abort the fork switch if we'd pop below LIB.
+                                auto lib_num = get_dynamic_global_properties().last_irreversible_block_num;
+                                while (head_block_id() !=
+                                       branches.second.back()->data.previous) {
+                                    if (head_block_num() <= lib_num) {
+                                        wlog("Fork switch requires popping below committed LIB=${lib} in DLT mode. "
+                                             "Aborting fork switch to prevent crash.",
+                                             ("lib", lib_num));
+                                        _fork_db.remove(new_head->data.id());
+                                        FC_THROW_EXCEPTION(unlinkable_block_exception,
+                                            "fork switch would pop below committed LIB");
+                                    }
+                                    ilog("FORK-SWITCH-POP: popping head #${h} (target=${t}, branches.second.back=#${b})",
+                                         ("h", head_block_num())
+                                         ("t", branches.second.back()->data.previous)
+                                         ("b", branches.second.back()->data.block_num()));
+                                    pop_block();
+                                }
+                            }
+
+                            // Apply blocks from the new fork.
+                            // For a linear extension, skip the common ancestor (last
+                            // element in branches.first) — it is already applied.
+                            auto common_ancestor_id = branches.second.empty()
+                                ? block_id_type()
+                                : branches.second.back()->data.id();
+
                             for (auto ritr = branches.first.rbegin();
                                  ritr != branches.first.rend(); ++ritr) {
-                                // ilog( "pushing blocks from fork ${n} ${id}", ("n",(*ritr)->data.block_num())("id",(*ritr)->data.id()) );
+                                if (is_linear_extension &&
+                                    (*ritr)->data.id() == common_ancestor_id) {
+                                    continue;  // already applied
+                                }
                                 optional<fc::exception> except;
                                 try {
                                     auto session = start_undo_session();
@@ -1397,33 +1894,67 @@ namespace graphene { namespace chain {
                                     except = e;
                                 }
                                 if (except) {
-                                    // wlog( "exception thrown while switching forks ${e}", ("e",except->to_detail_string() ) );
-                                    // remove the rest of branches.first from the fork_db, those blocks are invalid
+                                    wlog("Exception during fork switch at block #${n}: ${e}",
+                                         ("n", (*ritr)->data.block_num())("e", except->to_detail_string()));
+                                    // remove the rest of branches.first from the fork_db
                                     while (ritr != branches.first.rend()) {
                                         _fork_db.remove((*ritr)->data.id());
                                         ++ritr;
                                     }
-                                    // pop all blocks from the bad fork
-                                    while (head_block_id() !=
-                                           branches.second.back()->data.previous) {
-                                        pop_block();
-                                    }
 
-                                    // restore all blocks from the good fork
-                                    for (auto ritr = branches.second.rbegin();
-                                         ritr !=
-                                         branches.second.rend(); ++ritr) {
-                                        auto session = start_undo_session();
-                                        apply_block((*ritr)->data, skip);
-                                        session.push();
-                                    }
+                                    if (is_linear_extension) {
+                                        // Linear extension error: pop any new blocks
+                                        // that were applied after the common ancestor,
+                                        // restoring the database to the original head.
+                                        auto lib_num_recover = get_dynamic_global_properties().last_irreversible_block_num;
+                                        while (head_block_id() != common_ancestor_id) {
+                                            if (head_block_num() <= lib_num_recover) {
+                                                wlog("Linear extension recovery: would pop below committed LIB=${lib}. Aborting.",
+                                                     ("lib", lib_num_recover));
+                                                break;
+                                            }
+                                            ilog("FORK-RECOVER-POP: popping head #${h} (restoring to common ancestor)",
+                                                 ("h", head_block_num()));
+                                            pop_block();
+                                        }
+                                        _fork_db.set_head(branches.second.back());
+                                        wlog("Linear extension failed. Restored head to #${h}.",
+                                             ("h", head_block_num()));
+                                    } else if (!branches.second.empty()) {
+                                        // Actual fork: pop applied blocks from new fork,
+                                        // restore original fork blocks.
+                                        auto lib_num_recover = get_dynamic_global_properties().last_irreversible_block_num;
+                                        while (head_block_id() !=
+                                               branches.second.back()->data.previous) {
+                                            if (head_block_num() <= lib_num_recover) {
+                                                wlog("Fork recovery: would pop below committed LIB=${lib}. Aborting.",
+                                                     ("lib", lib_num_recover));
+                                                break;
+                                            }
+                                            ilog("FORK-RECOVER-POP: popping head #${h} (target=${t})",
+                                                 ("h", head_block_num())("t", branches.second.back()->data.previous));
+                                            pop_block();
+                                        }
 
-                                    // Restore fork_db head to the original chain tip.
-                                    // pop_block() above moved _head backwards via
-                                    // _fork_db.pop_block(), but apply_block() does not
-                                    // advance it.  Without this, _head stays at the fork
-                                    // point instead of the original chain tip.
-                                    _fork_db.set_head(branches.second.front());
+                                        for (auto ritr2 = branches.second.rbegin();
+                                             ritr2 != branches.second.rend(); ++ritr2) {
+                                            auto session = start_undo_session();
+                                            apply_block((*ritr2)->data, skip);
+                                            session.push();
+                                        }
+
+                                        _fork_db.set_head(branches.second.front());
+                                    } else {
+                                        // branches.second empty — should not happen
+                                        // after fetch_branch_from, but keep as safety.
+                                        auto head_blk = fetch_block_by_id(head_block_id());
+                                        if (head_blk) {
+                                            _fork_db.reset();
+                                            _fork_db.start_block(*head_blk);
+                                        }
+                                        wlog("Fork switch failed with empty branches. DB head=#${h}, fork_db reset.",
+                                             ("h", head_block_num()));
+                                    }
 
                                     throw *except;
                                 }
@@ -1472,7 +2003,96 @@ namespace graphene { namespace chain {
                     }
                 }
 
-                return false;
+                // P39 fix: _push_next cascade. When fork_db.push_block()
+                // triggered _push_next, which linked previously-deferred blocks
+                // from _unlinked_index, fork_db._head may now be far ahead of
+                // the database head.  The blocks between the current database
+                // head and fork_db._head are valid linear extensions (they were
+                // linked by _push_next), so we apply them here to keep the
+                // database in sync with fork_db.
+                //
+                // Without this fix, the database head stays at the original
+                // block while fork_db._head jumps ahead.  Subsequent blocks
+                // in a range reply are then rejected as "too old" by fork_db's
+                // sliding window, and the P36 fix returns ALREADY_KNOWN —
+                // causing the range reply handler to skip them and the node
+                // to oscillate between FORWARD and SYNC mode.
+                auto fb_head = _fork_db.head();
+                if (fb_head && fb_head->data.block_num() > new_block.block_num()) {
+                    if (fb_head->data.block_num() > head_block_num() &&
+                        _fork_db.is_known_block(head_block_id())) {
+                        // Save original head before cascade so we can
+                        // roll back on partial failure.
+                        uint32_t original_head = head_block_num();
+
+                        try {
+                            auto branches = _fork_db.fetch_branch_from(
+                                fb_head->data.id(), head_block_id());
+
+                            // These blocks are all on the same chain (linked
+                            // by _push_next), so this is always a linear
+                            // extension.  branches.second should be just
+                            // [head_block_id] (the common ancestor).
+                            bool is_cascade_linear =
+                                (!branches.second.empty() &&
+                                 branches.second.size() == 1 &&
+                                 branches.second.back()->data.id() == head_block_id() &&
+                                 branches.first.back()->data.id() == branches.second.back()->data.id());
+
+                            if (is_cascade_linear) {
+                                dlog(DB_LOG_DGRAY "_push_next cascade \u2014 applying ${n} blocks from fork_db "
+                                     "(db_head=#${dh}, fork_db_head=#${fh})" DB_LOG_RESET,
+                                     ("n", branches.first.size() - 1)("dh", head_block_num())
+                                     ("fh", fb_head->data.block_num()));
+
+                                for (auto ritr = branches.first.rbegin();
+                                     ritr != branches.first.rend(); ++ritr) {
+                                    // Skip common ancestor (already applied)
+                                    if ((*ritr)->data.id() == head_block_id()) continue;
+
+                                    auto session = start_undo_session();
+                                    apply_block((*ritr)->data, skip);
+                                    session.push();
+                                }
+                                _fork_db.set_head(fb_head);
+                            } else {
+                                // Non-linear cascade: _push_next linked blocks
+                                // from a competing fork that has more weight.
+                                // Do a proper fork switch using the existing
+                                // logic above.  This is rare but possible.
+                                wlog("P39: _push_next cascade is non-linear, "
+                                     "skipping cascade apply (db_head=#${dh}, fork_db_head=#${fh})",
+                                     ("dh", head_block_num())("fh", fb_head->data.block_num()));
+                            }
+                        } catch (const fc::exception& e) {
+                            wlog("P39: Failed to apply _push_next cascade blocks: ${e}",
+                                 ("e", e.what()));
+                            // Don't throw — the original block was applied
+                            // successfully.  Roll back any cascade blocks
+                            // that were applied before the failure, then
+                            // reset fork_db to database head so subsequent
+                            // blocks aren't rejected as "too old".
+                            auto head_blk = fetch_block_by_id(head_block_id());
+                            // Pop cascade blocks that were applied but
+                            // not caught by the undo stack (session.push
+                            // already committed them).  Pop back to the
+                            // original head before the cascade started.
+                            auto lib_num = get_dynamic_global_properties().last_irreversible_block_num;
+                            while (head_block_num() > original_head &&
+                                   head_block_num() > lib_num) {
+                                ilog("P39 cascade recovery: popping head #${h} (restoring to #${t})",
+                                     ("h", head_block_num())("t", original_head));
+                                pop_block();
+                            }
+                            _fork_db.reset();
+                            if (head_blk) {
+                                _fork_db.start_block(*head_blk);
+                            }
+                        }
+                    }
+                }
+
+                return true;
             } FC_CAPTURE_AND_RETHROW()
         }
 
@@ -1578,7 +2198,8 @@ namespace graphene { namespace chain {
                          ("m", witness_obj.total_missed)("p", witness_obj.penalty_percent)
                          ("lc", witness_obj.last_confirmed_block_num)
                          ("idx_size", acc_idx.size()));
-                    FC_ASSERT(false, "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected. Node must be restarted with replay.",
+                    FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                              "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected.",
                               ("w", witness_owner));
                 }
 
@@ -1722,7 +2343,9 @@ namespace graphene { namespace chain {
 
             op_guard2.release();  // release before push_block(), which has its own guards
 
+            if (_debug_block_production) ilog("DEBUG_CRASH: push_block start for block by ${w}", ("w", witness_owner));
             push_block(pending_block, skip);
+            if (_debug_block_production) ilog("DEBUG_CRASH: push_block done");
 
             return pending_block;
         }
@@ -1739,6 +2362,13 @@ namespace graphene { namespace chain {
                 /// save the head block so we can recover its transactions
                 optional<signed_block> head_block = fetch_block_by_id(head_id);
                 CHAIN_ASSERT(head_block.valid(), pop_empty_chain, "there are no blocks to pop");
+
+                // Debug: log fork_db state before pop to diagnose crashes
+                auto fork_head = _fork_db.head();
+                ilog("POP_BLOCK: db_head=#${dh}, fork_db_head=#${fh}, fork_db_head_prev=${prev}",
+                     ("dh", head_block_num())
+                     ("fh", fork_head ? fork_head->num : 0)
+                     ("prev", (fork_head && fork_head->prev.lock()) ? fork_head->prev.lock()->num : 0));
 
                 _fork_db.pop_block();
                 undo();
@@ -1794,7 +2424,37 @@ namespace graphene { namespace chain {
         }
 
         void database::notify_applied_block(const signed_block &block) {
+            // Timing diagnostics for applied_block signal.
+            // The applied_block_timing_combiner (database.hpp) logs per-slot timing
+            // when any individual slot exceeds 100ms. This outer log shows the total.
+            auto notify_start = fc::time_point::now();
+            size_t num_slots = applied_block.num_slots();
+
             CHAIN_TRY_NOTIFY(applied_block, block)
+
+            auto notify_end = fc::time_point::now();
+            auto total_ms = (notify_end - notify_start).count() / 1000;
+            if (total_ms > 100) {
+                wlog("applied_block notification took ${ms}ms for block #${bnum} "
+                     "(${slots} connected plugins)",
+                     ("ms", total_ms)("bnum", block.block_num())("slots", num_slots));
+            }
+        }
+
+        void database::flush_pending_block_notifications() {
+            // Move the pending list to a local so we can deliver without
+            // holding any lock on the vector (notifications may take seconds).
+            auto pending = std::move(_pending_block_notifications);
+            _pending_block_notifications.clear();
+            // Wrap each notification in a read lock so plugins see
+            // consistent state.  Without this, a concurrent push_block
+            // could acquire the write lock and modify objects while
+            // plugins are reading them in applied_block callbacks.
+            for (const auto& blk : pending) {
+                with_weak_read_lock([&]() {
+                    notify_applied_block(blk);
+                });
+            }
         }
 
         void database::notify_on_pending_transaction(const signed_transaction &tx) {
@@ -2104,6 +2764,8 @@ namespace graphene { namespace chain {
         void database::update_witness_schedule() {
             if ((head_block_num() % ( CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT ) ) != 0) return;
 
+            if (_debug_block_production) ilog("DEBUG_CRASH: update_witness_schedule ENTER at block ${b}", ("b", head_block_num()));
+
             if(has_hardfork(CHAIN_HARDFORK_6)){//remove expired witness penalty
                 const auto &idx = get_index<witness_penalty_expire_index>().indices().get<by_expiration>();
                 auto itr = idx.begin();
@@ -2287,6 +2949,9 @@ namespace graphene { namespace chain {
                 });
             }
 
+            if (_debug_block_production) ilog("DEBUG_CRASH: schedule normal build: active=${a} support=${s}",
+                 ("a", active_witnesses.size())("s", support_witnesses.size()));
+
             modify(wso, [&](witness_schedule_object &_wso) {
                 // active witnesses has exactly CHAIN_MAX_WITNESSES elements, asserted above
                 size_t j = 0;
@@ -2344,19 +3009,22 @@ namespace graphene { namespace chain {
                 _wso.majority_version = majority_version;
             });
 
-            update_median_witness_props();
+            if (_debug_block_production) ilog("DEBUG_CRASH: schedule normal build done, num_scheduled=${n}",
+                 ("n", wso.num_scheduled_witnesses));
 
             // === HARDFORK 12: EMERGENCY HYBRID SCHEDULE ===
-            // After normal schedule update, apply hybrid schedule during emergency mode.
-            // Real witnesses keep their slots; committee fills gaps for offline witnesses.
+            // Must run BEFORE update_median_witness_props() because the normal
+            // schedule above may have zeroed all slots (no witnesses have valid keys
+            // during emergency). The hybrid override fills empty slots with committee.
             const dynamic_global_property_object &emergency_dgp = get_dynamic_global_properties();
 
             if (has_hardfork(CHAIN_HARDFORK_12) && emergency_dgp.emergency_consensus_active) {
+                if (_debug_block_production) ilog("DEBUG_CRASH: hybrid override ENTER");
                 const witness_schedule_object &emergency_wso = get_witness_schedule_object();
+                uint32_t real_witness_slots = 0;
+                uint32_t committee_slots = 0;
 
                 modify(emergency_wso, [&](witness_schedule_object &_wso) {
-                    uint32_t real_witness_slots = 0;
-                    uint32_t committee_slots = 0;
 
                     // First pass: replace unavailable/empty slots with committee
                     // Iterate the FULL schedule (CHAIN_MAX_WITNESSES), not just
@@ -2401,11 +3069,14 @@ namespace graphene { namespace chain {
                     _wso.next_shuffle_block_num =
                         head_block_num() + _wso.num_scheduled_witnesses;
 
-                    ilog("Emergency hybrid schedule: ${r} real witness slots, "
-                         "${c} committee slots",
+                    dlog(DB_LOG_YELLOW "Emergency hybrid schedule: ${r} real witness slots, "
+                         "${c} committee slots" DB_LOG_RESET,
                          ("r", real_witness_slots)
                          ("c", committee_slots));
                 });
+
+                if (_debug_block_production) ilog("DEBUG_CRASH: hybrid override done, real=${r} committee=${c} num_scheduled=${n}",
+                     ("r", real_witness_slots)("c", committee_slots)("n", emergency_wso.num_scheduled_witnesses));
 
                 // Sync committee witness props/hardfork-vote with the latest median
                 // and current hardfork state. This runs every schedule update so that
@@ -2425,10 +3096,12 @@ namespace graphene { namespace chain {
                     });
                 }
 
-                // EXIT CONDITION: LIB has advanced past emergency_consensus_start_block.
-                // This means 75% of real witnesses are producing consistently.
-                uint32_t current_lib = emergency_dgp.last_irreversible_block_num;
-                if (current_lib > emergency_dgp.emergency_consensus_start_block) {
+
+                // EXIT CONDITION: enough real witnesses have re-enabled.
+                // When >= 75% of schedule slots are real witnesses (not committee),
+                // the network has recovered and can sustain normal consensus.
+                uint32_t exit_threshold = (CHAIN_MAX_WITNESSES * CHAIN_IRREVERSIBLE_THRESHOLD) / CHAIN_100_PERCENT;
+                if (real_witness_slots >= exit_threshold) {
                     modify(emergency_dgp, [&](dynamic_global_property_object &_dgp) {
                         _dgp.emergency_consensus_active = false;
                     });
@@ -2437,12 +3110,14 @@ namespace graphene { namespace chain {
                     _fork_db.set_emergency_mode(false);
 
                     ilog("EMERGENCY CONSENSUS MODE deactivated at block ${b}. "
-                         "LIB has advanced to ${lib}, past emergency start ${start}.",
+                         "${r} real witnesses active (threshold: ${t}).",
                          ("b", head_block_num())
-                         ("lib", current_lib)
-                         ("start", emergency_dgp.emergency_consensus_start_block));
+                         ("r", real_witness_slots)
+                         ("t", exit_threshold));
                 }
             }
+
+            update_median_witness_props();
         }
 
         void database::update_median_witness_props() {
@@ -2470,7 +3145,7 @@ namespace graphene { namespace chain {
                 return;
             }
 
-            chain_properties_hf9 median_props;
+            chain_properties_hf13 median_props;
             auto median = active.size() / 2;
 
             auto calc_median = [&](auto&& param) {
@@ -2515,6 +3190,9 @@ namespace graphene { namespace chain {
                 calc_median(&chain_properties_hf9::subaccount_on_sale_fee);
                 calc_median(&chain_properties_hf9::witness_declaration_fee);
                 calc_median(&chain_properties_hf9::withdraw_intervals);
+            }
+            if(has_hardfork(CHAIN_HARDFORK_13)){
+                calc_median(&chain_properties_hf13::distribution_epoch_length);
             }
 
             modify(wso, [&](witness_schedule_object &_wso) {
@@ -3113,11 +3791,33 @@ namespace graphene { namespace chain {
                          ("w", cwit.owner)("k", cwit.signing_key)("m", cwit.total_missed)
                          ("p", cwit.penalty_percent)("lc", cwit.last_confirmed_block_num)
                          ("idx_size", acc_idx.size()));
-                    FC_ASSERT(false, "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected. Node must be restarted with replay.",
+                    FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                              "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected.",
                               ("w", cwit.owner));
                 }
-                auto witness_reward_shares = create_vesting(*witness_account, asset(witness_reward, TOKEN_SYMBOL));
-                push_virtual_operation(witness_reward_operation(cwit.owner,witness_reward_shares));
+                if (has_hardfork(CHAIN_HARDFORK_13) && cwit.sharing_rate > 0) {
+                    // HF13: split witness_reward between validator and stakeholder pool (both in TOKEN).
+                    // Validator receives SHARES immediately via create_vesting.
+                    // Stakeholder portion is accumulated as TOKEN in pending_stakeholder_reward and
+                    // distributed to stakeholders via create_vesting at each epoch end.
+                    share_type stakeholder_token = (fc::uint128_t(witness_reward.value) *
+                        cwit.sharing_rate / CHAIN_100_PERCENT).to_uint64();
+                    share_type validator_token = witness_reward - stakeholder_token;
+
+                    if (validator_token > 0) {
+                        auto validator_vshares = create_vesting(*witness_account, asset(validator_token, TOKEN_SYMBOL));
+                        push_virtual_operation(witness_reward_operation(cwit.owner, validator_vshares));
+                    }
+
+                    if (stakeholder_token > 0) {
+                        modify(cwit, [&](witness_object& w) {
+                            w.pending_stakeholder_reward += stakeholder_token;
+                        });
+                    }
+                } else {
+                    auto witness_reward_shares = create_vesting(*witness_account, asset(witness_reward, TOKEN_SYMBOL));
+                    push_virtual_operation(witness_reward_operation(cwit.owner, witness_reward_shares));
+                }
             }
             else{
                 share_type inflation_rate = int64_t( CHAIN_FIXED_INFLATION );
@@ -3160,7 +3860,8 @@ namespace graphene { namespace chain {
                              ("w", cwit.owner)("k", cwit.signing_key)("m", cwit.total_missed)
                              ("p", cwit.penalty_percent)("lc", cwit.last_confirmed_block_num)
                              ("idx_size", acc_idx.size()));
-                        FC_ASSERT(false, "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected. Node must be restarted with replay.",
+                        FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                                  "CRITICAL: Witness ${w} account not found in database (HF4 path)! Shared memory corruption suspected.",
                                   ("w", cwit.owner));
                     }
                     auto witness_reward_shares = create_vesting(*witness_account, asset(witness_reward, TOKEN_SYMBOL));
@@ -3194,6 +3895,95 @@ namespace graphene { namespace chain {
                     auto witness_reward_shares = create_vesting(get_account(cwit.owner), asset(witness_reward, TOKEN_SYMBOL));
                     push_virtual_operation(witness_reward_operation(cwit.owner,witness_reward_shares));
                 }
+            }
+        }
+
+        void database::process_validator_epoch_distribution() {
+            const auto& wso = get_witness_schedule_object();
+            uint32_t epoch_length = wso.median_props.distribution_epoch_length;
+
+            // Only run at epoch boundaries; guard against zero (shouldn't happen).
+            if (epoch_length == 0 || head_block_num() % epoch_length != 0) return;
+
+            // First block of the current epoch (inclusive).
+            // Votes cast at or before this block contributed for the whole epoch.
+            // epoch_length is guaranteed >= CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH > 0.
+            uint32_t epoch_start_block = head_block_num() - epoch_length + 1;
+
+            const auto& vote_idx = get_index<witness_vote_index>().indices().get<by_witness_account>();
+            const auto& widx = get_index<witness_index>().indices().get<by_name>();
+
+            for (const auto& wit : widx) {
+                if (wit.pending_stakeholder_reward == 0) continue;
+
+                const auto* witness_account = find_account(wit.owner);
+                if (!witness_account) continue;
+
+                share_type total_token = wit.pending_stakeholder_reward;
+
+                // Compute time-weighted contributions for every stakeholder.
+                // weighted_contribution[i] = vote_weight * blocks_in_epoch
+                // where blocks_in_epoch counts how many blocks of this epoch the stakeholder was
+                // actually voting for this validator.
+                // Votes cast before epoch_start_block (including pre-HF13 votes with
+                // vote_created_block==0) get full weight (blocks_in_epoch = epoch_length).
+                fc::uint128_t total_weighted = 0;
+                struct stakeholder_entry {
+                    const account_object* account;
+                    fc::uint128_t weighted; // vote_weight * blocks_in_epoch
+                };
+                std::vector<stakeholder_entry> entries;
+                {
+                    auto itr = vote_idx.lower_bound(boost::make_tuple(wit.id, account_id_type()));
+                    while (itr != vote_idx.end() && itr->witness == wit.id) {
+                        const auto& stakeholder = get(itr->account);
+                        // Fair weight: total stake divided by number of validators voted for,
+                        // matching the actual per-validator weight used in consensus scheduling.
+                        share_type vote_weight = stakeholder.witness_vote_fair_weight();
+                        if (vote_weight > 0) {
+                            uint32_t first_block = (itr->vote_created_block > epoch_start_block)
+                                ? itr->vote_created_block : epoch_start_block;
+                            // +1: stakeholder was present on both first_block and head_block_num
+                            uint32_t blocks_in_epoch = head_block_num() - first_block + 1;
+                            fc::uint128_t weighted = fc::uint128_t(vote_weight.value) * blocks_in_epoch;
+                            total_weighted += weighted;
+                            entries.push_back({&stakeholder, weighted});
+                        }
+                        ++itr;
+                    }
+                }
+
+                if (total_weighted == 0) {
+                    // No stakeholders — entire pool returns to validator.
+                    auto dust_shares = create_vesting(*witness_account, asset(total_token, TOKEN_SYMBOL));
+                    push_virtual_operation(witness_reward_operation(wit.owner, dust_shares));
+                    modify(wit, [&](witness_object& w) { w.pending_stakeholder_reward = 0; });
+                    continue;
+                }
+
+                share_type total_distributed_token = 0;
+
+                for (const auto& entry : entries) {
+                    // stakeholder_token = total_token * weighted / total_weighted
+                    share_type stakeholder_token = (fc::uint128_t(total_token.value) *
+                        entry.weighted / total_weighted).to_uint64();
+
+                    if (stakeholder_token.value < CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT) continue;
+
+                    auto stakeholder_shares = create_vesting(*entry.account, asset(stakeholder_token, TOKEN_SYMBOL));
+                    push_virtual_operation(stakeholder_reward_operation(
+                        wit.owner, entry.account->name, stakeholder_shares));
+                    total_distributed_token += stakeholder_token;
+                }
+
+                // Remaining TOKEN (dust from rounding + sub-threshold shares) goes back to the validator.
+                share_type dust_token = total_token - total_distributed_token;
+                if (dust_token > 0) {
+                    auto dust_shares = create_vesting(*witness_account, asset(dust_token, TOKEN_SYMBOL));
+                    push_virtual_operation(witness_reward_operation(wit.owner, dust_shares));
+                }
+
+                modify(wit, [&](witness_object& w) { w.pending_stakeholder_reward = 0; });
             }
         }
 
@@ -3708,6 +4498,7 @@ namespace graphene { namespace chain {
             _my->_evaluator_registry.register_evaluator<use_invite_balance_evaluator>();
             _my->_evaluator_registry.register_evaluator<fixed_award_evaluator>();
             _my->_evaluator_registry.register_evaluator<target_account_sale_evaluator>();
+            _my->_evaluator_registry.register_evaluator<set_reward_sharing_evaluator>();
         }
 
         void database::set_custom_operation_interpreter(const std::string &id, std::shared_ptr<custom_operation_interpreter> registry) {
@@ -4343,12 +5134,18 @@ namespace graphene { namespace chain {
                 }
                 update_bandwidth_reserve_candidates();
                 update_witness_schedule();
+                if (_debug_block_production) ilog("DEBUG_CRASH: update_witness_schedule done");
 
+                if (_debug_block_production) ilog("DEBUG_CRASH: process_funds start");
                 if(has_hardfork(CHAIN_HARDFORK_4)){
                     process_inflation_recalc();
                     expire_award_shares_processing();
                 }
                 process_funds();
+                if (_debug_block_production) ilog("DEBUG_CRASH: process_funds done");
+                if (has_hardfork(CHAIN_HARDFORK_13)) {
+                    process_validator_epoch_distribution();
+                }
                 process_content_cashout();
                 process_vesting_withdrawals();
 
@@ -4371,9 +5168,22 @@ namespace graphene { namespace chain {
                 create_block_post_validation(next_block_num,next_block_id,next_block.witness);
 
                 // notify observers that the block has been applied
-                notify_applied_block(next_block);
+                if (_debug_block_production) ilog("DEBUG_CRASH: notify_applied_block start");
+                if (_defer_block_notifications) {
+                    // Defer notification until after the write lock is released.
+                    // This prevents slow plugin callbacks (MongoDB, etc.) from
+                    // blocking P2P/RPC threads while the write lock is held.
+                    _pending_block_notifications.push_back(next_block);
+                } else {
+                    // Direct call (replay / standalone apply_block) — no
+                    // write lock contention, safe to notify immediately.
+                    notify_applied_block(next_block);
+                }
+                if (_debug_block_production) ilog("DEBUG_CRASH: notify_applied_block done");
 
+                if (_debug_block_production) ilog("DEBUG_CRASH: notify_changed_objects start");
                 notify_changed_objects();
+                if (_debug_block_production) ilog("DEBUG_CRASH: _apply_block EXIT");
             } FC_CAPTURE_LOG_AND_RETHROW((next_block.block_num()))
         }
 
@@ -4503,8 +5313,13 @@ namespace graphene { namespace chain {
                           next_block.timestamp, "", ("head_block_time", head_block_time())("next", next_block.timestamp)("blocknum", next_block.block_num()));
                 const witness_object &witness = get_witness(next_block.witness);
 
-                if (!(skip & skip_witness_signature))
+                if (!(skip & skip_witness_signature)) {
+                    FC_ASSERT(witness.signing_key != public_key_type(),
+                              "Witness '${w}' has null signing key — cannot validate block #${n}. "
+                              "The witness disabled their key or the node is on a different fork.",
+                              ("w", next_block.witness)("n", next_block.block_num()));
                     FC_ASSERT(next_block.validate_signee(witness.signing_key));
+                }
 
                 if (!(skip & skip_witness_schedule_check)) {
                     uint32_t slot_num = get_slot_at_time(next_block.timestamp);
@@ -4512,9 +5327,47 @@ namespace graphene { namespace chain {
 
                     string scheduled_witness = get_scheduled_witness(slot_num);
 
-                    FC_ASSERT(witness.owner ==
-                              scheduled_witness, "Witness produced block at wrong time",
-                            ("block witness", next_block.witness)("scheduled", scheduled_witness)("slot_num", slot_num));
+                    // During emergency consensus, the witness schedule can diverge
+                    // between competing forks (different blocks → different shuffle).
+                    // A block from another fork may have a different witness for the
+                    // same slot — that block is still valid, just from a different
+                    // chain view.  Accept it: if a competing block from the
+                    // "correct" witness arrives, fork_db picks the winner via
+                    // vote-weighted comparison.  If no competition arrives, this
+                    // block IS the correct one.
+                    //
+                    // We still validate the signature (the witness must hold the
+                    // correct signing key) and all other block properties — we only
+                    // relax the strict slot-to-witness mapping.
+                    const dynamic_global_property_object &dgp = get_dynamic_global_properties();
+                    if (has_hardfork(CHAIN_HARDFORK_12) && dgp.emergency_consensus_active) {
+                        if (witness.owner != scheduled_witness) {
+                            // Relax strict slot-to-witness mapping, but still
+                            // require the witness to be IN the current schedule.
+                            // This prevents arbitrary key holders from producing
+                            // blocks in random slots while allowing competing
+                            // forks with different shuffles to interoperate.
+                            const witness_schedule_object &wso = get_witness_schedule_object();
+                            bool in_schedule = false;
+                            for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                                if (wso.current_shuffled_witnesses[i] == witness.owner) {
+                                    in_schedule = true;
+                                    break;
+                                }
+                            }
+                            FC_ASSERT(in_schedule,
+                                "Emergency mode: block from witness ${w} not in current schedule",
+                                ("w", witness.owner));
+                            dlog("Emergency mode: accepting block from ${bw} at slot scheduled for ${sw} "
+                                 "(slot_num=${slot}, block=#${num})",
+                                 ("bw", next_block.witness)("sw", scheduled_witness)
+                                 ("slot", slot_num)("num", next_block.block_num()));
+                        }
+                    } else {
+                        FC_ASSERT(witness.owner ==
+                                  scheduled_witness, "Witness produced block at wrong time",
+                                ("block witness", next_block.witness)("scheduled", scheduled_witness)("slot_num", slot_num));
+                    }
                 }
 
                 return witness;
@@ -4557,10 +5410,42 @@ namespace graphene { namespace chain {
                             witness_missed.owner != b.witness &&
                             witness_missed.owner != CHAIN_EMERGENCY_WITNESS_ACCOUNT;
 
+                        if (!is_emergency_offline_witness && witness_missed.owner != b.witness) {
+                            ilog("\033[91mMissed block: witness ${w} did not produce block #${n} at ${t} (next: ${next})\033[0m",
+                                 ("w", witness_missed.owner)
+                                 ("n", head_block_num() + i + 1)
+                                 ("t", get_slot_time(i + 1))
+                                 ("next", b.witness));
+                        }
+
                         modify(witness_missed, [&](witness_object &w) {
-                            w.current_run = 0;
+                            // Only reset current_run for witnesses that actually missed their slot.
+                            // In emergency hybrid mode, the committee witness occupies multiple
+                            // schedule slots and produces the current block.  If we reset current_run
+                            // for the committee witness's duplicate slots (which are also "missed"
+                            // because committee can't fill all slots simultaneously), current_run
+                            // never reaches CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN, so
+                            // last_supported_block_num never advances and LIB stalls.
+                            if (w.owner != b.witness) {
+                                w.current_run = 0;
+                            }
                             if(is_emergency_offline_witness) {
-                                // Only reset current_run; skip all penalties and shutdown
+                                // Emergency mode: skip per-block vote penalties and total_missed.
+                                // Key-blanking uses a deterministic consensus check:
+                                // head_block_num - last_confirmed_block_num (both on-chain state)
+                                // against CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS.
+                                // All nodes compute the same result.
+                                if (w.signing_key != public_key_type() &&
+                                    head_block_num() -
+                                    w.last_confirmed_block_num >
+                                    CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS) {
+                                    elog("Emergency consensus: Witness ${w} missed ${missed} blocks since last confirmed ${lc} "
+                                         "(threshold=${t}), blanking signing_key",
+                                         ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
+                                         ("lc", w.last_confirmed_block_num)("t", CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS));
+                                    w.signing_key = public_key_type();
+                                    push_virtual_operation(shutdown_witness_operation(w.owner));
+                                }
                             } else if(witness_missed.owner != b.witness){
                                 // total_missed does not increment when witness_missed.owner == b.witness
                                 // because a low total_missed is a "prestige" item and a witness that
@@ -4580,7 +5465,8 @@ namespace graphene { namespace chain {
                                     });
                                 }
 
-                                if (head_block_num() -
+                                if (w.signing_key != public_key_type() &&
+                                    head_block_num() -
                                     w.last_confirmed_block_num >
                                     CHAIN_MAX_WITNESS_MISSED_BLOCKS) {
                                     elog("Witness ${w} missed too many blocks (${missed} since last confirmed ${lc}), blanking signing_key (was ${k})",
@@ -4668,12 +5554,13 @@ namespace graphene { namespace chain {
                     // More than CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC seconds have elapsed
                     // since the last irreversible block timestamp.
                     //
-                    // STARTUP DELAY: We also require that at least
-                    // CHAIN_EMERGENCY_STARTUP_DELAY_SEC seconds have passed since
-                    // the node was started. When a node is restarted after being
-                    // offline for hours, it must sync first — the old LIB timestamp
-                    // is stale and would immediately trigger emergency mode,
-                    // preventing the node from syncing with peers.
+                    // DETERMINISM: This check uses ONLY data embedded in the
+                    // block and chain state:
+                    //   seconds_since_lib = b.timestamp - lib_block.timestamp
+                    // Both values come from signed blocks, so the result is
+                    // identical on every node and during every replay.
+                    // No config flags, wall-clock time, or skip-flags may gate
+                    // this check — any such guard would break replay determinism.
                     //
                     // IMPORTANT: If the LIB block is not available in block_log
                     // (e.g., after snapshot restore when block_log is empty),
@@ -4685,128 +5572,128 @@ namespace graphene { namespace chain {
                     // p2p are rejected, head_block_num never advances,
                     // next_shuffle_block_num never reached).
 
-                    // Check startup delay first (uses wall-clock time)
-                    fc::time_point now_wall = fc::time_point::now();
-                    int64_t seconds_since_startup = (now_wall - _node_startup_time).count() / 1000000;
-                    if (seconds_since_startup < CHAIN_EMERGENCY_STARTUP_DELAY_SEC) {
-                        // Node just started — skip emergency check to allow
-                        // time for P2P sync.
-                    } else {
-                        fc::time_point_sec lib_time;
-                        bool lib_time_available = false;
+                    fc::time_point_sec lib_time;
+                    bool lib_time_available = false;
 
-                        if (_dgp.last_irreversible_block_num > 0) {
-                            auto lib_block = fetch_block_by_number(_dgp.last_irreversible_block_num);
-                            if (lib_block.valid()) {
-                                lib_time = lib_block->timestamp;
-                                lib_time_available = true;
-                            }
-                            // If lib_block is NOT valid (block_log empty after
-                            // snapshot restore), lib_time_available stays false.
-                            // We skip the emergency check entirely because we
-                            // cannot determine the real LIB time.
+                    if (_dgp.last_irreversible_block_num > 0) {
+                        auto lib_block = fetch_block_by_number(_dgp.last_irreversible_block_num);
+                        if (lib_block.valid()) {
+                            lib_time = lib_block->timestamp;
+                            lib_time_available = true;
                         }
+                        // If lib_block is NOT valid (block_log empty after
+                        // snapshot restore), lib_time_available stays false.
+                        // We skip the emergency check entirely because we
+                        // cannot determine the real LIB time.
+                    }
 
-                        if (!lib_time_available) {
-                            // Cannot determine LIB time (block_log empty after
-                            // snapshot restore). Skip emergency check to avoid
-                            // false activation that would deadlock the node.
-                        } else {
-                            uint32_t seconds_since_lib = (b.timestamp - lib_time).to_seconds();
+                    if (!lib_time_available) {
+                        // Cannot determine LIB time (block_log empty after
+                        // snapshot restore). Skip emergency check to avoid
+                        // false activation that would deadlock the node.
+                    } else {
+                        uint32_t seconds_since_lib = (b.timestamp - lib_time).to_seconds();
 
-                            if (seconds_since_lib >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC) {
-                                // Enter emergency consensus mode
-                                modify(_dgp, [&](dynamic_global_property_object &dgp) {
-                                    dgp.emergency_consensus_active = true;
-                                    dgp.emergency_consensus_start_block = b.block_num();
+                        if (seconds_since_lib >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC) {
+                            // Enter emergency consensus mode
+                            modify(_dgp, [&](dynamic_global_property_object &dgp) {
+                                dgp.emergency_consensus_active = true;
+                                dgp.emergency_consensus_start_block = b.block_num();
+                            });
+
+                            // Change 5: Ensure emergency witness object exists with correct key
+                            const auto &witness_by_name = get_index<witness_index>().indices().get<by_name>();
+                            auto wit_itr = witness_by_name.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT);
+
+                            if (wit_itr == witness_by_name.end()) {
+                                create<witness_object>([&](witness_object &w) {
+                                    w.owner = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                                    w.signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY;
+                                    w.created = head_block_time();
+                                    w.schedule = witness_object::top;
+                                    // Set running version to match the binary
+                                    w.running_version = CHAIN_VERSION;
+                                    // Vote for the CURRENTLY APPLIED hardfork version, not
+                                    // CHAIN_HARDFORK_VERSION (which may be ahead). This makes
+                                    // committee a neutral voter that reinforces the status quo
+                                    // and does not push for a new hardfork on its own.
+                                    const auto &hfp = get_hardfork_property_object();
+                                    w.hardfork_version_vote = hfp.current_hardfork_version;
+                                    w.hardfork_time_vote = hfp.processed_hardforks[hfp.last_hardfork];
+                                    // Copy the current median chain properties so that the
+                                    // committee witness does not skew the median when it's
+                                    // counted in update_median_witness_props(). With median
+                                    // props, N committee entries are invisible to the median
+                                    // computation (they just reinforce the existing median).
+                                    w.props = get_witness_schedule_object().median_props;
                                 });
-
-                                // Change 5: Ensure emergency witness object exists with correct key
-                                const auto &witness_by_name = get_index<witness_index>().indices().get<by_name>();
-                                auto wit_itr = witness_by_name.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT);
-
-                                if (wit_itr == witness_by_name.end()) {
-                                    create<witness_object>([&](witness_object &w) {
-                                        w.owner = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
-                                        w.signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY;
-                                        w.created = head_block_time();
-                                        w.schedule = witness_object::top;
-                                        // Set running version to match the binary
-                                        w.running_version = CHAIN_VERSION;
-                                        // Vote for the CURRENTLY APPLIED hardfork version, not
-                                        // CHAIN_HARDFORK_VERSION (which may be ahead). This makes
-                                        // committee a neutral voter that reinforces the status quo
-                                        // and does not push for a new hardfork on its own.
-                                        const auto &hfp = get_hardfork_property_object();
-                                        w.hardfork_version_vote = hfp.current_hardfork_version;
-                                        w.hardfork_time_vote = hfp.processed_hardforks[hfp.last_hardfork];
-                                        // Copy the current median chain properties so that the
-                                        // committee witness does not skew the median when it's
-                                        // counted in update_median_witness_props(). With median
-                                        // props, N committee entries are invisible to the median
-                                        // computation (they just reinforce the existing median).
-                                        w.props = get_witness_schedule_object().median_props;
-                                    });
-                                } else {
-                                    modify(*wit_itr, [&](witness_object &w) {
-                                        w.signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY;
-                                        w.schedule = witness_object::top;
-                                        // Update version fields on re-activation too
-                                        w.running_version = CHAIN_VERSION;
-                                        const auto &hfp = get_hardfork_property_object();
-                                        w.hardfork_version_vote = hfp.current_hardfork_version;
-                                        w.hardfork_time_vote = hfp.processed_hardforks[hfp.last_hardfork];
-                                        // Sync chain properties with current median
-                                        w.props = get_witness_schedule_object().median_props;
-                                    });
-                                }
-
-                                // Change 7: Reset all witness penalties and re-enable shut-down witnesses
-                                const auto &witness_idx = get_index<witness_index>().indices().get<by_id>();
-                                for (auto witr = witness_idx.begin(); witr != witness_idx.end(); ++witr) {
-                                    if (witr->owner == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
-                                    modify(*witr, [&](witness_object &w) {
-                                        w.penalty_percent = 0;
-                                        w.counted_votes = w.votes;
-                                        w.current_run = 0;
-                                    });
-                                }
-
-                                // Remove all pending penalty expiration objects
-                                const auto &penalty_idx = get_index<witness_penalty_expire_index>().indices().get<by_id>();
-                                auto pen_itr = penalty_idx.begin();
-                                while (pen_itr != penalty_idx.end()) {
-                                    const auto &current = *pen_itr;
-                                    ++pen_itr;
-                                    remove(current);
-                                }
-
-                                // Override witness schedule: all slots -> emergency witness
-                                // Also update next_shuffle_block_num so the hybrid override
-                                // runs on the next schedule update. Without this, if
-                                // next_shuffle_block_num is still N blocks away, the node
-                                // would run an all-committee schedule until then, rejecting
-                                // blocks from real witnesses during that window.
-                                const witness_schedule_object &wso = get_witness_schedule_object();
-                                modify(wso, [&](witness_schedule_object &_wso) {
-                                    for (int i = 0; i < _wso.num_scheduled_witnesses; i++) {
-                                        _wso.current_shuffled_witnesses[i] = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
-                                    }
-                                    _wso.next_shuffle_block_num = head_block_num() + _wso.num_scheduled_witnesses;
+                            } else {
+                                modify(*wit_itr, [&](witness_object &w) {
+                                    w.signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY;
+                                    w.schedule = witness_object::top;
+                                    // Update version fields on re-activation too
+                                    w.running_version = CHAIN_VERSION;
+                                    const auto &hfp = get_hardfork_property_object();
+                                    w.hardfork_version_vote = hfp.current_hardfork_version;
+                                    w.hardfork_time_vote = hfp.processed_hardforks[hfp.last_hardfork];
+                                    // Sync chain properties with current median
+                                    w.props = get_witness_schedule_object().median_props;
                                 });
+                            }
 
-                                // Notify fork_db about emergency mode
-                                _fork_db.set_emergency_mode(true);
+                            // Change 7: Disable all real witnesses and reset penalties.
+                            // On emergency start, zero signing_key so ONLY committee produces.
+                            // Operators must manually re-enable witnesses via update_witness tx.
+                            const auto &witness_idx = get_index<witness_index>().indices().get<by_id>();
+                            uint32_t blanked_count = 0;
+                            for (auto witr = witness_idx.begin(); witr != witness_idx.end(); ++witr) {
+                                if (witr->owner == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
+                                if (witr->signing_key != public_key_type()) blanked_count++;
+                                modify(*witr, [&](witness_object &w) {
+                                    w.signing_key = public_key_type();
+                                    w.penalty_percent = 0;
+                                    w.counted_votes = w.votes;
+                                    w.current_run = 0;
+                                });
+                            }
+                            elog("Emergency consensus started: blanked signing_key for ${n} witnesses. "
+                                 "Operators must send update_witness tx to re-enable after emergency ends.",
+                                 ("n", blanked_count));
 
-                                ilog("EMERGENCY CONSENSUS MODE activated at block ${b}. "
-                                    "No blocks for ${sec} seconds since LIB ${lib}. "
-                                    "Emergency witness: ${w}",
-                                    ("b", b.block_num())("sec", seconds_since_lib)
-                                    ("lib", _dgp.last_irreversible_block_num)
-                                    ("w", CHAIN_EMERGENCY_WITNESS_ACCOUNT));
-                            } // end if (seconds_since_lib >= TIMEOUT)
-                        } // end else (lib_time_available)
-                    } // end else (seconds_since_startup >= STARTUP_DELAY)
+                            // Remove all pending penalty expiration objects
+                            const auto &penalty_idx = get_index<witness_penalty_expire_index>().indices().get<by_id>();
+                            auto pen_itr = penalty_idx.begin();
+                            while (pen_itr != penalty_idx.end()) {
+                                const auto &current = *pen_itr;
+                                ++pen_itr;
+                                remove(current);
+                            }
+
+                            // Override witness schedule: all slots -> emergency witness
+                            // Also update next_shuffle_block_num so the hybrid override
+                            // runs on the next schedule update. Without this, if
+                            // next_shuffle_block_num is still N blocks away, the node
+                            // would run an all-committee schedule until then, rejecting
+                            // blocks from real witnesses during that window.
+                            const witness_schedule_object &wso = get_witness_schedule_object();
+                            modify(wso, [&](witness_schedule_object &_wso) {
+                                for (int i = 0; i < _wso.num_scheduled_witnesses; i++) {
+                                    _wso.current_shuffled_witnesses[i] = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                                }
+                                _wso.next_shuffle_block_num = head_block_num() + _wso.num_scheduled_witnesses;
+                            });
+
+                            // Notify fork_db about emergency mode
+                            _fork_db.set_emergency_mode(true);
+
+                            ilog("EMERGENCY CONSENSUS MODE activated at block ${b}. "
+                                "No blocks for ${sec} seconds since LIB ${lib}. "
+                                "Emergency witness: ${w}",
+                                ("b", b.block_num())("sec", seconds_since_lib)
+                                ("lib", _dgp.last_irreversible_block_num)
+                                ("w", CHAIN_EMERGENCY_WITNESS_ACCOUNT));
+                        } // end if (seconds_since_lib >= TIMEOUT)
+                    } // end else (lib_time_available)
                 } // end if (has_hardfork(HF12) && !emergency_active)
             } FC_CAPTURE_AND_RETHROW()
         }
@@ -4891,9 +5778,39 @@ namespace graphene { namespace chain {
                                             std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
                                                     dlt_head_num + 1);
                                             if (!block) {
-                                                // Block not in fork database — normal after restart when fork_db
-                                                // hasn't accumulated blocks back to LIB yet. Will catch up once
-                                                // LIB advances past the post-restart head.
+                                                // Block not in fork database — after DLT restart there
+                                                // can be a gap between dlt_block_log end and fork_db start.
+                                                // Find the earliest block fork_db has and reset dlt_block_log
+                                                // to start from there so future blocks are saved.
+                                                uint32_t fork_start = 0;
+                                                for (uint32_t n = dlt_head_num + 2; n <= dpo.last_irreversible_block_num; ++n) {
+                                                    if (_fork_db.fetch_block_on_main_branch_by_number(n)) {
+                                                        fork_start = n;
+                                                        break;
+                                                    }
+                                                }
+                                                if (fork_start > 0) {
+                                                    ilog("DLT block log: gap detected between dlt_end=${dlt_end} and "
+                                                         "fork_db_start=${fork_start} (LIB=${lib}). "
+                                                         "Resetting dlt_block_log to start from fork_db.",
+                                                         ("dlt_end", dlt_head_num)
+                                                         ("fork_start", fork_start)
+                                                         ("lib", dpo.last_irreversible_block_num));
+                                                    _dlt_block_log.reset();
+                                                    // Write all available blocks from fork_start to LIB
+                                                    for (uint32_t n = fork_start; n <= dpo.last_irreversible_block_num; ++n) {
+                                                        auto fb = _fork_db.fetch_block_on_main_branch_by_number(n);
+                                                        if (fb) {
+                                                            _dlt_block_log.append(fb->data);
+                                                            wrote_any = true;
+                                                        } else {
+                                                            break; // end of contiguous range
+                                                        }
+                                                    }
+                                                    // Signal snapshot plugin to create a fresh snapshot
+                                                    // so other DLT nodes can catch up from us
+                                                    try { dlt_block_log_was_reset(); } catch (...) {}
+                                                }
                                                 break;
                                             }
                                             _dlt_block_log.append(block->data);
@@ -4918,6 +5835,12 @@ namespace graphene { namespace chain {
                                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
                                         if (!_dlt_mode) {
                                             auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                                            if (!irreversible_block.valid()) {
+                                                auto fork_block = _fork_db.fetch_block_on_main_branch_by_number(_dpo.last_irreversible_block_num);
+                                                if (fork_block) {
+                                                    irreversible_block = fork_block->data;
+                                                }
+                                            }
                                             if (irreversible_block.valid()) {
                                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
@@ -4925,6 +5848,12 @@ namespace graphene { namespace chain {
                                             }
                                         } else if (_dlt_block_log_max_blocks > 0) {
                                             auto irreversible_block = _dlt_block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                                            if (!irreversible_block.valid()) {
+                                                auto fork_block = _fork_db.fetch_block_on_main_branch_by_number(_dpo.last_irreversible_block_num);
+                                                if (fork_block) {
+                                                    irreversible_block = fork_block->data;
+                                                }
+                                            }
                                             if (irreversible_block.valid()) {
                                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
@@ -4955,6 +5884,22 @@ namespace graphene { namespace chain {
                 // Don't advance LIB via post-validation during emergency mode
                 const dynamic_global_property_object &emergency_dpo = get_dynamic_global_properties();
                 if (has_hardfork(CHAIN_HARDFORK_12) && emergency_dpo.emergency_consensus_active) {
+                    return;
+                }
+
+                // Reject post-validations from witnesses not in the current schedule.
+                // Only scheduled witnesses can contribute to LIB advancement; accepting
+                // validations from non-scheduled witnesses is pointless and could be
+                // exploited for spam.
+                const witness_schedule_object &wso = get_witness_schedule_object();
+                bool is_scheduled = false;
+                for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                    if (wso.current_shuffled_witnesses[i] == witness_account) {
+                        is_scheduled = true;
+                        break;
+                    }
+                }
+                if (!is_scheduled) {
                     return;
                 }
 
@@ -5043,9 +5988,38 @@ namespace graphene { namespace chain {
                                             std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
                                                     dlt_head_num + 1);
                                             if (!block) {
-                                                // Block not in fork database — normal after restart when fork_db
-                                                // hasn't accumulated blocks back to LIB yet. Will catch up once
-                                                // LIB advances past the post-restart head.
+                                                // Block not in fork database — after DLT restart there
+                                                // can be a gap between dlt_block_log end and fork_db start.
+                                                // Find the earliest block fork_db has and reset dlt_block_log
+                                                // to start from there so future blocks are saved.
+                                                uint32_t fork_start = 0;
+                                                for (uint32_t n = dlt_head_num + 2; n <= dpo.last_irreversible_block_num; ++n) {
+                                                    if (_fork_db.fetch_block_on_main_branch_by_number(n)) {
+                                                        fork_start = n;
+                                                        break;
+                                                    }
+                                                }
+                                                if (fork_start > 0) {
+                                                    ilog("DLT block log: gap detected between dlt_end=${dlt_end} and "
+                                                         "fork_db_start=${fork_start} (LIB=${lib}). "
+                                                         "Resetting dlt_block_log to start from fork_db.",
+                                                         ("dlt_end", dlt_head_num)
+                                                         ("fork_start", fork_start)
+                                                         ("lib", dpo.last_irreversible_block_num));
+                                                    _dlt_block_log.reset();
+                                                    // Write all available blocks from fork_start to LIB
+                                                    for (uint32_t n = fork_start; n <= dpo.last_irreversible_block_num; ++n) {
+                                                        auto fb = _fork_db.fetch_block_on_main_branch_by_number(n);
+                                                        if (fb) {
+                                                            _dlt_block_log.append(fb->data);
+                                                            wrote_any = true;
+                                                        } else {
+                                                            break; // end of contiguous range
+                                                        }
+                                                    }
+                                                    // Signal snapshot plugin to create a fresh snapshot
+                                                    try { dlt_block_log_was_reset(); } catch (...) {}
+                                                }
                                                 break;
                                             }
                                             _dlt_block_log.append(block->data);
@@ -5069,6 +6043,12 @@ namespace graphene { namespace chain {
                                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
                                         if (!_dlt_mode) {
                                             auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                                            if (!irreversible_block.valid()) {
+                                                auto fork_block = _fork_db.fetch_block_on_main_branch_by_number(_dpo.last_irreversible_block_num);
+                                                if (fork_block) {
+                                                    irreversible_block = fork_block->data;
+                                                }
+                                            }
                                             if (irreversible_block.valid()) {
                                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
@@ -5076,6 +6056,12 @@ namespace graphene { namespace chain {
                                             }
                                         } else if (_dlt_block_log_max_blocks > 0) {
                                             auto irreversible_block = _dlt_block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                                            if (!irreversible_block.valid()) {
+                                                auto fork_block = _fork_db.fetch_block_on_main_branch_by_number(_dpo.last_irreversible_block_num);
+                                                if (fork_block) {
+                                                    irreversible_block = fork_block->data;
+                                                }
+                                            }
                                             if (irreversible_block.valid()) {
                                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
@@ -5101,16 +6087,19 @@ namespace graphene { namespace chain {
             const auto& validation_list = get_index<block_post_validation_index>().indices().get<by_id>();
             auto itr = validation_list.begin();
             size_t i = 0;
-            while(itr != validation_list.end())
+            while(itr != validation_list.end() && i < CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT)
             {
                 const auto& current = *itr;
                 ++itr;
                 //if witness is in the list add it to result
-                for (size_t j = 0; j< CHAIN_MAX_WITNESSES; j++) {
+                //only count the first match per validation object (committee can occupy multiple slots)
+                bool matched = false;
+                for (size_t j = 0; j < CHAIN_MAX_WITNESSES && !matched; j++) {
                     if(current.current_shuffled_witnesses[j] == witness_account){
                         if(current.current_shuffled_witnesses_validations[j] == false){//need validate
                             result[i] = block_post_validation_object(current);
                             ++i;
+                            matched = true;
                         }
                     }
                 }
@@ -5195,102 +6184,15 @@ namespace graphene { namespace chain {
                 const dynamic_global_property_object &dpo = get_dynamic_global_properties();
                 const witness_schedule_object &wso = get_witness_schedule_object();
 
-                // === HARDFORK 12: EMERGENCY LIB COMPUTATION ===
-                // During emergency mode, compute LIB using ONLY real witnesses
-                // (exclude committee). This ensures:
-                // 1. PARTITION SAFETY: committee-only chains keep LIB frozen
-                // 2. GRADUAL RECOVERY: real witnesses returning via hybrid schedule
-                //    advance LIB naturally -> emergency exits
-                if (has_hardfork(CHAIN_HARDFORK_12) && dpo.emergency_consensus_active) {
-                    // Collect ONLY real (non-committee) witnesses from schedule
-                    vector<const witness_object *> real_wit_objs;
-                    for (int i = 0; i < wso.num_scheduled_witnesses;
-                         i += CHAIN_BLOCK_WITNESS_REPEAT) {
-                        const auto &wname = wso.current_shuffled_witnesses[i];
-                        if (wname != CHAIN_EMERGENCY_WITNESS_ACCOUNT &&
-                            wname != account_name_type()) {
-                            real_wit_objs.push_back(
-                                &get_witness(wname));
-                        }
-                    }
-
-                    if (real_wit_objs.empty()) {
-                        // All committee -- LIB stays frozen
-                        // Expand fork_db to accommodate emergency blocks
-                        uint32_t emergency_fork_db_size = std::min(
-                            dpo.head_block_number -
-                                dpo.last_irreversible_block_num + 1,
-                            uint32_t(CHAIN_MAX_UNDO_HISTORY));
-                        _fork_db.set_max_size(emergency_fork_db_size);
-                        return;
-                    }
-
-                    // Compute LIB using real witnesses only.
-                    // Threshold: 75% of REAL witnesses (not total schedule).
-                    size_t offset =
-                        ((CHAIN_100_PERCENT - CHAIN_IRREVERSIBLE_THRESHOLD) *
-                         real_wit_objs.size() / CHAIN_100_PERCENT);
-
-                    std::nth_element(
-                        real_wit_objs.begin(),
-                        real_wit_objs.begin() + offset,
-                        real_wit_objs.end(),
-                        [](const witness_object *a, const witness_object *b) {
-                            return a->last_supported_block_num <
-                                   b->last_supported_block_num;
-                        });
-
-                    uint32_t new_lib =
-                        real_wit_objs[offset]->last_supported_block_num;
-
-                    if (new_lib > dpo.last_irreversible_block_num) {
-                        // Real witnesses have advanced LIB!
-                        ilog("Emergency LIB advance: ${old} -> ${new} "
-                             "(${n} real witnesses producing)",
-                             ("old", dpo.last_irreversible_block_num)
-                             ("new", new_lib)
-                             ("n", real_wit_objs.size()));
-
-                        modify(dpo, [&](dynamic_global_property_object &_dpo) {
-                            _dpo.last_irreversible_block_num = new_lib;
-                            _dpo.last_irreversible_block_id = block_id_type();
-                            _dpo.last_irreversible_block_ref_num = 0;
-                            _dpo.last_irreversible_block_ref_prefix = 0;
-                        });
-
-                        commit(dpo.last_irreversible_block_num);
-
-                        if (!(skip & skip_block_log) && !_dlt_mode) {
-                            const auto &tmp_head = _block_log.head();
-                            uint64_t log_head_num = 0;
-                            if (tmp_head) {
-                                log_head_num = tmp_head->block_num();
-                            }
-                            if (log_head_num < dpo.last_irreversible_block_num) {
-                                while (log_head_num < dpo.last_irreversible_block_num) {
-                                    std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
-                                            log_head_num + 1);
-                                    FC_ASSERT(block, "Current fork in the fork database does not contain the last_irreversible_block");
-                                    _block_log.append(block->data);
-                                    log_head_num++;
-                                }
-                                _block_log.flush();
-                            }
-                        }
-
-                        _fork_db.set_max_size(dpo.head_block_number -
-                                              dpo.last_irreversible_block_num + 1);
-                        return;
-                    } else {
-                        // Not enough real witnesses yet -- keep LIB frozen
-                        uint32_t emergency_fork_db_size = std::min(
-                            dpo.head_block_number -
-                                dpo.last_irreversible_block_num + 1,
-                            uint32_t(CHAIN_MAX_UNDO_HISTORY));
-                        _fork_db.set_max_size(emergency_fork_db_size);
-                        return;
-                    }
-                }
+                // === HARDFORK 12: EMERGENCY LIB ===
+                // During emergency mode, LIB advances normally using all witnesses
+                // in the schedule (including committee). Committee produces every
+                // block, so after current_run >= CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN
+                // (3 blocks), LIB advances every block (capped at HEAD-1 to preserve
+                // undo protection — see cap below). This keeps the gap between
+                // LIB and head small, preventing fork_db overflow on long emergencies.
+                // When operators re-enable real witnesses and emergency exits,
+                // normal LIB computation continues seamlessly.
                 // === END HARDFORK 12 EMERGENCY LIB ===
 
                 vector<const witness_object *> wit_objs;
@@ -5319,6 +6221,25 @@ namespace graphene { namespace chain {
 
                 uint32_t new_last_irreversible_block_num = wit_objs[offset]->last_supported_block_num;
 
+                // === HARDFORK 12: EMERGENCY LIB CAP ===
+                // During emergency, all schedule slots point to the same committee
+                // witness, so nth_element yields last_supported_block_num == HEAD.
+                // If we commit(HEAD), the undo session for the CURRENT block is
+                // destroyed. Any subsequent modify() in _apply_block (e.g.
+                // update_witness_schedule) becomes permanent with NO rollback.
+                // A crash after commit but before _apply_block finishes leaves
+                // permanently corrupted state (e.g. zeroed schedule).
+                // Cap LIB to HEAD-1 so the current block always has undo protection.
+                if (has_hardfork(CHAIN_HARDFORK_12) && dpo.emergency_consensus_active &&
+                    new_last_irreversible_block_num >= dpo.head_block_number) {
+                    new_last_irreversible_block_num = dpo.head_block_number > 0
+                        ? dpo.head_block_number - 1
+                        : 0;
+                }
+
+                if (_debug_block_production) ilog("DEBUG_CRASH: update_last_irreversible_block: new_lib=${lib} old_lib=${old} head=${h}",
+                     ("lib", new_last_irreversible_block_num)("old", dpo.last_irreversible_block_num)("h", dpo.head_block_number));
+
                 if (new_last_irreversible_block_num >
                     dpo.last_irreversible_block_num) {
                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
@@ -5329,6 +6250,7 @@ namespace graphene { namespace chain {
                     });
                 }
 
+                if (_debug_block_production) ilog("DEBUG_CRASH: committing LIB=${lib}", ("lib", dpo.last_irreversible_block_num));
                 commit(dpo.last_irreversible_block_num);
 
                 if (!(skip & skip_block_log) && !_dlt_mode) {
@@ -5372,16 +6294,43 @@ namespace graphene { namespace chain {
                             std::shared_ptr<fork_item> block = _fork_db.fetch_block_on_main_branch_by_number(
                                     dlt_head_num + 1);
                             if (!block) {
-                                // Block not in fork database — normal after restart when fork_db
-                                // hasn't accumulated blocks back to LIB yet. Will catch up once
-                                // LIB advances past the post-restart head.
-                                if (!_dlt_gap_logged) {
-                                    _dlt_gap_logged = true;
-                                    ilog("DLT block log: block ${n} not in fork_db, skipping "
-                                         "(dlt_head=${h}, LIB=${lib}). Gap will fill as new blocks arrive.",
-                                         ("n", dlt_head_num + 1)
-                                         ("h", _dlt_block_log.head_block_num())
+                                // Block not in fork database — gap between dlt_block_log
+                                // and fork_db.  Search for the earliest available block
+                                // and reset dlt_block_log to start from there.
+                                uint32_t fork_start = 0;
+                                for (uint32_t n = dlt_head_num + 2; n <= dpo.last_irreversible_block_num; ++n) {
+                                    if (_fork_db.fetch_block_on_main_branch_by_number(n)) {
+                                        fork_start = n;
+                                        break;
+                                    }
+                                }
+                                if (fork_start > 0) {
+                                    ilog("DLT block log (update_lib): gap detected between "
+                                         "dlt_end=${dlt_end} and fork_db_start=${fork_start} "
+                                         "(LIB=${lib}). Resetting dlt_block_log to start from fork_db.",
+                                         ("dlt_end", dlt_head_num)
+                                         ("fork_start", fork_start)
                                          ("lib", dpo.last_irreversible_block_num));
+                                    _dlt_block_log.reset();
+                                    for (uint32_t n = fork_start; n <= dpo.last_irreversible_block_num; ++n) {
+                                        auto fb = _fork_db.fetch_block_on_main_branch_by_number(n);
+                                        if (fb) {
+                                            _dlt_block_log.append(fb->data);
+                                            wrote_any = true;
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                    try { dlt_block_log_was_reset(); } catch (...) {}
+                                } else {
+                                    if (!_dlt_gap_logged) {
+                                        _dlt_gap_logged = true;
+                                        ilog("DLT block log (update_lib): block ${n} not in fork_db, "
+                                             "no recoverable range found (dlt_head=${h}, LIB=${lib}).",
+                                             ("n", dlt_head_num + 1)
+                                             ("h", _dlt_block_log.head_block_num())
+                                             ("lib", dpo.last_irreversible_block_num));
+                                    }
                                 }
                                 break;
                             }
@@ -5391,7 +6340,7 @@ namespace graphene { namespace chain {
                         }
 
                         if (wrote_any) {
-                            _dlt_gap_logged = false;  // Gap is filling, re-enable logging if it reappears
+                            _dlt_gap_logged = false;
                             _dlt_block_log.flush();
                         }
                     }
@@ -5407,6 +6356,12 @@ namespace graphene { namespace chain {
                     modify(dpo, [&](dynamic_global_property_object &_dpo) {
                         if (!_dlt_mode) {
                             auto irreversible_block = _block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                            if (!irreversible_block.valid()) {
+                                auto fork_block = _fork_db.fetch_block_on_main_branch_by_number(_dpo.last_irreversible_block_num);
+                                if (fork_block) {
+                                    irreversible_block = fork_block->data;
+                                }
+                            }
                             if (irreversible_block.valid()) {
                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
@@ -5414,6 +6369,12 @@ namespace graphene { namespace chain {
                             }
                         } else if (_dlt_block_log_max_blocks > 0) {
                             auto irreversible_block = _dlt_block_log.read_block_by_num(_dpo.last_irreversible_block_num);
+                            if (!irreversible_block.valid()) {
+                                auto fork_block = _fork_db.fetch_block_on_main_branch_by_number(_dpo.last_irreversible_block_num);
+                                if (fork_block) {
+                                    irreversible_block = fork_block->data;
+                                }
+                            }
                             if (irreversible_block.valid()) {
                                 _dpo.last_irreversible_block_id = irreversible_block->id();
                                 _dpo.last_irreversible_block_ref_num = _dpo.last_irreversible_block_num & 0xFFFF;
@@ -5423,8 +6384,10 @@ namespace graphene { namespace chain {
                     });
                 }
 
+                if (_debug_block_production) ilog("DEBUG_CRASH: fork_db set_max_size=${s}", ("s", dpo.head_block_number - dpo.last_irreversible_block_num + 1));
                 _fork_db.set_max_size(dpo.head_block_number -
                                       dpo.last_irreversible_block_num + 1);
+                if (_debug_block_production) ilog("DEBUG_CRASH: update_last_irreversible_block done");
             } FC_CAPTURE_AND_RETHROW()
         }
 
@@ -5573,6 +6536,9 @@ namespace graphene { namespace chain {
 
             _hardfork_times[CHAIN_HARDFORK_12] = fc::time_point_sec(CHAIN_HARDFORK_12_TIME);
             _hardfork_versions[CHAIN_HARDFORK_12] = CHAIN_HARDFORK_12_VERSION;
+
+            _hardfork_times[CHAIN_HARDFORK_13] = fc::time_point_sec(CHAIN_HARDFORK_13_TIME);
+            _hardfork_versions[CHAIN_HARDFORK_13] = CHAIN_HARDFORK_13_VERSION;
 
             const auto &hardforks = get_hardfork_property_object();
             FC_ASSERT(
@@ -6483,6 +7449,13 @@ namespace graphene { namespace chain {
                     }
                     break;
                 }
+                case CHAIN_HARDFORK_12:
+                    break;
+                case CHAIN_HARDFORK_13:
+                    // Validator reward sharing: new fields sharing_rate and
+                    // pending_stakeholder_reward on witness_object default to 0 (replay
+                    // initialises them), no extra migration needed.
+                    break;
                 default:
                     break;
             }

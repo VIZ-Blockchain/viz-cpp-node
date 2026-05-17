@@ -9,26 +9,19 @@
 #include <graphene/plugins/network_broadcast_api/network_broadcast_api_plugin.hpp>
 #include <graphene/plugins/witness/witness.hpp>
 #include <graphene/plugins/database_api/plugin.hpp>
-#include <graphene/plugins/test_api/test_api_plugin.hpp>
-#include <graphene/plugins/social_network/social_network.hpp>
 #include <graphene/plugins/account_history/plugin.hpp>
 #include <graphene/plugins/account_by_key/account_by_key_plugin.hpp>
-#include <graphene/plugins/private_message/private_message_plugin.hpp>
 #include <graphene/plugins/auth_util/plugin.hpp>
-#include <graphene/plugins/debug_node/plugin.hpp>
 #include <graphene/plugins/raw_block/plugin.hpp>
 #include <graphene/plugins/block_info/plugin.hpp>
-#include <graphene/plugins/tags/plugin.hpp>
 #include <graphene/plugins/witness_api/plugin.hpp>
-#include <graphene/plugins/follow/plugin.hpp>
-#ifdef MONGODB_PLUGIN_BUILT
-    #include <graphene/plugins/mongo_db/mongo_db_plugin.hpp>
-#endif
 #include <graphene/plugins/committee_api/committee_api.hpp>
 #include <graphene/plugins/invite_api/invite_api.hpp>
 #include <graphene/plugins/paid_subscription_api/paid_subscription_api.hpp>
 #include <graphene/plugins/custom_protocol_api/custom_protocol_api.hpp>
 #include <graphene/plugins/snapshot/plugin.hpp>
+
+#include <graphene/plugins/witness_guard/witness_guard.hpp>
 
 #include <fc/interprocess/signals.hpp>
 #include <fc/log/console_appender.hpp>
@@ -69,25 +62,17 @@ namespace graphene {
             appbase::app().register_plugin<graphene::plugins::witness_api::plugin>();
             appbase::app().register_plugin<graphene::plugins::network_broadcast_api::network_broadcast_api_plugin>();
             graphene::plugins::database_api::register_database_api();
-            appbase::app().register_plugin<graphene::plugins::social_network::social_network>();
-            appbase::app().register_plugin<graphene::plugins::test_api::test_api_plugin>();
             appbase::app().register_plugin<graphene::plugins::account_history::plugin>();
             appbase::app().register_plugin<graphene::plugins::account_by_key::account_by_key_plugin>();
-            appbase::app().register_plugin<graphene::plugins::private_message::private_message_plugin>();
             appbase::app().register_plugin<graphene::plugins::auth_util::plugin>();
             appbase::app().register_plugin<graphene::plugins::raw_block::plugin>();
             appbase::app().register_plugin<graphene::plugins::block_info::plugin>();
-            appbase::app().register_plugin<graphene::plugins::debug_node::plugin>();
-            appbase::app().register_plugin<graphene::plugins::tags::tags_plugin>();
-            appbase::app().register_plugin<graphene::plugins::follow::plugin>();
-            #ifdef MONGODB_PLUGIN_BUILT
-                appbase::app().register_plugin<graphene::plugins::mongo_db::mongo_db_plugin>();
-            #endif
             appbase::app().register_plugin<graphene::plugins::committee_api::committee_api>();
             appbase::app().register_plugin<graphene::plugins::invite_api::invite_api>();
             appbase::app().register_plugin<graphene::plugins::paid_subscription_api::paid_subscription_api>();
             appbase::app().register_plugin<graphene::plugins::custom_protocol_api::custom_protocol_api_plugin>();
             appbase::app().register_plugin<graphene::plugins::snapshot::snapshot_plugin>();
+            appbase::app().register_plugin<graphene::plugins::witness_guard::witness_guard_plugin>();
             ///plugins
         };
     }

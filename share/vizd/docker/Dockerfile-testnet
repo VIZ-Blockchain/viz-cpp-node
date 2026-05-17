@@ -102,7 +102,6 @@ RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
         -DBUILD_TESTNET=TRUE \
         -DLOW_MEMORY_NODE=FALSE \
         -DCHAINBASE_CHECK_LOCKING=FALSE \
-        -DENABLE_MONGO_PLUGIN=FALSE \
         .. \
     && \
     make -j$(nproc) vizd cli_wallet && \

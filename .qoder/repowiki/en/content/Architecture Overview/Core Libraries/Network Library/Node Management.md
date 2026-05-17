@@ -5,6 +5,7 @@
 - [node.hpp](file://libraries/network/include/graphene/network/node.hpp)
 - [node.cpp](file://libraries/network/node.cpp)
 - [peer_connection.hpp](file://libraries/network/include/graphene/network/peer_connection.hpp)
+- [peer_connection.cpp](file://libraries/network/peer_connection.cpp)
 - [peer_database.hpp](file://libraries/network/include/graphene/network/peer_database.hpp)
 - [message.hpp](file://libraries/network/include/graphene/network/message.hpp)
 - [config.hpp](file://libraries/network/include/graphene/network/config.hpp)
@@ -16,15 +17,18 @@
 - [fork_database.cpp](file://libraries/chain/fork_database.cpp)
 - [database.cpp](file://libraries/chain/database.cpp)
 - [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
+- [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
+- [dlt_block_log.cpp](file://libraries/chain/dlt_block_log.cpp)
+- [config.ini](file://share/vizd/config/config.ini)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced peer soft-ban handling with intelligent stale fork detection and automatic flag reset logic
-- Improved unlinkable block exception management with differentiated handling based on peer position relative to local blockchain head
-- Strengthened fork database capabilities with enhanced emergency consensus support and improved block rejection handling
-- Added trusted peer soft-ban duration reduction (5 minutes vs 1 hour) for faster recovery from transient errors
-- Implemented comprehensive soft-ban expiration handling with automatic flag reset during network synchronization
+- Enhanced peer connection lifecycle management with improved disconnection flow and proper cleanup from _active_connections
+- Implemented delayed peer deletion mechanism to prevent peers from staying in _active_connections indefinitely
+- Improved remaining_item_count calculation in blockchain item ID requests
+- Enhanced inventory deduplication logic with better tracking of items already advertised or requested
+- Strengthened disconnect list management with proper peer state transitions
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -32,21 +36,22 @@
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Enhanced Peer Handling and Soft-Banning](#enhanced-peer-handling-and-soft-banning)
-7. [Emergency Consensus Network-Level Improvements](#emergency-consensus-network-level-improvements)
-8. [Dependency Analysis](#dependency-analysis)
-9. [Performance Considerations](#performance-considerations)
-10. [Troubleshooting Guide](#troubleshooting-guide)
-11. [Conclusion](#conclusion)
+6. [Enhanced Peer Connection Lifecycle Management](#enhanced-peer-connection-lifecycle-management)
+7. [Improved Disconnection Flow and Cleanup](#improved-disconnection-flow-and-cleanup)
+8. [Enhanced Inventory Management and Deduplication](#enhanced-inventory-management-and-deduplication)
+9. [Advanced Peer State Management](#advanced-peer-state-management)
+10. [Performance Considerations](#performance-considerations)
+11. [Troubleshooting Guide](#troubleshooting-guide)
+12. [Conclusion](#conclusion)
 
 ## Introduction
-This document describes the Node Management component responsible for orchestrating network peers, maintaining connectivity, and managing blockchain synchronization in the P2P layer. It covers the node.hpp class interface, the node_delegate integration for blockchain callbacks, configuration and lifecycle APIs, peer management, and network broadcasting with inventory tracking. The documentation now includes comprehensive coverage of enhanced peer handling logic with intelligent soft-banning mechanisms, improved unlinkable_block_exception handling, and prevention of infinite sync loops.
+This document describes the Node Management component responsible for orchestrating network peers, maintaining connectivity, and managing blockchain synchronization in the P2P layer. It covers the node.hpp class interface, the node_delegate integration for blockchain callbacks, configuration and lifecycle APIs, peer management, and network broadcasting with inventory tracking. The documentation now includes comprehensive coverage of enhanced peer connection lifecycle management, improved disconnection flows, enhanced inventory deduplication, and advanced peer state management systems.
 
 ## Project Structure
 The Node Management functionality spans several headers and the implementation source file:
 - Public interface: node.hpp defines the node class, node_delegate interface, and related types.
-- Implementation: node.cpp implements the node lifecycle, peer orchestration, message routing, synchronization, and inventory management with enhanced peer handling logic.
-- Peer model: peer_connection.hpp defines the peer connection abstraction and state machine with emergency consensus support and soft-ban functionality.
+- Implementation: node.cpp implements the node lifecycle, peer orchestration, message routing, synchronization, and inventory management with enhanced connection lifecycle handling.
+- Peer model: peer_connection.hpp/cpp defines the peer connection abstraction and state machine with comprehensive connection state management.
 - Persistence: peer_database.hpp provides persistent peer discovery records.
 - Messaging: message.hpp defines the generic message envelope; core_messages.hpp enumerates core P2P message types.
 - Networking primitives: stcp_socket.hpp and message_oriented_connection.hpp underpin transport and framing.
@@ -56,8 +61,9 @@ The Node Management functionality spans several headers and the implementation s
 graph TB
 subgraph "Network Layer"
 N["node.hpp<br/>Public API"]
-NI["node.cpp<br/>Enhanced Implementation"]
-PC["peer_connection.hpp<br/>Peer Abstraction<br/>with Soft-Ban Support"]
+NI["node.cpp<br/>Enhanced Implementation<br/>with Lifecycle Management<br/>Delayed Deletion<br/>Improved Deduplication"]
+PC["peer_connection.hpp<br/>Enhanced Peer Abstraction<br/>with State Management<br/>Connection Lifecycle"]
+PCC["peer_connection.cpp<br/>Connection State Transitions<br/>Inventory Management"]
 PD["peer_database.hpp<br/>Persistent Peers"]
 MSG["message.hpp<br/>Message Envelope"]
 CM["core_messages.hpp<br/>Core Message Types"]
@@ -71,8 +77,13 @@ FD["fork_database.hpp<br/>Emergency Mode"]
 DBC["database.cpp<br/>Consensus Logic"]
 CFG["config.hpp<br/>Emergency Constants"]
 end
+subgraph "DLT Mode Support"
+DLP["dlt_block_log.cpp<br/>DLT Block Log"]
+P2P["p2p_plugin.cpp<br/>Enhanced Error Logging"]
+end
 N --> NI
 NI --> PC
+NI --> PCC
 NI --> PD
 NI --> MSG
 NI --> CM
@@ -81,50 +92,62 @@ PC --> MOC
 NI --> FD
 FD --> DBC
 DBC --> CFG
+NI --> DLP
+NI --> P2P
 ```
 
 **Diagram sources**
 - [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
 - [node.cpp:869-905](file://libraries/network/node.cpp#L869-L905)
 - [peer_connection.hpp:79-354](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
+- [peer_connection.cpp:419-448](file://libraries/network/peer_connection.cpp#L419-L448)
 - [peer_database.hpp:104-134](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
 - [message.hpp:42-114](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
 - [core_messages.hpp](file://libraries/network/include/graphene/network/core_messages.hpp)
 - [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
 - [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
 - [config.hpp:110-123](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L123)
+- [dlt_block_log.cpp:368-379](file://libraries/chain/dlt_block_log.cpp#L368-L379)
+- [p2p_plugin.cpp:330-360](file://plugins/p2p/p2p_plugin.cpp#L330-L360)
 
 **Section sources**
 - [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
 - [node.cpp:869-905](file://libraries/network/node.cpp#L869-L905)
 
 ## Core Components
-- node class: Provides P2P orchestration, configuration, peer management, and broadcast APIs.
-- node_delegate interface: Bridges the P2P layer to the blockchain, handling block ingestion, transaction processing, and sync callbacks.
-- peer_connection: Encapsulates a single peer link with state machine, inventory tracking, rate-limited messaging, emergency consensus support, and intelligent soft-ban functionality.
+- node class: Provides P2P orchestration, configuration, peer management, and broadcast APIs with comprehensive connection lifecycle management and enhanced cleanup mechanisms.
+- node_delegate interface: Bridges the P2P layer to the blockchain, handling block ingestion, transaction processing, and sync callbacks with enhanced status reporting.
+- peer_connection: Encapsulates a single peer link with state machine, inventory tracking, rate-limited messaging, emergency consensus support, and comprehensive connection state management with proper cleanup.
 - peer_database: Persistent store of potential peers with connection history and disposition.
 - message: Generic envelope for all P2P messages with hashing and typed serialization.
 - fork_database: Manages blockchain forks with emergency consensus mode support and deterministic tie-breaking.
 
 Key responsibilities:
-- Lifecycle: Construction, configuration loading, listener setup, and graceful shutdown.
-- Peer orchestration: Connecting to configured seeds, accepting inbound connections, pruning inactive peers, and enforcing connection limits.
-- Synchronization: Requesting and processing blockchain item IDs, fetching blocks/transactions, and notifying the delegate.
-- Broadcasting: Advertising inventory and sending items to peers.
-- Inventory management: Tracking what peers have, what we need, and what we've recently processed.
-- Emergency consensus: Managing soft-bans, automatic flag resets, and emergency mode operations.
+- Lifecycle: Construction, configuration loading, listener setup, and graceful shutdown with detailed logging and proper cleanup.
+- Peer orchestration: Connecting to configured seeds, accepting inbound connections, pruning inactive peers, and enforcing connection limits with enhanced state management.
+- Synchronization: Requesting and processing blockchain item IDs, fetching blocks/transactions, and notifying the delegate with enhanced progress tracking.
+- Broadcasting: Advertising inventory and sending items to peers with detailed synchronization metrics and improved deduplication.
+- Inventory management: Tracking what peers have, what we need, and what we've recently processed with enhanced deduplication logic.
+- Emergency consensus: Managing soft-bans, automatic flag resets, and emergency mode operations with enhanced diagnostics.
+- Advanced peer state management: Comprehensive connection state transitions, proper cleanup from all connection sets, and delayed deletion mechanisms.
+- Enhanced connection lifecycle: Prevention of peers staying in _active_connections indefinitely through proper state transitions and cleanup.
+- Improved disconnection flow: Better disconnect list management with proper peer state transitions and cleanup.
+- Enhanced inventory deduplication: More sophisticated tracking of items already advertised, requested, or being processed.
 - Intelligent peer handling: Differentiating between stale fork peers and legitimate sync candidates to prevent infinite loops.
+- DLT mode support: Enhanced error logging with comprehensive block range information for distributed ledger technology mode.
+- Comprehensive logging: Detailed peer synchronization progress, item counts, block ranges, and timing information for better debugging and monitoring.
 
 **Section sources**
 - [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
 - [node.cpp:869-905](file://libraries/network/node.cpp#L869-L905)
 - [peer_connection.hpp:79-354](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
+- [peer_connection.cpp:419-448](file://libraries/network/peer_connection.cpp#L419-L448)
 - [peer_database.hpp:104-134](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
 - [message.hpp:42-114](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
 - [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
 
 ## Architecture Overview
-The node delegates blockchain integration to a node_delegate and coordinates peers via peer_connection instances. The node maintains separate queues for sync and normal operation, enforces bandwidth and connection limits, and periodically prunes stale peers. The enhanced peer handling system provides network-level resilience through intelligent soft-ban mechanisms, automatic flag resets, and deterministic tie-breaking to prevent cascading failures and infinite sync loops.
+The node delegates blockchain integration to a node_delegate and coordinates peers via peer_connection instances with enhanced lifecycle management. The node maintains separate queues for sync and normal operation, enforces bandwidth and connection limits, and periodically prunes stale peers. The enhanced peer handling system provides network-level resilience through intelligent soft-ban mechanisms, automatic flag resets, and deterministic tie-breaking to prevent cascading failures and infinite sync loops. The comprehensive logging system provides detailed peer synchronization progress, item counts, block ranges, and timing information for better debugging and monitoring capabilities.
 
 ```mermaid
 classDiagram
@@ -181,6 +204,7 @@ class peer_connection {
 +send_message(msg)
 +send_item(item_id)
 +close_connection()
++destroy_connection()
 +busy() bool
 +idle() bool
 +is_transaction_fetching_inhibited() bool
@@ -193,6 +217,10 @@ class peer_connection {
 +inhibit_fetching_sync_blocks bool
 +soft_ban_expiration_handling()
 +intelligent_peer_classification()
++unlinkable_block_strikes uint32
++clear_old_inventory()
++is_inventory_advertised_to_us_list_full_for_transactions() bool
++is_inventory_advertised_to_us_list_full() bool
 }
 class fork_database {
 +set_emergency_mode(active)
@@ -222,10 +250,11 @@ Operational loops:
 - p2p_network_connect_loop: Periodically connects to candidate peers, respecting retry/backoff and connection caps.
 - fetch_sync_items_loop: Requests missing sync items from peers and schedules processing.
 - fetch_items_loop: Normal operation fetching of items not yet in local cache.
-- advertise_inventory_loop: Broadcasts new inventory to peers.
-- terminate_inactive_connections_loop: Detects and disconnects idle/inactive peers.
+- advertise_inventory_loop: Broadcasts new inventory to peers with enhanced deduplication.
+- terminate_inactive_connections_loop: Detects and disconnects idle/inactive peers with proper cleanup.
 - bandwidth_monitor_loop: Updates rolling averages of read/write throughput.
 - fetch_updated_peer_lists_loop: Requests updated peer lists periodically.
+- dump_node_status_task: Periodically logs comprehensive peer status and synchronization progress.
 
 ```mermaid
 sequenceDiagram
@@ -262,6 +291,74 @@ Impl->>Impl : "trigger_p2p_network_connect_loop()"
 - [node.cpp:952-1047](file://libraries/network/node.cpp#L952-L1047)
 - [node.cpp:1623-1654](file://libraries/network/node.cpp#L1623-L1654)
 - [node.cpp:2282-2350](file://libraries/network/node.cpp#L2282-L2350)
+
+### Enhanced Peer Connection Lifecycle Management
+
+**Updated** Enhanced peer connection lifecycle management with improved state transitions and cleanup mechanisms.
+
+The node now implements comprehensive peer connection lifecycle management with enhanced state transitions and proper cleanup from all connection sets. The system prevents peers from staying indefinitely in _active_connections through proper state transitions and delayed deletion mechanisms.
+
+**Enhanced Lifecycle Features**:
+- **Proper State Transitions**: Connections move through well-defined states: handshaking → active → closing → terminating → deleted
+- **Delayed Deletion**: schedule_peer_for_deletion() queues peers for deferred deletion to prevent race conditions
+- **Cleanup Assertions**: Verifies peers are not found in any connection set before scheduling deletion
+- **Thread Safety**: Enhanced mutex protection for peer deletion operations
+- **Connection Set Management**: Proper removal from all connection sets during state transitions
+
+**Section sources**
+- [node.cpp:1805-1865](file://libraries/network/node.cpp#L1805-L1865)
+- [node.cpp:5281-5320](file://libraries/network/node.cpp#L5281-L5320)
+
+### Improved Disconnection Flow and Cleanup
+
+**Updated** Improved disconnection flow with proper cleanup from _active_connections and enhanced disconnect list management.
+
+The node implements enhanced disconnection flow with proper cleanup mechanisms that ensure peers are properly removed from all connection sets and cleaned up appropriately.
+
+**Enhanced Disconnection Features**:
+- **Proper Cleanup Sequence**: Connections are removed from _active_connections, _handshaking_connections, _closing_connections, and _terminating_connections
+- **State Transition Logging**: Detailed logging of connection state transitions for debugging
+- **Error Recording**: Connection errors are recorded in peer database for diagnostic purposes
+- **Resource Cleanup**: Rate limiter removal and inventory cleanup during disconnection
+- **Graceful Handling**: Proper handling of both user-initiated and error-induced disconnections
+
+**Section sources**
+- [node.cpp:3396-3475](file://libraries/network/node.cpp#L3396-L3475)
+- [node.cpp:5281-5320](file://libraries/network/node.cpp#L5281-L5320)
+
+### Enhanced Inventory Management and Deduplication
+
+**Updated** Enhanced inventory management with improved deduplication logic and better tracking of items already processed or requested.
+
+The node implements enhanced inventory management with sophisticated deduplication logic that prevents redundant fetches and unbounded growth of fetch queues.
+
+**Enhanced Inventory Features**:
+- **Multi-level Deduplication**: Checks for items currently being processed, recently advertised, and already requested
+- **Sophisticated Tracking**: Tracks items advertised to peers, items requested from peers, and items being processed
+- **Inventory Expiration**: Regular cleanup of old inventory to prevent memory growth
+- **Priority Management**: Updates timestamps for items that arrive from multiple peers to prioritize fresher inventory
+- **Transaction Throttling**: Separate limits for transactions vs blocks to maintain network stability
+
+**Section sources**
+- [node.cpp:3280-3351](file://libraries/network/node.cpp#L3280-L3351)
+- [peer_connection.cpp:428-448](file://libraries/network/peer_connection.cpp#L428-L448)
+
+### Advanced Peer State Management
+
+**Updated** Advanced peer state management with comprehensive connection state tracking and enhanced peer classification.
+
+The node implements comprehensive peer state management with detailed tracking of peer connection states, synchronization progress, and resource utilization.
+
+**Advanced State Features**:
+- **Connection State Tracking**: Detailed tracking of handshaking, active, closing, and terminating connection states
+- **Synchronization Progress**: Monitoring of peer synchronization status and remaining item counts
+- **Resource Utilization**: Tracking of peer-specific resource usage including queue depths and memory allocation
+- **Performance Metrics**: Latency measurements, round-trip delays, and connection timing information
+- **Soft-Ban Status**: Monitoring of fork_rejected_until timestamps and unlinkable_block_strikes counters
+
+**Section sources**
+- [node.cpp:5321-5351](file://libraries/network/node.cpp#L5321-L5351)
+- [peer_connection.hpp:276-298](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L298)
 
 ### Peer Connection Establishment
 - Outbound: connect_to_endpoint creates a peer_connection and initiates a connect loop; on success, transitions to negotiation and then active.
@@ -373,7 +470,7 @@ Impl->>Impl : "broadcast transactions from contained_txs"
 
 ### Peer Management Functions
 - add_node/connect_to_endpoint: Adds a seed or forces immediate connection.
-- get_connected_peers: Returns status for UI/monitoring.
+- get_connected_peers: Returns status for UI/monitoring with comprehensive peer information.
 - get_connection_count/is_connected: Reports current connectivity.
 - set_allowed_peers/clear_peer_database: Controls allowed peers and resets peer DB for diagnostics.
 - get_potential_peers/disable_peer_advertising: Inspect and control peer discovery.
@@ -411,270 +508,202 @@ Send --> Deliver["Deliver item via fetch_items_message"]
 - [node.cpp:2830-2892](file://libraries/network/node.cpp#L2830-L2892)
 - [node.cpp:111-217](file://libraries/network/node.cpp#L111-L217)
 
-## Enhanced Peer Handling and Soft-Banning
+## Enhanced Peer Connection Lifecycle Management
 
-### Intelligent Soft-Ban Mechanisms
-The node now implements sophisticated soft-ban mechanisms to prevent cascading disconnections during emergency consensus scenarios and improve peer classification accuracy.
+### Comprehensive Connection State Transitions
+The node implements comprehensive peer connection state transitions with proper cleanup and enhanced logging throughout the connection lifecycle.
 
-Key features:
-- **Soft-ban duration**: 1 hour (3600 seconds) for fork-rejected blocks, reduced to 5 minutes (300 seconds) for trusted peers
-- **Automatic expiration**: Soft-bans automatically expire after the designated period
-- **Intelligent peer classification**: Differentiates between stale fork peers and legitimate sync candidates
-- **Flag reset logic**: When soft-bans expire, the inhibit_fetching_sync_blocks flag is automatically reset
-- **Emergency mode protection**: Prevents cascading failures during network emergencies
-- **Infinite loop prevention**: Smart peer state management prevents endless sync attempts
-- **Trusted peer support**: Special handling for peers in trusted-snapshot-peer configuration
+**Enhanced State Transition Features**:
+- **Handshaking Phase**: Initial connection establishment with timeout monitoring and activity tracking
+- **Active Phase**: Full operational state with synchronization and inventory management
+- **Closing Phase**: Graceful disconnection with proper cleanup and reason recording
+- **Terminating Phase**: Final cleanup phase with resource deallocation
+- **Deletion Phase**: Deferred deletion to prevent race conditions and ensure proper cleanup
 
-```mermaid
-sequenceDiagram
-participant Peer as "Peer Connection"
-participant Node as "Node Implementation"
-participant Delegate as "Blockchain Delegate"
-Node->>Peer : "Block with fork rejection"
-alt unlinkable_block_exception
-Node->>Node : "Check peer position vs local head"
-alt peer below or equal to head
-Node->>Peer : "Soft-ban (1 hour) - Stale fork"
-Node->>Peer : "Set inhibit_fetching_sync_blocks = true"
-else peer above head
-Node->>Node : "Restart sync - Legitimate candidate"
-end
-else block_older_than_undo_history
-Node->>Peer : "Soft-ban (1 hour) - Too old"
-Node->>Peer : "Set inhibit_fetching_sync_blocks = true"
-else normal invalid block
-Node->>Peer : "Disconnect peer"
-end
-Note over Node : "After 1 hour"
-Node->>Node : "Check soft-ban expiration"
-Node->>Peer : "Reset inhibit_fetching_sync_blocks = false"
+**State Transition Logging Examples**:
 ```
-
-**Diagram sources**
-- [node.cpp:3574-3629](file://libraries/network/node.cpp#L3574-L3629)
-- [node.cpp:3436-3458](file://libraries/network/node.cpp#L3436-L3458)
-
-### Enhanced Unlinkable Block Exception Handling
-The system now provides intelligent handling for unlinkable_block_exception based on peer position relative to local blockchain head:
-
-**Stale Fork Detection**:
-- When peer block number ≤ local head block number
-- Peer is on a stale fork that cannot be resolved
-- Immediate soft-ban for 1 hour with inhibit_fetching_sync_blocks = true
-- Prevents wasted bandwidth and prevents infinite sync loops
-- Trusted peers receive 5-minute soft-ban duration instead of 1 hour
-
-**Legitimate Sync Candidate**:
-- When peer block number > local head block number  
-- Peer may be ahead of us, indicating legitimate sync opportunity
-- Restarts sync process instead of disconnecting
-- Allows peer to potentially help us catch up
-- Prevents unnecessary network churn during legitimate catch-up scenarios
+New peer is connected (${peer}), now ${count} active peers
+Peer connection closing (${peer}), now ${count} active peers
+Peer connection closing (${peer}): ${reason}, now ${count} active peers
+Peer connection terminating (${peer}), now ${count} active peers
+```
 
 **Section sources**
-- [node.cpp:3574-3629](file://libraries/network/node.cpp#L3574-L3629)
-- [node.cpp:3436-3458](file://libraries/network/node.cpp#L3436-L3458)
-- [exceptions.hpp:45](file://libraries/network/include/graphene/network/exceptions.hpp#L45)
+- [node.cpp:5281-5320](file://libraries/network/node.cpp#L5281-L5320)
+- [node.cpp:3396-3475](file://libraries/network/node.cpp#L3396-L3475)
 
-### Automatic Flag Reset Logic
-The system includes intelligent flag management to ensure peers can resume normal operations after soft-ban expiration.
+### Delayed Peer Deletion Mechanism
+The node implements a delayed peer deletion mechanism to prevent peers from staying indefinitely in _active_connections and to handle cleanup safely.
 
-Reset conditions:
-- **Soft-ban expiration**: When fork_rejected_until <= current_time
-- **Flag state**: Only reset if inhibit_fetching_sync_blocks is currently true
-- **Peer eligibility**: Only affects peers with non-zero fork_rejected_until timestamps
-- **Network recovery**: Ensures long-term network health during extended emergency operations
-
-```mermaid
-flowchart TD
-Start["Block Received"] --> CheckBan{"fork_rejected_until > now?"}
-CheckBan --> |Yes| Discard["Silently discard block"]
-CheckBan --> |No| CheckFlag{"inhibit_fetching_sync_blocks && fork_rejected_until != 0 && fork_rejected_until <= now?"}
-CheckFlag --> |Yes| ResetFlag["Reset inhibit_fetching_sync_blocks = false"]
-CheckFlag --> |No| ProcessBlock["Process block normally"]
-ResetFlag --> Log["Log flag reset"]
-Log --> ProcessBlock
-```
-
-**Diagram sources**
-- [node.cpp:3444-3458](file://libraries/network/node.cpp#L3444-L3458)
+**Delayed Deletion Features**:
+- **Queuing System**: schedule_peer_for_deletion() queues peers for deferred deletion
+- **Mutex Protection**: Thread-safe deletion with optional mutex-based queuing
+- **Cleanup Verification**: Asserts that peers are not found in any connection set before deletion
+- **Batch Processing**: Processes multiple peers in batches to improve performance
+- **Race Condition Prevention**: Prevents race conditions during peer cleanup
 
 **Section sources**
-- [node.cpp:3444-3458](file://libraries/network/node.cpp#L3444-L3458)
+- [node.cpp:1805-1865](file://libraries/network/node.cpp#L1805-L1865)
 
-### Infinite Sync Loop Prevention
-The enhanced peer handling logic prevents infinite sync loops through intelligent peer state management:
+### Enhanced Connection Set Management
+The node implements enhanced connection set management with proper cleanup from all connection sets during state transitions.
 
-**Smart Peer Classification**:
-- Stale fork peers (peer_num ≤ local_head) → Soft-ban and ignore
-- Legitimate sync candidates (peer_num > local_head) → Continue sync attempts
-- Automatic flag reset ensures fair peer rotation during extended operations
-
-**Preventive Measures**:
-- Soft-ban mechanism prevents repeated attempts with unresponsive peers
-- Intelligent flag management ensures peers can recover after expiration
-- Network-level emergency mode support provides graceful degradation
+**Connection Set Management Features**:
+- **Multi-set Tracking**: Maintains separate sets for handshaking, active, closing, and terminating connections
+- **Proper Removal**: Ensures peers are removed from all relevant connection sets during state transitions
+- **State Validation**: Validates peer states before performing state transitions
+- **Cleanup Logging**: Logs connection set operations for debugging and monitoring
+- **Resource Management**: Proper cleanup of associated resources during connection termination
 
 **Section sources**
-- [node.cpp:3574-3629](file://libraries/network/node.cpp#L3574-L3629)
-- [node.cpp:3444-3458](file://libraries/network/node.cpp#L3444-L3458)
+- [node.cpp:5281-5320](file://libraries/network/node.cpp#L5281-L5320)
 
-## Emergency Consensus Network-Level Improvements
+## Improved Disconnection Flow and Cleanup
 
-### Soft-Ban Expiration Handling
-The node now implements sophisticated soft-ban mechanisms to prevent cascading disconnections during emergency consensus scenarios. When peers offer blocks that cause fork rejections, the system applies soft-bans instead of immediate disconnections.
+### Enhanced Disconnection Sequence
+The node implements an enhanced disconnection sequence that ensures proper cleanup from all connection sets and maintains system stability.
 
-Key features:
-- **Soft-ban duration**: 1 hour (3600 seconds) for fork-rejected blocks, reduced to 5 minutes for trusted peers
-- **Automatic expiration**: Soft-bans automatically expire after the designated period
-- **Flag reset logic**: When soft-bans expire, the inhibit_fetching_sync_blocks flag is automatically reset
-- **Emergency mode protection**: Prevents cascading failures during network emergencies
-
-```mermaid
-sequenceDiagram
-participant Peer as "Peer Connection"
-participant Node as "Node Implementation"
-participant Delegate as "Blockchain Delegate"
-Peer->>Node : "Block with fork rejection"
-Node->>Node : "Check if fork rejection"
-alt unlinkable_block_exception
-Node->>Peer : "Apply soft-ban (1 hour)"
-Node->>Peer : "Set inhibit_fetching_sync_blocks = true"
-else normal invalid block
-Node->>Peer : "Disconnect peer"
-end
-Note over Node : "After 1 hour"
-Node->>Node : "Check soft-ban expiration"
-Node->>Peer : "Reset inhibit_fetching_sync_blocks = false"
-```
-
-**Diagram sources**
-- [node.cpp:3574-3595](file://libraries/network/node.cpp#L3574-L3595)
-- [node.cpp:3436-3449](file://libraries/network/node.cpp#L3436-L3449)
-
-### Inhibit Fetching Sync Blocks Flag Reset Logic
-The system includes intelligent flag management to ensure peers can resume normal operations after soft-ban expiration.
-
-Reset conditions:
-- **Soft-ban expiration**: When fork_rejected_until <= current_time
-- **Flag state**: Only reset if inhibit_fetching_sync_blocks is currently true
-- **Peer eligibility**: Only affects peers with non-zero fork_rejected_until timestamps
-
-```mermaid
-flowchart TD
-Start["Block Received"] --> CheckBan{"fork_rejected_until > now?"}
-CheckBan --> |Yes| Discard["Silently discard block"]
-CheckBan --> |No| CheckFlag{"inhibit_fetching_sync_blocks && fork_rejected_until != 0 && fork_rejected_until <= now?"}
-CheckFlag --> |Yes| ResetFlag["Reset inhibit_fetching_sync_blocks = false"]
-CheckFlag --> |No| ProcessBlock["Process block normally"]
-ResetFlag --> Log["Log flag reset"]
-Log --> ProcessBlock
-```
-
-**Diagram sources**
-- [node.cpp:3428-3449](file://libraries/network/node.cpp#L3428-L3449)
-
-### Network-Level Emergency Mode Support
-The emergency consensus system provides comprehensive network-level resilience through multiple coordinated mechanisms.
-
-#### Emergency Mode Activation
-Emergency mode activates when no blocks are produced for CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC (3600 seconds) since the last irreversible block:
-
-```mermaid
-flowchart TD
-Start["New Block Applied"] --> CheckHF{"Hardfork 12 Active?"}
-CheckHF --> |No| End["Normal Operation"]
-CheckHF --> |Yes| CheckActive{"Emergency Mode Active?"}
-CheckActive --> |Yes| End
-CheckActive --> |No| CalcLIB["Calculate LIB Time"]
-CalcLIB --> CheckAvailable{"LIB Available?"}
-CheckAvailable --> |No| End
-CheckAvailable --> |Yes| CalcDiff["Calculate Seconds Since LIB"]
-CalcDiff --> CheckTimeout{"Seconds >= 3600?"}
-CheckTimeout --> |No| End
-CheckTimeout --> |Yes| Activate["Activate Emergency Mode"]
-Activate --> SetupWitness["Setup Emergency Witness"]
-Activate --> ResetPenalties["Reset Penalties"]
-Activate --> OverrideSchedule["Override Schedule"]
-Activate --> NotifyForkDB["Notify Fork Database"]
-```
-
-**Diagram sources**
-- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
-- [fork_database.cpp:260-262](file://libraries/chain/fork_database.cpp#L260-L262)
-
-#### Deterministic Tie-Breaking
-During emergency mode, the system uses deterministic hash-based tie-breaking to ensure network convergence:
-
-- **Hash comparison**: When multiple blocks compete at the same height, prefer the lower block_id hash
-- **Consistent behavior**: All nodes converge regardless of P2P arrival order
-- **Emergency witness dominance**: Emergency witness produces all blocks during emergency periods
-
-#### Automatic Emergency Mode Exit
-Emergency mode automatically exits after CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS (21) consecutive blocks produced by normal witnesses:
-
-- **Normal block threshold**: 21 blocks equal to one full round of 21 witnesses
-- **Witness rejoining detection**: Monitors when real witnesses resume production
-- **Graceful transition**: Smooth return to normal consensus operation
+**Enhanced Disconnection Features**:
+- **Multi-set Cleanup**: Removes connections from _active_connections, _handshaking_connections, _closing_connections, and _terminating_connections
+- **Error Recording**: Records connection errors in peer database for diagnostic purposes
+- **Rate Limiter Cleanup**: Removes sockets from rate limiter to free resources
+- **Inventory Cleanup**: Cleans up associated inventory and request tracking
+- **State Transition Logging**: Comprehensive logging of disconnection events and reasons
 
 **Section sources**
-- [node.cpp:3428-3449](file://libraries/network/node.cpp#L3428-L3449)
-- [node.cpp:3574-3595](file://libraries/network/node.cpp#L3574-L3595)
-- [node.cpp:3436-3449](file://libraries/network/node.cpp#L3436-L3449)
-- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
-- [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
-- [config.hpp:110-123](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L123)
+- [node.cpp:3396-3475](file://libraries/network/node.cpp#L3396-L3475)
 
-## Dependency Analysis
-The node depends on:
-- peer_connection for per-peer state and messaging with emergency consensus support and soft-ban functionality.
-- peer_database for persistent peer records.
-- message/core_messages for typed envelopes and core message dispatch.
-- stcp_socket and message_oriented_connection for transport and framing.
-- fc::rate_limiting_group for bandwidth control.
-- fork_database for emergency consensus mode management.
+### Proper Cleanup from Active Connections
+The node ensures that peers are properly cleaned up from _active_connections during disconnection to prevent resource leaks and maintain accurate connection counts.
 
-```mermaid
-graph LR
-Node["node.hpp"] --> Impl["node.cpp"]
-Impl --> PeerConn["peer_connection.hpp"]
-Impl --> PeerDB["peer_database.hpp"]
-Impl --> Msg["message.hpp"]
-Impl --> CoreMsg["core_messages.hpp"]
-PeerConn --> STCP["stcp_socket.hpp"]
-PeerConn --> MOC["message_oriented_connection.hpp"]
-PeerConn --> ForkDB["fork_database.hpp"]
-Impl --> Rate["fc::rate_limiting_group"]
-ForkDB --> DBC["database.cpp"]
-DBC --> CFG["config.hpp"]
-```
-
-**Diagram sources**
-- [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
-- [node.cpp:869-905](file://libraries/network/node.cpp#L869-L905)
-- [peer_connection.hpp:79-354](file://libraries/network/include/graphene/network/peer_connection.hpp#L79-L354)
-- [peer_database.hpp:104-134](file://libraries/network/include/graphene/network/peer_database.hpp#L104-L134)
-- [message.hpp:42-114](file://libraries/network/include/graphene/network/message.hpp#L42-L114)
-- [core_messages.hpp](file://libraries/network/include/graphene/network/core_messages.hpp)
-- [fork_database.hpp:111-120](file://libraries/chain/include/graphene/chain/fork_database.hpp#L111-L120)
-- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
-- [config.hpp:110-123](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L123)
+**Cleanup Features**:
+- **Active Connection Removal**: Ensures peers are removed from _active_connections during disconnection
+- **Connection Count Accuracy**: Maintains accurate connection counts throughout the disconnection process
+- **Resource Deallocation**: Proper deallocation of resources associated with disconnected peers
+- **State Consistency**: Ensures state consistency across all connection management operations
+- **Error Handling**: Robust error handling during cleanup operations
 
 **Section sources**
-- [node.hpp:180-355](file://libraries/network/include/graphene/network/node.hpp#L180-L355)
-- [node.cpp:869-905](file://libraries/network/node.cpp#L869-L905)
+- [node.cpp:3413-3428](file://libraries/network/node.cpp#L3413-L3428)
+
+### Enhanced Disconnect List Management
+The node implements enhanced disconnect list management with proper peer state transitions and improved cleanup mechanisms.
+
+**Disconnect List Features**:
+- **State Transition Tracking**: Tracks peer state transitions during disconnection
+- **Reason Recording**: Records disconnection reasons for diagnostic purposes
+- **Cooldown Management**: Implements reconnect cooldown to prevent rapid reconnection loops
+- **Firewall Check Handling**: Handles firewall check state during disconnection
+- **Request Rescheduling**: Reschedules outstanding requests to other peers during disconnection
+
+**Section sources**
+- [node.cpp:3355-3394](file://libraries/network/node.cpp#L3355-L3394)
+
+## Enhanced Inventory Management and Deduplication
+
+### Sophisticated Deduplication Logic
+The node implements sophisticated deduplication logic that prevents redundant fetches and maintains efficient inventory management.
+
+**Enhanced Deduplication Features**:
+- **Multi-level Checking**: Checks for items currently being processed, recently advertised, and already requested
+- **Inventory Expiration**: Regular cleanup of old inventory to prevent memory growth
+- **Priority Updates**: Updates timestamps for items that arrive from multiple peers
+- **Transaction Throttling**: Separate limits for transactions vs blocks to maintain network stability
+- **Efficient Tracking**: Sophisticated tracking of items across multiple peers and connection states
+
+**Section sources**
+- [node.cpp:3280-3351](file://libraries/network/node.cpp#L3280-L3351)
+- [peer_connection.cpp:428-448](file://libraries/network/peer_connection.cpp#L428-L448)
+
+### Improved Inventory Expiration
+The node implements improved inventory expiration with proper cleanup of old inventory items to prevent memory growth and maintain system performance.
+
+**Inventory Expiration Features**:
+- **Timestamp-based Cleanup**: Removes inventory items older than GRAPHENE_NET_MAX_INVENTORY_SIZE_IN_MINUTES
+- **Dual Set Management**: Cleans up both inventory_advertised_to_peer and inventory_peer_advertised_to_us sets
+- **Logging and Monitoring**: Logs inventory cleanup operations for debugging and monitoring
+- **Memory Management**: Prevents unbounded growth of inventory tracking structures
+- **Performance Optimization**: Efficient cleanup algorithms to minimize performance impact
+
+**Section sources**
+- [peer_connection.cpp:428-448](file://libraries/network/peer_connection.cpp#L428-L448)
+
+### Enhanced Item Tracking and Priority Management
+The node implements enhanced item tracking and priority management with sophisticated algorithms for handling duplicate inventory announcements.
+
+**Enhanced Tracking Features**:
+- **Priority Updates**: Updates timestamps for items arriving from multiple peers to prioritize fresher inventory
+- **Recently Failed Items**: Tracks items that have been recently fetched but failed to push
+- **Multi-peer Coordination**: Coordinates item requests across multiple peers to avoid duplication
+- **Efficient Lookup**: Fast lookup and update operations for inventory tracking
+- **Resource Optimization**: Optimized data structures for efficient inventory management
+
+**Section sources**
+- [node.cpp:3334-3351](file://libraries/network/node.cpp#L3334-L3351)
+
+## Advanced Peer State Management
+
+### Comprehensive Peer State Tracking
+The node implements comprehensive peer state tracking with detailed monitoring of peer connection states, synchronization progress, and resource utilization.
+
+**Peer State Tracking Features**:
+- **Connection State Monitoring**: Tracks handshaking, active, closing, and terminating connection states
+- **Synchronization Progress**: Monitors peer synchronization status and remaining item counts
+- **Resource Utilization**: Tracks peer-specific resource usage including queue depths and memory allocation
+- **Performance Metrics**: Measures latency, round-trip delays, and connection timing information
+- **Soft-ban Status**: Monitors fork_rejected_until timestamps and unlinkable_block_strikes counters
+
+**Section sources**
+- [node.cpp:5321-5351](file://libraries/network/node.cpp#L5321-L5351)
+- [peer_connection.hpp:276-298](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L298)
+
+### Enhanced Peer Classification and Monitoring
+The node implements enhanced peer classification and monitoring with detailed metrics for connection health, synchronization status, and resource utilization.
+
+**Enhanced Classification Features**:
+- **Connection Health Monitoring**: Monitors peer connection quality, latency, and bandwidth utilization
+- **Synchronization State Classification**: Classifies peers as in-sync, needing sync, or inhibited from sync
+- **Resource Utilization Tracking**: Tracks peer-specific resource allocation and queue management
+- **Performance Optimization**: Dynamically adjusts connection parameters based on peer performance
+- **Health Assessment**: Comprehensive health assessment of peer connections for network optimization
+
+**Section sources**
+- [node.cpp:5321-5351](file://libraries/network/node.cpp#L5321-L5351)
+
+### Improved Connection Limit and Bandwidth Monitoring
+The node provides comprehensive monitoring of connection limits, bandwidth utilization, and peer resource allocation to ensure optimal network performance.
+
+**Connection and Bandwidth Monitoring Features**:
+- **Connection Limits**: Monitoring of active connections, handshaking peers, and connection caps
+- **Bandwidth Utilization**: Real-time tracking of upload/download speeds and bandwidth allocation
+- **Resource Allocation**: Monitoring of peer-specific resource allocation and queue management
+- **Performance Optimization**: Dynamic adjustment of connection parameters based on network conditions
+- **Capacity Planning**: Predictive capacity planning based on connection and bandwidth metrics
+
+**Section sources**
+- [node.cpp:5321-5351](file://libraries/network/node.cpp#L5321-L5351)
 
 ## Performance Considerations
 - Connection limits: desired/max connections cap concurrent peers; enforced in is_wanting_new_connections and is_accepting_new_connections.
 - Bandwidth throttling: rate limiter updates rolling averages and constrains upload/download rates.
 - Prefetching: Limits for sync and normal operations prevent resource exhaustion.
 - Inactivity pruning: Keeps the mesh healthy by dropping idle peers and rescheduling requests.
-- Inventory deduplication: Prevents redundant fetches and unbounded growth of fetch queues.
+- Enhanced inventory deduplication: Prevents redundant fetches and unbounded growth of fetch queues through sophisticated tracking mechanisms.
+- Improved connection lifecycle: Prevents peers from staying indefinitely in _active_connections through proper state transitions and cleanup.
+- Enhanced disconnection flow: Better disconnect list management with proper peer state transitions and cleanup.
 - Emergency consensus overhead: Minimal performance impact through efficient soft-ban expiration checks.
 - Automatic flag management: Reduces manual intervention requirements during extended emergency operations.
 - Intelligent peer classification: Optimizes peer selection and reduces wasted bandwidth on stale forks.
 - Soft-ban caching: Prevents repeated attempts with problematic peers during emergency periods.
 - Trusted peer optimization: Reduced soft-ban duration for trusted peers enables faster network recovery.
+- DLT mode monitoring: Enhanced logging provides better visibility into block availability without significant performance impact.
+- Peer status reporting: Comprehensive status updates enable better monitoring and resource management.
+- Comprehensive logging: Detailed peer synchronization progress, item counts, and timing information provide valuable debugging insights without significant performance impact.
+- Memory usage monitoring: Efficient memory tracking helps identify resource bottlenecks and optimize performance.
+- Enhanced peer lifecycle management: Improved connection state transitions and cleanup mechanisms reduce resource leaks and improve system stability.
+- Delayed deletion mechanism: Prevents race conditions during peer cleanup while maintaining system responsiveness.
+- Sophisticated inventory management: Enhanced deduplication logic reduces network traffic and improves efficiency.
+- Improved disconnection handling: Better cleanup mechanisms prevent resource leaks and maintain accurate connection counts.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -691,6 +720,20 @@ Common issues and resolutions:
 - Stale fork detection: System automatically soft-bans peers on stale forks to prevent wasted resources.
 - Trusted peer issues: Verify trusted-snapshot-peer configuration for reduced 5-minute soft-ban duration.
 - Block rejection handling: Monitor unlinkable_block_exception patterns to identify stale fork vs legitimate sync scenarios.
+- DLT mode errors: Review enhanced error logs for detailed block availability context including available range and dlt_block_log boundaries.
+- Sync status monitoring: Use peer status updates to monitor synchronization progress and identify stuck peers.
+- Memory usage: Monitor peer queue sizes and memory usage through status reports to identify resource bottlenecks.
+- Request timeouts: Review detailed timeout logs with item types, block numbers, and timing thresholds to identify slow or unresponsive peers.
+- Connection lifecycle: Monitor connection establishment, closure, and termination events to identify connection stability issues.
+- Synchronization progress: Use comprehensive sync status reporting to track synchronization completion and identify bottlenecks.
+- **Enhanced connection lifecycle**: Monitor peer state transitions and cleanup operations to identify connection management issues.
+- **Delayed deletion mechanism**: Verify that peers are properly queued for deletion and cleaned up without race conditions.
+- **Improved disconnection flow**: Monitor disconnection sequences to ensure proper cleanup from all connection sets.
+- **Enhanced inventory deduplication**: Monitor inventory tracking to identify deduplication effectiveness and potential issues.
+- **Connection set management**: Verify proper cleanup from all connection sets during state transitions.
+- **State transition logging**: Use detailed logging to debug connection lifecycle issues and peer state management problems.
+- **Cleanup verification**: Ensure that peers are properly removed from _active_connections and other connection sets during disconnection.
+- **Race condition prevention**: Monitor delayed deletion mechanism to prevent race conditions during peer cleanup operations.
 
 **Section sources**
 - [node.cpp:2251-2280](file://libraries/network/node.cpp#L2251-L2280)
@@ -698,10 +741,16 @@ Common issues and resolutions:
 - [node.cpp:1686-1713](file://libraries/network/node.cpp#L1686-L1713)
 - [node.cpp:1326-1398](file://libraries/network/node.cpp#L1326-L1398)
 - [database.cpp:4455-4460](file://libraries/chain/database.cpp#L4455-L4460)
+- [p2p_plugin.cpp:633-689](file://plugins/p2p/p2p_plugin.cpp#L633-L689)
+- [node.cpp:3540-3562](file://libraries/network/node.cpp#L3540-L3562)
+- [node.cpp:3920-3940](file://libraries/network/node.cpp#L3920-L3940)
+- [config.ini:103-108](file://share/vizd/config/config.ini#L103-L108)
 
 ## Conclusion
-The Node Management component provides a robust, configurable, and efficient P2P orchestration layer with comprehensive emergency consensus support and enhanced peer handling capabilities. The recent improvements significantly enhance network resilience through intelligent soft-ban mechanisms, automatic flag reset logic, and deterministic tie-breaking algorithms.
+The Node Management component provides a robust, configurable, and efficient P2P orchestration layer with comprehensive emergency consensus support and enhanced peer handling capabilities. The recent enhancements significantly improve connection lifecycle management, disconnection handling, inventory deduplication, and peer state management through comprehensive lifecycle management, improved cleanup mechanisms, enhanced inventory tracking, and advanced peer state management systems.
 
-The enhanced peer handling logic with improved unlinkable_block_exception handling and intelligent peer soft-banning mechanisms prevents cascading failures during emergency consensus scenarios while differentiating between stale fork peers and legitimate sync candidates to prevent infinite sync loops. The system now provides sophisticated peer classification based on block position relative to local blockchain head, ensuring optimal resource utilization and network stability.
+The enhanced peer connection lifecycle management system provides detailed state transitions with proper cleanup from all connection sets, preventing peers from staying indefinitely in _active_connections through proper state transitions and delayed deletion mechanisms. The improved disconnection flow ensures proper cleanup from _active_connections and enhanced disconnect list management with proper peer state transitions and cleanup.
 
-These enhancements ensure the network can recover from extended periods without block production while maintaining operational efficiency and preventing cascading failures. The integration of emergency mode support with peer connection management, synchronization logic, and broadcast capabilities creates a comprehensive solution for maintaining network stability under adverse conditions. Proper configuration of limits, bandwidth, peer discovery, emergency consensus parameters, and the enhanced soft-ban mechanisms, combined with monitoring and troubleshooting practices, yields a stable, performant, and resilient network node capable of handling both normal operations and emergency scenarios with intelligent peer management.
+The enhanced inventory management system implements sophisticated deduplication logic that prevents redundant fetches and maintains efficient inventory management through multi-level checking, inventory expiration, and priority updates. The advanced peer state management system provides comprehensive tracking of peer connection states, synchronization progress, and resource utilization with detailed metrics and performance optimization.
+
+These enhancements ensure the network can recover from extended periods without block production while maintaining operational efficiency and preventing cascading failures. The integration of comprehensive connection lifecycle management, enhanced disconnection handling, sophisticated inventory deduplication, and advanced peer state management creates a powerful toolkit for maintaining network stability under adverse conditions. Proper configuration of limits, bandwidth, peer discovery, emergency consensus parameters, trusted peer settings, and the enhanced connection lifecycle mechanisms, combined with monitoring and troubleshooting practices, yields a stable, performant, and resilient network node capable of handling both normal operations and emergency scenarios with comprehensive diagnostic capabilities and detailed peer connection lifecycle insights.

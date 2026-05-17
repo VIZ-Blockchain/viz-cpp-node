@@ -46,5 +46,7 @@ namespace graphene {
 
         FC_DECLARE_DERIVED_EXCEPTION(deferred_resize_exception, graphene::network::net_exception, 90007, "shared memory resize deferred, retry block")
 
+        FC_DECLARE_DERIVED_EXCEPTION(read_lock_timeout_exception, graphene::network::net_exception, 90008, "transient lock contention, retry block")
+
     }
 }

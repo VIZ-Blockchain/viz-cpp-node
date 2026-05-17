@@ -19,6 +19,7 @@ The snapshot plugin enables near-instant node startup by serializing and restori
 | `--snapshot <path>` | `string` | Load state from a snapshot file instead of replaying blockchain. The node opens in DLT mode (no block log). Safe for restarts — skips import if shared_memory already exists, and renames the file to `.used` after successful import. |
 | `--snapshot-auto-latest` | `bool` (default: `false`) | Auto-discover the latest snapshot file in `snapshot-dir` by parsing block numbers from filenames (`snapshot-block-NNNNN.vizjson` or `.json`). Typically used with `--replay-from-snapshot` to avoid specifying the file path manually. Ignored if `--snapshot` is already specified. |
 | `--replay-from-snapshot` | `bool` (default: `false`) | Crash recovery mode: import a snapshot and then replay blocks from `dlt_block_log` to bring the node up to the latest available state. Unlike `--snapshot`, this always wipes shared memory (assumes corruption), does NOT rename the snapshot to `.used`, and replays subsequent blocks from the DLT rolling block log. Requires `--snapshot <path>` or `--snapshot-auto-latest`. |
+| `--auto-recover-from-snapshot` | `bool` (default: `true`) | Automatic runtime recovery from shared memory corruption. When corruption is detected during block processing or generation (e.g., missing witness account), the node immediately closes the database, finds the latest snapshot, wipes shared memory, imports the snapshot, replays `dlt_block_log`, and resumes P2P sync — all without a restart. Requires `plugin = snapshot` and snapshots in `snapshot-dir`. |
 | `--create-snapshot <path>` | `string` | Create a snapshot file at the given path using the current database state, then exit. |
 | `--sync-snapshot-from-trusted-peer` | `bool` (default: `false`) | Download and load snapshot from trusted peers when state is empty (`head_block_num == 0`). Requires `trusted-snapshot-peer` to be configured. Defaults to `false` (opt-in) — must be explicitly enabled to prevent accidental state wipe via `chainbase::wipe()`. |
 
@@ -368,6 +369,19 @@ dlt-block-log-max-blocks = 100000
 - When the DLT block log is empty (fresh snapshot import), the node skips ahead to the last irreversible block number, since snapshot state is already trusted.
 - If a block is not found in the fork database during DLT block log writes (normal after restart), the gap is logged via `wlog` and fills naturally as LIB advances past the post-restart head.
 
+### Mapped file integrity
+
+The DLT block log uses `boost::iostreams::mapped_file` for both data and index files. Each `append()` calls `resize()` which internally does close→truncate→remap. After thousands of resize cycles during long-running block production, `mapped_file.size()` can return **stale values** (reflecting an older, smaller size), causing `get_block_pos()` to reject valid block numbers and break P2P sync (the node claims to have blocks but fails to look them up).
+
+**Fix:** The implementation tracks **logical file sizes** (`_logical_block_size`, `_logical_index_size`) independently of `mapped_file.size()`. These are updated after every `resize()` in `append()` and re-synced from the actual mapping on `open()`. All range checks in `get_block_pos()` and `read_block()` use the tracked logical sizes.
+
+**Self-healing:** A `verify_mapping()` method compares `mapped_file.size()` against the tracked logical size. If a discrepancy is detected, the mapping is closed and reopened (healing the stale state). This is called automatically every 5 minutes by the P2P stats task.
+
+**Diagnostics:** The P2P stats task (every 5 minutes) logs a `Block storage` line showing:
+- `dlt_log: [start..end]` — current DLT block log range
+- `dlt_resizes` — total `resize()` calls since open (useful for correlating with staleness)
+- `fork_db` — linked/unlinked block counts and ranges
+
 ### P2P block serving path
 
 When a peer requests a block:
@@ -388,8 +402,23 @@ After snapshot import, the node must sync all subsequent blocks from P2P. Severa
 **LIB promotion:** After snapshot import, LIB is set to `head_block_num` so P2P's blockchain synopsis starts from the snapshot's head. Peers will only offer blocks after the snapshot point, which can link correctly in the fork database.
 
 **Fork database seeding:**
-- Fresh snapshot import: `fork_db` is seeded with the head block via `start_block()`
-- DLT mode restart: `fork_db` is in-memory and lost on restart. The node tries to seed from `dlt_block_log` if it covers the head block. If not, the early rejection logic in `_push_block` handles the empty `fork_db` case by always allowing blocks whose `previous == head_block_id()`
+- Fresh snapshot import: `fork_db` is seeded with the head block via `start_block()`. The head block is also appended to `dlt_block_log` so that restart can reconstruct `fork_db` from it.
+- DLT mode restart: `fork_db` is in-memory and lost on restart. The node seeds it from `dlt_block_log` if it covers the head block (guaranteed after the fix above). If `dlt_block_log` somehow does not cover the head, the early rejection logic in `_push_block` handles the empty `fork_db` case by always allowing blocks whose `previous == head_block_id()`
+
+**Block ID advertisement clamping (`get_block_ids`):** After snapshot import, the `block_summary` (TAPOS buffer, 65536 entries) contains block IDs for blocks the node *knows about* but cannot serve (the actual block data only exists in `dlt_block_log` which starts at the snapshot head). Without clamping, `get_block_ids()` would advertise these un-serveable blocks to peers, causing them to request the blocks, receive `item_not_available`, and disconnect with "You are missing a sync item you claim to have, your database is probably corrupted."
+
+Fix: `database::earliest_available_block_num()` returns the lowest block the node can actually serve (from `dlt_block_log`, `block_log`, or `fork_db`). In DLT mode after snapshot import, this is typically the snapshot head block. `get_block_ids()` in `p2p_plugin.cpp` clamps its start to `earliest_available_block_num()`, ensuring the node only advertises blocks it can deliver.
+
+**Graceful `item_not_available` handling:** When a peer sends `item_not_available` for a sync block, the node no longer disconnects with a "corrupted database" message. Instead, it sets `inhibit_fetching_sync_blocks = true` on that peer and tries other peers. This allows DLT nodes with limited block history to participate in the network without being aggressively disconnected.
+
+**Broadcast inventory suppression during sync:** During initial sync (catching up from snapshot), peers send both sync data (block IDs for catch-up) and broadcast items (recent transactions/blocks at chain tip). If the node tries to fetch these broadcast items, the 1-second `active_ignored_request_timeout` in `terminate_inactive_connections()` fires before the items arrive, disconnecting peers and killing sync connections.
+
+The node suppresses broadcast inventory (`on_item_ids_inventory_message`) with a 3-layer defense:
+1. **Per-peer sync check:** Skip if the originating peer has `we_need_sync_items_from_peer = true`
+2. **Global sync check:** Skip if *any* active peer has `we_need_sync_items_from_peer = true` — prevents inventory from non-syncing peers from polluting `items_requested_from_peer`
+3. **Head block time check:** Skip if the node's head block is >30 seconds behind wall clock — catches the brief window after all peers respond "up to date" but the node is still behind (e.g., when the peer was at the same block and set `we_need_sync_items_from_peer = false`)
+
+Broadcast items are useless during sync — the node will receive them naturally once caught up.
 
 **Early block rejection in `_push_block`:** When a node is far behind, it receives sync blocks (sequential, must accept) and broadcast blocks (real-time, potentially thousands ahead, must reject silently). Checks prevent sync disruption:
 1. Duplicate blocks at/before head with matching ID → skipped silently
@@ -402,6 +431,18 @@ After snapshot import, the node must sync all subsequent blocks from P2P. Severa
 - `_push_next()` was never called after inserting a new block — added the call to resolve previously-unlinkable blocks
 - Duplicate block check added in `_push_block`
 - `_unlinked_index.clear()` added to `reset()`
+
+## Stale Snapshot Detection (DLT Mode)
+
+In DLT mode, the `dlt_block_log` is a rolling window that prunes old blocks. If the node's latest snapshot is older than the DLT block log's start block, downloading nodes would face an unsyncable gap (snapshot at block N, DLT log starts at block M > N, blocks N+1..M-1 missing).
+
+At startup, the snapshot plugin detects this condition:
+1. Checks if in DLT mode with snapshot serving or periodic creation enabled
+2. Compares latest snapshot block number against `dlt_block_log.start_block_num()`
+3. If snapshot block < DLT start block, logs a `STALE SNAPSHOT DETECTED` warning
+4. On the first fully-synced block, creates an urgent fresh snapshot (async, with witness-aware deferral)
+
+This ensures serving nodes always have a snapshot that peers can actually sync from. The check runs automatically — no configuration needed beyond the existing `snapshot-every-n-blocks` or `allow-snapshot-serving` settings.
 
 ## Crash Recovery: `--replay-from-snapshot`
 
@@ -501,6 +542,48 @@ The node is now at block 79,274,318 and P2P sync fills the gap to the live chain
 | DLT block log replay | No | Yes, from snapshot_head+1 |
 | Hardfork initialization | In callback | In callback + explicit call |
 | Typical use case | First-time node setup | Crash recovery |
+
+## Automatic Runtime Recovery: `--auto-recover-from-snapshot`
+
+While `--replay-from-snapshot` requires a manual restart, `--auto-recover-from-snapshot` (enabled by default) provides **immediate, automatic recovery** when shared memory corruption is detected at runtime — without any restart.
+
+### How it works
+
+When the node detects corruption during normal operation (e.g., a witness account object is missing from the database during block processing or block generation), it throws a `shared_memory_corruption_exception`. This exception is caught at the plugin level:
+
+1. **Block acceptance path** (P2P sync): `plugin::accept_block()` catches the exception and calls `attempt_auto_recovery()`.
+2. **Block generation path** (witness): The witness plugin's `generate_block` retry loop catches the exception before the generic `fc::exception` handler, and calls `chain().attempt_auto_recovery()`.
+
+### Recovery flow (`attempt_auto_recovery`)
+
+1. **Find snapshot** — Scans `snapshot-dir` for the latest `snapshot-block-*.vizjson` or `.json` file (same logic as `--snapshot-auto-latest`).
+2. **Close database** — Calls `db.close(false)` (no rewind — state is corrupted anyway). Errors during close are ignored.
+3. **Wipe & import** — Calls `do_snapshot_load(data_dir, true)`, which is the exact same code path as `--replay-from-snapshot`: wipes `shared_memory.bin`, opens from genesis via `open_from_snapshot()`, imports snapshot state via callback, replays `dlt_block_log` blocks.
+4. **Resume** — Calls `on_sync()` to resume P2P sync from the recovered head block. The node continues running.
+
+If recovery fails at any step (no snapshots found, snapshot plugin not configured, import error), the node logs an error and calls `appbase::app().quit()`.
+
+### Prerequisites
+
+- `plugin = snapshot` must be enabled
+- Snapshots must exist in `snapshot-dir` (default: `<data-dir>/snapshots/`). Use `--snapshot-every-n-blocks` to create them automatically.
+- The `dlt_block_log` should cover blocks beyond the snapshot for minimal data loss.
+
+### Key differences from `--replay-from-snapshot`
+
+| Aspect | `--replay-from-snapshot` | `--auto-recover-from-snapshot` |
+|--------|--------------------------|-------------------------------|
+| Trigger | Manual (restart with CLI flag) | Automatic (runtime exception) |
+| Requires restart | Yes | No |
+| Snapshot selection | `--snapshot` or `--snapshot-auto-latest` | Always auto-discovers latest |
+| Default | `false` (opt-in) | `true` (enabled by default) |
+| Database state before recovery | Failed to open | Open but corrupted → closed |
+| Startup corruption | Yes (catch blocks in `plugin_startup`) | Yes (catch blocks in `plugin_startup`) |
+| Runtime corruption | No | Yes (`accept_block`, `generate_block`) |
+
+### Disabling
+
+To disable automatic recovery (e.g., for debugging), pass `--no-auto-recover-from-snapshot` on the command line.
 
 ## P2P Snapshot Sync
 
@@ -741,10 +824,367 @@ Alternatively, add a cron job on the **host** machine:
 | One-shot snapshot | `docker run --rm -e VIZD_EXTRA_OPTS="--create-snapshot /var/lib/vizd/snapshots/snap.json --plugin snapshot" ...` |
 | Load from snapshot | `docker run -e VIZD_EXTRA_OPTS="--snapshot /var/lib/vizd/snapshots/snap.json --plugin snapshot" ...` |
 | Crash recovery | `docker run -e VIZD_EXTRA_OPTS="--replay-from-snapshot --snapshot-auto-latest --plugin snapshot" ...` |
+| Auto-recovery (default) | Enabled by default with `--auto-recover-from-snapshot`. Ensure `plugin = snapshot` and `snapshot-every-n-blocks` are set in config. |
 | P2P auto-bootstrap | Add `trusted-snapshot-peer = <ip>:<port>` to config, start container with `--plugin snapshot` |
 | Find snapshots on host | `ls -lt ~/vizhome/snapshots/` |
 | Check snapshot creation logs | `docker logs vizd \| grep -i snapshot` |
 | Force re-import | `docker run -e VIZD_EXTRA_OPTS="--resync-blockchain --snapshot /path/snap.json --plugin snapshot" ...` |
+
+## P2P Sync Flow (DLT Mode)
+
+This section documents the complete P2P sync protocol for a DLT node that loaded from a snapshot. The example uses a snapshot with head block #79504801 — the node has exactly **1 block** in its state, **1 entry** in fork_db, and its blockchain synopsis contains that single block ID.
+
+### Node state after snapshot import
+
+| Property | Value |
+|----------|-------|
+| `head_block_num` | 79504801 |
+| `last_irreversible_block_num` (LIB) | 79504801 (promoted to head after snapshot import) |
+| `block_log` | Empty |
+| `dlt_block_log` | Contains block #79504801 only |
+| `fork_db` | Contains 1 item: block #79504801 |
+| `block_summary` (TAPOS buffer) | 65536 entries surviving from snapshot (blocks ~79439265..79504801) |
+| `earliest_available_block_num()` | 79504801 |
+| `_dlt_mode` | `true` |
+
+### Flow 1: Outbound sync — our node fetches blocks FROM a peer
+
+This is the primary sync flow. Our DLT node connects to peers and downloads blocks to catch up.
+
+#### Step 1: Connection & handshake
+
+```
+connect_to_peer(seed_node)
+  → TCP connect
+  → send_hello_message()     [our_state = just_connected]
+  → peer responds: connection_accepted_message
+  → on_connection_accepted_message()  [our_state = connection_accepted]
+  → send address_request_message
+  → peer responds: address_message
+  → on_address_message()
+    → both our_state and their_state == connection_accepted
+    → move_peer_to_active_list(peer)     ← LOG: "New peer is connected (X.X.X.X:2001), now N active peers"
+    → new_peer_just_added(peer)
+```
+
+**Code path:** `node.cpp` lines 4793→4802 (outbound connect), 2287 (connection accepted), 2373→2397 (address message completes handshake).
+
+#### Step 2: Sync initiation — `new_peer_just_added()`
+
+Called immediately after handshake completes:
+
+```cpp
+void new_peer_just_added(peer) {
+    send current_time_request_message;
+    start_synchronizing_with_peer(peer);   // ← triggers sync
+}
+```
+
+#### Step 3: `start_synchronizing_with_peer(peer)`
+
+Resets peer sync state and begins fetching:
+
+```cpp
+peer->ids_of_items_to_get.clear();
+peer->number_of_unfetched_item_ids = 0;
+peer->we_need_sync_items_from_peer = true;    // ← marks peer as sync source
+peer->last_block_delegate_has_seen = item_hash_t();  // empty — no reference point yet
+peer->inhibit_fetching_sync_blocks = false;
+fetch_next_batch_of_item_ids_from_peer(peer);
+```
+
+#### Step 4: `fetch_next_batch_of_item_ids_from_peer(peer)`
+
+Builds our blockchain synopsis and sends it to the peer:
+
+```
+create_blockchain_synopsis_for_peer(peer)
+  → reference_point = peer->last_block_delegate_has_seen = empty (first call)
+  → ids_of_items_to_get is empty (just cleared)
+  → calls _delegate->get_blockchain_synopsis(item_hash_t(), 0)
+```
+
+#### Step 5: `get_blockchain_synopsis()` — what our DLT node sends
+
+In `p2p_plugin.cpp`, with empty reference point (= "summarize whole chain"):
+
+```
+high_block_num = head_block_num() = 79504801
+low_block_num  = last_non_undoable_block_num() = 79504801  (LIB == head)
+
+Loop iteration:
+  push get_block_id_for_num(79504801)  →  block_id_79504801
+  low_block_num += (79504801 - 79504801 + 2) / 2 = 1
+  low_block_num = 79504802 > 79504801 → stop
+
+Result: synopsis = [block_id_79504801]   (1 entry)
+```
+
+LOG: `"DLT mode: get_blockchain_synopsis() returning 1 entries, low=79504801, high=79504801, head=79504801, LIB=79504801, earliest_available=79504801"`
+
+The node sends `fetch_blockchain_item_ids_message { type=block, synopsis=[block_id_79504801] }` to the peer.
+
+Also stores: `peer->item_ids_requested_from_peer = (synopsis, timestamp)` — records that we're waiting for a response.
+
+#### Step 6: Peer processes our synopsis
+
+The **peer** (a normal full node, e.g. at head #80000000) receives our `fetch_blockchain_item_ids_message` and processes it in their `on_fetch_blockchain_item_ids_message()`:
+
+```
+peer's get_block_ids(synopsis=[block_id_79504801], remaining):
+  → iterates synopsis in reverse
+  → is_known_block(block_id_79504801)?
+    → block_summary: slot 79504801 & 0xFFFF was overwritten by block ~79570337 → no match
+    → fetch_block_by_id: read block #79504801 from block_log, check id matches → YES
+  → is_included_block(block_id_79504801)?
+    → get_block_id_for_num(79504801): reads from block_log → same id → YES
+  → found! last_known_block_id = block_id_79504801, start_num = 79504801
+
+  → Loop from 79504801 to min(peer_head, 79504801 + limit):
+    result = [block_id_79504801, block_id_79504802, block_id_79504803, ..., block_id_X]
+  → remaining_item_count = peer_head - X
+```
+
+Peer sends back `blockchain_item_ids_inventory_message`:
+- `item_hashes_available`: [block_id_79504801, block_id_79504802, ..., block_id_X] (up to `limit`, typically 2000)
+- `total_remaining_item_count`: N (many thousands more blocks)
+
+#### Step 7: Our node receives peer's block ID list
+
+`on_blockchain_item_ids_inventory_message()` processes the response:
+
+```
+1. Diagnostic log: peer, count, block range, remaining
+
+2. Check: item_ids_requested_from_peer is set? YES (set in step 4)
+
+3. Validate: item_hashes_available is sequential? YES
+
+4. Validate: first item (block_id_79504801) is in our synopsis? YES
+
+5. Reset: item_ids_requested_from_peer = empty
+
+6. Check "up to date" condition:
+   total_remaining_item_count == 0?  NO (N > 0)
+   → NOT up to date, proceed to receive blocks
+
+7. Dedup: pop blocks we already have from front of list:
+   - block_id_79504801: has_item() → is_known_block() → YES → pop
+   - block_id_79504802: has_item() → is_known_block() → NO → stop
+
+8. Remaining: item_hashes_received = [block_id_79504802, ..., block_id_X]
+
+9. Append to: peer->ids_of_items_to_get
+
+10. Since total_remaining_item_count > 0:
+    if ids_of_items_to_get.size() > GRAPHENE_NET_MIN_BLOCK_IDS_TO_PREFETCH:
+      trigger_fetch_sync_items_loop()    ← starts downloading actual blocks
+    else:
+      fetch_next_batch_of_item_ids_from_peer()  ← get more IDs first
+```
+
+#### Step 8: Block fetching and application
+
+`fetch_sync_items_loop()` requests actual block data from peers:
+
+```
+For each block_id in ids_of_items_to_get:
+  → send fetch_items_message to peer
+  → peer responds with block_message containing full signed_block
+  → process_block_message():
+    → _delegate->handle_block()
+    → chain.accept_block() → database::push_block() → fork_db → apply
+    → head advances: 79504802, 79504803, ...
+```
+
+As blocks are applied:
+- `dlt_block_log` receives new irreversible blocks
+- `block_summary` is updated with new block IDs
+- `fork_db` grows with new blocks
+- LIB advances as witnesses produce super-majority
+
+#### Step 9: Subsequent synopsis rounds
+
+After all IDs from the first batch are fetched, or when more IDs are needed:
+
+```
+fetch_next_batch_of_item_ids_from_peer(peer):
+  → peer->last_block_delegate_has_seen is now set to the last deduped block
+  → create_blockchain_synopsis_for_peer:
+    → reference_point = last block peer told us about that we already had
+    → synopsis includes blocks from our chain + ids_of_items_to_get
+  → sends next fetch_blockchain_item_ids_message
+  → peer responds with the next batch of block IDs
+  → cycle continues until peer says total_remaining_item_count == 0
+```
+
+#### Step 10: Sync complete
+
+When peer responds with `total_remaining_item_count == 0` and all blocks have been fetched:
+
+```
+on_blockchain_item_ids_inventory_message:
+  → "up to date" condition is true
+  → peer->we_need_sync_items_from_peer = false
+  → LOG: "Sync: peer X says we're up-to-date"
+  → node transitions to normal operation (receiving broadcast blocks)
+```
+
+### Flow 2: Inbound sync — peer fetches blocks FROM our DLT node
+
+This flow describes what happens when another node connects to our DLT node and asks for blocks.
+
+#### Step 1: Peer connects to us
+
+The peer initiates a TCP connection. We receive their hello message in `on_hello_message()`:
+
+```
+Validate: signature, protocol version, chain ID
+  → all pass → their_state = connection_accepted
+  → send connection_accepted_message
+  → exchange address messages
+  → move_peer_to_active_list()
+  → new_peer_just_added()  ← we also start syncing FROM them (Flow 1)
+```
+
+Meanwhile, the peer also starts syncing from us (they send their synopsis).
+
+#### Step 2: Peer sends us their synopsis
+
+The peer sends `fetch_blockchain_item_ids_message` with their synopsis, e.g. `[..., block_id_79501245]` (their most recent known block). Our `on_fetch_blockchain_item_ids_message()` processes it:
+
+```
+_delegate->get_block_ids(synopsis=[..., block_id_79501245], remaining):
+  → iterate synopsis in reverse looking for a known block
+  → find block_id_79501245 (if it's in our block_summary and on our chain)
+  → start_num = 79501245
+
+  DLT mode clamping:
+  → earliest_available = earliest_available_block_num() = 79504801
+  → 79501245 < 79504801 → clamp start_num to 79504801
+
+  → Loop from 79504801 to head (79504801):
+    result = [block_id_79504801]
+  → remaining_item_count = 0
+
+  LOG: "DLT mode: get_block_ids() clamping start from 79501245 to 79504801"
+  LOG: "DLT mode: get_block_ids() returning 1 block IDs (start=79504801, head=79504801)"
+```
+
+We respond with `blockchain_item_ids_inventory_message`:
+- `item_hashes_available`: [block_id_79504801]
+- `total_remaining_item_count`: 0
+
+#### Step 3: Peer processes our response
+
+On the peer's side, they receive our 1-block response:
+- `item_hashes_available.size() == 1`
+- `has_item(block_id_79504801)` → YES (peer already has this block)
+- `total_remaining_item_count == 0`
+- Conclusion: **we're up to date** — the peer marks `we_need_sync_items_from_peer = false` for us
+
+This is correct — our DLT node only has 1 block, so the peer can't get anything useful from us yet. As our node syncs and accumulates blocks in `dlt_block_log`, future peers will get more blocks from us.
+
+#### Step 4: Peer determines sync direction
+
+The peer also checks `peer_needs_sync_items_from_us`:
+- Our synopsis had `[block_id_79504801]`
+- Peer's `get_block_ids(our_synopsis)` → finds block #79504801, returns blocks after it
+- `peer_needs_sync_items_from_us = true` → peer will send us blocks (Flow 1, step 6)
+
+### Flow 3: Broadcast inventory suppression
+
+During sync (Flow 1), peers also send real-time broadcast inventory (new transactions/blocks at chain tip). Without suppression, this causes timeout disconnects:
+
+```
+Peer sends item_ids_inventory_message (broadcast transactions)
+  → on_item_ids_inventory_message():
+    Layer 1: originating_peer->we_need_sync_items_from_peer? → YES → SKIP
+    (or)
+    Layer 2: any active peer has we_need_sync_items_from_peer? → YES → SKIP
+    (or)
+    Layer 3: head block time > 30s behind wall clock? → YES → SKIP
+
+    → broadcast inventory silently dropped during sync
+    → prevents items_requested_from_peer pollution
+    → prevents 1-second active_ignored_request_timeout disconnects
+```
+
+### Key code locations
+
+| Function | File | Purpose |
+|----------|------|---------|
+| `new_peer_just_added()` | node.cpp:4356 | Entry point: triggers sync after handshake |
+| `start_synchronizing_with_peer()` | node.cpp:4333 | Sets sync flags, begins ID fetch |
+| `fetch_next_batch_of_item_ids_from_peer()` | node.cpp:2580 | Builds synopsis, sends to peer |
+| `create_blockchain_synopsis_for_peer()` | node.cpp:2527 | Generates synopsis from chain state |
+| `get_blockchain_synopsis()` | p2p_plugin.cpp:370 | DLT-aware synopsis generation |
+| `on_blockchain_item_ids_inventory_message()` | node.cpp:2618 | Processes peer's block ID response |
+| `on_fetch_blockchain_item_ids_message()` | node.cpp:2403 | Responds to peer's synopsis with block IDs |
+| `get_block_ids()` | p2p_plugin.cpp:249 | DLT-aware block ID enumeration with clamping |
+| `on_item_ids_inventory_message()` | node.cpp:3048 | Broadcast inventory suppression |
+| `fetch_sync_items_loop()` | node.cpp | Requests actual block data from peers |
+| `send_sync_block_to_node_delegate()` | node.cpp | Pushes sync blocks to chain; handles `deferred_resize_exception` |
+| `terminate_inactive_connections_loop()` | node.cpp | Auto-clears stuck `peer_needs_sync_items_from_us` (30s timeout) |
+| `trigger_resync()` | p2p_plugin.cpp | Re-initiates P2P sync after snapshot hot-reload |
+| `is_known_block()` | database.cpp:726 | DLT-aware block existence check |
+| `earliest_available_block_num()` | database.cpp | Lowest block the node can actually serve |
+
+### Sync deadlock prevention
+
+On a live chain producing blocks every 3 seconds, a race condition can cause the sync to stall permanently:
+
+1. The seed finishes processing sync blocks and sends a "final synopsis" to the master
+2. The master has already produced new blocks, so the reply has >1 item
+3. `peer_needs_sync_items_from_us` stays `true` on the master → inventory advertisements blocked
+4. The seed fetches the new blocks, sends another synopsis, but the master has more blocks again
+5. This chase loop repeats — especially when `deferred_resize_exception` slows the seed during catch-up
+
+**Fix 1: Early inventory-mode transition (`remaining == 0`)**
+
+In `on_fetch_blockchain_item_ids_message()`, when the master's reply has `total_remaining_item_count == 0` (all blocks sent), the master now sets `peer_needs_sync_items_from_us = false` immediately — even if the reply has multiple items. The peer is close enough that inventory mode can deliver any new blocks produced during the remaining sync processing.
+
+Flag logic (master-side `on_fetch_blockchain_item_ids_message`):
+
+| Condition | `peer_needs_sync_items_from_us` | Meaning |
+|---|---|---|
+| Reply empty | `false` | Our chain is empty |
+| Reply = 1 item in synopsis | `false` | Peer is fully caught up |
+| Reply >1 item, `remaining == 0` | `false` | Peer is nearly caught up — switch to inventory |
+| Reply >1 item, `remaining > 0` | `true` | Peer is far behind, keep sync mode |
+
+**Fix 2: Auto-clear safety net (30-second timeout)**
+
+In `terminate_inactive_connections_loop()`, if `peer_needs_sync_items_from_us` has been `true` for >30 seconds without the peer sending any `fetch_blockchain_item_ids` request, the flag is force-cleared. This catches edge cases where `deferred_resize_exception` prevents the seed from sending the final synopsis (because `peers_with_newly_empty_item_lists` is never populated when the block isn't applied).
+
+**Fix 3: Post-snapshot `trigger_resync()`**
+
+After the snapshot plugin completes a hot-reload (importing a new snapshot while the node is running), it calls `p2p_plugin::trigger_resync()` to re-initiate P2P sync from the new head block. Without this, the P2P layer would continue with stale state and the peer would never receive new blocks.
+
+### Diagnostic logging
+
+All sync negotiation messages use `fc_ilog(fc::logger::get("sync"), ...)` to go through the **"sync" logger**, which must be configured in `config.ini`:
+
+```ini
+[logger.sync]
+level = info
+appenders = stderr
+```
+
+Key diagnostic messages:
+- `"Starting sync with peer ..."` — sync initiation with peer state flags
+- `"sync: sending synopsis to peer ..."` — synopsis details (count, last block)
+- `"on_blockchain_item_ids_inventory: ..."` — peer's response (block range, remaining, sync flags)
+- `"Sync: peer X says we're up-to-date"` — sync complete for this peer
+- `"Sync: received N block IDs from peer ..."` — block ID batch received
+- `"sync: peer X nearly caught up (sent N items, remaining=0)"` — early inventory-mode transition
+- `"sync: peer X is now in sync with us (peer_needs_sync=false)"` — flag cleared (reply=1 known item)
+- `"auto-clearing stuck peer_needs_sync_items_from_us for peer X"` — 30-second safety net fired
+- `"DEFERRED_RESIZE: sync block #N deferred due to shared memory resize"` — resize interrupted sync
+- `"DEFERRED_RESIZE: restarting sync with all peers"` — sync restart after deferred resize
+- `"sync: peer X lists now empty — sending final synopsis"` — all sync blocks processed, checking completion
+
+**Important:** `node.cpp` defines `#define DEFAULT_LOGGER "p2p"` (line 75), so all `ilog()`/`dlog()`/`wlog()` macros in that file go to the "p2p" logger, NOT the default logger. To make messages visible, either configure the "p2p" logger or use `fc_ilog(fc::logger::get("sync"), ...)` explicitly.
 
 ## Modified Components
 
@@ -754,12 +1194,14 @@ The snapshot plugin required changes to several core components:
 |-----------|--------|
 | `chainbase::generic_index` | Added `set_next_id()` / `next_id()` for ID preservation during import |
 | `fork_database.cpp` | Fixed `_unlinked_index.insert()` dead code (moved before `throw`); added `_push_next(item)` call at end of `_push_block` to resolve previously-unlinkable blocks; added duplicate block check in `_push_block`; added `_unlinked_index.clear()` to `reset()` |
-| `database.hpp/cpp` | Added `open_from_snapshot()`, `initialize_hardforks()`, `reindex_from_dlt()`, `get_fork_db()`, `_dlt_mode` flag with `set_dlt_mode()` setter; DLT mode skips block_log writes and detects empty block_log on restart; `is_known_block()` in DLT mode checks block_summary then verifies preferred chain via `find_block_id_for_num()` (prevents both lying to peers and breaking sync negotiation); DLT restart seeds fork_db from dlt_block_log when available; early rejection in `_push_block`: duplicate blocks (at/before head, same ID), blocks at/before head on different fork with unknown parent (prevents P2P sync restart loop), far-ahead broadcast blocks (parent unknown and not head_block_id), with immediate successor (`previous == head_block_id()`) always allowed; DLT block log gap logging via `wlog`; DLT block log empty-skip logic for fresh snapshot imports |
+| `database.hpp/cpp` | Added `open_from_snapshot()`, `initialize_hardforks()`, `reindex_from_dlt()`, `get_fork_db()`, `_dlt_mode` flag with `set_dlt_mode()` setter; DLT mode skips block_log writes and detects empty block_log on restart; `is_known_block()` in DLT mode checks block_summary then verifies preferred chain via `find_block_id_for_num()` (prevents both lying to peers and breaking sync negotiation); DLT restart seeds fork_db from dlt_block_log when available; early rejection in `_push_block`: duplicate blocks (at/before head, same ID), blocks at/before head on different fork with unknown parent (prevents P2P sync restart loop), far-ahead broadcast blocks (parent unknown and not head_block_id), with immediate successor (`previous == head_block_id()`) always allowed; DLT block log gap logging via `wlog`; DLT block log empty-skip logic for fresh snapshot imports; corruption detection throws `shared_memory_corruption_exception` (instead of `FC_ASSERT`) from all witness-account-missing checks (generate_block, process_funds, HF4 path) |
+| `database_exceptions.hpp` | Added `shared_memory_corruption_exception` (code 4140000) for runtime corruption detection |
 | `dlt_block_log.hpp/cpp` | New class: offset-aware rolling block log with 8-byte header index, `truncate_before()` for rotation, read/write with mutex locking |
-| `chain plugin` | Added `snapshot_load_callback`, `snapshot_create_callback`, `snapshot_p2p_sync_callback`; restart safety (shared_memory check + `.used` rename + file existence check); LIB promotion after snapshot import (LIB = head_block_num for correct P2P synopsis); `dlt-block-log-max-blocks` config option; diagnostic warning when node has 0 blocks and no snapshot sync configured; `--replay-from-snapshot` crash recovery mode (wipes shared_memory, imports snapshot, replays dlt_block_log via `reindex_from_dlt`, does not rename snapshot); `--snapshot-auto-latest` auto-discovery of latest snapshot in `snapshot-dir` |
-| `snapshot plugin` | Full implementation: create/load/periodic snapshots; P2P TCP sync (serve + download with concurrent fiber handling on a dedicated `fc::thread`); 5-second peer operation timeout (connect, send, read); anti-spam (rate limiting, mutex-protected session tracking, enforced per-operation connection deadline); cached snapshot info; streaming SHA-256 checksum; built-in rotation (`snapshot-max-age-days`); elapsed time logging for all operations; console progress logging for download/import; `sync-snapshot-from-trusted-peer` defaults to `false` (opt-in); auto-creates snapshot directory; periodic snapshots only trigger on live blocks (skipped during P2P sync); memory optimization: compressed data freed immediately after decompression; `--snapshot-auto-latest` auto-discovery of latest snapshot file by block number; `find_latest_snapshot()` helper; **async snapshot creation**: `on_applied_block` schedules snapshot on a dedicated `fc::thread` (not the main thread's fc scheduler, which is blocked by `io_serv->run()`); `create_snapshot` splits into Phase 1 (read lock for DB serialization only) and Phase 2 (compression + file I/O without lock); `snapshot_in_progress` atomic flag prevents overlapping snapshots; `write_snapshot_to_file` accepts pre-captured header+state (no DB access needed); shutdown waits for in-progress snapshot before quitting thread |
+| `chain plugin` | Added `snapshot_load_callback`, `snapshot_create_callback`, `snapshot_p2p_sync_callback`; restart safety (shared_memory check + `.used` rename + file existence check); LIB promotion after snapshot import (LIB = head_block_num for correct P2P synopsis); `dlt-block-log-max-blocks` config option; diagnostic warning when node has 0 blocks and no snapshot sync configured; `--replay-from-snapshot` crash recovery mode (wipes shared_memory, imports snapshot, replays dlt_block_log via `reindex_from_dlt`, does not rename snapshot); `--snapshot-auto-latest` auto-discovery of latest snapshot in `snapshot-dir`; `--auto-recover-from-snapshot` (default: `true`) immediate runtime recovery — `accept_block` and witness `generate_block` catch `shared_memory_corruption_exception`, call `attempt_auto_recovery()` which closes DB, finds latest snapshot, wipes shared memory, imports snapshot, replays dlt_block_log, and resumes P2P sync without restart |
+| `snapshot plugin` | Full implementation: create/load/periodic snapshots; P2P TCP sync (serve + download with concurrent fiber handling on a dedicated `fc::thread`); 5-second peer operation timeout (connect, send, read); anti-spam (rate limiting, mutex-protected session tracking, enforced per-operation connection deadline); cached snapshot info; streaming SHA-256 checksum; built-in rotation (`snapshot-max-age-days`); elapsed time logging for all operations; console progress logging for download/import; `sync-snapshot-from-trusted-peer` defaults to `false` (opt-in); auto-creates snapshot directory; periodic snapshots only trigger on live blocks (skipped during P2P sync); memory optimization: compressed data freed immediately after decompression; `--snapshot-auto-latest` auto-discovery of latest snapshot file by block number; `find_latest_snapshot()` helper; **async snapshot creation**: `on_applied_block` schedules snapshot on a dedicated `fc::thread` (not the main thread's fc scheduler, which is blocked by `io_serv->run()`); `create_snapshot` splits into Phase 1 (read lock for DB serialization only) and Phase 2 (compression + file I/O without lock); `snapshot_in_progress` atomic flag prevents overlapping snapshots; `write_snapshot_to_file` accepts pre-captured header+state (no DB access needed); shutdown waits for in-progress snapshot before quitting thread; **DLT restart safety**: `load_snapshot()` persists the snapshot's head block into `dlt_block_log` so `database::open()` can seed `fork_db` on restart; **stale snapshot detection**: at startup, compares latest snapshot block against `dlt_block_log.start_block_num()` — if snapshot is older than DLT start, creates an urgent fresh snapshot on first synced block to prevent serving a broken snapshot with unsyncable gap |
 | `content_object.hpp` | Added missing `FC_REFLECT` for `content_object`, `content_type_object`, `content_vote_object` |
 | `witness_objects.hpp` | Added missing `FC_REFLECT` for `witness_vote_object` |
 | `proposal_object.hpp` | Added missing `FC_REFLECT` for `required_approval_object` |
 | `vizd/main.cpp` | Registered `snapshot_plugin`, linked `graphene::snapshot` |
-| `p2p_plugin` | Added `_dlt_block_log` fallback in `get_item()` for serving blocks to peers in DLT mode |
+| `p2p_plugin` | Added `_dlt_block_log` fallback in `get_item()` for serving blocks to peers in DLT mode; added `trigger_resync()` for post-snapshot-reload P2P re-initiation; added `last_peer_sync_request_time` to `peer_connection` for stuck-flag detection |
+| `node.cpp` (network library) | Added early inventory-mode transition when `remaining == 0`; auto-clear of stuck `peer_needs_sync_items_from_us` (30s timeout); `DEFERRED_RESIZE` diagnostic logging; final synopsis diagnostic logging |

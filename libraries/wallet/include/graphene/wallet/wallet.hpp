@@ -1,7 +1,6 @@
 #pragma once
 
 #include <graphene/wallet/remote_node_api.hpp>
-#include <graphene/plugins/private_message/private_message_plugin.hpp>
 #include <graphene/plugins/account_history/history_object.hpp>
 
 #include <graphene/utilities/key_conversion.hpp>
@@ -17,7 +16,6 @@ namespace graphene { namespace wallet {
 
         using namespace graphene::utilities;
         using namespace graphene::protocol;
-        using namespace graphene::plugins::private_message;
 
         typedef uint16_t transaction_handle_type;
 
@@ -669,6 +667,19 @@ namespace graphene { namespace wallet {
                 bool broadcast = false
             );
 
+            /**
+             * Set the validator reward sharing rate (HF13).
+             *
+             * @param validator_name The name of the validator (witness) account.
+             * @param sharing_rate Basis points (0 = 0%, 10000 = 100%) of block reward to share with stakeholders (voters).
+             * @param broadcast true if you wish to broadcast the transaction.
+             */
+            annotated_signed_transaction set_reward_sharing(
+                string validator_name,
+                uint16_t sharing_rate,
+                bool broadcast = false
+            );
+
             /** Set the voting proxy for an account.
              *
              * If a user does not wish to take an active part in voting, they can choose
@@ -949,22 +960,6 @@ namespace graphene { namespace wallet {
                 get_account_history( string account, uint32_t from, uint32_t limit );
 
 
-            FC_TODO(Supplement API argument description)
-            /**
-             *  Marks one account as following another account. Requires the regular authority of the follower.
-             *
-             *  @param follower
-             *  @param following
-             *  @param what - a set of things to follow: posts, contents, votes, ignore
-             *  @param broadcast true if you wish to broadcast the transaction
-             */
-            annotated_signed_transaction follow(
-                    const string& follower,
-                    const string& following,
-                    const set<string>& what,
-                    const bool broadcast);
-
-
             std::map<string,std::function<string(fc::variant,const fc::variants&)>> get_result_formatters() const;
 
             fc::signal<void(bool)> lock_changed;
@@ -986,14 +981,6 @@ namespace graphene { namespace wallet {
              * Returns the decrypted memo if possible given wallet's known private keys
              */
             string decrypt_memo( string memo );
-
-            // Private message
-            vector<extended_message_object> get_inbox(
-                    const std::string& to, time_point newest, uint16_t limit, std::uint64_t offset);
-            vector<extended_message_object> get_outbox(
-                    const std::string& from, time_point newest, uint16_t limit, std::uint64_t offset);
-
-            message_body try_decrypt_message( const message_api_obj& mo );
 
             /**
              * Broadcast a custom operation.
@@ -1483,6 +1470,7 @@ FC_API( graphene::wallet::wallet_api,
                 (update_witness)
                 (update_chain_properties)
                 (versioned_update_chain_properties)
+                (set_reward_sharing)
                 (set_voting_proxy)
                 (vote_for_witness)
                 //(follow)
@@ -1555,8 +1543,6 @@ FC_API( graphene::wallet::wallet_api,
 
                 (get_active_witnesses)
                 (get_transaction)
-                (get_inbox)
-                (get_outbox)
 )
 
 FC_REFLECT( (graphene::wallet::memo_data), (from)(to)(nonce)(check)(encrypted) )

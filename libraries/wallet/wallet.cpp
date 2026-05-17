@@ -12,7 +12,6 @@
 #include <graphene/wallet/api_documentation.hpp>
 #include <graphene/wallet/reflect_util.hpp>
 #include <graphene/wallet/remote_node_api.hpp>
-#include <graphene/plugins/follow/follow_operations.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -215,10 +214,7 @@ namespace graphene { namespace wallet {
                     _remote_database_api( con.get_remote_api< remote_database_api >( 0, "database_api" ) ),
                     _remote_operation_history( con.get_remote_api< remote_operation_history >( 0, "operation_history" ) ),
                     _remote_account_history( con.get_remote_api< remote_account_history >( 0, "account_history" ) ),
-                    _remote_social_network( con.get_remote_api< remote_social_network >( 0, "social_network" ) ),
                     _remote_network_broadcast_api( con.get_remote_api< remote_network_broadcast_api >( 0, "network_broadcast_api" ) ),
-                    _remote_follow( con.get_remote_api< remote_follow >( 0, "follow" ) ),
-                    _remote_private_message( con.get_remote_api< remote_private_message>( 0, "private_message" ) ),
                     _remote_account_by_key( con.get_remote_api< remote_account_by_key>( 0, "account_by_key" ) ) ,
                     _remote_witness_api( con.get_remote_api< remote_witness_api >( 0, "witness_api" ) )
                 {
@@ -887,10 +883,7 @@ namespace graphene { namespace wallet {
                 fc::api< remote_database_api >          _remote_database_api;
                 fc::api< remote_operation_history >     _remote_operation_history;
                 fc::api< remote_account_history >       _remote_account_history;
-                fc::api< remote_social_network >        _remote_social_network;
                 fc::api< remote_network_broadcast_api>  _remote_network_broadcast_api;
-                fc::api< remote_follow >                _remote_follow;
-                fc::api< remote_private_message >       _remote_private_message;
                 fc::api< remote_account_by_key >        _remote_account_by_key;
                 fc::api< remote_witness_api >           _remote_witness_api;
                 uint32_t                                _tx_expiration_seconds = 30;
@@ -1722,6 +1715,23 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
             return my->sign_transaction(tx, broadcast);
         }
 
+        annotated_signed_transaction wallet_api::set_reward_sharing(
+            string validator_name,
+            uint16_t sharing_rate,
+            bool broadcast
+        ) {
+            FC_ASSERT(!is_locked());
+
+            signed_transaction tx;
+            set_reward_sharing_operation op;
+            op.owner = validator_name;
+            op.sharing_rate = sharing_rate;
+            tx.operations.push_back(op);
+            tx.validate();
+
+            return my->sign_transaction(tx, broadcast);
+        }
+
         annotated_signed_transaction wallet_api::vote_for_witness(string voting_account, string witness_to_vote_for, bool approve, bool broadcast )
         { try {
                 FC_ASSERT( !is_locked() );
@@ -2085,106 +2095,6 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
             return my->_remote_operation_history->get_transaction( id );
         }
 
-        vector<extended_message_object> wallet_api::get_inbox(const std::string& to, time_point newest, uint16_t limit, std::uint64_t offset) {
-            FC_ASSERT( !is_locked() );
-            vector<extended_message_object> result;
-            auto remote_result = my->_remote_private_message->get_inbox(to, newest, limit, offset);
-            for( const auto& item : remote_result ) {
-                result.emplace_back( item );
-                message_body tmp = try_decrypt_message( item );
-                result.back().message = std::move(tmp);
-            }
-            return result;
-        }
-
-        vector<extended_message_object> wallet_api::get_outbox(const std::string& from, time_point newest, uint16_t limit, std::uint64_t offset) {
-            FC_ASSERT( !is_locked() );
-            vector<extended_message_object> result;
-            auto remote_result = my->_remote_private_message->get_outbox(from, newest, limit, offset);
-            for( const auto& item : remote_result ) {
-                result.emplace_back( item );
-                message_body tmp = try_decrypt_message( item );
-                result.back().message = std::move(tmp);
-            }
-            return result;
-        }
-
-        message_body wallet_api::try_decrypt_message( const message_api_obj& mo ) {
-            message_body result;
-
-            fc::sha512 shared_secret;
-
-            auto it = my->_keys.find(mo.from_memo_key);
-            if( it == my->_keys.end() )
-            {
-                it = my->_keys.find(mo.to_memo_key);
-                if( it == my->_keys.end() )
-                {
-                    wlog( "unable to find keys" );
-                    return result;
-                }
-                auto priv_key = wif_to_key( it->second );
-                if( !priv_key ) return result;
-                shared_secret = priv_key->get_shared_secret( mo.from_memo_key );
-            } else {
-                auto priv_key = wif_to_key( it->second );
-                if( !priv_key ) return result;
-                shared_secret = priv_key->get_shared_secret( mo.to_memo_key );
-            }
-
-
-            fc::sha512::encoder enc;
-            fc::raw::pack( enc, mo.sent_time );
-            fc::raw::pack( enc, shared_secret );
-            auto encrypt_key = enc.result();
-
-            uint32_t check = fc::sha256::hash( encrypt_key )._hash[0];
-
-            if( mo.checksum != check )
-                return result;
-
-            auto decrypt_data = fc::aes_decrypt( encrypt_key, mo.encrypted_message );
-            try {
-                return fc::raw::unpack<message_body>( decrypt_data );
-            } catch ( ... ) {
-                return result;
-            }
-        }
-
-        annotated_signed_transaction wallet_api::follow(
-                const string& follower,
-                const string& following,
-                const set<string>& what,
-                const bool broadcast) {
-            string _following = following;
-
-            auto follwer_account = get_account( follower );
-            FC_ASSERT( _following.size() );
-            if( _following[0] != '@' || _following[0] != '#' ) {
-                _following = '@' + _following;
-            }
-            if( _following[0] == '@' ) {
-                get_account( _following.substr(1) );
-            }
-            FC_ASSERT( _following.size() > 1 );
-
-            follow::follow_operation fop;
-            fop.follower = follower;
-            fop.following = _following;
-            fop.what = what;
-            follow::follow_plugin_operation op = fop;
-
-            custom_operation jop;
-            jop.id = "follow";
-            jop.json = fc::json::to_string(op);
-            jop.required_regular_auths.insert(follower);
-
-            signed_transaction trx;
-            trx.operations.push_back( jop );
-            trx.validate();
-
-            return my->sign_transaction( trx, broadcast );
-        }
 
         annotated_signed_transaction wallet_api::custom(
             flat_set<string> required_active_auths,

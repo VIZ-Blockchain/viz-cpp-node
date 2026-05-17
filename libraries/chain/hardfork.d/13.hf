@@ -1,0 +1,6 @@
+// 13 Hardfork — Validator Reward Sharing
+#ifndef CHAIN_HARDFORK_13
+#define CHAIN_HARDFORK_13 13
+#define CHAIN_HARDFORK_13_TIME 1778961600
+#define CHAIN_HARDFORK_13_VERSION hardfork_version( version(3, 2, 0) )
+#endif

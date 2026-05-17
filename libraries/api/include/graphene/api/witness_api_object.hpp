@@ -31,6 +31,9 @@ namespace graphene { namespace api {
         version running_version;
         hardfork_version hardfork_version_vote;
         time_point_sec hardfork_time_vote;
+        // HF13: validator reward sharing
+        uint16_t sharing_rate = 0;
+        share_type pending_stakeholder_reward = 0;
     };
 
 } } // graphene::api
@@ -40,4 +43,5 @@ FC_REFLECT(
     (graphene::api::witness_api_object),
     (id)(owner)(created)(url)(votes)(penalty_percent)(counted_votes)(virtual_last_update)(virtual_position)(virtual_scheduled_time)
     (total_missed)(last_aslot)(last_confirmed_block_num)(signing_key)(props)
-    (last_work)(running_version)(hardfork_version_vote)(hardfork_time_vote))
+    (last_work)(running_version)(hardfork_version_vote)(hardfork_time_vote)
+    (sharing_rate)(pending_stakeholder_reward))

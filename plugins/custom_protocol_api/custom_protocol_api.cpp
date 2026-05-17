@@ -1,3 +1,5 @@
+#include <limits>
+
 #include <boost/program_options/options_description.hpp>
 #include <graphene/plugins/custom_protocol_api/custom_protocol_api.hpp>
 #include <graphene/plugins/custom_protocol_api/custom_protocol_api_object.hpp>
@@ -83,7 +85,7 @@ namespace graphene { namespace plugins { namespace custom_protocol_api {
         boost::program_options::options_description& cfg
     ) {
         cli.add_options()
-            ("custom-protocol-store-size", boost::program_options::value<uint8_t>()->default_value(10),
+            ("custom-protocol-store-size", boost::program_options::value<uint32_t>()->default_value(10),
                 "Set the maximum store size for custom protocols used by account");
         cfg.add(cli);
     }
@@ -97,8 +99,10 @@ namespace graphene { namespace plugins { namespace custom_protocol_api {
         add_plugin_index<custom_protocol_api::custom_protocol_index>(db);
 
         if (options.count("custom-protocol-store-size")) {
-            uint8_t _custom_protocol_store_size = options["custom-protocol-store-size"].as<uint8_t>();
-            pimpl->custom_protocol_store_size = _custom_protocol_store_size;
+            uint32_t _custom_protocol_store_size = options["custom-protocol-store-size"].as<uint32_t>();
+            FC_ASSERT(_custom_protocol_store_size <= std::numeric_limits<uint8_t>::max(),
+                "custom-protocol-store-size must be <= ${max}", ("max", std::numeric_limits<uint8_t>::max()));
+            pimpl->custom_protocol_store_size = static_cast<uint8_t>(_custom_protocol_store_size);
         }
 
         JSON_RPC_REGISTER_API(name());

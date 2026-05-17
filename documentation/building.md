@@ -28,10 +28,9 @@ We ship Dockerfiles for building production and testnet images.
 
 | Dockerfile | Purpose | Image Tag | CMake Options |
 |------------|---------|-----------|---------------|
-| `share/vizd/docker/Dockerfile-production` | Mainnet node | `vizblockchain/vizd:latest` | `LOW_MEMORY_NODE=FALSE`, `ENABLE_MONGO_PLUGIN=FALSE` |
+| `share/vizd/docker/Dockerfile-production` | Mainnet node | `vizblockchain/vizd:latest` | `LOW_MEMORY_NODE=FALSE` |
 | `share/vizd/docker/Dockerfile-testnet` | Testnet node | `vizblockchain/vizd:testnet` | `BUILD_TESTNET=TRUE`, `LOW_MEMORY_NODE=FALSE` |
 | `share/vizd/docker/Dockerfile-lowmem` | Low memory consensus node | `vizblockchain/vizd:lowmem` | `LOW_MEMORY_NODE=TRUE` |
-| `share/vizd/docker/Dockerfile-mongo` | Node with MongoDB plugin | `vizblockchain/vizd:mongo` | `ENABLE_MONGO_PLUGIN=TRUE` |
 
 ### Building Locally
 
@@ -64,12 +63,6 @@ Build the low-memory image (for witnesses and seed-nodes):
 
 ```bash
 docker build -t vizblockchain/vizd:lowmem -f share/vizd/docker/Dockerfile-lowmem .
-```
-
-Build the MongoDB-enabled image:
-
-```bash
-docker build -t vizblockchain/vizd:mongo -f share/vizd/docker/Dockerfile-mongo .
 ```
 
 ### Pushing to Docker Hub
@@ -132,12 +125,6 @@ docker run -d \
   -v /path/to/blockchain:/var/lib/vizd \
   vizblockchain/vizd:lowmem
 
-# MongoDB-enabled node
-docker run -d \
-  --name vizd-mongo \
-  -p 8090:8090 -p 8091:8091 -p 2001:2001 \
-  -v /path/to/blockchain:/var/lib/vizd \
-  vizblockchain/vizd:mongo
 ```
 
 ### Troubleshooting
@@ -405,6 +392,103 @@ The build system requires **Boost 1.71 or later** with static linking.
 - Git for Windows
 - Boost 1.71+ (built from source or prebuilt binaries)
 - OpenSSL for Windows
+
+### Windows Dependencies Download Links
+
+All external libraries required for building VIZ on Windows are listed below.
+Download and install each one before proceeding.
+
+| Dependency | Minimum Version | Recommended Version | Download URL |
+|------------|----------------|---------------------|---------------|
+| Visual Studio (MSVC) | 2019 | 2019 or 2022 | https://visualstudio.microsoft.com/downloads/ |
+| CMake | 3.16 | Latest 3.x | https://cmake.org/download/ |
+| Git for Windows | Any | Latest | https://git-scm.com/download/win |
+| Boost | 1.71 | 1.84.0 | https://www.boost.org/users/download/ |
+| OpenSSL | 1.1.1 | 3.0.x | https://slproweb.com/products/Win32OpenSSL.html |
+| Perl (OpenSSL source build) | 5.20 | Strawberry Perl 5.40 | https://strawberryperl.com/ |
+| NASM (OpenSSL source build) | 2.13 | Latest 2.x | https://www.nasm.us/ |
+| MinGW-w64 (MinGW builds only) | Any recent | Via MSYS2 | https://www.msys2.org/ |
+
+#### Visual Studio
+
+Download from https://visualstudio.microsoft.com/downloads/ (the free Community
+edition is sufficient). During installation, select the **Desktop development
+with C++** workload.
+
+Tested generators:
+
+- `Visual Studio 16 2019` (VS 2019, MSVC 19.29)
+- `Visual Studio 17 2022` (VS 2022)
+
+#### CMake
+
+Download from https://cmake.org/download/. Make sure `cmake` is in your
+`PATH` (the installer offers to add it). Alternatively, install the
+**CMake tools for Windows** component from the Visual Studio installer.
+
+#### Git
+
+Download from https://git-scm.com/download/win. A standard installation
+is sufficient.
+
+#### Boost
+
+Download the source archive from https://www.boost.org/users/download/
+(Boost 1.84.0 recommended). Build from source with MSVC:
+
+    :: Using VS 2019 (Developer Command Prompt)
+    cd boost_1_84_0
+    bootstrap.bat
+    b2 -j%NUMBER_OF_PROCESSORS% variant=release link=static threading=multi runtime-link=shared install --prefix=D:\Boost
+
+For MinGW builds, replace the toolset:
+
+    b2 -j%NUMBER_OF_PROCESSORS% toolset=gcc variant=release link=static threading=multi install --prefix=D:\Boost
+
+After building, set the environment variable:
+
+    setx BOOST_ROOT "D:\Boost"
+
+#### OpenSSL
+
+**Option A — Prebuilt binaries (recommended):**
+
+Download the full Win64 installer from
+https://slproweb.com/products/Win32OpenSSL.html (not the "Light" version).
+Set the environment variable after installation:
+
+    setx OPENSSL_ROOT_DIR "C:\OpenSSL-Win64"
+
+**Option B — Build from source:**
+
+If you need a specific version or static libraries, build from source.
+This requires **Perl** (Strawberry Perl from https://strawberryperl.com/)
+and **NASM** (from https://www.nasm.us/):
+
+    :: Using VS 2019 (Developer Command Prompt)
+    cd openssl-3.0.16
+    perl Configure VC-WIN64A no-shared --prefix=D:\OpenSSL --openssldir=D:\OpenSSL\ssl
+    nmake
+    nmake install
+
+After building, set the environment variable:
+
+    setx OPENSSL_ROOT_DIR "D:\OpenSSL"
+
+#### Perl and NASM (only needed for building OpenSSL from source)
+
+- **Perl**: Install Strawberry Perl from https://strawberryperl.com/. ActiveState
+  Perl (https://activestate.com/products/activeperl/) also works.
+- **NASM**: Download from https://www.nasm.us/ and add it to your `PATH`.
+
+#### MinGW-w64 (only for MinGW builds)
+
+The easiest way to get MinGW-w64 is via **MSYS2**
+(https://www.msys2.org/). After installing MSYS2, run:
+
+    pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake make
+
+Add the MSYS2 `mingw64/bin` directory to your system `PATH`.
 
 ### Using Visual Studio (MSVC)
 

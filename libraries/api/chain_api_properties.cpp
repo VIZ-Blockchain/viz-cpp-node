@@ -37,6 +37,9 @@ namespace graphene { namespace api {
             witness_declaration_fee=src.witness_declaration_fee;
             withdraw_intervals=src.withdraw_intervals;
         }
+        if (db.has_hardfork(CHAIN_HARDFORK_13)) {
+            distribution_epoch_length=src.distribution_epoch_length;
+        }
     }
 
 } } // graphene::api

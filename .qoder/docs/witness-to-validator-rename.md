@@ -1,0 +1,320 @@
+# Naming Analysis: VIZ "Witness" → "Validator" Rename Proposal
+
+## 1. What VIZ Witnesses Actually Do
+
+Looking at the codebase, VIZ witnesses perform two distinct roles:
+
+**Block production** — scheduled in rotation, they run `block_production_loop()`, sign blocks with `block_signing_key`, and broadcast them via P2P.
+
+**Block post validation (BPV)** — they sign `block_post_validation_object`s to confirm blocks produced by other witnesses, which drives LIB (Last Irreversible Block) advancement.
+
+So witnesses are both producers and validators — which is exactly why "witness" is semantically weak. It sounds passive ("I saw this happen") and says nothing about their active role in consensus.
+
+---
+
+## 2. What XRPL Calls These Nodes
+
+XRPL uses:
+
+| XRPL Term | Meaning |
+|-----------|---------|
+| **Validator** | A server actively participating in consensus — proposes, votes on, and confirms transaction sets |
+| **UNL (Unique Node List)** | The trusted set of validators a node relies on |
+| **Validation vote** | A cryptographic fingerprint published post-consensus round |
+| **Participant** | Generic term for any consensus node |
+
+XRPL does not split "producer" from "validator" — validators do both. This matches exactly how VIZ witnesses work.
+
+The same pattern holds across other major PoS ecosystems:
+- **Ethereum PoS** — validators attest and propose blocks
+- **Cosmos / Tendermint** — validators propose and pre-vote/pre-commit blocks
+- **Polkadot** — validators produce and attest parachain blocks
+
+---
+
+## 3. How Operations Are Serialized (Critical for Compatibility)
+
+Understanding the wire format determines what is and is not a breaking change.
+
+### Binary / wire protocol
+
+Operations in `fc::static_variant` are serialized as `[integer_index, {fields}]`:
+
+```cpp
+// thirdparty/fc/include/fc/static_variant.hpp
+void from_variant(const fc::variant &v, fc::static_variant<T...> &s) {
+    auto ar = v.get_array();
+    s.set_which(ar[0].as_uint64());  // INTEGER index — not the struct name
+    s.visit(to_static_variant(ar[1]));
+}
+```
+
+**Renaming C++ struct names has zero impact on the binary wire format** as long as the order in the `static_variant` list in `operations.hpp` is preserved.
+
+### JSON-RPC name format
+
+Operation names exposed via JSON-RPC are derived from the C++ type name by `name_from_type()`:
+
+```cpp
+// libraries/protocol/operation_util_impl.cpp
+std::string name_from_type(const std::string &type_name) {
+    auto start = type_name.find_last_of(':') + 1;
+    auto end   = type_name.find_last_of('_');
+    return type_name.substr(start, end - start);
+    // "graphene::protocol::witness_update_operation" → "witness_update"
+}
+```
+
+**Renaming a struct changes its JSON name.** Any JS/PHP/Python client that submits transactions using string operation names (e.g. `["witness_update", {...}]`) will break if the struct is renamed without a compatibility layer.
+
+---
+
+## 4. Backward-Compatibility Fallback (Old Client Support)
+
+**Yes, a fallback is feasible without a hardfork.**
+
+The approach: add a static alias table in the JSON deserialization path that maps old string names to new ones before the type lookup. Clients sending `"witness_update"` would be transparently remapped to `"validator_update"`.
+
+### Implementation location
+
+The alias mapping belongs in the operation variant `from_variant` path, in:
+- `libraries/protocol/operation_util_impl.cpp` — `name_from_type()` or a new `resolve_operation_name()` wrapper
+- Or in the JSON-RPC layer that dispatches incoming transaction broadcasts
+
+### Alias table (old → new)
+
+| Old JSON name | New JSON name |
+|--------------|---------------|
+| `witness_update` | `validator_update` |
+| `account_witness_vote` | `account_validator_vote` |
+| `account_witness_proxy` | `account_validator_proxy` |
+| `shutdown_witness` | `shutdown_validator` |
+| `witness_reward` | `validator_reward` |
+
+### Behavior
+
+- Nodes running the renamed version accept **both** old and new operation names in incoming JSON.
+- Nodes serialize outgoing JSON using **new names only**.
+- Binary wire format is unchanged — integer indices are stable.
+- No hardfork needed for the fallback layer itself.
+- JS/PHP/CLI clients that have not been updated continue to work transparently.
+- The fallback can be removed in a future release after all clients are migrated.
+
+---
+
+## 5. Full Rename Tables
+
+### 5.1 Protocol Operations
+
+These are the on-chain operations. The C++ struct rename is a code-only change (binary wire index preserved); the JSON name fallback handles old clients.
+
+| Current struct name | New struct name | JSON old name | JSON new name | Type ID | Virtual? |
+|--------------------|-----------------|--------------|---------------|---------|----------|
+| `witness_update_operation` | `validator_update_operation` | `witness_update` | `validator_update` | 6 | no |
+| `account_witness_vote_operation` | `account_validator_vote_operation` | `account_witness_vote` | `account_validator_vote` | 7 | no |
+| `account_witness_proxy_operation` | `account_validator_proxy_operation` | `account_witness_proxy` | `account_validator_proxy` | 8 | no |
+| `shutdown_witness_operation` | `shutdown_validator_operation` | `shutdown_witness` | `shutdown_validator` | 50 | yes |
+| `witness_reward_operation` | `validator_reward_operation` | `witness_reward` | `validator_reward` | 66 | yes |
+
+> `chain_properties_update_operation` and `versioned_chain_properties_update_operation` — these are submitted by witnesses but describe chain property voting, not the witness role itself. **Keep names as-is.**
+
+### 5.2 Core Objects and Types
+
+| Current Name | New Name | File |
+|-------------|----------|------|
+| `witness_object` | `validator_object` | `libraries/chain/include/graphene/chain/witness_objects.hpp` |
+| `witness_schedule_object` | `validator_schedule_object` | `libraries/chain/include/graphene/chain/witness_objects.hpp` |
+| `witness_schedule_type` | `validator_schedule_type` | `libraries/chain/include/graphene/chain/witness_objects.hpp` |
+| `current_shuffled_witnesses[]` | `current_shuffled_validators[]` | field in `validator_schedule_object` |
+| `block_post_validation_object` | `validator_confirmation_object` | `libraries/chain/include/graphene/chain/chain_objects.hpp` |
+| `witness_api_object` | `validator_api_object` | `libraries/api/include/graphene/api/witness_api_object.hpp` |
+
+### 5.3 Internal Enum (`block_production_condition`)
+
+| Current Name | New Name | File |
+|-------------|----------|------|
+| namespace `block_production_condition` | `block_validation_condition` | `plugins/witness/include/graphene/plugins/witness/witness.hpp` |
+| `block_production_condition_enum` | `block_validation_condition_enum` | same |
+| `exception_producing_block` | `exception_validating_block` | same |
+
+All other enum values (`produced`, `not_synced`, `not_my_turn`, `not_time_yet`, `no_private_key`, `low_participation`, `lag`, `consecutive`, `fork_collision`, `minority_fork`) need no rename.
+
+### 5.4 Plugin Internal Methods
+
+| Current Name | New Name | File |
+|-------------|----------|------|
+| `block_production_loop()` | `block_validation_loop()` | `plugins/witness/witness.cpp` |
+| `maybe_produce_block()` | `maybe_validate_block()` | `plugins/witness/witness.cpp` |
+| `is_witness_scheduled_soon()` | `is_validator_scheduled_soon()` | `plugins/witness/witness.hpp` |
+
+### 5.5 Plugins (Directories and CMake Targets)
+
+| Current Name | New Name |
+|-------------|----------|
+| `witness_plugin` | `validator_plugin` |
+| `plugins/witness/` | `plugins/validator/` |
+| `witness_api_plugin` | `validator_api_plugin` |
+| `plugins/witness_api/` | `plugins/validator_api/` |
+| `witness_guard_plugin` | `validator_guard_plugin` |
+| `plugins/witness_guard/` | `plugins/validator_guard/` |
+
+### 5.6 Witness API Endpoints (JSON-RPC)
+
+| Current Name | New Name |
+|-------------|----------|
+| `get_active_witnesses()` | `get_active_validators()` |
+| `get_witness_schedule()` | `get_validator_schedule()` |
+| `get_witnesses()` | `get_validators()` |
+| `get_witness_by_account()` | `get_validator_by_account()` |
+| `get_witnesses_by_vote()` | `get_validators_by_vote()` |
+| `get_witnesses_by_counted_vote()` | `get_validators_by_counted_vote()` |
+| `get_witness_count()` | `get_validator_count()` |
+| `lookup_witness_accounts()` | `lookup_validator_accounts()` |
+
+> API endpoint fallback: keep old method names as deprecated aliases that forward to new implementations for one release cycle.
+
+### 5.7 CLI Wallet Commands
+
+| Current Command | New Command | Operation Used |
+|----------------|-------------|----------------|
+| `list_witnesses()` | `list_validators()` | — (read) |
+| `get_witness()` | `get_validator()` | — (read) |
+| `get_active_witnesses()` | `get_active_validators()` | — (read) |
+| `update_witness()` | `update_validator()` | `validator_update_operation` |
+| `vote_for_witness()` | `vote_for_validator()` | `account_validator_vote_operation` |
+| `set_voting_proxy()` | `set_voting_proxy()` | `account_validator_proxy_operation` — command name stays |
+
+File: `libraries/wallet/wallet.cpp` and `libraries/wallet/include/graphene/wallet/wallet.hpp`
+
+### 5.8 Configuration Keys
+
+| Current Key | New Key | File |
+|------------|---------|------|
+| `plugin = witness` | `plugin = validator` | `config_witness.ini` |
+| `plugin = witness_guard` | `plugin = validator_guard` | `config_witness.ini` |
+| `plugin = witness_api` | `plugin = validator_api` | `config_witness.ini` |
+| `--witness = "name"` | `--validator = "name"` | `config_witness.ini` |
+| `witness-guard-enabled` | `validator-guard-enabled` | `config_witness.ini` |
+| `witness-guard-disable` | `validator-guard-disable` | `config_witness.ini` |
+| `witness-guard-interval` | `validator-guard-interval` | `config_witness.ini` |
+| `witness-guard-witness` | `validator-guard-validator` | `config_witness.ini` |
+
+Config keys fallback: on startup, if an old key is detected emit a warning — `"Config key 'witness' is deprecated, use 'validator'"` — and continue reading the value.
+
+---
+
+## 6. External Client Libraries
+
+JS and PHP libraries are external repositories not in this codebase. They reference:
+- Operation names as strings: `"witness_update"`, `"account_witness_vote"`, `"account_witness_proxy"`
+- API method names: `get_active_witnesses()`, `get_witness_by_account()`, etc.
+
+### Impact without fallback
+
+| Client action | Breaks without fallback? |
+|--------------|--------------------------|
+| Submit `witness_update` transaction by string name | Yes |
+| Submit transaction by integer type ID (6, 7, 8) | No — wire format unchanged |
+| Call `get_active_witnesses()` API | Yes |
+| Read operation from block history | No — history uses integer IDs |
+
+### Impact with fallback (Section 4)
+
+| Client action | Breaks with fallback? |
+|--------------|----------------------|
+| Submit `witness_update` by string name | No — alias maps to new name |
+| Call `get_active_witnesses()` | No — old endpoint aliased |
+| Receive response containing `validator_update` instead of `witness_update` | Yes — clients parsing response type names will see the new name |
+
+### Required changes in JS/PHP libs
+
+Even with server-side fallback, clients will receive **responses** with new names. The minimum update per library:
+
+| What to update | Detail |
+|---------------|--------|
+| Operation name constants | `"witness_update"` → `"validator_update"` etc. |
+| API method names in client code | `getActiveWitnesses()` → `getActiveValidators()` etc. |
+| Response field parsing | Any code checking `op[0] === "witness_update"` |
+| Type constants / enums | Any named constants for operation types |
+
+---
+
+## 7. Terms to Keep Unchanged
+
+| Identifier | Why it stays |
+|------------|-------------|
+| `block_signing_key` / `signing_key` | Accurately describes the cryptographic key used to sign blocks and post-validations |
+| `delegate_vesting_shares_operation` | "Delegate" is already taken in VIZ for vesting share delegation — **do not use "delegate" as the consensus-role name** |
+| `chain_properties_update_operation` | Describes chain governance, not the witness role |
+| `versioned_chain_properties_update_operation` | Same |
+| Enum values `top`, `support`, `none` | Scheduling tier names, not role names |
+
+---
+
+## 8. Implementation Phases
+
+### Phase 1 — Internal rename (zero breaking changes)
+
+1. Rename `block_production_condition` namespace, enum, and `exception_producing_block` in `witness.hpp` + `witness.cpp`.
+2. Rename internal method names: `block_production_loop`, `maybe_produce_block`, `is_witness_scheduled_soon`.
+3. Rename `block_post_validation_object` → `validator_confirmation_object` (internal chain object — not exposed by name in the protocol).
+4. Rename `current_shuffled_witnesses[]` field.
+5. Build and verify — all existing behavior unchanged.
+6. Update all `.qoder/` documentation files.
+
+### Phase 2 — API and config rename (with fallbacks)
+
+1. Add operation name alias table in `operation_util_impl.cpp` — old JSON names → new names.
+2. Rename `witness_update_operation` → `validator_update_operation` and the other four operations (Section 5.1). Binary type IDs preserved.
+3. Add deprecated endpoint aliases in `witness_api_plugin` for all `get_witness_*` methods.
+4. Rename CLI wallet commands; keep old names as deprecated aliases.
+5. Rename config keys; add startup warnings for old keys.
+6. Rename plugin directories and CMake targets.
+7. Rename `witness_object`, `witness_schedule_object`, `witness_api_object`.
+8. Update `config_witness.ini` template to new key names.
+
+### Phase 3 — External library updates
+
+1. Update JS client library: operation name constants, API method names, response parsing.
+2. Update PHP client library: same scope.
+3. After both libraries are released, schedule removal of the server-side fallback aliases.
+
+---
+
+## 9. Files Affected (Source Code)
+
+| File | Phase | Scope |
+|------|-------|-------|
+| `plugins/witness/include/graphene/plugins/witness/witness.hpp` | 1 | Enum namespace, method declarations |
+| `plugins/witness/witness.cpp` | 1 | All enum references, method definitions |
+| `plugins/witness_guard/witness_guard.cpp` | 2 | Config keys, class names |
+| `plugins/witness_guard/include/.../witness_guard.hpp` | 2 | Class names, config declarations |
+| `plugins/witness_api/plugin.cpp` | 2 | API method names + deprecated aliases |
+| `plugins/witness_api/include/.../plugin.hpp` | 2 | API method declarations |
+| `libraries/chain/include/graphene/chain/witness_objects.hpp` | 2 | Object type names, field names |
+| `libraries/chain/include/graphene/chain/chain_objects.hpp` | 1 | `block_post_validation_object` rename |
+| `libraries/chain/database.cpp` | 1+2 | All object references |
+| `libraries/chain/database.hpp` | 1+2 | Method signatures |
+| `libraries/protocol/include/graphene/protocol/chain_operations.hpp` | 2 | Operation struct names |
+| `libraries/protocol/include/graphene/protocol/chain_virtual_operations.hpp` | 2 | Virtual operation struct names |
+| `libraries/protocol/include/graphene/protocol/operations.hpp` | 2 | static_variant list — struct names only, order unchanged |
+| `libraries/protocol/operation_util_impl.cpp` | 2 | Add alias table for old JSON names |
+| `libraries/api/include/graphene/api/witness_api_object.hpp` | 2 | Rename `witness_api_object` |
+| `libraries/wallet/wallet.cpp` | 2 | CLI wallet command implementations |
+| `libraries/wallet/include/graphene/wallet/wallet.hpp` | 2 | CLI wallet method declarations |
+| `libraries/wallet/include/graphene/wallet/remote_node_api.hpp` | 2 | Remote API method names |
+| `share/vizd/config/config_witness.ini` | 2 | Config key names |
+| `share/vizd/config/config.ini` | 2 | Plugin names |
+
+---
+
+## 10. Summary
+
+`witness` → `validator` is the right rename. It:
+
+- Matches XRPL, Ethereum PoS, Cosmos, and Polkadot terminology
+- Accurately describes both the block production and post-validation duties
+- Removes the passive/observational connotation of "witness"
+- Makes `block_post_validation_object` → `validator_confirmation_object` semantically clear
+
+**The rename is safe for unupdated JS/PHP clients** — the binary wire format uses integer type IDs, not string names, so old clients submitting transactions continue to work. A server-side name alias table handles the JSON string name fallback at zero cost. The only visible breakage for old clients is in response parsing, where they may encounter new names (`validator_update` instead of `witness_update`) in block history reads.

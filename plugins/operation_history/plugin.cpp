@@ -264,7 +264,14 @@ namespace graphene { namespace plugins { namespace operation_history {
             uint32_t history_count_blocks = options.at("history-count-blocks").as<uint32_t>();
             pimpl->history_count_blocks = history_count_blocks;
             pimpl->applied_block_connection = pimpl->database.applied_block.connect([&](const signed_block& block){
+                auto cb_start = fc::time_point::now();
                 pimpl->purge_old_history();
+                auto cb_ms = (fc::time_point::now() - cb_start).count() / 1000;
+                if (cb_ms > 100) {
+                    wlog("operation_history purge_old_history took ${ms}ms (block #${n}) — "
+                         "write lock held, blocking P2P/RPC",
+                         ("ms", cb_ms)("n", block.block_num()));
+                }
             });
         } else {
             pimpl->history_count_blocks = UINT32_MAX;

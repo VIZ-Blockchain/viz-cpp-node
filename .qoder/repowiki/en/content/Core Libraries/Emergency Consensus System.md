@@ -19,27 +19,28 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced emergency consensus activation with CHAIN_EMERGENCY_STARTUP_DELAY_SEC startup delay protection
-- Improved emergency activation logic with comprehensive startup delay validation
-- Enhanced emergency witness management with automatic key synchronization and property updates
-- Implemented comprehensive concurrency protection through operation guards
-- Strengthened emergency mode exit conditions with LIB advancement monitoring
-- Enhanced emergency witness penalty reset and schedule override mechanisms
+- Enhanced emergency recovery mechanisms with new emergency threshold constants and improved network resilience during critical failure scenarios
+- Updated emergency consensus activation with comprehensive LIB availability validation and deterministic synchronization detection
+- Improved emergency exit conditions with refined real witness recovery validation using 75% threshold
+- Enhanced emergency mode flag management across fork database and witness plugin integration
+- Strengthened emergency witness management with comprehensive penalty reset and schedule override logic
+- Added enhanced memory management protection through operation guards during emergency mode operations
 
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [System Architecture](#system-architecture)
 3. [Core Components](#core-components)
 4. [Enhanced Emergency Consensus Activation](#enhanced-emergency-consensus-activation)
-5. [Improved Detection Algorithms](#improved-detection-algorithms)
-6. [Emergency Mode Operations](#emergency-mode-operations)
-7. [Enhanced Exit Conditions](#enhanced-exit-conditions)
-8. [Network Behavior](#network-behavior)
-9. [Configuration and Constants](#configuration-and-constants)
-10. [Comprehensive Concurrency Protection](#comprehensive-concurrency-protection)
-11. [Implementation Details](#implementation-details)
-12. [Troubleshooting Guide](#troubleshooting-guide)
-13. [Conclusion](#conclusion)
+5. [Automatic Schedule Recovery](#automatic-schedule-recovery)
+6. [Emergency Hybrid Schedule Override](#emergency-hybrid-schedule-override)
+7. [Refined Emergency Exit Conditions](#refined-emergency-exit-conditions)
+8. [Redesigned Emergency LIB Computation](#redesigned-emergency-lib-computation)
+9. [Network Behavior](#network-behavior)
+10. [Configuration and Constants](#configuration-and-constants)
+11. [Comprehensive Concurrency Protection](#comprehensive-concurrency-protection)
+12. [Implementation Details](#implementation-details)
+13. [Troubleshooting Guide](#troubleshooting-guide)
+14. [Conclusion](#conclusion)
 
 ## Introduction
 
@@ -47,7 +48,7 @@ The Emergency Consensus System is a critical safety mechanism implemented in the
 
 The system operates as a three-state safety enforcement mechanism, providing automatic recovery capabilities that prevent network paralysis during emergencies. It maintains consensus integrity while allowing the network to recover from various failure scenarios including witness failures, network partitions, or other catastrophic events.
 
-**Updated** Enhanced with comprehensive emergency consensus constants and configuration options including CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC, CHAIN_EMERGENCY_WITNESS_ACCOUNT, CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS, and CHAIN_EMERGENCY_STARTUP_DELAY_SEC that establish the foundation for emergency consensus mode activation and operation with improved startup delay protection.
+**Updated** Enhanced with comprehensive emergency consensus constants and configuration options including CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC, CHAIN_EMERGENCY_WITNESS_ACCOUNT, CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS, CHAIN_IRREVERSIBLE_THRESHOLD, and CHAIN_MAX_WITNESSES * 10 threshold that establishes the foundation for emergency consensus mode activation and operation with deterministic synchronization detection during replay, reindex, and live sync scenarios.
 
 ## System Architecture
 
@@ -59,24 +60,27 @@ subgraph "Consensus Layer"
 DB[Database Engine]
 WS[Witness Schedule]
 DGP[Dynamic Global Properties]
-end
+END
 subgraph "Emergency Components"
 EW[Emergency Witness]
 FD[Fork Database]
 WC[Witness Plugin]
 OG[Operation Guards]
-end
+END
 subgraph "Network Layer"
 P2P[P2P Network]
 BP[Block Production]
-end
+END
 subgraph "Safety Mechanisms"
 HC[Hardfork Control]
 TM[Timeout Monitor]
 EC[Emergency Checker]
 MEM[Memory Manager]
 ERR[Error Handler]
-SD[Startup Delay Validator]
+SD[Deterministic Sync Detector]
+SR[Schedule Recovery]
+HO[Hybrid Override]
+IR[Irreversible Threshold]
 END
 DB --> WS
 DB --> DGP
@@ -87,6 +91,9 @@ DGP --> EC
 EC --> HC
 EC --> TM
 EC --> SD
+EC --> SR
+EC --> HO
+EC --> IR
 EC --> MEM
 EC --> ERR
 WC --> BP
@@ -94,6 +101,9 @@ BP --> P2P
 EC -.-> DB
 TM -.-> DB
 SD -.-> DB
+SR -.-> DB
+HO -.-> DB
+IR -.-> DB
 MEM -.-> DB
 ERR -.-> DB
 HC -.-> DB
@@ -101,18 +111,18 @@ OG -.-> DB
 ```
 
 **Diagram sources**
-- [database.cpp:4665-4810](file://libraries/chain/database.cpp#L4665-L4810)
-- [fork_database.cpp:260-262](file://libraries/chain/fork_database.cpp#L260-L262)
-- [witness.cpp:354-392](file://plugins/witness/witness.cpp#L354-L392)
-- [database.cpp:562-590](file://libraries/chain/database.cpp#L562-L590)
-- [chainbase.hpp:1075-1115](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1075-L1115)
+- [database.cpp:4863-5004](file://libraries/chain/database.cpp#L4863-L5004)
+- [fork_database.cpp:81-88](file://libraries/chain/fork_database.cpp#L81-L88)
+- [witness.cpp:422-427](file://plugins/witness/witness.cpp#L422-L427)
+- [database.cpp:1556](file://libraries/chain/database.cpp#L1556)
+- [chainbase.hpp:1097-1115](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1097-L1115)
 
 The architecture consists of several key layers:
 
 - **Consensus Layer**: Core blockchain state management and witness scheduling
 - **Emergency Components**: Specialized emergency witness and fork database modifications with operation guards
 - **Network Layer**: Peer-to-peer communication and block propagation
-- **Safety Mechanisms**: Hardfork coordination, timeout monitoring, startup delay validation, memory management, and error handling
+- **Safety Mechanisms**: Hardfork coordination, timeout monitoring, deterministic synchronization detection, memory management, error handling, automatic schedule recovery, hybrid schedule override, and irreversible threshold validation
 
 ## Core Components
 
@@ -169,6 +179,7 @@ The emergency witness serves as the automated consensus producer during emergenc
 | Schedule Priority | Top | Takes precedence over all other witnesses |
 | Version Synchronization | Automatic | Matches current binary version |
 | Hardfork Alignment | Current Status | Votes for currently applied hardfork |
+| Penalty Management | Reset | All penalties cleared during emergency |
 
 **Section sources**
 - [config.hpp:114-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L114-L124)
@@ -176,9 +187,9 @@ The emergency witness serves as the automated consensus producer during emergenc
 
 ## Enhanced Emergency Consensus Activation
 
-### Comprehensive Startup Delay Protection
+### Deterministic Synchronization Detection
 
-The emergency consensus activation is now protected by a startup delay mechanism that prevents false activations during node restarts:
+The emergency consensus activation is now protected by a deterministic synchronization detection mechanism that prevents false activations during node replay, reindex, or live sync scenarios:
 
 ```mermaid
 flowchart TD
@@ -186,12 +197,9 @@ Start([Block Applied]) --> CheckHF{"Hardfork 12 Active?"}
 CheckHF --> |No| Normal[Normal Operation]
 CheckHF --> |Yes| CheckActive{"Emergency Active?"}
 CheckActive --> |Yes| Normal
-CheckActive --> |No| CheckStartup["Check Startup Delay"]
-CheckStartup --> CheckDelay{"Seconds Since Startup ≥ 600?"}
-CheckDelay --> |No| SkipCheck["Skip Emergency Check"]
-CheckDelay --> |Yes| CheckLIB["Check LIB Availability"]
+CheckActive --> |No| CheckLIB["Check LIB Availability"]
 CheckLIB --> CheckEmpty{"Is Block Log Empty?"}
-CheckEmpty --> |Yes| SkipCheck
+CheckEmpty --> |Yes| SkipCheck["Skip Emergency Check"]
 CheckEmpty --> |No| CalcTime["Calculate Time Since LIB"]
 CalcTime --> CheckTimeout{"Seconds Since LIB ≥ 3600?"}
 CheckTimeout --> |No| Normal
@@ -207,122 +215,111 @@ Normal --> End([End])
 ```
 
 **Diagram sources**
-- [database.cpp:4665-4810](file://libraries/chain/database.cpp#L4665-L4810)
+- [database.cpp:4863-5004](file://libraries/chain/database.cpp#L4863-L5004)
 - [config.hpp:110-128](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L128)
 
-### Enhanced Activation Triggers with Startup Protection
+### Enhanced Activation Triggers with Deterministic Synchronization Detection
 
-The system now implements comprehensive validation with startup delay protection:
+The system now implements comprehensive validation with deterministic synchronization detection:
 
-1. **Startup Delay Validation**: 600 seconds (10 minutes) minimum delay after node startup
+1. **LIB Availability Validation**: Uses block_log to verify LIB timestamp before activation
 2. **Timeout Threshold**: 3,600 seconds (1 hour) since last irreversible block
 3. **Hardfork Activation**: Requires CHAIN_HARDFORK_12 to be active
 4. **Network Stall Detection**: No blocks produced within timeout period
 5. **Snapshot Compatibility**: Handles DLT mode scenarios with proper LIB availability checking
 6. **Error Prevention**: Skips emergency check when LIB timestamp cannot be determined
-7. **Startup Protection**: Prevents false activation during node restarts with insufficient sync time
+7. **Deterministic Behavior**: Same results on replay as original application
 
 **Section sources**
-- [database.cpp:4665-4810](file://libraries/chain/database.cpp#L4665-L4810)
-- [database.cpp:4688-4694](file://libraries/chain/database.cpp#L4688-L4694)
+- [database.cpp:4863-5004](file://libraries/chain/database.cpp#L4863-L5004)
+- [database.cpp:4887-4906](file://libraries/chain/database.cpp#L4887-L4906)
 
-## Improved Detection Algorithms
+## Automatic Schedule Recovery
 
-### Enhanced LIB Timestamp Monitoring with Startup Validation
+### Startup Schedule Repair Mechanism
 
-The system now implements enhanced LIB timestamp monitoring with comprehensive startup delay validation:
+The system now includes comprehensive automatic schedule recovery that repairs broken witness schedules during node startup:
 
 ```mermaid
 sequenceDiagram
 participant DB as Database
-participant BL as Block Log
-participant DLT as DLT Log
-participant FD as Fork DB
-participant SD as Startup Delay
-DB->>SD : Check Startup Time
-SD-->>DB : Valid Startup Duration
-alt Valid Startup
-DB->>DB : Fetch LIB Block
-DB->>BL : Check Block Log
-alt Block Found
-BL-->>DB : Return LIB Timestamp
-else Block Missing
-DB->>DLT : Check DLT Log
-alt DLT Has Block
-DLT-->>DB : Return LIB Timestamp
-else DLT Empty
-DB->>DB : Mark LIB Unavailable
-DB->>DB : Skip Emergency Check
+participant WSO as Witness Schedule
+participant DGP as Dynamic Global Properties
+DB->>DB : Node Startup
+DB->>DGP : Load DGP Object
+DB->>WSO : Load Witness Schedule
+DB->>DB : Check for Empty Slots
+alt Empty Slots Found
+DB->>DGP : Activate Emergency Mode
+DB->>WSO : Override All Slots with Committee
+DB->>DB : Log Recovery
+else Valid Schedule
+DB->>DB : Restore Emergency Mode Flag
 end
-end
-DB->>DB : Calculate Time Delta
-DB->>DB : Compare with Timeout
-else Invalid Startup
-SD-->>DB : Skip Check
-end
+DB->>DB : Continue Normal Operation
 ```
 
 **Diagram sources**
-- [database.cpp:4688-4714](file://libraries/chain/database.cpp#L4688-L4714)
+- [database.cpp:303-357](file://libraries/chain/database.cpp#L303-L357)
 
-### Advanced Network Stall Detection
+### Comprehensive Schedule Repair Logic
 
-The enhanced detection algorithm includes:
+The automatic schedule recovery system addresses several critical scenarios:
 
-- **Startup Delay Validation**: Ensures minimum 10-minute delay after node startup
-- **LIB Availability Validation**: Validates LIB timestamp before activation
-- **DLT Mode Compatibility**: Proper handling of snapshot restoration scenarios
-- **False Activation Prevention**: Skips emergency check when LIB timestamp is unavailable
-- **Graceful Degradation**: Continues normal operation when emergency conditions cannot be verified
-- **Startup Protection**: Prevents immediate activation during node restarts
+- **Crash Recovery**: Repairs schedules that became corrupted when nodes shut down during emergency mode
+- **Empty Slot Detection**: Identifies witness schedules with null witness names in shuffled positions
+- **Emergency Mode Restoration**: Reactivates emergency mode when broken schedules are detected
+- **Complete Override**: Fills all schedule slots with emergency witness to ensure network stability
+- **Next Shuffle Adjustment**: Updates next shuffle block number to ensure immediate schedule override
 
 **Section sources**
-- [database.cpp:4688-4714](file://libraries/chain/database.cpp#L4688-L4714)
-- [database.cpp:4710-4714](file://libraries/chain/database.cpp#L4710-L4714)
+- [database.cpp:303-357](file://libraries/chain/database.cpp#L303-L357)
 
-## Emergency Mode Operations
+## Emergency Hybrid Schedule Override
 
-### Enhanced Automatic Block Production
+### Dynamic Schedule Adjustment Logic
 
-During emergency mode, the system automatically produces blocks using the emergency witness with comprehensive management:
+The emergency system now implements sophisticated hybrid schedule override that dynamically adjusts witness assignments based on real witness availability:
 
 ```mermaid
-sequenceDiagram
-participant DB as Database
-participant WC as Witness Plugin
-participant FD as Fork Database
-participant NW as Network
-DB->>DB : Check Emergency Active
-DB->>WC : Enable Production
-WC->>WC : Bypass Participation Checks
-WC->>DB : Generate Block
-DB->>FD : Push Block to Fork DB
-FD->>NW : Broadcast Block
-NW->>NW : Propagate to Peers
-Note over DB,NW : Emergency Mode Active with Enhanced Management
+flowchart TD
+Start([Schedule Update]) --> CheckHF{"Hardfork 12 Active?"}
+CheckHF --> |No| Normal[Normal Operation]
+CheckHF --> |Yes| CheckEmergency{"Emergency Active?"}
+CheckEmergency --> |No| Normal
+CheckEmergency --> |Yes| ScanSchedule["Scan Current Shuffled Schedule"]
+ScanSchedule --> CountSlots["Count Real vs Committee Slots"]
+CountSlots --> CheckAvailability{"Real Witnesses Available?"}
+CheckAvailability --> |Yes| FillCommittee["Fill Empty Slots with Committee"]
+CheckAvailability --> |No| AllCommittee["All Slots = Committee"]
+FillCommittee --> ExpandSchedule["Expand to Max Witnesses"]
+AllCommittee --> ExpandSchedule
+ExpandSchedule --> UpdateNextShuffle["Update Next Shuffle Block"]
+UpdateNextShuffle --> SyncCommittee["Sync Committee Props"]
+SyncCommittee --> LogHybrid["Log Hybrid Schedule"]
+LogHybrid --> End([End])
+Normal --> End
 ```
 
 **Diagram sources**
-- [witness.cpp:405-406](file://plugins/witness/witness.cpp#L405-L406)
-- [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
+- [database.cpp:2561-2591](file://libraries/chain/database.cpp#L2561-L2591)
 
-### Comprehensive Fork Database Modifications
+### Advanced Hybrid Schedule Features
 
-The fork database implements special handling for emergency mode with enhanced tie-breaking and startup protection:
+The emergency hybrid schedule override provides sophisticated witness management:
 
-| Feature | Description | Impact |
-|---------|-------------|--------|
-| Deterministic Tie-Breaking | Lower block ID preferred during conflicts | Ensures network convergence |
-| Emergency Mode Flag | Special state tracking | Modifies block acceptance rules |
-| Hash Comparison | Prevents cascade disconnections | Maintains network stability |
-| Enhanced Conflict Resolution | Improved handling of competing blocks | Reduces fork collisions |
-| Startup Delay Integration | Prevents immediate emergency activation | Ensures proper node synchronization |
+- **Real Witness Detection**: Identifies available real witnesses vs. empty/invalid slots
+- **Dynamic Allocation**: Fills empty slots with emergency witness automatically
+- **Schedule Expansion**: Expands schedule to include all 21 witnesses for proper rotation
+- **Next Shuffle Optimization**: Adjusts next shuffle block to ensure immediate override
+- **Committee Synchronization**: Keeps emergency witness properties synchronized with current state
+- **Threshold-Based Logic**: Uses 75% threshold for emergency exit conditions
 
 **Section sources**
-- [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
-- [fork_database.cpp:260-262](file://libraries/chain/fork_database.cpp#L260-L262)
+- [database.cpp:2561-2591](file://libraries/chain/database.cpp#L2561-L2591)
+- [database.cpp:2596-2612](file://libraries/chain/database.cpp#L2596-L2612)
 
-## Enhanced Exit Conditions
+## Refined Emergency Exit Conditions
 
 ### Intelligent Automatic Deactivation
 
@@ -333,7 +330,11 @@ flowchart TD
 Start([Emergency Active]) --> MonitorLIB["Monitor LIB Progress"]
 MonitorLIB --> CheckProgress{"LIB > Start Block?"}
 CheckProgress --> |No| Continue["Continue Emergency Mode"]
-CheckProgress --> |Yes| Deactivate["Deactivate Emergency Mode"]
+CheckProgress --> |Yes| CheckRecovery["Check Real Witness Recovery"]
+CheckRecovery --> CountReal["Count Real Witness Slots"]
+CountReal --> CheckThreshold{"Real Witnesses ≥ 75%?"}
+CheckThreshold --> |No| Continue
+CheckThreshold --> |Yes| Deactivate["Deactivate Emergency Mode"]
 Deactivate --> ClearFlag["Clear Emergency Flag"]
 ClearFlag --> NotifyFork["Notify Fork Database"]
 NotifyFork --> LogExit["Log Exit Condition Met"]
@@ -342,29 +343,71 @@ Continue --> End([End])
 ```
 
 **Diagram sources**
-- [database.cpp:2428-2444](file://libraries/chain/database.cpp#L2428-L2444)
+- [database.cpp:2614-2631](file://libraries/chain/database.cpp#L2614-L2631)
 
 ### Advanced Exit Criteria with Enhanced Monitoring
 
 The system evaluates several sophisticated conditions for emergency mode exit:
 
 1. **LIB Advancement**: Last Irreversible Block number exceeds start block
-2. **Network Recovery**: 75% of real witnesses are producing consistently
+2. **Network Recovery**: 75% of schedule slots are real witnesses (not committee)
 3. **Automatic Trigger**: 21 consecutive blocks produced by emergency witness
 4. **Manual Intervention**: System administrator override possible
 5. **Real-time Monitoring**: Continuous LIB progress tracking during emergency
-6. **Startup Protection**: Prevents premature exit during node initialization
+6. **Deterministic Synchronization**: Prevents premature exit during replay scenarios
 7. **Consensus Validation**: Ensures network stability before deactivation
 
 **Section sources**
-- [database.cpp:2428-2444](file://libraries/chain/database.cpp#L2428-L2444)
-- [config.hpp:126-128](file://libraries/protocol/include/graphene/protocol/config.hpp#L126-L128)
+- [database.cpp:2614-2631](file://libraries/chain/database.cpp#L2614-L2631)
+- [config.hpp:125-128](file://libraries/protocol/include/graphene/protocol/config.hpp#L125-L128)
+
+## Redesigned Emergency LIB Computation
+
+### Normal LIB Advancement During Emergency
+
+The emergency system now implements redesigned LIB computation that advances normally using all witnesses including committee:
+
+```mermaid
+sequenceDiagram
+participant DB as Database
+participant WSO as Witness Schedule
+participant DPO as Dynamic Properties
+DB->>DB : Update Last Irreversible Block
+DB->>WSO : Get Scheduled Witnesses
+WSO-->>DB : Committee + Real Witnesses
+DB->>DB : Calculate Support Threshold
+DB->>DB : Find Median Support
+alt Emergency Mode
+DB->>DB : Cap at Head-1 for Safety
+DB->>DPO : Commit New LIB
+else Normal Mode
+DB->>DPO : Commit New LIB
+end
+DB->>DB : Update Block Log
+```
+
+**Diagram sources**
+- [database.cpp:5473-5545](file://libraries/chain/database.cpp#L5473-L5545)
+
+### Enhanced LIB Computation Logic
+
+The redesigned emergency LIB computation provides:
+
+- **Normal Advancement**: LIB advances using all witnesses in schedule (including committee)
+- **Safety Cap**: Caps LIB at head-1 during emergency to preserve undo protection
+- **Median Calculation**: Uses witness support thresholds to determine LIB safely
+- **Emergency Protection**: Prevents permanent state corruption during crashes
+- **Seamless Transition**: Allows normal LIB computation to resume after emergency exit
+
+**Section sources**
+- [database.cpp:5473-5545](file://libraries/chain/database.cpp#L5473-L5545)
+- [database.cpp:5515-5529](file://libraries/chain/database.cpp#L5515-L5529)
 
 ## Network Behavior
 
 ### Enhanced Peer Connection Management
 
-During emergency mode, the system implements special peer connection handling with enhanced stability measures and startup protection:
+During emergency mode, the system implements special peer connection handling with enhanced stability measures and deterministic synchronization:
 
 | Scenario | Action | Rationale |
 |----------|--------|-----------|
@@ -372,53 +415,54 @@ During emergency mode, the system implements special peer connection handling wi
 | Cascade Disconnections | Prevention measures | Maintains network stability |
 | Block Propagation | Normal P2P behavior | Ensures consensus continuity |
 | Fork Collisions | Deterministic resolution | Reduces network fragmentation |
-| Startup Delays | Graceful handling | Prevents false activations |
+| Replay Scenarios | Deterministic handling | Prevents false activations |
 
 ### Comprehensive Witness Participation Override
 
-The emergency system bypasses normal witness participation requirements with enhanced error handling and startup protection:
+The emergency system bypasses normal witness participation requirements with enhanced error handling and deterministic synchronization:
 
 - **Participation Rate Checks**: Automatically enabled during emergency
 - **Stale Block Production**: Allowed without penalties
 - **Production Scheduling**: Emergency witness takes precedence
 - **Conflict Resolution**: Enhanced tie-breaking algorithms
 - **Schedule Updates**: Hybrid schedule during emergency mode
-- **Startup Protection**: Prevents immediate participation during node restarts
+- **Deterministic Sync Detection**: Prevents immediate participation during replay
 - **Penalty Management**: Comprehensive reset of all witness penalties
 
 **Section sources**
-- [witness.cpp:405-406](file://plugins/witness/witness.cpp#L405-L406)
-- [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
+- [witness.cpp:422-427](file://plugins/witness/witness.cpp#L422-L427)
+- [fork_database.cpp:81-88](file://libraries/chain/fork_database.cpp#L81-L88)
 
 ## Configuration and Constants
 
 ### Enhanced Emergency Consensus Parameters
 
-The system uses comprehensive configurable constants with enhanced monitoring and protection:
+The system uses comprehensive configurable constants with enhanced monitoring and deterministic synchronization:
 
 | Parameter | Value | Unit | Description |
 |-----------|-------|------|-------------|
 | CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC | 3600 | Seconds | Timeout threshold |
-| CHAIN_EMERGENCY_STARTUP_DELAY_SEC | 600 | Seconds | Startup delay protection |
 | CHAIN_EMERGENCY_WITNESS_ACCOUNT | "committee" | Account | Emergency producer |
 | CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY | VIZ75CR... | Key | Block signing key |
 | CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS | 21 | Blocks | Consecutive blocks to exit |
 | CHAIN_IRREVERSIBLE_THRESHOLD | 75% | Percent | Recovery threshold |
+| CHAIN_MAX_WITNESSES | 21 | Witnesses | Total witness count |
+| CHAIN_MAX_WITNESSES * 10 | 210 | Blocks | Deterministic sync threshold |
 
 ### Hardfork Configuration with Enhanced Protection
 
-The emergency consensus requires specific hardfork activation with comprehensive startup protection:
+The emergency consensus requires specific hardfork activation with comprehensive deterministic synchronization protection:
 
 - **Hardfork Version**: 12
 - **Activation Time**: 1776620500 (Unix timestamp)
 - **Protocol Version**: 3.1.0
 - **Required Nodes**: Majority consensus for activation
-- **Startup Protection**: 10-minute minimum delay after node startup
-- **Emergency Activation**: Requires both hardfork and startup delay validation
+- **Deterministic Sync Detection**: Prevents false activations during replay
+- **Emergency Activation**: Requires both hardfork and sync detection validation
 
 **Section sources**
 - [config.hpp:110-128](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L128)
-- [12.hf:1-6](file://libraries/chain/hardfork.d/12.hf#L1-L6)
+- [12.hf:1-7](file://libraries/chain/hardfork.d/12.hf#L1-L7)
 
 ## Comprehensive Concurrency Protection
 
@@ -454,9 +498,9 @@ database --> chainbase : "extends"
 ```
 
 **Diagram sources**
-- [chainbase.hpp:1075-1115](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1075-L1115)
+- [chainbase.hpp:1097-1115](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1097-L1115)
+- [database.cpp:1721](file://libraries/chain/database.cpp#L1721)
 - [database.cpp:1556](file://libraries/chain/database.cpp#L1556)
-- [database.cpp:1593](file://libraries/chain/database.cpp#L1593)
 
 ### Enhanced Memory Management with Operation Guards
 
@@ -469,15 +513,15 @@ The enhanced memory management system includes comprehensive operation guard int
 - **Exception Safety**: Operation guards are properly cleaned up on exceptions
 
 **Section sources**
-- [chainbase.hpp:1075-1115](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1075-L1115)
+- [chainbase.hpp:1097-1115](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1097-L1115)
+- [database.cpp:1721](file://libraries/chain/database.cpp#L1721)
 - [database.cpp:1556](file://libraries/chain/database.cpp#L1556)
-- [database.cpp:1593](file://libraries/chain/database.cpp#L1593)
 
 ## Implementation Details
 
 ### Enhanced Database Integration
 
-The emergency consensus system integrates deeply with the blockchain database with comprehensive error handling and startup protection:
+The emergency consensus system integrates deeply with the blockchain database with comprehensive error handling and deterministic synchronization:
 
 ```mermaid
 classDiagram
@@ -492,6 +536,7 @@ class database {
 +void check_free_memory(bool skip_print, uint32_t current_block_num)
 +operation_guard make_operation_guard()
 +void _node_startup_time
++bool _enable_emergency_mode
 }
 class emergency_consensus_system {
 +bool emergency_consensus_active
@@ -499,31 +544,32 @@ class emergency_consensus_system {
 +void activate_emergency_mode()
 +void deactivate_emergency_mode()
 +bool check_timeout_conditions()
-+bool check_startup_delay()
++bool check_deterministic_sync_detection()
++void repair_schedule_on_startup()
++void apply_hybrid_schedule_override()
 }
 database --> emergency_consensus_system : "manages"
 ```
 
 **Diagram sources**
-- [database.cpp:4665-4810](file://libraries/chain/database.cpp#L4665-L4810)
+- [database.cpp:4863-5004](file://libraries/chain/database.cpp#L4863-L5004)
 - [database.hpp:37-612](file://libraries/chain/include/graphene/chain/database.hpp#L37-L612)
 
-### Advanced Error Handling with Startup Protection
+### Advanced Error Handling with Deterministic Synchronization Protection
 
-The system implements comprehensive error handling throughout the consensus process with enhanced startup delay protection:
+The system implements comprehensive error handling throughout the consensus process with enhanced deterministic synchronization protection:
 
-- **Startup Delay Validation**: Ensures minimum 10-minute delay after node startup
 - **LIB Availability Checks**: Validates LIB timestamp before emergency activation
 - **Snapshot Compatibility**: Handles DLT mode scenarios gracefully
 - **Memory Management Errors**: Provides detailed logging for memory operations
 - **Fork Database Exceptions**: Enhanced error reporting for fork operations
 - **Witness Creation Failures**: Comprehensive error handling for emergency witness setup
 - **Operation Guard Protection**: Thread-safe emergency mode operations
-- **Startup Protection**: Prevents false activations during node restarts
+- **Deterministic Behavior**: Same results on replay as original application
 
 **Section sources**
-- [database.cpp:4665-4810](file://libraries/chain/database.cpp#L4665-L4810)
-- [database.cpp:562-590](file://libraries/chain/database.cpp#L562-L590)
+- [database.cpp:4863-5004](file://libraries/chain/database.cpp#L4863-L5004)
+- [database.cpp:4887-4906](file://libraries/chain/database.cpp#L4887-L4906)
 
 ## Troubleshooting Guide
 
@@ -531,62 +577,72 @@ The system implements comprehensive error handling throughout the consensus proc
 
 | Issue | Symptoms | Solution |
 |-------|----------|----------|
-| Emergency Mode Not Activating | No automatic blocks produced | Verify hardfork 12 activation, LIB availability, and startup delay completion |
-| Emergency Mode Stuck | Cannot exit emergency mode | Check LIB advancement, memory management logs, and startup delay validation |
-| Network Instability | Frequent disconnections | Review fork database settings, memory usage, and startup delay protection |
+| Emergency Mode Not Activating | No automatic blocks produced | Verify hardfork 12 activation, LIB availability, and sync detection |
+| Emergency Mode Stuck | Cannot exit emergency mode | Check LIB advancement, memory management logs, and sync detection validation |
+| Network Instability | Frequent disconnections | Review fork database settings, memory usage, and deterministic sync detection |
 | Witness Production Failures | Emergency witness cannot produce blocks | Verify emergency key configuration, memory allocation, and operation guard protection |
 | Memory Issues | Low free memory warnings | Check memory management configuration, resize logs, and operation guard usage |
-| Startup Delays | Delayed emergency activation | Verify node startup time and ensure minimum 10-minute delay is observed |
-| False Activations | Premature emergency activation | Check startup delay validation and LIB timestamp availability |
+| Replay Scenarios | Delayed emergency activation | Verify replay detection and ensure CHAIN_MAX_WITNESSES * 10 threshold is observed |
+| False Activations | Premature emergency activation | Check deterministic sync detection and LIB timestamp availability |
+| Snapshot Restores | Deadlock during emergency activation | Verify DLT mode handling and LIB timestamp validation |
+| Broken Schedules | Empty witness slots after crash | Check automatic schedule recovery and emergency mode flags |
+| Hybrid Schedule Issues | Incorrect witness assignments | Verify hybrid schedule override logic and real witness detection |
 
 ### Advanced Diagnostic Commands
 
 To troubleshoot emergency consensus issues with enhanced monitoring:
 
 1. **Check Emergency Status**: Verify `emergency_consensus_active` flag and start block
-2. **Monitor Startup Delay**: Check node startup time and ensure minimum 10-minute delay
+2. **Monitor Sync Detection**: Check replay/reindex detection and large block gap validation
 3. **Monitor LIB Progress**: Track irreversible block advancement and timestamp
 4. **Validate Timeout Logs**: Check activation/deactivation timestamps and LIB availability
-5. **Validate Startup Protection**: Ensure startup delay validation passes
+5. **Validate Deterministic Sync**: Ensure sync detection passes during replay scenarios
 6. **Check Operation Guards**: Monitor thread safety and concurrent access protection
 7. **Validate Witness Configuration**: Ensure emergency witness exists with correct key and schedule
 8. **Monitor Memory Usage**: Check free, reserved, and maximum memory states with operation guard protection
+9. **Check Schedule Recovery**: Verify automatic schedule repair and emergency mode restoration
+10. **Validate Hybrid Override**: Monitor dynamic witness assignment during emergency
 
 ### Performance Considerations
 
 - **Memory Usage**: Emergency mode may increase fork database size with detailed logging and operation guard overhead
 - **Network Bandwidth**: Additional block propagation during emergency with enhanced monitoring
-- **CPU Load**: Extra processing for emergency block validation with startup delay protection and operation guards
+- **CPU Load**: Extra processing for emergency block validation with deterministic sync detection
 - **Storage Impact**: Extended fork database retention during emergencies with better memory management
 - **Logging Overhead**: Enhanced detailed logging for troubleshooting with comprehensive operation guard tracking
 - **Thread Safety**: Operation guards add minimal overhead for thread-safe emergency mode operations
-- **Startup Performance**: 10-minute startup delay prevents immediate emergency activation during node restarts
+- **Deterministic Performance**: CHAIN_MAX_WITNESSES * 10 threshold prevents immediate emergency activation during sync
+- **Replay Compatibility**: Same results on replay as original application with deterministic behavior
 
 **Section sources**
-- [database.cpp:4665-4810](file://libraries/chain/database.cpp#L4665-L4810)
-- [fork_database.cpp:113-145](file://libraries/chain/fork_database.cpp#L113-L145)
-- [database.cpp:562-590](file://libraries/chain/database.cpp#L562-L590)
+- [database.cpp:4863-5004](file://libraries/chain/database.cpp#L4863-L5004)
+- [fork_database.cpp:81-88](file://libraries/chain/fork_database.cpp#L81-L88)
+- [database.cpp:1556](file://libraries/chain/database.cpp#L1556)
 
 ## Conclusion
 
 The Emergency Consensus System represents a sophisticated safety mechanism designed to maintain blockchain functionality during critical network failures. By implementing automatic activation, deterministic network behavior, and clear exit conditions, the system provides robust protection against network stalls while maintaining consensus integrity.
 
-**Updated** The enhanced system now features comprehensive emergency consensus constants and configuration options including CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC for timeout threshold control, CHAIN_EMERGENCY_WITNESS_ACCOUNT for emergency producer configuration, CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS for automatic exit conditions, and CHAIN_EMERGENCY_STARTUP_DELAY_SEC for startup delay protection. These constants establish the foundation for emergency consensus mode that activates when no blocks have been produced for the specified timeout period while preventing false activations during node restarts.
+**Updated** The enhanced system now features comprehensive emergency consensus constants and configuration options including CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC for timeout threshold control, CHAIN_EMERGENCY_WITNESS_ACCOUNT for emergency producer configuration, CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS for automatic exit conditions, CHAIN_IRREVERSIBLE_THRESHOLD for recovery validation, and CHAIN_MAX_WITNESSES * 10 threshold for deterministic synchronization detection. These constants establish the foundation for emergency consensus mode that activates when no blocks have been produced for the specified timeout period while preventing false activations during replay, reindex, and live sync scenarios.
 
 The system's three-state safety enforcement approach ensures that the network can recover from various failure scenarios without requiring manual intervention. Through careful integration with existing consensus mechanisms, network protocols, and comprehensive operation guard protection, the emergency system operates seamlessly with minimal disruption to normal network operations.
 
 Key enhancements include:
-- **Startup Delay Protection**: 10-minute minimum delay prevents false activations during node restarts
+- **Automatic Schedule Recovery**: Comprehensive repair of broken witness schedules during node startup
+- **Emergency Hybrid Schedule Override**: Dynamic adjustment of witness assignments based on real witness availability
+- **Refined Exit Conditions**: Improved real witness recovery validation using 75% threshold
+- **Redesigned LIB Computation**: Normal LIB advancement using all witnesses during emergency
+- **Deterministic Sync Detection**: CHAIN_MAX_WITNESSES * 10 threshold prevents false activations during replay and catch-up scenarios
 - **Automatic Recovery**: No manual intervention required for activation with comprehensive validation
 - **Network Stability**: Prevents cascade failures during emergencies with enhanced tie-breaking
 - **Consensus Integrity**: Maintains blockchain validity during recovery with improved error handling
 - **Operational Continuity**: Ensures service availability during outages with comprehensive monitoring
 - **Enhanced Reliability**: Improved detection algorithms, memory management, and operation guard protection
 - **Better Troubleshooting**: Detailed logging and monitoring capabilities for easier diagnostics
-- **Configurable Parameters**: Flexible timeout thresholds, exit conditions, and startup delays for different network conditions
+- **Configurable Parameters**: Flexible timeout thresholds, exit conditions, and sync detection for different network conditions
 - **Robust Emergency Witness**: Dedicated emergency witness with proper key configuration, schedule override, and comprehensive penalty management
 - **Thread-Safe Operations**: Comprehensive operation guard protection ensures concurrent access safety
-- **Startup Protection**: Prevents immediate emergency activation during node initialization
+- **Deterministic Behavior**: Same results on replay as original application with comprehensive sync detection
 - **Advanced Concurrency Control**: Operation guards provide comprehensive thread safety for emergency mode operations
 
 The implementation demonstrates best practices in distributed systems design, providing a reliable foundation for blockchain resilience and operational continuity with significantly improved reliability, monitoring capabilities, and thread safety through comprehensive operation guard protection.

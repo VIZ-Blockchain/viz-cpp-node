@@ -79,14 +79,6 @@ if(CHAINBASE_CHECK_LOCKING)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DCHAINBASE_CHECK_LOCKING")
 endif()
 
-option(ENABLE_MONGO_PLUGIN "Build with mongodb plugin" FALSE)
-if(ENABLE_MONGO_PLUGIN)
-  set(MONGO_LIB graphene::mongo_db)
-
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DMONGODB_PLUGIN_BUILT")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DMONGODB_PLUGIN_BUILT")
-endif()
-
 if(WIN32)
     set(BOOST_ROOT $ENV{BOOST_ROOT})
     set(Boost_USE_MULTITHREADED ON)
@@ -117,7 +109,7 @@ if(WIN32)
     set(CRYPTO_LIB)
 
     if(MSVC)
-        add_compile_options(/wd4503 /wd4267 /wd4244)
+        add_compile_options(/wd4503 /wd4267 /wd4244 /EHsc)
         #looks like this flag can have different default on some machines.
         set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /SAFESEH:NO")
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /SAFESEH:NO")

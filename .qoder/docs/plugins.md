@@ -49,6 +49,7 @@ The fundamental plugin that manages the blockchain database, block validation, a
 | `--replay-if-corrupted` | `bool` (default: `true`) | Replay all blocks if shared memory is corrupted |
 | `--force-replay-blockchain` | `bool` | Force clear chain database and replay all blocks |
 | `--replay-from-snapshot` | `bool` | Crash recovery: import snapshot and replay dlt_block_log |
+| `--auto-recover-from-snapshot` | `bool` (default: `true`) | Automatic runtime recovery from shared memory corruption via snapshot |
 | `--resync-blockchain` | `bool` | Clear chain database and block log |
 
 **Config options:**
@@ -57,6 +58,19 @@ shared-file-size = 2G
 shared-file-dir = /path/to/blockchain
 flush-state-interval = 0
 ```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `shared-file-size` | `2G` | Start size of the shared memory file |
+| `shared-file-dir` | `state` | Location of the shared memory files |
+| `inc-shared-file-size` | `2G` | Size increment when shared memory runs low |
+| `min-free-shared-file-size` | `500M` | Minimum free space before auto-grow |
+| `block-num-check-free-size` | `1000` | Check free space every N blocks |
+| `flush-state-interval` | `10000` | Flush shared memory to disk every N blocks |
+| `single-write-thread` | `false` | Push blocks/transactions from one thread |
+| `skip-virtual-ops` | `false` | Skip virtual operations (saves memory) |
+| `enable-plugins-on-push-transaction` | `false` | Notify plugins on push_transaction |
+| `dlt-block-log-max-blocks` | `100000` | Blocks to keep in the DLT rolling block_log |
 
 ---
 
@@ -124,6 +138,7 @@ Peer-to-peer networking for block and transaction propagation.
 - Syncs blockchain from the network
 - Broadcasts blocks and transactions
 - Maintains peer database
+- Minority fork auto-recovery (`resync_from_lib()`)
 
 **JSON-RPC:** None (internal only)
 
@@ -132,7 +147,71 @@ Peer-to-peer networking for block and transaction propagation.
 p2p-endpoint = 0.0.0.0:2001
 p2p-seed-node = seed.viz.world:2001
 p2p-max-connections = 200
+p2p-stats-enabled = true
+p2p-stats-interval = 300
+p2p-stale-sync-detection = false
+p2p-stale-sync-timeout-seconds = 120
 ```
+
+**P2P stats task:** When `p2p-stats-enabled = true`, every `p2p-stats-interval` seconds the plugin logs:
+- Per-peer stats (IP, port, latency, bytes received, blocked status)
+- Failed/rejected peers from the peer database
+- **Block storage diagnostics:** head, LIB, earliest available block, DLT block log range, regular block log end, fork_db linked/unlinked counts and ranges, DLT mode flag, and total `resize()` count
+- In DLT mode, also runs `dlt_block_log::verify_mapping()` to detect and self-heal stale memory-mapped file state
+
+**Minority fork auto-recovery:** The P2P plugin exposes `resync_from_lib()` which is called by the witness plugin when a minority fork is detected (last 21 blocks all from our own witnesses). It pops all reversible blocks back to LIB, resets fork_db, re-initiates P2P sync, and reconnects seed nodes. This replicates the effect of a manual node restart. See [fork-collision-hardfork-proposal.md](fork-collision-hardfork-proposal.md) for details.
+
+**Post-snapshot `trigger_resync()`:** The P2P plugin exposes `trigger_resync()` which is called by the snapshot plugin after a hot-reload (snapshot import while the node is running). It re-initiates P2P sync from the new head block so the P2P layer picks up the chain state change. Without this, the P2P layer would continue advertising stale block IDs.
+
+**Sync deadlock prevention:** Two mechanisms prevent the P2P sync from stalling permanently:
+
+1. **Early inventory-mode transition (`remaining == 0`):** When the master responds to a peer's `fetch_blockchain_item_ids` request, it checks `total_remaining_item_count`. If `remaining == 0` (all blocks sent in this reply), the master sets `peer_needs_sync_items_from_us = false` immediately, enabling inventory advertisements. This prevents an infinite chase loop where the peer is almost caught up but the master keeps producing blocks faster than the sync round-trips can converge — especially on live chains with `deferred_resize_exception` slowing the peer.
+
+2. **Auto-clear safety net (30-second timeout):** In `terminate_inactive_connections_loop`, if `peer_needs_sync_items_from_us` has been `true` for >30 seconds without the peer sending any `fetch_blockchain_item_ids` request, the flag is force-cleared. This handles edge cases where the sync state becomes inconsistent (e.g., `deferred_resize_exception` prevents the seed from sending the final synopsis that would normally clear the flag). The `last_peer_sync_request_time` field on `peer_connection` tracks the last request time.
+
+**DEFERRED_RESIZE diagnostic logging:** When `deferred_resize_exception` interrupts sync block processing, diagnostic messages (`DEFERRED_RESIZE:`) are logged via the sync logger, including the deferred block number and the subsequent sync restart. This helps diagnose stalls caused by shared memory resizes during catch-up.
+
+---
+
+### `witness`
+**Status:** Active
+**Category:** Producer
+**Dependencies:** `chain`, `p2p`
+
+Block production and witness scheduling.
+
+**Purpose:**
+- Produces blocks when scheduled
+- Manages witness signing keys
+- Detects fork collisions and defers production
+- Detects minority fork (last 21 blocks all from own witnesses) and triggers auto-recovery
+- Supports emergency consensus block production
+
+**JSON-RPC:** None (internal only)
+
+**Config options:**
+```ini
+witness = "mywitness"
+private-key = 5K...
+enable-stale-production = false
+required-participation = 3300
+fork-collision-timeout-blocks = 21
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `witness` | (none) | Witness account name(s) to produce blocks for |
+| `private-key` | (none) | WIF private key(s) for block signing |
+| `emergency-private-key` | (none) | WIF key for emergency consensus production |
+| `enable-stale-production` | `false` | Allow production even if chain is stale or on a minority fork |
+| `required-participation` | `3300` (33%) | Minimum witness participation rate (basis points) |
+| `fork-collision-timeout-blocks` | `21` | Deferrals before forcing production past a fork collision |
+
+**Minority fork detection:** Before producing a block, the witness plugin walks the last `CHAIN_MAX_WITNESSES` (21) blocks in fork_db. If ALL were produced by the node's own configured witnesses, the node is stuck on a minority fork. With `enable-stale-production=false` (default), the plugin calls `p2p.resync_from_lib()` to pop back to LIB and resync. With `enable-stale-production=true`, production continues (for bootstrap/testnet scenarios). Detection is skipped during emergency consensus mode.
+
+**Emergency consensus:** When `emergency-private-key` is configured, the committee account is added to the witness set. During emergency consensus mode (`dgp.emergency_consensus_active`), the node produces blocks using the committee account's schedule.
+
+See [block-processing.md](block-processing.md) for production timing details and [fork-collision-hardfork-proposal.md](fork-collision-hardfork-proposal.md) for fork handling.
 
 ---
 
@@ -149,6 +228,7 @@ Snapshot creation, loading, and P2P sync for fast node bootstrap and crash recov
 - Serve snapshots to other nodes over TCP
 - Download snapshots from trusted peers
 - Crash recovery via snapshot + dlt_block_log replay
+- Detect stale snapshots at startup (snapshot block < DLT start block) and create urgent fresh snapshots
 
 **JSON-RPC:** None
 
@@ -160,6 +240,7 @@ Snapshot creation, loading, and P2P sync for fast node bootstrap and crash recov
 | `--snapshot <path>` | `string` | Load state from a snapshot file (DLT mode) |
 | `--snapshot-auto-latest` | `bool` | Auto-discover latest snapshot in `snapshot-dir` |
 | `--replay-from-snapshot` | `bool` | Crash recovery: import snapshot + replay dlt_block_log |
+| `--auto-recover-from-snapshot` | `bool` (default: `true`) | Automatic runtime recovery from shared memory corruption |
 | `--create-snapshot <path>` | `string` | Create a snapshot and exit |
 | `--sync-snapshot-from-trusted-peer` | `bool` | Download snapshot from trusted peers on empty state |
 

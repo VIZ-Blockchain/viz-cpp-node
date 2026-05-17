@@ -5,6 +5,7 @@
 - [plugin.cpp](file://plugins/chain/plugin.cpp)
 - [plugin.hpp](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp)
 - [database.cpp](file://libraries/chain/database.cpp)
+- [database_exceptions.hpp](file://libraries/chain/include/graphene/chain/database_exceptions.hpp)
 - [plugin.cpp](file://plugins/snapshot/plugin.cpp)
 - [application.cpp](file://thirdparty/appbase/application.cpp)
 - [README.md](file://README.md)
@@ -17,10 +18,11 @@
 
 ## Update Summary
 **Changes Made**
-- Enhanced logging with green color support for sync mode completion messages, improving visual differentiation in console output for better debugging experience
-- Updated error logging color scheme to use cyan instead of red for better visual hierarchy
-- Improved sync mode status messages with ANSI escape code formatting for better console readability
-- Enhanced debugging experience through color-coded console output for different sync states
+- Added comprehensive automatic recovery system from shared memory corruption with new --auto-recover-from-snapshot flag
+- Implemented new --snapshot-auto-latest command-line flag for automatic snapshot discovery
+- Enhanced database error handling with shared_memory_corruption_exception for robust error reporting
+- Improved chain plugin startup sequence with conditional on_sync() callback invocation to prevent conflicts during automatic recovery scenarios
+- Added immediate auto-recovery mechanism that triggers during block processing when corruption is detected
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -29,13 +31,14 @@
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
 6. [Enhanced Logging System](#enhanced-logging-system)
-7. [Dependency Analysis](#dependency-analysis)
-8. [Performance Considerations](#performance-considerations)
-9. [Troubleshooting Guide](#troubleshooting-guide)
-10. [Conclusion](#conclusion)
+7. [Automatic Recovery System](#automatic-recovery-system)
+8. [Dependency Analysis](#dependency-analysis)
+9. [Performance Considerations](#performance-considerations)
+10. [Troubleshooting Guide](#troubleshooting-guide)
+11. [Conclusion](#conclusion)
 
 ## Introduction
-The Chain Plugin is the core component responsible for managing the blockchain state, accepting blocks and transactions, maintaining database consistency, and coordinating with other plugins in the VIZ node. It integrates tightly with the underlying database layer and provides APIs for block acceptance, transaction processing, and state queries. Recent enhancements focus on improved plugin coordination, deferred execution support for snapshot loading, comprehensive recovery system integration with DLT block log capabilities, expanded snapshot management infrastructure with consistent data directory usage, and enhanced logging system with visual differentiation for better debugging experience.
+The Chain Plugin is the core component responsible for managing the blockchain state, accepting blocks and transactions, maintaining database consistency, and coordinating with other plugins in the VIZ node. It integrates tightly with the underlying database layer and provides APIs for block acceptance, transaction processing, and state queries. Recent enhancements focus on improved plugin coordination, deferred execution support for snapshot loading, comprehensive recovery system integration with DLT block log capabilities, expanded snapshot management infrastructure with consistent data directory usage, enhanced logging system with visual differentiation for better debugging experience, and most importantly, a comprehensive automatic recovery system that can detect and recover from shared memory corruption scenarios.
 
 ## Project Structure
 The Chain Plugin resides under the `plugins/chain` directory and interfaces with the `libraries/chain` database implementation. The plugin exposes a clean interface for other plugins and the application to interact with the blockchain state, with enhanced deferred execution support and comprehensive recovery capabilities. The data directory path has been standardized to use 'state' for improved organizational clarity.
@@ -88,8 +91,9 @@ Key responsibilities include:
 - Implementing advanced recovery procedures with automatic snapshot detection and restoration
 - Integrating with comprehensive snapshot management infrastructure including automatic discovery, rotation, and serving capabilities
 - **Enhanced** Providing visual feedback through color-coded console logging for improved debugging experience
+- **New** Implementing comprehensive automatic recovery system from shared memory corruption with immediate detection and restoration capabilities
 
-**Updated** Enhanced plugin coordination with deferred execution support allows seamless integration between chain and snapshot plugins, enabling flexible startup sequences and improved error recovery mechanisms. The default shared memory directory has been changed from 'blockchain' to 'state' for better organizational clarity and consistency across data directory usage. The enhanced logging system now provides visual differentiation through ANSI escape codes for better console output readability.
+**Updated** Enhanced plugin coordination with deferred execution support allows seamless integration between chain and snapshot plugins, enabling flexible startup sequences and improved error recovery mechanisms. The default shared memory directory has been changed from 'blockchain' to 'state' for better organizational clarity and consistency across data directory usage. The enhanced logging system now provides visual differentiation through ANSI escape codes for better console output readability. The new automatic recovery system provides robust protection against shared memory corruption scenarios with immediate detection and restoration capabilities.
 
 **Section sources**
 - [plugin.hpp:21-124](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L21-L124)
@@ -202,6 +206,7 @@ class PluginImpl {
 +skip_virtual_ops bool
 +snapshot_path string
 +replay_from_snapshot bool
++auto_recover_from_snapshot bool
 +db database
 +single_write_thread bool
 +sync_start_logged bool
@@ -213,6 +218,7 @@ class PluginImpl {
 +replay_db(data_dir, force_replay)
 +do_snapshot_load(data_dir, is_recovery)
 +trigger_snapshot_load()
++attempt_auto_recovery()
 }
 Plugin --> PluginImpl : "owns"
 ```
@@ -246,8 +252,9 @@ The plugin supports extensive configuration through command-line and configurati
 | **snapshot-auto-latest** | bool | Auto-find latest snapshot in snapshot-dir | false |
 | **replay-from-snapshot** | bool | Snapshot + dlt_block_log replay | false |
 | **snapshot-dir** | string | Directory for auto-generated snapshots | empty |
+| **auto-recover-from-snapshot** | bool | Automatically recover from corruption | true |
 
-**Updated** Enhanced plugin coordination with deferred execution support for snapshot operations, allowing flexible startup sequences between chain and snapshot plugins. The default shared-file-dir has been changed from 'blockchain' to 'state' for improved organizational clarity and consistency across data directory usage. Enhanced logging system provides visual feedback through color-coded console output.
+**Updated** Enhanced plugin coordination with deferred execution support for snapshot operations, allowing flexible startup sequences between chain and snapshot plugins. The default shared-file-dir has been changed from 'blockchain' to 'state' for improved organizational clarity and consistency across data directory usage. Enhanced logging system provides visual feedback through color-coded console output. **New** The --auto-recover-from-snapshot flag enables automatic recovery from shared memory corruption by importing the latest available snapshot and replaying DLT block log data.
 
 **Section sources**
 - [plugin.cpp:197-272](file://plugins/chain/plugin.cpp#L197-L272)
@@ -348,6 +355,7 @@ Recent improvements focus on sophisticated plugin coordination mechanisms with d
 - Automatic callback registration and triggering between chain and snapshot plugins
 - Comprehensive recovery system integration with DLT block log replay capabilities
 - Improved error handling and fallback mechanisms for snapshot operations
+- **New** Immediate auto-recovery mechanism that can trigger during block processing when corruption is detected
 
 ```mermaid
 flowchart TD
@@ -386,6 +394,7 @@ The enhanced recovery system provides robust snapshot-based restoration with DLT
 - DLT block log replay for incremental recovery from corrupted states
 - Emergency consensus mode support for network recovery scenarios
 - Comprehensive error reporting and fallback mechanisms
+- **New** Immediate auto-recovery from shared memory corruption during block processing
 
 ```mermaid
 flowchart TD
@@ -502,6 +511,125 @@ The enhanced logging system improves debugging experience through:
 - [logger_config.cpp:69-89](file://thirdparty/fc/src/log/logger_config.cpp#L69-L89)
 - [main.cpp:234-250](file://programs/vizd/main.cpp#L234-L250)
 
+## Automatic Recovery System
+
+**New** The Chain Plugin now implements a comprehensive automatic recovery system designed to detect and recover from shared memory corruption scenarios without manual intervention. This system provides multiple layers of protection and recovery mechanisms.
+
+### Recovery System Architecture
+
+```mermaid
+flowchart TD
+CorruptionDetected["Shared Memory Corruption Detected"] --> CheckAutoRecover{"--auto-recover-from-snapshot enabled?"}
+CheckAutoRecover --> |Yes| FindLatestSnapshot["Find Latest Available Snapshot"]
+CheckAutoRecover --> |No| ManualRecovery["Manual Recovery Required"]
+FindLatestSnapshot --> CheckSnapshotExists{"Snapshot Found?"}
+CheckSnapshotExists --> |Yes| CloseDatabase["Close Corrupted Database"]
+CheckSnapshotExists --> |No| FallbackReplay["Fallback to Replay Mode"]
+CloseDatabase --> SetSnapshotPath["Set Snapshot Path"]
+SetSnapshotPath --> LoadSnapshot["Load Snapshot State"]
+LoadSnapshot --> InitializeHardforks["Initialize Hardforks"]
+InitializeHardforks --> ReplayDLT["Replay DLT Block Log"]
+ReplayDLT --> ResumeNode["Resume Node Operation"]
+ManualRecovery --> ExitNode["Exit Node with Error Message"]
+FallbackReplay --> ReplayBlockchain["Replay Blockchain from Scratch"]
+ReplayBlockchain --> ResumeNode
+```
+
+**Diagram sources**
+- [plugin.cpp:757-816](file://plugins/chain/plugin.cpp#L757-L816)
+- [plugin.cpp:547-600](file://plugins/chain/plugin.cpp#L547-L600)
+
+### Recovery Triggers
+
+The automatic recovery system can be triggered in multiple scenarios:
+
+1. **Startup Phase Recovery**: When the database fails to open due to shared memory corruption
+2. **Runtime Recovery**: During block processing when shared memory corruption is detected
+3. **Configuration-Based Recovery**: When the `--auto-recover-from-snapshot` flag is enabled
+
+### Recovery Process Implementation
+
+The recovery process follows a systematic approach:
+
+```mermaid
+sequenceDiagram
+participant Chain as "Chain Plugin"
+participant DB as "Database"
+participant Snapshot as "Snapshot Plugin"
+Chain->>DB : Attempt to open database
+DB-->>Chain : Throws shared_memory_corruption_exception
+Chain->>Chain : check auto_recover_from_snapshot flag
+alt Auto-recovery enabled
+Chain->>Chain : find_latest_snapshot()
+Chain->>Chain : snapshot_path = latest_snapshot
+Chain->>Chain : do_snapshot_load(data_dir, is_recovery=true)
+Chain->>DB : open_from_snapshot()
+DB->>Snapshot : snapshot_load_callback()
+Snapshot-->>DB : Load snapshot state
+DB-->>Chain : Recovery complete
+Chain->>Chain : Resume normal operation
+else Auto-recovery disabled
+Chain->>Chain : Log error and exit
+end
+```
+
+**Diagram sources**
+- [plugin.cpp:757-816](file://plugins/chain/plugin.cpp#L757-L816)
+- [database_exceptions.hpp:122](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L122)
+
+### Database Exception Handling
+
+The system leverages a dedicated exception type for shared memory corruption detection:
+
+```mermaid
+classDiagram
+class shared_memory_corruption_exception {
++inherits chain_exception
++code : 4140000
++message : "shared memory corruption detected"
+}
+class chain_exception {
++inherits fc : : exception
++base exception for all chain-related errors
+}
+shared_memory_corruption_exception --> chain_exception : "inherits"
+```
+
+**Diagram sources**
+- [database_exceptions.hpp:122](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L122)
+
+### Command-Line Configuration
+
+The automatic recovery system introduces new command-line flags:
+
+| Flag | Type | Description | Default |
+|------|------|-------------|---------|
+| `--auto-recover-from-snapshot` | boolean | Automatically recover from shared memory corruption by importing latest snapshot | true |
+| `--snapshot-auto-latest` | boolean | Auto-discover latest snapshot in snapshot-dir for recovery scenarios | false |
+
+### Recovery Validation and Safety
+
+The system includes multiple safety mechanisms:
+
+- **Snapshot Validation**: Ensures recovered snapshots are valid and compatible
+- **Database Integrity Checks**: Verifies recovered state before resuming operations
+- **DLT Block Log Replay**: Applies incremental updates from DLT log for complete state consistency
+- **Graceful Degradation**: Falls back to traditional replay mode if snapshot recovery fails
+
+### Recovery Monitoring and Reporting
+
+The system provides comprehensive logging for recovery operations:
+
+- **Recovery Initiation**: Logs when automatic recovery is triggered
+- **Snapshot Detection**: Reports found snapshot path and block number
+- **Recovery Progress**: Tracks recovery stages and completion status
+- **Error Handling**: Provides detailed error messages for recovery failures
+
+**Section sources**
+- [plugin.cpp:757-816](file://plugins/chain/plugin.cpp#L757-L816)
+- [plugin.cpp:547-600](file://plugins/chain/plugin.cpp#L547-L600)
+- [database_exceptions.hpp:122](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L122)
+
 ## Dependency Analysis
 The Chain Plugin has well-defined dependencies and integration points with enhanced plugin coordination:
 
@@ -543,7 +671,7 @@ The plugin integrates with several other components with enhanced coordination:
 - Witness plugin for block production
 - Database plugin for state persistence
 
-**Updated** Enhanced integration with snapshot plugin includes sophisticated deferred execution mechanisms, automatic callback registration, and comprehensive recovery system coordination. The default shared memory directory has been changed from 'blockchain' to 'state' for better organizational structure and consistent data directory usage. The enhanced logging system provides visual feedback for better debugging experience.
+**Updated** Enhanced integration with snapshot plugin includes sophisticated deferred execution mechanisms, automatic callback registration, and comprehensive recovery system coordination. The default shared memory directory has been changed from 'blockchain' to 'state' for better organizational structure and consistent data directory usage. The enhanced logging system provides visual feedback for better debugging experience. **New** The automatic recovery system provides seamless protection against shared memory corruption with immediate detection and restoration capabilities.
 
 **Section sources**
 - [plugin.hpp:23-24](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L23-L24)
@@ -575,6 +703,7 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 - Optimized snapshot loading with automatic path validation
 - Improved snapshot serving performance with trust model and anti-spam protection
 - **Enhanced** Color-coded logging reduces visual scanning time for important sync events
+- **New** Automatic recovery system minimizes downtime during corruption scenarios
 
 ### Logging Performance Considerations
 **Updated** The enhanced logging system maintains performance through:
@@ -582,6 +711,13 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 - Efficient ANSI escape code handling
 - Platform-specific optimization for Windows and Unix terminals
 - Stripping of color codes for file output to prevent performance degradation
+
+### Recovery System Performance Impact
+**New** The automatic recovery system is designed to minimize performance impact:
+- Fast snapshot discovery using optimized file system scanning
+- Incremental DLT block log replay to reduce recovery time
+- Graceful degradation to traditional replay mode if needed
+- Background recovery operations to avoid blocking normal node operations
 
 **Section sources**
 - [plugin.cpp:24-51](file://plugins/chain/plugin.cpp#L24-L51)
@@ -594,12 +730,14 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 2. **Missing State**: Uses snapshot recovery mode when available with enhanced deferred execution support
 3. **Lock Conflicts**: Configurable lock timeouts and retry mechanisms
 4. **Plugin Coordination Issues**: Enhanced error reporting for snapshot plugin initialization delays
+5. ****New** Shared Memory Corruption**: Automatic recovery system provides immediate detection and restoration
 
 ### Recovery Procedures
 - Use `--replay-blockchain` to force blockchain replay
 - Use `--resync-blockchain` to wipe and rebuild from scratch
 - Use `--replay-from-snapshot` for recovery from corrupted state with DLT block log replay
 - **Updated** Use `--snapshot-auto-latest` with proper `--snapshot-dir` configuration for automatic snapshot discovery
+- **New** Enable `--auto-recover-from-snapshot` to automatically recover from corruption scenarios
 
 ### Monitoring and Diagnostics
 - Enable `--check-locks` for lock validation debugging
@@ -608,6 +746,7 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 - **Updated** Enable verbose logging for snapshot plugin coordination failures
 - Monitor snapshot serving metrics and trust model compliance
 - **Enhanced** Use color-coded logs to quickly identify sync mode status and progress
+- **New** Monitor automatic recovery system logs for corruption detection and restoration events
 
 ### Enhanced Plugin Coordination Troubleshooting
 **Updated** Specific troubleshooting for plugin coordination issues:
@@ -625,6 +764,9 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 - Monitor hardfork initialization during recovery processes
 - Validate emergency consensus mode settings for network recovery scenarios
 - Test snapshot serving configuration with trust model and anti-spam settings
+- **New** Verify `--auto-recover-from-snapshot` flag is properly configured
+- **New** Check snapshot directory permissions for automatic recovery access
+- **New** Monitor recovery logs for corruption detection and restoration success
 
 ### Snapshot Management Troubleshooting
 **Updated** Specific troubleshooting for snapshot management issues:
@@ -652,6 +794,15 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 - Verify sync mode completion messages reset properly when normal blocks arrive
 - Check that sync mode guard variables work correctly to prevent duplicate messages
 
+### Automatic Recovery System Troubleshooting
+**New** Specific troubleshooting for automatic recovery system issues:
+- Verify `--auto-recover-from-snapshot` flag is enabled in configuration
+- Check snapshot directory accessibility for automatic recovery operations
+- Monitor recovery logs for corruption detection and restoration attempts
+- Verify snapshot plugin is properly configured for recovery callbacks
+- Test recovery system by simulating shared memory corruption scenarios
+- Check DLT block log availability for incremental recovery after snapshot restoration
+
 **Section sources**
 - [plugin.cpp:562-601](file://plugins/chain/plugin.cpp#L562-L601)
 - [plugin.cpp:251-271](file://plugins/chain/plugin.cpp#L251-L271)
@@ -660,3 +811,5 @@ The Chain Plugin implements several performance optimizations with enhanced plug
 The Chain Plugin provides a robust foundation for blockchain state management in the VIZ node. Its modular design, comprehensive configuration options, and efficient database operations make it suitable for production deployments while maintaining flexibility for development and testing scenarios. Recent enhancements focus on improved plugin coordination with deferred execution support, comprehensive recovery system integration with DLT block log capabilities, and sophisticated snapshot loading mechanisms. The plugin's integration with snapshot technology, emergency consensus mode, and advanced recovery procedures provides strong operational resilience and enhanced error handling capabilities with improved plugin coordination and seamless user experience.
 
 **Updated** The default shared-memory directory has been changed from 'blockchain' to 'state' for better organizational clarity, ensuring consistency across data directory usage in plugin initialization and snapshot plugin deferred loading functionality. The comprehensive snapshot management infrastructure provides powerful automation capabilities including automatic discovery, periodic creation, rotation, serving, and P2P synchronization with trust models and anti-spam protection. The enhanced logging system significantly improves debugging experience through color-coded console output, providing immediate visual feedback for sync mode status and progress indicators with green color for important completion messages and yellow/brown for periodic progress notifications.
+
+**New** The comprehensive automatic recovery system represents a major advancement in operational resilience, providing seamless protection against shared memory corruption scenarios. The system automatically detects corruption during both startup and runtime, immediately initiates recovery procedures, and restores node operation with minimal downtime. This system includes sophisticated snapshot discovery, validation, and restoration mechanisms, along with incremental DLT block log replay for complete state consistency. The recovery system is fully configurable and can be enabled or disabled based on operational requirements, providing operators with control over their recovery strategy while ensuring maximum uptime and data integrity.

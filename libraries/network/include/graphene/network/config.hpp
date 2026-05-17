@@ -38,6 +38,7 @@
  */
 #define MAX_MESSAGE_SIZE                                     1024*1024*2
 #define GRAPHENE_NET_DEFAULT_PEER_CONNECTION_RETRY_TIME      30 // seconds
+#define GRAPHENE_NET_MAX_FAILED_CONNECTION_ATTEMPTS            5  // cap backoff at (5+1)*30 = 180s = 3 minutes
 
 /**
  * AFter trying all peers, how long to wait before we check to
