@@ -30,12 +30,12 @@ public:
 DEFINE_API(plugin, get_active_witnesses) {
     return my->database.with_weak_read_lock([&]() {
         const auto &wso = my->database.get_validator_schedule_object();
-        size_t n = wso.current_shuffled_witnesses.size();
+        size_t n = wso.current_shuffled_validators.size();
         vector<account_name_type> result;
         result.reserve(n);
         for (size_t i = 0; i < n; i++) {
-            if (wso.current_shuffled_witnesses[i] != "") {
-                result.push_back(wso.current_shuffled_witnesses[i]);
+            if (wso.current_shuffled_validators[i] != "") {
+                result.push_back(wso.current_shuffled_validators[i]);
             }
         }
         return result;
