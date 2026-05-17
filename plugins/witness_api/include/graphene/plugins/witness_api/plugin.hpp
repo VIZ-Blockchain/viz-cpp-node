@@ -26,7 +26,7 @@
 #include <appbase/application.hpp>
 #include <graphene/plugins/chain/plugin.hpp>
 #include <graphene/plugins/witness_api/api_objects/feed_history_api_object.hpp>
-#include <graphene/api/validator_api_object.hpp>
+#include <graphene/api/witness_api_object.hpp>
 
 #include <graphene/chain/database.hpp>
 

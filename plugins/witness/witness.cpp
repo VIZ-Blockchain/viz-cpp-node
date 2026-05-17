@@ -425,7 +425,7 @@ namespace graphene {
 
                     // Check 5 upcoming slots (~15 seconds) to cover snapshot creation time (~10s) + safety margin
                     for (uint32_t s = slot; s <= slot + 4; ++s) {
-                        string scheduled_witness = db.get_scheduled_witness(s);
+                        string scheduled_witness = db.get_scheduled_validator(s);
                         if (pimpl->_witnesses.find(scheduled_witness) == pimpl->_witnesses.end()) {
                             continue;
                         }
@@ -471,7 +471,7 @@ namespace graphene {
                     }
 
                     for (uint32_t s = slot; s <= slot + 4; ++s) {
-                        string scheduled_witness = db.get_scheduled_witness(s);
+                        string scheduled_witness = db.get_scheduled_validator(s);
                         if (pimpl->_witnesses.find(scheduled_witness) == pimpl->_witnesses.end()) {
                             continue;
                         }
@@ -686,7 +686,7 @@ namespace graphene {
                     }
 
                     fc::time_point_sec next_slot = database().get_slot_time(1);
-                    std::string next_scheduled = database().get_scheduled_witness(1);
+                    std::string next_scheduled = database().get_scheduled_validator(1);
 
                     // Check on-chain signing key status for our witnesses
                     std::string key_status;
@@ -909,7 +909,7 @@ namespace graphene {
                             int64_t _drift_us = 0;
                             try { _drift_us = graphene::time::ntp_error().count(); } catch (...) {}
                             int64_t _gap_ms = (_nst_init - _now_init).count() / 1000;
-                            std::string _next_w3 = database().get_scheduled_witness(1);
+                            std::string _next_w3 = database().get_scheduled_validator(1);
                             bool _ours3 = _witnesses.count(_next_w3) > 0;
                             wlog("SLOT=0 STREAK: ${n} consecutive not_time_yet. "
                                  "now=${now} head_block_time=${hbt} (drift=${d}us) "
@@ -927,7 +927,7 @@ namespace graphene {
                             int64_t _drift10 = 0;
                             try { _drift10 = graphene::time::ntp_error().count(); } catch (...) {}
                             int64_t _gap_ms = (_nst10 - _now10).count() / 1000;
-                            std::string _next_w10 = database().get_scheduled_witness(1);
+                            std::string _next_w10 = database().get_scheduled_validator(1);
                             bool _ours10 = _witnesses.count(_next_w10) > 0;
                             wlog("slot=0 streak: ${n} consecutive not_time_yet (${s}s elapsed). "
                                  "now=${now}, head_block_time=${hbt}, next_slot_time=${nst}. "
@@ -951,7 +951,7 @@ namespace graphene {
                             try { catching_up = p2p().is_catching_up_after_pause(); } catch (...) {}
                             bool dlt_syncing = false;
                             try { dlt_syncing = chain().is_syncing(); } catch (...) {}
-                            std::string _next_w60 = database().get_scheduled_witness(1);
+                            std::string _next_w60 = database().get_scheduled_validator(1);
                             bool _ours60 = _witnesses.count(_next_w60) > 0;
                             elog("SLOT=0 PROLONGED STALL: ${n} consecutive not_time_yet (${s}s). "
                                  "head_block_time=${hbt} is ${f}ms AHEAD of now=${now}! "
@@ -982,7 +982,7 @@ namespace graphene {
                                 if (!shuffled_top3.empty()) shuffled_top3 += ",";
                                 shuffled_top3 += wso120.current_shuffled_validators[i];
                             }
-                            std::string _next_w120 = database().get_scheduled_witness(1);
+                            std::string _next_w120 = database().get_scheduled_validator(1);
                             bool _ours120 = _witnesses.count(_next_w120) > 0;
                             elog("CRITICAL: slot=0 stall for ${s}s! head_block_time=${hbt} is ${f}ms in the future "
                                  "relative to NTP time (now=${now}). next_slot_time=${nst} next_witness=${nw} is_ours=${o}, NTP drift=${d}us. "
@@ -1120,11 +1120,11 @@ namespace graphene {
                                     fc::time_point_sec now_sec = graphene::time::now() + fc::microseconds(250000);
                                     uint32_t cur_slot = db_wd.get_slot_at_time(now_sec);
                                     if (cur_slot > 0) {
-                                        scheduled_now = db_wd.get_scheduled_witness(cur_slot);
+                                        scheduled_now = db_wd.get_scheduled_validator(cur_slot);
                                         we_are_scheduled = _witnesses.count(scheduled_now) > 0;
                                     } else {
                                         // Between slots: show who gets the NEXT slot
-                                        scheduled_now = "between_slots/" + db_wd.get_scheduled_witness(1);
+                                        scheduled_now = "between_slots/" + db_wd.get_scheduled_validator(1);
                                     }
 
                                     // Scan full shuffled schedule for our witnesses
@@ -1640,7 +1640,7 @@ namespace graphene {
                     int64_t _guard_ms = (fc::time_point::now() - _guard_enter).count() / 1000;
                     if (_guard_ms > 100) {
                         uint32_t _slot_before = db.get_slot_at_time(now_fine + fc::microseconds(250000) - fc::microseconds(_guard_ms * 1000));
-                        std::string _wit_before = _slot_before > 0 ? db.get_scheduled_witness(_slot_before) : "none";
+                        std::string _wit_before = _slot_before > 0 ? db.get_scheduled_validator(_slot_before) : "none";
                         bool _our_slot_lost = _slot_before > 0 && _witnesses.count(_wit_before) > 0;
                         if (_our_slot_lost) {
                             elog("WITNESS-SLOT-LOST: op_guard stall ${d}ms crossed slot boundary! "
@@ -1711,15 +1711,15 @@ namespace graphene {
                 //
                 assert(now > db.head_block_time());
 
-                if (db._debug_block_production) ilog("DEBUG_CRASH: get_scheduled_witness(${s})", ("s", slot));
-                string scheduled_witness = db.get_scheduled_witness(slot);
+                if (db._debug_block_production) ilog("DEBUG_CRASH: get_scheduled_validator(${s})", ("s", slot));
+                string scheduled_witness = db.get_scheduled_validator(slot);
                 if (db._debug_block_production) ilog("DEBUG_CRASH: scheduled_witness=${w}", ("w", scheduled_witness));
                 // we must control the witness scheduled to produce the next block.
                 if (_witnesses.find(scheduled_witness) == _witnesses.end()) {
                     capture("scheduled_witness", scheduled_witness);
                     _last_scheduled_witness = scheduled_witness; // track for diagnostic
                     // Emergency master diagnostic: log when committee is configured but
-                    // get_scheduled_witness returned a different name — reveals schedule misalignment
+                    // get_scheduled_validator returned a different name — reveals schedule misalignment
                     if (_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end()) {
                         const auto &_dgp3 = db.get_dynamic_global_properties();
                         if (_dgp3.emergency_consensus_active) {
