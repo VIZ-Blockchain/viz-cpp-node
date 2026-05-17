@@ -446,7 +446,7 @@ namespace graphene { namespace protocol {
             /**
              *  Consensus - Witness reward percent from block inflation
              */
-            int16_t inflation_validator_percent = CHAIN_CONSENSUS_INFLATION_WITNESS_PERCENT;
+            int16_t inflation_validator_percent = CHAIN_CONSENSUS_INFLATION_VALIDATOR_PERCENT;
 
             /**
              *  Consensus - Inflation ratio between committee and reward fund
