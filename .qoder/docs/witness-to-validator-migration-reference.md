@@ -26,7 +26,7 @@ This distinction is the most important rule for library developers.
 
 | What | Reason |
 |------|--------|
-| Block header fields (`witness`, `witness_signature`) | Library reads from node, forwards to caller. Field name in response changes automatically after node upgrade — library just reflects whatever the node returns. No hardcoded logic. |
+| Block header fields | **Done.** Node now returns `validator` / `validator_signature`. Libraries that relay raw block objects with no field-specific code need no changes. Code explicitly accessing `.witness` / `.witness_signature` on a block header must be updated to `.validator` / `.validator_signature`. |
 | Raw API response objects (beyond type definitions) | JSON deserialization is dynamic — field access works regardless of name if library doesn't validate field names |
 | Historical transaction data from node | Same — the node returns it, library relays it |
 
@@ -38,13 +38,21 @@ This distinction is the most important rule for library developers.
 
 | Layer | Status | Visible to JS/PHP? |
 |-------|--------|---------------------|
-| Internal C++ methods (e.g., `is_validator_scheduled_soon`) | Done | No |
-| Internal enums (`block_validation_condition`) | Done | No |
-| Protocol operation struct names | Not yet | Yes — JSON name in transactions |
-| API method names (`get_active_witnesses`, etc.) | Not yet | Yes — JSON-RPC calls |
-| Chain object types (`witness_object`, etc.) | Not yet | Yes — API response type names |
-| Plugin names (`witness`, `witness_api`, `witness_guard`) | Not yet | Yes — config files |
-| CLI wallet commands | Not yet | Yes — if using CLI wallet |
+| Internal C++ methods (e.g., `is_validator_scheduled_soon`) | **Done** | No |
+| Internal enums (`block_validation_condition`) | **Done** | No |
+| Internal skip flags (`skip_validator_signature`) | **Done** | No |
+| Block header fields (`validator`, `validator_signature`) | **Done** | Yes — block responses |
+| Dynamic global property (`current_validator`) | **Done** | Yes — `get_dynamic_global_properties` |
+| Protocol operation struct names and JSON names | **Done** | Yes — JSON name in transactions |
+| Operation field names inside types 7 and 42 | **Done** | Yes — field names in operation body |
+| Chain properties field names | **Done** | Yes — JSON field names in governance ops |
+| API method names (`get_active_validators`, etc.) | **Done** | Yes — JSON-RPC calls |
+| Chain object types (`validator_object`, etc.) | **Done** | Yes — API response type names |
+| CLI wallet commands (`get_active_validators`, etc.) | **Done** | Yes — if using CLI wallet |
+| Physical file renames (`.hpp`/`.cpp`) | Pending — future PR | No — internal build only |
+| Plugin directory and CMake target renames | Pending — future PR | Yes — config `plugin =` keys |
+| Config key renames (`--validator`, etc.) | Pending — future PR | Yes — node operator config |
+| API namespace (`witness_api` → `validator_api`) | Pending — future PR | Yes — JSON-RPC `"api"` field |
 
 ---
 
@@ -371,7 +379,7 @@ Not directly relevant to JS/PHP libraries, but included for completeness:
 | Signing authority level (`active`) | Operations still require active authority |
 | Block interval, slot scheduling, consensus rules | Unchanged |
 
-> **Note on block header fields:** `block.witness` and `block.witness_signature` are renamed to `block.validator` and `block.validator_signature` in JSON output. This is a **simple rename with no hardfork required** — binary format does not serialize field names, only values by position. Libraries that just relay block data will reflect new names automatically after node upgrade. No binary migration or version negotiation is needed.
+> **Block header fields** are now `validator` and `validator_signature` in all node responses. Binary wire format is unchanged — field names are not serialized, only values by position. Libraries relaying raw block objects reflect new names automatically; no version negotiation needed.
 
 ---
 
@@ -434,8 +442,21 @@ Not directly relevant to JS/PHP libraries, but included for completeness:
 
 | Old Field | New Field | In Object |
 |-----------|-----------|-----------|
-| `current_shuffled_witnesses` | `current_shuffled_validators` | schedule object |
-| `num_scheduled_witnesses` | `num_scheduled_validators` | schedule object |
+| `current_shuffled_witnesses` | `current_shuffled_validators` | `validator_schedule_object` |
+| `num_scheduled_witnesses` | `num_scheduled_validators` | `validator_schedule_object` |
+
+### Block Header Fields
+
+| Old Field | New Field |
+|-----------|-----------|
+| `witness` | `validator` |
+| `witness_signature` | `validator_signature` |
+
+### Dynamic Global Property Fields
+
+| Old Field | New Field |
+|-----------|-----------|
+| `current_witness` | `current_validator` |
 
 ### Chain Properties Fields
 
