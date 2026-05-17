@@ -130,7 +130,7 @@ public:
     void broadcast_block_post_validation(
         const block_id_type& block_id,
         const std::string& witness_account,
-        const signature_type& witness_signature);
+        const signature_type& validator_signature);
     void broadcast_transaction(const signed_transaction& trx);
     void broadcast_chain_status();
 

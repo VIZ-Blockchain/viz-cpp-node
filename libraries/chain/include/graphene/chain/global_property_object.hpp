@@ -38,7 +38,7 @@ namespace graphene {
             block_id_type head_block_id;
             time_point_sec genesis_time;
             time_point_sec time;
-            account_name_type current_witness;
+            account_name_type current_validator;
 
             asset committee_fund = asset(0, TOKEN_SYMBOL);
             uint32_t committee_requests = 0;
@@ -164,7 +164,7 @@ FC_REFLECT((graphene::chain::dynamic_global_property_object),
                 (head_block_id)
                 (genesis_time)
                 (time)
-                (current_witness)
+                (current_validator)
                 (committee_fund)
                 (committee_requests)
                 (current_supply)

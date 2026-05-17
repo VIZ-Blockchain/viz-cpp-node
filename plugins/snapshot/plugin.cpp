@@ -162,7 +162,9 @@ inline uint32_t import_dynamic_global_properties(
         obj.head_block_id = v["head_block_id"].as<block_id_type>();
         obj.genesis_time = v["genesis_time"].as<fc::time_point_sec>();
         obj.time = v["time"].as<fc::time_point_sec>();
-        obj.current_witness = v["current_witness"].as<account_name_type>();
+        obj.current_validator = v.get_object().contains("current_validator")
+            ? v["current_validator"].as<account_name_type>()
+            : v["current_witness"].as<account_name_type>();
         obj.committee_fund = v["committee_fund"].as<asset>();
         obj.committee_requests = v["committee_requests"].as_uint64();
         obj.current_supply = v["current_supply"].as<asset>();
@@ -1724,7 +1726,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     if (snapshot_in_progress.load(std::memory_order_relaxed)) {
         dlog(SNAP_LOG_YELLOW "New block #${n} (witness ${w}) received while snapshot in progress \u2014 "
              "block will be processed after snapshot completes" SNAP_LOG_RESET,
-             ("n", b.block_num())("w", b.witness));
+             ("n", b.block_num())("w", b.validator));
     }
 
     // Update last block received time for stalled sync detection

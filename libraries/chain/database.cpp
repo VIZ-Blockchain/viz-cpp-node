@@ -549,7 +549,7 @@ namespace graphene { namespace chain {
 
                 uint64_t skip_flags =
                         skip_block_size_check |
-                        skip_witness_signature |
+                        skip_validator_signature |
                         skip_transaction_signatures |
                         skip_transaction_dupe_check |
                         skip_tapos_check |
@@ -669,7 +669,7 @@ namespace graphene { namespace chain {
 
                 uint64_t skip_flags =
                         skip_block_size_check |
-                        skip_witness_signature |
+                        skip_validator_signature |
                         skip_transaction_signatures |
                         skip_transaction_dupe_check |
                         skip_tapos_check |
@@ -1435,7 +1435,7 @@ namespace graphene { namespace chain {
                 vector<std::pair<account_name_type, fc::time_point_sec>> witness_time_pairs;
                 vector<block_id_type> previous_ids;
                 for (const auto &b : blocks) {
-                    witness_time_pairs.push_back(std::make_pair(b->data.witness, b->data.timestamp));
+                    witness_time_pairs.push_back(std::make_pair(b->data.validator, b->data.timestamp));
                     previous_ids.push_back(b->data.previous);
                 }
 
@@ -1498,7 +1498,7 @@ namespace graphene { namespace chain {
                     share_type total_weight = 0;
                     bool has_emergency = false;
                     for (const auto& item : branch) {
-                        const auto& wit_name = item->data.witness;
+                        const auto& wit_name = item->data.validator;
                         if (wit_name == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
                             has_emergency = true;
                             continue;
@@ -2203,7 +2203,7 @@ namespace graphene { namespace chain {
                               ("w", witness_owner));
                 }
 
-                if (!(skip & skip_witness_signature))
+                if (!(skip & skip_validator_signature))
                     FC_ASSERT(witness_obj.signing_key ==
                               block_signing_private_key.get_public_key());
             } // op_guard released here
@@ -2287,7 +2287,7 @@ namespace graphene { namespace chain {
             pending_block.previous = head_block_id();
             pending_block.timestamp = when;
             pending_block.transaction_merkle_root = pending_block.calculate_merkle_root();
-            pending_block.witness = witness_owner;
+            pending_block.validator = witness_owner;
 
             const auto &witness = get_witness(witness_owner);
 
@@ -2332,7 +2332,7 @@ namespace graphene { namespace chain {
                 }
             }
 
-            if (!(skip & skip_witness_signature)) {
+            if (!(skip & skip_validator_signature)) {
                 pending_block.sign(block_signing_private_key);
             }
 
@@ -3780,7 +3780,7 @@ namespace graphene { namespace chain {
                     p.current_supply += asset( digital_asset_per_block, TOKEN_SYMBOL );
                 });
 
-                const auto& cwit = get_witness( props.current_witness );
+                const auto& cwit = get_witness( props.current_validator );
                 const auto* witness_account = find_account(cwit.owner);
                 if (!witness_account) {
                     auto& acc_idx = get_index<account_index>().indices().get<by_name>();
@@ -3849,7 +3849,7 @@ namespace graphene { namespace chain {
                         p.current_supply += asset( inflation_per_block, TOKEN_SYMBOL );
                     });
 
-                    const auto& cwit = get_witness( props.current_witness );
+                    const auto& cwit = get_witness( props.current_validator );
                     const auto* witness_account = find_account(cwit.owner);
                     if (!witness_account) {
                         auto& acc_idx = get_index<account_index>().indices().get<by_name>();
@@ -3876,7 +3876,7 @@ namespace graphene { namespace chain {
                     auto committee_reward = ( inflation_per_block * CHAIN_COMMITTEE_FUND_PERCENT ) / CHAIN_100_PERCENT;
                     auto witness_reward = inflation_per_block - content_reward - vesting_reward - committee_reward; /// Remaining 10% to witness pay
 
-                    const auto& cwit = get_witness( props.current_witness );
+                    const auto& cwit = get_witness( props.current_validator );
 
                     inflation_per_block = content_reward + vesting_reward + committee_reward + witness_reward;
                     /*
@@ -4804,7 +4804,7 @@ namespace graphene { namespace chain {
                 }
 
                 create<dynamic_global_property_object>([&](dynamic_global_property_object &p) {
-                    p.current_witness = CHAIN_COMMITTEE_ACCOUNT;
+                    p.current_validator = CHAIN_COMMITTEE_ACCOUNT;
                     p.recent_slots_filled = fc::uint128_t::max_value();
                     p.participation_count = 128;
                     p.committee_fund = asset(0, TOKEN_SYMBOL);
@@ -5019,7 +5019,7 @@ namespace graphene { namespace chain {
                                   itr->second, "Block did not match checkpoint", ("checkpoint", *itr)("block_id", next_block.id()));
 
                     if (_checkpoints.rbegin()->first >= block_num) {
-                        skip = skip_witness_signature
+                        skip = skip_validator_signature
                                | skip_transaction_signatures
                                | skip_transaction_dupe_check
                                | skip_fork_db
@@ -5079,9 +5079,9 @@ namespace graphene { namespace chain {
                 _current_virtual_op = 0;
 
                 /// modify current witness so transaction evaluators can know who included the transaction,
-                /// this is mostly for POW operations which must pay the current_witness
+                /// this is mostly for POW operations which must pay the current_validator
                 modify(gprops, [&](dynamic_global_property_object &dgp) {
-                    dgp.current_witness = next_block.witness;
+                    dgp.current_validator = next_block.validator;
                 });
 
                 if( BOOST_UNLIKELY( next_block_num == 1 ) )//change genesis
@@ -5098,10 +5098,10 @@ namespace graphene { namespace chain {
                 /// parse witness version reporting
                 process_header_extensions(next_block);
 
-                const auto &witness = get_witness(next_block.witness);
+                const auto &witness = get_witness(next_block.validator);
                 FC_ASSERT(witness.running_version >= hardfork_state.current_hardfork_version,
                         "Block produced by witness that is not running current hardfork",
-                        ("witness", witness)("next_block.witness", next_block.witness)("hardfork_state", hardfork_state)
+                        ("witness", witness)("next_block.validator", next_block.validator)("hardfork_state", hardfork_state)
                 );
 
                 for (const auto &trx : next_block.transactions) {
@@ -5165,7 +5165,7 @@ namespace graphene { namespace chain {
                 process_hardforks();
 
                 check_block_post_validation_chain();
-                create_block_post_validation(next_block_num,next_block_id,next_block.witness);
+                create_block_post_validation(next_block_num,next_block_id,next_block.validator);
 
                 // notify observers that the block has been applied
                 if (_debug_block_production) ilog("DEBUG_CRASH: notify_applied_block start");
@@ -5197,8 +5197,8 @@ namespace graphene { namespace chain {
                     case 1: // version
                     {
                         auto reported_version = itr->get<version>();
-                        const auto &signing_witness = get_witness(next_block.witness);
-                        //idump( (next_block.witness)(signing_witness.running_version)(reported_version) );
+                        const auto &signing_witness = get_witness(next_block.validator);
+                        //idump( (next_block.validator)(signing_witness.running_version)(reported_version) );
 
                         if (reported_version !=
                             signing_witness.running_version) {
@@ -5211,8 +5211,8 @@ namespace graphene { namespace chain {
                     case 2: // hardfork_version vote
                     {
                         auto hfv = itr->get<hardfork_version_vote>();
-                        const auto &signing_witness = get_witness(next_block.witness);
-                        //idump( (next_block.witness)(signing_witness.running_version)(hfv) );
+                        const auto &signing_witness = get_witness(next_block.validator);
+                        //idump( (next_block.validator)(signing_witness.running_version)(hfv) );
 
                         if (hfv.hf_version !=
                             signing_witness.hardfork_version_vote ||
@@ -5311,13 +5311,13 @@ namespace graphene { namespace chain {
                           next_block.previous, "", ("head_block_id", head_block_id())("next.prev", next_block.previous));
                 FC_ASSERT(head_block_time() <
                           next_block.timestamp, "", ("head_block_time", head_block_time())("next", next_block.timestamp)("blocknum", next_block.block_num()));
-                const validator_object &witness = get_witness(next_block.witness);
+                const validator_object &witness = get_witness(next_block.validator);
 
-                if (!(skip & skip_witness_signature)) {
+                if (!(skip & skip_validator_signature)) {
                     FC_ASSERT(witness.signing_key != public_key_type(),
                               "Witness '${w}' has null signing key — cannot validate block #${n}. "
                               "The witness disabled their key or the node is on a different fork.",
-                              ("w", next_block.witness)("n", next_block.block_num()));
+                              ("w", next_block.validator)("n", next_block.block_num()));
                     FC_ASSERT(next_block.validate_signee(witness.signing_key));
                 }
 
@@ -5360,13 +5360,13 @@ namespace graphene { namespace chain {
                                 ("w", witness.owner));
                             dlog("Emergency mode: accepting block from ${bw} at slot scheduled for ${sw} "
                                  "(slot_num=${slot}, block=#${num})",
-                                 ("bw", next_block.witness)("sw", scheduled_witness)
+                                 ("bw", next_block.validator)("sw", scheduled_witness)
                                  ("slot", slot_num)("num", next_block.block_num()));
                         }
                     } else {
                         FC_ASSERT(witness.owner ==
                                   scheduled_witness, "Witness produced block at wrong time",
-                                ("block witness", next_block.witness)("scheduled", scheduled_witness)("slot_num", slot_num));
+                                ("block witness", next_block.validator)("scheduled", scheduled_witness)("slot_num", slot_num));
                     }
                 }
 
@@ -5407,15 +5407,15 @@ namespace graphene { namespace chain {
                         bool is_emergency_offline_witness =
                             has_hardfork(CHAIN_HARDFORK_12) &&
                             _dgp.emergency_consensus_active &&
-                            witness_missed.owner != b.witness &&
+                            witness_missed.owner != b.validator &&
                             witness_missed.owner != CHAIN_EMERGENCY_WITNESS_ACCOUNT;
 
-                        if (!is_emergency_offline_witness && witness_missed.owner != b.witness) {
+                        if (!is_emergency_offline_witness && witness_missed.owner != b.validator) {
                             ilog("\033[91mMissed block: witness ${w} did not produce block #${n} at ${t} (next: ${next})\033[0m",
                                  ("w", witness_missed.owner)
                                  ("n", head_block_num() + i + 1)
                                  ("t", get_slot_time(i + 1))
-                                 ("next", b.witness));
+                                 ("next", b.validator));
                         }
 
                         modify(witness_missed, [&](validator_object &w) {
@@ -5426,7 +5426,7 @@ namespace graphene { namespace chain {
                             // because committee can't fill all slots simultaneously), current_run
                             // never reaches CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN, so
                             // last_supported_block_num never advances and LIB stalls.
-                            if (w.owner != b.witness) {
+                            if (w.owner != b.validator) {
                                 w.current_run = 0;
                             }
                             if(is_emergency_offline_witness) {
@@ -5446,8 +5446,8 @@ namespace graphene { namespace chain {
                                     w.signing_key = public_key_type();
                                     push_virtual_operation(shutdown_validator_operation(w.owner));
                                 }
-                            } else if(witness_missed.owner != b.witness){
-                                // total_missed does not increment when witness_missed.owner == b.witness
+                            } else if(witness_missed.owner != b.validator){
+                                // total_missed does not increment when witness_missed.owner == b.validator
                                 // because a low total_missed is a "prestige" item and a witness that
                                 // restarts a dead network is "rewarded" by not having total_missed
                                 // increase for any blocks they missed in the gap.

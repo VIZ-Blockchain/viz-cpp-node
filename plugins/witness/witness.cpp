@@ -599,9 +599,9 @@ namespace graphene {
                                 wso_sj.current_shuffled_validators[slot_idx];
                             bool was_our_slot = _witnesses.count(expected_witness) > 0;
                             // True hijack only if the actual producer is NOT also one of our witnesses.
-                            bool producer_is_ours = _witnesses.count(block.witness) > 0;
+                            bool producer_is_ours = _witnesses.count(block.validator) > 0;
 
-                            if (was_our_slot && !producer_is_ours && block.witness != expected_witness) {
+                            if (was_our_slot && !producer_is_ours && block.validator != expected_witness) {
                                 // External witness (committee / emergency) produced at our slot.
                                 _slot_hijack_count++;
                                 _slot_hijack_height = static_cast<uint32_t>(block_num);
@@ -614,18 +614,18 @@ namespace graphene {
                                     elog("SLOT-HIJACK: block #${bn} by '${wit}' but slot was assigned "
                                          "to our witness '${exp}' (hijack #${cnt}). "
                                          "head=#${head} aslot=${aslot} num_sched=${nsched}",
-                                         ("bn", block_num)("wit", block.witness)("exp", expected_witness)
+                                         ("bn", block_num)("wit", block.validator)("exp", expected_witness)
                                          ("cnt", _slot_hijack_count)
                                          ("head", dgp_hijack.head_block_number)
                                          ("aslot", (uint64_t)dgp_hijack.current_aslot)
                                          ("nsched", nsw_sj));
                                 }
-                            } else if (was_our_slot && (block.witness == expected_witness || producer_is_ours)) {
+                            } else if (was_our_slot && (block.validator == expected_witness || producer_is_ours)) {
                                 // Our witness (expected or another of ours) produced — reset hijack counter.
                                 if (_slot_hijack_count > 0) {
                                     wlog("SLOT-HIJACK-RESOLVED: our witness '${wit}' produced "
                                          "block #${bn} after ${cnt} hijacked slot(s).",
-                                         ("wit", block.witness)("bn", block_num)("cnt", _slot_hijack_count));
+                                         ("wit", block.validator)("bn", block_num)("cnt", _slot_hijack_count));
                                 }
                                 _slot_hijack_count = 0;
                             }
@@ -1506,7 +1506,7 @@ namespace graphene {
                         auto current = fork_head;
 
                         while (current && blocks_checked < CHAIN_MAX_WITNESSES) {
-                            if (_witnesses.find(current->data.witness) == _witnesses.end()) {
+                            if (_witnesses.find(current->data.validator) == _witnesses.end()) {
                                 all_ours = false;
                                 break;
                             }
@@ -1591,7 +1591,7 @@ namespace graphene {
                             auto current = fork_head;
 
                             while (current && blocks_checked < dlt_minority_threshold) {
-                                if (_witnesses.find(current->data.witness) == _witnesses.end()) {
+                                if (_witnesses.find(current->data.validator) == _witnesses.end()) {
                                     all_ours = false;
                                     break;
                                 }
@@ -1859,7 +1859,7 @@ namespace graphene {
                             // Normal mode: only count blocks from different witnesses
                             // on a different parent as competing
                             for (const auto &eb : existing_blocks) {
-                                if (eb->data.witness != scheduled_witness &&
+                                if (eb->data.validator != scheduled_witness &&
                                     eb->data.previous != db.head_block_id()) {
                                     has_competing_block = true;
                                     competing_block = eb;

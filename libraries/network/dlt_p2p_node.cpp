@@ -1340,7 +1340,7 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
 
             ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by witness ${w} [${ep}]" DLT_LOG_RESET,
                  ("n", block.block_num())("tx", block.transactions.size())
-                 ("w", block.witness)("ep", state.endpoint));
+                 ("w", block.validator)("ep", state.endpoint));
 
             on_block_applied(block, /*caused_fork_switch=*/false);
 
@@ -1567,7 +1567,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
     if (result == dlt_block_accept_result::ACCEPTED) {
         ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by witness ${w} [${ep}]" DLT_LOG_RESET,
              ("n", reply.block.block_num())("tx", reply.block.transactions.size())
-             ("w", reply.block.witness)("ep", state.endpoint));
+             ("w", reply.block.validator)("ep", state.endpoint));
 
         _last_network_block_time = fc::time_point::now();
         _last_block_received_time = fc::time_point::now();
@@ -1590,7 +1590,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
 
         // Retransmit to our-fork peers
         dlog(DLT_LOG_DGRAY "Retransmitting block #${n} by ${w} to fork peers (excluding ${ep})" DLT_LOG_RESET,
-             ("n", reply.block.block_num())("w", reply.block.witness)("ep", state.endpoint));
+             ("n", reply.block.block_num())("w", reply.block.validator)("ep", state.endpoint));
         send_to_all_our_fork_peers(message(dlt_block_reply_message(reply)), peer, reply.block.id());
 
         // P26 fix: Check if we've caught up to all peers via single-block replies
@@ -1603,7 +1603,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
         // Do NOT call on_block_applied (which would corrupt mempool),
         // do NOT retransmit (block is not on our main chain).
         dlog(DLT_LOG_ORANGE "Stored block #${n} by witness ${w} in fork_db (not applied, head=${h}) from ${ep}" DLT_LOG_RESET,
-             ("n", block_num)("w", reply.block.witness)("h", _delegate->get_head_block_num())("ep", state.endpoint));
+             ("n", block_num)("w", reply.block.validator)("h", _delegate->get_head_block_num())("ep", state.endpoint));
     }
 
     // Update peer's expected_next_block regardless of outcome so the
@@ -1913,7 +1913,7 @@ void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply&
 
             ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by witness ${w} [${ep}] (gap fill)" DLT_LOG_RESET,
                  ("n", block.block_num())("tx", block.transactions.size())
-                 ("w", block.witness)("ep", it->second.endpoint));
+                 ("w", block.validator)("ep", it->second.endpoint));
 
             on_block_applied(block, /*caused_fork_switch=*/false);
 
@@ -2147,7 +2147,7 @@ void dlt_p2p_node::broadcast_block(const signed_block& block) {
 void dlt_p2p_node::broadcast_block_post_validation(
     const block_id_type& block_id,
     const std::string& witness_account,
-    const signature_type& witness_signature) {
+    const signature_type& validator_signature) {
     // For now, send as fork_status message with block_id
     dlt_fork_status_message msg;
     msg.fork_status = _fork_status;
@@ -2309,7 +2309,7 @@ void dlt_p2p_node::drain_paused_block_queue() {
             _last_network_block_time = fc::time_point::now();
 
             ilog(DLT_LOG_BWHITE "Got queued block #${n} with ${tx} transaction(s) by witness ${w}" DLT_LOG_RESET,
-                 ("n", block.block_num())("tx", block.transactions.size())("w", block.witness));
+                 ("n", block.block_num())("tx", block.transactions.size())("w", block.validator));
 
             on_block_applied(block, /*caused_fork_switch=*/false);
         }

@@ -639,22 +639,22 @@ void p2p_plugin::broadcast_block(const graphene::protocol::signed_block& block) 
 void p2p_plugin::broadcast_block_post_validation(
     const graphene::protocol::block_id_type block_id,
     const std::string& witness_account,
-    const graphene::protocol::signature_type& witness_signature) {
-    my->p2p_thread.async([this, block_id, witness_account, witness_signature]() {
-        my->node->broadcast_block_post_validation(block_id, witness_account, witness_signature);
+    const graphene::protocol::signature_type& validator_signature) {
+    my->p2p_thread.async([this, block_id, witness_account, validator_signature]() {
+        my->node->broadcast_block_post_validation(block_id, witness_account, validator_signature);
     }).wait();
 }
 
 void p2p_plugin::post_broadcast_block_post_validation(
     const graphene::protocol::block_id_type block_id,
     const std::string& witness_account,
-    const graphene::protocol::signature_type& witness_signature) {
+    const graphene::protocol::signature_type& validator_signature) {
     // Fire-and-forget: queue the broadcast on the P2P thread without
     // blocking the caller.  The production timer thread must never
     // wait for slow peer socket I/O — a blocked wait would cause the
     // production loop to miss its slot window.
-    my->p2p_thread.async([this, block_id, witness_account, witness_signature]() {
-        my->node->broadcast_block_post_validation(block_id, witness_account, witness_signature);
+    my->p2p_thread.async([this, block_id, witness_account, validator_signature]() {
+        my->node->broadcast_block_post_validation(block_id, witness_account, validator_signature);
     });
 }
 

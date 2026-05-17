@@ -149,7 +149,7 @@ namespace chain {
 
                 if (block.block_num() % 500 == 0) {
                     ilog("\033[93mSyncing Blockchain --- Got block: #${n} time: ${t} producer: ${p}\033[0m",
-                         ("t", block.timestamp)("n", block.block_num())("p", block.witness));
+                         ("t", block.timestamp)("n", block.block_num())("p", block.validator));
                 }
             } else {
                 if (sync_start_logged) {

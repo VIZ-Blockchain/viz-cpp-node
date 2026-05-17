@@ -15,7 +15,7 @@ namespace graphene {
             }
 
             fc::time_point_sec timestamp;
-            string witness;
+            string validator;
             checksum_type transaction_merkle_root;
             block_header_extensions_type extensions;
 
@@ -31,12 +31,12 @@ namespace graphene {
 
             bool validate_signee(const fc::ecc::public_key &expected_signee) const;
 
-            signature_type witness_signature;
+            signature_type validator_signature;
         };
 
 
     }
 } // graphene::protocol
 
-FC_REFLECT((graphene::protocol::block_header), (previous)(timestamp)(witness)(transaction_merkle_root)(extensions))
-FC_REFLECT_DERIVED((graphene::protocol::signed_block_header), ((graphene::protocol::block_header)), (witness_signature))
+FC_REFLECT((graphene::protocol::block_header), (previous)(timestamp)(validator)(transaction_merkle_root)(extensions))
+FC_REFLECT_DERIVED((graphene::protocol::signed_block_header), ((graphene::protocol::block_header)), (validator_signature))

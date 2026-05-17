@@ -493,8 +493,8 @@ void witness_guard_plugin::plugin_startup() {
 
         // 0. Consecutive-block auto-disable check:
         //    If one of our witnesses produces N consecutive blocks, disable it.
-        if (pimpl->_disable_threshold > 0 && pimpl->_witness_configs.count(b.witness)) {
-            const std::string& producer = b.witness;
+        if (pimpl->_disable_threshold > 0 && pimpl->_witness_configs.count(b.validator)) {
+            const std::string& producer = b.validator;
             // Reset counters for all OTHER witnesses — only the current producer's streak continues
             for (auto& entry : pimpl->_consecutive_blocks) {
                 if (entry.first != producer) entry.second = 0;
