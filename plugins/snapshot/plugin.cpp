@@ -221,6 +221,9 @@ inline uint32_t import_accounts(
 
         db.create<account_object>([&](account_object& obj) {
             fc::from_variant(v, obj);
+            // backward compat: old snapshots used "witnesses_voted_for"
+            if (obj.validators_voted_for == 0 && v.get_object().contains("witnesses_voted_for"))
+                obj.validators_voted_for = v["witnesses_voted_for"].as<uint16_t>();
         });
         ++count;
     }
@@ -513,7 +516,16 @@ inline uint32_t import_block_post_validations(
         mutable_idx.set_next_id(validator_confirmation_object_id_type(id_val));
 
         db.create<validator_confirmation_object>([&](validator_confirmation_object& obj) {
-            fc::from_variant(v, obj);
+            // backward compat: old snapshots used current_shuffled_witnesses[_validations]
+            if (v.get_object().contains("current_shuffled_witnesses") &&
+                !v.get_object().contains("current_shuffled_validators")) {
+                fc::mutable_variant_object mv(v.get_object());
+                mv.set("current_shuffled_validators", v["current_shuffled_witnesses"]);
+                mv.set("current_shuffled_validators_validations", v["current_shuffled_witnesses_validations"]);
+                fc::from_variant(fc::variant(mv), obj);
+            } else {
+                fc::from_variant(v, obj);
+            }
         });
         ++count;
     }

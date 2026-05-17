@@ -460,7 +460,7 @@ namespace graphene { namespace chain {
 
             /** clears all vote records for a particular account but does not update the
              * witness vote totals.  Vote totals should be updated first via a call to
-             * adjust_proxied_validator_votes( a, -a.witness_vote_weight() )
+             * adjust_proxied_validator_votes( a, -a.validator_vote_weight() )
              */
             void clear_validator_votes(const account_object &a);
 

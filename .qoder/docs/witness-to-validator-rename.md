@@ -66,6 +66,7 @@ Nothing remaining. All renames complete.
 - `witness_vote_object` — internal vote-tracking object; not exposed by name in protocol
 - `witness_penalty_expire_object` — internal object; not exposed in protocol
 - `witness_penalty_expire_object::witness` field — internal back-reference, not a block header field
+- `witness_vote_index`, `by_account_witness` — chainbase index tags; tied to `witness_vote_object`, not renamed
 
 ---
 
@@ -314,9 +315,17 @@ Even with server-side fallback, clients will receive **responses** with new name
 11. ✅ Rename skip flag: `skip_validator_signature`.
 12. ✅ Plugin namespaces: `validator_plugin`, `validator_api`, `validator_guard`. `plugin_name` strings updated.
 
+### Phase 2 — Additional API-visible fields ✅ Done
+
+1. ✅ Rename `account_object` fields: `witnesses_voted_for` → `validators_voted_for`, `witnesses_vote_weight` → `validators_vote_weight`; methods `witness_vote_weight()` → `validator_vote_weight()`, `witness_vote_fair_weight()` → `validator_vote_fair_weight()`, `witness_vote_fair_weight_prehf5()` → `validator_vote_fair_weight_prehf5()`.
+2. ✅ Rename `account_api_object` fields: `witnesses_voted_for`, `witnesses_vote_weight`, `witness_votes` → `validators_voted_for`, `validators_vote_weight`, `validator_votes`.
+3. ✅ Rename `config.hpp`/`config_testnet.hpp` constants: `CHAIN_MAX_WITNESSES` → `CHAIN_MAX_VALIDATORS`, `CHAIN_BLOCK_WITNESS_REPEAT` → `CHAIN_BLOCK_VALIDATOR_REPEAT`, `CHAIN_EMERGENCY_WITNESS_ACCOUNT` → `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT`, `CHAIN_HARDFORK_REQUIRED_WITNESSES` → `CHAIN_HARDFORK_REQUIRED_VALIDATORS`, `CHAIN_MAX_ACCOUNT_WITNESS_VOTES` → `CHAIN_MAX_ACCOUNT_VALIDATOR_VOTES`, `CHAIN_MAX_WITNESS_URL_LENGTH` → `CHAIN_MAX_VALIDATOR_URL_LENGTH`, `CONSENSUS_WITNESS_MISS_PENALTY_*` → `CONSENSUS_VALIDATOR_MISS_PENALTY_*`, `CONSENSUS_WITNESS_DECLARATION_FEE` → `CONSENSUS_VALIDATOR_DECLARATION_FEE` etc.
+4. ✅ `get_config.cpp` API key strings updated to new names.
+5. ✅ Snapshot `import_accounts` — backward compat for old `witnesses_voted_for` key.
+
 ### Phase 3 — External library updates
 
-1. Update JS client library: operation name constants, API method names, response parsing, block header field names.
+1. Update JS client library: operation name constants, API method names, response parsing, block header field names, `get_config` key names, `account_api_object` field names.
 2. Update PHP client library: same scope.
 3. After both libraries are released, schedule removal of the server-side fallback aliases.
 
@@ -326,19 +335,19 @@ Even with server-side fallback, clients will receive **responses** with new name
 
 | File | Status | Scope |
 |------|--------|-------|
-| `plugins/witness/include/graphene/plugins/witness/witness.hpp` | ✅ Done | Enum namespace, method declarations |
-| `plugins/witness/witness.cpp` | ✅ Done | All enum references, method definitions, block field accesses |
-| `plugins/witness_guard/witness_guard.cpp` | ✅ Done | Object types, block field accesses |
-| `plugins/witness_guard/include/.../witness_guard.hpp` | ✅ Done | Class names, config declarations |
-| `plugins/witness_api/plugin.cpp` | ✅ Done | API method names + deprecated aliases |
-| `plugins/witness_api/include/.../plugin.hpp` | ✅ Done | API method declarations |
+| `plugins/validator/include/graphene/plugins/validator/validator.hpp` | ✅ Done | Enum namespace, method declarations |
+| `plugins/validator/validator.cpp` | ✅ Done | All enum references, method definitions, block field accesses |
+| `plugins/validator_guard/validator_guard.cpp` | ✅ Done | Object types, block field accesses |
+| `plugins/validator_guard/include/.../validator_guard.hpp` | ✅ Done | Class names, config declarations |
+| `plugins/validator_api/plugin.cpp` | ✅ Done | API method names + deprecated aliases |
+| `plugins/validator_api/include/.../plugin.hpp` | ✅ Done | API method declarations |
 | `plugins/p2p/p2p_plugin.cpp` | ✅ Done | `validator_signature` parameter |
 | `plugins/p2p/include/.../p2p_plugin.hpp` | ✅ Done | `validator_signature` parameter |
 | `plugins/chain/plugin.cpp` | ✅ Done | Block field access |
 | `plugins/snapshot/plugin.cpp` | ✅ Done | Object types, field accesses, backward compat import |
 | `plugins/database_api/api.cpp` | ✅ Done | Object type references |
 | `plugins/account_history/plugin.cpp` | ✅ Done | Operation visitor method names |
-| `libraries/chain/include/graphene/chain/witness_objects.hpp` | ✅ Done | Object type names, field names (file not renamed yet) |
+| `libraries/chain/include/graphene/chain/validator_objects.hpp` | ✅ Done | Object type names, field names, CHAIN_MAX_VALIDATORS array size |
 | `libraries/chain/include/graphene/chain/global_property_object.hpp` | ✅ Done | `current_validator` field + FC_REFLECT |
 | `libraries/chain/include/graphene/chain/chain_objects.hpp` | ✅ Done | `validator_confirmation_object`, `validator_confirmation_index` |
 | `libraries/chain/database.cpp` | ✅ Done | All object and block field references |
@@ -365,6 +374,12 @@ Even with server-side fallback, clients will receive **responses** with new name
 | `libraries/wallet/wallet.cpp` | ✅ Done | CLI wallet command implementations |
 | `libraries/wallet/include/graphene/wallet/wallet.hpp` | ✅ Done | CLI wallet method declarations |
 | `libraries/wallet/include/graphene/wallet/remote_node_api.hpp` | ✅ Done | Remote API method names |
+| `libraries/chain/include/graphene/chain/account_object.hpp` | ✅ Done | `witnesses_voted_for`→`validators_voted_for`, `witnesses_vote_weight`→`validators_vote_weight`, methods |
+| `libraries/api/include/graphene/api/account_api_object.hpp` | ✅ Done | Same fields + `witness_votes`→`validator_votes` |
+| `libraries/api/account_api_object.cpp` | ✅ Done | Field assignments |
+| `libraries/protocol/include/graphene/protocol/config.hpp` | ✅ Done | All `WITNESS` constants → `VALIDATOR` |
+| `libraries/protocol/include/graphene/protocol/config_testnet.hpp` | ✅ Done | Same |
+| `libraries/protocol/get_config.cpp` | ✅ Done | API string keys updated |
 | `share/vizd/config/config_witness.ini` | ✅ Done | Plugin names → `validator`, `validator_api`, `validator_guard` |
 | `share/vizd/config/config.ini` | ✅ Done | Plugin names |
 | `share/vizd/config/config_debug.ini` | ✅ Done | Plugin names |

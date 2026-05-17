@@ -385,7 +385,7 @@ std::vector<account_api_object> plugin::api_impl::get_accounts(std::vector<std::
             results.push_back(account_api_object(*itr, _db));
             auto vitr = vidx.lower_bound(boost::make_tuple(itr->id, validator_id_type()));
             while (vitr != vidx.end() && vitr->account == itr->id) {
-                results.back().witness_votes.insert(_db.get(vitr->witness).owner);
+                results.back().validator_votes.insert(_db.get(vitr->witness).owner);
                 ++vitr;
             }
         }

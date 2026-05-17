@@ -183,7 +183,7 @@ namespace graphene { namespace protocol {
         void validator_update_operation::validate() const {
             validate_account_name(owner);
             FC_ASSERT(url.size() > 0, "URL size must be greater than 0");
-            FC_ASSERT(url.size() < CHAIN_MAX_WITNESS_URL_LENGTH, "URL size must be lesser than CHAIN_MAX_WITNESS_URL_LENGTH");
+            FC_ASSERT(url.size() < CHAIN_MAX_VALIDATOR_URL_LENGTH, "URL size must be lesser than CHAIN_MAX_VALIDATOR_URL_LENGTH");
             FC_ASSERT(fc::is_utf8(url), "URL is not valid UTF8");
         }
 

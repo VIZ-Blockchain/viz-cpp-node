@@ -186,8 +186,8 @@ namespace graphene {
 
             uint32_t block_num = 0;
             block_id_type block_id;
-            fc::array<account_name_type, CHAIN_MAX_WITNESSES> current_shuffled_witnesses;
-            fc::array<bool, CHAIN_MAX_WITNESSES> current_shuffled_witnesses_validations;
+            fc::array<account_name_type, CHAIN_MAX_VALIDATORS> current_shuffled_validators;
+            fc::array<bool, CHAIN_MAX_VALIDATORS> current_shuffled_validators_validations;
         };
         typedef multi_index_container <
             validator_confirmation_object,
@@ -221,5 +221,5 @@ FC_REFLECT((graphene::chain::award_shares_expire_object),
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::award_shares_expire_object, graphene::chain::award_shares_expire_index)
 
 FC_REFLECT((graphene::chain::validator_confirmation_object),
-    (id)(block_num)(block_id)(current_shuffled_witnesses)(current_shuffled_witnesses_validations))
+    (id)(block_num)(block_id)(current_shuffled_validators)(current_shuffled_validators_validations))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::validator_confirmation_object, graphene::chain::validator_confirmation_index)

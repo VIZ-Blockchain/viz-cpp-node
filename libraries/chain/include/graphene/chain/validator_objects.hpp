@@ -124,7 +124,7 @@ namespace graphene { namespace chain {
 
             fc::uint128_t current_virtual_time;
             uint32_t next_shuffle_block_num = 1;
-            fc::array<account_name_type, CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT> current_shuffled_validators;
+            fc::array<account_name_type, CHAIN_MAX_VALIDATORS * CHAIN_BLOCK_VALIDATOR_REPEAT> current_shuffled_validators;
             uint8_t num_scheduled_validators = 1;
             chain_properties median_props;
             version majority_version;
@@ -175,7 +175,7 @@ namespace graphene { namespace chain {
 
         fc::uint128_t current_virtual_time;
         uint32_t next_shuffle_block_num = 1;
-        fc::array<account_name_type, CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT> current_shuffled_validators;
+        fc::array<account_name_type, CHAIN_MAX_VALIDATORS * CHAIN_BLOCK_VALIDATOR_REPEAT> current_shuffled_validators;
         uint8_t num_scheduled_validators = 1;
         chain_properties median_props;
         version majority_version;

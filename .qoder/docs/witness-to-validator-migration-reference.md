@@ -53,6 +53,9 @@ This distinction is the most important rule for library developers.
 | Plugin directory and CMake target renames | **Done** | No — internal build |
 | Config key renames (`plugin = validator`, etc.) | **Done** | Yes — node operators must update `config.ini` |
 | API namespace (`validator_api`) | **Done** | Yes — JSON-RPC `"api"` field (see Section 2) |
+| `account_api_object` fields (`validators_voted_for`, `validators_vote_weight`, `validator_votes`) | **Done** | Yes — `get_accounts` response |
+| `get_config` keys (`CHAIN_MAX_VALIDATORS`, `CHAIN_HARDFORK_REQUIRED_VALIDATORS`, etc.) | **Done** | Yes — `get_config` response |
+| Config constants (`CHAIN_MAX_VALIDATORS`, `CHAIN_BLOCK_VALIDATOR_REPEAT`, `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT`, etc.) | **Done** | No — internal C++ only |
 
 ---
 
@@ -477,3 +480,22 @@ Not directly relevant to JS/PHP libraries, but included for completeness:
 | `witness_miss_penalty_percent` | `validator_miss_penalty_percent` | `chain_properties_hf6` |
 | `witness_miss_penalty_duration` | `validator_miss_penalty_duration` | `chain_properties_hf6` |
 | `witness_declaration_fee` | `validator_declaration_fee` | `chain_properties_hf9` |
+
+### Account Object Fields (`get_accounts` response)
+
+| Old Field | New Field | Notes |
+|-----------|-----------|-------|
+| `witnesses_voted_for` | `validators_voted_for` | Count of validators the account voted for |
+| `witnesses_vote_weight` | `validators_vote_weight` | Cached voting weight |
+| `witness_votes` | `validator_votes` | Set of validator account names voted for |
+
+### `get_config` Response Keys
+
+| Old Key | New Key |
+|---------|---------|
+| `CHAIN_HARDFORK_REQUIRED_WITNESSES` | `CHAIN_HARDFORK_REQUIRED_VALIDATORS` |
+| `CHAIN_MAX_ACCOUNT_WITNESS_VOTES` | `CHAIN_MAX_ACCOUNT_VALIDATOR_VOTES` |
+| `CHAIN_MAX_WITNESSES` | `CHAIN_MAX_VALIDATORS` |
+| `CHAIN_MAX_SUPPORT_WITNESSES` | `CHAIN_MAX_SUPPORT_VALIDATORS` |
+| `CHAIN_MAX_TOP_WITNESSES` | `CHAIN_MAX_TOP_VALIDATORS` |
+| `CHAIN_MAX_WITNESS_URL_LENGTH` | `CHAIN_MAX_VALIDATOR_URL_LENGTH` |

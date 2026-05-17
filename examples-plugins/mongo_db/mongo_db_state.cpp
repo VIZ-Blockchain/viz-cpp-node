@@ -182,7 +182,7 @@ namespace mongo_db {
                 body << "proxied_vsf_votes" << ben_array;
             }
 
-            format_value(body, "witnesses_voted_for", account.witnesses_voted_for);
+            format_value(body, "validators_voted_for", account.validators_voted_for);
 
             format_value(body, "last_root_post", account.last_root_post);
             format_value(body, "last_post", account.last_post);

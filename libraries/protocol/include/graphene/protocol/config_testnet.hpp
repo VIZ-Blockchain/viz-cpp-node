@@ -25,21 +25,21 @@
 #define CHAIN_CLEAR_CLOSED_COMMITTEE_REQUEST_DELAY        fc::minutes(10)
 
 #define CHAIN_BLOCK_INTERVAL                  3
-#define CHAIN_BLOCK_WITNESS_REPEAT            1
+#define CHAIN_BLOCK_VALIDATOR_REPEAT            1
 #define CHAIN_BLOCKS_PER_YEAR                 (365*24*60*60/CHAIN_BLOCK_INTERVAL)
 #define CHAIN_BLOCKS_PER_DAY                  (24*60*60/CHAIN_BLOCK_INTERVAL)
 #define CHAIN_BLOCKS_PER_HOUR                 (60*60/CHAIN_BLOCK_INTERVAL)
-#define CHAIN_MAX_WITNESS_MISSED_BLOCKS       200 // ~10 min after first missed block for top witness
+#define CHAIN_MAX_VALIDATOR_MISSED_BLOCKS       200 // ~10 min after first missed block for top witness
 
 #define CHAIN_INITIATOR_NAME                 "viz"
 // Private key: 5JabcrvaLnBTCkCVFX5r4rmeGGfuJuVp4NAKRNLTey6pxhRQmf4
 #define CHAIN_INITIATOR_PUBLIC_KEY_STR       "VIZ6MyX5QiXAXRZk7SYCiqpi6Mtm8UbHWDFSV8HPpt7FJyahCnc2T"
 #define CHAIN_INITIATOR_PUBLIC_KEY            (graphene::protocol::public_key_type(CHAIN_INITIATOR_PUBLIC_KEY_STR))
 #define CHAIN_NUM_INITIATORS                  0
-#define CHAIN_MAX_TOP_WITNESSES               1
-#define CHAIN_MAX_SUPPORT_WITNESSES           0
-#define CHAIN_MAX_WITNESSES                   (CHAIN_MAX_TOP_WITNESSES+CHAIN_MAX_SUPPORT_WITNESSES)
-#define CHAIN_HARDFORK_REQUIRED_WITNESSES     1
+#define CHAIN_MAX_TOP_VALIDATORS               1
+#define CHAIN_MAX_SUPPORT_VALIDATORS           0
+#define CHAIN_MAX_VALIDATORS                   (CHAIN_MAX_TOP_VALIDATORS+CHAIN_MAX_SUPPORT_VALIDATORS)
+#define CHAIN_HARDFORK_REQUIRED_VALIDATORS     1
 #define CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT 20
 #define CHAIN_MAX_TIME_UNTIL_EXPIRATION       (60*60) // seconds,  aka: 1 hour
 #define CHAIN_MAX_PROXY_RECURSION_DEPTH       4
@@ -51,8 +51,8 @@
 #define CHAIN_MAX_COMMENT_BENEFICIARIES       64
 #define CHAIN_VOTE_ENERGY_RATE                1
 
-#define CHAIN_MAX_ACCOUNT_WITNESS_VOTES_PRE_HF4 2
-#define CHAIN_MAX_ACCOUNT_WITNESS_VOTES       100
+#define CHAIN_MAX_ACCOUNT_VALIDATOR_VOTES_PRE_HF4 2
+#define CHAIN_MAX_ACCOUNT_VALIDATOR_VOTES       100
 
 #define CHAIN_100_PERCENT                     10000
 #define CHAIN_1_PERCENT                       (CHAIN_100_PERCENT/100)
@@ -64,7 +64,7 @@
 #define CHAIN_COMMITTEE_FUND_PERCENT          (35*CHAIN_1_PERCENT) //35% of inflation
 #define CHAIN_DIGITAL_ASSET_ISSUED_PER_BLOCK  int64_t(1000) //1.000 viz (new emission of digital asset per block)
 
-#define CHAIN_CONSENSUS_INFLATION_WITNESS_PERCENT (20*CHAIN_1_PERCENT) //20% of inflation
+#define CHAIN_CONSENSUS_INFLATION_VALIDATOR_PERCENT (20*CHAIN_1_PERCENT) //20% of inflation
 #define CHAIN_CONSENSUS_INFLATION_RATIO       (50*CHAIN_1_PERCENT) //default: 50% of inflation minus witness percent (80% split between committee and reward fund)
 #define CHAIN_CONSENSUS_INFLATION_RECALC_PERIOD (28*CHAIN_BLOCKS_PER_DAY) //default: period for recalc inflation medians to global properties
 
@@ -92,7 +92,7 @@
 
 #define CHAIN_MAX_URL_LENGTH                  256
 #define CHAIN_MAX_MEMO_LENGTH                 2048
-#define CHAIN_MAX_WITNESS_URL_LENGTH          2048
+#define CHAIN_MAX_VALIDATOR_URL_LENGTH          2048
 
 #define CHAIN_INIT_SUPPLY                     int64_t(50000000000)
 #define CHAIN_MAX_SHARE_SUPPLY                int64_t(1000000000000000ll)
@@ -112,11 +112,11 @@
 #define CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC    3600  // 1 hour
 
 /// The witness account name that produces blocks during emergency mode
-#define CHAIN_EMERGENCY_WITNESS_ACCOUNT          CHAIN_COMMITTEE_ACCOUNT  // "committee"
+#define CHAIN_EMERGENCY_VALIDATOR_ACCOUNT          CHAIN_COMMITTEE_ACCOUNT  // "committee"
 
 /// The public key used to sign blocks during emergency mode
-#define CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY_STR   "VIZ75CRHVHPwYiUESy1bgN3KhVFbZCQQRA9jT6TnpzKAmpxMPD6Xv"
-#define CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY       (graphene::protocol::public_key_type(CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY_STR))
+#define CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY_STR   "VIZ75CRHVHPwYiUESy1bgN3KhVFbZCQQRA9jT6TnpzKAmpxMPD6Xv"
+#define CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY       (graphene::protocol::public_key_type(CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY_STR))
 
 /// Number of consecutive blocks produced by the emergency witness that
 /// triggers automatic exit from emergency mode (witnesses have rejoined).
@@ -140,12 +140,12 @@
 #define CONSENSUS_VOTE_ACCOUNTING_MIN_RSHARES uint32_t(5000000) // default 0.5 SHARES equivalent
 #define CONSENSUS_COMMITTEE_REQUEST_APPROVE_MIN_PERCENT 1000 // default: 10.00%
 #define CONSENSUS_DATA_OPERATIONS_COST_ADDITIONAL_BANDWIDTH 0
-#define CONSENSUS_WITNESS_MISS_PENALTY_PERCENT 100 // default: 1.00%
-#define CONSENSUS_WITNESS_MISS_PENALTY_DURATION (CHAIN_BLOCKS_PER_DAY*CHAIN_BLOCK_INTERVAL) // default: 1 day
+#define CONSENSUS_VALIDATOR_MISS_PENALTY_PERCENT 100 // default: 1.00%
+#define CONSENSUS_VALIDATOR_MISS_PENALTY_DURATION (CHAIN_BLOCKS_PER_DAY*CHAIN_BLOCK_INTERVAL) // default: 1 day
 
 #define CONSENSUS_CREATE_INVITE_MIN_BALANCE   10000
 #define CONSENSUS_COMMITTEE_CREATE_REQUEST_FEE 100000
-#define CONSENSUS_WITNESS_DECLARATION_FEE     10000
+#define CONSENSUS_VALIDATOR_DECLARATION_FEE     10000
 #define CONSENSUS_CREATE_PAID_SUBSCRIPTION_FEE 100000
 #define CONSENSUS_ACCOUNT_ON_SALE_FEE         10000
 #define CONSENSUS_SUBACCOUNT_ON_SALE_FEE      100000

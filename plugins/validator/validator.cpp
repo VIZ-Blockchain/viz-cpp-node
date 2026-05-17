@@ -308,7 +308,7 @@ namespace graphene {
                         }
                         // Add the committee account to our witness set so we produce blocks
                         // when the schedule assigns committee slots during emergency mode
-                        pimpl->_witnesses.insert(CHAIN_EMERGENCY_WITNESS_ACCOUNT);
+                        pimpl->_witnesses.insert(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT);
                         ilog("Emergency private key loaded. Will produce blocks during emergency consensus mode.");
                     }
 
@@ -508,9 +508,9 @@ namespace graphene {
                     }
 
                     // Condition 1: we hold the emergency-private-key.
-                    // CHAIN_EMERGENCY_WITNESS_ACCOUNT is added to _witnesses only
+                    // CHAIN_EMERGENCY_VALIDATOR_ACCOUNT is added to _witnesses only
                     // when --emergency-private-key is configured (see plugin_initialize).
-                    if (pimpl->_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) == pimpl->_witnesses.end()) {
+                    if (pimpl->_witnesses.find(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) == pimpl->_witnesses.end()) {
                         return false;
                     }
 
@@ -518,8 +518,8 @@ namespace graphene {
                     auto& db = pimpl->database();
                     return db.with_weak_read_lock([&]() -> bool {
                         const validator_schedule_object& wso = db.get_validator_schedule_object();
-                        for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_WITNESS_REPEAT) {
-                            if (wso.current_shuffled_validators[i] == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                        for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                            if (wso.current_shuffled_validators[i] == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) {
                                 return true;
                             }
                         }
@@ -538,9 +538,9 @@ namespace graphene {
                     if (!pimpl || pimpl->_witnesses.empty()) {
                         return false;
                     }
-                    // CHAIN_EMERGENCY_WITNESS_ACCOUNT is added to _witnesses only
+                    // CHAIN_EMERGENCY_VALIDATOR_ACCOUNT is added to _witnesses only
                     // when --emergency-private-key is configured (see plugin_initialize).
-                    return pimpl->_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != pimpl->_witnesses.end();
+                    return pimpl->_witnesses.find(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) != pimpl->_witnesses.end();
                 } catch (...) {
                     return false;
                 }
@@ -1070,7 +1070,7 @@ namespace graphene {
                         if (!_minority_fork_recovering && !_witnesses.empty()) {
                             if (dgp_watch.emergency_consensus_active) {
                                 // Emergency mode: should produce if we have emergency key
-                                should_be_producing = (_witnesses.count(CHAIN_EMERGENCY_WITNESS_ACCOUNT) > 0);
+                                should_be_producing = (_witnesses.count(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) > 0);
                             } else {
                                 // Normal mode: should produce if participation is healthy
                                 uint32_t prate_watch = database().witness_participation_rate();
@@ -1081,7 +1081,7 @@ namespace graphene {
 
                     if (should_be_producing) {
                         auto silent_for = fc::time_point::now() - _last_production_time;
-                        bool is_emrg_master = _witnesses.count(CHAIN_EMERGENCY_WITNESS_ACCOUNT) > 0;
+                        bool is_emrg_master = _witnesses.count(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) > 0;
                         int64_t threshold_us = is_emrg_master ? 60000000 : 180000000;
                         if (silent_for.count() > threshold_us) {
                             // === AUTO-ENABLE DEBUG LOGGING ON FIRST WATCHDOG FIRE ===
@@ -1302,7 +1302,7 @@ namespace graphene {
                 if (db._dlt_mode && chain().is_syncing()) {
                     bool we_are_emergency_master =
                         dgp.emergency_consensus_active &&
-                        _witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end();
+                        _witnesses.find(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) != _witnesses.end();
                     if (!we_are_emergency_master) {
                         return block_validation_condition::not_synced;
                     }
@@ -1356,7 +1356,7 @@ namespace graphene {
                         // producing on a stale head creates double-production
                         // collisions and minority forks (p32.log).
                         bool we_are_emergency_master =
-                            _witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end();
+                            _witnesses.find(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) != _witnesses.end();
                         if (!we_are_emergency_master && _witnesses.empty()) {
                             elog("EMERGENCY MODE ACTIVE but no witnesses configured! "
                                  "Block production impossible. Add --emergency-private-key to config.");
@@ -1419,7 +1419,7 @@ namespace graphene {
                     // bandwidth and CPU.
                     const validator_schedule_object &wso = db.get_validator_schedule_object();
                     std::set<string> scheduled_witnesses_set;
-                    for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                    for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
                         if (wso.current_shuffled_validators[i] != account_name_type()) {
                             scheduled_witnesses_set.insert(wso.current_shuffled_validators[i]);
                         }
@@ -1482,7 +1482,7 @@ namespace graphene {
 
                 if (db._debug_block_production) ilog("DEBUG_CRASH: block_post_validation done, entering minority fork detection");
                 // === MINORITY FORK DETECTION ===
-                // If the last CHAIN_MAX_WITNESSES (21) blocks in fork_db were ALL
+                // If the last CHAIN_MAX_VALIDATORS (21) blocks in fork_db were ALL
                 // produced by our own configured witnesses, we are likely stuck on
                 // a minority fork where no external witnesses are participating.
                 //
@@ -1505,7 +1505,7 @@ namespace graphene {
                         uint32_t blocks_checked = 0;
                         auto current = fork_head;
 
-                        while (current && blocks_checked < CHAIN_MAX_WITNESSES) {
+                        while (current && blocks_checked < CHAIN_MAX_VALIDATORS) {
                             if (_witnesses.find(current->data.validator) == _witnesses.end()) {
                                 all_ours = false;
                                 break;
@@ -1514,7 +1514,7 @@ namespace graphene {
                             current = current->prev.lock();
                         }
 
-                        if (all_ours && blocks_checked >= CHAIN_MAX_WITNESSES) {
+                        if (all_ours && blocks_checked >= CHAIN_MAX_VALIDATORS) {
                             if (_production_skip_flags & graphene::chain::database::skip_undo_history_check) {
                                 // enable-stale-production=true: operator override, continue
                                 dlog("Minority fork detected (last ${n} blocks from our witnesses) "
@@ -1555,7 +1555,7 @@ namespace graphene {
                 // our witnesses unless we're isolated from the master.  This matches
                 // the standard non-emergency minority fork threshold.
                 //
-                // IMPORTANT: If committee (CHAIN_EMERGENCY_WITNESS_ACCOUNT) is in the
+                // IMPORTANT: If committee (CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) is in the
                 // current witness schedule AND we have its key (emergency-private-key
                 // configured), this node IS the emergency master.  All blocks being
                 // "ours" is expected — other nodes sync from us.  Skip minority fork
@@ -1570,10 +1570,10 @@ namespace graphene {
                     // (b) we have its key (committee is in _witnesses only when
                     // emergency-private-key was configured — see plugin_initialize).
                     bool we_are_master = false;
-                    if (_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end()) {
+                    if (_witnesses.find(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) != _witnesses.end()) {
                         const validator_schedule_object &wso = db.get_validator_schedule_object();
-                        for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_WITNESS_REPEAT) {
-                            if (wso.current_shuffled_validators[i] == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                        for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                            if (wso.current_shuffled_validators[i] == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) {
                                 we_are_master = true;
                                 break;
                             }
@@ -1585,7 +1585,7 @@ namespace graphene {
                         // the key.  Run the existing fork_db isolation scan.
                         auto fork_head = db.get_fork_db().head();
                         if (fork_head) {
-                            const uint32_t dlt_minority_threshold = CHAIN_MAX_WITNESSES; // 21 blocks = 1 full round
+                            const uint32_t dlt_minority_threshold = CHAIN_MAX_VALIDATORS; // 21 blocks = 1 full round
                             bool all_ours = true;
                             uint32_t blocks_checked = 0;
                             auto current = fork_head;
@@ -1662,7 +1662,7 @@ namespace graphene {
                     // Emergency master diagnostic: log when we are stuck at slot=0 and
                     // real time is well past the expected next slot (i.e. we should have
                     // a slot available but get_slot_at_time says 0 — NTP or head-time anomaly)
-                    if (_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end()) {
+                    if (_witnesses.find(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) != _witnesses.end()) {
                         const auto &_dgp2 = db.get_dynamic_global_properties();
                         if (_dgp2.emergency_consensus_active) {
                             static fc::time_point _last_slot0_log;
@@ -1720,7 +1720,7 @@ namespace graphene {
                     _last_scheduled_witness = scheduled_witness; // track for diagnostic
                     // Emergency master diagnostic: log when committee is configured but
                     // get_scheduled_validator returned a different name — reveals schedule misalignment
-                    if (_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end()) {
+                    if (_witnesses.find(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) != _witnesses.end()) {
                         const auto &_dgp3 = db.get_dynamic_global_properties();
                         if (_dgp3.emergency_consensus_active) {
                             static fc::time_point _last_nmt_log;
@@ -1770,8 +1770,8 @@ namespace graphene {
 
                 // Check if witness has zero/null signing key (intentionally disabled for block production)
                 if (scheduled_key == graphene::protocol::public_key_type()) {
-                    if (scheduled_witness == CHAIN_EMERGENCY_WITNESS_ACCOUNT &&
-                        _witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end()) {
+                    if (scheduled_witness == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT &&
+                        _witnesses.find(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) != _witnesses.end()) {
                         static fc::time_point _last_zerokey_log;
                         auto _now_zk = fc::time_point::now();
                         if ((_now_zk - _last_zerokey_log).count() > 3000000) {
@@ -1966,7 +1966,7 @@ namespace graphene {
                 } catch (...) {}
 
                 if (db._debug_block_production) ilog("DEBUG_CRASH: calling generate_block for ${w}", ("w", scheduled_witness));
-                if (scheduled_witness == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                if (scheduled_witness == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) {
                     dlog("EMRG-DIAG producing: slot=${s} scheduled_time=${st} head=#${h} aslot=${a}",
                          ("s", slot)("st", scheduled_time)("h", db.head_block_num())
                          ("a", db.get_dynamic_global_properties().current_aslot));

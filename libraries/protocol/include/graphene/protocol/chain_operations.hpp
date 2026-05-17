@@ -485,12 +485,12 @@ namespace graphene { namespace protocol {
             /**
              *  Consensus - Witness who missed the block will receive a penality of a percentage of the votes
              */
-            int16_t validator_miss_penalty_percent = CONSENSUS_WITNESS_MISS_PENALTY_PERCENT;
+            int16_t validator_miss_penalty_percent = CONSENSUS_VALIDATOR_MISS_PENALTY_PERCENT;
 
             /**
              *  Consensus - Witness who missed the block will receive a penality with duration (in seconds)
              */
-            uint32_t validator_miss_penalty_duration = CONSENSUS_WITNESS_MISS_PENALTY_DURATION;
+            uint32_t validator_miss_penalty_duration = CONSENSUS_VALIDATOR_MISS_PENALTY_DURATION;
 
             void validate() const {
                 chain_properties_hf4::validate();
@@ -543,7 +543,7 @@ namespace graphene { namespace protocol {
             /**
              *  Consensus - Fee to the network committee for declare account as witness
              */
-            asset validator_declaration_fee = asset(CONSENSUS_WITNESS_DECLARATION_FEE, TOKEN_SYMBOL);
+            asset validator_declaration_fee = asset(CONSENSUS_VALIDATOR_DECLARATION_FEE, TOKEN_SYMBOL);
 
             /**
              *  Consensus - withdraw intervals (duration defined as CHAIN_VESTING_WITHDRAW_INTERVAL_SECONDS equal 1 day)

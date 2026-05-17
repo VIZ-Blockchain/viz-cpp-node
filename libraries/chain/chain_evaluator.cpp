@@ -1160,19 +1160,19 @@ namespace graphene { namespace chain {
                 FC_ASSERT(o.approve, "Vote doesn't exist, user must indicate a desire to approve witness.");
 
                 if(_db.has_hardfork(CHAIN_HARDFORK_4)){
-                    FC_ASSERT(voter.witnesses_voted_for <
-                              CHAIN_MAX_ACCOUNT_WITNESS_VOTES, "Account has voted for too many witnesses.");
+                    FC_ASSERT(voter.validators_voted_for <
+                              CHAIN_MAX_ACCOUNT_VALIDATOR_VOTES, "Account has voted for too many witnesses.");
                 }
                 else{
-                    FC_ASSERT(voter.witnesses_voted_for <
-                              CHAIN_MAX_ACCOUNT_WITNESS_VOTES_PRE_HF4, "Account has voted for too many witnesses."); // TODO: Remove after hardfork 2
+                    FC_ASSERT(voter.validators_voted_for <
+                              CHAIN_MAX_ACCOUNT_VALIDATOR_VOTES_PRE_HF4, "Account has voted for too many witnesses."); // TODO: Remove after hardfork 2
                 }
 
                 if(_db.has_hardfork(CHAIN_HARDFORK_5)){
                     const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
                     auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr != vidx.end() && vitr->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.witnesses_vote_weight);
+                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.validators_vote_weight);
                         ++vitr;
                     }
 
@@ -1183,17 +1183,17 @@ namespace graphene { namespace chain {
                     });
 
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_voted_for++;
+                        a.validators_voted_for++;
                     });
-                    share_type fair_vote_weight = voter.witness_vote_fair_weight();
+                    share_type fair_vote_weight = voter.validator_vote_fair_weight();
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_vote_weight = fair_vote_weight;
+                        a.validators_vote_weight = fair_vote_weight;
                     });
 
                     const auto &vidx2 = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
                     auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr2 != vidx2.end() && vitr2->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.witnesses_vote_weight);
+                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.validators_vote_weight);
                         ++vitr2;
                     }
                 }
@@ -1201,7 +1201,7 @@ namespace graphene { namespace chain {
                     const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
                     auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr != vidx.end() && vitr->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.witness_vote_fair_weight_prehf5());
+                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.validator_vote_fair_weight_prehf5());
                         ++vitr;
                     }
 
@@ -1212,13 +1212,13 @@ namespace graphene { namespace chain {
                     });
 
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_voted_for++;
+                        a.validators_voted_for++;
                     });
 
                     const auto &vidx2 = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
                     auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr2 != vidx2.end() && vitr2->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.witness_vote_fair_weight_prehf5());
+                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.validator_vote_fair_weight_prehf5());
                         ++vitr2;
                     }
                 }
@@ -1228,9 +1228,9 @@ namespace graphene { namespace chain {
                         v.account = voter.id;
                         v.vote_created_block = _db.head_block_num();
                     });
-                    _db.adjust_validator_vote(witness, voter.witness_vote_weight());
+                    _db.adjust_validator_vote(witness, voter.validator_vote_weight());
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_voted_for++;
+                        a.validators_voted_for++;
                     });
                 }
             } else {
@@ -1240,24 +1240,24 @@ namespace graphene { namespace chain {
                     const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
                     auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr != vidx.end() && vitr->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.witnesses_vote_weight);
+                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.validators_vote_weight);
                         ++vitr;
                     }
 
                     _db.remove(*itr);
 
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_voted_for--;
+                        a.validators_voted_for--;
                     });
-                    share_type fair_vote_weight = voter.witness_vote_fair_weight();
+                    share_type fair_vote_weight = voter.validator_vote_fair_weight();
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_vote_weight = fair_vote_weight;
+                        a.validators_vote_weight = fair_vote_weight;
                     });
 
                     const auto &vidx2 = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
                     auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr2 != vidx2.end() && vitr2->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.witnesses_vote_weight);
+                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.validators_vote_weight);
                         ++vitr2;
                     }
                 }
@@ -1265,27 +1265,27 @@ namespace graphene { namespace chain {
                     const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
                     auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr != vidx.end() && vitr->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.witness_vote_fair_weight_prehf5());
+                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.validator_vote_fair_weight_prehf5());
                         ++vitr;
                     }
 
                     _db.remove(*itr);
 
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_voted_for--;
+                        a.validators_voted_for--;
                     });
 
                     const auto &vidx2 = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
                     auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr2 != vidx2.end() && vitr2->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.witness_vote_fair_weight_prehf5());
+                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.validator_vote_fair_weight_prehf5());
                         ++vitr2;
                     }
                 }
                 else{
-                    _db.adjust_validator_vote(witness, -voter.witness_vote_weight());
+                    _db.adjust_validator_vote(witness, -voter.validator_vote_weight());
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_voted_for--;
+                        a.validators_voted_for--;
                     });
                     _db.remove(*itr);
                 }

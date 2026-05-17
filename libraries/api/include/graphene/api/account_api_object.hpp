@@ -65,8 +65,8 @@ struct account_api_object {
 
     std::vector<share_type> proxied_vsf_votes;
 
-    uint16_t witnesses_voted_for;
-    share_type witnesses_vote_weight;
+    uint16_t validators_voted_for;
+    share_type validators_vote_weight;
 
     time_point_sec last_root_post;
     time_point_sec last_post;
@@ -74,7 +74,7 @@ struct account_api_object {
     share_type lifetime_bandwidth;
     time_point_sec last_bandwidth_update;
 
-    set<string> witness_votes;
+    set<string> validator_votes;
 
     bool valid;
 
@@ -109,10 +109,10 @@ FC_REFLECT(
     (content_count)(awarded_rshares)(custom_sequence)(custom_sequence_block_num)(energy)(last_vote_time)(balance)
     (vesting_shares)(delegated_vesting_shares)(received_vesting_shares)
     (vesting_withdraw_rate)(next_vesting_withdrawal)(withdrawn)(to_withdraw)(withdraw_routes)
-    (curation_rewards)(posting_rewards)(receiver_awards)(benefactor_awards)(proxied_vsf_votes)(witnesses_voted_for)
-    (witnesses_vote_weight)(last_post)(last_root_post)
+    (curation_rewards)(posting_rewards)(receiver_awards)(benefactor_awards)(proxied_vsf_votes)(validators_voted_for)
+    (validators_vote_weight)(last_post)(last_root_post)
     (average_bandwidth)(lifetime_bandwidth)(last_bandwidth_update)
-    (witness_votes)
+    (validator_votes)
     (valid)
     (account_seller)(account_offer_price)(account_on_sale)(account_on_sale_start_time)
     (subaccount_seller)(subaccount_offer_price)(subaccount_on_sale)

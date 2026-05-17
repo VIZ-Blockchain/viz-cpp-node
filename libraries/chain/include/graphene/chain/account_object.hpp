@@ -68,8 +68,8 @@ public:
 
     fc::array<share_type, CHAIN_MAX_PROXY_RECURSION_DEPTH> proxied_vsf_votes;// = std::vector<share_type>( CHAIN_MAX_PROXY_RECURSION_DEPTH, 0 ); ///< the total VFS votes proxied to this account
 
-    uint16_t witnesses_voted_for = 0;
-    share_type witnesses_vote_weight = 0;
+    uint16_t validators_voted_for = 0;
+    share_type validators_vote_weight = 0;
 
     time_point_sec last_root_post;
     time_point_sec last_post;
@@ -78,27 +78,27 @@ public:
     share_type lifetime_bandwidth;
     time_point_sec last_bandwidth_update;
 
-    /// This function should be used only when the account votes for a witness directly
-    share_type witness_vote_weight() const {
+    /// This function should be used only when the account votes for a validator directly
+    share_type validator_vote_weight() const {
         return std::accumulate(proxied_vsf_votes.begin(),
                 proxied_vsf_votes.end(),
                 vesting_shares.amount);
     }
-    share_type witness_vote_fair_weight_prehf5() const {
+    share_type validator_vote_fair_weight_prehf5() const {
         share_type weight=0;
-        if(0<witnesses_voted_for){
-            weight = (fc::uint128_t(vesting_shares.amount.value) / witnesses_voted_for).to_uint64();
+        if(0<validators_voted_for){
+            weight = (fc::uint128_t(vesting_shares.amount.value) / validators_voted_for).to_uint64();
         }
         return std::accumulate(proxied_vsf_votes.begin(),
                 proxied_vsf_votes.end(),
                 weight);
     }
 
-    share_type witness_vote_fair_weight() const {
+    share_type validator_vote_fair_weight() const {
         share_type weight=std::accumulate(proxied_vsf_votes.begin(),proxied_vsf_votes.end(),vesting_shares.amount);
         share_type fair_weight=0;
-        if(0<witnesses_voted_for){
-            fair_weight = (fc::uint128_t(weight) / witnesses_voted_for).to_uint64();
+        if(0<validators_voted_for){
+            fair_weight = (fc::uint128_t(weight) / validators_voted_for).to_uint64();
         }
         return fair_weight;
     }
@@ -520,7 +520,7 @@ FC_REFLECT((graphene::chain::account_object),
                 (vesting_withdraw_rate)(next_vesting_withdrawal)(withdrawn)(to_withdraw)(withdraw_routes)
                 (curation_rewards)
                 (posting_rewards)
-                (proxied_vsf_votes)(witnesses_voted_for)
+                (proxied_vsf_votes)(validators_voted_for)
                 (last_root_post)(last_post)
                 (average_bandwidth)(lifetime_bandwidth)(last_bandwidth_update)
                 (valid)
