@@ -180,5 +180,20 @@
 #define CHAIN_ROOT_POST_PARENT                (account_name_type())
 ///@}
 
+/// HF13: Validator reward sharing constants
+#define CHAIN_VALIDATOR_MAX_SHARING_RATE      CHAIN_100_PERCENT
+
+/// Default epoch length (1 hour in testnet for faster iteration).
+#define CHAIN_DEFAULT_DISTRIBUTION_EPOCH_LENGTH  CHAIN_BLOCKS_PER_HOUR
+
+/// Minimum epoch length: 1 block in testnet to allow any interval.
+#define CHAIN_MIN_DISTRIBUTION_EPOCH_LENGTH  uint32_t(1)
+
+/// Minimum TOKEN amount per stakeholder payout (1 atomic unit = 0.001 VIZ).
+#define CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT   int64_t(1)
+
+/// Chainbase schema version — must match CHAIN_SCHEMA_VERSION in config.hpp.
+#define CHAIN_SCHEMA_VERSION                  uint32_t(13)
+
 // Deprecated defines
 #define CHAIN_CASHOUT_WINDOW_SECONDS          (60*60*24)  // 1 day
