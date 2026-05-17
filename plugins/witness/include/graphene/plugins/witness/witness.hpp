@@ -66,6 +66,12 @@ namespace graphene {
                 /// Returns true if a locally-controlled validator is scheduled to produce in the next slot
                 bool is_validator_scheduled_soon() const;
 
+                /// Returns the slot time of the earliest upcoming slot where a locally-controlled
+                /// validator is scheduled and we hold its private key. Returns fc::time_point_sec()
+                /// (epoch) if no such slot exists. Used by the snapshot plugin to defer snapshot
+                /// creation until after the witness has produced its block.
+                fc::time_point_sec get_next_validator_slot_time() const;
+
                 /// Deprecated alias — use is_validator_scheduled_soon().
                 bool is_witness_scheduled_soon() const { return is_validator_scheduled_soon(); }
 

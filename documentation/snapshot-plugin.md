@@ -33,7 +33,7 @@ snapshot-every-n-blocks = 100000
 snapshot-dir = /var/lib/vizd/snapshots
 ```
 
-**Witness-Aware Deferral:** When the node is also a block-producing witness, periodic snapshot creation is automatically deferred if the witness is scheduled to produce within the next 4 slots (~12 seconds). This covers the typical snapshot creation time (~10 seconds) plus a safety margin, preventing snapshot serialization from causing the witness to miss its production slot. The snapshot is created once the witness is no longer scheduled in the near-term slots.
+**Witness-Aware Deferral:** When the node is also a block-producing witness, periodic snapshot creation is automatically deferred if the witness is scheduled to produce within the next 5 slots (~15 seconds). This covers the typical snapshot creation time (~10 seconds) plus a safety margin, preventing snapshot serialization from causing the witness to miss its production slot. The deferred snapshot waits until the witness's specific slot has been filled (its block produced and applied, or the slot missed and the chain moved past it), then starts immediately — avoiding any overlap with witness production.
 
 **Non-Blocking Snapshot Creation:** Snapshot creation runs asynchronously on a dedicated background thread. Only the database read phase (serialization of state) holds a read lock (~1 second); compression and file I/O run without any lock. This means block processing is only briefly paused during the read phase, and API/P2P reads are never blocked — eliminating the read-lock timeouts and `unlinkable_block_exception` errors that occurred when snapshot creation ran synchronously inside the write-lock scope.
 

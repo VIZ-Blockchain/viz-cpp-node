@@ -423,8 +423,8 @@ namespace graphene {
                         slot = 1;
                     }
 
-                    // Check 4 upcoming slots (~12 seconds) to cover snapshot creation time (~10s) + safety margin
-                    for (uint32_t s = slot; s <= slot + 3; ++s) {
+                    // Check 5 upcoming slots (~15 seconds) to cover snapshot creation time (~10s) + safety margin
+                    for (uint32_t s = slot; s <= slot + 4; ++s) {
                         string scheduled_witness = db.get_scheduled_witness(s);
                         if (pimpl->_witnesses.find(scheduled_witness) == pimpl->_witnesses.end()) {
                             continue;
@@ -452,6 +452,53 @@ namespace graphene {
                     wlog("is_validator_scheduled_soon check failed with unknown exception");
                 }
                 return false;
+            }
+
+            fc::time_point_sec witness_plugin::get_next_validator_slot_time() const {
+                try {
+                    if (!pimpl || pimpl->_witnesses.empty() || pimpl->_private_keys.empty()) {
+                        return fc::time_point_sec();
+                    }
+
+                    auto& db = pimpl->database();
+                    auto op_guard = db.make_operation_guard();
+                    fc::time_point now_fine = graphene::time::now();
+                    fc::time_point_sec now = now_fine + fc::microseconds(250000);
+
+                    uint32_t slot = db.get_slot_at_time(now);
+                    if (slot == 0) {
+                        slot = 1;
+                    }
+
+                    for (uint32_t s = slot; s <= slot + 4; ++s) {
+                        string scheduled_witness = db.get_scheduled_witness(s);
+                        if (pimpl->_witnesses.find(scheduled_witness) == pimpl->_witnesses.end()) {
+                            continue;
+                        }
+
+                        const auto& witness_by_name = db.get_index<graphene::chain::witness_index>().indices().get<graphene::chain::by_name>();
+                        auto itr = witness_by_name.find(scheduled_witness);
+                        if (itr == witness_by_name.end()) {
+                            continue;
+                        }
+
+                        graphene::protocol::public_key_type scheduled_key = itr->signing_key;
+                        if (scheduled_key == graphene::protocol::public_key_type()) {
+                            continue; // Disabled witness (zero key)
+                        }
+
+                        if (pimpl->_private_keys.find(scheduled_key) != pimpl->_private_keys.end()) {
+                            fc::time_point_sec slot_time = db.get_slot_time(s);
+                            op_guard.release();
+                            return slot_time;
+                        }
+                    }
+                } catch (const fc::exception& e) {
+                    wlog("get_next_validator_slot_time check failed: ${e}", ("e", e.to_detail_string()));
+                } catch (...) {
+                    wlog("get_next_validator_slot_time check failed with unknown exception");
+                }
+                return fc::time_point_sec();
             }
 
             bool witness_plugin::is_emergency_master() const {
