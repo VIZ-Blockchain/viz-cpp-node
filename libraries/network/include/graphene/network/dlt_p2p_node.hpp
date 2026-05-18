@@ -286,7 +286,7 @@ private:
     bool is_same_subnet(const fc::ip::address& a, const fc::ip::address& b) const;
 
     // ── Per-IP dedup ─────────────────────────────────────────────
-    peer_id find_active_peer_by_ip(const fc::ip::address& addr) const;
+    peer_id find_active_peer_by_node_id(const node_id_t& nid) const;
 
 private:
     dlt_p2p_delegate*               _delegate = nullptr;
@@ -344,6 +344,7 @@ private:
     fc::thread*                     _thread = nullptr;
     bool                            _running = false;
     std::map<peer_id, fc::future<void>> _read_fibers;
+    std::vector<fc::future<void>> _dead_fibers;
     fc::future<void>                _accept_fiber;
     fc::future<void>                _periodic_fiber;
 
@@ -443,6 +444,9 @@ private:
     std::map<uint32_t, fc::time_point>  _blocked_ips;
     static constexpr uint32_t           BLOCKED_IP_DURATION_SEC = 3600; // 1 hour
     void                                block_incoming_ip(uint32_t ip, const std::string& reason);
+    // Last time a peer exchange request was sent — used by periodic_peer_exchange()
+    // to dynamically throttle based on the number of active peers (see impl).
+    fc::time_point                      _last_peer_exchange_time;
     bool                                is_ip_blocked(uint32_t ip);
 
     // ── Diagnostics ───────────────────────────────────────────────
