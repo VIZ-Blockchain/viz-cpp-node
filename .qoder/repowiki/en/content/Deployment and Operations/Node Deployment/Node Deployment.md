@@ -1,4 +1,4 @@
-# Node Deployment
+﻿# Node Deployment
 
 <cite>
 **Referenced Files in This Document**
@@ -31,7 +31,7 @@
 11. [Appendices](#appendices)
 
 ## Introduction
-This document provides comprehensive deployment guidance for VIZ CPP Node across production, testnet, and specialized configurations. It covers hardware and system prerequisites, installation procedures for multiple operating systems, Docker-based deployments, node types (full, witness, seed), configuration management, service integration, performance tuning, capacity planning, security hardening, and troubleshooting.
+This document provides comprehensive deployment guidance for VIZ CPP Node across production, testnet, and specialized configurations. It covers hardware and system prerequisites, installation procedures for multiple operating systems, Docker-based deployments, node types (full, validator, seed), configuration management, service integration, performance tuning, capacity planning, security hardening, and troubleshooting.
 
 ## Project Structure
 At a high level, the repository provides:
@@ -95,7 +95,7 @@ VIZD --> LOG
 Key behaviors:
 - Plugin registration and initialization occur at startup
 - Logging configuration is parsed from the config file sections
-- Docker entrypoint supports environment-driven customization (RPC, P2P, witness identity, private key)
+- Docker entrypoint supports environment-driven customization (RPC, P2P, validator identity, private key)
 
 **Section sources**
 - [programs/vizd/main.cpp](file://programs/vizd/main.cpp#L62-L91)
@@ -117,7 +117,7 @@ participant Log as "Logging Config"
 participant P2P as "P2P Plugin"
 participant RPC as "Webserver Plugin"
 Entrypoint->>Env : Read VIZD_* variables
-Entrypoint->>Vizd : Pass --p2p-endpoint, --rpc-endpoint, --data-dir, seed nodes, witness, private-key
+Entrypoint->>Vizd : Pass --p2p-endpoint, --rpc-endpoint, --data-dir, seed nodes, validator, private-key
 Vizd->>Cfg : Load config.ini and parse sections
 Cfg-->>Log : Build logging config from [log.*] and [logger.*]
 Vizd->>Log : Configure logging
@@ -136,16 +136,16 @@ Vizd-->>Entrypoint : Running
 
 ### Node Types and Roles
 - Full node: Participates in P2P gossip, serves RPC APIs, optionally tracks history and feeds
-- Witness node: Produces blocks; requires a configured witness name and private key
+- validator node: Produces blocks; requires a configured validator name and private key
 - Seed node: Minimal footprint, connects peers and advertises connectivity; recommended low-memory build
 
 Configuration templates:
 - Production template: [config.ini](file://share/vizd/config/config.ini#L1-L130)
-- Witness template: [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107)
+- validator template: [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107)
 - Testnet template: [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
 
 Operational differences:
-- Witness nodes enable block production and require private keys
+- validator nodes enable block production and require private keys
 - Seed nodes typically bind RPC to localhost and disable verbose plugins
 - Testnet enables special participation rules and snapshot-based initialization
 
@@ -159,7 +159,7 @@ Operational differences:
 - Endpoints: P2P, HTTP RPC, WebSocket RPC
 - Locking and threading: Read/write wait limits and single-write-thread behavior
 - Shared memory sizing: Initial size, minimum free space, increment step, and periodic checks
-- Plugins: Enabled via plugin directives; witness and API plugins commonly enabled
+- Plugins: Enabled via plugin directives; validator and API plugins commonly enabled
 - Logging: Console and file appenders, logger levels, and appender routing
 
 Environment overrides:
@@ -201,8 +201,8 @@ flowchart TD
 Start(["Start"]) --> Pull["Pull or Build Image"]
 Pull --> Run["Run Container with Volumes and Ports"]
 Run --> Seed["Set VIZD_SEED_NODES (optional)"]
-Seed --> Witness["Set VIZD_WITNESS_NAME and VIZD_PRIVATE_KEY (optional)"]
-Witness --> Logs["Monitor Logs"]
+Seed --> validator["Set VIZD_WITNESS_NAME and VIZD_PRIVATE_KEY (optional)"]
+validator --> Logs["Monitor Logs"]
 Logs --> End(["Ready"])
 ```
 
@@ -245,7 +245,7 @@ participant Bin as "vizd"
 participant Net as "P2P"
 participant API as "RPC"
 Init->>FS : Read /etc/vizd/seednodes
-Init->>Bin : exec vizd with --p2p-endpoint, --rpc-endpoint, --data-dir, --p2p-seed-node, --witness, --private-key
+Init->>Bin : exec vizd with --p2p-endpoint, --rpc-endpoint, --data-dir, --p2p-seed-node, --validator, --private-key
 Bin->>Bin : Register plugins
 Bin->>Bin : Load logging config
 Bin->>Net : Start P2P
@@ -313,7 +313,7 @@ Plugins --> Chain["Chain"]
 - [share/vizd/config/config_testnet.ini](file://share/vizd/config/config_testnet.ini#L13-L67)
 
 ## Security Hardening
-- Bind RPC to localhost for witness nodes to prevent external exposure
+- Bind RPC to localhost for validator nodes to prevent external exposure
 - Use environment variables to inject secrets (private keys) and restrict filesystem access
 - Restrict P2P exposure to trusted networks; consider firewall rules to allow only necessary ports
 - Monitor logs and set appropriate logger levels to detect anomalies early
@@ -333,8 +333,8 @@ Common issues and resolutions:
   - Adjust read-wait-micro and max-read-wait-retries; consider single-write-thread
 - No peers or slow bootstrapping
   - Confirm p2p-seed-node entries; validate network accessibility on port 2001
-- Witness node not producing blocks
-  - Ensure witness name and private key are set; verify required-participation and enable-stale-production as appropriate
+- validator node not producing blocks
+  - Ensure validator name and private key are set; verify required-participation and enable-stale-production as appropriate
 - Testnet initialization problems
   - Confirm snapshot availability and permissions; check testnet-specific configuration
 
@@ -346,13 +346,13 @@ Common issues and resolutions:
 - [share/vizd/seednodes](file://share/vizd/seednodes#L1-L6)
 
 ## Conclusion
-Deploying a VIZ CPP Node involves selecting the appropriate configuration template, preparing the environment (native or Docker), and integrating with monitoring and security controls. Use the provided Docker images for production, leverage witness and testnet configurations for specialized roles, and tune performance parameters according to workload profiles.
+Deploying a VIZ CPP Node involves selecting the appropriate configuration template, preparing the environment (native or Docker), and integrating with monitoring and security controls. Use the provided Docker images for production, leverage validator and testnet configurations for specialized roles, and tune performance parameters according to workload profiles.
 
 ## Appendices
 
 ### Appendix A: Node Type Reference
 - Full node: General-purpose node with comprehensive plugins
-- Witness node: Block producer with configured witness and private key
+- validator node: Block producer with configured validator and private key
 - Seed node: Minimal footprint, focused on peer connectivity
 
 **Section sources**
@@ -364,8 +364,8 @@ Deploying a VIZ CPP Node involves selecting the appropriate configuration templa
 - VIZD_RPC_ENDPOINT: Override RPC endpoint
 - VIZD_P2P_ENDPOINT: Override P2P endpoint
 - VIZD_SEED_NODES: Comma-separated seed nodes
-- VIZD_WITNESS_NAME: Witness name for block production
-- VIZD_PRIVATE_KEY: Private key for witness signing
+- VIZD_WITNESS_NAME: validator name for block production
+- VIZD_PRIVATE_KEY: Private key for validator signing
 - VIZD_EXTRA_OPTS: Additional arguments to pass to vizd
 
 **Section sources**

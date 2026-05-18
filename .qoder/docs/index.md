@@ -1,4 +1,4 @@
-# VIZ Blockchain — Operations & Structures Spec
+﻿# VIZ Blockchain — Operations & Structures Spec
 
 Full specification and implementation checklist for building VIZ blockchain client libraries in PHP, Node.js, and other languages.
 
@@ -27,7 +27,7 @@ Full specification and implementation checklist for building VIZ blockchain clie
 | [emergency-consensus-review.md](emergency-consensus-review.md) | HF12 implementation review: failure/rollback procedures, threat model, test matrix |
 | [op-account.md](op-account.md) | Account create, update, metadata operations |
 | [op-transfer-vesting.md](op-transfer-vesting.md) | Transfer, transfer_to_vesting, withdraw_vesting, set route, delegate |
-| [op-witness.md](op-witness.md) | Witness update, vote, proxy, chain properties |
+| [op-validator.md](op-validator.md) | validator update, vote, proxy, chain properties |
 | [op-content.md](op-content.md) | Content, vote, delete_content (deprecated), custom |
 | [op-recovery.md](op-recovery.md) | Request/recover account, change recovery account |
 | [op-escrow.md](op-escrow.md) | Escrow transfer, approve, dispute, release |
@@ -53,9 +53,9 @@ Full specification and implementation checklist for building VIZ blockchain clie
 | 3 | `transfer_to_vesting_operation` | active | op-transfer-vesting.md |
 | 4 | `withdraw_vesting_operation` | active | op-transfer-vesting.md |
 | 5 | `account_update_operation` | master/active | op-account.md |
-| 6 | `witness_update_operation` | active | op-witness.md |
-| 7 | `account_witness_vote_operation` | active | op-witness.md |
-| 8 | `account_witness_proxy_operation` | active | op-witness.md |
+| 6 | `witness_update_operation` | active | op-validator.md |
+| 7 | `account_witness_vote_operation` | active | op-validator.md |
+| 8 | `account_witness_proxy_operation` | active | op-validator.md |
 | 9 | `delete_content_operation` *(deprecated)* | regular | op-content.md |
 | 10 | `custom_operation` | active/regular | op-content.md |
 | 11 | `set_withdraw_vesting_route_operation` | active | op-transfer-vesting.md |
@@ -72,14 +72,14 @@ Full specification and implementation checklist for building VIZ blockchain clie
 | 22 | `proposal_create_operation` | active | op-proposal.md |
 | 23 | `proposal_update_operation` | varies | op-proposal.md |
 | 24 | `proposal_delete_operation` | active | op-proposal.md |
-| 25 | `chain_properties_update_operation` | active | op-witness.md |
+| 25 | `chain_properties_update_operation` | active | op-validator.md |
 | 35 | `committee_worker_create_request_operation` | regular | op-committee.md |
 | 36 | `committee_worker_cancel_request_operation` | regular | op-committee.md |
 | 37 | `committee_vote_request_operation` | regular | op-committee.md |
 | 43 | `create_invite_operation` | active | op-invite.md |
 | 44 | `claim_invite_balance_operation` | active | op-invite.md |
 | 45 | `invite_registration_operation` | active | op-invite.md |
-| 46 | `versioned_chain_properties_update_operation` | active | op-witness.md |
+| 46 | `versioned_chain_properties_update_operation` | active | op-validator.md |
 | 47 | `award_operation` | regular | op-award.md |
 | 50 | `set_paid_subscription_operation` | active | op-subscription.md |
 | 51 | `paid_subscribe_operation` | active | op-subscription.md |
@@ -98,7 +98,7 @@ Full specification and implementation checklist for building VIZ blockchain clie
 | 27 | `curation_reward_operation` | Content payout | virtual-operations.md |
 | 28 | `content_reward_operation` | Content payout | virtual-operations.md |
 | 29 | `fill_vesting_withdraw_operation` | Withdrawal interval | virtual-operations.md |
-| 30 | `shutdown_witness_operation` | Witness deactivated | virtual-operations.md |
+| 30 | `shutdown_witness_operation` | validator deactivated | virtual-operations.md |
 | 31 | `hardfork_operation` | Hardfork activation | virtual-operations.md |
 | 32 | `content_payout_update_operation` | Content payout update | virtual-operations.md |
 | 33 | `content_benefactor_reward_operation` | Content payout | virtual-operations.md |

@@ -1,4 +1,4 @@
-# Witness Guard Plugin
+﻿# validator Guard Plugin
 
 <cite>
 **Referenced Files in This Document**
@@ -25,13 +25,13 @@
 
 ## Introduction
 
-The Witness Guard Plugin is a specialized plugin for the VIZ blockchain node that automatically monitors and maintains witness signing keys to prevent downtime in block production. This plugin serves as a critical safety mechanism for witness operators who want to ensure their witnesses remain productive even when encountering issues with their signing keys.
+The validator Guard Plugin is a specialized plugin for the VIZ blockchain node that automatically monitors and maintains validator signing keys to prevent downtime in block production. This plugin serves as a critical safety mechanism for validator operators who want to ensure their validators remain productive even when encountering issues with their signing keys.
 
-The plugin operates by continuously monitoring configured witnesses and automatically restoring their on-chain signing keys when they become null or invalid. It also includes intelligent auto-disable functionality to prevent excessive block production by a single witness, protecting the network from potential centralization risks.
+The plugin operates by continuously monitoring configured validators and automatically restoring their on-chain signing keys when they become null or invalid. It also includes intelligent auto-disable functionality to prevent excessive block production by a single validator, protecting the network from potential centralization risks.
 
 ## Project Structure
 
-The Witness Guard Plugin follows the standard VIZ plugin architecture pattern with a clear separation between interface and implementation:
+The validator Guard Plugin follows the standard VIZ plugin architecture pattern with a clear separation between interface and implementation:
 
 ```mermaid
 graph TB
@@ -66,7 +66,7 @@ end
 
 ## Core Components
 
-The Witness Guard Plugin consists of several key components that work together to provide comprehensive witness monitoring and protection:
+The validator Guard Plugin consists of several key components that work together to provide comprehensive validator monitoring and protection:
 
 ### Main Plugin Class
 The primary plugin class implements the appbase plugin interface and manages the plugin lifecycle. It requires both the chain plugin and p2p plugin to function properly.
@@ -80,10 +80,10 @@ The internal implementation class contains all the core logic for:
 
 ### Data Structures
 The plugin maintains several critical data structures:
-- **Witness Configuration Map**: Stores witness names with their associated key pairs
-- **Consecutive Block Counters**: Tracks blocks produced by each witness
+- **validator Configuration Map**: Stores validator names with their associated key pairs
+- **Consecutive Block Counters**: Tracks blocks produced by each validator
 - **Pending Restoration Tracking**: Manages in-flight transactions
-- **Auto-Disabled Witnesses**: Prevents automatic restoration of problematic witnesses
+- **Auto-Disabled validators**: Prevents automatic restoration of problematic validators
 
 **Section sources**
 - [witness_guard.hpp:11-44](file://plugins/witness_guard/include/graphene/plugins/witness_guard/witness_guard.hpp#L11-L44)
@@ -91,33 +91,33 @@ The plugin maintains several critical data structures:
 
 ## Architecture Overview
 
-The Witness Guard Plugin integrates deeply with the VIZ blockchain's core infrastructure through a sophisticated event-driven architecture:
+The validator Guard Plugin integrates deeply with the VIZ blockchain's core infrastructure through a sophisticated event-driven architecture:
 
 ```mermaid
 sequenceDiagram
 participant Node as "VIZ Node"
 participant Chain as "Chain Plugin"
-participant Guard as "Witness Guard Plugin"
+participant Guard as "validator Guard Plugin"
 participant DB as "Database"
 participant P2P as "P2P Network"
-participant Witness as "Witness Node"
-Note over Node,Witness : Startup Phase
+participant validator as "validator Node"
+Note over Node,validator : Startup Phase
 Node->>Guard : plugin_initialize()
 Guard->>Guard : Parse Configuration
 Guard->>DB : Verify Authority Keys
 Guard->>Guard : Setup Monitoring
-Note over Node,Witness : Runtime Monitoring
+Note over Node,validator : Runtime Monitoring
 Chain->>Guard : applied_block Signal
 Guard->>Guard : Check Consecutive Blocks
-Guard->>DB : Query Witness Status
+Guard->>DB : Query validator Status
 Guard->>Guard : Auto-Disable Check
 alt Null Signing Key Detected
-Guard->>DB : Fetch Witness Object
+Guard->>DB : Fetch validator Object
 Guard->>Guard : Build Restore Transaction
 Guard->>P2P : Broadcast Transaction
 Guard->>Guard : Track Confirmation
 end
-Note over Node,Witness : Periodic Checks
+Note over Node,validator : Periodic Checks
 Chain->>Guard : Block Applied
 Guard->>Guard : Check Restoration Status
 Guard->>DB : Confirm Transaction Inclusion
@@ -140,14 +140,14 @@ The architecture follows a reactive pattern where the plugin listens for blockch
 The plugin supports extensive configuration options that allow fine-tuned control over its behavior:
 
 #### Core Configuration Options
-- **witness-guard-enabled**: Enables or disables the entire plugin functionality
-- **witness-guard-witness**: Configures individual witnesses with their key pairs
-- **witness-guard-interval**: Sets the frequency of periodic checks in blocks
-- **witness-guard-disable**: Controls auto-disable threshold for excessive block production
+- **validator-guard-enabled**: Enables or disables the entire plugin functionality
+- **validator-guard-validator**: Configures individual validators with their key pairs
+- **validator-guard-interval**: Sets the frequency of periodic checks in blocks
+- **validator-guard-disable**: Controls auto-disable threshold for excessive block production
 
-#### Witness Configuration Format
-Each witness configuration requires three components:
-1. **Witness Name**: The account name of the witness
+#### validator Configuration Format
+Each validator configuration requires three components:
+1. **validator Name**: The account name of the validator
 2. **Signing WIF**: Private key for signing blocks
 3. **Active WIF**: Private key for transaction authorization
 
@@ -158,7 +158,7 @@ The plugin validates all configurations during initialization and performs autho
 
 ### Monitoring and Restoration Logic
 
-The core monitoring functionality operates through a sophisticated state machine that tracks witness health and automatically restores compromised keys:
+The core monitoring functionality operates through a sophisticated state machine that tracks validator health and automatically restores compromised keys:
 
 ```mermaid
 flowchart TD
@@ -175,7 +175,7 @@ SyncOK --> |No| SkipRestore
 SyncOK --> |Yes| CheckLIB["Check LIB Age"]
 CheckLIB --> LIBOK{"LIB Recent?"}
 LIBOK --> |No| SkipRestore
-LIBOK --> |Yes| CheckWitnesses["Iterate Configured Witnesses"]
+LIBOK --> |Yes| CheckWitnesses["Iterate Configured validators"]
 CheckWitnesses --> NullKey{"Null Signing Key?"}
 NullKey --> |No| ClearState["Clear Pending State"]
 NullKey --> |Yes| CheckAutoDisabled{"Auto-Disabled?"}
@@ -204,19 +204,19 @@ The restoration process includes comprehensive error handling and retry mechanis
 
 ### Auto-Disable Mechanism
 
-The plugin includes an intelligent auto-disable feature designed to prevent excessive block production by a single witness:
+The plugin includes an intelligent auto-disable feature designed to prevent excessive block production by a single validator:
 
 #### Consecutive Block Detection
-The system tracks blocks produced by each witness and increments counters when the same witness produces consecutive blocks. When the counter reaches the configured threshold, the system automatically disables the witness by broadcasting a transaction that sets the signing key to null.
+The system tracks blocks produced by each validator and increments counters when the same validator produces consecutive blocks. When the counter reaches the configured threshold, the system automatically disables the validator by broadcasting a transaction that sets the signing key to null.
 
 #### Prevention of Excessive Centralization
 This mechanism serves as a safeguard against:
-- Single-witness dominance in block production
-- Potential malicious behavior by a single witness
+- Single-validator dominance in block production
+- Potential malicious behavior by a single validator
 - Network instability caused by excessive block production
 
 #### Operator Intervention Required
-When a witness is auto-disabled, the plugin prevents automatic restoration to ensure operators investigate and address underlying issues. Manual intervention is required to re-enable the witness.
+When a validator is auto-disabled, the plugin prevents automatic restoration to ensure operators investigate and address underlying issues. Manual intervention is required to re-enable the validator.
 
 **Section sources**
 - [witness_guard.cpp:459-495](file://plugins/witness_guard/witness_guard.cpp#L459-L495)
@@ -228,7 +228,7 @@ The plugin implements robust transaction management for both restoration and dis
 
 #### Transaction Construction
 Each operation constructs a properly formatted `witness_update` transaction with:
-- Correct witness owner identification
+- Correct validator owner identification
 - Appropriate URL preservation
 - Proper key updates (restore or disable)
 - Transaction expiration handling
@@ -252,7 +252,7 @@ The plugin maintains detailed tracking of all broadcast transactions:
 
 ## Dependency Analysis
 
-The Witness Guard Plugin has carefully managed dependencies that enable it to function effectively within the VIZ ecosystem:
+The validator Guard Plugin has carefully managed dependencies that enable it to function effectively within the VIZ ecosystem:
 
 ```mermaid
 graph LR
@@ -290,7 +290,7 @@ A --> P
 The plugin requires the chain plugin for:
 - Database access and manipulation
 - Block production scheduling
-- Witness object management
+- validator object management
 - Authority verification
 
 #### P2P Plugin Integration
@@ -313,17 +313,17 @@ The plugin relies on protocol definitions for:
 
 ## Performance Considerations
 
-The Witness Guard Plugin is designed with performance optimization in mind to minimize impact on node operations:
+The validator Guard Plugin is designed with performance optimization in mind to minimize impact on node operations:
 
 ### Efficient Monitoring Strategy
 - **Event-Driven Architecture**: Uses blockchain event signals rather than polling
 - **Intelligent Scheduling**: Adjusts check frequency based on network conditions
-- **Selective Processing**: Only processes blocks that affect monitored witnesses
+- **Selective Processing**: Only processes blocks that affect monitored validators
 - **Memory Management**: Implements efficient data structures for tracking state
 
 ### Resource Optimization
 - **Minimal Memory Footprint**: Uses compact data structures for tracking
-- **Efficient Key Storage**: Optimizes storage of witness configurations
+- **Efficient Key Storage**: Optimizes storage of validator configurations
 - **Connection Management**: Properly manages database connections
 - **Signal Handling**: Efficient signal connection and disconnection
 
@@ -341,18 +341,18 @@ The Witness Guard Plugin is designed with performance optimization in mind to mi
 **Symptoms**: Plugin fails to initialize or appears disabled
 **Causes**:
 - Missing configuration options
-- Invalid witness configurations
+- Invalid validator configurations
 - Missing required plugins (chain, p2p)
 - Authority verification failures
 
 **Solutions**:
 - Verify all configuration options are properly set
-- Check witness configuration format and validity
+- Check validator configuration format and validity
 - Ensure required plugins are enabled in config.ini
-- Validate witness authority keys against blockchain state
+- Validate validator authority keys against blockchain state
 
-#### Witness Restoration Failures
-**Symptoms**: Witness keys not being restored despite null signing keys
+#### validator Restoration Failures
+**Symptoms**: validator keys not being restored despite null signing keys
 **Causes**:
 - Active authority key mismatch
 - Insufficient network synchronization
@@ -366,16 +366,16 @@ The Witness Guard Plugin is designed with performance optimization in mind to mi
 - Monitor P2P network connectivity and transaction propagation
 
 #### Auto-Disable Issues
-**Symptoms**: Witnesses being auto-disabled unexpectedly or not being disabled
+**Symptoms**: validators being auto-disabled unexpectedly or not being disabled
 **Causes**:
 - Incorrect disable threshold configuration
 - Network timing issues
-- Witness scheduling conflicts
+- validator scheduling conflicts
 - Database access problems
 
 **Solutions**:
 - Review and adjust disable threshold settings
-- Monitor witness production patterns
+- Monitor validator production patterns
 - Check network stability and block times
 - Verify database connectivity and performance
 
@@ -385,7 +385,7 @@ The plugin performs extensive validation during initialization:
 
 #### Configuration Validation Steps
 1. **Option Parsing**: Validates all command-line and config file options
-2. **Witness Entry Validation**: Verifies each witness configuration triplet
+2. **validator Entry Validation**: Verifies each validator configuration triplet
 3. **Authority Verification**: Confirms active keys have proper authority
 4. **Network Health Assessment**: Evaluates current network conditions
 5. **Stale Production Detection**: Identifies stale production mode activation
@@ -403,14 +403,14 @@ The plugin implements comprehensive logging for troubleshooting:
 
 ## Conclusion
 
-The Witness Guard Plugin represents a sophisticated solution for maintaining witness reliability in the VIZ blockchain ecosystem. Its comprehensive monitoring capabilities, intelligent auto-disable mechanisms, and robust restoration processes provide essential protection against witness downtime while preventing excessive centralization risks.
+The validator Guard Plugin represents a sophisticated solution for maintaining validator reliability in the VIZ blockchain ecosystem. Its comprehensive monitoring capabilities, intelligent auto-disable mechanisms, and robust restoration processes provide essential protection against validator downtime while preventing excessive centralization risks.
 
 The plugin's architecture demonstrates best practices in blockchain plugin development, including proper separation of concerns, efficient resource management, and comprehensive error handling. Its integration with the VIZ blockchain's event-driven architecture enables real-time monitoring and response to network conditions.
 
-Key benefits of the Witness Guard Plugin include:
+Key benefits of the validator Guard Plugin include:
 - **Automated Reliability**: Continuous monitoring reduces manual intervention requirements
-- **Network Protection**: Prevents excessive witness dominance and centralization
+- **Network Protection**: Prevents excessive validator dominance and centralization
 - **Operational Efficiency**: Intelligent scheduling minimizes performance impact
 - **Security Enhancement**: Comprehensive validation protects against unauthorized operations
 
-For optimal deployment, operators should carefully configure the plugin according to their specific needs, monitor its performance regularly, and maintain awareness of network conditions that may affect its operation. The plugin's comprehensive logging and error reporting capabilities provide excellent visibility into its operations and help ensure reliable witness protection.
+For optimal deployment, operators should carefully configure the plugin according to their specific needs, monitor its performance regularly, and maintain awareness of network conditions that may affect its operation. The plugin's comprehensive logging and error reporting capabilities provide excellent visibility into its operations and help ensure reliable validator protection.

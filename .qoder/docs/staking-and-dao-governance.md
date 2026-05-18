@@ -1,4 +1,4 @@
-# VIZ Staking (Vesting Shares) and DAO Self-Governance
+﻿# VIZ Staking (Vesting Shares) and DAO Self-Governance
 
 ## What is Staking in VIZ
 
@@ -82,27 +82,27 @@ When removing delegation, the SHARES enter a 5-day expiration period (matching e
 
 SHARES are the universal governance token. Every meaningful action in VIZ is weighted by `effective_vesting_shares`:
 
-### 1. Witness Voting
+### 1. validator Voting
 
-Witnesses produce blocks and set chain parameters. Every account can vote for up to 100 witnesses.
+validators produce blocks and set chain parameters. Every account can vote for up to 100 validators.
 
 ```json
 ["account_witness_vote", {
     "account": "alice",
-    "witness": "node1",
+    "validator": "node1",
     "approve": true
 }]
 ```
 
-**Fair-DPOS weighting**: vote weight is divided equally across all witnesses the account votes for:
+**Fair-DPOS weighting**: vote weight is divided equally across all validators the account votes for:
 
 ```
 fair_weight = (vesting_shares + proxied_votes) / witnesses_voted_for
 ```
 
-This prevents concentration of power — if you vote for 10 witnesses, each gets 1/10 of your stake weight, not the full amount.
+This prevents concentration of power — if you vote for 10 validators, each gets 1/10 of your stake weight, not the full amount.
 
-Accounts can also set a **proxy** (`account_witness_proxy_operation`), delegating their witness voting to another account.
+Accounts can also set a **proxy** (`account_witness_proxy_operation`), delegating their validator voting to another account.
 
 ### 2. Committee DAO Voting
 
@@ -155,7 +155,7 @@ A `fixed_award_operation` variant lets you specify an exact reward amount — th
 
 ### 4. Chain Parameter Governance
 
-Witnesses publish their preferred chain parameters, and the **median** value across all active witnesses becomes the consensus setting. Since witnesses are elected by stake-weighted voting, the chain parameters are indirectly controlled by all SHARES holders.
+validators publish their preferred chain parameters, and the **median** value across all active validators becomes the consensus setting. Since validators are elected by stake-weighted voting, the chain parameters are indirectly controlled by all SHARES holders.
 
 Parameters governed this way include:
 - `account_creation_fee` — cost to create new accounts
@@ -189,11 +189,11 @@ VIZ is not just a blockchain — it is a **Decentralized Autonomous Organization
 | DAO treasury | Committee fund + reward fund |
 | DAO shares / governance tokens | SHARES (vesting shares) |
 | Proposal voting | Committee worker requests |
-| Board of directors | Elected witnesses |
-| Director elections | Witness voting (Fair-DPOS) |
+| Board of directors | Elected validators |
+| Director elections | validator voting (Fair-DPOS) |
 | Dividend distribution | Award mechanism (reward fund) |
 | Bylaws / parameters | Chain properties (median governance) |
-| Delegation of voting rights | `delegate_vesting_shares` + witness proxy |
+| Delegation of voting rights | `delegate_vesting_shares` + validator proxy |
 
 ### How Each Member "Controls Their Share of the DAO"
 
@@ -205,9 +205,9 @@ If you hold 1% of all SHARES, your vote carries exactly 1% weight in every commi
 
 #### 2. Electing Leadership
 
-Witnesses are the "board of directors" — they produce blocks, validate transactions, and **set chain parameters** through median voting. Every SHARES holder votes for witnesses, and Fair-DPOS ensures your voting power is split equally across your chosen witnesses, preventing vote concentration.
+validators are the "board of directors" — they produce blocks, validate transactions, and **set chain parameters** through median voting. Every SHARES holder votes for validators, and Fair-DPOS ensures your voting power is split equally across your chosen validators, preventing vote concentration.
 
-If you don't want to vote directly, you can **set a proxy** — delegate your witness voting to someone you trust, just like a proxy vote in a shareholder meeting.
+If you don't want to vote directly, you can **set a proxy** — delegate your validator voting to someone you trust, just like a proxy vote in a shareholder meeting.
 
 #### 3. Direct Value Distribution
 
@@ -228,14 +228,14 @@ The delegatee gains your voting power for awards, committee votes, and bandwidth
 
 #### 5. Rule-Setting
 
-Chain parameters are set by the **median** of witness-published values. Since you elect witnesses, you indirectly control:
+Chain parameters are set by the **median** of validator-published values. Since you elect validators, you indirectly control:
 - How expensive it is to create accounts
 - How the reward fund is distributed between content creators and curators
 - What the minimum participation threshold is for committee proposals
 - How long vesting withdrawals take
 - Network capacity and transaction limits
 
-If the current parameters don't serve your interests, you vote for witnesses who share your vision. The median mechanism ensures no single witness (or voter) can impose extreme values — only the community consensus prevails.
+If the current parameters don't serve your interests, you vote for validators who share your vision. The median mechanism ensures no single validator (or voter) can impose extreme values — only the community consensus prevails.
 
 ### Why This Works as Self-Governance
 
@@ -243,11 +243,11 @@ If the current parameters don't serve your interests, you vote for witnesses who
 
 2. **Bipolar voting**: negative votes are first-class citizens. Opposing a bad proposal is just as powerful as supporting a good one. This prevents apathy-driven approval.
 
-3. **Continuous governance**: there are no "governance seasons" or "voting periods" for witnesses — you can change your votes at any time. Committee proposals have time-bounded voting, but you can update your vote throughout.
+3. **Continuous governance**: there are no "governance seasons" or "voting periods" for validators — you can change your votes at any time. Committee proposals have time-bounded voting, but you can update your vote throughout.
 
 4. **Skin in the game**: SHARES are locked tokens. To gain governance power, you must commit capital. To exit, you wait 28 days. This ensures voters have long-term alignment with the ecosystem.
 
-5. **No trusted intermediaries**: all governance rules are enforced by protocol code, not by humans. Committee payouts, witness elections, parameter changes — everything is automatic and verifiable.
+5. **No trusted intermediaries**: all governance rules are enforced by protocol code, not by humans. Committee payouts, validator elections, parameter changes — everything is automatic and verifiable.
 
 6. **Delegation without custody**: you can amplify others' power without giving them your tokens. Revocation is always possible. This enables trust hierarchies without centralization.
 
@@ -255,13 +255,13 @@ If the current parameters don't serve your interests, you vote for witnesses who
 
 ```
 Stake VIZ → Get SHARES → Governance Power
-    ├── Vote for witnesses     → Control block production & chain parameters
+    ├── Vote for validators     → Control block production & chain parameters
     ├── Vote on committee      → Control treasury spending
     ├── Award other accounts   → Distribute value from reward fund
     ├── Delegate to others     → Amplify allies' governance power
-    └── Set chain parameters   → Shape the rules (via witness election)
+    └── Set chain parameters   → Shape the rules (via validator election)
          ↓
-    Witnesses produce blocks → Rewards generated → Reward fund grows
+    validators produce blocks → Rewards generated → Reward fund grows
          ↓
     Committee fund grows → Proposals funded → Ecosystem develops
          ↓
@@ -284,7 +284,7 @@ This is a complete, self-sustaining DAO where every participant's influence is e
 | `CHAIN_MIN_DELEGATION` | 1 VIZ | Minimum delegation amount |
 | `CHAIN_CREATE_ACCOUNT_DELEGATION_RATIO` | 10× | Delegation multiplier for account creation |
 | `CHAIN_CREATE_ACCOUNT_DELEGATION_TIME` | 30 days | Minimum delegation lock for account creation |
-| `CHAIN_MAX_ACCOUNT_WITNESS_VOTES` | 100 | Maximum witnesses per account |
+| `CHAIN_MAX_ACCOUNT_WITNESS_VOTES` | 100 | Maximum validators per account |
 | `CONSENSUS_VOTE_ACCOUNTING_MIN_RSHARES` | 5000000 | Minimum rshares for award to have effect |
 | `CONSENSUS_COMMITTEE_REQUEST_APPROVE_MIN_PERCENT` | 1000 (10%) | Default participation threshold for proposals |
 | `CONSENSUS_BANDWIDTH_RESERVE_BELOW` | 500 SHARES | Threshold for bandwidth reserve |

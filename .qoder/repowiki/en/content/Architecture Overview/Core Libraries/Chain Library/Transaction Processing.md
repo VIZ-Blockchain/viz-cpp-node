@@ -1,4 +1,4 @@
-# Transaction Processing
+﻿# Transaction Processing
 
 <cite>
 **Referenced Files in This Document**
@@ -32,7 +32,7 @@ This document explains the Transaction Processing system responsible for validat
 - Execution context and rollback mechanisms for apply_transaction() and _apply_transaction()
 - Pending transaction management, transaction pool operations, and broadcast mechanisms
 - Examples of transaction processing workflows, operation evaluation, and error handling
-- Interactions with witness scheduling, fee markets, and state transitions
+- Interactions with validator scheduling, fee markets, and state transitions
 - Transaction size limits, priority handling, and performance optimization strategies
 
 ## Project Structure
@@ -333,8 +333,8 @@ Notif-->>Net : on_applied_transaction callback
 - [database.cpp](file://libraries/chain/database.cpp#L960-L970)
 - [database.cpp](file://libraries/chain/database.cpp#L1192-L1198)
 
-### Relationship with Witness Scheduling, Fee Markets, and State Transitions
-- Witness scheduling: The database computes scheduled witnesses and validates block headers; transaction processing occurs within the context of block production and validation.
+### Relationship with validator Scheduling, Fee Markets, and State Transitions
+- validator scheduling: The database computes scheduled validators and validates block headers; transaction processing occurs within the context of block production and validation.
 - Fee markets and state transitions: Operations modify state objects (e.g., balances, vesting shares, reward funds). Bandwidth accounting influences fee market dynamics indirectly by controlling resource usage and reserve ratios.
 
 [No sources needed since this section synthesizes relationships without analyzing specific files]

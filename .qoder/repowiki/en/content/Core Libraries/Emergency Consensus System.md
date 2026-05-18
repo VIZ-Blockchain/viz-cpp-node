@@ -1,4 +1,4 @@
-# Emergency Consensus System
+﻿# Emergency Consensus System
 
 <cite>
 **Referenced Files in This Document**
@@ -10,8 +10,8 @@
 - [fork_database.hpp](file://libraries/chain/include/graphene/chain/fork_database.hpp)
 - [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
 - [config_testnet.hpp](file://libraries/protocol/include/graphene/protocol/config_testnet.hpp)
-- [witness.cpp](file://plugins/witness/witness.cpp)
-- [witness.hpp](file://plugins/witness/include/graphene/plugins/witness/witness.hpp)
+- [validator.cpp](file://plugins/validator/validator.cpp)
+- [validator.hpp](file://plugins/validator/include/graphene/plugins/validator/validator.hpp)
 - [12.hf](file://libraries/chain/hardfork.d/12.hf)
 - [chainbase.cpp](file://thirdparty/chainbase/src/chainbase.cpp)
 - [chainbase.hpp](file://thirdparty/chainbase/include/chainbase/chainbase.hpp)
@@ -21,9 +21,9 @@
 **Changes Made**
 - Enhanced emergency recovery mechanisms with new emergency threshold constants and improved network resilience during critical failure scenarios
 - Updated emergency consensus activation with comprehensive LIB availability validation and deterministic synchronization detection
-- Improved emergency exit conditions with refined real witness recovery validation using 75% threshold
-- Enhanced emergency mode flag management across fork database and witness plugin integration
-- Strengthened emergency witness management with comprehensive penalty reset and schedule override logic
+- Improved emergency exit conditions with refined real validator recovery validation using 75% threshold
+- Enhanced emergency mode flag management across fork database and Validator Plugin integration
+- Strengthened emergency validator management with comprehensive penalty reset and schedule override logic
 - Added enhanced memory management protection through operation guards during emergency mode operations
 
 ## Table of Contents
@@ -44,9 +44,9 @@
 
 ## Introduction
 
-The Emergency Consensus System is a critical safety mechanism implemented in the VIZ blockchain to maintain network continuity during extended periods of network stall or witness failure. This system automatically activates when the blockchain stops producing blocks for a predetermined timeout period, ensuring the network remains functional even when regular witness production is compromised.
+The Emergency Consensus System is a critical safety mechanism implemented in the VIZ blockchain to maintain network continuity during extended periods of network stall or validator failure. This system automatically activates when the blockchain stops producing blocks for a predetermined timeout period, ensuring the network remains functional even when regular validator production is compromised.
 
-The system operates as a three-state safety enforcement mechanism, providing automatic recovery capabilities that prevent network paralysis during emergencies. It maintains consensus integrity while allowing the network to recover from various failure scenarios including witness failures, network partitions, or other catastrophic events.
+The system operates as a three-state safety enforcement mechanism, providing automatic recovery capabilities that prevent network paralysis during emergencies. It maintains consensus integrity while allowing the network to recover from various failure scenarios including validator failures, network partitions, or other catastrophic events.
 
 **Updated** Enhanced with comprehensive emergency consensus constants and configuration options including CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC, CHAIN_EMERGENCY_WITNESS_ACCOUNT, CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS, CHAIN_IRREVERSIBLE_THRESHOLD, and CHAIN_MAX_WITNESSES * 10 threshold that establishes the foundation for emergency consensus mode activation and operation with deterministic synchronization detection during replay, reindex, and live sync scenarios.
 
@@ -58,13 +58,13 @@ The Emergency Consensus System is built on a distributed architecture that integ
 graph TB
 subgraph "Consensus Layer"
 DB[Database Engine]
-WS[Witness Schedule]
+WS[validator Schedule]
 DGP[Dynamic Global Properties]
 END
 subgraph "Emergency Components"
-EW[Emergency Witness]
+EW[Emergency validator]
 FD[Fork Database]
-WC[Witness Plugin]
+WC[Validator Plugin]
 OG[Operation Guards]
 END
 subgraph "Network Layer"
@@ -113,14 +113,14 @@ OG -.-> DB
 **Diagram sources**
 - [database.cpp:4863-5004](file://libraries/chain/database.cpp#L4863-L5004)
 - [fork_database.cpp:81-88](file://libraries/chain/fork_database.cpp#L81-L88)
-- [witness.cpp:422-427](file://plugins/witness/witness.cpp#L422-L427)
+- [validator.cpp:422-427](file://plugins/validator/validator.cpp#L422-L427)
 - [database.cpp:1556](file://libraries/chain/database.cpp#L1556)
 - [chainbase.hpp:1097-1115](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1097-L1115)
 
 The architecture consists of several key layers:
 
-- **Consensus Layer**: Core blockchain state management and witness scheduling
-- **Emergency Components**: Specialized emergency witness and fork database modifications with operation guards
+- **Consensus Layer**: Core blockchain state management and validator scheduling
+- **Emergency Components**: Specialized emergency validator and fork database modifications with operation guards
 - **Network Layer**: Peer-to-peer communication and block propagation
 - **Safety Mechanisms**: Hardfork coordination, timeout monitoring, deterministic synchronization detection, memory management, error handling, automatic schedule recovery, hybrid schedule override, and irreversible threshold validation
 
@@ -167,16 +167,16 @@ witness_schedule_object --> witness_object : "contains"
 - [global_property_object.hpp:24-146](file://libraries/chain/include/graphene/chain/global_property_object.hpp#L24-L146)
 - [witness_objects.hpp:27-132](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L27-L132)
 
-### Enhanced Emergency Witness Implementation
+### Enhanced Emergency validator Implementation
 
-The emergency witness serves as the automated consensus producer during emergency conditions with comprehensive management:
+The emergency validator serves as the automated consensus producer during emergency conditions with comprehensive management:
 
 | Property | Value | Description |
 |----------|-------|-------------|
-| Account Name | `committee` | Emergency witness account identifier |
+| Account Name | `committee` | Emergency validator account identifier |
 | Public Key | `VIZ75CRHVHPwYiUESy1bgN3KhVFbZCQQRA9jT6TnpzKAmpxMPD6Xv` | Block signing key |
 | Role | Automated Producer | Produces blocks when network is stalled |
-| Schedule Priority | Top | Takes precedence over all other witnesses |
+| Schedule Priority | Top | Takes precedence over all other validators |
 | Version Synchronization | Automatic | Matches current binary version |
 | Hardfork Alignment | Current Status | Votes for currently applied hardfork |
 | Penalty Management | Reset | All penalties cleared during emergency |
@@ -204,9 +204,9 @@ CheckEmpty --> |No| CalcTime["Calculate Time Since LIB"]
 CalcTime --> CheckTimeout{"Seconds Since LIB ≥ 3600?"}
 CheckTimeout --> |No| Normal
 CheckTimeout --> |Yes| Activate["Activate Emergency Mode"]
-Activate --> CreateWitness["Create/Update Emergency Witness Object"]
-CreateWitness --> ResetPenalties["Reset All Witness Penalties"]
-ResetPenalties --> OverrideSchedule["Override Schedule with Emergency Witness"]
+Activate --> CreateWitness["Create/Update Emergency validator Object"]
+CreateWitness --> ResetPenalties["Reset All validator Penalties"]
+ResetPenalties --> OverrideSchedule["Override Schedule with Emergency validator"]
 OverrideSchedule --> NotifyFork["Notify Fork Database"]
 NotifyFork --> LogEvent["Log Emergency Activation"]
 LogEvent --> Normal
@@ -238,16 +238,16 @@ The system now implements comprehensive validation with deterministic synchroniz
 
 ### Startup Schedule Repair Mechanism
 
-The system now includes comprehensive automatic schedule recovery that repairs broken witness schedules during node startup:
+The system now includes comprehensive automatic schedule recovery that repairs broken validator schedules during node startup:
 
 ```mermaid
 sequenceDiagram
 participant DB as Database
-participant WSO as Witness Schedule
+participant WSO as validator Schedule
 participant DGP as Dynamic Global Properties
 DB->>DB : Node Startup
 DB->>DGP : Load DGP Object
-DB->>WSO : Load Witness Schedule
+DB->>WSO : Load validator Schedule
 DB->>DB : Check for Empty Slots
 alt Empty Slots Found
 DB->>DGP : Activate Emergency Mode
@@ -267,9 +267,9 @@ DB->>DB : Continue Normal Operation
 The automatic schedule recovery system addresses several critical scenarios:
 
 - **Crash Recovery**: Repairs schedules that became corrupted when nodes shut down during emergency mode
-- **Empty Slot Detection**: Identifies witness schedules with null witness names in shuffled positions
+- **Empty Slot Detection**: Identifies validator schedules with null validator names in shuffled positions
 - **Emergency Mode Restoration**: Reactivates emergency mode when broken schedules are detected
-- **Complete Override**: Fills all schedule slots with emergency witness to ensure network stability
+- **Complete Override**: Fills all schedule slots with emergency validator to ensure network stability
 - **Next Shuffle Adjustment**: Updates next shuffle block number to ensure immediate schedule override
 
 **Section sources**
@@ -279,7 +279,7 @@ The automatic schedule recovery system addresses several critical scenarios:
 
 ### Dynamic Schedule Adjustment Logic
 
-The emergency system now implements sophisticated hybrid schedule override that dynamically adjusts witness assignments based on real witness availability:
+The emergency system now implements sophisticated hybrid schedule override that dynamically adjusts validator assignments based on real validator availability:
 
 ```mermaid
 flowchart TD
@@ -289,10 +289,10 @@ CheckHF --> |Yes| CheckEmergency{"Emergency Active?"}
 CheckEmergency --> |No| Normal
 CheckEmergency --> |Yes| ScanSchedule["Scan Current Shuffled Schedule"]
 ScanSchedule --> CountSlots["Count Real vs Committee Slots"]
-CountSlots --> CheckAvailability{"Real Witnesses Available?"}
+CountSlots --> CheckAvailability{"Real validators Available?"}
 CheckAvailability --> |Yes| FillCommittee["Fill Empty Slots with Committee"]
 CheckAvailability --> |No| AllCommittee["All Slots = Committee"]
-FillCommittee --> ExpandSchedule["Expand to Max Witnesses"]
+FillCommittee --> ExpandSchedule["Expand to Max validators"]
 AllCommittee --> ExpandSchedule
 ExpandSchedule --> UpdateNextShuffle["Update Next Shuffle Block"]
 UpdateNextShuffle --> SyncCommittee["Sync Committee Props"]
@@ -306,13 +306,13 @@ Normal --> End
 
 ### Advanced Hybrid Schedule Features
 
-The emergency hybrid schedule override provides sophisticated witness management:
+The emergency hybrid schedule override provides sophisticated validator management:
 
-- **Real Witness Detection**: Identifies available real witnesses vs. empty/invalid slots
-- **Dynamic Allocation**: Fills empty slots with emergency witness automatically
-- **Schedule Expansion**: Expands schedule to include all 21 witnesses for proper rotation
+- **Real validator Detection**: Identifies available real validators vs. empty/invalid slots
+- **Dynamic Allocation**: Fills empty slots with emergency validator automatically
+- **Schedule Expansion**: Expands schedule to include all 21 validators for proper rotation
 - **Next Shuffle Optimization**: Adjusts next shuffle block to ensure immediate override
-- **Committee Synchronization**: Keeps emergency witness properties synchronized with current state
+- **Committee Synchronization**: Keeps emergency validator properties synchronized with current state
 - **Threshold-Based Logic**: Uses 75% threshold for emergency exit conditions
 
 **Section sources**
@@ -330,9 +330,9 @@ flowchart TD
 Start([Emergency Active]) --> MonitorLIB["Monitor LIB Progress"]
 MonitorLIB --> CheckProgress{"LIB > Start Block?"}
 CheckProgress --> |No| Continue["Continue Emergency Mode"]
-CheckProgress --> |Yes| CheckRecovery["Check Real Witness Recovery"]
-CheckRecovery --> CountReal["Count Real Witness Slots"]
-CountReal --> CheckThreshold{"Real Witnesses ≥ 75%?"}
+CheckProgress --> |Yes| CheckRecovery["Check Real validator Recovery"]
+CheckRecovery --> CountReal["Count Real validator Slots"]
+CountReal --> CheckThreshold{"Real validators ≥ 75%?"}
 CheckThreshold --> |No| Continue
 CheckThreshold --> |Yes| Deactivate["Deactivate Emergency Mode"]
 Deactivate --> ClearFlag["Clear Emergency Flag"]
@@ -350,8 +350,8 @@ Continue --> End([End])
 The system evaluates several sophisticated conditions for emergency mode exit:
 
 1. **LIB Advancement**: Last Irreversible Block number exceeds start block
-2. **Network Recovery**: 75% of schedule slots are real witnesses (not committee)
-3. **Automatic Trigger**: 21 consecutive blocks produced by emergency witness
+2. **Network Recovery**: 75% of schedule slots are real validators (not committee)
+3. **Automatic Trigger**: 21 consecutive blocks produced by emergency validator
 4. **Manual Intervention**: System administrator override possible
 5. **Real-time Monitoring**: Continuous LIB progress tracking during emergency
 6. **Deterministic Synchronization**: Prevents premature exit during replay scenarios
@@ -365,16 +365,16 @@ The system evaluates several sophisticated conditions for emergency mode exit:
 
 ### Normal LIB Advancement During Emergency
 
-The emergency system now implements redesigned LIB computation that advances normally using all witnesses including committee:
+The emergency system now implements redesigned LIB computation that advances normally using all validators including committee:
 
 ```mermaid
 sequenceDiagram
 participant DB as Database
-participant WSO as Witness Schedule
+participant WSO as validator Schedule
 participant DPO as Dynamic Properties
 DB->>DB : Update Last Irreversible Block
-DB->>WSO : Get Scheduled Witnesses
-WSO-->>DB : Committee + Real Witnesses
+DB->>WSO : Get Scheduled validators
+WSO-->>DB : Committee + Real validators
 DB->>DB : Calculate Support Threshold
 DB->>DB : Find Median Support
 alt Emergency Mode
@@ -393,9 +393,9 @@ DB->>DB : Update Block Log
 
 The redesigned emergency LIB computation provides:
 
-- **Normal Advancement**: LIB advances using all witnesses in schedule (including committee)
+- **Normal Advancement**: LIB advances using all validators in schedule (including committee)
 - **Safety Cap**: Caps LIB at head-1 during emergency to preserve undo protection
-- **Median Calculation**: Uses witness support thresholds to determine LIB safely
+- **Median Calculation**: Uses validator support thresholds to determine LIB safely
 - **Emergency Protection**: Prevents permanent state corruption during crashes
 - **Seamless Transition**: Allows normal LIB computation to resume after emergency exit
 
@@ -417,20 +417,20 @@ During emergency mode, the system implements special peer connection handling wi
 | Fork Collisions | Deterministic resolution | Reduces network fragmentation |
 | Replay Scenarios | Deterministic handling | Prevents false activations |
 
-### Comprehensive Witness Participation Override
+### Comprehensive validator Participation Override
 
-The emergency system bypasses normal witness participation requirements with enhanced error handling and deterministic synchronization:
+The emergency system bypasses normal validator participation requirements with enhanced error handling and deterministic synchronization:
 
 - **Participation Rate Checks**: Automatically enabled during emergency
 - **Stale Block Production**: Allowed without penalties
-- **Production Scheduling**: Emergency witness takes precedence
+- **Production Scheduling**: Emergency validator takes precedence
 - **Conflict Resolution**: Enhanced tie-breaking algorithms
 - **Schedule Updates**: Hybrid schedule during emergency mode
 - **Deterministic Sync Detection**: Prevents immediate participation during replay
-- **Penalty Management**: Comprehensive reset of all witness penalties
+- **Penalty Management**: Comprehensive reset of all validator penalties
 
 **Section sources**
-- [witness.cpp:422-427](file://plugins/witness/witness.cpp#L422-L427)
+- [validator.cpp:422-427](file://plugins/validator/validator.cpp#L422-L427)
 - [fork_database.cpp:81-88](file://libraries/chain/fork_database.cpp#L81-L88)
 
 ## Configuration and Constants
@@ -446,7 +446,7 @@ The system uses comprehensive configurable constants with enhanced monitoring an
 | CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY | VIZ75CR... | Key | Block signing key |
 | CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS | 21 | Blocks | Consecutive blocks to exit |
 | CHAIN_IRREVERSIBLE_THRESHOLD | 75% | Percent | Recovery threshold |
-| CHAIN_MAX_WITNESSES | 21 | Witnesses | Total witness count |
+| CHAIN_MAX_WITNESSES | 21 | validators | Total validator count |
 | CHAIN_MAX_WITNESSES * 10 | 210 | Blocks | Deterministic sync threshold |
 
 ### Hardfork Configuration with Enhanced Protection
@@ -563,7 +563,7 @@ The system implements comprehensive error handling throughout the consensus proc
 - **Snapshot Compatibility**: Handles DLT mode scenarios gracefully
 - **Memory Management Errors**: Provides detailed logging for memory operations
 - **Fork Database Exceptions**: Enhanced error reporting for fork operations
-- **Witness Creation Failures**: Comprehensive error handling for emergency witness setup
+- **validator Creation Failures**: Comprehensive error handling for emergency validator setup
 - **Operation Guard Protection**: Thread-safe emergency mode operations
 - **Deterministic Behavior**: Same results on replay as original application
 
@@ -580,13 +580,13 @@ The system implements comprehensive error handling throughout the consensus proc
 | Emergency Mode Not Activating | No automatic blocks produced | Verify hardfork 12 activation, LIB availability, and sync detection |
 | Emergency Mode Stuck | Cannot exit emergency mode | Check LIB advancement, memory management logs, and sync detection validation |
 | Network Instability | Frequent disconnections | Review fork database settings, memory usage, and deterministic sync detection |
-| Witness Production Failures | Emergency witness cannot produce blocks | Verify emergency key configuration, memory allocation, and operation guard protection |
+| validator Production Failures | Emergency validator cannot produce blocks | Verify emergency key configuration, memory allocation, and operation guard protection |
 | Memory Issues | Low free memory warnings | Check memory management configuration, resize logs, and operation guard usage |
 | Replay Scenarios | Delayed emergency activation | Verify replay detection and ensure CHAIN_MAX_WITNESSES * 10 threshold is observed |
 | False Activations | Premature emergency activation | Check deterministic sync detection and LIB timestamp availability |
 | Snapshot Restores | Deadlock during emergency activation | Verify DLT mode handling and LIB timestamp validation |
-| Broken Schedules | Empty witness slots after crash | Check automatic schedule recovery and emergency mode flags |
-| Hybrid Schedule Issues | Incorrect witness assignments | Verify hybrid schedule override logic and real witness detection |
+| Broken Schedules | Empty validator slots after crash | Check automatic schedule recovery and emergency mode flags |
+| Hybrid Schedule Issues | Incorrect validator assignments | Verify hybrid schedule override logic and real validator detection |
 
 ### Advanced Diagnostic Commands
 
@@ -598,10 +598,10 @@ To troubleshoot emergency consensus issues with enhanced monitoring:
 4. **Validate Timeout Logs**: Check activation/deactivation timestamps and LIB availability
 5. **Validate Deterministic Sync**: Ensure sync detection passes during replay scenarios
 6. **Check Operation Guards**: Monitor thread safety and concurrent access protection
-7. **Validate Witness Configuration**: Ensure emergency witness exists with correct key and schedule
+7. **Validate validator Configuration**: Ensure emergency validator exists with correct key and schedule
 8. **Monitor Memory Usage**: Check free, reserved, and maximum memory states with operation guard protection
 9. **Check Schedule Recovery**: Verify automatic schedule repair and emergency mode restoration
-10. **Validate Hybrid Override**: Monitor dynamic witness assignment during emergency
+10. **Validate Hybrid Override**: Monitor dynamic validator assignment during emergency
 
 ### Performance Considerations
 
@@ -628,10 +628,10 @@ The Emergency Consensus System represents a sophisticated safety mechanism desig
 The system's three-state safety enforcement approach ensures that the network can recover from various failure scenarios without requiring manual intervention. Through careful integration with existing consensus mechanisms, network protocols, and comprehensive operation guard protection, the emergency system operates seamlessly with minimal disruption to normal network operations.
 
 Key enhancements include:
-- **Automatic Schedule Recovery**: Comprehensive repair of broken witness schedules during node startup
-- **Emergency Hybrid Schedule Override**: Dynamic adjustment of witness assignments based on real witness availability
-- **Refined Exit Conditions**: Improved real witness recovery validation using 75% threshold
-- **Redesigned LIB Computation**: Normal LIB advancement using all witnesses during emergency
+- **Automatic Schedule Recovery**: Comprehensive repair of broken validator schedules during node startup
+- **Emergency Hybrid Schedule Override**: Dynamic adjustment of validator assignments based on real validator availability
+- **Refined Exit Conditions**: Improved real validator recovery validation using 75% threshold
+- **Redesigned LIB Computation**: Normal LIB advancement using all validators during emergency
 - **Deterministic Sync Detection**: CHAIN_MAX_WITNESSES * 10 threshold prevents false activations during replay and catch-up scenarios
 - **Automatic Recovery**: No manual intervention required for activation with comprehensive validation
 - **Network Stability**: Prevents cascade failures during emergencies with enhanced tie-breaking
@@ -640,7 +640,7 @@ Key enhancements include:
 - **Enhanced Reliability**: Improved detection algorithms, memory management, and operation guard protection
 - **Better Troubleshooting**: Detailed logging and monitoring capabilities for easier diagnostics
 - **Configurable Parameters**: Flexible timeout thresholds, exit conditions, and sync detection for different network conditions
-- **Robust Emergency Witness**: Dedicated emergency witness with proper key configuration, schedule override, and comprehensive penalty management
+- **Robust Emergency validator**: Dedicated emergency validator with proper key configuration, schedule override, and comprehensive penalty management
 - **Thread-Safe Operations**: Comprehensive operation guard protection ensures concurrent access safety
 - **Deterministic Behavior**: Same results on replay as original application with comprehensive sync detection
 - **Advanced Concurrency Control**: Operation guards provide comprehensive thread safety for emergency mode operations

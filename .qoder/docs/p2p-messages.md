@@ -1,4 +1,4 @@
-# VIZ P2P Message Protocol Reference
+﻿# VIZ P2P Message Protocol Reference
 
 Complete reference for all P2P network message types, their structures, flow diagrams, and the transaction exchange pipeline through JSON-RPC, chain, and network broadcast plugins.
 
@@ -85,7 +85,7 @@ struct trx_message {
 | Caller | File | Line |
 |--------|------|------|
 | JSON-RPC `broadcast_transaction` | [network_broadcast_api.cpp](file:///d:/Work/viz-cpp-node/plugins/network_broadcast_api/network_broadcast_api.cpp) | 50 |
-| Witness block production (contained txs) | [witness.cpp](file:///d:/Work/viz-cpp-node/plugins/witness/witness.cpp) | — |
+| validator block production (contained txs) | [validator.cpp](file:///d:/Work/viz-cpp-node/plugins/validator/validator.cpp) | — |
 | P2P relay (incoming tx → other peers) | [node.cpp](file:///d:/Work/viz-cpp-node/libraries/network/node.cpp) | 5146 |
 
 ---
@@ -112,13 +112,13 @@ struct block_message {
 4. [p2p_plugin.cpp](file:///d:/Work/viz-cpp-node/plugins/p2p/p2p_plugin.cpp) `handle_block()` (line 145) — calls `chain.accept_block(blk_msg.block, ...)`
 5. On success: broadcast to other peers
 
-**DLT emergency near-caught-up logic** (p2p_plugin.cpp:219): When `sync_mode && gap <= 2 && dlt_mode && block_age < 30s`, treats the sync block as a normal block to avoid triggering "Syncing Blockchain started" and disrupting witness production.
+**DLT emergency near-caught-up logic** (p2p_plugin.cpp:219): When `sync_mode && gap <= 2 && dlt_mode && block_age < 30s`, treats the sync block as a normal block to avoid triggering "Syncing Blockchain started" and disrupting validator production.
 
 **Usage sites:**
 | Caller | File | Line |
 |--------|------|------|
 | JSON-RPC `broadcast_block` | [network_broadcast_api.cpp](file:///d:/Work/viz-cpp-node/plugins/network_broadcast_api/network_broadcast_api.cpp) | 88 |
-| Witness block production | [witness.cpp](file:///d:/Work/viz-cpp-node/plugins/witness/witness.cpp) | — |
+| validator block production | [validator.cpp](file:///d:/Work/viz-cpp-node/plugins/validator/validator.cpp) | — |
 | P2P relay | [node.cpp](file:///d:/Work/viz-cpp-node/libraries/network/node.cpp) | 5146 |
 
 ---
@@ -396,7 +396,7 @@ Sent on every new connection in `new_peer_just_added()` (node.cpp:5186).
 
 ### 6009 — block_post_validation_message
 
-**Purpose:** Block signing witness verification (Hardfork 11+). Sent after a block is applied to confirm the signing witness identity. The receiving node validates the signature against the witness's signing key on-chain and triggers `apply_block_post_validation()`.
+**Purpose:** Block signing validator verification (Hardfork 11+). Sent after a block is applied to confirm the signing validator identity. The receiving node validates the signature against the validator's signing key on-chain and triggers `apply_block_post_validation()`.
 
 **Structure:**
 ```cpp
@@ -410,9 +410,9 @@ struct block_post_validation_message {
 
 **Handler:** [p2p_plugin.cpp](file:///d:/Work/viz-cpp-node/plugins/p2p/p2p_plugin.cpp) `handle_message()` (line 304)
 
-**Validation:** Recovers the public key from the signature, compares against the witness's on-chain `signing_key`. If matched, calls `apply_block_post_validation()`.
+**Validation:** Recovers the public key from the signature, compares against the validator's on-chain `signing_key`. If matched, calls `apply_block_post_validation()`.
 
-**Broadcast:** Sent by witnesses after producing a block. Also emitted via [p2p_plugin.cpp](file:///d:/Work/viz-cpp-node/plugins/p2p/p2p_plugin.cpp) `broadcast_block_post_validation()` (line 1470).
+**Broadcast:** Sent by validators after producing a block. Also emitted via [p2p_plugin.cpp](file:///d:/Work/viz-cpp-node/plugins/p2p/p2p_plugin.cpp) `broadcast_block_post_validation()` (line 1470).
 
 ---
 
@@ -441,7 +441,7 @@ struct chain_status_announcement_message {
 
 **Broadcast trigger:** [p2p_plugin.cpp](file:///d:/Work/viz-cpp-node/plugins/p2p/p2p_plugin.cpp) `connection_count_changed()` (line 793) — when the connection count increases (new peer joined), a `chain_status_announcement_message` is built from the chain database and broadcast to all peers.
 
-**Manual call site:** `p2p_plugin::broadcast_chain_status()` — can be called from any plugin (e.g., witness or snapshot) when chain state materially changes.
+**Manual call site:** `p2p_plugin::broadcast_chain_status()` — can be called from any plugin (e.g., validator or snapshot) when chain state materially changes.
 
 ---
 
@@ -525,7 +525,7 @@ When remaining == 0 and all items known:
 ### Broadcast/Inventory Mode Flow (Push-Based)
 
 ```
-Witness Node          Peer A                Peer B (us)           Peer C
+validator Node          Peer A                Peer B (us)           Peer C
      |                   |                      |                    |
      | 1. generate_block |
      | 2. broadcast_block|                      |                    |
@@ -560,7 +560,7 @@ Witness Node          Peer A                Peer B (us)           Peer C
 ### Block Post-Validation Flow
 
 ```
-Witness Node                              Other Peers
+validator Node                              Other Peers
      |                                        |
      | 1. produce_block() + broadcast         |
      | 2. broadcast_block_post_validation()   |
@@ -568,7 +568,7 @@ Witness Node                              Other Peers
      |--------------------------------------->|
      |                                        | 3. handle_message() in p2p_plugin
      |                                        |    - recover public key from signature
-     |                                        |    - compare with witness on-chain signing_key
+     |                                        |    - compare with validator on-chain signing_key
      |                                        |    - if match: apply_block_post_validation()
 ```
 
@@ -610,7 +610,7 @@ External Client
   Transaction propagates through the network via gossip
   (each peer that accepts it broadcasts to its other peers)
 
-Eventually included in a block by a witness.
+Eventually included in a block by a validator.
 ```
 
 ### Callback-Based Variant
@@ -727,7 +727,7 @@ When a DLT node (rolling window of blocks) receives a `fetch_blockchain_item_ids
 
 ### Near-Caught-Up Sync Blocks
 
-[p2p_plugin.cpp](file:///d:/Work/viz-cpp-node/plugins/p2p/p2p_plugin.cpp#L202-L226): When a sync block arrives with `gap <= 2 && dlt_mode && block_age < 30s`, it's treated as a normal (non-sync) block. This prevents "Syncing Blockchain started" from firing when the node is only 1-2 blocks behind, which would set `currently_syncing=true` and disrupt witness block production.
+[p2p_plugin.cpp](file:///d:/Work/viz-cpp-node/plugins/p2p/p2p_plugin.cpp#L202-L226): When a sync block arrives with `gap <= 2 && dlt_mode && block_age < 30s`, it's treated as a normal (non-sync) block. This prevents "Syncing Blockchain started" from firing when the node is only 1-2 blocks behind, which would set `currently_syncing=true` and disrupt validator block production.
 
 ---
 

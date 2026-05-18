@@ -1,4 +1,4 @@
-# Monitoring and Maintenance
+﻿# Monitoring and Maintenance
 
 <cite>
 **Referenced Files in This Document**
@@ -101,7 +101,7 @@ BIN --> LOGS
 - Webserver and JSON-RPC: Provide HTTP and WebSocket endpoints for API access and dispatch JSON-RPC requests to registered APIs.
 - Logging: Configured via file appenders and loggers in the configuration file.
 - P2P Peer Statistics System: Real-time monitoring of peer connections, latency, bandwidth usage, and blocking status for network observability.
-- Plugins: Chain, Account History, Operation History, Mongo DB, P2P, Network Broadcast API, Witness API, Block Info, Raw Block, Debug Node, and others.
+- Plugins: Chain, Account History, Operation History, Mongo DB, P2P, Network Broadcast API, validator API, Block Info, Raw Block, Debug Node, and others.
 - Runtime launcher: Sets endpoints, seed nodes, and replay options for Docker-based deployments.
 
 Key configuration and runtime elements:
@@ -152,7 +152,7 @@ STATS-->>P2P : "Latency, Bandwidth, Status"
 ### Health Checks and Readiness
 - HTTP/WS endpoints: Configure readiness by ensuring the webserver plugin is active and reachable on the configured HTTP and WebSocket endpoints.
 - JSON-RPC health: Use a lightweight method (e.g., a read-only chain property) to validate API responsiveness.
-- P2P connectivity: Confirm peers are connected and block production is progressing (for witness nodes).
+- P2P connectivity: Confirm peers are connected and block production is progressing (for validator nodes).
 - **Updated** P2P peer statistics: Monitor peer health through the statistics system for real-time network observability.
 
 Operational references:
@@ -417,7 +417,7 @@ This guide outlines how to operate, monitor, and maintain VIZ CPP Node instances
 - Database API: Provides chain state queries and operations.
 - Account History and Operation History: Index and expose historical data.
 - P2P and Network Broadcast API: Manage peer connections and broadcast transactions.
-- Witness API: Expose witness-specific operations.
+- validator API: Expose validator-specific operations.
 - Block Info and Raw Block: Provide block-level insights.
 - Debug Node: Simulate chain state for testing and development.
 
@@ -427,7 +427,7 @@ References:
 - Operation History plugin: [operation_history_plugin.cpp:1-200](file://plugins/operation_history/plugin.cpp#L1-L200)
 - P2P plugin: [p2p_plugin.cpp:1-200](file://plugins/p2p/p2p_plugin.cpp#L1-L200)
 - Network Broadcast API plugin: [network_broadcast_api_plugin.cpp:1-200](file://plugins/network_broadcast_api/network_broadcast_api.cpp#L1-L200)
-- Witness API plugin: [witness_api_plugin.cpp:1-200](file://plugins/witness_api/plugin.cpp#L1-L200)
+- validator API plugin: [witness_api_plugin.cpp:1-200](file://plugins/witness_api/plugin.cpp#L1-L200)
 - Block Info plugin: [block_info_plugin.cpp:1-200](file://plugins/block_info/plugin.cpp#L1-L200)
 - Raw Block plugin: [raw_block_plugin.cpp:1-200](file://plugins/raw_block/plugin.cpp#L1-L200)
 - Debug Node plugin: [debug_node_plugin.cpp:1-200](file://plugins/debug_node/plugin.cpp#L1-L200)

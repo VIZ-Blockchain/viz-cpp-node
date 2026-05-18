@@ -1,8 +1,8 @@
-# Fork Collision Reduction Hardfork Proposal
+﻿# Fork Collision Reduction Hardfork Proposal
 
 ## Problem Statement
 
-The VIZ blockchain experiences recurring "block num collision" events — situations where two witnesses produce blocks at the same height on different chain tips, creating a fork. With a 3-second block interval (`CHAIN_BLOCK_INTERVAL = 3`), there is minimal margin for block propagation, making collisions frequent during periods of network latency or clock drift.
+The VIZ blockchain experiences recurring "block num collision" events — situations where two validators produce blocks at the same height on different chain tips, creating a fork. With a 3-second block interval (`CHAIN_BLOCK_INTERVAL = 3`), there is minimal margin for block propagation, making collisions frequent during periods of network latency or clock drift.
 
 ### Observed Pattern (Block 79162800–79162802)
 
@@ -12,19 +12,19 @@ Block 79162801: lexai @ 11:53:24 (latency 47ms)      | denis-skripnik @ 11:53:21
 Block 79162802: micu @ 11:53:30 (latency 78ms)        | creativity @ 11:53:27 (latency 4044ms)
 ```
 
-Three consecutive blocks had collisions, indicating a sustained network partition between two witness subsets. The high latency values (7–10 seconds) on one fork branch confirm severe propagation delay.
+Three consecutive blocks had collisions, indicating a sustained network partition between two validator subsets. The high latency values (7–10 seconds) on one fork branch confirm severe propagation delay.
 
 ### Root Causes
 
 1. **Tight block interval with no propagation margin** — 3-second slots leave no buffer for cross-region propagation (typical P2P propagation is 1–4 seconds for a global network).
 
-2. **Deterministic witness ordering without shuffling** — The witness shuffle was [commented out](../libraries/chain/database.cpp) (`// VIZ remove randomization`), making the schedule predictable. If two consecutive witnesses have poor connectivity, collisions recur every round.
+2. **Deterministic validator ordering without shuffling** — The validator shuffle was [commented out](../libraries/chain/database.cpp) (`// VIZ remove randomization`), making the schedule predictable. If two consecutive validators have poor connectivity, collisions recur every round.
 
 3. **No on-chain fork telemetry** — The current `_maybe_warn_multiple_production()` only logs a console warning. There is no on-chain metric for fork frequency, making it impossible to monitor network health programmatically.
 
-4. **No production-time fork awareness** — Witnesses produce blocks on whatever chain tip they see, even if a competing block already exists in their fork database for the same height.
+4. **No production-time fork awareness** — validators produce blocks on whatever chain tip they see, even if a competing block already exists in their fork database for the same height.
 
-5. **Clock drift susceptibility** — `get_slot_at_time()` uses wall-clock time. NTP drift between witness nodes can cause slot mismatches. API load can indirectly degrade NTP precision due to thread contention.
+5. **Clock drift susceptibility** — `get_slot_at_time()` uses wall-clock time. NTP drift between validator nodes can cause slot mismatches. API load can indirectly degrade NTP precision due to thread contention.
 
 ---
 
@@ -92,22 +92,22 @@ void database::_maybe_warn_multiple_production(uint32_t height) const {
 
 **Why this requires a hardfork**: Adding new fields to `dynamic_global_property_object` changes its serialized representation. All nodes must agree on the object layout for consensus. The snapshot plugin's export/import must also be updated.
 
-**Consensus benefit**: Enables monitoring dashboards, alerting, and data-driven decisions about network topology. Witnesses with high collision rates can be identified and their connectivity improved.
+**Consensus benefit**: Enables monitoring dashboards, alerting, and data-driven decisions about network topology. validators with high collision rates can be identified and their connectivity improved.
 
 ---
 
 ### Change 2: Fork-Aware Block Production Deferral
 
-**Type**: Non-consensus-breaking (witness plugin behavior only)
+**Type**: Non-consensus-breaking (Validator Plugin behavior only)
 
-Already implemented in `plugins/witness/witness.cpp` — before producing a block, check if a competing block already exists in the fork database for the target height. If so, defer production to allow fork resolution.
+Already implemented in `plugins/validator/validator.cpp` — before producing a block, check if a competing block already exists in the fork database for the target height. If so, defer production to allow fork resolution.
 
 This does **not** require a hardfork because:
-- It only affects the witness plugin's production timing
+- It only affects the Validator Plugin's production timing
 - It does not change block validation rules
 - A deferred block will be produced in the next available slot
 
-However, the hardfork proposal could make this behavior **mandatory** by adding a consensus rule: if a witness observes a fork collision for the current slot, they MUST wait for the competing block's next witness to produce before building on top. This would formalize the deferral as a consensus rule rather than a best-effort optimization.
+However, the hardfork proposal could make this behavior **mandatory** by adding a consensus rule: if a validator observes a fork collision for the current slot, they MUST wait for the competing block's next validator to produce before building on top. This would formalize the deferral as a consensus rule rather than a best-effort optimization.
 
 **Formalized version** (requires hardfork):
 
@@ -117,7 +117,7 @@ Add to `validate_block_header()`:
 if (has_hardfork(CHAIN_HARDFORK_12)) {
     // After a fork collision at height H, the next block must be
     // built on top of the longest chain's block at height H.
-    // Witnesses must not produce on the shorter fork's tip.
+    // validators must not produce on the shorter fork's tip.
     auto existing = _fork_db.fetch_block_by_number(next_block.block_num());
     if (existing.size() > 1) {
         // There was a collision at this height; verify this block
@@ -130,15 +130,15 @@ if (has_hardfork(CHAIN_HARDFORK_12)) {
 }
 ```
 
-**Consensus benefit**: Prevents witnesses from extending a minority fork after a collision is detected, reducing the duration and depth of forks.
+**Consensus benefit**: Prevents validators from extending a minority fork after a collision is detected, reducing the duration and depth of forks.
 
 ---
 
 ### Change 2a: Minority Fork Detection & Auto-Resync
 
-**Type**: Non-consensus-breaking (witness + P2P plugin behavior only)
+**Type**: Non-consensus-breaking (validator + P2P plugin behavior only)
 
-Implemented in `plugins/witness/witness.cpp` and `plugins/p2p/p2p_plugin.cpp` — before producing a block, the witness plugin walks back the last `CHAIN_MAX_WITNESSES` (21) blocks in fork_db and checks if ALL were produced by the node's own configured witnesses. If so, the node is stuck on a minority fork (no external witnesses are participating on this chain).
+Implemented in `plugins/validator/validator.cpp` and `plugins/p2p/p2p_plugin.cpp` — before producing a block, the Validator Plugin walks back the last `CHAIN_MAX_WITNESSES` (21) blocks in fork_db and checks if ALL were produced by the node's own configured validators. If so, the node is stuck on a minority fork (no external validators are participating on this chain).
 
 **Behavior by configuration:**
 
@@ -159,7 +159,7 @@ Implemented in `plugins/witness/witness.cpp` and `plugins/p2p/p2p_plugin.cpp` �
 
 This replicates the effect of a manual docker stop/start without node downtime.
 
-**Files modified:** `witness.hpp` (new enum value `minority_fork`), `witness.cpp` (detection logic + switch case), `p2p_plugin.hpp` (new `resync_from_lib()` method), `p2p_plugin.cpp` (implementation)
+**Files modified:** `validator.hpp` (new enum value `minority_fork`), `validator.cpp` (detection logic + switch case), `p2p_plugin.hpp` (new `resync_from_lib()` method), `p2p_plugin.cpp` (implementation)
 
 ---
 
@@ -167,7 +167,7 @@ This replicates the effect of a manual docker stop/start without node downtime.
 
 **Type**: Consensus-breaking (changes block timing expectations)
 
-Add a configurable production delay of `CHAIN_PRODUCTION_DELAY_MS` milliseconds (e.g., 500ms) that a witness must wait after receiving a new block before producing its own. This gives the network time to propagate the latest block before the next witness builds on it.
+Add a configurable production delay of `CHAIN_PRODUCTION_DELAY_MS` milliseconds (e.g., 500ms) that a validator must wait after receiving a new block before producing its own. This gives the network time to propagate the latest block before the next validator builds on it.
 
 **Implementation**:
 
@@ -175,7 +175,7 @@ Add a configurable production delay of `CHAIN_PRODUCTION_DELAY_MS` milliseconds 
 // In config.hpp:
 #define CHAIN_PRODUCTION_DELAY_MS 500  // Wait 500ms after receiving block before producing
 
-// In witness.cpp maybe_produce_block():
+// In validator.cpp maybe_produce_block():
 fc::time_point_sec earliest_production_time = db.head_block_time() +
     fc::milliseconds(CHAIN_PRODUCTION_DELAY_MS);
 if (now < earliest_production_time) {
@@ -184,9 +184,9 @@ if (now < earliest_production_time) {
 }
 ```
 
-**Why this requires a hardfork**: Changes the timing semantics of when blocks are expected. The current consensus assumes witnesses produce as close to their scheduled slot time as possible. A mandatory delay effectively shortens the usable production window.
+**Why this requires a hardfork**: Changes the timing semantics of when blocks are expected. The current consensus assumes validators produce as close to their scheduled slot time as possible. A mandatory delay effectively shortens the usable production window.
 
-**Consensus benefit**: A 500ms delay on a 3-second interval gives the P2P network 500ms to propagate the previous block to all witnesses before the next one starts building. This dramatically reduces the probability of two witnesses building on different chain tips simultaneously.
+**Consensus benefit**: A 500ms delay on a 3-second interval gives the P2P network 500ms to propagate the previous block to all validators before the next one starts building. This dramatically reduces the probability of two validators building on different chain tips simultaneously.
 
 **Trade-off**: Block latency increases by up to 500ms per block. Over a day (28,800 blocks), this adds ~4 hours of total latency, but the actual user-perceived latency increase is only 500ms per transaction confirmation.
 
@@ -203,17 +203,17 @@ These changes are already implemented and can be deployed immediately:
 | Enhanced collision diagnostics with fork topology classification | `database.cpp` `_maybe_warn_multiple_production()` | Done |
 | Rate-limited collision warnings (prevent log spam) | `database.cpp` `_maybe_warn_multiple_production()` | Done |
 | Parent block ID logging for fork topology analysis | `database.cpp` `_maybe_warn_multiple_production()` | Done |
-| Pre-production fork collision check in witness plugin | `witness.cpp` `maybe_produce_block()` | Done |
-| `fork_collision` block production condition | `witness.hpp` enum, `witness.cpp` handler | Done |
-| NTP re-sync on fork collision detection | `witness.cpp` `block_production_loop()` | Done |
-| Minority fork detection & auto-resync | `witness.cpp`, `p2p_plugin.cpp/.hpp`, `witness.hpp` | Done |
+| Pre-production fork collision check in Validator Plugin | `validator.cpp` `maybe_produce_block()` | Done |
+| `fork_collision` block production condition | `validator.hpp` enum, `validator.cpp` handler | Done |
+| NTP re-sync on fork collision detection | `validator.cpp` `block_production_loop()` | Done |
+| Minority fork detection & auto-resync | `validator.cpp`, `p2p_plugin.cpp/.hpp`, `validator.hpp` | Done |
 
 ### Phase 2: Hardfork 12 (Requires Network-Wide Upgrade)
 
 | Change | Breaking | Files Modified |
 |--------|----------|----------------|
 | Fork collision counter in DGP | Yes (serialized object) | `global_property_object.hpp`, `database.cpp`, `snapshot/plugin.cpp` |
-| Production delay buffer | Yes (timing) | `config.hpp`, `witness.cpp` |
+| Production delay buffer | Yes (timing) | `config.hpp`, `validator.cpp` |
 | Mandatory fork deferral rule | Yes (validation) | `database.cpp` `validate_block_header()` |
 
 ### Hardfork 12 Definition
@@ -224,7 +224,7 @@ These changes are already implemented and can be deployed immediately:
 // 12 Hardfork — Fork Resilience Improvements
 #ifndef CHAIN_HARDFORK_12
 #define CHAIN_HARDFORK_12 12
-#define CHAIN_HARDFORK_12_TIME <TBD> // To be determined by witness vote
+#define CHAIN_HARDFORK_12_TIME <TBD> // To be determined by validator vote
 #define CHAIN_HARDFORK_12_VERSION hardfork_version( version(3, 1, 0) )
 #endif
 ```
@@ -239,7 +239,7 @@ These changes are already implemented and can be deployed immediately:
 
 | Scenario | Current | After HF12 | Reduction |
 |----------|---------|------------|-----------|
-| Consecutive witness pair with poor connectivity | ~95% collision/round | ~5% collision/round | ~19× |
+| Consecutive validator pair with poor connectivity | ~95% collision/round | ~5% collision/round | ~19× |
 | Random single-slot collision (network hiccup) | 100% produces fork | ~30% (delay absorbs transient) | ~3× |
 | Sustained partition (2+ round) | 100% collision every block | 100% (delay can't help) | 0× |
 | NTP drift <500ms | ~50% collision | ~10% (delay + re-sync) | ~5× |
@@ -262,11 +262,11 @@ Would eliminate most collisions by giving 2+ seconds of propagation margin. **Re
 
 ### B. Batch Block Production (Produce 2+ Blocks per Slot)
 
-Similar to EOS's approach where a witness produces a batch of consecutive blocks. **Rejected** because it increases centralization (longer production windows favor better-connected witnesses) and complicates missed-block accounting.
+Similar to EOS's approach where a validator produces a batch of consecutive blocks. **Rejected** because it increases centralization (longer production windows favor better-connected validators) and complicates missed-block accounting.
 
-### C. Fork Choice by Witness Priority
+### C. Fork Choice by validator Priority
 
-Instead of longest-chain, use witness priority (e.g., higher-voted witness's block wins). **Rejected** because it breaks the fundamental longest-chain consensus rule and could enable voting attacks.
+Instead of longest-chain, use validator priority (e.g., higher-voted validator's block wins). **Rejected** because it breaks the fundamental longest-chain consensus rule and could enable voting attacks.
 
 ### D. P2P Block Prefetch / Fast Relay Network
 
@@ -278,5 +278,5 @@ A dedicated relay network for block propagation (similar to Bitcoin's FIBRE). **
 
 - [DLT Hardfork New Objects](dlt-hardfork-new-objects.md) — Procedure for adding consensus objects in hardforks
 - [Block Processing](block-processing.md) — Block application flow and fork resolution
-- [Witness Operations](op-witness.md) — Witness update, vote, chain properties
-- [Plugins](plugins.md) — Plugin architecture including witness and P2P plugins
+- [validator Operations](op-validator.md) — validator update, vote, chain properties
+- [Plugins](plugins.md) — Plugin architecture including validator and P2P plugins

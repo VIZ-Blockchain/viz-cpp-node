@@ -1,14 +1,14 @@
-# Naming Analysis: VIZ "Witness" → "Validator" Rename Proposal
+﻿# Naming Analysis: VIZ "validator" → "Validator" Rename Proposal
 
-## 1. What VIZ Witnesses Actually Do
+## 1. What VIZ validators Actually Do
 
-Looking at the codebase, VIZ witnesses perform two distinct roles:
+Looking at the codebase, VIZ validators perform two distinct roles:
 
 **Block production** — scheduled in rotation, they run `block_production_loop()`, sign blocks with `block_signing_key`, and broadcast them via P2P.
 
-**Block post validation (BPV)** — they sign `block_post_validation_object`s to confirm blocks produced by other witnesses, which drives LIB (Last Irreversible Block) advancement.
+**Block post validation (BPV)** — they sign `block_post_validation_object`s to confirm blocks produced by other validators, which drives LIB (Last Irreversible Block) advancement.
 
-So witnesses are both producers and validators — which is exactly why "witness" is semantically weak. It sounds passive ("I saw this happen") and says nothing about their active role in consensus.
+So validators are both producers and validators — which is exactly why "validator" is semantically weak. It sounds passive ("I saw this happen") and says nothing about their active role in consensus.
 
 ---
 
@@ -23,7 +23,7 @@ XRPL uses:
 | **Validation vote** | A cryptographic fingerprint published post-consensus round |
 | **Participant** | Generic term for any consensus node |
 
-XRPL does not split "producer" from "validator" — validators do both. This matches exactly how VIZ witnesses work.
+XRPL does not split "producer" from "validator" — validators do both. This matches exactly how VIZ validators work.
 
 The same pattern holds across other major PoS ecosystems:
 - **Ethereum PoS** — validators attest and propose blocks
@@ -41,7 +41,7 @@ The same pattern holds across other major PoS ecosystems:
 | Item | Notes |
 |------|-------|
 | Protocol operations (types 6, 7, 8, 30, 42) | Renamed; old-name alias table in `operation_util_impl.cpp` |
-| Operation field names (`witness` → `validator` in types 7 and 42) | Node accepts both old and new on input |
+| Operation field names (`validator` → `validator` in types 7 and 42) | Node accepts both old and new on input |
 | Chain properties fields (`inflation_validator_percent`, etc.) | Old names accepted in snapshot import |
 | Chain objects (`validator_object`, `validator_schedule_object`) | C++ types renamed; files not renamed yet |
 | Schedule fields (`current_shuffled_validators`, `num_scheduled_validators`) | Done |
@@ -65,7 +65,7 @@ Nothing remaining. All renames complete.
 
 - `witness_vote_object` — internal vote-tracking object; not exposed by name in protocol
 - `witness_penalty_expire_object` — internal object; not exposed in protocol
-- `witness_penalty_expire_object::witness` field — internal back-reference, not a block header field
+- `witness_penalty_expire_object::validator` field — internal back-reference, not a block header field
 - `witness_vote_index`, `by_account_witness` — chainbase index tags; tied to `witness_vote_object`, not renamed
 
 ---
@@ -154,7 +154,7 @@ These are the on-chain operations. The C++ struct rename is a code-only change (
 | `shutdown_witness_operation` | `shutdown_validator_operation` | `shutdown_witness` | `shutdown_validator` | 50 | yes |
 | `witness_reward_operation` | `validator_reward_operation` | `witness_reward` | `validator_reward` | 66 | yes |
 
-> `chain_properties_update_operation` and `versioned_chain_properties_update_operation` — these are submitted by witnesses but describe chain property voting, not the witness role itself. **Keep names as-is.**
+> `chain_properties_update_operation` and `versioned_chain_properties_update_operation` — these are submitted by validators but describe chain property voting, not the validator role itself. **Keep names as-is.**
 
 ### 5.2 Core Objects and Types
 
@@ -171,7 +171,7 @@ These are the on-chain operations. The C++ struct rename is a code-only change (
 
 | Current Name | New Name | File |
 |-------------|----------|------|
-| namespace `block_production_condition` | `block_validation_condition` | `plugins/witness/include/graphene/plugins/witness/witness.hpp` |
+| namespace `block_production_condition` | `block_validation_condition` | `plugins/validator/include/graphene/plugins/validator/validator.hpp` |
 | `block_production_condition_enum` | `block_validation_condition_enum` | same |
 | `exception_producing_block` | `exception_validating_block` | same |
 
@@ -181,22 +181,22 @@ All other enum values (`produced`, `not_synced`, `not_my_turn`, `not_time_yet`, 
 
 | Current Name | New Name | File |
 |-------------|----------|------|
-| `block_production_loop()` | `block_validation_loop()` | `plugins/witness/witness.cpp` |
-| `maybe_produce_block()` | `maybe_validate_block()` | `plugins/witness/witness.cpp` |
-| `is_witness_scheduled_soon()` | `is_validator_scheduled_soon()` | `plugins/witness/witness.hpp` |
+| `block_production_loop()` | `block_validation_loop()` | `plugins/validator/validator.cpp` |
+| `maybe_produce_block()` | `maybe_validate_block()` | `plugins/validator/validator.cpp` |
+| `is_witness_scheduled_soon()` | `is_validator_scheduled_soon()` | `plugins/validator/validator.hpp` |
 
 ### 5.5 Plugins (Directories and CMake Targets)
 
 | Current Name | New Name |
 |-------------|----------|
 | `witness_plugin` | `validator_plugin` |
-| `plugins/witness/` | `plugins/validator/` |
+| `plugins/validator/` | `plugins/validator/` |
 | `witness_api_plugin` | `validator_api_plugin` |
 | `plugins/witness_api/` | `plugins/validator_api/` |
 | `witness_guard_plugin` | `validator_guard_plugin` |
 | `plugins/witness_guard/` | `plugins/validator_guard/` |
 
-### 5.6 Witness API Endpoints (JSON-RPC)
+### 5.6 validator API Endpoints (JSON-RPC)
 
 | Current Name | New Name |
 |-------------|----------|
@@ -228,16 +228,16 @@ File: `libraries/wallet/wallet.cpp` and `libraries/wallet/include/graphene/walle
 
 | Current Key | New Key | File |
 |------------|---------|------|
-| `plugin = witness` | `plugin = validator` | `config_witness.ini` |
+| `plugin = validator` | `plugin = validator` | `config_witness.ini` |
 | `plugin = witness_guard` | `plugin = validator_guard` | `config_witness.ini` |
 | `plugin = witness_api` | `plugin = validator_api` | `config_witness.ini` |
-| `--witness = "name"` | `--validator = "name"` | `config_witness.ini` |
-| `witness-guard-enabled` | `validator-guard-enabled` | `config_witness.ini` |
-| `witness-guard-disable` | `validator-guard-disable` | `config_witness.ini` |
-| `witness-guard-interval` | `validator-guard-interval` | `config_witness.ini` |
-| `witness-guard-witness` | `validator-guard-validator` | `config_witness.ini` |
+| `--validator = "name"` | `--validator = "name"` | `config_witness.ini` |
+| `validator-guard-enabled` | `validator-guard-enabled` | `config_witness.ini` |
+| `validator-guard-disable` | `validator-guard-disable` | `config_witness.ini` |
+| `validator-guard-interval` | `validator-guard-interval` | `config_witness.ini` |
+| `validator-guard-validator` | `validator-guard-validator` | `config_witness.ini` |
 
-Config keys fallback: on startup, if an old key is detected emit a warning — `"Config key 'witness' is deprecated, use 'validator'"` — and continue reading the value.
+Config keys fallback: on startup, if an old key is detected emit a warning — `"Config key 'validator' is deprecated, use 'validator'"` — and continue reading the value.
 
 ---
 
@@ -283,7 +283,7 @@ Even with server-side fallback, clients will receive **responses** with new name
 |------------|-------------|
 | `block_signing_key` / `signing_key` | Accurately describes the cryptographic key used to sign blocks and post-validations |
 | `delegate_vesting_shares_operation` | "Delegate" is already taken in VIZ for vesting share delegation — **do not use "delegate" as the consensus-role name** |
-| `chain_properties_update_operation` | Describes chain governance, not the witness role |
+| `chain_properties_update_operation` | Describes chain governance, not the validator role |
 | `versioned_chain_properties_update_operation` | Same |
 | Enum values `top`, `support`, `none` | Scheduling tier names, not role names |
 
@@ -293,7 +293,7 @@ Even with server-side fallback, clients will receive **responses** with new name
 
 ### Phase 1 — Internal rename (zero breaking changes) ✅ Done
 
-1. ✅ Rename `block_production_condition` namespace, enum, and `exception_producing_block` in `witness.hpp` + `witness.cpp`.
+1. ✅ Rename `block_production_condition` namespace, enum, and `exception_producing_block` in `validator.hpp` + `validator.cpp`.
 2. ✅ Rename internal method names: `block_production_loop`, `maybe_produce_block`, `is_witness_scheduled_soon`.
 3. ⏳ Rename `block_post_validation_object` → `validator_confirmation_object` — deferred with physical file renames.
 4. ✅ Rename `current_shuffled_witnesses[]` field.
@@ -306,7 +306,7 @@ Even with server-side fallback, clients will receive **responses** with new name
 2. ✅ Rename `witness_update_operation` → `validator_update_operation` and the other four operations (Section 5.1). Binary type IDs preserved.
 3. ✅ Add deprecated endpoint aliases in `validator_api` plugin for all `get_witness_*` methods.
 4. ✅ Rename CLI wallet commands; keep old names as deprecated aliases.
-5. ✅ Config keys updated (`plugin = validator`, `plugin = validator_api`, `plugin = validator_guard`). `--witness` kept as deprecated alias for `--validator` in config.ini backward compat.
+5. ✅ Config keys updated (`plugin = validator`, `plugin = validator_api`, `plugin = validator_guard`). `--validator` kept as deprecated alias for `--validator` in config.ini backward compat.
 6. ✅ Plugin directories renamed: `plugins/validator/`, `plugins/validator_api/`, `plugins/validator_guard/`. CMake targets updated.
 7. ✅ Rename `witness_object`, `witness_schedule_object`, `witness_api_object` (C++ types and files).
 8. ✅ `config_witness.ini` and all other `config*.ini` updated to new plugin names.
@@ -377,7 +377,7 @@ Even with server-side fallback, clients will receive **responses** with new name
 | `libraries/chain/include/graphene/chain/account_object.hpp` | ✅ Done | `witnesses_voted_for`→`validators_voted_for`, `witnesses_vote_weight`→`validators_vote_weight`, methods |
 | `libraries/api/include/graphene/api/account_api_object.hpp` | ✅ Done | Same fields + `witness_votes`→`validator_votes` |
 | `libraries/api/account_api_object.cpp` | ✅ Done | Field assignments |
-| `libraries/protocol/include/graphene/protocol/config.hpp` | ✅ Done | All `WITNESS` constants → `VALIDATOR` |
+| `libraries/protocol/include/graphene/protocol/config.hpp` | ✅ Done | All `validator` constants → `VALIDATOR` |
 | `libraries/protocol/include/graphene/protocol/config_testnet.hpp` | ✅ Done | Same |
 | `libraries/protocol/get_config.cpp` | ✅ Done | API string keys updated |
 | `share/vizd/config/config_witness.ini` | ✅ Done | Plugin names → `validator`, `validator_api`, `validator_guard` |
@@ -392,11 +392,11 @@ Even with server-side fallback, clients will receive **responses** with new name
 
 ## 10. Summary
 
-`witness` → `validator` is the right rename. It:
+`validator` → `validator` is the right rename. It:
 
 - Matches XRPL, Ethereum PoS, Cosmos, and Polkadot terminology
 - Accurately describes both the block production and post-validation duties
-- Removes the passive/observational connotation of "witness"
+- Removes the passive/observational connotation of "validator"
 - Makes `block_post_validation_object` → `validator_confirmation_object` semantically clear
 
 **The rename is safe for unupdated JS/PHP clients** — the binary wire format uses integer type IDs, not string names, so old clients submitting transactions continue to work. A server-side name alias table handles the JSON string name fallback at zero cost. The only visible breakage for old clients is in response parsing, where they may encounter new names (`validator_update` instead of `witness_update`) in block history reads.

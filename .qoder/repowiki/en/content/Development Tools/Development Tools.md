@@ -1,4 +1,4 @@
-# Development Tools
+﻿# Development Tools
 
 <cite>
 **Referenced Files in This Document**
@@ -287,7 +287,7 @@ Root --> PRG
 ## Performance Considerations
 - Use Release builds for performance-sensitive tasks.
 - Enable coverage only when profiling or auditing code coverage.
-- Consider LOW_MEMORY_NODE for resource-constrained environments (e.g., witnesses).
+- Consider LOW_MEMORY_NODE for resource-constrained environments (e.g., validators).
 - Use Docker images to standardize environments and avoid performance regressions caused by local toolchain differences.
 
 [No sources needed since this section provides general guidance]

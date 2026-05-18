@@ -1,4 +1,4 @@
-# Docker Configuration
+﻿# Docker Configuration
 
 <cite>
 **Referenced Files in This Document**
@@ -189,8 +189,8 @@ RuntimeStage --> Entrypoint["Start via vizd.sh"]
 ### Environment Variables
 The container supports the following environment variables to customize runtime behavior:
 - VIZD_SEED_NODES: Space-delimited list of seed nodes to connect to at startup. Overrides default seed list.
-- VIZD_WITNESS_NAME: Name of the witness to operate when block production is enabled.
-- VIZD_PRIVATE_KEY: Private key for signing blocks (when operating a witness).
+- VIZD_WITNESS_NAME: Name of the validator to operate when block production is enabled.
+- VIZD_PRIVATE_KEY: Private key for signing blocks (when operating a validator).
 - VIZD_RPC_ENDPOINT: RPC endpoint binding (default: 0.0.0.0:8090).
 - VIZD_P2P_ENDPOINT: P2P endpoint binding (default: 0.0.0.0:2001).
 - VIZD_EXTRA_OPTS: Additional command-line options appended to the node invocation.
@@ -289,8 +289,8 @@ These are defined in the Dockerfiles and used by the entrypoint script.
   - Use the testnet image tag and adjust seed nodes if required.
   - Reference: [README.md:16-20](file://README.md#L16-L20), [Dockerfile-testnet:94-103](file://share/vizd/docker/Dockerfile-testnet#L94-L103)
 
-- Witness node
-  - Set VIZD_WITNESS_NAME and VIZD_PRIVATE_KEY to operate a witness.
+- validator node
+  - Set VIZD_WITNESS_NAME and VIZD_PRIVATE_KEY to operate a validator.
   - Reference: [vizd.sh:31-37](file://share/vizd/vizd.sh#L31-L37)
 
 - MongoDB analytics node
@@ -422,7 +422,7 @@ The VIZ C++ Node provides multiple Docker images tailored for production, testne
 
 ### Environment Variable Reference
 - VIZD_SEED_NODES: Seed nodes to connect to.
-- VIZD_WITNESS_NAME: Witness name for block production.
+- VIZD_WITNESS_NAME: validator name for block production.
 - VIZD_PRIVATE_KEY: Private key for signing blocks.
 - VIZD_RPC_ENDPOINT: RPC endpoint binding.
 - VIZD_P2P_ENDPOINT: P2P endpoint binding.

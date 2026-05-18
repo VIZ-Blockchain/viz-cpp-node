@@ -1,4 +1,4 @@
-# Development Workflow
+﻿# Development Workflow
 
 <cite>
 **Referenced Files in This Document**
@@ -322,7 +322,7 @@ Dev --> Tests
 
 ## Performance Considerations
 - Build type: prefer Release for production; Debug with coverage for development and analysis.
-- Low-memory nodes: use LOW_MEMORY_NODE for witness and seed-node deployments to reduce resource usage.
+- Low-memory nodes: use LOW_MEMORY_NODE for validator and seed-node deployments to reduce resource usage.
 - Docker builds: leverage prebuilt images for faster iteration; build locally when debugging CI issues.
 
 [No sources needed since this section provides general guidance]

@@ -1,4 +1,4 @@
-# Testnet Dockerfile
+﻿# Testnet Dockerfile
 
 <cite>
 **Referenced Files in This Document**
@@ -72,7 +72,7 @@ DF --> SEED
 
 ## Core Components
 - Testnet Dockerfile: Builds with BUILD_TESTNET enabled, installs testnet config, snapshot, and seed nodes, exposes testnet RPC and P2P ports, and declares persistent volumes for data and config.
-- Testnet configuration: Defines RPC endpoints, P2P settings, plugin list, and witness production parameters tuned for testnet.
+- Testnet configuration: Defines RPC endpoints, P2P settings, plugin list, and validator production parameters tuned for testnet.
 - Startup script: Resolves seed nodes, applies environment overrides, optionally replays from cached blockchain, and launches the node with proper data directory ownership.
 - Snapshot: Pre-populates test accounts for immediate testing without manual account creation.
 - Seed nodes: Provides initial peers for testnet connectivity.
@@ -182,14 +182,14 @@ B --> |No| F["Default production config"]
 - P2P endpoint: Listens on a testnet-specific port.
 - RPC endpoints: HTTP and WebSocket endpoints configured for testnet.
 - Plugins: Includes chain, p2p, json_rpc, webserver, and other plugins suitable for testnet development and testing.
-- Witness production: Enabled with configurable participation thresholds and witness name/key for testnet block production.
+- validator production: Enabled with configurable participation thresholds and validator name/key for testnet block production.
 
 ```mermaid
 flowchart TD
 CFG["config_testnet.ini"] --> P2P["p2p-endpoint"]
 CFG --> RPC["webserver-http-endpoint<br/>webserver-ws-endpoint"]
 CFG --> PLUGINS["plugin list"]
-CFG --> WITNESS["witness and private-key"]
+CFG --> validator["validator and private-key"]
 ```
 
 **Diagram sources**
@@ -235,7 +235,7 @@ Script->>Node : exec vizd with args and env overrides
 ### Testnet RPC Endpoint Setup and Environment Overrides
 - RPC endpoint override: The script allows overriding the RPC endpoint via an environment variable.
 - P2P endpoint override: Similarly supports overriding the P2P endpoint.
-- Witness customization: Allows setting the witness name and private key via environment variables.
+- validator customization: Allows setting the validator name and private key via environment variables.
 
 ```mermaid
 flowchart TD
@@ -335,7 +335,7 @@ Common issues and resolutions:
 - No seed nodes provided: The startup script automatically loads seed nodes from the built-in seed list if none are supplied via environment variables.
 - RPC endpoint conflicts: Override the RPC endpoint using the environment variable to avoid port conflicts.
 - P2P endpoint conflicts: Override the P2P endpoint similarly.
-- Witness production: Ensure the witness name and private key match the testnet configuration when attempting to produce blocks.
+- validator production: Ensure the validator name and private key match the testnet configuration when attempting to produce blocks.
 - Snapshot not applied: Verify the presence of the snapshot file and that the node has permission to read it.
 - Connectivity delays: Allow time for the node to discover peers and synchronize; monitor logs for peer connection and block sync progress.
 

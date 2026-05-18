@@ -1,4 +1,4 @@
-# VIZ Blockchain — Block Processing & Pending Transactions
+﻿# VIZ Blockchain — Block Processing & Pending Transactions
 
 Internal mechanics of block application, transaction queuing, and the pending transaction lifecycle.
 
@@ -122,7 +122,7 @@ if new_block.previous == head_block_id()
      fork_db.start_block(head_block)   ← seeds fork_db with the head
 ```
 
-This also fixes **witness nodes that generate their own blocks**: `generate_block()` sets `pending_block.previous = head_block_id()`, and without the seed the self-generated block would fail to push into `fork_db`.
+This also fixes **validator nodes that generate their own blocks**: `generate_block()` sets `pending_block.previous = head_block_id()`, and without the seed the self-generated block would fail to push into `fork_db`.
 
 ---
 
@@ -294,9 +294,9 @@ Now the log only fires once, after both loops complete, with an accurate count o
 
 ---
 
-## Bug Fix: Witness Plugin Option Parsing
+## Bug Fix: Validator Plugin Option Parsing
 
-Source: [witness.cpp](../../plugins/witness/witness.cpp)
+Source: [validator.cpp](../../plugins/validator/validator.cpp)
 
 ### Bug 1: `enable-stale-production` with `implicit_value(false)`
 
@@ -346,18 +346,18 @@ _required_witness_participation = options["required-participation"].as<uint32_t>
 
 ---
 
-## Witness Block Production Timing
+## validator Block Production Timing
 
-Source: [witness.cpp](../../plugins/witness/witness.cpp)
+Source: [validator.cpp](../../plugins/validator/validator.cpp)
 
 ### Production Loop Mechanism
 
-The witness plugin uses a timer-based production loop with a look-ahead to detect when it's time to produce a block:
+The Validator Plugin uses a timer-based production loop with a look-ahead to detect when it's time to produce a block:
 
 1. **Timer** fires every **250ms** (aligned to 250ms boundaries, minimum sleep 50ms)
 2. On each tick, `maybe_produce_block()` computes `now = NTP_time + 250ms` (look-ahead)
 3. `get_slot_at_time(now)` finds which slot corresponds to `now`
-4. If the slot belongs to one of our witnesses and `|scheduled_time - now| <= 500ms`, the block is produced with `scheduled_time` as the timestamp
+4. If the slot belongs to one of our validators and `|scheduled_time - now| <= 500ms`, the block is produced with `scheduled_time` as the timestamp
 
 The block timestamp is always the **deterministic slot time** (computed from `head_block_time` rounded to `CHAIN_BLOCK_INTERVAL` boundary + `slot_num × 3s`), never the current clock time.
 
@@ -374,15 +374,15 @@ This gives a **500ms safety margin** against the LAG threshold, compared to 0ms 
 
 ### Missed Block Behavior
 
-When a witness misses their slot, the production loop does NOT wait or retry. The next tick simply finds a later slot:
+When a validator misses their slot, the production loop does NOT wait or retry. The next tick simply finds a later slot:
 
 ```
-Slot T=3 missed (witness A absent):
-  Tick at T=3.000 → now=3.250 → slot=1 → witness A → not our witness → not_my_turn
+Slot T=3 missed (validator A absent):
+  Tick at T=3.000 → now=3.250 → slot=1 → validator A → not our validator → not_my_turn
   (A's slot passes unclaimed)
 
-Slot T=6 (witness B - our witness):
-  Tick at T=5.750 → now=6.000 → slot=2 → witness B → PRODUCE with timestamp T=6.000
+Slot T=6 (validator B - our validator):
+  Tick at T=5.750 → now=6.000 → slot=2 → validator B → PRODUCE with timestamp T=6.000
 ```
 
 When block at T=6 is pushed, `update_global_dynamic_data()` counts `missed_blocks = get_slot_at_time(6.000) - 1 = 1` and increments `current_aslot` accordingly.
@@ -393,13 +393,13 @@ When block at T=6 is pushed, `update_global_dynamic_data()` counts `missed_block
 |---|---|---|
 | Sync status | Chain is not stale (or `enable-stale-production`) | `not_synced` |
 | Slot time | `get_slot_at_time(now) > 0` | `not_time_yet` |
-| Witness ownership | Scheduled witness is in our `_witnesses` set | `not_my_turn` |
-| Signing key | Witness has non-zero `signing_key` on chain | `not_my_turn` |
+| validator ownership | Scheduled validator is in our `_witnesses` set | `not_my_turn` |
+| Signing key | validator has non-zero `signing_key` on chain | `not_my_turn` |
 | Private key | We have the private key for the signing key | `no_private_key` |
 | Participation | Network participation ≥ required (pre-HF12 only) | `low_participation` |
 | Lag | `|scheduled_time - now| <= 500ms` | `lag` |
 | Fork collision | No competing block at same height in fork_db | `fork_collision` |
-| Minority fork | Last 21 blocks NOT all from our own witnesses (or `enable-stale-production` or emergency mode) | `minority_fork` |
+| Minority fork | Last 21 blocks NOT all from our own validators (or `enable-stale-production` or emergency mode) | `minority_fork` |
 
 ---
 
@@ -410,4 +410,4 @@ When block at T=6 is pushed, `update_global_dynamic_data()` counts `missed_block
 | `CHAIN_PENDING_TRANSACTION_EXECUTION_LIMIT` | 200ms | Max time to spend re-applying pending txs after block push |
 | `CHAIN_BLOCK_GENERATION_POSTPONED_TX_LIMIT` | 5 | Max consecutive oversized txs to skip during block generation |
 | `CHAIN_BLOCK_SIZE` | 65536 bytes | Hard limit on block size |
-| `maximum_block_size` | Dynamic (witness median) | Soft limit on block size |
+| `maximum_block_size` | Dynamic (validator median) | Soft limit on block size |

@@ -1,4 +1,4 @@
-# Installation and Setup
+﻿# Installation and Setup
 
 <cite>
 **Referenced Files in This Document**
@@ -245,7 +245,7 @@ These options influence compilation flags and conditional compilation macros.
 #### Multi-Stage Dockerfiles
 - Production: full-featured node with optimized runtime
 - Low memory: consensus-only node for resource-constrained environments
-- Testnet: preconfigured for local testnet with snapshot and default witness
+- Testnet: preconfigured for local testnet with snapshot and default validator
 - Each Dockerfile:
   - Installs build dependencies
   - Copies minimal source subsets
@@ -274,7 +274,7 @@ Runtime --> Image["Final image with vizd"]
 - [share/vizd/docker/Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L1-L88)
 
 #### Container Entrypoint and Environment
-- The container entrypoint script sets up seed nodes, optional witness configuration, copies configuration, initializes blockchain cache if present, and launches the node with environment-provided endpoints and arguments.
+- The container entrypoint script sets up seed nodes, optional validator configuration, copies configuration, initializes blockchain cache if present, and launches the node with environment-provided endpoints and arguments.
 
 ```mermaid
 sequenceDiagram
@@ -304,7 +304,7 @@ Node-->>Docker : Logs and runtime
 
 ### Configuration Management
 - Production configuration template defines P2P endpoints, RPC endpoints, threading, shared memory sizing, plugin list, and logging
-- Testnet configuration template adds witness-related settings and enables stale production for local testing
+- Testnet configuration template adds validator-related settings and enables stale production for local testing
 
 **Section sources**
 - [share/vizd/config/config.ini](file://share/vizd/config/config.ini#L1-L130)

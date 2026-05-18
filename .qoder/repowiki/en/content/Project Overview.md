@@ -1,4 +1,4 @@
-# Project Overview
+﻿# Project Overview
 
 <cite>
 **Referenced Files in This Document**
@@ -11,7 +11,7 @@
 - [vizd.sh](file://share/vizd/vizd.sh)
 - [database.hpp](file://libraries/chain/include/graphene/chain/database.hpp)
 - [operations.hpp](file://libraries/protocol/include/graphene/protocol/operations.hpp)
-- [witness.hpp](file://plugins/witness/include/graphene/plugins/witness/witness.hpp)
+- [validator.hpp](file://plugins/validator/include/graphene/plugins/validator/validator.hpp)
 - [social_network.hpp](file://plugins/social_network/include/graphene/plugins/social_network/social_network.hpp)
 - [global_property_object.hpp](file://libraries/chain/include/graphene/chain/global_property_object.hpp)
 </cite>
@@ -30,18 +30,18 @@
 
 ## Introduction
 VIZ is a Graphene-based blockchain implementing Fair-DPOS consensus, designed as a full consensus node for the VIZ World platform. It provides a robust, extensible foundation for decentralized applications, social networks, and financial systems with a focus on fairness, transparency, and efficient governance. The project emphasizes:
-- Fair-DPOS consensus ensuring equitable witness participation and penalties for missed blocks
+- Fair-DPOS consensus ensuring equitable validator participation and penalties for missed blocks
 - Rich social and content features integrated into the blockchain state
-- A modular plugin architecture enabling flexible node configurations for different roles (full node, witness, indexer, etc.)
+- A modular plugin architecture enabling flexible node configurations for different roles (full node, validator, indexer, etc.)
 - Strong developer tooling and operational scripts for building, running, and maintaining nodes
 
 Target audiences:
-- Node operators: Run full nodes, seed nodes, and witness nodes with configurable plugins and performance tuning
+- Node operators: Run full nodes, seed nodes, and validator nodes with configurable plugins and performance tuning
 - Application developers: Build decentralized apps leveraging JSON-RPC APIs and plugin-specific endpoints
 - Wallet developers: Integrate with database and chain APIs for account, transaction, and content queries
 
 Key differentiators:
-- Fair-DPOS with explicit participation checks and penalties for inactive witnesses
+- Fair-DPOS with explicit participation checks and penalties for inactive validators
 - Integrated social features (content, voting, rewards, invites, subscriptions) in the core chain
 - Extensive plugin ecosystem for APIs, indexing, and specialized node roles
 - Operational readiness with Docker images, seed nodes, and shell scripts
@@ -54,7 +54,7 @@ Key differentiators:
 ## Project Structure
 At a high level, the repository is organized into:
 - Core libraries: Protocol definitions, chain logic, network messaging, utilities, and wallet support
-- Plugins: Modular extensions exposing APIs and specialized functionality (e.g., witness, social_network, database_api)
+- Plugins: Modular extensions exposing APIs and specialized functionality (e.g., validator, social_network, database_api)
 - Programs: Executables (vizd, cli_wallet) and utilities
 - Documentation: Build instructions, plugin usage, testnet setup, and API notes
 - Share assets: Configurations, Dockerfiles, seed nodes, and shell scripts for deployment
@@ -74,7 +74,7 @@ LWallet["libraries/wallet"]
 end
 subgraph "Plugins"
 PChain["plugins/chain"]
-PWitness["plugins/witness"]
+PWitness["plugins/validator"]
 PDB["plugins/database_api"]
 PSocial["plugins/social_network"]
 PJSON["plugins/json_rpc"]
@@ -112,29 +112,29 @@ LWallet --> LProto
 - [config.ini](file://share/vizd/config/config.ini#L69-L74)
 
 ## Core Components
-- Chain database and consensus engine: Manages blockchain state, fork resolution, block validation, witness scheduling, and reward/cashout mechanics
+- Chain database and consensus engine: Manages blockchain state, fork resolution, block validation, validator scheduling, and reward/cashout mechanics
 - Protocol definitions: Enumerates operations (transfers, content, governance, social features) and virtual operations for rewards and payouts
 - Plugin architecture: Enables modular APIs (database, social_network, committee, invite, paid_subscription, witness_api) and transport (JSON-RPC, WebServer)
-- Witness plugin: Produces blocks according to Fair-DPOS participation thresholds and schedule
+- Validator Plugin: Produces blocks according to Fair-DPOS participation thresholds and schedule
 - Social network plugin: Exposes content, votes, replies, and governance APIs tailored for VIZ World’s social features
 - Configuration and deployment: Comprehensive config files, Docker images, and shell scripts for production and testnet
 
 Practical examples:
 - Run a full node: Use the provided Docker image or build from source, configure endpoints and plugins, and start the node
 - Develop applications: Consume JSON-RPC endpoints exposed by database_api and social_network plugins
-- Operate a witness: Enable the witness plugin, set witness name and private key, and monitor participation metrics
+- Operate a validator: Enable the Validator Plugin, set validator name and private key, and monitor participation metrics
 
 **Section sources**
 - [database.hpp](file://libraries/chain/include/graphene/chain/database.hpp#L194-L227)
 - [operations.hpp](file://libraries/protocol/include/graphene/protocol/operations.hpp#L13-L102)
-- [witness.hpp](file://plugins/witness/include/graphene/plugins/witness/witness.hpp#L34-L65)
+- [validator.hpp](file://plugins/validator/include/graphene/plugins/validator/validator.hpp#L34-L65)
 - [social_network.hpp](file://plugins/social_network/include/graphene/plugins/social_network/social_network.hpp#L36-L76)
 - [config.ini](file://share/vizd/config/config.ini#L1-L130)
 - [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L69-L111)
 - [vizd.sh](file://share/vizd/vizd.sh#L1-L82)
 
 ## Architecture Overview
-The node initializes plugins, opens the chain database, and starts P2P networking and webserver services. The chain plugin coordinates block production and validation, while witness plugin enforces Fair-DPOS participation. Social and governance plugins expose APIs for content, voting, and committee operations.
+The node initializes plugins, opens the chain database, and starts P2P networking and webserver services. The chain plugin coordinates block production and validation, while Validator Plugin enforces Fair-DPOS participation. Social and governance plugins expose APIs for content, voting, and committee operations.
 
 ```mermaid
 graph TB
@@ -143,13 +143,13 @@ Main --> P2P["p2p plugin<br/>peer connections"]
 Main --> Web["webserver plugin<br/>HTTP/WebSocket"]
 Main --> JSON["json_rpc plugin<br/>RPC transport"]
 Main --> DBAPI["database_api plugin<br/>chain queries"]
-Main --> Witness["witness plugin<br/>block production"]
+Main --> validator["Validator Plugin<br/>block production"]
 Main --> Social["social_network plugin<br/>content & votes"]
 Main --> Others["other plugins<br/>committee, invite, paid_subscription"]
 Chain --> DB["database<br/>blocks, txns, objects"]
 DBAPI --> DB
 Social --> DB
-Witness --> DB
+validator --> DB
 P2P --> Net["network core"]
 Web --> JSON
 ```
@@ -164,8 +164,8 @@ Web --> JSON
 
 ## Detailed Component Analysis
 
-### Fair-DPOS Consensus and Witness Production
-Fair-DPOS ensures that only participating witnesses produce blocks, with penalties for missed slots. The chain tracks participation and schedules witnesses accordingly. Operators can configure participation thresholds and enable stale production for resilience.
+### Fair-DPOS Consensus and validator Production
+Fair-DPOS ensures that only participating validators produce blocks, with penalties for missed slots. The chain tracks participation and schedules validators accordingly. Operators can configure participation thresholds and enable stale production for resilience.
 
 ```mermaid
 flowchart TD
@@ -173,7 +173,7 @@ Start(["Block production cycle"]) --> CheckSync["Check sync with network"]
 CheckSync --> SyncOK{"Synced?"}
 SyncOK --> |No| WaitSync["Wait for peers"]
 SyncOK --> |Yes| CheckTurn["Is it my turn?"]
-CheckTurn --> MyTurn{"Witness slot active?"}
+CheckTurn --> MyTurn{"validator slot active?"}
 MyTurn --> |No| SleepSlot["Sleep until next slot"]
 MyTurn --> |Yes| CheckParticipation["Check participation threshold"]
 CheckParticipation --> PartOK{"Participation >= required?"}
@@ -187,15 +187,15 @@ Broadcast --> CheckSync
 ```
 
 **Diagram sources**
-- [witness.hpp](file://plugins/witness/include/graphene/plugins/witness/witness.hpp#L20-L32)
+- [validator.hpp](file://plugins/validator/include/graphene/plugins/validator/validator.hpp#L20-L32)
 - [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L99-L103)
 
 **Section sources**
-- [witness.hpp](file://plugins/witness/include/graphene/plugins/witness/witness.hpp#L20-L32)
+- [validator.hpp](file://plugins/validator/include/graphene/plugins/validator/validator.hpp#L20-L32)
 - [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L99-L103)
 
 ### Database and State Management
-The database manages blocks, transactions, and domain objects (accounts, content, proposals, witnesses). It supports validation, push operations, fork resolution, and periodic processing (cashouts, inflation, committee actions).
+The database manages blocks, transactions, and domain objects (accounts, content, proposals, validators). It supports validation, push operations, fork resolution, and periodic processing (cashouts, inflation, committee actions).
 
 ```mermaid
 classDiagram
@@ -279,7 +279,7 @@ class Operation {
 - [operations.hpp](file://libraries/protocol/include/graphene/protocol/operations.hpp#L13-L102)
 
 ### Plugin APIs and Deployment
-The node enables a wide array of plugins for APIs and transport. Configuration files define endpoints, plugin lists, and witness credentials. Shell scripts and Docker images streamline deployment and seeding.
+The node enables a wide array of plugins for APIs and transport. Configuration files define endpoints, plugin lists, and validator credentials. Shell scripts and Docker images streamline deployment and seeding.
 
 ```mermaid
 sequenceDiagram
@@ -317,7 +317,7 @@ The node composes multiple subsystems:
 graph LR
 Entry["programs/vizd/main.cpp"] --> Reg["register_plugins()"]
 Reg --> PChain["plugins/chain"]
-Reg --> PWitness["plugins/witness"]
+Reg --> PWitness["plugins/validator"]
 Reg --> PDB["plugins/database_api"]
 Reg --> PSocial["plugins/social_network"]
 Reg --> PJSON["plugins/json_rpc"]
@@ -345,7 +345,7 @@ LChain --> LProto["libraries/protocol"]
 - Participation thresholds: Tuning participation requirements impacts block production frequency and network liveness
 
 Operational tips:
-- Use LOW_MEMORY_NODE build option for consensus-only nodes (witnesses/seed nodes)
+- Use LOW_MEMORY_NODE build option for consensus-only nodes (validators/seed nodes)
 - Monitor shared memory free space and tune increments based on workload
 - Adjust thread pool size for RPC clients to match CPU cores
 
@@ -359,12 +359,12 @@ Common operational scenarios:
 - Node not syncing: Verify P2P endpoints and seed nodes; check logs for connection errors
 - RPC lock errors: Increase read/write wait retries or tune single-write-thread behavior
 - Memory pressure: Reduce plugin overhead, enable virtual ops skipping, and adjust shared memory parameters
-- Witness production issues: Confirm participation thresholds, witness name, and private key configuration
+- validator production issues: Confirm participation thresholds, validator name, and private key configuration
 
 Useful references:
 - Logging configuration via config sections for console and file appenders
-- Testnet configuration enabling stale production and default witness credentials for development
-- Shell script arguments for RPC/P2P endpoints and witness overrides
+- Testnet configuration enabling stale production and default validator credentials for development
+- Shell script arguments for RPC/P2P endpoints and validator overrides
 
 **Section sources**
 - [config.ini](file://share/vizd/config/config.ini#L112-L130)
@@ -372,13 +372,13 @@ Useful references:
 - [vizd.sh](file://share/vizd/vizd.sh#L62-L73)
 
 ## Conclusion
-VIZ delivers a Graphene-based blockchain optimized for fairness and social features, with a modular plugin architecture and strong operational tooling. Its Fair-DPOS consensus, integrated content and governance primitives, and extensive APIs make it suitable for diverse use cases—from full node operations and witness roles to application and wallet development. The combination of comprehensive documentation, Docker images, and shell scripts lowers the barrier to entry while offering deep customization for advanced users.
+VIZ delivers a Graphene-based blockchain optimized for fairness and social features, with a modular plugin architecture and strong operational tooling. Its Fair-DPOS consensus, integrated content and governance primitives, and extensive APIs make it suitable for diverse use cases—from full node operations and validator roles to application and wallet development. The combination of comprehensive documentation, Docker images, and shell scripts lowers the barrier to entry while offering deep customization for advanced users.
 
 ## Appendices
 - Practical examples:
   - Full node: Use Docker image or build from source; configure endpoints and plugins; start with default or testnet config
   - Application development: Consume database_api and social_network endpoints over HTTP/WebSocket
-  - Witness operation: Enable witness plugin, set witness name and private key, monitor participation and block production
+  - validator operation: Enable Validator Plugin, set validator name and private key, monitor participation and block production
 
 **Section sources**
 - [README.md](file://README.md#L12-L29)

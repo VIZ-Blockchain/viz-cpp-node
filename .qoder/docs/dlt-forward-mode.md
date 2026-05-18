@@ -1,4 +1,4 @@
-# DLT Forward Mode — Block & Transaction Exchange
+﻿# DLT Forward Mode — Block & Transaction Exchange
 
 ## Overview
 
@@ -106,10 +106,10 @@ Relay block_reply to 3 peers (0 skipped: no_exchange, 0 skipped: not_active, 1 s
 
 ### Self-Produced Blocks
 
-When a witness produces a block, the flow is:
+When a validator produces a block, the flow is:
 
 ```
-witness.cpp:1081    p2p().broadcast_block(block)
+validator.cpp:1081    p2p().broadcast_block(block)
   → p2p_plugin.cpp:482   my->node->broadcast_block(block)
     → dlt_p2p_node.cpp:1117
 ```
@@ -142,7 +142,7 @@ The `peer` (sender) is excluded via the `exclude` parameter. Additionally, peers
 
 ### Block Post-Validation Broadcast
 
-`broadcast_block_post_validation()` sends a lightweight fork-status message (block ID + witness + signature) instead of the full block. This is called by the witness plugin for each block in the production round after validation completes.
+`broadcast_block_post_validation()` sends a lightweight fork-status message (block ID + validator + signature) instead of the full block. This is called by the Validator Plugin for each block in the production round after validation completes.
 
 ---
 
@@ -491,7 +491,7 @@ Between these events, the peer's actual chain head may advance significantly (e.
 | `libraries/network/include/graphene/network/dlt_p2p_messages.hpp` | `dlt_block_reply_message`, `dlt_transaction_message`, `dlt_message_type_enum` |
 | `libraries/network/include/graphene/network/dlt_p2p_peer_state.hpp` | `dlt_peer_state` (contains `exchange_enabled`, `fork_alignment`, `known_blocks` for echo suppression) |
 | `plugins/p2p/p2p_plugin.cpp` | `dlt_delegate::accept_block()`, `p2p_plugin::broadcast_block()`, `p2p_plugin::broadcast_transaction()` |
-| `plugins/witness/witness.cpp` | Calls `p2p().broadcast_block()` after block production |
+| `plugins/validator/validator.cpp` | Calls `p2p().broadcast_block()` after block production |
 
 ---
 

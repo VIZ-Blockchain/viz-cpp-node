@@ -1,4 +1,4 @@
-# Getting Started
+﻿# Getting Started
 
 <cite>
 **Referenced Files in This Document**
@@ -33,7 +33,7 @@ This guide helps you install, configure, and run a VIZ node quickly. It covers:
 - Prerequisites and environment setup
 - Multiple installation approaches: Docker, manual compilation, and package installation
 - First-time setup, configuration, and initial synchronization
-- Practical scenarios: full node, testnet node, and witness node
+- Practical scenarios: full node, testnet node, and validator node
 - Security considerations, monitoring, and troubleshooting
 
 ## Project Structure
@@ -68,7 +68,7 @@ C --> C4["vizd.sh"]
 
 ## Core Components
 - Node binary: vizd, the core blockchain node
-- Configuration: config.ini for mainnet, config_testnet.ini for testnet, config_witness.ini for witness-only setups
+- Configuration: config.ini for mainnet, config_testnet.ini for testnet, config_witness.ini for validator-only setups
 - Seed nodes: curated list to bootstrap P2P connectivity
 - Docker images: prebuilt or self-built images for quick deployment
 
@@ -85,7 +85,7 @@ Key runtime entry point and plugin registration are defined in the node’s main
 The node exposes:
 - P2P endpoint for peer-to-peer communication
 - JSON-RPC HTTP and WebSocket endpoints for API access
-- Optional witness production controls
+- Optional validator production controls
 
 ```mermaid
 graph TB
@@ -95,7 +95,7 @@ P["P2P Plugin"]
 W["Webserver Plugin"]
 C["Chain Plugin"]
 NA["Network Broadcast API"]
-WA["Witness API"]
+WA["validator API"]
 end
 subgraph "External"
 S["Seed Nodes"]
@@ -217,7 +217,7 @@ Install --> End(["Done"])
 #### Initial Configuration Files
 - Mainnet: config.ini
 - Testnet: config_testnet.ini
-- Witness-only: config_witness.ini
+- validator-only: config_witness.ini
 
 Key areas to review:
 - P2P endpoint and seed nodes
@@ -277,10 +277,10 @@ F --> G["Save and start node"]
 - [share/vizd/docker/Dockerfile-testnet](file://share/vizd/docker/Dockerfile-testnet#L75-L77)
 - [documentation/testnet.md](file://documentation/testnet.md#L21-L37)
 
-#### Witness Node
+#### validator Node
 - Use config_witness.ini
-- Enable witness and witness_api plugins
-- Configure witness name and private key
+- Enable validator and witness_api plugins
+- Configure validator name and private key
 
 **Section sources**
 - [share/vizd/config/config_witness.ini](file://share/vizd/config/config_witness.ini#L68-L86)
@@ -341,8 +341,8 @@ Common issues and resolutions:
   - Confirm volume mounts for persistent data and config
   - Rebuild images if dependencies change
 
-- Witness setup
-  - Ensure witness name and private key are configured
+- validator setup
+  - Ensure validator name and private key are configured
   - Adjust participation thresholds for testnet if needed
 
 **Section sources**
@@ -355,7 +355,7 @@ Common issues and resolutions:
 You now have multiple paths to run a VIZ node:
 - Docker for quick start
 - Manual build for customization
-- Witness configuration for block production
+- validator configuration for block production
 
 Follow the configuration and troubleshooting sections to ensure a smooth setup and ongoing operation.
 
@@ -363,7 +363,7 @@ Follow the configuration and troubleshooting sections to ensure a smooth setup a
 
 ### Security Considerations
 - Limit RPC exposure to trusted networks or use reverse proxies
-- Use strong private keys for witness nodes
+- Use strong private keys for validator nodes
 - Regularly update the node and monitor logs for anomalies
 
 ### Monitoring Node Health

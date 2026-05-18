@@ -1,8 +1,8 @@
-# VIZ Blockchain — Witness → Validator Migration Reference
+﻿# VIZ Blockchain — validator → Validator Migration Reference
 
 ## Quick Summary
 
-The VIZ blockchain is renaming "witness" terminology to "validator" across the entire stack. This document is a reference for JS/PHP library developers to support both old and new names during migration.
+The VIZ blockchain is renaming "validator" terminology to "validator" across the entire stack. This document is a reference for JS/PHP library developers to support both old and new names during migration.
 
 **Key principle: binary wire format uses integer type IDs, not string names. Submitting transactions by integer ID never breaks. Only JSON string names change.**
 
@@ -26,11 +26,11 @@ This distinction is the most important rule for library developers.
 
 | What | Reason |
 |------|--------|
-| Block header fields | **Done.** Node now returns `validator` / `validator_signature`. Libraries that relay raw block objects with no field-specific code need no changes. Code explicitly accessing `.witness` / `.witness_signature` on a block header must be updated to `.validator` / `.validator_signature`. |
+| Block header fields | **Done.** Node now returns `validator` / `validator_signature`. Libraries that relay raw block objects with no field-specific code need no changes. Code explicitly accessing `.validator` / `.witness_signature` on a block header must be updated to `.validator` / `.validator_signature`. |
 | Raw API response objects (beyond type definitions) | JSON deserialization is dynamic — field access works regardless of name if library doesn't validate field names |
 | Historical transaction data from node | Same — the node returns it, library relays it |
 
-**Practical rule:** if your library has a hardcoded string `"witness"` as a field name when *building* a JSON object to *send* to a node — that string must be updated. If the string `"witness"` only appears in a *comment*, a *display label*, or a *type definition that only affects IDE autocomplete* — it can wait.
+**Practical rule:** if your library has a hardcoded string `"validator"` as a field name when *building* a JSON object to *send* to a node — that string must be updated. If the string `"validator"` only appears in a *comment*, a *display label*, or a *type definition that only affects IDE autocomplete* — it can wait.
 
 ---
 
@@ -68,12 +68,12 @@ These are the operations users submit in transactions. The **integer type ID nev
 | Type ID | Current JSON Name (old) | New JSON Name | Virtual? | Fields (unchanged) |
 |---------|------------------------|---------------|----------|---------------------|
 | `6` | `witness_update` | `validator_update` | no | `owner`, `url`, `block_signing_key` |
-| `7` | `account_witness_vote` | `account_validator_vote` | no | `account`, **`witness` → `validator`**, `approve` |
+| `7` | `account_witness_vote` | `account_validator_vote` | no | `account`, **`validator` → `validator`**, `approve` |
 | `8` | `account_witness_proxy` | `account_validator_proxy` | no | `account`, `proxy` |
 | `30` | `shutdown_witness` | `shutdown_validator` | **yes** | `owner` |
-| `42` | `witness_reward` | `validator_reward` | **yes** | **`witness` → `validator`**, `shares` |
+| `42` | `witness_reward` | `validator_reward` | **yes** | **`validator` → `validator`**, `shares` |
 
-> **Field renames inside operations:** In type 7 (`account_validator_vote`) the field `witness` (the target account name) is renamed to `validator`. In type 42 (`validator_reward`) the field `witness` is renamed to `validator`. The node accepts both old and new field names in incoming JSON, but responses use new names only.
+> **Field renames inside operations:** In type 7 (`account_validator_vote`) the field `validator` (the target account name) is renamed to `validator`. In type 42 (`validator_reward`) the field `validator` is renamed to `validator`. The node accepts both old and new field names in incoming JSON, but responses use new names only.
 
 ### What JS/PHP Developers Must Handle
 
@@ -99,7 +99,7 @@ const op = ['validator_update', {  // new name
 
 ```js
 // Old (still accepted by node, but deprecated):
-const op = [7, { account: 'alice', witness: 'bob', approve: true }];
+const op = [7, { account: 'alice', validator: 'bob', approve: true }];
 
 // New (correct):
 const op = [7, { account: 'alice', validator: 'bob', approve: true }];
@@ -286,8 +286,8 @@ function getShuffledValidators(schedule) {
 
 | Field (old) | Field (new) | Operation | Note |
 |-------------|-------------|-----------|------|
-| `witness` | `validator` | `account_validator_vote` (type 7) | Target account name |
-| `witness` | `validator` | `validator_reward` (type 42) | Virtual op — library receives, not constructs |
+| `validator` | `validator` | `account_validator_vote` (type 7) | Target account name |
+| `validator` | `validator` | `validator_reward` (type 42) | Virtual op — library receives, not constructs |
 
 The node accepts both old and new field names in incoming JSON (backward compat). Responses always use new names.
 
@@ -307,7 +307,7 @@ The node accepts both old and new field names in incoming JSON (backward compat)
 
 ## 5. Chain Properties Field Renames
 
-**This section is critical for library developers.** The `chain_properties_update_operation` and `versioned_chain_properties_update_operation` carry governance parameters with `witness` in their names. These field names change in JSON. Libraries that construct these operations must update field names.
+**This section is critical for library developers.** The `chain_properties_update_operation` and `versioned_chain_properties_update_operation` carry governance parameters with `validator` in their names. These field names change in JSON. Libraries that construct these operations must update field names.
 
 **Binary format is safe** — field order is preserved in binary serialization, names are not written. Only JSON field names change.
 
@@ -358,14 +358,14 @@ Not directly relevant to JS/PHP libraries, but included for completeness:
 
 | Current Config Key (old) | New Config Key |
 |--------------------------|----------------|
-| `plugin = witness` | `plugin = validator` |
+| `plugin = validator` | `plugin = validator` |
 | `plugin = witness_api` | `plugin = validator_api` |
 | `plugin = witness_guard` | `plugin = validator_guard` |
-| `--witness = "name"` | `--validator = "name"` |
-| `witness-guard-enabled` | `validator-guard-enabled` |
-| `witness-guard-disable` | `validator-guard-disable` |
-| `witness-guard-interval` | `validator-guard-interval` |
-| `witness-guard-witness` | `validator-guard-validator` |
+| `--validator = "name"` | `--validator = "name"` |
+| `validator-guard-enabled` | `validator-guard-enabled` |
+| `validator-guard-disable` | `validator-guard-disable` |
+| `validator-guard-interval` | `validator-guard-interval` |
+| `validator-guard-validator` | `validator-guard-validator` |
 
 ---
 
@@ -406,7 +406,7 @@ Not directly relevant to JS/PHP libraries, but included for completeness:
    - Accept both `account_witness_vote` and `account_validator_vote` as name for type ID 7
    - Same for types 8, 30, 42
 2. Update field names in operation builders:
-   - Type 7: accept both `witness` and `validator` for the target account field; send `validator`
+   - Type 7: accept both `validator` and `validator` for the target account field; send `validator`
    - Chain properties: add new field names; keep old for backward compat with old nodes
 3. Add dual-name support for API methods:
    - Try new method name first, fall back to old name
@@ -434,10 +434,10 @@ Not directly relevant to JS/PHP libraries, but included for completeness:
 | Type ID | Old JSON Name | New JSON Name | Field changes |
 |---------|--------------|---------------|---------------|
 | 6 | `witness_update` | `validator_update` | none |
-| 7 | `account_witness_vote` | `account_validator_vote` | `witness` → `validator` |
+| 7 | `account_witness_vote` | `account_validator_vote` | `validator` → `validator` |
 | 8 | `account_witness_proxy` | `account_validator_proxy` | none |
 | 30 | `shutdown_witness` | `shutdown_validator` | none |
-| 42 | `witness_reward` | `validator_reward` | `witness` → `validator` |
+| 42 | `witness_reward` | `validator_reward` | `validator` → `validator` |
 
 ### API Methods
 
@@ -463,7 +463,7 @@ Not directly relevant to JS/PHP libraries, but included for completeness:
 
 | Old Field | New Field |
 |-----------|-----------|
-| `witness` | `validator` |
+| `validator` | `validator` |
 | `witness_signature` | `validator_signature` |
 
 ### Dynamic Global Property Fields

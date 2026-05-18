@@ -1,6 +1,6 @@
-# VIZ Blockchain — Witness Operations
+﻿# VIZ Blockchain — validator Operations
 
-Spec for implementing witness-related operations in PHP/Node.js libraries.
+Spec for implementing validator-related operations in PHP/Node.js libraries.
 
 ---
 
@@ -9,17 +9,17 @@ Spec for implementing witness-related operations in PHP/Node.js libraries.
 **Type ID:** `6`
 **Required authority:** `active` of `owner`
 
-Registers or updates a witness. Setting `block_signing_key` to the null key removes the witness from block production contention.
+Registers or updates a validator. Setting `block_signing_key` to the null key removes the validator from block production contention.
 
 ### Fields
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `owner` | `account_name_type` | yes | Witness account name |
-| `url` | `string` | yes | Witness website or info URL |
+| `owner` | `account_name_type` | yes | validator account name |
+| `url` | `string` | yes | validator website or info URL |
 | `block_signing_key` | `public_key_type` | yes | Key used to sign blocks (set to null key to deactivate) |
 
-**Null key** (deactivate witness): `"VIZ1111111111111111111111111111111114T1Anm"`
+**Null key** (deactivate validator): `"VIZ1111111111111111111111111111111114T1Anm"`
 
 ### JSON Example
 
@@ -56,7 +56,7 @@ const op = ['witness_update', {
 
 ### Checklist
 - [ ] `block_signing_key` must be a valid VIZ public key or the null key
-- [ ] Null key = `VIZ1111111111111111111111111111111114T1Anm` (deactivates witness)
+- [ ] Null key = `VIZ1111111111111111111111111111111114T1Anm` (deactivates validator)
 - [ ] `url` must be non-empty and < `CHAIN_MAX_URL_LENGTH` (256) bytes
 - [ ] Requires `witness_declaration_fee` paid to committee (see chain properties)
 - [ ] Sign with `owner`'s active key
@@ -68,13 +68,13 @@ const op = ['witness_update', {
 **Type ID:** `25`
 **Required authority:** `active` of `owner`
 
-Witness votes on base chain properties (`chain_properties_init` format only). Use `versioned_chain_properties_update_operation` for extended properties.
+validator votes on base chain properties (`chain_properties_init` format only). Use `versioned_chain_properties_update_operation` for extended properties.
 
 ### Fields
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `owner` | `account_name_type` | yes | Witness account voting |
+| `owner` | `account_name_type` | yes | validator account voting |
 | `props` | `chain_properties_init` | yes | Proposed chain properties |
 
 ### JSON Example
@@ -105,7 +105,7 @@ Witness votes on base chain properties (`chain_properties_init` format only). Us
 - [ ] `bandwidth_reserve_below.symbol` must be `SHARES`
 - [ ] `min_curation_percent` <= `max_curation_percent`
 - [ ] All percent fields in basis points (0–10000)
-- [ ] Median of all active witness values is used as actual chain property
+- [ ] Median of all active validator values is used as actual chain property
 
 ---
 
@@ -114,13 +114,13 @@ Witness votes on base chain properties (`chain_properties_init` format only). Us
 **Type ID:** `46`
 **Required authority:** `active` of `owner`
 
-Witness votes on versioned chain properties (supports all hardfork extensions).
+validator votes on versioned chain properties (supports all hardfork extensions).
 
 ### Fields
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `owner` | `account_name_type` | yes | Witness account voting |
+| `owner` | `account_name_type` | yes | validator account voting |
 | `props` | `versioned_chain_properties` | yes | Versioned props variant |
 
 ### JSON Example (using hf9 = index 3)
@@ -170,14 +170,14 @@ Witness votes on versioned chain properties (supports all hardfork extensions).
 **Type ID:** `7`
 **Required authority:** `active` of `account`
 
-Votes for or against a witness to be included in block production.
+Votes for or against a validator to be included in block production.
 
 ### Fields
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `account` | `account_name_type` | yes | Voting account |
-| `witness` | `account_name_type` | yes | Witness to vote for/against |
+| `validator` | `account_name_type` | yes | validator to vote for/against |
 | `approve` | `bool` | yes | `true` to add vote, `false` to remove vote |
 
 ### JSON Example
@@ -185,7 +185,7 @@ Votes for or against a witness to be included in block production.
 ```json
 [7, {
   "account": "alice",
-  "witness": "bob",
+  "validator": "bob",
   "approve": true
 }]
 ```
@@ -197,7 +197,7 @@ $op = [
     'type' => 'account_witness_vote_operation',
     'value' => [
         'account' => 'alice',
-        'witness' => 'bob',
+        'validator' => 'bob',
         'approve' => true,
     ],
 ];
@@ -208,7 +208,7 @@ $op = [
 ```js
 const op = ['account_witness_vote', {
     account: 'alice',
-    witness: 'bob',
+    validator: 'bob',
     approve: true,
 }];
 ```
@@ -216,7 +216,7 @@ const op = ['account_witness_vote', {
 ### Checklist
 - [ ] Account must have SHARES to have meaningful voting weight
 - [ ] `approve: false` removes a previously cast vote
-- [ ] Top 21 witnesses by vote weight produce blocks
+- [ ] Top 21 validators by vote weight produce blocks
 - [ ] Sign with `account`'s active key
 
 ---
@@ -226,7 +226,7 @@ const op = ['account_witness_vote', {
 **Type ID:** `8`
 **Required authority:** `active` of `account`
 
-Assigns a proxy account for witness voting. All existing votes are removed when a proxy is set.
+Assigns a proxy account for validator voting. All existing votes are removed when a proxy is set.
 
 ### Fields
 
@@ -248,5 +248,5 @@ Assigns a proxy account for witness voting. All existing votes are removed when 
 - [ ] Setting `proxy` to `""` (empty string) removes the proxy
 - [ ] Cannot set proxy to self
 - [ ] Proxy chains are resolved (A→B→C); max depth is limited
-- [ ] Setting a proxy removes all direct witness votes
+- [ ] Setting a proxy removes all direct validator votes
 - [ ] Sign with `account`'s active key

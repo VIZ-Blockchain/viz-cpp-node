@@ -1,4 +1,4 @@
-# Chain Library
+﻿# Chain Library
 
 <cite>
 **Referenced Files in This Document**
@@ -22,7 +22,7 @@
 - [plugin.cpp](file://plugins/chain/plugin.cpp)
 - [snapshot_plugin.cpp](file://plugins/snapshot/plugin.cpp)
 - [node.cpp](file://libraries/network/node.cpp)
-- [witness.cpp](file://plugins/witness/witness.cpp)
+- [validator.cpp](file://plugins/validator/validator.cpp)
 - [console_appender.cpp](file://thirdparty/fc/src/log/console_appender.cpp)
 - [main.cpp](file://programs/vizd/main.cpp)
 </cite>
@@ -59,7 +59,7 @@ The Chain Library is organized around a central database class that orchestrates
 - Fork handling with a fork database
 - Block log for durable storage
 - DLT rolling block log for selective block retention
-- Object model definitions for accounts, witnesses, committee requests, and more
+- Object model definitions for accounts, validators, committee requests, and more
 - Evaluator registry for operation processing
 - Observer signals for event-driven integrations
 - Snapshot loading and state restoration capabilities
@@ -92,7 +92,7 @@ subgraph "Logging System"
 LOG["console_appender.cpp"]
 MAIN["main.cpp"]
 SYNC["node.cpp"]
-WITNESS["witness.cpp"]
+validator["validator.cpp"]
 end
 DB --> FDB
 DB --> BLK
@@ -110,7 +110,7 @@ CHAINPLUG --> SNAP
 CHAINPLUG --> DB
 SNAP --> LOG
 SYNC --> LOG
-WITNESS --> LOG
+validator --> LOG
 MAIN --> LOG
 ```
 
@@ -146,7 +146,7 @@ MAIN --> LOG
 - Fork Database: Maintains a tree of candidate blocks, supports branch resolution, and selects the longest chain.
 - Block Log: Provides durable, memory-mapped storage for blocks and an index for fast random access.
 - DLT Rolling Block Log: Enhanced block storage system that maintains only a rolling window of recent blocks for selective retention.
-- Object Model: Defines all persistent objects (accounts, witnesses, committee requests, transactions, etc.) and their multi-index containers.
+- Object Model: Defines all persistent objects (accounts, validators, committee requests, transactions, etc.) and their multi-index containers.
 - Evaluator System: Registry and base classes for operation processing with a standardized interface.
 - Observer Pattern: Signals for pre/post operation application, applied block, and transaction events.
 - Snapshot Plugin: Handles state restoration from snapshots and manages snapshot lifecycle.
@@ -389,12 +389,12 @@ WriteIndex --> UpdateHead["Update head"]
 ### Data Model: Objects and Indices
 The object model defines persistent entities and their indices:
 - Object types enumerate all managed object kinds
-- Account, witness, committee request/vote, transaction, escrow, vesting delegation, and more
+- Account, validator, committee request/vote, transaction, escrow, vesting delegation, and more
 - Multi-index containers provide unique and composite keys for efficient lookups
 
 Representative object categories:
 - Accounts: balances, vesting shares, delegation, auction metadata, bandwidth tracking
-- Witnesses: votes, virtual scheduling, signing keys, version/hardfork votes
+- validators: votes, virtual scheduling, signing keys, version/hardfork votes
 - Committee: requests with statuses, funding, payouts
 - Transactions: deduplication and expiration tracking
 - Escrow and routes: multi-signature transfers and routing
@@ -410,7 +410,7 @@ received_vesting_shares : asset
 energy : int16
 last_vote_time : time_point_sec
 }
-WITNESS {
+validator {
 owner : account_name_type
 votes : share_type
 signing_key : public_key_type
@@ -693,7 +693,7 @@ During blockchain synchronization, the system provides enhanced color-coded prog
 
 - **Green messages** indicate synchronization start (only logged once per sync session)
 - **Yellow messages** indicate synchronization progress every 500 blocks
-- **Green messages** confirm successful block generation by witnesses
+- **Green messages** confirm successful block generation by validators
 - **Orange messages** highlight snapshot import operations
 - **Default messages** show internal synchronization mechanics
 
@@ -709,7 +709,7 @@ The logging system supports configurable color schemes through program options:
 - [console_appender.cpp:132-154](file://thirdparty/fc/src/log/console_appender.cpp#L132-L154)
 - [main.cpp:234-253](file://programs/vizd/main.cpp#L234-L253)
 - [snapshot_plugin.cpp:1018-1032](file://plugins/snapshot/plugin.cpp#L1018-L1032)
-- [witness.cpp:286](file://plugins/witness/witness.cpp#L286)
+- [validator.cpp:286](file://plugins/validator/validator.cpp#L286)
 
 ### Enhanced Troubleshooting with Color Coding
 The enhanced color-coded logging system significantly improves troubleshooting capabilities:
@@ -737,7 +737,7 @@ The ANSI color codes provide immediate visual feedback in terminal environments:
 **Section sources**
 - [node.cpp:3446-3456](file://libraries/network/node.cpp#L3446-L3456)
 - [snapshot_plugin.cpp:1770-1771](file://plugins/snapshot/plugin.cpp#L1770-L1771)
-- [witness.cpp:286](file://plugins/witness/witness.cpp#L286)
+- [validator.cpp:286](file://plugins/validator/validator.cpp#L286)
 
 ### Network Node Synchronization Logging Enhancements
 **Updated** The network node synchronization system now uses info-level logging for sync restart reasons, providing clearer insights into synchronization behavior:
@@ -797,7 +797,7 @@ CHAINPLUG["chain plugin.cpp"] --> SNAP["snapshot_plugin.cpp"]
 CHAINPLUG --> DB
 LOGSYS["console_appender.cpp"] --> MAIN["main.cpp"]
 LOGSYS --> SYNC["node.cpp"]
-LOGSYS --> WITNESS["witness.cpp"]
+LOGSYS --> validator["validator.cpp"]
 ```
 
 **Diagram sources**
@@ -877,7 +877,7 @@ The Chain Library provides a robust, modular framework for blockchain state mana
 - Push transaction:
   - Validate transaction size, apply within a pending session, record changes, and emit pending/applied transaction signals.
 - Query state:
-  - Retrieve account, witness, content, escrow, dynamic global properties, witness schedule, and hardfork property objects by name or identifier.
+  - Retrieve account, validator, content, escrow, dynamic global properties, validator schedule, and hardfork property objects by name or identifier.
 - Fork resolution:
   - Compute branches from current head to a candidate fork head, pop blocks until common ancestor, then push new fork blocks.
 - **New**: Snapshot operations:
@@ -972,7 +972,7 @@ Usage scenarios:
 - [snapshot_plugin.cpp:50-53](file://plugins/snapshot/plugin.cpp#L50-L53)
 - [console_appender.cpp:132-154](file://thirdparty/fc/src/log/console_appender.cpp#L132-L154)
 - [node.cpp:3446-3456](file://libraries/network/node.cpp#L3446-L3456)
-- [witness.cpp:286](file://plugins/witness/witness.cpp#L286)
+- [validator.cpp:286](file://plugins/validator/validator.cpp#L286)
 
 ### Network Synchronization Logging Reference
 **New Section** Enhanced logging improvements for network synchronization

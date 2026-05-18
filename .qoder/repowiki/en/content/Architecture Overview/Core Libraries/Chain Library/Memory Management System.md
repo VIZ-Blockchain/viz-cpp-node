@@ -1,4 +1,4 @@
-# Memory Management System
+﻿# Memory Management System
 
 <cite>
 **Referenced Files in This Document**
@@ -19,7 +19,7 @@
 - [thread_specific.hpp](file://thirdparty/fc/include/fc/thread/thread_specific.hpp)
 - [scoped_exit.hpp](file://thirdparty/fc/include/fc/scoped_exit.hpp)
 - [aligned.hpp](file://thirdparty/fc/include/fc/aligned.hpp)
-- [witness.cpp](file://plugins/witness/witness.cpp)
+- [validator.cpp](file://plugins/validator/validator.cpp)
 </cite>
 
 ## Update Summary
@@ -107,7 +107,7 @@ INTERPROCESS --> FILE_MAPPING
 **Diagram sources**
 - [chainbase.hpp:1319-1328](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1319-L1328)
 - [database.cpp:613-653](file://libraries/chain/database.cpp#L613-L653)
-- [witness.cpp:503-507](file://plugins/witness/witness.cpp#L503-L507)
+- [validator.cpp:503-507](file://plugins/validator/validator.cpp#L503-L507)
 
 ## Memory Management Components
 

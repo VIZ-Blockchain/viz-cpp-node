@@ -1,6 +1,6 @@
-# DLT P2P Node — Code Audit vs. Documentation (2026-05-08)
+﻿# DLT P2P Node — Code Audit vs. Documentation (2026-05-08)
 
-Audit of the `fix-witness` branch against the problem/fix log in
+Audit of the `fix-validator` branch against the problem/fix log in
 `dlt-4-node-sync-scenarios.md`. Checks which fixes are actually in the code,
 identifies logic errors not yet documented, and lists undocumented problems
 found via code comments.
@@ -35,7 +35,7 @@ found via code comments.
 | P25 | `exchange_enabled` re-evaluated when peer block accepted | **DONE** — line 1247-1249 |
 | P26 | `check_sync_catchup()` called on single-block accept | **DONE** — line 1495 |
 | P31 | `constexpr uint32_t dlt_peer_state::MAX_RECONNECT_BACKOFF_SEC;` defined | **DONE** — line 25 |
-| P28/P29/P30 | Build errors in p2p_plugin.cpp / multimap::erase / witness header | **DONE** |
+| P28/P29/P30 | Build errors in p2p_plugin.cpp / multimap::erase / validator header | **DONE** |
 
 ---
 
@@ -173,7 +173,7 @@ The code comments reference problems not yet in `dlt-4-node-sync-scenarios.md`.
 | **P39** | `fork_db._head` jumps ahead of database head via `_push_next` cascade when a parent block arrives. The block being pushed can then appear "too old" (block_too_old_exception). Fixed in `_push_block`. (`p2p_plugin.cpp:185-192`) |
 | **P40** | Iterator invalidation in `periodic_lifecycle_timeout_check()` when `handle_disconnect` erases entries from `_peer_states` during iteration. Fixed: collect timed-out peers into a vector first. (`dlt_p2p_node.cpp:417-418`) |
 | **P42** | `request_blocks_from_peer` uses stale `peer_dlt_latest` as the peer's chain tip. Fixed: `peer_latest = max(peer_dlt_latest, peer_head_num)` to use whichever is fresher. (`dlt_p2p_node.cpp:956-960`) |
-| **P49** | Range request starts at `our_head + 1`, skipping our own head block. If two witnesses signed competing blocks at the same height, we'd never detect the divergence. Fixed: start at `our_head`. (`dlt_p2p_node.cpp:982-986`) |
+| **P49** | Range request starts at `our_head + 1`, skipping our own head block. If two validators signed competing blocks at the same height, we'd never detect the divergence. Fixed: start at `our_head`. (`dlt_p2p_node.cpp:982-986`) |
 
 ---
 

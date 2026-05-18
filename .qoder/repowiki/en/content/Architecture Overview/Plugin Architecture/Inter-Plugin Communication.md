@@ -1,4 +1,4 @@
-# Inter-Plugin Communication
+﻿# Inter-Plugin Communication
 
 <cite>
 **Referenced Files in This Document**
@@ -424,7 +424,7 @@ Chain --> RawBlock["raw_block::plugin"]
 Chain --> BlockInfo["block_info::plugin"]
 Chain --> Tags["tags::plugin"]
 Chain --> Follow["follow::plugin"]
-Chain --> Witness["witness_plugin::witness_plugin"]
+Chain --> validator["witness_plugin::witness_plugin"]
 Chain --> CommitteeAPI["committee_api::committee_api"]
 Chain --> InviteAPI["invite_api::invite_api"]
 Chain --> PaidSubAPI["paid_subscription_api::paid_subscription_api"]

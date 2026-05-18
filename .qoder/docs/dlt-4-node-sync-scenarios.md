@@ -1,4 +1,4 @@
-# DLT 4-Node Sync Scenarios — Problems & Analysis
+﻿# DLT 4-Node Sync Scenarios — Problems & Analysis
 
 Analysis of a 4-node DLT network under emergency consensus: 1 master + 3 slaves, based on the current `dlt_p2p_node.cpp` implementation.
 
@@ -499,12 +499,12 @@ This repeated for hundreds of iterations (minutes of wall time) with no blocks p
 ```
 maybe_produce_block returned 1   (not my slot, but slot had a value)
 ```
-Here `scheduled_witness=social` (a slave witness), so the master correctly doesn't produce, but the slave's block never arrived.
+Here `scheduled_witness=social` (a slave validator), so the master correctly doesn't produce, but the slave's block never arrived.
 
 **Severity:** **CRITICAL** — network stalls for minutes with no block production.
 
 **Related files:**
-- [witness.cpp](file:///d:/Work/viz-cpp-node/plugins/witness/witness.cpp) — `maybe_produce_block`
+- [validator.cpp](file:///d:/Work/viz-cpp-node/plugins/validator/validator.cpp) — `maybe_produce_block`
 
 ---
 
@@ -651,7 +651,7 @@ trigger_resync: could not read head block (lock contention?): Unable to acquire 
 
 **Observed on:** Slave (80.87.202.57) + Master (185.146.232.170)
 
-**Symptom:** Slave produces block #79645211 (witness="social", slot time 10:20:24), sends it via P2P. Master never receives/processes it and produces its own block #79645211 (witness="committee", slot time 10:20:27) — 3 seconds later for the same block number:
+**Symptom:** Slave produces block #79645211 (validator="social", slot time 10:20:24), sends it via P2P. Master never receives/processes it and produces its own block #79645211 (validator="committee", slot time 10:20:27) — 3 seconds later for the same block number:
 
 **Slave side:**
 ```
@@ -675,7 +675,7 @@ scheduled_witness=committee
 
 The master then produced a competing block because it didn't see the slave's block within the slot window.
 
-**Severity:** **HIGH** — causes unnecessary fork switches, wastes blocks, confuses witnesses.
+**Severity:** **HIGH** — causes unnecessary fork switches, wastes blocks, confuses validators.
 
 ---
 
@@ -762,11 +762,11 @@ auto a_data = a.data();   // 'const class fc::ip::address' has no member named '
 
 **Symptom:**
 ```
-fatal error: graphene/plugins/witness/witness_plugin.hpp: No such file or directory
-#include <graphene/plugins/witness/witness_plugin.hpp>
+fatal error: graphene/plugins/validator/witness_plugin.hpp: No such file or directory
+#include <graphene/plugins/validator/witness_plugin.hpp>
 ```
 
-**Root cause:** The include path is wrong. The actual file is at `plugins/witness/include/graphene/plugins/witness/witness.hpp` (note: `witness.hpp` not `witness_plugin.hpp`). The CMake include directories may not include the witness plugin's include path.
+**Root cause:** The include path is wrong. The actual file is at `plugins/validator/include/graphene/plugins/validator/validator.hpp` (note: `validator.hpp` not `witness_plugin.hpp`). The CMake include directories may not include the Validator Plugin's include path.
 
 **Severity:** **MEDIUM** — blocks compilation in certain build configurations.
 

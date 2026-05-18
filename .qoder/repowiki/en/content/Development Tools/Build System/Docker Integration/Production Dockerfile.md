@@ -1,4 +1,4 @@
-# Production Dockerfile
+﻿# Production Dockerfile
 
 <cite>
 **Referenced Files in This Document**
@@ -261,7 +261,7 @@ F --> K["No MongoDB plugin"]
   - Set VIZD_RPC_ENDPOINT and VIZD_P2P_ENDPOINT environment variables.
 - Provide custom seed nodes:
   - Set VIZD_SEED_NODES to a whitespace-delimited list of seed nodes.
-- Enable witness mode:
+- Enable validator mode:
   - Set VIZD_WITNESS_NAME and VIZD_PRIVATE_KEY environment variables.
 
 **Section sources**
@@ -326,7 +326,7 @@ RUNTIME --> SCRIPT["vizd.sh"]
 - Permission issues: The entry script sets ownership for /var/lib/vizd; ensure mounted volumes have correct permissions.
 - Configuration overrides: Place a custom config.ini in /etc/vizd to override defaults.
 - Seed nodes: Provide VIZD_SEED_NODES to override the default seednodes list.
-- Witness mode: Set VIZD_WITNESS_NAME and VIZD_PRIVATE_KEY to enable witness participation.
+- validator mode: Set VIZD_WITNESS_NAME and VIZD_PRIVATE_KEY to enable validator participation.
 
 **Section sources**
 - [vizd.sh](file://share/vizd/vizd.sh#L7-L53)
