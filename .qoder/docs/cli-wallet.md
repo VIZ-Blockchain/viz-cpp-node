@@ -201,11 +201,11 @@ get_ops_in_block 1000000 false  # all operations
 get_ops_in_block 1000000 true   # only virtual operations
 ```
 
-### get_active_witnesses
+### get_active_validators
 Returns the list of validators producing blocks in the current round (21 blocks).
 
 ```bash
-get_active_witnesses
+get_active_validators
 ```
 
 ### get_account
@@ -406,35 +406,35 @@ set_withdraw_vesting_route "alice" "charlie" 2500 true true
 
 ## validator Operations
 
-### list_witnesses
+### list_validators
 Lists all validators registered in the blockchain.
 
 ```bash
-list_witnesses "" 100     # First 100 validators
-list_witnesses "bob" 100  # 100 validators starting from "bob"
+list_validators "" 100     # First 100 validators
+list_validators "bob" 100  # 100 validators starting from "bob"
 ```
 
-### get_witness
+### get_validator
 Returns information about the given validator.
 
 ```bash
-get_witness "witnessname"
+get_validator "validatorname"
 ```
 
-### update_witness
+### update_validator
 Update a validator object.
 
 ```bash
-update_witness "mywitness" "https://mywitness.com" "VIZsigningkey..." true
+update_validator "myvalidator" "https://myvalidator.com" "VIZsigningkey..." true
 # Disable block production (empty key):
-update_witness "mywitness" "" "" true
+update_validator "myvalidator" "" "" true
 ```
 
 ### update_chain_properties
 Vote for the chain properties.
 
 ```bash
-update_chain_properties "mywitness" \
+update_chain_properties "myvalidator" \
   {"account_creation_fee":"1.000 VIZ","maximum_block_size":65536,"create_account_delegation_ratio":10,...} \
   true
 ```
@@ -443,7 +443,7 @@ update_chain_properties "mywitness" \
 Vote for the versioned chain properties.
 
 ```bash
-versioned_update_chain_properties "mywitness" \
+versioned_update_chain_properties "myvalidator" \
   {"account_creation_fee":"1.000 VIZ","maximum_block_size":65536,...} \
   true
 ```
@@ -457,12 +457,12 @@ set_voting_proxy "alice" "trustedvoter" true
 set_voting_proxy "alice" "" true
 ```
 
-### vote_for_witness
+### vote_for_validator
 Vote for a validator to become a block producer.
 
 ```bash
-vote_for_witness "alice" "mywitness" true true   # Vote for
-vote_for_witness "alice" "mywitness" false true  # Vote against
+vote_for_validator "alice" "myvalidator" true true   # Vote for
+vote_for_validator "alice" "myvalidator" false true  # Vote against
 ```
 
 ---
