@@ -1956,7 +1956,14 @@ namespace graphene { namespace chain {
                                              ("h", head_block_num()));
                                     }
 
-                                    throw *except;
+                                    // The invalid branch has been removed from fork_db and
+                                    // the original head restored.  Do not propagate the
+                                    // exception to the P2P layer — returning false signals
+                                    // "block rejected" without triggering sync restarts or
+                                    // peer backoff.  Network fork resolution proceeds
+                                    // naturally: nodes on the invalid fork eventually switch
+                                    // to the valid chain when it becomes longer.
+                                    return false;
                                 }
                             }
 
