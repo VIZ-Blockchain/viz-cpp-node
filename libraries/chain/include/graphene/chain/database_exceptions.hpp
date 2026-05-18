@@ -70,6 +70,13 @@ namespace graphene {
 
         FC_DECLARE_DERIVED_EXCEPTION(block_validate_exception, graphene::chain::chain_exception, 4020000, "block validation exception")
 
+        // Thrown when a block's validator does not match the locally
+        // computed schedule for the block's slot.  Treated as a soft
+        // condition during fork resolution: the block is kept in fork_db
+        // as a competing tip, and a fork-switch may apply it with
+        // skip_witness_schedule_check when the branch is heavier.
+        FC_DECLARE_DERIVED_EXCEPTION(wrong_scheduled_validator_exception, graphene::chain::block_validate_exception, 4020100, "validator does not match scheduled validator for slot")
+
         FC_DECLARE_DERIVED_EXCEPTION(transaction_exception, graphene::chain::chain_exception, 4030000, "transaction validation exception")
 
         FC_DECLARE_DERIVED_EXCEPTION(operation_validate_exception, graphene::chain::chain_exception, 4040000, "operation validation exception")
