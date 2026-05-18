@@ -1,4 +1,4 @@
-# DLT P2P Statistics Reference
+﻿# DLT P2P Statistics Reference
 
 This document explains the DLT P2P statistics output — what each field means, why it has its current value, and what actions (if any) an operator should take.
 
@@ -64,11 +64,11 @@ Emitted every ~30 seconds. Intended for tail/grep monitoring without noise.
 |-------|---------|
 | `NORMAL` | Node is on the majority fork — no fork conflict detected. |
 | `LOOKING` | Node detected multiple competing fork tips and is actively comparing branches to determine which is the majority. |
-| `MINORITY` | Node determined it is on a minority fork (fewer witnesses producing on this branch). A fork switch is likely pending. |
+| `MINORITY` | Node determined it is on a minority fork (fewer validators producing on this branch). A fork switch is likely pending. |
 
 **Why it might not be `NORMAL`:**
-- Two or more witnesses produced blocks at the same slot, creating a temporary fork
-- Network partition caused different subsets of witnesses to build on different tips
+- Two or more validators produced blocks at the same slot, creating a temporary fork
+- Network partition caused different subsets of validators to build on different tips
 - Node just received a block from an alternative fork that doesn't link to its current head
 
 ### `head` / `lib`
@@ -225,7 +225,7 @@ Number of spam strikes accumulated by this peer. Each invalid or malformed messa
 
 **Why flags matter:**
 - `+align` is the most important — it confirms the peer is a valid source for blocks
-- `+emrg` + `+ekey` together indicate the peer is an emergency witness participant
+- `+emrg` + `+ekey` together indicate the peer is an emergency validator participant
 - `+sync` indicates active synchronization — the peer is being used as a block source
 
 ### Banned Peers
@@ -279,13 +279,13 @@ After the ban expires, the peer state resets to DISCONNECTED and normal reconnec
 **What it means:** Multiple peers believe they are on a minority fork.
 
 **Likely causes:**
-- Network-wide fork event — witnesses are split between two competing chains
-- The majority fork is being built by a different set of witnesses
+- Network-wide fork event — validators are split between two competing chains
+- The majority fork is being built by a different set of validators
 
 **What to do:**
 - Monitor the `fork` status in the header — if it transitions to `MINORITY`, our node will also switch forks
 - Wait for fork resolution — the protocol will eventually converge on a single chain
-- If this persists, check witness activity and network connectivity
+- If this persists, check validator activity and network connectivity
 
 ### Scenario 4: High `backoff` Values on Disconnected Peers
 

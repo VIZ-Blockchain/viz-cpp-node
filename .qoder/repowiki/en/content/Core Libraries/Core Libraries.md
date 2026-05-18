@@ -1,4 +1,4 @@
-# Core Libraries
+﻿# Core Libraries
 
 <cite>
 **Referenced Files in This Document**
@@ -27,15 +27,15 @@
 - [libraries/wallet/include/graphene/wallet/api_documentation.hpp](file://libraries/wallet/include/graphene/wallet/api_documentation.hpp)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp)
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp)
-- [plugins/witness/witness.cpp](file://plugins/witness/witness.cpp)
+- [plugins/validator/validator.cpp](file://plugins/validator/validator.cpp)
 - [programs/vizd/main.cpp](file://programs/vizd/main.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
-- Enhanced witness scheduling system documentation with emergency mode integration
+- Enhanced validator scheduling system documentation with emergency mode integration
 - Added comprehensive peer connection management for emergency consensus
-- Updated witness scheduling with hybrid schedule implementation during emergency mode
+- Updated validator scheduling with hybrid schedule implementation during emergency mode
 - Expanded emergency consensus activation and deactivation logic
 - Added peer soft-banning mechanism for emergency fork management
 - Updated fork database tie-breaking with deterministic hash-based selection
@@ -64,9 +64,9 @@ This document explains the VIZ CPP Node core libraries that form the foundation 
 - Network library: peer-to-peer communication and synchronization
 - Wallet library: transaction signing and key management
 
-These libraries interact closely: the Chain library validates and applies operations, the Protocol library defines operations and transactions, the Network library propagates blocks and transactions across peers, and the Wallet library signs transactions before they are broadcast. The system now includes enhanced emergency consensus mode with integrated witness scheduling and improved peer connection management for maintaining network stability during critical situations.
+These libraries interact closely: the Chain library validates and applies operations, the Protocol library defines operations and transactions, the Network library propagates blocks and transactions across peers, and the Wallet library signs transactions before they are broadcast. The system now includes enhanced emergency consensus mode with integrated validator scheduling and improved peer connection management for maintaining network stability during critical situations.
 
-**Updated** Enhanced documentation now includes comprehensive coverage of emergency consensus mode, hybrid witness scheduling, peer connection management, blockchain operations, data types, protocol specifications, DNS nameserver helper functionality, and accurate postponed transactions processing with corrected logging behavior.
+**Updated** Enhanced documentation now includes comprehensive coverage of emergency consensus mode, hybrid validator scheduling, peer connection management, blockchain operations, data types, protocol specifications, DNS nameserver helper functionality, and accurate postponed transactions processing with corrected logging behavior.
 
 ## Project Structure
 The core libraries are organized under the libraries/ directory, with each library providing focused capabilities:
@@ -75,7 +75,7 @@ The core libraries are organized under the libraries/ directory, with each libra
 - libraries/network: P2P node, peer connections, message handling, synchronization, emergency peer management
 - libraries/wallet: transaction builder, signing, key management, APIs, DNS nameserver helpers
 
-Plugins integrate these libraries into a full node via the appbase framework. The main entry point initializes plugins and starts the node. Emergency consensus mode adds new components for witness scheduling and peer management.
+Plugins integrate these libraries into a full node via the appbase framework. The main entry point initializes plugins and starts the node. Emergency consensus mode adds new components for validator scheduling and peer management.
 
 ```mermaid
 graph TB
@@ -88,11 +88,11 @@ end
 subgraph "Plugins"
 PL_CHAIN["plugins/chain/plugin.hpp"]
 PL_P2P["plugins/p2p/p2p_plugin.hpp"]
-PL_WITNESS["plugins/witness/witness.hpp"]
+PL_WITNESS["plugins/validator/validator.hpp"]
 end
 subgraph "Emergency Consensus Components"
 EMERGENCY_MODE["Emergency Consensus<br/>Mode Activation<br/>Deactivation Logic"]
-HYBRID_SCHED["Hybrid Witness Schedule<br/>Real + Committee Slots"]
+HYBRID_SCHED["Hybrid validator Schedule<br/>Real + Committee Slots"]
 PEER_MANAGEMENT["Peer Connection<br/>Management & Soft-Banning"]
 END
 MAIN["programs/vizd/main.cpp"]
@@ -113,7 +113,7 @@ WALLET --> PROTO
 - [programs/vizd/main.cpp:106-140](file://programs/vizd/main.cpp#L106-L140)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:21-46](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L21-L46)
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp:18-46](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L46)
-- [plugins/witness/witness.cpp:170-198](file://plugins/witness/witness.cpp#L170-L198)
+- [plugins/validator/validator.cpp:170-198](file://plugins/validator/validator.cpp#L170-L198)
 - [libraries/chain/include/graphene/chain/database.hpp:36-561](file://libraries/chain/include/graphene/chain/database.hpp#L36-L561)
 - [libraries/protocol/include/graphene/protocol/config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [libraries/network/include/graphene/network/node.hpp:190-304](file://libraries/network/include/graphene/network/node.hpp#L190-L304)
@@ -124,7 +124,7 @@ WALLET --> PROTO
 - [programs/vizd/main.cpp:62-91](file://programs/vizd/main.cpp#L62-L91)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:21-46](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L21-L46)
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp:18-46](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L46)
-- [plugins/witness/witness.cpp:170-198](file://plugins/witness/witness.cpp#L170-L198)
+- [plugins/validator/validator.cpp:170-198](file://plugins/validator/validator.cpp#L170-L198)
 
 ## Core Components
 This section introduces the primary responsibilities and key classes of each library.
@@ -136,13 +136,13 @@ This section introduces the primary responsibilities and key classes of each lib
   - db_with: pending transaction processing, postponed transactions handling, and restoration logic
   - global_property_object: dynamic chain properties including emergency consensus state
   - fork_database: fork management with emergency mode tie-breaking and state tracking
-  - Responsibilities: block validation, transaction validation, state transitions, hardfork handling, witness scheduling, emergency consensus management
+  - Responsibilities: block validation, transaction validation, state transitions, hardfork handling, validator scheduling, emergency consensus management
 
 - Protocol Library
   - operations: static_variant of all supported operations (transfers, governance, content, etc.)
   - transaction: structure with operations, expiration, reference block, and cryptographic signing
   - types: comprehensive data type definitions including cryptographic keys, asset types, and authority structures
-  - config: emergency consensus constants and witness scheduling parameters
+  - config: emergency consensus constants and validator scheduling parameters
   - Responsibilities: define canonical operation semantics, transaction signing and verification, authority checks, emergency mode configuration
 
 - Network Library
@@ -156,7 +156,7 @@ This section introduces the primary responsibilities and key classes of each lib
   - DNS Nameserver Helpers: validation, extraction, and management of DNS records in account metadata
   - Responsibilities: construct transactions, sign with private keys, manage encrypted key storage, expose APIs, handle DNS metadata
 
-**Updated** Enhanced with comprehensive emergency consensus mode integration, hybrid witness scheduling, peer connection management, and DNS nameserver helper functionality.
+**Updated** Enhanced with comprehensive emergency consensus mode integration, hybrid validator scheduling, peer connection management, and DNS nameserver helper functionality.
 
 **Section sources**
 - [libraries/chain/include/graphene/chain/database.hpp:36-561](file://libraries/chain/include/graphene/chain/database.hpp#L36-L561)
@@ -175,7 +175,7 @@ This section introduces the primary responsibilities and key classes of each lib
 - [libraries/wallet/include/graphene/wallet/api_documentation.hpp:37-75](file://libraries/wallet/include/graphene/wallet/api_documentation.hpp#L37-L75)
 
 ## Architecture Overview
-The libraries integrate through explicit interfaces and signals. The Chain library exposes a database interface and signals for operation application. The Protocol library defines the canonical operation types and transaction structures. The Network library consumes blocks and transactions from the Chain library and broadcasts them to peers. The Wallet library constructs and signs transactions using the Protocol library and sends them to the Chain library via the P2P plugin. The DNS nameserver helper functionality extends the wallet library to manage DNS metadata within account JSON metadata. The db_with module handles postponed transactions processing with accurate counting and logging. Emergency consensus mode adds new components for witness scheduling and peer management.
+The libraries integrate through explicit interfaces and signals. The Chain library exposes a database interface and signals for operation application. The Protocol library defines the canonical operation types and transaction structures. The Network library consumes blocks and transactions from the Chain library and broadcasts them to peers. The Wallet library constructs and signs transactions using the Protocol library and sends them to the Chain library via the P2P plugin. The DNS nameserver helper functionality extends the wallet library to manage DNS metadata within account JSON metadata. The db_with module handles postponed transactions processing with accurate counting and logging. Emergency consensus mode adds new components for validator scheduling and peer management.
 
 ```mermaid
 graph TB
@@ -187,14 +187,14 @@ EVAL["Evaluators<br/>evaluator.hpp"]
 CHAIN_OBJ["Chain Objects<br/>chain_objects.hpp"]
 DB_WITH["Postponed Transactions<br/>db_with.hpp"]
 EMERGENCY_MODE["Emergency Consensus<br/>Mode Management"]
-HYBRID_SCHED["Hybrid Witness Schedule<br/>Real + Committee Slots"]
+HYBRID_SCHED["Hybrid validator Schedule<br/>Real + Committee Slots"]
 PEER_CONN["Peer Connections<br/>Soft-Banning & Fork Management"]
 NET["Network Node<br/>node.hpp"]
 PL_CHAIN["Chain Plugin<br/>plugin.hpp"]
 PL_P2P["P2P Plugin<br/>p2p_plugin.hpp"]
-PL_WITNESS["Witness Plugin<br/>witness.hpp"]
+PL_WITNESS["Validator Plugin<br/>validator.hpp"]
 DNS_HELPERS["DNS Nameserver Helpers<br/>ns_validate_*<br/>ns_create_metadata<br/>ns_set_records"]
-WITNESS_PLUGIN["Witness Plugin<br/>Emergency Key Loading<br/>Block Production"]
+WITNESS_PLUGIN["Validator Plugin<br/>Emergency Key Loading<br/>Block Production"]
 FORK_DB["Fork Database<br/>Emergency Mode Tie-Breaking"]
 WALLET --> API_DOC
 WALLET --> PROTO
@@ -233,7 +233,7 @@ WITNESS_PLUGIN --> CHAIN
 - [libraries/network/include/graphene/network/peer_connection.hpp:276-277](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L277)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:21-46](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L21-L46)
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp:18-46](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L46)
-- [plugins/witness/witness.cpp:170-198](file://plugins/witness/witness.cpp#L170-L198)
+- [plugins/validator/validator.cpp:170-198](file://plugins/validator/validator.cpp#L170-L198)
 
 ## Detailed Component Analysis
 
@@ -246,7 +246,7 @@ The Chain library is the core state machine. It manages:
 - Hardfork handling: versioning and activation logic
 - Postponed transactions: accurate counting and processing with proper logging
 - Emergency consensus: automatic activation/deactivation based on network health
-- Witness scheduling: hybrid schedule during emergency mode with real and committee witnesses
+- validator scheduling: hybrid schedule during emergency mode with real and committee validators
 
 Key classes and responsibilities:
 - database: open/reindex, push/pop blocks, push transactions, notify signals, hardfork control, emergency mode management
@@ -336,7 +336,7 @@ The Protocol library defines the canonical operation types and transaction struc
 - transaction: operations, expiration, reference block, and signing/verification helpers
 - types: comprehensive data type definitions including cryptographic keys, asset types, and authority structures
 - Authority and sign_state: required authorities and signature verification
-- config: emergency consensus constants and witness scheduling parameters
+- config: emergency consensus constants and validator scheduling parameters
 
 ```mermaid
 classDiagram
@@ -606,7 +606,7 @@ CHAIN-->>P2P : "transaction propagated"
 - Network receives a block from peers
 - Chain plugin accepts the block and validates it
 - Database validates block header, extensions, and applies block-level operations
-- Database updates global properties, witness schedules, and emits applied_block signal
+- Database updates global properties, validator schedules, and emits applied_block signal
 
 ```mermaid
 sequenceDiagram
@@ -723,7 +723,7 @@ Transactions follow a strict validation pipeline:
 
 ## Emergency Consensus Mode
 
-The VIZ blockchain now includes a comprehensive emergency consensus mode designed to maintain network stability during prolonged network stalls or witness failures. This system automatically activates when no blocks are produced for a specified timeout period and ensures continuous block production through committee witnesses.
+The VIZ blockchain now includes a comprehensive emergency consensus mode designed to maintain network stability during prolonged network stalls or validator failures. This system automatically activates when no blocks are produced for a specified timeout period and ensures continuous block production through committee validators.
 
 ### Emergency Consensus Activation Logic
 
@@ -736,9 +736,9 @@ CheckLIB --> CalcTime["Calculate Time Since LIB"]
 CalcTime --> Timeout{"Timeout Exceeded?<br/>> CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC"}
 Timeout --> |No| Normal["Normal Operation"]
 Timeout --> |Yes| Activate["Activate Emergency Mode"]
-Activate --> CreateWitness["Create/Update Emergency Witness"]
-CreateWitness --> ResetPenalties["Reset Witness Penalties"]
-ResetPenalties --> OverrideSchedule["Override Witness Schedule"]
+Activate --> CreateWitness["Create/Update Emergency validator"]
+CreateWitness --> ResetPenalties["Reset validator Penalties"]
+ResetPenalties --> OverrideSchedule["Override validator Schedule"]
 OverrideSchedule --> NotifyForkDB["Notify Fork Database"]
 NotifyForkDB --> LogActivation["Log Emergency Mode Activation"]
 ```
@@ -747,35 +747,35 @@ NotifyForkDB --> LogActivation["Log Emergency Mode Activation"]
 - [libraries/chain/database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
 - [libraries/protocol/include/graphene/protocol/config.hpp:110-112](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L112)
 
-### Hybrid Witness Scheduling System
+### Hybrid validator Scheduling System
 
-During emergency mode, the witness scheduling system operates as a hybrid between real witnesses and committee witnesses:
+During emergency mode, the validator scheduling system operates as a hybrid between real validators and committee validators:
 
-- **Real Witness Slots**: Maintained for witnesses with valid signing keys
-- **Committee Slots**: Filled by the emergency witness account for offline or unavailable witnesses
+- **Real validator Slots**: Maintained for validators with valid signing keys
+- **Committee Slots**: Filled by the emergency validator account for offline or unavailable validators
 - **Full Schedule Expansion**: The schedule expands to include all committee slots during emergency
 
 The hybrid schedule ensures that:
-- Real witnesses keep their scheduled slots
-- Offline witnesses are replaced by committee witnesses
+- Real validators keep their scheduled slots
+- Offline validators are replaced by committee validators
 - The full CHAIN_MAX_WITNESSES schedule is maintained for consistent block production
-- Committee witnesses maintain neutral voting positions aligned with current hardfork state
+- Committee validators maintain neutral voting positions aligned with current hardfork state
 
 ```mermaid
 sequenceDiagram
-participant SCHED as "Witness Scheduler"
-participant REAL as "Real Witnesses"
-participant COMMITTEE as "Committee Witnesses"
+participant SCHED as "validator Scheduler"
+participant REAL as "Real validators"
+participant COMMITTEE as "Committee validators"
 participant DATABASE as "Database"
 SCHED->>DATABASE : "Get Current Schedule"
 DATABASE-->>SCHED : "wso.current_shuffled_witnesses"
 SCHED->>SCHED : "Iterate Full Schedule (MAX_WITNESSES)"
 loop For Each Slot
-SCHED->>REAL : "Check Witness Availability"
-alt Witness Available
-SCHED->>SCHED : "Keep Real Witness Slot"
-else Witness Unavailable
-SCHED->>COMMITTEE : "Assign Emergency Witness"
+SCHED->>REAL : "Check validator Availability"
+alt validator Available
+SCHED->>SCHED : "Keep Real validator Slot"
+else validator Unavailable
+SCHED->>COMMITTEE : "Assign Emergency validator"
 SCHED->>SCHED : "Replace with Committee Slot"
 end
 end
@@ -791,21 +791,21 @@ DATABASE-->>SCHED : "Updated Schedule"
 
 Emergency mode automatically deactivates when:
 - The last irreversible block advances beyond the emergency start block
-- 21 consecutive blocks are produced by the emergency witness (full round completion)
-- Network conditions return to normal with sufficient witness participation
+- 21 consecutive blocks are produced by the emergency validator (full round completion)
+- Network conditions return to normal with sufficient validator participation
 
 The exit process restores normal operations:
 - Disables emergency consensus flag
 - Resets fork database emergency mode state
-- Removes emergency witness from schedule
-- Restores normal witness participation requirements
+- Removes emergency validator from schedule
+- Restores normal validator participation requirements
 
 ### Emergency Consensus Configuration
 
 Key configuration parameters:
 - `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC`: 3600 seconds (1 hour) timeout for emergency activation
 - `CHAIN_EMERGENCY_WITNESS_ACCOUNT`: "committee" account for emergency block production
-- `CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY`: Public key for emergency witness signature verification
+- `CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY`: Public key for emergency validator signature verification
 - `CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS`: 21 blocks for automatic emergency mode exit
 
 **Section sources**
@@ -1022,7 +1022,7 @@ The libraries exhibit layered dependencies with enhanced emergency consensus int
 - Chain depends on Protocol for operation types, transaction structures, and emergency mode configuration
 - Network depends on Protocol for message serialization, types, and emergency peer management
 - Wallet depends on Protocol for transaction construction and signing, plus includes DNS helpers
-- Plugins depend on Chain for database access, on Network for P2P operations, and on Emergency Mode for witness scheduling
+- Plugins depend on Chain for database access, on Network for P2P operations, and on Emergency Mode for validator scheduling
 - db_with module depends on Chain database for transaction processing and logging
 - Emergency consensus components depend on all core libraries for coordinated operation
 
@@ -1039,7 +1039,7 @@ EMERGENCY_MODE --> HYBRID_SCHED["Hybrid Schedule"]
 EMERGENCY_MODE --> FORK_DB["Fork Database<br/>Tie-Breaking"]
 PL_P2P["P2P Plugin"] --> NET
 PL_CHAIN["Chain Plugin"] --> CHAIN
-PL_WITNESS["Witness Plugin"] --> CHAIN
+PL_WITNESS["Validator Plugin"] --> CHAIN
 MAIN["Main Entry"] --> PL_CHAIN
 MAIN --> PL_P2P
 MAIN --> PL_WITNESS
@@ -1056,14 +1056,14 @@ MAIN --> PL_WITNESS
 - [libraries/network/include/graphene/network/peer_connection.hpp:276-277](file://libraries/network/include/graphene/network/peer_connection.hpp#L276-L277)
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp:3-3](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L3-L3)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:7-7](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L7-L7)
-- [plugins/witness/witness.cpp:170-198](file://plugins/witness/witness.cpp#L170-L198)
+- [plugins/validator/validator.cpp:170-198](file://plugins/validator/validator.cpp#L170-L198)
 - [programs/vizd/main.cpp:106-140](file://programs/vizd/main.cpp#L106-L140)
 
 **Section sources**
 - [programs/vizd/main.cpp:106-140](file://programs/vizd/main.cpp#L106-L140)
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:7-7](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L7-L7)
 - [plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp:3-3](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L3-L3)
-- [plugins/witness/witness.cpp:170-198](file://plugins/witness/witness.cpp#L170-L198)
+- [plugins/validator/validator.cpp:170-198](file://plugins/validator/validator.cpp#L170-L198)
 - [libraries/chain/include/graphene/chain/database.hpp:8-8](file://libraries/chain/include/graphene/chain/database.hpp#L8-L8)
 - [libraries/network/include/graphene/network/node.hpp:26-30](file://libraries/network/include/graphene/network/node.hpp#L26-L30)
 - [libraries/wallet/include/graphene/wallet/wallet.hpp:18-21](file://libraries/wallet/include/graphene/wallet/wallet.hpp#L18-L21)
@@ -1097,8 +1097,8 @@ Common issues and diagnostics:
 - TTL validation errors: verify positive integer values for DNS record TTL settings
 - Postponed transactions issues: check block size limits, execution time limits, and known transaction filtering
 - Logging accuracy: verify postponed transaction counters and avoid false 'Postponed' messages for skipped known transactions
-- Emergency mode activation: verify timeout thresholds and emergency witness configuration
-- Hybrid schedule issues: check witness availability and schedule expansion during emergency mode
+- Emergency mode activation: verify timeout thresholds and emergency validator configuration
+- Hybrid schedule issues: check validator availability and schedule expansion during emergency mode
 - Peer soft-banning: monitor fork_rejected_until timestamps and emergency peer connection management
 - Fork database tie-breaking: ensure deterministic hash comparison during emergency mode conflicts
 
@@ -1117,6 +1117,6 @@ Common issues and diagnostics:
 - [libraries/chain/fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
 
 ## Conclusion
-The VIZ CPP Node core libraries form a cohesive architecture with enhanced emergency consensus capabilities: Protocol defines canonical operations and transactions, Chain manages state and validation with emergency mode integration, Network enables peer synchronization with emergency peer management, and Wallet provides signing and key management. The enhanced documentation now provides comprehensive coverage of emergency consensus mode, hybrid witness scheduling, peer connection management, blockchain operations, data types, protocol specifications, DNS nameserver helper functionality, and accurate postponed transactions processing with corrected logging behavior, supporting robust transaction processing, block validation, peer coordination, and emergency network stability essential to a production blockchain node.
+The VIZ CPP Node core libraries form a cohesive architecture with enhanced emergency consensus capabilities: Protocol defines canonical operations and transactions, Chain manages state and validation with emergency mode integration, Network enables peer synchronization with emergency peer management, and Wallet provides signing and key management. The enhanced documentation now provides comprehensive coverage of emergency consensus mode, hybrid validator scheduling, peer connection management, blockchain operations, data types, protocol specifications, DNS nameserver helper functionality, and accurate postponed transactions processing with corrected logging behavior, supporting robust transaction processing, block validation, peer coordination, and emergency network stability essential to a production blockchain node.
 
-**Updated** Enhanced documentation provides expanded coverage of emergency consensus mode, hybrid witness scheduling, peer connection management, blockchain operations, data types, protocol specifications, DNS nameserver helper functionality, and accurate postponed transactions processing with corrected logging behavior, making it easier for developers to understand and work with the VIZ blockchain protocol, manage emergency network conditions, and implement DNS records within account metadata.
+**Updated** Enhanced documentation provides expanded coverage of emergency consensus mode, hybrid validator scheduling, peer connection management, blockchain operations, data types, protocol specifications, DNS nameserver helper functionality, and accurate postponed transactions processing with corrected logging behavior, making it easier for developers to understand and work with the VIZ blockchain protocol, manage emergency network conditions, and implement DNS records within account metadata.

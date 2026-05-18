@@ -1,4 +1,4 @@
-# DLT P2P Network Redesign — Implementation Status
+﻿# DLT P2P Network Redesign — Implementation Status
 
 Implementation of the [design plan](../plans/dlt-p2p-network-redesign_91a7ca29.md).
 
@@ -224,12 +224,12 @@ Implemented in `dlt_p2p_node.cpp`:
 - `dlt_fork_resolution_state::CONFIRMATION_BLOCKS = 6` (hysteresis)
 - `track_fork_state()` called after each block application
 - `resolve_fork()` with vote-weight winner + consecutive-block confirmation
-- `_fork_status` exposed via `is_on_majority_fork()` for witness plugin
+- `_fork_status` exposed via `is_on_majority_fork()` for Validator Plugin
 
 ### Phase 5: In-Place Replacement ✅
 
 - Same plugin name `"p2p"`, same `p2p-endpoint` port (2001/4243)
-- Same public API — zero changes to witness, witness_guard, snapshot plugins
+- Same public API — zero changes to validator, witness_guard, snapshot plugins
 - Old `node.cpp` and all related files removed from build and deleted from disk
 - `p2p_plugin.hpp` completely unchanged
 
@@ -238,12 +238,12 @@ Implemented in `dlt_p2p_node.cpp`:
 | Decision | Rationale |
 |----------|-----------|
 | Delegate pattern instead of direct chain access | Network lib only links `fc` + `graphene_protocol`, not `graphene_chain`. Delegate avoids circular dependency. |
-| Raw TCP instead of STCP encryption | DLT emergency mode means all witnesses switch simultaneously — no need for backward-compatible encryption. Simpler wire protocol. |
+| Raw TCP instead of STCP encryption | DLT emergency mode means all validators switch simultaneously — no need for backward-compatible encryption. Simpler wire protocol. |
 | fc::thread fibers instead of per-peer threads | All I/O uses fc's cooperative fiber model. `readsome()`/`writesome()` yield the fiber, allowing multiple peers on one thread without mutexes. |
 | Manual header+data writes instead of `fc::raw::pack(msg)` | `fc::raw::pack(message)` adds varint length prefix to the data vector, creating mismatched wire format. Writing header and data separately matches the read side. |
 | Single `spam_strikes` counter | Simpler and more effective than old multi-counter system (`unlinkable_block_strikes`, `sync_spam_strikes`, etc.). Reset-on-good naturally recovers from transient issues. |
 | Separate P2P mempool | Chain's `_pending_tx` only applies after acceptance. P2P mempool provides earlier filtering (expiry, TaPoS, size limits) before pushing to chain. |
-| In-place replacement, no dual-mode | Old and new protocols are incompatible. Dual-mode creates isolated sub-networks. Emergency mode means all witnesses can switch simultaneously. |
+| In-place replacement, no dual-mode | Old and new protocols are incompatible. Dual-mode creates isolated sub-networks. Emergency mode means all validators can switch simultaneously. |
 
 ## Subsequent Enhancements & Fixes (2026-05-05)
 
@@ -299,7 +299,7 @@ Full details in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md).
 
 | Method | Purpose |
 |--------|---------|
-| `broadcast_block_post_validation()` | Broadcast block by ID+witness+signature after validation |
+| `broadcast_block_post_validation()` | Broadcast block by ID+validator+signature after validation |
 | `broadcast_chain_status()` | Send hello to all connected peers |
 | `trigger_resync()` | Force re-enter SYNC mode and re-request blocks |
 | `reconnect_seeds()` | Re-connect to all seed nodes |
@@ -361,7 +361,7 @@ When `_block_processing_paused` is true (snapshot in progress), `periodic_task()
 
 ## Known Limitations / Future Work
 
-- `has_emergency_private_key()` **now queries witness plugin** (was hardcoded `false`)
+- `has_emergency_private_key()` **now queries Validator Plugin** (was hardcoded `false`)
 - `switch_to_fork()` **now has full implementation** with fork_db fetch + `push_block()`
 - `resync_from_lib()` is handled at plugin level (by design — delegate returns early)
 - `compute_branch_info()` returns simplified info — detailed vote-weight computation needs fork_db traversal
@@ -379,7 +379,7 @@ The following compilation/linking issues block building with newer GCC (13+) in 
 |---|-------|------|-----|
 | P28 | `multimap::erase` with `std::pair` — C++17 removed value-erase overload | `dlt_p2p_node.cpp` | Use iterator-erase: `_mempool_by_expiry.erase(it_by_expiry)` |
 | P28b | `ip::address::data()` doesn't exist in fc | `dlt_p2p_node.cpp` | Use `fc::raw::pack()` |
-| P29 | Missing `witness_plugin.hpp` — actual file is `witness.hpp` | `p2p_plugin.cpp` | Fix include path |
+| P29 | Missing `witness_plugin.hpp` — actual file is `validator.hpp` | `p2p_plugin.cpp` | Fix include path |
 | P30 | 6+ API mismatches in `p2p_plugin.cpp` (see below) | `p2p_plugin.cpp` | Update delegate calls |
 | P31 | Linker error: `static constexpr` ODR-use | `dlt_p2p_peer_state.hpp` | **Fixed** — out-of-line definitions added |
 
@@ -461,7 +461,7 @@ Full analysis in [DLT 4-Node Sync Scenarios](./dlt-4-node-sync-scenarios.md#new-
 
 ### P18: slot=0 Production Stall Detector
 
-**Files:** `plugins/witness/witness.cpp`
+**Files:** `plugins/validator/validator.cpp`
 
 **Root cause:** `get_slot_at_time()` returns 0 when NTP time is behind `head_block_time()`. After crash/restart with NTP desync, the master could loop on `not_time_yet` for minutes.
 

@@ -1,4 +1,4 @@
-# Cloud and Infrastructure
+﻿# Cloud and Infrastructure
 
 <cite>
 **Referenced Files in This Document**
@@ -115,7 +115,7 @@ The recommended deployment model is container-first:
 - Run one or more VIZ node containers behind a load balancer
 - Persist blockchain data via volumes
 - Mount configuration files and seed node lists as needed
-- Use environment variables to override endpoints and enable witness operation when required
+- Use environment variables to override endpoints and enable validator operation when required
 
 ```mermaid
 graph TB
@@ -152,7 +152,7 @@ Nn --> CFG
   - Similar structure to production but enables a low-memory mode during build
 - Testnet image
   - Includes testnet-specific configuration and snapshot
-  - Enables witness operation by default
+  - Enables validator operation by default
 
 Operational notes:
 - The images are published by the CI/CD workflows
@@ -169,18 +169,18 @@ Operational notes:
 The node reads configuration from a mounted config file and supports environment-driven overrides via the entrypoint script. Notable runtime parameters include:
 - RPC endpoint binding
 - P2P endpoint binding
-- Witness name and private key
+- validator name and private key
 - Seed nodes list
 - Optional extra arguments
 
 Configuration templates:
 - Mainnet template defines default endpoints, plugin list, and logging configuration
-- Testnet template adds witness operation and adjusts participation thresholds
+- Testnet template adds validator operation and adjusts participation thresholds
 
 ```mermaid
 flowchart TD
 Start(["Container Start"]) --> LoadCfg["Load config.ini or config_testnet.ini"]
-LoadCfg --> ApplyEnv["Apply environment overrides<br/>RPC, P2P, Seed, Witness, Private Key"]
+LoadCfg --> ApplyEnv["Apply environment overrides<br/>RPC, P2P, Seed, validator, Private Key"]
 ApplyEnv --> InitData["Initialize data directory<br/>and blockchain cache if present"]
 InitData --> RunNode["Start vizd with merged args"]
 RunNode --> End(["Running"])
@@ -250,12 +250,12 @@ Common operational checks:
 - Confirm persistent volume is mounted and writable
 - Review logs written to the configured log directories
 - Validate seed nodes connectivity and adjust seed list if needed
-- For witness nodes, confirm witness name and private key are set appropriately
+- For validator nodes, confirm validator name and private key are set appropriately
 
 Environment overrides:
 - Override RPC and P2P endpoints if necessary
 - Provide custom seed nodes via environment variable
-- Enable witness operation by setting witness name and private key
+- Enable validator operation by setting validator name and private key
 
 **Section sources**
 - [share/vizd/vizd.sh](file://share/vizd/vizd.sh#L62-L72)
@@ -335,7 +335,7 @@ The repository provides a solid foundation for deploying VIZ CPP Node in contain
 - Reserved instances
   - Commit to steady-state capacity with savings plans or reserved instances
 - Spot instances
-  - Use for fault-tolerant, stateless workers; avoid critical witness slots
+  - Use for fault-tolerant, stateless workers; avoid critical validator slots
 
 [No sources needed since this section provides general guidance]
 

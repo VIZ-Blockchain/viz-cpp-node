@@ -1,4 +1,4 @@
-# VIZ Blockchain — Common Data Types
+﻿# VIZ Blockchain — Common Data Types
 
 This document describes all shared data types used across VIZ protocol operations and virtual operations. These types appear as field types throughout operation structures.
 
@@ -108,7 +108,7 @@ Multi-signature authority structure controlling an account's permission level.
 | Level | Used for |
 |---|---|
 | `master` | Highest security — changing keys, account recovery |
-| `active` | Token operations — transfer, vesting, witness voting |
+| `active` | Token operations — transfer, vesting, validator voting |
 | `regular` | Social operations — content, awards, committee voting |
 
 ### Checklist
@@ -217,7 +217,7 @@ Example (hf9 = index 3):
 
 | Field | Type | Description |
 |---|---|---|
-| `inflation_witness_percent` | `int16_t` | Witness reward % from block inflation |
+| `inflation_witness_percent` | `int16_t` | validator reward % from block inflation |
 | `inflation_ratio_committee_vs_reward_fund` | `int16_t` | Ratio committee/reward fund |
 | `inflation_recalc_period` | `uint32_t` | Blocks per inflation recalc |
 
@@ -238,7 +238,7 @@ Example (hf9 = index 3):
 | `create_paid_subscription_fee` | `asset` (VIZ) | Fee to create paid subscription |
 | `account_on_sale_fee` | `asset` (VIZ) | Fee to list account for sale |
 | `subaccount_on_sale_fee` | `asset` (VIZ) | Fee to list subaccounts for sale |
-| `witness_declaration_fee` | `asset` (VIZ) | Fee to declare as witness |
+| `witness_declaration_fee` | `asset` (VIZ) | Fee to declare as validator |
 | `withdraw_intervals` | `uint16_t` | Number of withdraw intervals |
 
 ---

@@ -1,14 +1,14 @@
-# Witness Plugin Refactoring: Remove Cached Flags
+﻿# Validator Plugin Refactoring: Remove Cached Flags
 
 ## Date: 2026-05-14
 
 ## Summary
 
-Refactored witness plugin to eliminate cached internal state flags and instead query actual state directly from database and other plugins on every production tick.
+Refactored Validator Plugin to eliminate cached internal state flags and instead query actual state directly from database and other plugins on every production tick.
 
 ## Problem
 
-The witness plugin was caching critical state in internal variables:
+The Validator Plugin was caching critical state in internal variables:
 - `_production_enabled` (bool): Whether production should be active
 - Indirect checks via `p2p().is_catching_up_after_pause()` for snapshot status
 
@@ -25,7 +25,7 @@ This created several issues:
 **File:** `plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp`
 ```cpp
 /// Returns true if a snapshot creation is currently in progress.
-/// Used by the witness plugin to defer block production during
+/// Used by the Validator Plugin to defer block production during
 /// snapshot serialization (avoids write-lock contention).
 bool is_snapshot_in_progress() const;
 ```
@@ -38,9 +38,9 @@ bool snapshot_plugin::is_snapshot_in_progress() const {
 }
 ```
 
-### 2. Added Snapshot Plugin Dependency to Witness Plugin
+### 2. Added Snapshot Plugin Dependency to Validator Plugin
 
-**File:** `plugins/witness/include/graphene/plugins/witness/witness.hpp`
+**File:** `plugins/validator/include/graphene/plugins/validator/validator.hpp`
 ```cpp
 #include <graphene/plugins/snapshot/plugin.hpp>
 
@@ -49,7 +49,7 @@ public:
     APPBASE_PLUGIN_REQUIRES((chain::plugin) (p2p::p2p_plugin) (snapshot::snapshot_plugin))
 ```
 
-**File:** `plugins/witness/witness.cpp`
+**File:** `plugins/validator/validator.cpp`
 ```cpp
 struct witness_plugin::impl final {
     impl():
@@ -206,13 +206,13 @@ if (_ever_produced) {
 
 **Before:**
 ```cpp
-elog("WITNESS-WATCHDOG: ... prod=${pe} ...",
+elog("validator-WATCHDOG: ... prod=${pe} ...",
      ("pe", _production_enabled));
 ```
 
 **After:**
 ```cpp
-elog("WITNESS-WATCHDOG: ... skip_flags=${sf} ...",
+elog("validator-WATCHDOG: ... skip_flags=${sf} ...",
      ("sf", _production_skip_flags));
 ```
 
@@ -251,7 +251,7 @@ Diagnostic logs now show actual skip flags and state from database, not cached b
 **None** - all config options remain the same:
 - `--enable-stale-production` still works (sets `skip_undo_history_check` flag)
 - `--required-participation` unchanged
-- `--witness`, `--private-key`, `--emergency-private-key` unchanged
+- `--validator`, `--private-key`, `--emergency-private-key` unchanged
 
 ### Behavior Changes
 **Minimal** - production logic identical, just queries state differently:
@@ -265,14 +265,14 @@ Diagnostic logs now show actual skip flags and state from database, not cached b
 bool snapshot_plugin::is_snapshot_in_progress() const;
 ```
 
-**New dependency in witness plugin:**
+**New dependency in Validator Plugin:**
 ```cpp
 APPBASE_PLUGIN_REQUIRES((chain::plugin) (p2p::p2p_plugin) (snapshot::snapshot_plugin))
 ```
 
 ## Testing Recommendations
 
-1. **Normal production**: Verify witness produces blocks normally
+1. **Normal production**: Verify validator produces blocks normally
 2. **Snapshot creation**: Verify production defers during snapshot (check logs for "snapshot creation in progress")
 3. **Emergency mode**: Verify emergency master produces regardless of sync state
 4. **Minority fork recovery**: Verify production resumes after resync completes
@@ -283,8 +283,8 @@ APPBASE_PLUGIN_REQUIRES((chain::plugin) (p2p::p2p_plugin) (snapshot::snapshot_pl
 
 1. `plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp` - Added `is_snapshot_in_progress()` declaration
 2. `plugins/snapshot/plugin.cpp` - Implemented `is_snapshot_in_progress()`
-3. `plugins/witness/include/graphene/plugins/witness/witness.hpp` - Added snapshot plugin dependency
-4. `plugins/witness/witness.cpp` - Major refactoring:
+3. `plugins/validator/include/graphene/plugins/validator/validator.hpp` - Added snapshot plugin dependency
+4. `plugins/validator/validator.cpp` - Major refactoring:
    - Added snapshot plugin reference
    - Removed `_production_enabled` flag
    - Updated all production readiness checks

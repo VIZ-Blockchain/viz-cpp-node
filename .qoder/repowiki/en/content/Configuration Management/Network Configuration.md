@@ -1,4 +1,4 @@
-# Network Configuration
+﻿# Network Configuration
 
 <cite>
 **Referenced Files in This Document**
@@ -494,7 +494,7 @@ Example keys:
 
 #### Testnet
 - Use testnet-specific defaults and endpoints.
-- Enable witness participation and adjust required participation as needed.
+- Enable validator participation and adjust required participation as needed.
 - Configure stale sync detection with appropriate timeout for testnet conditions.
 
 Example keys:

@@ -1,4 +1,4 @@
-# Docker Integration
+﻿# Docker Integration
 
 <cite>
 **Referenced Files in This Document**
@@ -122,14 +122,14 @@ GHPR --> DTest
   - PR builds for production images with ref tagging using latest GitHub Actions versions.
   - Robust error handling and authentication mechanisms for reliable builds.
 - Runtime:
-  - A service wrapper script initializes configuration, applies optional seed nodes, and starts the node with environment-driven endpoints and optional witness settings.
+  - A service wrapper script initializes configuration, applies optional seed nodes, and starts the node with environment-driven endpoints and optional validator settings.
   - Configuration templates define RPC endpoints, P2P endpoints, plugin sets, logging, and optional MongoDB connection.
   - Snapshot assets enable fast initialization of blockchain data.
 
 Key runtime environment variables supported by the container entrypoint:
 - VIZD_SEED_NODES: Comma-separated list of seed nodes to connect to.
-- VIZD_WITNESS_NAME: Optional witness name for block production.
-- VIZD_PRIVATE_KEY: Private key for witness signing.
+- VIZD_WITNESS_NAME: Optional validator name for block production.
+- VIZD_PRIVATE_KEY: Private key for validator signing.
 - VIZD_RPC_ENDPOINT: Override RPC endpoint binding.
 - VIZD_P2P_ENDPOINT: Override P2P endpoint binding.
 - VIZD_EXTRA_OPTS: Additional arguments appended to the node command.
@@ -268,14 +268,14 @@ The container entrypoint script orchestrates node startup:
 - Applies default seed nodes from the seednodes file if none are provided via environment.
 - Copies the packaged configuration into the data directory and adjusts ownership.
 - Optionally replays from a cached snapshot if present.
-- Starts the node with configurable RPC and P2P endpoints and optional witness parameters.
+- Starts the node with configurable RPC and P2P endpoints and optional validator parameters.
 
 ```mermaid
 sequenceDiagram
 participant Entrypoint as "vizd.sh"
 participant FS as "Mounted Volumes"
 participant Node as "vizd"
-Entrypoint->>Entrypoint : Parse env vars (seed, witness, keys, endpoints)
+Entrypoint->>Entrypoint : Parse env vars (seed, validator, keys, endpoints)
 Entrypoint->>FS : Copy /etc/vizd/config.ini -> /var/lib/vizd/config.ini
 Entrypoint->>FS : Optionally extract cached snapshot to blockchain dir
 Entrypoint->>Node : exec vizd with data-dir, endpoints, plugins, extra opts
@@ -289,10 +289,10 @@ Node-->>Entrypoint : stdout/stderr
 - [vizd.sh:1-98](file://share/vizd/vizd.sh#L1-L98)
 
 ### Configuration Templates and Plugin Sets
-Configuration files define RPC endpoints, plugin sets, logging, and optional MongoDB URI. The testnet configuration enables witness production and includes a default witness and private key suitable for automated testing.
+Configuration files define RPC endpoints, plugin sets, logging, and optional MongoDB URI. The testnet configuration enables validator production and includes a default validator and private key suitable for automated testing.
 
 - Production: Full plugin set excluding MongoDB.
-- Testnet: Includes witness plugin and default witness credentials.
+- Testnet: Includes Validator Plugin and default validator credentials.
 - MongoDB: Adds mongo_db plugin and a MongoDB URI for external connectivity.
 
 **Section sources**
@@ -359,13 +359,13 @@ For MongoDB-enabled deployments, the configuration template includes a MongoDB U
     -v /srv/viz/mongo-etc:/etc/vizd \
     vizblockchain/vizd:mongo
 
-- Run a witness node:
+- Run a validator node:
   - docker run -d \
-    --name viz-witness \
-    -e VIZD_WITNESS_NAME="your-witness" \
+    --name viz-validator \
+    -e VIZD_WITNESS_NAME="your-validator" \
     -e VIZD_PRIVATE_KEY="5...your-private-key" \
     -p 8090:8090 -p 8091:8091 -p 2001:2001 \
-    -v /srv/viz/witness-data:/var/lib/vizd \
+    -v /srv/viz/validator-data:/var/lib/vizd \
     vizblockchain/vizd:latest
 
 [No sources needed since this section provides practical examples without analyzing specific files]
@@ -425,8 +425,8 @@ Common issues and resolutions:
   - Verify VIZD_SEED_NODES or rely on default seednodes; confirm firewall/NAT rules allow inbound P2P traffic on port 2001.
 - Slow startup due to replay:
   - Provide a cached snapshot or pre-seeded blockchain data in /var/lib/vizd to accelerate synchronization.
-- Witness production not starting:
-  - Confirm VIZD_WITNESS_NAME and VIZD_PRIVATE_KEY are set and match the configured witness and private key in the configuration.
+- validator production not starting:
+  - Confirm VIZD_WITNESS_NAME and VIZD_PRIVATE_KEY are set and match the configured validator and private key in the configuration.
 - MongoDB plugin errors:
   - Ensure the MongoDB URI is reachable from the container network and matches the configuration template.
 - CI/CD build failures:
@@ -454,8 +454,8 @@ The Docker integration for VIZ CPP Node provides flexible, reproducible deployme
 
 ### Appendix A: Environment Variables Reference
 - VIZD_SEED_NODES: Comma-separated P2P endpoints to bootstrap connections.
-- VIZD_WITNESS_NAME: Name of the witness to produce blocks.
-- VIZD_PRIVATE_KEY: Private key for witness signing.
+- VIZD_WITNESS_NAME: Name of the validator to produce blocks.
+- VIZD_PRIVATE_KEY: Private key for validator signing.
 - VIZD_RPC_ENDPOINT: RPC endpoint binding (host:port).
 - VIZD_P2P_ENDPOINT: P2P endpoint binding (host:port).
 - VIZD_EXTRA_OPTS: Additional CLI options appended to the node process.

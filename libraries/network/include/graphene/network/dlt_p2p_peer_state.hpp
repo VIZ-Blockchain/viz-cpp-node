@@ -81,6 +81,8 @@ struct dlt_peer_state {
     uint32_t                     pending_sync_start = 0;   // what block range we asked for
     uint32_t                     pending_sync_end = 0;
     bool                         range_fallback_mode = false; // single-block mode after range deserialization error
+    uint32_t                     fork_only_batch_count = 0;  // consecutive range replies with no blocks applied
+    static constexpr uint32_t   FORK_ONLY_BATCH_LIMIT = 5;
 
     // Block echo suppression: ring buffer of recent block IDs this peer
     // is known to have.  Updated when we send a block to the peer or when

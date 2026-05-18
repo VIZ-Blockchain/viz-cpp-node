@@ -1,4 +1,4 @@
-# Plugin Architecture
+﻿# Plugin Architecture
 
 <cite>
 **Referenced Files in This Document**
@@ -729,7 +729,7 @@ Snapshot->>Snapshot : Create Snapshot
 end
 end
 Chain->>Chain : Fire on_sync()
-Chain->>Chain : Start P2P/Witness
+Chain->>Chain : Start P2P/validator
 ```
 
 **Diagram sources**

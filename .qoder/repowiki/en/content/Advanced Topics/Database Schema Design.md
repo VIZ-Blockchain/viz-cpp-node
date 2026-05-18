@@ -1,4 +1,4 @@
-# Database Schema Design
+﻿# Database Schema Design
 
 <cite>
 **Referenced Files in This Document**
@@ -44,7 +44,7 @@ The database layer is built on top of ChainBase and integrates with Protocol typ
 - Database lifecycle and schema initialization
 - Fork database for chain branching and conflict resolution
 - Index registration and plugin index hooks
-- Object definitions for accounts, content, witnesses, proposals, invites, and auxiliary objects
+- Object definitions for accounts, content, validators, proposals, invites, and auxiliary objects
 
 ```mermaid
 graph TB
@@ -167,7 +167,7 @@ database --> invite_object : "persists"
 Object types are enumerated and mapped to persistent objects. Each object inherits from a base object class and is associated with a MultiIndex container that defines its indexes.
 
 - Enumerated object types:
-  - Dynamic global property, account, authority, witness, transaction, block summary, witness schedule, content, content type, content vote, witness vote, hardfork property, vesting routes, authorities history, recovery requests, escrow, block stats, vesting delegation, fixed delegation, delegation expiration, metadata, proposal, required approvals, committee request/vote, invite, award shares expiration, paid subscriptions, witness penalties, block post validation
+  - Dynamic global property, account, authority, validator, transaction, block summary, validator schedule, content, content type, content vote, validator vote, hardfork property, vesting routes, authorities history, recovery requests, escrow, block stats, vesting delegation, fixed delegation, delegation expiration, metadata, proposal, required approvals, committee request/vote, invite, award shares expiration, paid subscriptions, validator penalties, block post validation
 
 - Object identity and serialization:
   - Object IDs are typed identifiers; reflection and raw packing/unpacking are supported for persistence and RPC
@@ -232,8 +232,8 @@ Optimization notes:
 - [content_object.hpp](file://libraries/chain/include/graphene/chain/content_object.hpp#L197-L248)
 - [content_object.hpp](file://libraries/chain/include/graphene/chain/content_object.hpp#L144-L184)
 
-### Witness and Governance Objects
-Witness objects track scheduling, votes, signing keys, and penalties. Governance objects include votes and schedules.
+### validator and Governance Objects
+validator objects track scheduling, votes, signing keys, and penalties. Governance objects include votes and schedules.
 
 Indexes:
 - witness_object:
@@ -245,8 +245,8 @@ Indexes:
   - by_schedule_time (composite: virtual_scheduled_time + id)
 - witness_vote_object:
   - by_id (unique)
-  - by_account_witness (unique composite: account + witness)
-  - by_witness_account (unique composite: witness + account)
+  - by_account_witness (unique composite: account + validator)
+  - by_witness_account (unique composite: validator + account)
 - witness_schedule_object:
   - by_id (unique)
 - witness_penalty_expire_object:
@@ -256,7 +256,7 @@ Indexes:
 
 Optimization notes:
 - Virtual scheduled time index supports O(log N) scheduling decisions
-- Composite indexes on account-witness pairs enable fast vote lookups
+- Composite indexes on account-validator pairs enable fast vote lookups
 
 **Section sources**
 - [witness_objects.hpp](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L183-L219)
@@ -382,7 +382,7 @@ Common optimization techniques:
 ### Object Relationship Patterns
 Relationships among entities:
 - Accounts own content and votes; content references authors and parents; votes reference accounts and content
-- Witnesses schedule and produce blocks; witness votes link accounts to witnesses
+- validators schedule and produce blocks; validator votes link accounts to validators
 - Proposals require approvals from active/master/regular sets; required approvals link accounts to proposals
 - Invites connect creators/receivers and keys to balances
 - Vesting delegation links delegators to delegatees; expiration objects track time-based cleanup
@@ -393,7 +393,7 @@ ACCOUNT ||--o{ CONTENT : "author"
 ACCOUNT ||--o{ CONTENT_VOTE : "voter"
 CONTENT ||--o{ CONTENT_VOTE : "content"
 ACCOUNT ||--o{ WITNESS_VOTE : "account"
-WITNESS ||--o{ WITNESS_VOTE : "witness"
+validator ||--o{ WITNESS_VOTE : "validator"
 ACCOUNT ||--o{ VESTING_DELEGATION : "delegator"
 ACCOUNT ||--o{ VESTING_DELEGATION_EXPIRATION : "delegator"
 ACCOUNT ||--o{ PROPOSAL : "author"

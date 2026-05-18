@@ -1,4 +1,4 @@
-# API Reference
+﻿# API Reference
 
 <cite>
 **Referenced Files in This Document**
@@ -64,7 +64,7 @@ SN["Social Network API"]
 PS["Paid Subscription API"]
 CP["Custom Protocol API"]
 IW["Invite API"]
-WT["Witness API"]
+WT["validator API"]
 NB["Network Broadcast API"]
 AH["Account History API"]
 FL["Follow API"]
@@ -310,7 +310,7 @@ Example invocation pattern:
 ### Additional API Categories
 - Paid Subscription API: Namespace paid_subscription_api
 - Invite API: Namespace invite_api
-- Witness API: Namespace witness_api
+- validator API: Namespace witness_api
 - Network Broadcast API: Namespace network_broadcast_api
 - Follow API: Namespace follow
 - Private Message API: Namespace private_message

@@ -1,4 +1,4 @@
-# Wallet Library
+﻿# Wallet Library
 
 <cite>
 **Referenced Files in This Document**
@@ -542,7 +542,7 @@ Wallet --> NetBCast["graphene::network_broadcast_api"]
 Wallet --> Follow["graphene::follow"]
 Wallet --> PM["graphene::private_message"]
 Wallet --> AccByKey["graphene::account_by_key"]
-Wallet --> Witness["graphene::witness_api"]
+Wallet --> validator["graphene::witness_api"]
 Wallet --> Util["graphene_utilities"]
 Wallet --> FC["fc"]
 Wallet --> ContentAPI["content_api_object.hpp"]

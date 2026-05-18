@@ -1,4 +1,4 @@
-# P2P Plugin
+﻿# P2P Plugin
 
 <cite>
 **Referenced Files in This Document**
@@ -16,7 +16,7 @@
 - [dlt_block_log.cpp](file://libraries/chain/dlt_block_log.cpp)
 - [database.cpp](file://libraries/chain/database.cpp)
 - [chainbase.hpp](file://thirdparty/chainbase/include/chainbase/chainbase.hpp)
-- [witness.cpp](file://plugins/witness/witness.cpp)
+- [validator.cpp](file://plugins/validator/validator.cpp)
 - [CMakeLists.txt](file://plugins/p2p/CMakeLists.txt)
 - [config.ini](file://share/vizd/config/config.ini)
 </cite>
@@ -35,7 +35,7 @@
 - Fixed atomic flag ordering in resume: `_catchup_after_pause` is set before clearing `snapshot_in_progress` to prevent stale-head fork
 - Refactored resume_block_processing() into two-phase design: flags set immediately (Phase 1), drain posted async without wait (Phase 2) to eliminate a fiber deadlock
 - Handle `shared_memory_corruption_exception` in block acceptance path: triggers auto-recovery instead of peer soft-ban
-- Clear `_dlt_syncing` flag on SYNC→FORWARD transition to unblock witness production after sync completes
+- Clear `_dlt_syncing` flag on SYNC→FORWARD transition to unblock validator production after sync completes
 - Added node uptime field (`uptime=Xh Ym Zs`) to DLT Status and DLT P2P Stats log lines
 
 ## Table of Contents
@@ -330,9 +330,9 @@ flowchart TD
 Start([Block Received]) --> ValidateType{"Is block_post_validation_message?"}
 ValidateType --> |No| StandardValidation["Standard block validation<br/>via chain.accept_block()"]
 ValidateType --> |Yes| ExtractParams["Extract block_id,<br/>witness_account,<br/>signature"]
-ExtractParams --> VerifyWitness{"Verify witness exists?"}
-VerifyWitness --> |No| RejectBlock["Reject block<br/>(invalid witness)"]
-VerifyWitness --> |Yes| VerifySignature["Verify signature<br/>matches witness key"]
+ExtractParams --> VerifyWitness{"Verify validator exists?"}
+VerifyWitness --> |No| RejectBlock["Reject block<br/>(invalid validator)"]
+VerifyWitness --> |Yes| VerifySignature["Verify signature<br/>matches validator key"]
 VerifySignature --> SignatureValid{"Signature valid?"}
 SignatureValid --> |No| RejectBlock
 SignatureValid --> |Yes| ApplyValidation["Apply block post-validation<br/>chain.db().apply_block_post_validation()"]
@@ -350,11 +350,11 @@ style BroadcastBlock fill:#ccffcc
 
 **Updated** The block validation protocol now includes enhanced concurrent access safety through operation guard protection and conditional latency logging:
 
-The block validation process incorporates operation guards to prevent concurrent access conflicts during witness key validation and block post-validation processing. This ensures thread-safe access to shared blockchain state during high-load conditions.
+The block validation process incorporates operation guards to prevent concurrent access conflicts during validator key validation and block post-validation processing. This ensures thread-safe access to shared blockchain state during high-load conditions.
 
 The enhanced validation includes:
 
-1. **Witness Signature Verification**: Validates that the block signature matches the claimed witness's public key
+1. **validator Signature Verification**: Validates that the block signature matches the claimed validator's public key
 2. **Chain ID Consistency**: Ensures blocks belong to the correct blockchain instance
 3. **Hard Fork Protection**: Handles different validation requirements across blockchain hard forks
 4. **Post-Validation Processing**: Applies additional validation steps after initial acceptance
@@ -1150,14 +1150,14 @@ flowchart TD
 Start([Handle Block]) --> LogGap["Log block gap:<br/>- Block number<br/>- Head block<br/>- Gap size<br/>- Gap detection context<br/>in gray ANSI color"]
 LogGap --> CheckSyncMode{"Sync mode?"}
 CheckSyncMode --> |Yes| LogSync["Log sync block:<br/>- Block number<br/>- Head<br/>- Gap<br/>- Clamping info<br/>in gray ANSI color"]
-CheckSyncMode --> |No| LogNormal["Log normal block:<br/>- Block number<br/>- Transactions<br/>- Witness<br/>- Gap context<br/>in gray ANSI color"]
+CheckSyncMode --> |No| LogNormal["Log normal block:<br/>- Block number<br/>- Transactions<br/>- validator<br/>- Gap context<br/>in gray ANSI color"]
 LogSync --> AcceptBlock["Accept block via chain.accept_block()"]
 LogNormal --> AcceptBlock
 AcceptBlock --> CheckResult{"Result successful?"}
 CheckResult --> |No| End([End])
 CheckResult --> |Yes| CheckSyncMode2{"Sync mode?"}
 CheckSyncMode2 --> |Yes| End
-CheckSyncMode2 --> |No| LogLatency["Log latency:<br/>- Transaction count<br/>- Block number<br/>- Witness<br/>- Latency in milliseconds<br/>in white ANSI color"]
+CheckSyncMode2 --> |No| LogLatency["Log latency:<br/>- Transaction count<br/>- Block number<br/>- validator<br/>- Latency in milliseconds<br/>in white ANSI color"]
 LogLatency --> End([End])
 ```
 
@@ -1447,7 +1447,7 @@ CheckResult --> |No| End([End - No Latency Logging])
 CheckResult --> |Yes| CheckSyncMode{"Sync mode?"}
 CheckSyncMode --> |Yes| End([End - No Latency Logging])
 CheckSyncMode --> |No| CalculateLatency["Calculate latency:<br/>fc::time_point::now() - blk_msg.block.timestamp"]
-CalculateLatency --> LogLatency["Log latency:<br/>- Transaction count<br/>- Block number<br/>- Witness<br/>- Latency in milliseconds<br/>in white ANSI color"]
+CalculateLatency --> LogLatency["Log latency:<br/>- Transaction count<br/>- Block number<br/>- validator<br/>- Latency in milliseconds<br/>in white ANSI color"]
 LogLatency --> End([End - Latency Logged])
 ```
 
@@ -1474,7 +1474,7 @@ bool result = chain.accept_block(blk_msg.block, sync_mode, ...);
 if (!sync_mode && result) {
     fc::microseconds latency = fc::time_point::now() - blk_msg.block.timestamp;
     ilog(CLOG_WHITE "Got ${t} transactions on block ${b} by ${w} -- latency: ${l} ms" CLOG_RESET,
-         ("t", blk_msg.block.transactions.size())("b", blk_msg.block.block_num())("w", blk_msg.block.witness)("l", latency.count() / 1000));
+         ("t", blk_msg.block.transactions.size())("b", blk_msg.block.block_num())("w", blk_msg.block.validator)("l", latency.count() / 1000));
 }
 ```
 
@@ -1602,21 +1602,21 @@ The minority fork recovery process now includes several critical enhancements wi
 5. **Peer Reconnection**: Enhanced peer management with error handling and gap compatibility checking
 6. **Timer Reset**: Proper timing management to prevent immediate re-trigger with gap monitoring
 
-### Integration with Witness Plugin and Gap Detection
+### Integration with Validator Plugin and Gap Detection
 
-The minority fork recovery is triggered automatically by the witness plugin with enhanced logging and gap detection:
+The minority fork recovery is triggered automatically by the Validator Plugin with enhanced logging and gap detection:
 
 ```mermaid
 sequenceDiagram
-participant Witness as Witness Plugin
+participant validator as Validator Plugin
 participant P2P as P2P Plugin
 participant Chain as Chain Database
 participant Network as Network Layer
-Witness->>Chain : Check recent blocks
-Chain-->>Witness : Block validation results
-Witness->>Witness : Analyze fork scenario<br/>with gap detection
+validator->>Chain : Check recent blocks
+Chain-->>validator : Block validation results
+validator->>validator : Analyze fork scenario<br/>with gap detection
 alt Minority fork detected
-Witness->>P2P : resync_from_lib()
+validator->>P2P : resync_from_lib()
 Note over P2P : Enhanced logging with gap context<br/>in gray ANSI color
 P2P->>Chain : Pop blocks to LIB<br/>with gap boundary awareness
 P2P->>Chain : Reset fork database<br/>including gap detection
@@ -1627,12 +1627,12 @@ end
 ```
 
 **Diagram sources**
-- [witness.cpp:540-552](file://plugins/witness/witness.cpp#L540-L552)
+- [validator.cpp:540-552](file://plugins/validator/validator.cpp#L540-L552)
 - [p2p_plugin.cpp:992-1061](file://plugins/p2p/p2p_plugin.cpp#L992-L1061)
 
 **Section sources**
 - [p2p_plugin.cpp:992-1061](file://plugins/p2p/p2p_plugin.cpp#L992-L1061)
-- [witness.cpp:540-552](file://plugins/witness/witness.cpp#L540-L552)
+- [validator.cpp:540-552](file://plugins/validator/validator.cpp#L540-L552)
 
 ## Enhanced Block Validation
 
@@ -1644,10 +1644,10 @@ The enhanced block validation incorporates operation guards to prevent race cond
 
 ```mermaid
 flowchart TD
-BlockReceived([Block Received]) --> ExtractWitness["Extract witness information"]
+BlockReceived([Block Received]) --> ExtractWitness["Extract validator information"]
 ExtractWitness --> AcquireGuard["Acquire operation guard"]
-AcquireGuard --> VerifyWitness["Verify witness exists"]
-VerifyWitness --> VerifySignature["Verify signature matches witness key"]
+AcquireGuard --> VerifyWitness["Verify validator exists"]
+VerifyWitness --> VerifySignature["Verify signature matches validator key"]
 VerifySignature --> ReleaseGuard["Release operation guard"]
 ReleaseGuard --> ApplyValidation["Apply block post-validation"]
 ApplyValidation --> BroadcastBlock["Broadcast block to peers"]
@@ -1662,7 +1662,7 @@ The operation guard system provides several layers of protection with gap detect
 
 1. **Resize Barrier Participation**: Operation guards participate in the shared memory resize barrier
 2. **Lock Acquisition**: Automatically waits for resize operations to complete
-3. **Thread Safety**: Prevents concurrent access conflicts during witness key validation
+3. **Thread Safety**: Prevents concurrent access conflicts during validator key validation
 4. **Resource Management**: Ensures proper cleanup and release of resources
 5. **Gap Detection Integration**: Operation guards work with gap detection mechanisms
 
@@ -1761,7 +1761,7 @@ Enhanced error handling protects against various failure scenarios with gap dete
 if (!sync_mode && result) {
     fc::microseconds latency = fc::time_point::now() - blk_msg.block.timestamp;
     ilog(CLOG_WHITE "Got ${t} transactions on block ${b} by ${w} -- latency: ${l} ms" CLOG_RESET,
-         ("t", blk_msg.block.transactions.size())("b", blk_msg.block.block_num())("w", blk_msg.block.witness)("l", latency.count() / 1000));
+         ("t", blk_msg.block.transactions.size())("b", blk_msg.block.block_num())("w", blk_msg.block.validator)("l", latency.count() / 1000));
 }
 ```
 
@@ -1796,7 +1796,7 @@ Three relevant flags are now atomic:
 - `snapshot_in_progress` (conceptually cleared by the caller via a guard) — controls whether new blocks are accepted.
 - `_catchup_after_pause` — tells the production gate that we just resumed and are catching up.
 
-**Critical ordering**: `_catchup_after_pause` must be set to `true` **before** `snapshot_in_progress` is cleared. If the order were reversed, the witness plugin could observe the snapshot complete but the catchup flag unset, mis-classify the head as a stale fork, and refuse to produce.
+**Critical ordering**: `_catchup_after_pause` must be set to `true` **before** `snapshot_in_progress` is cleared. If the order were reversed, the Validator Plugin could observe the snapshot complete but the catchup flag unset, mis-classify the head as a stale fork, and refuse to produce.
 
 This ordering is enforced in `p2p_plugin::resume_block_processing()` via `dlt_p2p_node::set_resume_flags()` (sets both atomics) followed by an async post for the P2P-thread-only drain.
 
@@ -1826,7 +1826,7 @@ When `dlt_p2p_node` receives a block from the network and calls `push_block()`, 
 
 ### Clear Syncing Flag on SYNC→FORWARD Transition
 
-`dlt_p2p_node` now explicitly clears the `_dlt_syncing` flag when transitioning from SYNC state to FORWARD state. Previously the flag could remain set after the sync completed, causing the witness plugin to see `chain().is_syncing() == true` indefinitely and refuse to produce blocks.
+`dlt_p2p_node` now explicitly clears the `_dlt_syncing` flag when transitioning from SYNC state to FORWARD state. Previously the flag could remain set after the sync completed, causing the Validator Plugin to see `chain().is_syncing() == true` indefinitely and refuse to produce blocks.
 
 **Section sources**
 - [dlt_p2p_node.cpp](file://libraries/network/dlt_p2p_node.cpp)
@@ -1856,7 +1856,7 @@ P2P[p2p_plugin]
 Chain[chain::plugin]
 AppBase[appbase]
 Snapshot[snapshot_plugin]
-Witness[witness_plugin]
+validator[witness_plugin]
 end
 subgraph "Network Dependencies"
 Node[node.hpp]
@@ -1880,7 +1880,7 @@ P2P --> Chain
 P2P --> Node
 P2P --> AppBase
 P2P --> Snapshot
-P2P --> Witness
+P2P --> validator
 Node --> PeerConn
 Node --> Messages
 Node --> PeerDB
@@ -1906,7 +1906,7 @@ Key dependency relationships:
 2. **Network Foundation**: Relies on the network library for peer communication with gap-aware protocols
 3. **Application Framework**: Uses appbase for plugin lifecycle management
 4. **Snapshot Coordination**: Integrates with snapshot plugin for trusted peer management with gap detection
-5. **Witness Integration**: Works closely with witness plugin for fork detection and gap monitoring
+5. **validator Integration**: Works closely with Validator Plugin for fork detection and gap monitoring
 6. **Database Protection**: Leverages chainbase operation guards for concurrent access safety with gap detection
 7. **DLT Mode Support**: Integrates with dlt_block_log for snapshot-based block serving with sophisticated gap detection
 8. **Gap Detection**: Enhanced integration with gap detection mechanisms throughout the plugin stack
@@ -2032,7 +2032,7 @@ The P2P plugin implements several performance optimization strategies with enhan
 
 **Updated** For minority fork scenarios with gap detection:
 
-1. **Detection**: Monitor witness plugin logs for minority fork warnings with gap context
+1. **Detection**: Monitor Validator Plugin logs for minority fork warnings with gap context
 2. **Automatic Recovery**: The system automatically triggers `resync_from_lib()` with gap detection
 3. **Manual Intervention**: Use RPC commands to trigger recovery if automatic detection fails
 4. **Verification**: Monitor logs to confirm successful recovery and synchronization with gap awareness
@@ -2175,21 +2175,21 @@ The P2P Plugin represents a sophisticated implementation of blockchain networkin
 
 **Updated** Key enhancements include:
 
-1. **Security Focus**: Advanced block validation and witness verification mechanisms with gap detection
+1. **Security Focus**: Advanced block validation and validator verification mechanisms with gap detection
 2. **Performance Optimization**: Efficient synchronization and connection management with gap-aware optimizations
 3. **Operational Excellence**: Comprehensive monitoring and diagnostic capabilities with gap detection
 4. **Extensibility**: Clean interfaces that support future enhancements with gap detection integration
 5. **Enhanced Logging**: Improved logging level consistency with reduced verbosity while maintaining operational visibility
 6. **Minority Fork Recovery**: Specialized recovery mechanism for handling fork scenarios with gap awareness
 7. **Concurrent Access Safety**: Enhanced protection against race conditions and data corruption with gap detection
-8. **Integration Capabilities**: Seamless coordination with witness and snapshot plugins with gap detection
+8. **Integration Capabilities**: Seamless coordination with validator and snapshot plugins with gap detection
 9. **DLT Mode Support**: Intelligent block range management for snapshot-based nodes with sophisticated gap detection
 10. **Graceful Degradation**: Robust error handling and peer interaction management with gap-aware recovery
 11. **Enhanced Diagnostics**: Comprehensive logging throughout the sync process with gap detection
 12. **Peer Database Analytics**: Detailed peer interaction tracking and troubleshooting with gap awareness
 13. **ANSI Color Code Implementation**: Strategic use of color codes (white, cyan, gray, orange, red) for improved console readability and visual distinction
 14. **Conditional Latency Logging**: Smart latency reporting that only displays successful block processing information in non-sync mode
-15. **Enhanced Block Processing Visibility**: Improved visibility into block processing with detailed transaction and witness information
+15. **Enhanced Block Processing Visibility**: Improved visibility into block processing with detailed transaction and validator information
 16. **DLT Storage Diagnostics**: Comprehensive block storage monitoring with gap detection and coverage analysis
 17. **Automatic Peer Soft-Banning**: Intelligent peer management with automatic soft-banning for sync spam and improved peer interaction
 18. **DLT Integrity Verification**: Periodic verification of DLT block log integrity with gap detection and continuity scanning

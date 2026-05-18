@@ -1,4 +1,4 @@
-# Debugging Tools
+﻿# Debugging Tools
 
 <cite>
 **Referenced Files in This Document**
@@ -105,7 +105,7 @@ CFG --> P2P
 
 ## Core Components
 - Debug node plugin
-  - Provides APIs to push blocks from disk or JSON, generate blocks locally, pop blocks, inspect witness schedule, and control hardfork state
+  - Provides APIs to push blocks from disk or JSON, generate blocks locally, pop blocks, inspect validator schedule, and control hardfork state
   - Supports applying database updates at specific block heights and logging decisions
   - Exposes program options for initial database edit scripts
 - Transaction signing utilities
@@ -116,7 +116,7 @@ CFG --> P2P
   - Color-coded logging improves console readability and debugging efficiency
 
 Key capabilities:
-- State inspection via database access and witness schedule retrieval
+- State inspection via database access and validator schedule retrieval
 - Transaction tracing by generating blocks and observing accepted transactions
 - Blockchain state visualization by replaying blocks from logs or JSON
 - Signing diagnostics using deterministic signing utilities
@@ -164,9 +164,9 @@ Note over Client,P2P : "Enhanced P2P plugin logs with ANSI color codes for impro
 ### Debug Node Plugin
 The debug node plugin offers:
 - Block replay from block log and JSON arrays
-- Local block generation with configurable witness key and skipping of validations
+- Local block generation with configurable validator key and skipping of validations
 - Database update hooks applied at specific block heights
-- Hardfork state control and witness schedule inspection
+- Hardfork state control and validator schedule inspection
 
 ```mermaid
 classDiagram
@@ -201,14 +201,14 @@ plugin --> plugin_impl : "owns"
 
 Key behaviors:
 - Block replay honors skip flags to bypass expensive validations when needed
-- Local block generation modifies witness signing keys to accept self-signed blocks
+- Local block generation modifies validator signing keys to accept self-signed blocks
 - Hardfork state can be set programmatically for testing activation logic
 - Logging toggles help reduce noise during automated tests
 
 Practical usage patterns:
 - Replay historical blocks from a block log to reproduce state
 - Generate blocks deterministically for consensus timing tests
-- Inspect witness schedule and hardfork state during debugging sessions
+- Inspect validator schedule and hardfork state during debugging sessions
 
 **Section sources**
 - [plugin.cpp:321-420](file://plugins/debug_node/plugin.cpp#L321-L420)
@@ -304,7 +304,7 @@ Operational insights with enhanced visual distinction:
 - [node.cpp:5091-5108](file://libraries/network/node.cpp#L5091-L5108)
 
 ## Dependency Analysis
-The debug node plugin depends on the chain plugin and JSON-RPC infrastructure. It interacts with the database to push blocks, modify witness keys, and manage hardfork state. The P2P plugin depends on the chain plugin for validation and delegates block/trx handling to it. The enhanced logging system relies on ANSI color code definitions and the underlying logging framework.
+The debug node plugin depends on the chain plugin and JSON-RPC infrastructure. It interacts with the database to push blocks, modify validator keys, and manage hardfork state. The P2P plugin depends on the chain plugin for validation and delegates block/trx handling to it. The enhanced logging system relies on ANSI color code definitions and the underlying logging framework.
 
 ```mermaid
 graph LR
@@ -380,12 +380,12 @@ E --> F["Replay blocks with skip flags to isolate issue"]
 ### Consensus Issues
 Symptoms:
 - Blocks not accepted or chain stalls
-- Witness participation thresholds not met
+- validator participation thresholds not met
 
 Workflow:
 - Use debug_generate_blocks to advance the chain deterministically
-- Temporarily modify witness signing keys to accept self-signed blocks
-- Inspect witness schedule and hardfork state via debug APIs
+- Temporarily modify validator signing keys to accept self-signed blocks
+- Inspect validator schedule and hardfork state via debug APIs
 
 ```mermaid
 sequenceDiagram
@@ -393,8 +393,8 @@ participant Dev as "Developer"
 participant DNP as "debug_node"
 participant DB as "Database"
 Dev->>DNP : "debug_generate_blocks(key,count,skip)"
-DNP->>DB : "modify witness signing_key if needed"
-DNP->>DB : "generate_block(slot,witness,priv_key,skip)"
+DNP->>DB : "modify validator signing_key if needed"
+DNP->>DB : "generate_block(slot,validator,priv_key,skip)"
 DB-->>DNP : "new head block"
 ```
 
@@ -471,7 +471,7 @@ Enhanced diagnostic approach:
 - Unit testing: Use sign_transaction and sign_digest to validate signing logic in isolation
 - Integration testing: Replay blocks from JSON logs with skip flags to accelerate tests
 - Staging: Enable debug node plugin with restricted RPC access and targeted edit scripts
-- Production troubleshooting: Temporarily enable debug APIs on loopback, replay problematic blocks, and inspect witness schedule and hardfork state
+- Production troubleshooting: Temporarily enable debug APIs on loopback, replay problematic blocks, and inspect validator schedule and hardfork state
 - **Updated** Utilize enhanced color-coded logging for rapid identification of network issues in production environments
 
 **Section sources**
@@ -492,7 +492,7 @@ The VIZ C++ Node provides robust debugging tooling centered around the debug nod
 - debug_generate_blocks: Produce blocks with a specified key
 - debug_generate_blocks_until: Advance time-based to a target head block time
 - debug_pop_block: Remove the head block
-- debug_get_witness_schedule: Retrieve witness schedule object
+- debug_get_witness_schedule: Retrieve validator schedule object
 - debug_set_hardfork / debug_has_hardfork: Control and query hardfork state
 
 **Section sources**

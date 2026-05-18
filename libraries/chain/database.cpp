@@ -1890,6 +1890,22 @@ namespace graphene { namespace chain {
                                     apply_block((*ritr)->data, skip);
                                     session.push();
                                 }
+                                catch (const wrong_scheduled_validator_exception &e) {
+                                    // Schedule mismatch on a branch already chosen
+                                    // as heavier by vote-weighted comparison.  The
+                                    // branch represents collective consensus of
+                                    // its producers — retry with the schedule
+                                    // check skipped so the heavier chain can win.
+                                    wlog("Fork switch: relaxing schedule check for block #${n} (validator=${w}); branch chosen by vote-weighted comparison: ${e}",
+                                         ("n", (*ritr)->data.block_num())("w", (*ritr)->data.validator)("e", e.to_detail_string()));
+                                    try {
+                                        auto session = start_undo_session();
+                                        apply_block((*ritr)->data, skip | skip_witness_schedule_check);
+                                        session.push();
+                                    } catch (const fc::exception &e2) {
+                                        except = e2;
+                                    }
+                                }
                                 catch (const fc::exception &e) {
                                     except = e;
                                 }
@@ -1956,7 +1972,14 @@ namespace graphene { namespace chain {
                                              ("h", head_block_num()));
                                     }
 
-                                    throw *except;
+                                    // The invalid branch has been removed from fork_db and
+                                    // the original head restored.  Do not propagate the
+                                    // exception to the P2P layer — returning false signals
+                                    // "block rejected" without triggering sync restarts or
+                                    // peer backoff.  Network fork resolution proceeds
+                                    // naturally: nodes on the invalid fork eventually switch
+                                    // to the valid chain when it becomes longer.
+                                    return false;
                                 }
                             }
 
@@ -1980,6 +2003,18 @@ namespace graphene { namespace chain {
                     auto session = start_undo_session();
                     apply_block(new_block, skip);
                     session.push();
+                }
+                catch (const wrong_scheduled_validator_exception &e) {
+                    // Schedule mismatch: keep the block in fork_db as a
+                    // competing tip so descendants can link to it.  When
+                    // a heavier branch builds upon this block, fork-switch
+                    // will apply it with skip_witness_schedule_check.
+                    // Returning false signals "not applied" without
+                    // triggering the P2P rejection / soft-ban path.
+                    wlog("Block #${n} from validator ${w} kept in fork_db as competing tip (schedule mismatch): ${e}",
+                         ("n", new_block.block_num())("w", new_block.validator)
+                         ("e", e.to_detail_string()));
+                    return false;
                 }
                 catch (const fc::exception &e) {
                     elog("Failed to push new block:\n${e}", ("e", e.to_detail_string()));
@@ -5364,9 +5399,17 @@ namespace graphene { namespace chain {
                                  ("slot", slot_num)("num", next_block.block_num()));
                         }
                     } else {
-                        FC_ASSERT(witness.owner ==
-                                  scheduled_witness, "Validator produced block at wrong time",
+                        if (witness.owner != scheduled_witness) {
+                            // Throw a typed exception so the caller can
+                            // distinguish a schedule mismatch from other
+                            // validation failures.  Schedule mismatch is
+                            // a soft fork-resolution condition: the block
+                            // is kept in fork_db, and a heavier branch can
+                            // win via vote-weighted comparison.
+                            FC_THROW_EXCEPTION(wrong_scheduled_validator_exception,
+                                "Validator produced block at wrong time",
                                 ("block validator", next_block.validator)("scheduled", scheduled_witness)("slot_num", slot_num));
+                        }
                     }
                 }
 

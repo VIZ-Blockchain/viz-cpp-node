@@ -1443,7 +1443,7 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
             _last_block_received_time = fc::time_point::now();
             _last_network_block_time = fc::time_point::now();
 
-            ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by validator " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}]" DLT_LOG_RESET,
+            ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) validated by " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}]" DLT_LOG_RESET,
                  ("n", block.block_num())("tx", block.transactions.size())
                  ("w", block.validator)("ep", state.endpoint));
 
@@ -1502,6 +1502,7 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
     // (no applied, no fork_db) should NOT end sync mode.
     if (_node_status == DLT_NODE_STATUS_SYNC) {
         if (any_block_applied) {
+            state.fork_only_batch_count = 0;
             if (reply.is_last) {
                 transition_to_forward();
             } else if (reply.last_block_next_available > 0) {
@@ -1512,9 +1513,19 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
             // Blocks went to fork_db but weren't applied — competing fork.
             // Continue fetching so fork_db accumulates the full competing
             // chain and can evaluate a fork switch.
-            ilog(DLT_LOG_ORANGE "Range stored in fork_db only (competing fork?), continuing fetch from #${n}" DLT_LOG_RESET,
-                 ("n", reply.last_block_next_available));
-            request_blocks_from_peer(peer);
+            // P77 fix: if after FORK_ONLY_BATCH_LIMIT consecutive batches
+            // nothing is applied, this peer is on a permanently diverging
+            // fork — soft-ban to break the infinite fetch loop.
+            state.fork_only_batch_count++;
+            if (state.fork_only_batch_count >= dlt_peer_state::FORK_ONLY_BATCH_LIMIT) {
+                wlog(DLT_LOG_RED "Peer ${ep}: ${n} consecutive fork-only batches with no blocks applied — soft-banning" DLT_LOG_RESET,
+                     ("ep", state.endpoint)("n", state.fork_only_batch_count));
+                soft_ban_peer(peer, "fork-only spam: " + std::to_string(state.fork_only_batch_count) + " batches with no progress");
+            } else {
+                ilog(DLT_LOG_ORANGE "Range stored in fork_db only (competing fork?), continuing fetch from #${n}" DLT_LOG_RESET,
+                     ("n", reply.last_block_next_available));
+                request_blocks_from_peer(peer);
+            }
         }
     }
 }
@@ -1670,7 +1681,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
     }
 
     if (result == dlt_block_accept_result::ACCEPTED) {
-        ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by validator " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}]" DLT_LOG_RESET,
+        ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) validated by " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}]" DLT_LOG_RESET,
              ("n", reply.block.block_num())("tx", reply.block.transactions.size())
              ("w", reply.block.validator)("ep", state.endpoint));
 
@@ -2016,7 +2027,7 @@ void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply&
             _last_block_received_time = fc::time_point::now();
             _last_network_block_time = fc::time_point::now();
 
-            ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by validator " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}] (gap fill)" DLT_LOG_RESET,
+            ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) validated by " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}] (gap fill)" DLT_LOG_RESET,
                  ("n", block.block_num())("tx", block.transactions.size())
                  ("w", block.validator)("ep", it->second.endpoint));
 

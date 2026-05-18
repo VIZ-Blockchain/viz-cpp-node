@@ -1,4 +1,4 @@
-# Fork Resolution and Consensus
+﻿# Fork Resolution and Consensus
 
 <cite>
 **Referenced Files in This Document**
@@ -10,7 +10,7 @@
 - [dlt_block_log.hpp](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp)
 - [dlt_block_log.cpp](file://libraries/chain/dlt_block_log.cpp)
 - [p2p_plugin.cpp](file://plugins/p2p/p2p_plugin.cpp)
-- [witness.cpp](file://plugins/witness/witness.cpp)
+- [validator.cpp](file://plugins/validator/validator.cpp)
 - [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
 - [12.hf](file://libraries/chain/hardfork.d/12.hf)
 </cite>
@@ -50,9 +50,9 @@ The fork resolution and consensus logic spans several core files with enhanced e
 - database.hpp/cpp: Blockchain database integration, block pushing with early rejection logic, chain reorganization, DLT mode management, sophisticated block validation, vote-weighted fork comparison, and **NEW**: fork database access for diagnostic monitoring
 - block_log.hpp: Append-only persistence of blocks for recovery and irreversible state
 - dlt_block_log.hpp/cpp: Separate rolling block log for DLT nodes to serve recent irreversible blocks to P2P peers
-- witness.cpp: Witness scheduling integration with emergency mode awareness, fork collision handling, two-level fork collision resolution, stuck-head timeout mechanism, and automatic chain linking
+- validator.cpp: validator scheduling integration with emergency mode awareness, fork collision handling, two-level fork collision resolution, stuck-head timeout mechanism, and automatic chain linking
 - p2p_plugin.cpp: **NEW**: Real-time monitoring of fork database storage statistics with comprehensive analytics
-- config.hpp: Emergency consensus configuration constants including timeout settings and emergency witness parameters
+- config.hpp: Emergency consensus configuration constants including timeout settings and emergency validator parameters
 - 12.hf: Hardfork configuration defining HF12 parameters and activation time
 
 ```mermaid
@@ -103,7 +103,7 @@ PMON --> DIAG
 - [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
 - [database.cpp:1204-1270](file://libraries/chain/database.cpp#L1204-L1270)
 - [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)
-- [witness.cpp:521-544](file://plugins/witness/witness.cpp#L521-L544)
+- [validator.cpp:521-544](file://plugins/validator/validator.cpp#L521-L544)
 
 **Section sources**
 - [fork_database.hpp:1-168](file://libraries/chain/include/graphene/chain/fork_database.hpp#L1-L168)
@@ -112,7 +112,7 @@ PMON --> DIAG
 - [database.cpp:1-6669](file://libraries/chain/database.cpp#L1-L6669)
 - [dlt_block_log.hpp:1-76](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L1-L76)
 - [dlt_block_log.cpp:1-454](file://libraries/chain/dlt_block_log.cpp#L1-L454)
-- [witness.cpp:1-697](file://plugins/witness/witness.cpp#L1-L697)
+- [validator.cpp:1-697](file://plugins/validator/validator.cpp#L1-L697)
 - [p2p_plugin.cpp:735-771](file://plugins/p2p/p2p_plugin.cpp#L735-L771)
 - [config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [12.hf:1-7](file://libraries/chain/hardfork.d/12.hf#L1-L7)
@@ -122,9 +122,9 @@ PMON --> DIAG
 - database: Integrates fork resolution into block application with sophisticated early rejection logic, comprehensive block validation, performs chain reorganization when a better fork emerges, manages DLT mode for snapshot-based nodes, implements emergency consensus mode activation/deactivation, provides vote-weighted fork comparison for HF12, and **NEW**: exposes fork database access for diagnostic monitoring
 - block_log: Provides persistent storage for blocks, enabling recovery and serving as the source of irreversible blocks
 - dlt_block_log: Separate rolling block log for DLT nodes that maintains a sliding window of recent irreversible blocks for P2P synchronization
-- witness: Integrates witness scheduling with emergency mode awareness, handles fork collisions through two-level resolution system, manages stuck-head timeout mechanism, implements HF12 fork collision resolution, and provides automatic chain linking when parent blocks arrive
+- validator: Integrates validator scheduling with emergency mode awareness, handles fork collisions through two-level resolution system, manages stuck-head timeout mechanism, implements HF12 fork collision resolution, and provides automatic chain linking when parent blocks arrive
 - **NEW**: P2P monitoring system: Real-time monitoring of fork database storage statistics including linked/unlinked index sizes, minimum/maximum block numbers, and comprehensive storage health metrics
-- emergency consensus: Implements timeout-based emergency mode activation, hybrid witness scheduling, and deterministic tie-breaking mechanisms
+- emergency consensus: Implements timeout-based emergency mode activation, hybrid validator scheduling, and deterministic tie-breaking mechanisms
 - compare_fork_branches: New HF12 function that performs vote-weighted fork comparison with +10% bonus for longer chains
 - remove_blocks_by_number: New function that removes all blocks at a specific height to prevent memory bloat from dead-fork blocks
 
@@ -135,10 +135,10 @@ Key responsibilities:
 - Reorganize the chain when a higher fork becomes active with better error recovery, emergency mode integration, and fork collision resolution
 - Manage DLT mode for snapshot-based nodes with automatic fork database seeding capabilities
 - Implement emergency consensus mode activation based on timeout thresholds
-- Provide hybrid witness scheduling during emergency periods with deterministic tie-breaking
+- Provide hybrid validator scheduling during emergency periods with deterministic tie-breaking
 - Persist irreversible blocks to both block_log and dlt_block_log with enhanced reliability and emergency mode awareness
 - Serve recent blocks to P2P peers through dlt_block_log for faster synchronization
-- Handle emergency witness account creation and key management for consensus recovery
+- Handle emergency validator account creation and key management for consensus recovery
 - Distinguish between different types of invalid blocks and handle them appropriately to prevent system degradation
 - **New**: Provide comprehensive diagnostic accessors for monitoring fork database storage statistics including linked/unlinked index sizes and block number ranges
 - **New**: Integrate diagnostic accessors into P2P monitoring system for real-time storage analytics
@@ -152,7 +152,7 @@ Key responsibilities:
 - [fork_database.cpp:33-92](file://libraries/chain/fork_database.cpp#L33-L92)
 - [database.cpp:1223-1267](file://libraries/chain/database.cpp#L1223-L1267)
 - [dlt_block_log.hpp:13-33](file://libraries/chain/include/graphene/chain/dlt_block_log.hpp#L13-L33)
-- [witness.cpp:521-544](file://plugins/witness/witness.cpp#L521-L544)
+- [validator.cpp:521-544](file://plugins/validator/validator.cpp#L521-L544)
 - [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)
 
 ## Architecture Overview
@@ -163,7 +163,7 @@ sequenceDiagram
 participant Net as "Network"
 participant DB as "database.cpp"
 participant FDB as "fork_database.cpp"
-participant WIT as "witness.cpp"
+participant WIT as "validator.cpp"
 participant BL as "block_log.hpp"
 participant DLTL as "dlt_block_log.cpp"
 participant MON as "P2P Monitoring"
@@ -179,7 +179,7 @@ else "Valid block"
 FDB-->>DB : "Insert and _push_next"
 DB->>DB : "Check emergency consensus timeout"
 alt "Emergency mode activated"
-DB->>WIT : "Override witness schedule to emergency witness"
+DB->>WIT : "Override validator schedule to emergency validator"
 DB->>FDB : "set_emergency_mode(true)"
 DB->>DB : "Skip LIB advancement during emergency"
 else "Normal mode"
@@ -201,7 +201,7 @@ MON->>MON : "analyze fork storage statistics"
 **Diagram sources**
 - [database.cpp:1204-1270](file://libraries/chain/database.cpp#L1204-L1270)
 - [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
-- [witness.cpp:521-544](file://plugins/witness/witness.cpp#L521-L544)
+- [validator.cpp:521-544](file://plugins/validator/validator.cpp#L521-L544)
 - [dlt_block_log.cpp:336-340](file://libraries/chain/dlt_block_log.cpp#L336-L340)
 - [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)
 
@@ -667,9 +667,9 @@ end
   - Mechanism: Gap logging suppression prevents log flooding while maintaining operational awareness
 - **New Scenario F**: Emergency consensus mode activation
   - Behavior: When no blocks are produced for CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC seconds, emergency mode activates with deterministic tie-breaking
-  - Mechanism: Emergency witness takes over all witness slots, emergency mode flag is set, and deterministic hash-based tie-breaking ensures consensus stability
+  - Mechanism: Emergency validator takes over all validator slots, emergency mode flag is set, and deterministic hash-based tie-breaking ensures consensus stability
 - **New Scenario G**: Emergency consensus mode deactivation
-  - Behavior: When LIB advances past emergency_consensus_start_block, emergency mode is deactivated and normal witness scheduling resumes
+  - Behavior: When LIB advances past emergency_consensus_start_block, emergency mode is deactivated and normal validator scheduling resumes
   - Mechanism: Emergency mode flag is cleared and fork database is notified of emergency mode termination
 - **New Scenario H**: Sophisticated early rejection in action
   - Behavior: Database rejects blocks that are already applied, on different forks, or far ahead with unknown parents to prevent infinite sync loops
@@ -679,9 +679,9 @@ end
   - Mechanism: Comprehensive duplicate detection prevents redundant CPU usage and improves synchronization reliability
 - **New Scenario J**: HF12 fork collision resolution
   - Behavior: When competing blocks appear at the same height, database uses vote-weighted comparison to determine the stronger fork
-  - Mechanism: `compare_fork_branches()` calculates total vote weight per witness, applies +10% bonus to longer chain, and resolves ties deterministically
+  - Mechanism: `compare_fork_branches()` calculates total vote weight per validator, applies +10% bonus to longer chain, and resolves ties deterministically
 - **New Scenario K**: Stuck-head timeout mechanism
-  - Behavior: After 21 consecutive deferrals (one full witness round), database removes stale competing blocks and produces on the canonical chain
+  - Behavior: After 21 consecutive deferrals (one full validator round), database removes stale competing blocks and produces on the canonical chain
   - Mechanism: `fork_collision_defer_count_` tracks deferral attempts, `remove_blocks_by_number()` clears stale blocks, and timeout ensures network progress
 - **New Scenario L**: Automatic stale fork pruning
   - Behavior: Database periodically removes stale competing blocks from dead forks to prevent memory bloat and improve performance
@@ -713,21 +713,21 @@ end
 - [database.cpp:1300-1399](file://libraries/chain/database.cpp#L1300-L1399)
 - [database.cpp:2125-2142](file://libraries/chain/database.cpp#L2125-L2142)
 - [database.cpp:1223-1267](file://libraries/chain/database.cpp#L1223-L1267)
-- [witness.cpp:597-612](file://plugins/witness/witness.cpp#L597-L612)
+- [validator.cpp:597-612](file://plugins/validator/validator.cpp#L597-L612)
 - [fork_database.cpp:269-274](file://libraries/chain/fork_database.cpp#L269-L274)
 - [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)
 
 ## Emergency Consensus Recovery System
 
 ### Emergency Consensus Mode Activation
-The emergency consensus mode activates automatically when no blocks are produced for more than CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC seconds (1 hour by default). This mechanism ensures blockchain continuity during extended network partitions or witness failures.
+The emergency consensus mode activates automatically when no blocks are produced for more than CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC seconds (1 hour by default). This mechanism ensures blockchain continuity during extended network partitions or validator failures.
 
 Emergency mode activation process:
 - **Timeout detection**: The database checks if seconds_since_LIB >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC
 - **Mode activation**: Sets emergency_consensus_active = true and records emergency_consensus_start_block
-- **Emergency witness setup**: Creates or updates emergency witness account with CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY
-- **Penalty reset**: Resets all witness penalties and re-enables shut-down witnesses
-- **Schedule override**: Overrides witness schedule so all slots are filled by emergency witness
+- **Emergency validator setup**: Creates or updates emergency validator account with CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY
+- **Penalty reset**: Resets all validator penalties and re-enables shut-down validators
+- **Schedule override**: Overrides validator schedule so all slots are filled by emergency validator
 - **Fork database notification**: Sets emergency mode flag in fork database for deterministic tie-breaking
 
 ```mermaid
@@ -736,9 +736,9 @@ Start(["Block Application"]) --> CheckTimeout["Check LIB timestamp vs block time
 CheckTimeout --> TimeoutExceeded{"seconds_since_LIB >= TIMEOUT?"}
 TimeoutExceeded --> |No| NormalOperation["Continue normal operation"]
 TimeoutExceeded --> |Yes| ActivateEmergency["Activate Emergency Mode"]
-ActivateEmergency --> CreateWitness["Create/Update Emergency Witness"]
-CreateWitness --> ResetPenalties["Reset All Witness Penalties"]
-ResetPenalties --> OverrideSchedule["Override Witness Schedule"]
+ActivateEmergency --> CreateWitness["Create/Update Emergency validator"]
+CreateWitness --> ResetPenalties["Reset All validator Penalties"]
+ResetPenalties --> OverrideSchedule["Override validator Schedule"]
 OverrideSchedule --> NotifyForkDB["Notify Fork Database"]
 NotifyForkDB --> LogActivation["Log Emergency Mode Activation"]
 LogActivation --> End(["Emergency Mode Active"])
@@ -748,20 +748,20 @@ NormalOperation --> End
 **Diagram sources**
 - [database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
 
-### Hybrid Witness Scheduling During Emergency
-During emergency mode, the witness scheduling system operates differently to ensure consensus stability:
-- **All slots filled by emergency witness**: All CHAIN_MAX_WITNESSES slots are assigned to CHAIN_EMERGENCY_WITNESS_ACCOUNT
+### Hybrid validator Scheduling During Emergency
+During emergency mode, the validator scheduling system operates differently to ensure consensus stability:
+- **All slots filled by emergency validator**: All CHAIN_MAX_WITNESSES slots are assigned to CHAIN_EMERGENCY_WITNESS_ACCOUNT
 - **Deterministic tie-breaking**: Emergency mode uses hash-based tie-breaking for consensus stability
 - **Skip LIB advancement**: Post-validation chain does not advance LIB during emergency mode
-- **Committee exclusion**: Committee witness is excluded from hardfork vote tally and median computation during emergency
+- **Committee exclusion**: Committee validator is excluded from hardfork vote tally and median computation during emergency
 
 ```mermaid
 flowchart TD
-EmergencyMode["Emergency Mode Active"] --> OverrideSchedule["Override Schedule: All Slots -> Emergency Witness"]
+EmergencyMode["Emergency Mode Active"] --> OverrideSchedule["Override Schedule: All Slots -> Emergency validator"]
 OverrideSchedule --> DeterministicTie["Deterministic Hash-Based Tie-Breaking"]
 DeterministicTie --> SkipLIB["Skip LIB Advancement"]
 SkipLIB --> CommitteeExclusion["Exclude Committee from Hardfork Votes"]
-CommitteeExclusion --> EmergencyWitness["Emergency Witness Produces All Blocks"]
+CommitteeExclusion --> EmergencyWitness["Emergency validator Produces All Blocks"]
 EmergencyWitness --> ExitCondition["Check Exit Condition: LIB > Start Block"]
 ExitCondition --> |True| DeactivateEmergency["Deactivate Emergency Mode"]
 ExitCondition --> |False| ContinueEmergency["Continue Emergency Mode"]
@@ -773,15 +773,15 @@ NotifyForkDB --> NormalOperation["Resume Normal Operation"]
 - [database.cpp:4420-4438](file://libraries/chain/database.cpp#L4420-L4438)
 - [database.cpp:4444-4450](file://libraries/chain/database.cpp#L4444-L4450)
 
-### Emergency Witness Account Management
-The emergency witness account serves as the single producer during emergency consensus mode:
+### Emergency validator Account Management
+The emergency validator account serves as the single producer during emergency consensus mode:
 - **Account name**: CHAIN_EMERGENCY_WITNESS_ACCOUNT (defaults to "committee")
 - **Signing key**: CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY (deterministic emergency key)
 - **Properties**: Copies median chain properties to avoid skewing median computations
 - **Hardfork votes**: Votes for currently applied hardfork version to maintain status quo
-- **Penalty management**: Emergency witness participates in penalty reset process
+- **Penalty management**: Emergency validator participates in penalty reset process
 
-Emergency witness lifecycle:
+Emergency validator lifecycle:
 - **Creation**: Created automatically during emergency mode activation if not exists
 - **Updates**: Key and properties updated during emergency mode reactivation
 - **Participation**: Produces blocks for CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS consecutive blocks
@@ -807,19 +807,19 @@ Tie-breaking algorithm:
 
 **Section sources**
 - [fork_database.cpp:80-87](file://libraries/chain/fork_database.cpp#L80-L87)
-- [witness.cpp:521-526](file://plugins/witness/witness.cpp#L521-L526)
+- [validator.cpp:521-526](file://plugins/validator/validator.cpp#L521-L526)
 
 ### Emergency Exit Conditions and Recovery
 Emergency consensus mode deactivates automatically when:
 - **LIB advancement**: Last Irreversible Block number exceeds emergency_consensus_start_block
-- **Normal witness rejoin**: Regular witnesses resume production after emergency period
+- **Normal validator rejoin**: Regular validators resume production after emergency period
 - **Manual intervention**: System administrator can manually deactivate emergency mode
 
 Emergency exit process:
 - **LIB check**: Monitor LIB advancement past emergency start block
 - **Mode deactivation**: Set emergency_consensus_active = false
 - **Fork database notification**: Clear emergency mode flag in fork database
-- **Normal operation resume**: Resume normal witness scheduling and LIB advancement
+- **Normal operation resume**: Resume normal validator scheduling and LIB advancement
 - **Penalty restoration**: Restore normal penalty calculations for emergency period
 
 **Section sources**
@@ -834,7 +834,7 @@ The two-level fork collision resolution system provides robust handling of compe
 ### Level 1: Vote-Weighted Comparison (HF12)
 When HF12 is active and competing blocks exist at the same height, the system performs immediate vote-weighted comparison:
 
-1. **Comparison**: `compare_fork_branches()` calculates total vote weight per witness for both forks
+1. **Comparison**: `compare_fork_branches()` calculates total vote weight per validator for both forks
 2. **Bonus Application**: Longer chain receives +10% bonus to vote weight
 3. **Decision Making**:
    - If one fork has significantly more weight: produce on stronger fork
@@ -844,7 +844,7 @@ When HF12 is active and competing blocks exist at the same height, the system pe
 ### Level 2: Stuck-Head Timeout
 If the network remains stuck with competing blocks for extended periods:
 
-1. **Timeout Detection**: After 21 consecutive deferrals (one full witness round)
+1. **Timeout Detection**: After 21 consecutive deferrals (one full validator round)
 2. **Action**: Remove all stale competing blocks from the dead fork
 3. **Resolution**: Produce on the canonical chain with confirmed majority support
 4. **Prevention**: Ensures network doesn't stall indefinitely due to fork collisions
@@ -873,12 +873,12 @@ DeferMore --> End
 ```
 
 **Diagram sources**
-- [witness.cpp:565-656](file://plugins/witness/witness.cpp#L565-L656)
+- [validator.cpp:565-656](file://plugins/validator/validator.cpp#L565-L656)
 - [database.cpp:1223-1267](file://libraries/chain/database.cpp#L1223-L1267)
 
 **Section sources**
-- [witness.cpp:565-656](file://plugins/witness/witness.cpp#L565-L656)
-- [witness.cpp:121](file://plugins/witness/witness.cpp#L121)
+- [validator.cpp:565-656](file://plugins/validator/validator.cpp#L565-L656)
+- [validator.cpp:121](file://plugins/validator/validator.cpp#L121)
 
 ## Vote-Weighted Fork Comparison Algorithm
 
@@ -888,14 +888,14 @@ The `compare_fork_branches()` function implements HF12's vote-weighted fork comp
 #### Algorithm Steps:
 1. **Validation**: Ensure both fork tips exist in fork database
 2. **Branch Extraction**: Use `fetch_branch_from()` to get branches to common ancestor
-3. **Weight Calculation**: Compute total vote weight per witness for each branch
+3. **Weight Calculation**: Compute total vote weight per validator for each branch
 4. **Bonus Application**: Apply +10% bonus to longer chain
 5. **Comparison**: Determine stronger fork or tie
 
 #### Weight Calculation Details:
-- **Per-Witness Weight**: Sum of vote weights for each unique witness
-- **Emergency Witness Exclusion**: Emergency witness votes are excluded from calculation
-- **Unique Witness Counting**: Each witness contributes only once per branch
+- **Per-validator Weight**: Sum of vote weights for each unique validator
+- **Emergency validator Exclusion**: Emergency validator votes are excluded from calculation
+- **Unique validator Counting**: Each validator contributes only once per branch
 
 #### Bonus System:
 - **Longer Chain Advantage**: +10% bonus applied to the fork with more blocks
@@ -1124,8 +1124,8 @@ The fork resolution system depends on:
 - database for integrating fork resolution into block application, DLT mode management, automatic seeding, emergency consensus mode activation/deactivation with sophisticated early rejection logic, block validation, and HF12 vote-weighted fork comparison
 - block_log for persistence of irreversible blocks in normal mode
 - **New**: dlt_block_log for DLT mode persistence and P2P synchronization support
-- **New**: witness plugin for emergency mode awareness, fork collision handling, two-level fork collision resolution, stuck-head timeout mechanism, HF12 fork comparison integration, and automatic chain linking
-- **New**: emergency consensus configuration for timeout thresholds and emergency witness parameters
+- **New**: Validator Plugin for emergency mode awareness, fork collision handling, two-level fork collision resolution, stuck-head timeout mechanism, HF12 fork comparison integration, and automatic chain linking
+- **New**: emergency consensus configuration for timeout thresholds and emergency validator parameters
 - **New**: compare_fork_branches function for HF12 vote-weighted fork comparison
 - **New**: Enhanced exception handling for different types of block validation failures
 - **New**: Automatic stale fork pruning system with remove_blocks_by_number() function
@@ -1140,7 +1140,7 @@ graph LR
 FDB["fork_database.cpp"] --> DBCPP["database.cpp"]
 DBCPP --> BLH["block_log.hpp"]
 DBCPP --> DLTH["dlt_block_log.hpp"]
-DBCPP --> WIT["witness.cpp"]
+DBCPP --> WIT["validator.cpp"]
 DBH["database.hpp"] --> DBCPP
 DLTH --> DBCPP
 WIT --> DBCPP
@@ -1160,7 +1160,7 @@ MON["P2P Monitoring"] --> DIAG
 - [fork_database.cpp:1-278](file://libraries/chain/fork_database.cpp#L1-L278)
 - [database.cpp:1-6669](file://libraries/chain/database.cpp#L1-L6669)
 - [dlt_block_log.cpp:1-454](file://libraries/chain/dlt_block_log.cpp#L1-L454)
-- [witness.cpp:1-697](file://plugins/witness/witness.cpp#L1-L697)
+- [validator.cpp:1-697](file://plugins/validator/validator.cpp#L1-L697)
 - [config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [12.hf:1-7](file://libraries/chain/hardfork.d/12.hf#L1-L7)
 
@@ -1168,7 +1168,7 @@ MON["P2P Monitoring"] --> DIAG
 - [fork_database.cpp:1-278](file://libraries/chain/fork_database.cpp#L1-L278)
 - [database.cpp:1-6669](file://libraries/chain/database.cpp#L1-L6669)
 - [dlt_block_log.cpp:1-454](file://libraries/chain/dlt_block_log.cpp#L1-L454)
-- [witness.cpp:1-697](file://plugins/witness/witness.cpp#L1-L697)
+- [validator.cpp:1-697](file://plugins/validator/validator.cpp#L1-L697)
 - [config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [12.hf:1-7](file://libraries/chain/hardfork.d/12.hf#L1-L7)
 
@@ -1187,7 +1187,7 @@ MON["P2P Monitoring"] --> DIAG
 - **DLT mode optimization**: Automatic seeding eliminates synchronization delays for snapshot-based nodes, improving overall network health
 - **Gap handling**: DLT block log gap logging suppression prevents performance impact from excessive warning messages
 - **Emergency mode efficiency**: Emergency mode uses optimized tie-breaking with minimal computational overhead while ensuring consensus stability
-- **Hybrid scheduling**: Emergency witness scheduling minimizes complexity compared to full witness rotation during emergency periods
+- **Hybrid scheduling**: Emergency validator scheduling minimizes complexity compared to full validator rotation during emergency periods
 - **Penalty management**: Emergency penalty reset avoids complex penalty calculations during emergency mode, reducing computational load
 - **Sophisticated validation**: Early rejection logic prevents unnecessary processing and reduces system load during network partitions
 - **HF12 fork comparison**: Vote-weighted comparison adds computational overhead but provides more robust consensus decisions
@@ -1216,14 +1216,14 @@ Common issues and remedies:
 - **Gap logging**: Monitor DLT block log gaps and adjust configuration if gaps persist beyond acceptable limits
 - **Emergency mode activation failures**: Verify CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC configuration and check LIB timestamp calculations
 - **Emergency mode deactivation issues**: Monitor LIB advancement and ensure emergency_consensus_start_block tracking is accurate
-- **Emergency witness problems**: Verify emergency witness account creation and key management during emergency mode activation
-- **Hybrid scheduling conflicts**: Check witness schedule overrides and ensure emergency witness has proper signing key configuration
+- **Emergency validator problems**: Verify emergency validator account creation and key management during emergency mode activation
+- **Hybrid scheduling conflicts**: Check validator schedule overrides and ensure emergency validator has proper signing key configuration
 - **Tie-breaking anomalies**: Monitor emergency mode tie-breaking behavior and verify hash-based resolution consistency across network nodes
 - **Infinite sync loops**: Check early rejection logic and ensure proper block validation to prevent continuous sync restarts
 - **Block validation failures**: Monitor different types of block validation errors and ensure appropriate exception handling
-- **HF12 fork comparison failures**: Verify compare_fork_branches() function returns valid results and check witness vote weight calculations
+- **HF12 fork comparison failures**: Verify compare_fork_branches() function returns valid results and check validator vote weight calculations
 - **Two-level collision resolution issues**: Monitor fork collision timeout counters and ensure stuck-head timeout mechanism is functioning correctly
-- **Vote-weighted comparison anomalies**: Check witness vote weight calculations and ensure emergency witness exclusion is working properly
+- **Vote-weighted comparison anomalies**: Check validator vote weight calculations and ensure emergency validator exclusion is working properly
 - **Automatic pruning failures**: Verify remove_blocks_by_number() function is cleaning stale competing blocks and check set_max_size() pruning effectiveness
 - **Timeout configuration problems**: Adjust fork-collision-timeout-blocks parameter if network experiences frequent fork collisions or insufficient timeout
 - **Gap-based rejection issues**: Verify 100-block threshold is working correctly and check that legitimate out-of-order blocks are not being rejected
@@ -1242,12 +1242,12 @@ Common issues and remedies:
 - [database.cpp:4581-4594](file://libraries/chain/database.cpp#L4581-L4594)
 - [database.cpp:1300-1399](file://libraries/chain/database.cpp#L1300-L1399)
 - [database.cpp:2125-2142](file://libraries/chain/database.cpp#L2125-L2142)
-- [witness.cpp:597-612](file://plugins/witness/witness.cpp#L597-L612)
+- [validator.cpp:597-612](file://plugins/validator/validator.cpp#L597-L612)
 - [fork_database.cpp:269-274](file://libraries/chain/fork_database.cpp#L269-L274)
 - [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)
 
 ## Conclusion
-**Updated** The fork resolution and consensus system combines an efficient in-memory fork database with robust chain reorganization, irreversible block persistence, comprehensive DLT mode support, and advanced emergency consensus recovery mechanisms. The system has been significantly enhanced with sophisticated gap-based early rejection logic, comprehensive duplicate detection, DLT mode integration, automatic seeding capabilities, comprehensive emergency consensus implementation, HF12 vote-weighted fork comparison, two-level fork collision resolution, automatic stale fork pruning, and automatic chain linking. The enhanced fork database now supports snapshot-based nodes with immediate P2P synchronization, while the DLT block log provides efficient serving of recent irreversible blocks to peers. The emergency consensus recovery system ensures blockchain continuity through timeout-based activation, hybrid witness scheduling, and deterministic tie-breaking mechanisms. The HF12 fork comparison system provides more robust consensus decisions by weighting chains based on witness vote support with +10% bonus for longer chains. The two-level fork collision resolution system combines immediate vote-weighted comparison with stuck-head timeout to ensure network progress while maintaining consensus integrity. The automatic stale fork pruning system prevents memory bloat and maintains optimal performance under fork collision conditions. The gap-based early rejection logic with 100-block threshold prevents memory bloat from dead-fork chains while maintaining network efficiency. The automatic chain linking system via _push_next() ensures efficient processing of out-of-order blocks. The system integrates tightly with witness scheduling to ensure timely and valid block production, with emergency mode awareness enabling seamless transition between normal and emergency operations. The enhanced APIs enable reliable fork detection, chain validation, and recovery with DLT mode, emergency consensus, HF12 fork comparison, gap-based protection, and automatic chain linking awareness. Performance controls keep resource usage manageable while improving synchronization reliability, network health, and consensus stability during emergency conditions. The sophisticated early rejection logic and block validation mechanisms prevent infinite synchronization loops and system degradation, ensuring robust operation under various network conditions. The separate handling paths for linear extensions vs actual fork switches improve efficiency by avoiding unnecessary operations. The detailed debug logging with FORK-SWITCH-POP and FORK-RECOVER-POP prefixes provides excellent traceability for troubleshooting and monitoring fork resolution operations. **NEW**: The comprehensive diagnostic monitoring system provides real-time insights into fork database storage statistics, enabling proactive optimization and issue detection. The diagnostic accessors offer O(1) access to critical storage metrics including linked/unlinked index sizes and block number ranges, facilitating informed capacity planning and performance tuning. The P2P monitoring integration delivers comprehensive analytics for storage health, DLT coverage gaps, and synchronization performance, ensuring optimal system operation under varying network conditions.
+**Updated** The fork resolution and consensus system combines an efficient in-memory fork database with robust chain reorganization, irreversible block persistence, comprehensive DLT mode support, and advanced emergency consensus recovery mechanisms. The system has been significantly enhanced with sophisticated gap-based early rejection logic, comprehensive duplicate detection, DLT mode integration, automatic seeding capabilities, comprehensive emergency consensus implementation, HF12 vote-weighted fork comparison, two-level fork collision resolution, automatic stale fork pruning, and automatic chain linking. The enhanced fork database now supports snapshot-based nodes with immediate P2P synchronization, while the DLT block log provides efficient serving of recent irreversible blocks to peers. The emergency consensus recovery system ensures blockchain continuity through timeout-based activation, hybrid validator scheduling, and deterministic tie-breaking mechanisms. The HF12 fork comparison system provides more robust consensus decisions by weighting chains based on validator vote support with +10% bonus for longer chains. The two-level fork collision resolution system combines immediate vote-weighted comparison with stuck-head timeout to ensure network progress while maintaining consensus integrity. The automatic stale fork pruning system prevents memory bloat and maintains optimal performance under fork collision conditions. The gap-based early rejection logic with 100-block threshold prevents memory bloat from dead-fork chains while maintaining network efficiency. The automatic chain linking system via _push_next() ensures efficient processing of out-of-order blocks. The system integrates tightly with validator scheduling to ensure timely and valid block production, with emergency mode awareness enabling seamless transition between normal and emergency operations. The enhanced APIs enable reliable fork detection, chain validation, and recovery with DLT mode, emergency consensus, HF12 fork comparison, gap-based protection, and automatic chain linking awareness. Performance controls keep resource usage manageable while improving synchronization reliability, network health, and consensus stability during emergency conditions. The sophisticated early rejection logic and block validation mechanisms prevent infinite synchronization loops and system degradation, ensuring robust operation under various network conditions. The separate handling paths for linear extensions vs actual fork switches improve efficiency by avoiding unnecessary operations. The detailed debug logging with FORK-SWITCH-POP and FORK-RECOVER-POP prefixes provides excellent traceability for troubleshooting and monitoring fork resolution operations. **NEW**: The comprehensive diagnostic monitoring system provides real-time insights into fork database storage statistics, enabling proactive optimization and issue detection. The diagnostic accessors offer O(1) access to critical storage metrics including linked/unlinked index sizes and block number ranges, facilitating informed capacity planning and performance tuning. The P2P monitoring integration delivers comprehensive analytics for storage health, DLT coverage gaps, and synchronization performance, ensuring optimal system operation under varying network conditions.
 
 ## Appendices
 
@@ -1272,7 +1272,7 @@ Common issues and remedies:
   - **New**: Diagnostic accessors: O(1) access to storage statistics with comprehensive metrics
 - **New**: database compare_fork_branches():
   - O(B) where B = number of blocks in longer branch
-  - Calculates vote weights for each unique witness
+  - Calculates vote weights for each unique validator
   - Applies +10% bonus to longer chain
   - Returns comparison result (-1, 0, or 1)
 - **New**: database early rejection logic:
@@ -1287,7 +1287,7 @@ Common issues and remedies:
   - truncate_before: O(n) for window compaction with safe file swapping
 - **New**: Emergency consensus configuration:
   - CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC: 3600 seconds (1 hour) timeout threshold
-  - CHAIN_EMERGENCY_WITNESS_ACCOUNT: Emergency witness account name ("committee")
+  - CHAIN_EMERGENCY_WITNESS_ACCOUNT: Emergency validator account name ("committee")
   - CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY: Deterministic emergency signing key
   - CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS: 21 blocks to trigger emergency mode exit
   - Hardfork version: CHAIN_HARDFORK_12 (version 3.1.0)
@@ -1297,11 +1297,11 @@ Common issues and remedies:
   - Gap handling: O(1) logging suppression with periodic re-enabling
 - **New**: Emergency mode integration:
   - Activation detection: O(1) timestamp comparison for timeout checks
-  - Hybrid scheduling: O(N) override of all witness slots to emergency witness
-  - Penalty reset: O(N) iteration through all witnesses for penalty clearing
+  - Hybrid scheduling: O(N) override of all validator slots to emergency validator
+  - Penalty reset: O(N) iteration through all validators for penalty clearing
 - **New**: HF12 fork comparison:
   - Vote-weighted comparison: O(B) where B = number of blocks in longer branch
-  - Unique witness counting: O(W) where W = number of unique witnesses per branch
+  - Unique validator counting: O(W) where W = number of unique validators per branch
   - +10% bonus application: O(1) constant time operation
 - **New**: Two-level fork collision resolution:
   - Level 1 timeout: O(1) constant time comparison
@@ -1338,7 +1338,7 @@ Common issues and remedies:
 - [config.hpp:110-124](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L124)
 - [database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
 - [database.cpp:2125-2142](file://libraries/chain/database.cpp#L2125-L2142)
-- [witness.cpp:597-612](file://plugins/witness/witness.cpp#L597-L612)
+- [validator.cpp:597-612](file://plugins/validator/validator.cpp#L597-L612)
 - [p2p_plugin.cpp:739-760](file://plugins/p2p/p2p_plugin.cpp#L739-L760)
 
 ### Appendix B: Emergency Consensus Configuration Parameters
@@ -1346,8 +1346,8 @@ Common issues and remedies:
 
 Emergency consensus parameters:
 - **Timeout threshold**: CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC (default: 3600 seconds)
-- **Emergency witness account**: CHAIN_EMERGENCY_WITNESS_ACCOUNT (default: "committee")
-- **Emergency witness key**: CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY (deterministic emergency key)
+- **Emergency validator account**: CHAIN_EMERGENCY_WITNESS_ACCOUNT (default: "committee")
+- **Emergency validator key**: CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY (deterministic emergency key)
 - **Exit condition**: CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS (default: 21 blocks)
 - **Hardfork version**: CHAIN_HARDFORK_12 (version 3.1.0)
 - **Activation time**: CHAIN_HARDFORK_12_TIME (Unix timestamp for HF12 activation)
@@ -1396,7 +1396,7 @@ Exception handling strategies:
 - [fork_database.cpp:59-75](file://libraries/chain/fork_database.cpp#L59-L75)
 - [database.cpp:1300-1399](file://libraries/chain/database.cpp#L1300-L1399)
 - [database.cpp:1390-1465](file://libraries/chain/database.cpp#L1390-L1465)
-- [witness.cpp:614-646](file://plugins/witness/witness.cpp#L614-L646)
+- [validator.cpp:614-646](file://plugins/validator/validator.cpp#L614-L646)
 
 ### Appendix D: Diagnostic Accessors Usage Examples
 **New Section** Practical examples of using diagnostic accessors for monitoring and troubleshooting fork database storage statistics.

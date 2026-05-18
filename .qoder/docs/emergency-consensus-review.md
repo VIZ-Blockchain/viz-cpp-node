@@ -1,4 +1,4 @@
-# Emergency Consensus Recovery — Implementation Review
+﻿# Emergency Consensus Recovery — Implementation Review
 
 ## Status: Implemented (Hardfork 12, version 3.1.0) — Bugs Found and Fixed (B1–B17)
 
@@ -8,11 +8,11 @@ Research source: [consensus-emergency-recovery.md](../research/consensus-emergen
 
 ## System Overview
 
-Hardfork 12 adds an on-chain **Emergency Consensus Mode** that activates automatically when the VIZ network stalls for >1 hour (no LIB advancement). The activation check is fully deterministic — it uses only block timestamps from the chain state (`b.timestamp - lib_block.timestamp`), ensuring identical results on every node and during every replay. A well-known committee key (`VIZ75CRHVHPwYiUESy1bgN3KhVFbZCQQRA9jT6TnpzKAmpxMPD6Xv`) becomes the block producer, keeping the chain alive until real witnesses return.
+Hardfork 12 adds an on-chain **Emergency Consensus Mode** that activates automatically when the VIZ network stalls for >1 hour (no LIB advancement). The activation check is fully deterministic — it uses only block timestamps from the chain state (`b.timestamp - lib_block.timestamp`), ensuring identical results on every node and during every replay. A well-known committee key (`VIZ75CRHVHPwYiUESy1bgN3KhVFbZCQQRA9jT6TnpzKAmpxMPD6Xv`) becomes the block producer, keeping the chain alive until real validators return.
 
-On activation, **all real witnesses are disabled** (`signing_key` set to null, penalties reset to zero, `current_run` reset). Only the committee produces blocks initially. Operators must manually re-enable witnesses via `witness_update_operation` transactions. This ensures a clean start where only intentionally re-registered witnesses participate.
+On activation, **all real validators are disabled** (`signing_key` set to null, penalties reset to zero, `current_run` reset). Only the committee produces blocks initially. Operators must manually re-enable validators via `witness_update_operation` transactions. This ensures a clean start where only intentionally re-registered validators participate.
 
-The committee witness is a **neutral voter**: it copies the current median chain properties and votes for the currently applied hardfork version (not a future one). This ensures that committee slots in the schedule don't skew governance parameters or push unvoted hardforks.
+The committee validator is a **neutral voter**: it copies the current median chain properties and votes for the currently applied hardfork version (not a future one). This ensures that committee slots in the schedule don't skew governance parameters or push unvoted hardforks.
 
 ### Key Files Modified
 
@@ -24,7 +24,7 @@ The committee witness is a **neutral voter**: it copies the current median chain
 | `libraries/chain/database.cpp` | Activation, hybrid schedule, LIB advancement (capped), startup recovery, vote-weighted fork comparison |
 | `libraries/chain/include/graphene/chain/fork_database.hpp` | Emergency mode flag, size increase 1024→2400 |
 | `libraries/chain/fork_database.cpp` | Hash tie-breaking, `set_emergency_mode()` |
-| `plugins/witness/witness.cpp` | Three-state safety, emergency key config, fork collision |
+| `plugins/validator/validator.cpp` | Three-state safety, emergency key config, fork collision |
 | `libraries/network/include/graphene/network/peer_connection.hpp` | `fork_rejected_until` soft-ban field, `sync_spam_strikes` counter |
 | `libraries/network/node.cpp` | P2P anti-spam (soft-ban vs disconnect), sync ping-pong loop fix, sync spam soft-ban |
 | `plugins/snapshot/plugin.cpp` | Forward-compatible DGP import |
@@ -52,8 +52,8 @@ The committee witness is a **neutral voter**: it copies the current median chain
                     │           ≥ 3600?              │
                     │           ├── YES ─────────────│── Activate Emergency
                     │           │                   │   • emergency_consensus_active = true
-                    │           │                   │   • Create/update committee witness
-                    │           │                   │   • Disable ALL real witnesses
+                    │           │                   │   • Create/update committee validator
+                    │           │                   │   • Disable ALL real validators
                     │           │                   │     (signing_key = null, penalties = 0)
                     │           │                   │   • Override schedule → committee
                     │           │                   │   • next_shuffle_block_num = now+N
@@ -68,9 +68,9 @@ The committee witness is a **neutral voter**: it copies the current median chain
                     │                               │
                     │  1. Normal schedule build      │
                     │     (may zero all slots if no  │
-                    │      witnesses have valid keys) │
+                    │      validators have valid keys) │
                     │  2. Hybrid schedule override:  │
-                    │     • Real witnesses keep slots │
+                    │     • Real validators keep slots │
                     │     • Committee fills gaps      │
                     │     • Expand to full 21 slots   │
                     │     • Sync committee props/vote │
@@ -94,7 +94,7 @@ The committee witness is a **neutral voter**: it copies the current median chain
                     │ update_last_irreversible_block│
                     │                               │
                     │  During emergency:            │
-                    │   • All schedule witnesses    │
+                    │   • All schedule validators    │
                     │     used (including committee) │
                     │   • 75% nth_element threshold  │
                     │   • LIB capped at HEAD−1      │
@@ -129,27 +129,27 @@ The committee witness is a **neutral voter**: it copies the current median chain
 **Special case — snapshot restore**: After `open_from_snapshot()`, the block_log is empty, so `fetch_block_by_number(LIB)` returns invalid. If we fell back to `genesis_time`, emergency would activate immediately. This is now prevented: when the LIB block is unavailable, the emergency check is skipped entirely (B7 fix).
 
 **If it happens** (legitimate false activation):
-1. Emergency activates, all real witnesses are **disabled** (`signing_key` zeroed).
+1. Emergency activates, all real validators are **disabled** (`signing_key` zeroed).
 2. Committee produces blocks alone initially.
-3. Since all witnesses had valid keys before, operators quickly re-register via `witness_update_operation`.
-4. Once **16+ real witnesses** (75% of 21) have re-registered with valid signing keys in the hybrid schedule, **emergency exits automatically**.
-5. **Manual intervention required**: operators must re-register witnesses via transactions.
+3. Since all validators had valid keys before, operators quickly re-register via `witness_update_operation`.
+4. Once **16+ real validators** (75% of 21) have re-registered with valid signing keys in the hybrid schedule, **emergency exits automatically**.
+5. **Manual intervention required**: operators must re-register validators via transactions.
 
-**Worst case**: If all 21 witness operators are available, recovery takes as fast as they can broadcast `witness_update_operation` transactions.
+**Worst case**: If all 21 validator operators are available, recovery takes as fast as they can broadcast `witness_update_operation` transactions.
 
 ### F2: Emergency Exit Does Not Trigger
 
-**When**: Emergency is active but the exit condition (75% real witnesses in schedule) never becomes true.
+**When**: Emergency is active but the exit condition (75% real validators in schedule) never becomes true.
 
-**Root cause**: Fewer than 75% of the 21 schedule slots (i.e., <16) are occupied by real witnesses with valid `signing_key`. Since all witnesses are disabled on activation, operators must manually re-enable them.
+**Root cause**: Fewer than 75% of the 21 schedule slots (i.e., <16) are occupied by real validators with valid `signing_key`. Since all validators are disabled on activation, operators must manually re-enable them.
 
 **Recovery procedure**:
-1. **Check how many witnesses are active**: `get_dynamic_global_properties` → `participation_count`, plus inspect `witness_schedule` to see how many non-committee slots exist.
-2. **Activate more witnesses**: Each witness operator re-registers via `witness_update_operation` from CLI wallet or service. The witness only needs a valid `signing_key` — the hybrid schedule will automatically assign their slot on the next schedule update.
-3. **No config changes needed**: The `enable-stale-production` and `required-participation` settings are auto-bypassed during emergency. Witnesses just need to be connected to P2P and have their signing key registered.
-4. **Threshold**: Once 16+ witnesses have valid signing keys in the schedule, emergency exits on the next `update_witness_schedule()` call.
+1. **Check how many validators are active**: `get_dynamic_global_properties` → `participation_count`, plus inspect `witness_schedule` to see how many non-committee slots exist.
+2. **Activate more validators**: Each validator operator re-registers via `witness_update_operation` from CLI wallet or service. The validator only needs a valid `signing_key` — the hybrid schedule will automatically assign their slot on the next schedule update.
+3. **No config changes needed**: The `enable-stale-production` and `required-participation` settings are auto-bypassed during emergency. validators just need to be connected to P2P and have their signing key registered.
+4. **Threshold**: Once 16+ validators have valid signing keys in the schedule, emergency exits on the next `update_witness_schedule()` call.
 
-**If witnesses cannot re-register** (e.g., lost master keys): The network remains in emergency mode indefinitely but still produces blocks. Governance intervention (committee proposals) would be needed to resolve witness account recovery.
+**If validators cannot re-register** (e.g., lost master keys): The network remains in emergency mode indefinitely but still produces blocks. Governance intervention (committee proposals) would be needed to resolve validator account recovery.
 
 ### F3: Committee Chain Split (Multiple Emergency Producers)
 
@@ -157,13 +157,13 @@ The committee witness is a **neutral voter**: it copies the current median chain
 
 **Why this is expected and handled**:
 1. **Hash tie-breaking** (`fork_database::_push_block()`): When two blocks are at the same height during emergency, the one with the lower `block_id` (SHA256 hash) wins deterministically. All nodes converge to the same block within 1 P2P propagation round.
-2. **Fork collision check** (`witness.cpp`): After the first slot, nodes detect that a competing block already exists at the target height and skip production. This reduces multi-producer collisions to a transient 1–2 slot artifact.
-3. **No permanent split**: Because all emergency blocks use the same `committee` witness account and the schedule is identical on all nodes, there is no ongoing disagreement. Convergence is guaranteed within seconds.
+2. **Fork collision check** (`validator.cpp`): After the first slot, nodes detect that a competing block already exists at the target height and skip production. This reduces multi-producer collisions to a transient 1–2 slot artifact.
+3. **No permanent split**: Because all emergency blocks use the same `committee` validator account and the schedule is identical on all nodes, there is no ongoing disagreement. Convergence is guaranteed within seconds.
 
 **If a persistent split occurs** (e.g., network partition during emergency):
 - LIB is 1 block behind head on all partitions → most emergency blocks are irreversible.
 - When partitions reconnect, **vote-weighted chain comparison** (`push_block()`) resolves the fork:
-  - Branches with real witnesses (non-committee) win over pure-committee branches.
+  - Branches with real validators (non-committee) win over pure-committee branches.
   - Among branches with only committee blocks, the longer chain wins, with hash tie-breaking as the final tiebreaker.
 - The losing partition unwinds its reversible blocks and syncs from the winner.
 
@@ -177,32 +177,32 @@ The committee witness is a **neutral voter**: it copies the current median chain
 
 **Remaining risk**: If a bug prevents LIB from advancing despite the cap, the old failure mode would resurface. The startup recovery mechanism (B12) provides an additional safety net.
 
-### F5: Witnesses Disabled On Emergency Activation
+### F5: validators Disabled On Emergency Activation
 
-**When**: On emergency activation, **all real witnesses are disabled**: `signing_key` is set to `public_key_type()` (null), `penalty_percent` reset to 0, `counted_votes` restored to `votes`, `current_run` reset to 0. All `witness_penalty_expire_object` entries are removed.
+**When**: On emergency activation, **all real validators are disabled**: `signing_key` is set to `public_key_type()` (null), `penalty_percent` reset to 0, `counted_votes` restored to `votes`, `current_run` reset to 0. All `witness_penalty_expire_object` entries are removed.
 
 **Emergency behavior**:
-1. On activation, **all real witnesses are immediately disabled** by zeroing their `signing_key`. This is intentional — it ensures a clean start where only the committee produces blocks. Operators must explicitly re-register witnesses.
-2. **During emergency, offline witnesses do NOT accumulate new missed-block penalties**. The `update_global_dynamic_data()` penalty/shutdown logic is skipped for witnesses that are not the block producer and not the committee account.
-3. Witnesses must broadcast `witness_update_operation` to re-register their signing key.
+1. On activation, **all real validators are immediately disabled** by zeroing their `signing_key`. This is intentional — it ensures a clean start where only the committee produces blocks. Operators must explicitly re-register validators.
+2. **During emergency, offline validators do NOT accumulate new missed-block penalties**. The `update_global_dynamic_data()` penalty/shutdown logic is skipped for validators that are not the block producer and not the committee account.
+3. validators must broadcast `witness_update_operation` to re-register their signing key.
 
-**Recovery**: Emergency blocks **allow transactions** (not forced empty). So witnesses can:
+**Recovery**: Emergency blocks **allow transactions** (not forced empty). So validators can:
 1. Connect their node to the P2P network.
 2. Use CLI wallet or web services to broadcast `witness_update_operation` with their signing key.
 3. The transaction enters the next emergency block.
-4. On the next schedule update, the witness gets their slot back in the hybrid schedule.
+4. On the next schedule update, the validator gets their slot back in the hybrid schedule.
 
-**This is intentional**: Disabling all witnesses on activation ensures that only intentionally re-registered witnesses participate. This prevents stale/crashed witnesses from being included in the schedule and causing production failures.
+**This is intentional**: Disabling all validators on activation ensures that only intentionally re-registered validators participate. This prevents stale/crashed validators from being included in the schedule and causing production failures.
 
 ---
 
 ## Bugs Found and Fixed
 
-The following bugs were discovered during code review of the emergency consensus implementation, specifically for the scenario of **1 node running 11 top witnesses** with other witnesses expected to join later.
+The following bugs were discovered during code review of the emergency consensus implementation, specifically for the scenario of **1 node running 11 top validators** with other validators expected to join later.
 
 ### B1 (Critical): Hybrid Schedule Doesn't Expand `num_scheduled_witnesses`
 
-**Problem**: `update_witness_schedule()` sets `num_scheduled_witnesses` to the count of witnesses with valid signing keys (e.g., 11). The hybrid override loop only iterated up to `num_scheduled_witnesses`, so empty slots at indices 11-20 were never visited and never assigned to committee. After the first schedule round, committee disappeared from production entirely.
+**Problem**: `update_witness_schedule()` sets `num_scheduled_witnesses` to the count of validators with valid signing keys (e.g., 11). The hybrid override loop only iterated up to `num_scheduled_witnesses`, so empty slots at indices 11-20 were never visited and never assigned to committee. After the first schedule round, committee disappeared from production entirely.
 
 **Fix**: The hybrid override now iterates the full `CHAIN_MAX_WITNESSES` range, reads entries beyond `num_scheduled_witnesses` as empty, assigns committee to all empty/unavailable slots, and sets `num_scheduled_witnesses = CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT`.
 
@@ -210,33 +210,33 @@ The following bugs were discovered during code review of the emergency consensus
 
 **Problem**: With `CHAIN_BLOCK_WITNESS_REPEAT = 1`, the hardfork vote tally iterates every schedule slot. Committee filling 10 slots caused `get_witness("committee")` to be called 10 times, incrementing the committee's vote count by 10. The committee's default `hardfork_version_vote = 0.0.0` dominated the tally and blocked any hardfork from reaching `CHAIN_HARDFORK_REQUIRED_WITNESSES = 17`.
 
-**Fix**: The hardfork vote tally now skips `CHAIN_EMERGENCY_WITNESS_ACCOUNT` during emergency mode. Only real witnesses' votes count toward hardfork adoption.
+**Fix**: The hardfork vote tally now skips `CHAIN_EMERGENCY_WITNESS_ACCOUNT` during emergency mode. Only real validators' votes count toward hardfork adoption.
 
 ### B3 (High): Committee Skews Median Chain Properties
 
 **Problem**: `update_median_witness_props()` collected all schedule entries including 10 committee copies. The committee's default `chain_properties` (zero fees, zero sizes, zero penalties) skewed the median, enabling spam attacks and removing miss penalties.
 
 **Fix** (two-part):
-1. The committee witness is initialized with `props = median_props` (current median), and re-synced every schedule update. This makes committee entries neutral — they reinforce the existing median rather than distorting it.
-2. As defense-in-depth, `update_median_witness_props()` skips committee entries during emergency mode. This ensures the median reflects only real witnesses' preferences.
+1. The committee validator is initialized with `props = median_props` (current median), and re-synced every schedule update. This makes committee entries neutral — they reinforce the existing median rather than distorting it.
+2. As defense-in-depth, `update_median_witness_props()` skips committee entries during emergency mode. This ensures the median reflects only real validators' preferences.
 
-### B4 (High): Offline Witnesses Accumulate Penalties During Emergency
+### B4 (High): Offline validators Accumulate Penalties During Emergency
 
-**Problem**: When committee produced a block, the `missed_blocks` loop in `update_global_dynamic_data()` applied penalties to offline witnesses for every missed slot. After 200 missed blocks (~10 minutes), their `signing_key` was set to null again — the same problem that emergency activation's penalty reset tried to solve.
+**Problem**: When committee produced a block, the `missed_blocks` loop in `update_global_dynamic_data()` applied penalties to offline validators for every missed slot. After 200 missed blocks (~10 minutes), their `signing_key` was set to null again — the same problem that emergency activation's penalty reset tried to solve.
 
 **Fix** (consensus-based, deterministic): During emergency mode, the penalty/shutdown logic is split:
-- **Skipped**: `total_missed++`, `penalty_percent` increment, and `counted_votes` recalculation for offline witnesses. Only `current_run` is reset.
-- **Applied (consensus check)**: Key-blanking uses `head_block_num() - last_confirmed_block_num > CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS` (105 blocks = 5 full rounds). Both `head_block_num()` and `last_confirmed_block_num` are on-chain consensus fields stored in `witness_object` shared memory, so all nodes compute identical results. This replaces the old non-consensus approach that used a local `_emergency_round_start_gap` map (which could diverge between nodes). The threshold (105) is tighter than the normal-mode threshold (200) because real witnesses should re-enable faster during emergency recovery.
+- **Skipped**: `total_missed++`, `penalty_percent` increment, and `counted_votes` recalculation for offline validators. Only `current_run` is reset.
+- **Applied (consensus check)**: Key-blanking uses `head_block_num() - last_confirmed_block_num > CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS` (105 blocks = 5 full rounds). Both `head_block_num()` and `last_confirmed_block_num` are on-chain consensus fields stored in `witness_object` shared memory, so all nodes compute identical results. This replaces the old non-consensus approach that used a local `_emergency_round_start_gap` map (which could diverge between nodes). The threshold (105) is tighter than the normal-mode threshold (200) because real validators should re-enable faster during emergency recovery.
 
-### B5 (Medium): Committee Could Be Selected as Top/Support Witness
+### B5 (Medium): Committee Could Be Selected as Top/Support validator
 
-**Problem**: The top/support witness selection iterated by `counted_votes`. If the committee witness ever received votes, it could compete for a production slot, displacing a real witness.
+**Problem**: The top/support validator selection iterated by `counted_votes`. If the committee validator ever received votes, it could compete for a production slot, displacing a real validator.
 
-**Fix**: Both top and support witness selection loops now explicitly exclude `CHAIN_EMERGENCY_WITNESS_ACCOUNT`.
+**Fix**: Both top and support validator selection loops now explicitly exclude `CHAIN_EMERGENCY_WITNESS_ACCOUNT`.
 
 ### B6 (Medium): Committee Hardfork Vote Auto-Injected via Block Extensions
 
-**Problem**: `_generate_block()` auto-injects a `hardfork_version_vote` extension when the witness's on-chain vote doesn't match the binary's configured next hardfork. For the committee witness (which votes for `current_hardfork_version`), this extension overwrote the on-chain vote to the next hardfork version via `process_header_extensions()`, defeating the neutral-voter design.
+**Problem**: `_generate_block()` auto-injects a `hardfork_version_vote` extension when the validator's on-chain vote doesn't match the binary's configured next hardfork. For the committee validator (which votes for `current_hardfork_version`), this extension overwrote the on-chain vote to the next hardfork version via `process_header_extensions()`, defeating the neutral-voter design.
 
 **Fix**: When the block producer is the emergency committee, hardfork vote auto-injection is skipped entirely. The committee's on-chain vote stays at `current_hardfork_version` and is re-synced every schedule update.
 
@@ -246,9 +246,9 @@ The following bugs were discovered during code review of the emergency consensus
 
 The false activation triggers catastrophic side effects:
 1. Schedule overridden to all-committee, but `next_shuffle_block_num` not updated → hybrid override can't run until the next shuffle boundary.
-2. Blocks from real witnesses (via p2p) are rejected because the schedule expects `committee` → `head_block_num()` doesn't advance.
+2. Blocks from real validators (via p2p) are rejected because the schedule expects `committee` → `head_block_num()` doesn't advance.
 3. `next_shuffle_block_num` is never reached → **deadlock: the node permanently stops syncing**. Probability: ~20/21 (~95%) depending on how close the next shuffle was.
-4. Side effects: all witness penalties reset, committee witness object created, consensus state corrupted.
+4. Side effects: all validator penalties reset, committee validator object created, consensus state corrupted.
 
 **Fix** (two-part):
 1. When `lib_block` is not found (block_log empty after snapshot restore), `lib_time_available` stays `false` and the emergency check is skipped entirely. Emergency cannot activate without a valid LIB timestamp.
@@ -270,24 +270,24 @@ When a peer on a stale fork sends an unlinkable block at or below our head block
 1. In the `unlinkable_block_exception` catch handler, compare the peer's block number against our head. If the block is at or below our head, the peer is on a stale fork — soft-ban for 1 hour and set `inhibit_fetching_sync_blocks = true`. If the block is ahead of us, resync is justified (keep original behavior).
 2. Remove the dead `unlinkable_block_exception::code_enum::code_value` check from the `fc::exception` handler, leaving only the `block_num <= head` comparison for the soft-ban decision.
 
-### B10 (Critical): All Real Witnesses Must Be Disabled On Emergency Activation
+### B10 (Critical): All Real validators Must Be Disabled On Emergency Activation
 
-**Problem**: When emergency consensus activated, real witnesses retained their `signing_key` values. If they had valid signing keys but were offline, the hybrid schedule assigned them slots — but they could never produce blocks at those slots. The schedule had a mix of online committee and offline real witnesses, making block production unreliable.
+**Problem**: When emergency consensus activated, real validators retained their `signing_key` values. If they had valid signing keys but were offline, the hybrid schedule assigned them slots — but they could never produce blocks at those slots. The schedule had a mix of online committee and offline real validators, making block production unreliable.
 
-**Fix**: On emergency activation, **all real witnesses are immediately disabled**: `signing_key` set to `public_key_type()` (null), `penalty_percent` reset to 0, `counted_votes` restored to `votes`, `current_run` reset to 0. All `witness_penalty_expire_object` entries are removed. This ensures the initial schedule is all-committee (100% available). Operators must explicitly re-register witnesses via `witness_update_operation` transactions.
+**Fix**: On emergency activation, **all real validators are immediately disabled**: `signing_key` set to `public_key_type()` (null), `penalty_percent` reset to 0, `counted_votes` restored to `votes`, `current_run` reset to 0. All `witness_penalty_expire_object` entries are removed. This ensures the initial schedule is all-committee (100% available). Operators must explicitly re-register validators via `witness_update_operation` transactions.
 
 ### B11 (Critical): Schedule Crash — `get_witness("")` on Empty Schedule
 
-**Problem**: During emergency, the normal schedule build in `update_witness_schedule()` iterates all witnesses but skips any with null `signing_key`. Since B10 zeroes all keys, `sum_witnesses_count = 0` → all 21 slots are set to `account_name_type()` (empty string). The execution order was:
+**Problem**: During emergency, the normal schedule build in `update_witness_schedule()` iterates all validators but skips any with null `signing_key`. Since B10 zeroes all keys, `sum_witnesses_count = 0` → all 21 slots are set to `account_name_type()` (empty string). The execution order was:
 1. `modify(wso, ...)` — builds normal schedule (all slots zeroed)
 2. `update_median_witness_props()` — iterates schedule, calls `get_witness("")` → **crash: `unknown key`**
 3. Emergency hybrid override — would have filled empty slots with committee, but runs too late
 
-**Fix**: Moved the emergency hybrid schedule override to execute **before** `update_median_witness_props()`. The hybrid override fills empty/unavailable slots with committee first, so by the time `update_median_witness_props()` runs, all 21 slots contain valid witness names.
+**Fix**: Moved the emergency hybrid schedule override to execute **before** `update_median_witness_props()`. The hybrid override fills empty/unavailable slots with committee first, so by the time `update_median_witness_props()` runs, all 21 slots contain valid validator names.
 
 ### B12 (Critical): Permanently Corrupted Schedule After LIB=HEAD Commit
 
-**Problem**: During emergency, all 21 schedule slots point to the same committee witness. LIB computation via `nth_element` yields `last_supported_block_num == HEAD`. In `_apply_block`, the execution order is:
+**Problem**: During emergency, all 21 schedule slots point to the same committee validator. LIB computation via `nth_element` yields `last_supported_block_num == HEAD`. In `_apply_block`, the execution order is:
 1. `update_last_irreversible_block()` (line ~4455) — calls `commit(HEAD)`, which **destroys the undo session** for the current block
 2. `update_witness_schedule()` (line ~4466) — zeros all slots (pre-B11 fix), then crashes at `get_witness("")`
 
@@ -300,7 +300,7 @@ Since `commit(HEAD)` already consumed the undo session, the zeroed schedule from
 
 ### B13 (Critical): Stack Buffer Overflow in `get_block_post_validations()`
 
-**Problem**: During emergency mode, the committee account fills 18 of 21 schedule slots. `get_block_post_validations()` iterates all `block_post_validation_object` entries and matches each against the schedule. For each match, it writes an entry to a fixed-size array of `CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT = 20`. With the committee occupying 18 slots, each validation object generates up to 18 matches — a single object with its matching witnesses could write up to 18 entries per iteration. With 20 objects, this produced up to 360 writes into a 20-element array, causing a stack buffer overflow and silent segfault.
+**Problem**: During emergency mode, the committee account fills 18 of 21 schedule slots. `get_block_post_validations()` iterates all `block_post_validation_object` entries and matches each against the schedule. For each match, it writes an entry to a fixed-size array of `CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT = 20`. With the committee occupying 18 slots, each validation object generates up to 18 matches — a single object with its matching validators could write up to 18 entries per iteration. With 20 objects, this produced up to 360 writes into a 20-element array, causing a stack buffer overflow and silent segfault.
 
 **Fix** (two-part):
 1. **Bounds check**: Break the inner loop when the result array reaches `CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT`.
@@ -322,23 +322,23 @@ Since `commit(HEAD)` already consumed the undo session, the zeroed schedule from
 3. After 50 strikes, set `fork_rejected_until = now + 300s` (5 minute soft-ban). Reset strikes on legitimate sync (peer genuinely ahead).
 4. At the observed spam rate (~23 requests per 4ms burst), the threshold is hit in under 1 second.
 
-### B16 (High): Null Witness Signing Key Crashes Block Validation
+### B16 (High): Null validator Signing Key Crashes Block Validation
 
-**Problem**: When a witness has a null/empty `signing_key` (disabled via `shutdown_witness_operation` or emergency activation), and a block from that witness arrives via P2P, `validate_block_header()` calls `validate_signee(witness.signing_key)` with the empty key. The elliptic curve library crashes with `my->_key != empty_pub` deep inside `serialize()` — an opaque assertion that gives no indication of the root cause. The node then enters an infinite retry loop: gap fill requests the same block, receives it, rejects it with the crash, requests it again.
+**Problem**: When a validator has a null/empty `signing_key` (disabled via `shutdown_witness_operation` or emergency activation), and a block from that validator arrives via P2P, `validate_block_header()` calls `validate_signee(validator.signing_key)` with the empty key. The elliptic curve library crashes with `my->_key != empty_pub` deep inside `serialize()` — an opaque assertion that gives no indication of the root cause. The node then enters an infinite retry loop: gap fill requests the same block, receives it, rejects it with the crash, requests it again.
 
 **Fix** (two parts):
-1. **Clear error message**: Added a pre-check in `validate_block_header()` before `validate_signee()` that catches `witness.signing_key == public_key_type()` and throws a descriptive `FC_ASSERT` naming the witness and block number.
+1. **Clear error message**: Added a pre-check in `validate_block_header()` before `validate_signee()` that catches `validator.signing_key == public_key_type()` and throws a descriptive `FC_ASSERT` naming the validator and block number.
 2. **Gap fill blacklist**: Added rejection tracking in the DLT P2P node. When the same block is rejected 3 times (from any combination of broadcast + gap fill), gap fill is blacklisted for 120 seconds, breaking the infinite retry loop.
 
-### B17 (Critical): Emergency Witness Blanking Was Non-Consensus
+### B17 (Critical): Emergency validator Blanking Was Non-Consensus
 
-**Problem**: The emergency witness blanking logic in `update_witness_schedule()` used `_emergency_round_start_gap` — a local `std::map` that is NOT consensus state. It was populated at runtime and not stored in shared memory. Different nodes could compute different values depending on startup timing, replay history, and when they entered emergency mode. This meant two nodes could reach different conclusions about whether to blank a witness's signing key, causing chain divergence.
+**Problem**: The emergency validator blanking logic in `update_witness_schedule()` used `_emergency_round_start_gap` — a local `std::map` that is NOT consensus state. It was populated at runtime and not stored in shared memory. Different nodes could compute different values depending on startup timing, replay history, and when they entered emergency mode. This meant two nodes could reach different conclusions about whether to blank a validator's signing key, causing chain divergence.
 
 **Fix**: Replaced the non-consensus approach with the same deterministic pattern used in normal mode. Key-blanking now happens in `update_global_dynamic_data()` (the consensus path) and checks `head_block_num() - last_confirmed_block_num > CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS` (105). Both values are on-chain consensus fields in `witness_object` shared memory — all nodes compute identical results. Removed `_emergency_round_start_gap` entirely.
 
 ### Committee Neutral Voter Design
 
-After all fixes, the committee witness has these properties:
+After all fixes, the committee validator has these properties:
 
 | Field | Value | Rationale |
 |---|---|---|
@@ -370,11 +370,11 @@ VIZ75CRHVHPwYiUESy1bgN3KhVFbZCQQRA9jT6TnpzKAmpxMPD6Xv
 - Config template (`config_witness.ini`)
 - Documentation
 
-Any node running the witness plugin with `emergency-private-key` configured will attempt to produce blocks during emergency mode. This is by design — the goal is maximum availability during a network stall, not access control.
+Any node running the Validator Plugin with `emergency-private-key` configured will attempt to produce blocks during emergency mode. This is by design — the goal is maximum availability during a network stall, not access control.
 
 ### How Many Nodes Have It
 
-In practice: **every public witness node** should have it configured. During emergency:
+In practice: **every public validator node** should have it configured. During emergency:
 - Multiple nodes may attempt to produce at the same slot.
 - Hash tie-breaking (lowest `block_id` wins) ensures deterministic convergence.
 - Fork collision check causes all but one node to back off after the first slot.
@@ -386,7 +386,7 @@ In practice: **every public witness node** should have it configured. During eme
 
 | Attack | Impact | Mitigation |
 |---|---|---|
-| Attacker produces emergency blocks during normal operation | **None.** Emergency mode only activates when `seconds_since_lib >= 3600`. During normal operation, the schedule does not contain `committee`, so the attacker's blocks are invalid (wrong scheduled witness). | Consensus-level gating |
+| Attacker produces emergency blocks during normal operation | **None.** Emergency mode only activates when `seconds_since_lib >= 3600`. During normal operation, the schedule does not contain `committee`, so the attacker's blocks are invalid (wrong scheduled validator). | Consensus-level gating |
 | Attacker produces blocks during real emergency | Blocks are valid but **compete equally** with other emergency producers. Hash tie-breaking resolves conflicts deterministically. The attacker cannot produce *more* blocks than any other node with the key. | Hash tie-breaking + fork collision check |
 | Attacker produces blocks with invalid transactions | **Rejected.** Full consensus validation still applies to emergency blocks. Invalid operations, double-spends, etc. are caught by `apply_block()`. | Standard block validation |
 | Attacker floods P2P with emergency blocks | **Mitigated.** P2P anti-spam (`fork_rejected_until`) soft-bans peers sending blocks on rejected forks for 15 minutes (5 minutes for trusted peers). Sync request spam is detected separately: 50 repeated competing-fork sync requests trigger a 5-minute soft-ban, silently discarding further requests. Fork collision check limits production to 1 block per slot. After soft-ban expires, `inhibit_fetching_sync_blocks` is automatically reset (B8 fix) so the peer remains available for sync. | P2P soft-ban + sync spam ban + fork collision + auto-reset |
@@ -402,8 +402,8 @@ In practice: **every public witness node** should have it configured. During eme
 ### Can Emergency Produce Non-Empty Blocks?
 
 **Yes, and this is required.** Emergency blocks must allow transactions because:
-1. Witnesses need to broadcast `witness_update_operation` to re-register their signing key during recovery.
-2. If emergency blocks were forced empty, witnesses couldn't re-activate → deadlock where emergency never exits.
+1. validators need to broadcast `witness_update_operation` to re-register their signing key during recovery.
+2. If emergency blocks were forced empty, validators couldn't re-activate → deadlock where emergency never exits.
 3. In practice, most emergency blocks will be empty (low transaction volume during a stall), but the mechanism **must not** prohibit transactions.
 
 ### Summary
@@ -414,7 +414,7 @@ The emergency key is a **public coordination mechanism**, not a secret. Its secu
 - **Snapshot safety**: When LIB block is unavailable (post-snapshot restore), emergency check is skipped to prevent false activation
 - **Convergence**: Hash tie-breaking + fork collision → single effective producer
 - **Validation**: Full consensus rules apply to emergency blocks
-- **Deactivation**: Automatic when 75% (16/21) of schedule slots are real witnesses with valid signing keys
+- **Deactivation**: Automatic when 75% (16/21) of schedule slots are real validators with valid signing keys
 - **Scope**: Delegates can immediately re-activate through wallets/services once their nodes reconnect to the P2P network, because the emergency chain is public and accepts transactions
 
 ---
@@ -427,35 +427,35 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 
 | | |
 |---|---|
-| **Precondition** | 21 witnesses active, network healthy |
-| **Action** | Shut down all 21 witnesses. Wait >1 hour. Start 1 node with emergency key. Gradually restart witnesses. |
-| **Expected** | Emergency activates at LIB+3600s. All real witnesses disabled (signing_key zeroed). Committee produces blocks (full 21-slot schedule). LIB advances every block (capped at HEAD−1). Offline witnesses do NOT accumulate penalties. Committee props synced to median, hardfork vote synced to current version. Witnesses re-register via `witness_update_operation`. When 16+ real witnesses have valid signing keys in schedule (75%) → emergency exits automatically. |
-| **Components** | Activation, witness disabling, hybrid schedule (full expansion), LIB advancement (capped at HEAD−1), penalty skip, committee neutral voter, exit condition (75% real witnesses) |
+| **Precondition** | 21 validators active, network healthy |
+| **Action** | Shut down all 21 validators. Wait >1 hour. Start 1 node with emergency key. Gradually restart validators. |
+| **Expected** | Emergency activates at LIB+3600s. All real validators disabled (signing_key zeroed). Committee produces blocks (full 21-slot schedule). LIB advances every block (capped at HEAD−1). Offline validators do NOT accumulate penalties. Committee props synced to median, hardfork vote synced to current version. validators re-register via `witness_update_operation`. When 16+ real validators have valid signing keys in schedule (75%) → emergency exits automatically. |
+| **Components** | Activation, validator disabling, hybrid schedule (full expansion), LIB advancement (capped at HEAD−1), penalty skip, committee neutral voter, exit condition (75% real validators) |
 
 ### T2: 2-Way Partition (Majority/Minority)
 
 | | |
 |---|---|
-| **Precondition** | 21 witnesses, healthy network |
-| **Action** | Partition: 16 witnesses on side A, 5 on side B. |
-| **Expected** | Side A: participation >75% → continues normally, no emergency. Side B: participation drops to ~24% → production stops (below 33% threshold). After 1 hour, emergency activates on side B. On reconnect, side A's chain wins (higher vote weight from 16 real witnesses). Side B unwinds emergency blocks. |
+| **Precondition** | 21 validators, healthy network |
+| **Action** | Partition: 16 validators on side A, 5 on side B. |
+| **Expected** | Side A: participation >75% → continues normally, no emergency. Side B: participation drops to ~24% → production stops (below 33% threshold). After 1 hour, emergency activates on side B. On reconnect, side A's chain wins (higher vote weight from 16 real validators). Side B unwinds emergency blocks. |
 | **Components** | Three-state safety (healthy vs distressed), vote-weighted comparison, fork resolution |
 
 ### T3: 2-Way Partition (Even Split, Both Enter Emergency)
 
 | | |
 |---|---|
-| **Precondition** | 21 witnesses, healthy network |
-| **Action** | Partition: 10 witnesses on A, 11 on B. Neither side has 75% → both stall. Wait 1 hour → both enter emergency. Reconnect after 2 hours. |
-| **Expected** | Both sides produce emergency+hybrid blocks. LIB advances (capped at HEAD−1) on both. On reconnect, vote-weighted comparison: side with higher total `votes` wins. Losing side unwinds. Emergency exits when 16+ real witnesses have valid keys in the merged schedule. |
+| **Precondition** | 21 validators, healthy network |
+| **Action** | Partition: 10 validators on A, 11 on B. Neither side has 75% → both stall. Wait 1 hour → both enter emergency. Reconnect after 2 hours. |
+| **Expected** | Both sides produce emergency+hybrid blocks. LIB advances (capped at HEAD−1) on both. On reconnect, vote-weighted comparison: side with higher total `votes` wins. Losing side unwinds. Emergency exits when 16+ real validators have valid keys in the merged schedule. |
 | **Components** | LIB advancement (capped), vote-weighted comparison, fork_db expansion, partition merge |
 
 ### T4: 3-Way Partition
 
 | | |
 |---|---|
-| **Precondition** | 21 witnesses, healthy network |
-| **Action** | Partition into 3 groups: 7+7+7 witnesses. All stall → all enter emergency. Reconnect sequentially (A↔B first, then AB↔C). |
+| **Precondition** | 21 validators, healthy network |
+| **Action** | Partition into 3 groups: 7+7+7 validators. All stall → all enter emergency. Reconnect sequentially (A↔B first, then AB↔C). |
 | **Expected** | Each partition produces emergency blocks independently. LIB advances (capped at HEAD−1) on all. First merge (A↔B): vote-weighted comparison picks winner. Second merge (AB↔C): vote-weighted comparison again. Final chain has highest cumulative vote weight. |
 | **Components** | Multi-partition merge, vote-weighted comparison, cascading fork resolution, LIB advancement (capped) |
 
@@ -463,10 +463,10 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 
 | | |
 |---|---|
-| **Precondition** | Emergency active for 2 hours. 10 witnesses already back. |
-| **Action** | Witness #11 comes online with stale chain (2 hours behind). |
-| **Expected** | Peer syncs from the emergency chain. Once synced, witness re-registers via `witness_update_operation`. Their slot appears in hybrid schedule on next update. Witness produces at its assigned slot. LIB on the emergency chain is at HEAD−1, so only 1 reversible block exists — sync is fast. |
-| **Components** | P2P sync during emergency, hybrid schedule, LIB advancement (capped), witness re-registration |
+| **Precondition** | Emergency active for 2 hours. 10 validators already back. |
+| **Action** | validator #11 comes online with stale chain (2 hours behind). |
+| **Expected** | Peer syncs from the emergency chain. Once synced, validator re-registers via `witness_update_operation`. Their slot appears in hybrid schedule on next update. validator produces at its assigned slot. LIB on the emergency chain is at HEAD−1, so only 1 reversible block exists — sync is fast. |
+| **Components** | P2P sync during emergency, hybrid schedule, LIB advancement (capped), validator re-registration |
 
 ### T6: Conflicting Emergency Producers
 
@@ -481,18 +481,18 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 
 | | |
 |---|---|
-| **Precondition** | All witnesses offline. Emergency active. |
+| **Precondition** | All validators offline. Emergency active. |
 | **Action** | Let emergency run for 8+ hours (well beyond old undo limit). |
 | **Expected** | LIB advances every block (capped at HEAD−1), so HEAD−LIB gap stays at exactly 1. fork_db size stays at 2 blocks. Emergency runs indefinitely without hitting any undo limits. No degradation over time. |
 | **Components** | LIB advancement (capped at HEAD−1), fork_db sizing, indefinite emergency operation |
 
-### T8: Witness Shutdown + Re-registration During Emergency
+### T8: validator Shutdown + Re-registration During Emergency
 
 | | |
 |---|---|
-| **Precondition** | Emergency active. All witnesses had `signing_key` nullified by missed-block shutdown. |
-| **Action** | Witness operator broadcasts `witness_update_operation` via CLI wallet during emergency. |
-| **Expected** | Transaction included in emergency block. Witness object updated with new signing key. Next schedule update: witness gets their slot in hybrid schedule instead of committee. Witness begins producing. Offline witnesses do NOT get `signing_key` nullified again during emergency (penalty/shutdown skipped). |
+| **Precondition** | Emergency active. All validators had `signing_key` nullified by missed-block shutdown. |
+| **Action** | validator operator broadcasts `witness_update_operation` via CLI wallet during emergency. |
+| **Expected** | Transaction included in emergency block. validator object updated with new signing key. Next schedule update: validator gets their slot in hybrid schedule instead of committee. validator begins producing. Offline validators do NOT get `signing_key` nullified again during emergency (penalty/shutdown skipped). |
 | **Components** | Transaction processing during emergency, hybrid schedule update, penalty skip during emergency |
 
 ### T9: Snapshot Restore + Emergency Interaction
@@ -500,7 +500,7 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 | | |
 |---|---|
 | **Precondition** | Snapshot taken during emergency mode (`emergency_consensus_active = true`). |
-| **Action** | Restore snapshot on a fresh node. Start node with witness plugin and emergency key. |
+| **Action** | Restore snapshot on a fresh node. Start node with Validator Plugin and emergency key. |
 | **Expected** | Snapshot import reads `emergency_consensus_active` and `emergency_consensus_start_block` from DGP (forward-compatible). Node resumes in emergency mode. Produces emergency blocks. Standard exit condition applies. **No false activation**: block_log is empty after snapshot restore, so `fetch_block_by_number(LIB)` returns invalid, but the emergency check is skipped (not triggered by fallback to genesis_time). |
 | **Components** | Snapshot import (forward-compatible fields), emergency state persistence, B7 fix (no false activation on empty block_log) |
 
@@ -517,36 +517,36 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 
 | | |
 |---|---|
-| **Precondition** | HF12 active. All 21 witnesses online. Network healthy. |
-| **Action** | Normal operation for extended period. Occasional witness restarts. |
-| **Expected** | Emergency never activates (LIB advances every few seconds). Three-state safety: healthy mode enforces safe defaults regardless of `enable-stale-production` config. Vote-weighted comparison active but functionally equivalent to longest-chain (same witnesses on both sides of any micro-fork). Committee exclusion in hardfork tally and median props is a no-op (committee not in schedule). |
+| **Precondition** | HF12 active. All 21 validators online. Network healthy. |
+| **Action** | Normal operation for extended period. Occasional validator restarts. |
+| **Expected** | Emergency never activates (LIB advances every few seconds). Three-state safety: healthy mode enforces safe defaults regardless of `enable-stale-production` config. Vote-weighted comparison active but functionally equivalent to longest-chain (same validators on both sides of any micro-fork). Committee exclusion in hardfork tally and median props is a no-op (committee not in schedule). |
 | **Components** | No-regression, three-state safety (healthy mode), vote-weighted comparison |
 
 ### T12: `enable-stale-production` Ignored in Healthy Mode
 
 | | |
 |---|---|
-| **Precondition** | HF12 active. All witnesses online. Operator has `enable-stale-production = true` (forgot to revert from pre-HF12). |
-| **Action** | Network partition isolates this witness. |
-| **Expected** | Participation rate ≥33% → healthy mode → `enable-stale-production` is **ignored**. Witness stops producing when it detects it's isolated (no recent blocks). **This is the core micro-fork prevention feature.** |
+| **Precondition** | HF12 active. All validators online. Operator has `enable-stale-production = true` (forgot to revert from pre-HF12). |
+| **Action** | Network partition isolates this validator. |
+| **Expected** | Participation rate ≥33% → healthy mode → `enable-stale-production` is **ignored**. validator stops producing when it detects it's isolated (no recent blocks). **This is the core micro-fork prevention feature.** |
 | **Components** | Three-state safety (healthy mode auto-enforces safe defaults) |
 
-### T13: Partial Witness Set (11 Top Witnesses on 1 Node)
+### T13: Partial validator Set (11 Top validators on 1 Node)
 
 | | |
 |---|---|
-| **Precondition** | Network stalled >1 hour. 1 node with 11 top witnesses + emergency key. 10 other witnesses offline. |
-| **Action** | Emergency activates. 11 real witnesses produce at their slots. Committee fills the other 10 slots. Over time, other witnesses re-join. |
-| **Expected** | All witnesses initially disabled (signing_key zeroed). 11 witnesses re-register via `witness_update_operation`. Hybrid schedule expands to full 21 slots (11 real + 10 committee). Committee witness has `props = median_props` and `hardfork_version_vote = current_hardfork_version` — neutral voter. Hardfork vote tally excludes committee (only 11 real votes counted). Median props computed from real witnesses only. Offline witnesses don't accumulate penalties. When 16+ real witnesses have valid signing keys in schedule (75% of 21) → emergency exits automatically. |
-| **Components** | Witness disabling, hybrid schedule expansion, committee neutral voter, hardfork tally exclusion, median props exclusion, penalty skip, exit condition (75% real witnesses) |
+| **Precondition** | Network stalled >1 hour. 1 node with 11 top validators + emergency key. 10 other validators offline. |
+| **Action** | Emergency activates. 11 real validators produce at their slots. Committee fills the other 10 slots. Over time, other validators re-join. |
+| **Expected** | All validators initially disabled (signing_key zeroed). 11 validators re-register via `witness_update_operation`. Hybrid schedule expands to full 21 slots (11 real + 10 committee). Committee validator has `props = median_props` and `hardfork_version_vote = current_hardfork_version` — neutral voter. Hardfork vote tally excludes committee (only 11 real votes counted). Median props computed from real validators only. Offline validators don't accumulate penalties. When 16+ real validators have valid signing keys in schedule (75% of 21) → emergency exits automatically. |
+| **Components** | validator disabling, hybrid schedule expansion, committee neutral voter, hardfork tally exclusion, median props exclusion, penalty skip, exit condition (75% real validators) |
 
 ### T14: Committee Hardfork Vote Neutrality
 
 | | |
 |---|---|
-| **Precondition** | Emergency active. Binary version includes a pending hardfork (e.g., HF13) that has not been applied on-chain yet. 11 real witnesses running HF13 binary. |
+| **Precondition** | Emergency active. Binary version includes a pending hardfork (e.g., HF13) that has not been applied on-chain yet. 11 real validators running HF13 binary. |
 | **Action** | Committee produces blocks. Verify committee's on-chain `hardfork_version_vote` stays at the current applied version. |
-| **Expected** | Committee's block headers do NOT contain `hardfork_version_vote` extensions. `process_header_extensions()` does not update the committee's on-chain vote. Committee vote stays at `current_hardfork_version` (e.g., HF12). Only real witnesses' votes count toward HF13 adoption (need 17 of them). Committee props/hardfork vote re-synced every schedule update. |
+| **Expected** | Committee's block headers do NOT contain `hardfork_version_vote` extensions. `process_header_extensions()` does not update the committee's on-chain vote. Committee vote stays at `current_hardfork_version` (e.g., HF12). Only real validators' votes count toward HF13 adoption (need 17 of them). Committee props/hardfork vote re-synced every schedule update. |
 | **Components** | Hardfork vote auto-injection skip, process_header_extensions, committee props sync |
 
 ### T15: Snapshot Restore Does Not False-Activate Emergency
@@ -555,7 +555,7 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 |---|---|
 | **Precondition** | Network healthy. Snapshot taken from a healthy state (`emergency_consensus_active = false`). |
 | **Action** | Restore snapshot on a fresh node (block_log empty). Start syncing from p2p. |
-| **Expected** | First block from p2p: `fetch_block_by_number(LIB)` returns invalid (block_log empty). `lib_time_available = false`. Emergency check is **skipped**. Node processes the block normally. No false activation, no committee witness created, no penalties reset. Node syncs normally. |
+| **Expected** | First block from p2p: `fetch_block_by_number(LIB)` returns invalid (block_log empty). `lib_time_available = false`. Emergency check is **skipped**. Node processes the block normally. No false activation, no committee validator created, no penalties reset. Node syncs normally. |
 | **Components** | B7 fix (lib_time_available guard), snapshot restore, block_log interaction |
 
 ### T16: Soft-Ban `inhibit_fetching_sync_blocks` Reset After Expiry
@@ -571,7 +571,7 @@ All scenarios should be tested before deployment. Each test specifies preconditi
 
 | | |
 |---|---|
-| **Precondition** | Node crashed during emergency with corrupted schedule (all empty witness slots in shared memory). |
+| **Precondition** | Node crashed during emergency with corrupted schedule (all empty validator slots in shared memory). |
 | **Action** | Restart the node. |
 | **Expected** | `database::open()` detects empty slots in schedule. Fills all 21 slots with committee. Sets `emergency_consensus_active = true` if not already set. Restores `fork_db.set_emergency_mode(true)`. Node resumes producing emergency blocks. LIB advances normally (capped at HEAD−1). |
 | **Components** | Startup recovery (B12), schedule repair, fork_db flag restoration |

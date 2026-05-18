@@ -1,10 +1,10 @@
-# Witness Plugin Documentation
+﻿# Validator Plugin Documentation
 
 ## Overview
 
-The witness plugin is responsible for block production in the VIZ blockchain. It manages witness scheduling, block signing, broadcast, and implements sophisticated safety mechanisms including minority fork detection, emergency consensus support, and production watchdog recovery.
+The validator plugin is responsible for block production in the VIZ blockchain. It manages validator scheduling, block signing, broadcast, and implements sophisticated safety mechanisms including minority fork detection, emergency consensus support, and production watchdog recovery.
 
-**Location:** `plugins/witness/witness.cpp`, `plugins/witness/include/graphene/plugins/witness/witness.hpp`
+**Location:** `plugins/validator/validator.cpp`, `plugins/validator/include/graphene/plugins/validator/validator.hpp`
 
 ---
 
@@ -15,16 +15,16 @@ The witness plugin is responsible for block production in the VIZ blockchain. It
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `enable-stale-production` | bool | false | Enable block production even if the chain is stale. Overrides sync and participation checks. |
-| `required-participation` | uint32_t | 33% (33 * CHAIN_1_PERCENT) | Minimum witness participation percentage required to produce blocks. |
-| `witness` / `-w` | string (multi) | - | Name of witness controlled by this node. Can be specified multiple times. |
+| `required-participation` | uint32_t | 33% (33 * CHAIN_1_PERCENT) | Minimum validator participation percentage required to produce blocks. |
+| `validator` / `-w` | string (multi) | - | Name of validator controlled by this node. Can be specified multiple times. |
 | `private-key` | string (WIF, multi) | - | WIF private key(s) for signing blocks. |
-| `emergency-private-key` | string (WIF, multi) | - | WIF private key for emergency consensus production. Auto-adds `CHAIN_EMERGENCY_WITNESS_ACCOUNT` to witness set. |
+| `emergency-private-key` | string (WIF, multi) | - | WIF private key for emergency consensus production. Auto-adds `CHAIN_EMERGENCY_WITNESS_ACCOUNT` to validator set. |
 
 ### Fork Collision Resolution
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `fork-collision-timeout-blocks` | uint32_t | 21 | Number of consecutive fork-collision deferrals before forcing production. One full witness round = 21 blocks (63 seconds). |
+| `fork-collision-timeout-blocks` | uint32_t | 21 | Number of consecutive fork-collision deferrals before forcing production. One full validator round = 21 blocks (63 seconds). |
 
 ### NTP Synchronization
 
@@ -52,8 +52,8 @@ The witness plugin is responsible for block production in the VIZ blockchain. It
 APPBASE_PLUGIN_REQUIRES((chain::plugin) (p2p::p2p_plugin) (snapshot::snapshot_plugin))
 ```
 
-The witness plugin requires:
-- **chain::plugin**: Access to database, fork_db, witness schedule, block generation
+The validator plugin requires:
+- **chain::plugin**: Access to database, fork_db, validator schedule, block generation
 - **p2p::p2p_plugin**: Block broadcast, sync status, peer connections, snapshot pause detection
 - **snapshot::snapshot_plugin**: Query snapshot creation status via `is_snapshot_in_progress()`
 
@@ -69,9 +69,9 @@ The witness plugin requires:
 
 ### Production Control
 - `_production_skip_flags` (uint32_t): Flags passed to `generate_block()` (e.g., `skip_undo_history_check`)
-- `_required_witness_participation` (uint32_t): Participation threshold from config
+- `_required_validator_participation` (uint32_t): Participation threshold from config
 - `_private_keys` (map<public_key, private_key>): Loaded private keys for signing
-- `_witnesses` (set<string>): Configured witness names (includes `CHAIN_EMERGENCY_WITNESS_ACCOUNT` if emergency key configured)
+- `_validators` (set<string>): Configured validator names (includes `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` if emergency key configured)
 - `_last_lag_slot_time` (fc::time_point_sec): Scheduled time of the most recent `lag` condition. Zero when no lag is active. Used by `schedule_production_loop()` to skip ahead past the missed slot and avoid rechecking it every 250ms.
 
 ### Fork Detection & Recovery
@@ -83,9 +83,9 @@ The witness plugin requires:
 ### Stall Detection
 - `_slot_zero_streak` (uint32_t): Consecutive `not_time_yet` returns (NTP/clock issues)
 - `_slot_zero_streak_start` (fc::time_point): When slot=0 streak started
-- `_not_my_turn_streak` (uint32_t): Consecutive slots assigned to other witnesses
+- `_not_my_turn_streak` (uint32_t): Consecutive slots assigned to other validators
 - `_not_my_turn_streak_start` (fc::time_point): When not_my_turn streak started
-- `_last_scheduled_witness` (string): Last witness that got the slot
+- `_last_scheduled_validator` (string): Last validator that got the slot
 
 ### Watchdog & Diagnostics
 - `_ever_produced` (bool): Whether we've ever produced a block
@@ -107,7 +107,7 @@ The witness plugin requires:
 
 **Actions:**
 1. Create `impl` instance
-2. Load witness names from `--witness` option into `_witnesses` set
+2. Load validator names from `--validator` option into `_witnesses` set
 3. Load `--enable-stale-production` flag → sets `skip_undo_history_check` in `_production_skip_flags` if true
 4. Load `--required-participation` → `_required_witness_participation`
 5. Parse `--private-key` WIF strings → `_private_keys` map
@@ -127,7 +127,7 @@ The witness plugin requires:
 **Actions:**
 1. Start NTP time client: `graphene::time::now()`
 2. **Force NTP sync**: `graphene::time::update_ntp_time()` to minimize startup drift
-3. Log witness configuration (count, names)
+3. Log validator configuration (count, names)
 4. If `_witnesses` is not empty:
    - Call `p2p().set_block_production(true)` to enable P2P block production mode
    - Connect to `database::applied_block` signal → `on_block_applied()` handler
@@ -135,7 +135,7 @@ The witness plugin requires:
    - If `skip_undo_history_check` set in `_production_skip_flags` (from `--enable-stale-production`):
      - If `head_block_num() == 0`: Print new chain banner
    - **Start production loop**: `schedule_production_loop()`
-5. If no witnesses configured: Log error message
+5. If no validators configured: Log error message
 
 ---
 
@@ -144,7 +144,7 @@ The witness plugin requires:
 
 **Actions:**
 1. Shutdown NTP: `graphene::time::shutdown_ntp_time()`
-2. Cancel production timer if witnesses configured
+2. Cancel production timer if validators configured
 
 ---
 
@@ -229,7 +229,7 @@ if (!_minority_fork_recovering && !_witnesses.empty()) {
 ```
 
 - Emergency master: 60s threshold
-- Regular witness: 180s threshold
+- Regular validator: 180s threshold
 - Logs every 30s once triggered
 - **WATCHDOG-RECOVERY**: If conditions met (head advancing < 30s, not syncing, has peers, has active keys):
   - Clear `_minority_fork_recovering`
@@ -280,7 +280,7 @@ if (db._dlt_mode && chain().is_syncing()) {
 - If emergency consensus active AND we have emergency key → production proceeds
 - **Why:** Master is sole producer; waiting for sync would deadlock (no blocks arrive to clear syncing flag)
 
-**Outside DLT mode:** This check is NOT applied. Normal witnesses must produce on canonical head even while network catching up.
+**Outside DLT mode:** This check is NOT applied. Normal validators must produce on canonical head even while network catching up.
 
 ---
 
@@ -307,7 +307,7 @@ if (p2p().is_catching_up_after_pause()) {
 1. **Snapshot in progress**: snapshot plugin holds DB read lock; producing would cause write-lock starvation
 2. **P2P catchup after pause**: snapshot finished, but queued blocks haven't drained yet; producing on stale head → fork
 
-**Applies to:** ALL witness types (emergency and normal)
+**Applies to:** ALL validator types (emergency and normal)
 
 **Flag cleared when:**
 - `snapshot_in_progress`: Cleared by snapshot plugin on completion
@@ -402,17 +402,17 @@ if (db.get_slot_time(1) < now) {
 if(last_block_post_validation_time < now_fine) {
     last_block_post_validation_time = now;
     // Build scheduled_witnesses_set from witness_schedule_object
-    // For each witness in _witnesses:
+    // For each validator in _witnesses:
     //   - Skip if not in current schedule
     //   - Get block_post_validations from database
-    //   - Sign with witness private key
+    //   - Sign with validator private key
     //   - Broadcast via p2p().broadcast_block_post_validation()
 }
 ```
 
-**What it does:** Signs and broadcasts post-validation messages for scheduled witnesses to contribute to LIB advancement.
+**What it does:** Signs and broadcasts post-validation messages for scheduled validators to contribute to LIB advancement.
 
-**Optimization:** Skips witnesses not in current schedule (can't contribute to LIB).
+**Optimization:** Skips validators not in current schedule (can't contribute to LIB).
 
 ---
 
@@ -422,7 +422,7 @@ if(last_block_post_validation_time < now_fine) {
 if (!dgp.emergency_consensus_active) {
     auto fork_head = db.get_fork_db().head();
     // Walk back CHAIN_MAX_WITNESSES (21) blocks in fork_db
-    // If ALL from our witnesses → minority fork
+    // If ALL from our validators → minority fork
     if (all_ours && blocks_checked >= CHAIN_MAX_WITNESSES) {
         if (_production_skip_flags & skip_undo_history_check) {
             // enable-stale-production: continue
@@ -448,7 +448,7 @@ if (dgp.emergency_consensus_active && db._dlt_mode) {
     // Check if we are emergency master
     bool we_are_master = false;
     if (_witnesses.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT) != _witnesses.end()) {
-        // Check if committee is in current witness schedule
+        // Check if committee is in current validator schedule
         const witness_schedule_object &wso = db.get_witness_schedule_object();
         for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
             if (wso.current_shuffled_witnesses[i] == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
@@ -460,7 +460,7 @@ if (dgp.emergency_consensus_active && db._dlt_mode) {
 
     if (!we_are_master) {
         // Slave DLT node: run fork_db isolation scan
-        // If last 21 blocks all from our witnesses → isolated from master
+        // If last 21 blocks all from our validators → isolated from master
         p2p().resync_from_lib(true /*force_emergency*/);
         _minority_fork_recovering = true;
         return minority_fork;
@@ -481,7 +481,7 @@ if (dgp.emergency_consensus_active && db._dlt_mode) {
 auto op_guard = db.make_operation_guard();
 ```
 
-**Why:** Guards lockless reads into shared memory against concurrent resize. Prevents pointer invalidation while reading witness schedule, slot time, etc.
+**Why:** Guards lockless reads into shared memory against concurrent resize. Prevents pointer invalidation while reading validator schedule, slot time, etc.
 
 **Stall detection:** If guard blocks > 100ms, logs warning. If crosses slot boundary and we lost our slot → critical error.
 
@@ -508,7 +508,7 @@ if (_witnesses.find(scheduled_witness) == _witnesses.end()) {
 
 ---
 
-##### Step 10: Witness Validation (Line ~1563)
+##### Step 10: validator Validation (Line ~1563)
 
 ```cpp
 const auto &witness_by_name = db.get_index<witness_index>().indices().get<by_name>();
@@ -522,7 +522,7 @@ if (scheduled_time <= db.head_block_time()) {
     return not_time_yet;  // Slot filled during/after snapshot pause
 }
 
-// Check if witness disabled (zero key)
+// Check if validator disabled (zero key)
 if (scheduled_key == public_key_type()) {
     // Log warning (every 60s for regular, 3s for emergency)
     return not_my_turn;
@@ -535,7 +535,7 @@ if (private_key_itr == _private_keys.end()) {
 }
 ```
 
-**Slot already filled check:** Critical for snapshot pause scenario. Another witness may have filled the slot during pause.
+**Slot already filled check:** Critical for snapshot pause scenario. Another validator may have filled the slot during pause.
 
 ---
 
@@ -577,7 +577,7 @@ auto existing_blocks = db.get_fork_db().fetch_block_by_number(db.head_block_num(
 if (existing_blocks.size() > 0) {
     // Determine if competing block exists
     // Emergency mode: ANY block at this height is competing
-    // Normal mode: only different witness + different parent
+    // Normal mode: only different validator + different parent
 
     if (has_competing_block) {
         fork_collision_defer_count_++;
@@ -614,7 +614,7 @@ if (existing_blocks.size() > 0) {
 1. **Vote-weighted comparison** (HF12+): Compare fork branches by accumulated vote weight
 2. **Stuck-head timeout** (all versions): After 21 deferrals (63s), assume competing block is on dead fork
 
-**Why 21 blocks:** One full witness round. If head hasn't advanced after 21 slots, longer chain had all scheduled witnesses produce → canonical chain confirmed.
+**Why 21 blocks:** One full validator round. If head hasn't advanced after 21 slots, longer chain had all scheduled validators produce → canonical chain confirmed.
 
 ---
 
@@ -683,15 +683,15 @@ if (database()._dlt_mode && !_witnesses.empty()
         uint64_t slot_idx = dgp.current_aslot % nsw;
         const std::string& expected_witness = wso.current_shuffled_witnesses[slot_idx];
 
-        // True hijack: expected slot is ours AND actual producer is not one of our witnesses
+        // True hijack: expected slot is ours AND actual producer is not one of our validators
         if (_witnesses.count(expected_witness) > 0
-            && _witnesses.count(block.witness) == 0) {
+            && _witnesses.count(block.validator) == 0) {
             _slot_hijack_count++;  // Committee / emergency master filled our slot
             // Log first 3 hijacks, then once per minute
-        } else if (_witnesses.count(block.witness) > 0) {
-            // ANY of our witnesses produced → reset (false-positive guard)
+        } else if (_witnesses.count(block.validator) > 0) {
+            // ANY of our validators produced → reset (false-positive guard)
             if (_slot_hijack_count > 0) {
-                ilog("Hijack counter reset: our witness '${w}' produced...", ...);
+                ilog("Hijack counter reset: our validator '${w}' produced...", ...);
             }
             _slot_hijack_count = 0;
         }
@@ -699,9 +699,9 @@ if (database()._dlt_mode && !_witnesses.empty()
 }
 ```
 
-**What it detects:** In DLT emergency mode, the emergency master may blank our witness's signing_key and fill our scheduled slots with committee blocks.
+**What it detects:** In DLT emergency mode, the emergency master may blank our validator's signing_key and fill our scheduled slots with committee blocks.
 
-**Important:** The reset condition checks `_witnesses.count(block.witness) > 0` — i.e., ANY of our configured witnesses produced the block, not just the slot-assigned one. Without this, a legitimate block from a different one of our witnesses would be mis-counted as a hijack.
+**Important:** The reset condition checks `_witnesses.count(block.validator) > 0` — i.e., ANY of our configured validators produced the block, not just the slot-assigned one. Without this, a legitimate block from a different one of our validators would be mis-counted as a hijack.
 
 ---
 
@@ -711,7 +711,7 @@ if (database()._dlt_mode && !_witnesses.empty()
 if (block_num > prev_num + 1) {
     uint32_t missed_count = block_num - prev_num - 1;
 
-    // Calculate which witnesses were scheduled for missed slots
+    // Calculate which validators were scheduled for missed slots
     for (uint32_t i = 0; i < missed_count && i < 100; ++i) {
         uint64_t abs_slot = cur_aslot - missed_count + i;
         const std::string &wname = wso.current_shuffled_witnesses[abs_slot % num_witnesses];
@@ -724,14 +724,14 @@ if (block_num > prev_num + 1) {
         // Dump full diagnostic state:
         // - Production flags, NTP offset, sync status
         // - On-chain signing key status (blanked?)
-        // - Next slot time, scheduled witness
+        // - Next slot time, scheduled validator
         // - Streak counters
-        elog("MISSED-SLOT-OUR-WITNESS: ...");
+        elog("MISSED-SLOT-OUR-validator: ...");
     }
 }
 ```
 
-**Why check missed slots:** When incoming blocks reveal gaps, determines if our witness was scheduled for any missed slots and logs full diagnostic state for troubleshooting.
+**Why check missed slots:** When incoming blocks reveal gaps, determines if our validator was scheduled for any missed slots and logs full diagnostic state for troubleshooting.
 
 ---
 
@@ -739,19 +739,19 @@ if (block_num > prev_num + 1) {
 
 ### `is_witness_scheduled_soon()`
 
-**Returns:** `true` if locally-controlled witness is scheduled to produce in next 4 slots (~12 seconds)
+**Returns:** `true` if locally-controlled validator is scheduled to produce in next 4 slots (~12 seconds)
 
 **Implementation:**
 1. Check 4 upcoming slots (covers snapshot creation time ~10s + safety margin)
 2. For each slot:
-   - Get scheduled witness name
+   - Get scheduled validator name
    - Check if in `_witnesses` set
-   - Look up witness object in database
+   - Look up validator object in database
    - Check if signing key is non-zero
    - Check if we have corresponding private key
 3. Return `true` if any match found
 
-**Used by:** Snapshot plugin to defer snapshot creation when witness about to produce (avoids fork on stale head)
+**Used by:** Snapshot plugin to defer snapshot creation when validator about to produce (avoids fork on stale head)
 
 ---
 
@@ -761,7 +761,7 @@ if (block_num > prev_num + 1) {
 
 **Conditions:**
 1. Holds `emergency-private-key` (`CHAIN_EMERGENCY_WITNESS_ACCOUNT` in `_witnesses`)
-2. Committee account is in current witness schedule
+2. Committee account is in current validator schedule
 
 **Why both conditions:** Multiple nodes can have emergency key, but only the one where committee is scheduled should produce solo. Others are followers that must sync.
 
@@ -784,7 +784,7 @@ if (block_num > prev_num + 1) {
 
 **Returns:** Compact diagnostic string with key production-state flags
 
-**Format:** `witness[skip_flags=0x0 catching_up=0 head=#123 last_prod=45s_ago minority_rcv=0 slot_hijacks=2]`
+**Format:** `validator[skip_flags=0x0 catching_up=0 head=#123 last_prod=45s_ago minority_rcv=0 slot_hijacks=2]`
 
 **Used by:** P2P layer when FORWARD stagnation fires with no peer ahead, so stagnation log shows why master isn't filling gap.
 
@@ -814,8 +814,8 @@ if (block_num > prev_num + 1) {
    - HF12+: Vote-weighted comparison (Level 1) + timeout (Level 2)
 
 5. **Block post validation**:
-   - Pre-HF12: LIB advancement via 2/3 witness signatures
-   - HF12+: LIB advancement via witness participation rate, emergency mode disables post-validation chain
+   - Pre-HF12: LIB advancement via 2/3 validator signatures
+   - HF12+: LIB advancement via validator participation rate, emergency mode disables post-validation chain
 
 ---
 
@@ -828,10 +828,10 @@ if (block_num > prev_num + 1) {
 - `db.get_slot_at_time(now)` — determine if slot available
 - `db.get_scheduled_witness(slot)` — who should produce
 - `db.get_slot_time(slot)` — scheduled slot time
-- `db.get_witness_schedule_object()` — shuffled witness list, num_scheduled_witnesses
+- `db.get_witness_schedule_object()` — shuffled validator list, num_scheduled_witnesses
 - `db.head_block_num()`, `db.head_block_time()` — current chain state
 - `db.get_fork_db().head()`, `db.get_fork_db().fetch_block_by_number()` — fork detection
-- `db.get_index<witness_index>().indices().get<by_name>().find()` — witness signing key status
+- `db.get_index<witness_index>().indices().get<by_name>().find()` — validator signing key status
 - `db.witness_participation_rate()` — network health check
 - `db.has_hardfork(CHAIN_HARDFORK_12)` — feature gate
 
@@ -847,12 +847,12 @@ if (block_num > prev_num + 1) {
 ### Does NOT cache results
 
 **All database reads are fresh on every call:**
-- No caching of witness schedule
+- No caching of validator schedule
 - No caching of DGP state
 - No caching of fork_db state
 - No caching of signing key status
 
-**Why:** State changes every block (emergency mode can activate/deactivate, witness schedule changes, signing keys can be blanked). Caching would create race conditions and stale decisions.
+**Why:** State changes every block (emergency mode can activate/deactivate, validator schedule changes, signing keys can be blanked). Caching would create race conditions and stale decisions.
 
 **Exception:** `_witnesses` set and `_private_keys` map are loaded once during `plugin_initialize()` and never refreshed (operator must restart to change configuration).
 
@@ -923,7 +923,7 @@ bool snapshot_plugin::is_snapshot_in_progress() const {
 
 **Called by:** Snapshot plugin in `on_applied_block()` before scheduling snapshot
 
-**Why:** Defer snapshot if witness about to produce (~12s window). Producing during snapshot → read-lock contention, producing after on stale head → fork.
+**Why:** Defer snapshot if validator about to produce (~12s window). Producing during snapshot → read-lock contention, producing after on stale head → fork.
 
 ---
 
@@ -939,12 +939,12 @@ bool snapshot_plugin::is_snapshot_in_progress() const {
 [maybe_produce_block()]
   ├─→ not_synced (DLT sync, snapshot pause)
   ├─→ not_time_yet (slot=0, NTP drift, slot already filled)
-  ├─→ not_my_turn (witness disabled, wrong witness scheduled)
+  ├─→ not_my_turn (validator disabled, wrong validator scheduled)
   ├─→ no_private_key (missing key)
   ├─→ low_participation (< 33%, no override)
   ├─→ lag (> 500ms past slot time)
   ├─→ fork_collision (competing block, defer)
-  ├─→ minority_fork (21 blocks from our witnesses, rollback to LIB)
+  ├─→ minority_fork (21 blocks from our validators, rollback to LIB)
   └─→ produced (success, broadcast block)
 ```
 
@@ -953,7 +953,7 @@ bool snapshot_plugin::is_snapshot_in_progress() const {
 ## Critical Safety Mechanisms
 
 ### 1. Minority Fork Detection
-- **Trigger:** Last 21 blocks in fork_db all from our witnesses
+- **Trigger:** Last 21 blocks in fork_db all from our validators
 - **Action:** Rollback to LIB, resync from P2P network
 - **Override:** `enable-stale-production=true`
 - **Emergency mode:** Skipped (committee blocks would always trigger), DLT-specific check for slaves
@@ -964,13 +964,13 @@ bool snapshot_plugin::is_snapshot_in_progress() const {
 - **Emergency mode:** ANY competing block triggers defer
 
 ### 3. Network Partition Guard
-- **Trigger:** Witness participation < 33%
+- **Trigger:** validator participation < 33%
 - **Action:** Stop production (return `low_participation`)
 - **Override:** `enable-stale-production=true` for bootstrap/recovery
 
 ### 4. Slot Already Filled Guard
 - **Trigger:** `scheduled_time <= head_block_time()`
-- **Why:** Another witness filled slot during/after snapshot pause
+- **Why:** Another validator filled slot during/after snapshot pause
 - **Action:** Skip production (return `not_time_yet`)
 
 ### 5. Production Watchdog
@@ -1001,7 +1001,7 @@ bool snapshot_plugin::is_snapshot_in_progress() const {
 4. **Emergency master must always produce:** Sole producer, waiting = deadlock
 5. **Slave nodes must sync first:** Producing on stale head = minority fork
 6. **Participation < 33% = stop production:** Network partition guard (unless override)
-7. **21 consecutive blocks from our witnesses = minority fork:** Rollback to LIB
+7. **21 consecutive blocks from our validators = minority fork:** Rollback to LIB
 8. **All database reads are fresh:** No caching, state changes every block
 
 ---
@@ -1013,7 +1013,7 @@ bool snapshot_plugin::is_snapshot_in_progress() const {
 **Check logs for:**
 - `not_synced`: DLT sync active or snapshot pause → wait for sync/pause to complete
 - `not_time_yet`: NTP drift or slot=0 → check NTP offset in logs
-- `not_my_turn`: Wrong witness scheduled or key blanked → check `keys=[...]` in watchdog log
+- `not_my_turn`: Wrong validator scheduled or key blanked → check `keys=[...]` in watchdog log
 - `no_private_key`: Missing private key → check config
 - `low_participation`: Network participation < 33% → set `enable-stale-production=true`
 - `fork_collision`: Competing block → wait for resolution (21 blocks max)
@@ -1042,7 +1042,7 @@ bool snapshot_plugin::is_snapshot_in_progress() const {
 
 **Check:**
 1. Is emergency key configured? → `--emergency-private-key`
-2. Is committee in witness schedule? → Check `witness_schedule_object`
+2. Is committee in validator schedule? → Check `witness_schedule_object`
 3. Is NTP synchronized? → Check NTP offset
 4. Is sync flag stuck? → Watchdog should auto-clear
 
@@ -1054,12 +1054,12 @@ bool snapshot_plugin::is_snapshot_in_progress() const {
 
 **Symptoms:** `SLOT-HIJACK` logs, `slot_hijacks=N` in watchdog diagnostics
 
-**Cause:** Emergency master blanked our witness key and producing committee blocks in our slots
+**Cause:** Emergency master blanked our validator key and producing committee blocks in our slots
 
-**Normal behavior:** In DLT emergency mode, master may blank offline witnesses to maintain chain progress
+**Normal behavior:** In DLT emergency mode, master may blank offline validators to maintain chain progress
 
 **Action:**
-1. Check witness signing key status: `keys=[witness:key=BLANK]`
+1. Check validator signing key status: `keys=[validator:key=BLANK]`
 2. Send `update_witness` transaction to restore key
 3. Wait for emergency mode to end (LIB advances)
 
@@ -1070,7 +1070,7 @@ bool snapshot_plugin::is_snapshot_in_progress() const {
 - **Chain plugin:** `plugins/chain/plugin.cpp`, `plugins/chain/include/graphene/plugins/chain/plugin.hpp`
 - **P2P plugin:** `plugins/p2p/p2p_plugin.cpp`, `plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp`
 - **Snapshot plugin:** `plugins/snapshot/plugin.cpp`, `plugins/snapshot/include/graphene/plugins/snapshot/plugin.hpp`
-- **Witness guard plugin:** `plugins/witness_guard/witness_guard.cpp`
+- **validator guard plugin:** `plugins/witness_guard/witness_guard.cpp`
 - **DLT P2P node:** `libraries/network/dlt_p2p_node.cpp`, `libraries/network/include/graphene/network/dlt_p2p_node.hpp`
 - **Database:** `libraries/chain/database.cpp` (emergency consensus, hardfork logic, block generation)
 - **NTP time:** `libraries/time/time.cpp` (time synchronization)

@@ -1,4 +1,4 @@
-# Build System
+﻿# Build System
 
 <cite>
 **Referenced Files in This Document**
@@ -480,7 +480,7 @@ The `build-linux.sh` script provides a comprehensive automated build solution wi
 # Basic build with enhanced security
 ./build-linux.sh
 
-# Low memory node for witnesses
+# Low memory node for validators
 ./build-linux.sh -l
 
 # Testnet build
@@ -531,7 +531,7 @@ The `build-linux.sh` script provides a comprehensive automated build solution fo
 # Basic build
 ./build-linux.sh
 
-# Low memory node for witnesses
+# Low memory node for validators
 ./build-linux.sh -l
 
 # Testnet build
@@ -579,7 +579,7 @@ The `build-mac.sh` script streamlines macOS development with Homebrew integratio
 # Basic macOS build
 ./build-mac.sh
 
-# Low memory node for witness operations
+# Low memory node for validator operations
 ./build-mac.sh -l
 
 # Testnet configuration
@@ -876,7 +876,7 @@ chmod +x build-linux.sh
 # Basic development build (runs as user)
 ./build-linux.sh
 
-# Low memory node for witness operations
+# Low memory node for validator operations
 ./build-linux.sh -l
 
 # Testnet build

@@ -1,4 +1,4 @@
-# Shared Memory Architecture
+﻿# Shared Memory Architecture
 
 The VIZ node stores all blockchain state in a memory-mapped file (`shared_memory.bin`) managed by the **chainbase** library, which wraps Boost.Interprocess `managed_mapped_file`. This is the sole database for chain state — the node **cannot operate without shared memory**.
 
@@ -42,7 +42,7 @@ The VIZ node stores all blockchain state in a memory-mapped file (`shared_memory
 | `libraries/chain/database.cpp` | Chain-level `open()`, `_resize()`, `check_free_memory()`, `push_block()`, `_generate_block()` |
 | `libraries/chain/include/graphene/chain/database.hpp` | Chain database class declaration, resize/memory parameters |
 | `plugins/chain/plugin.cpp` | Config option definitions, initialization, snapshot loading |
-| `plugins/witness/witness.cpp` | Lockless reads in `maybe_produce_block()` and `is_witness_scheduled_soon()`, guarded by `operation_guard` |
+| `plugins/validator/validator.cpp` | Lockless reads in `maybe_produce_block()` and `is_witness_scheduled_soon()`, guarded by `operation_guard` |
 | `plugins/p2p/p2p_plugin.cpp` | Lockless reads in block post-validation (`get_witness_key()`), guarded by `operation_guard` |
 
 ---
@@ -60,7 +60,7 @@ The `shared_memory.bin` file is a Boost.Interprocess `managed_mapped_file`:
 
 ### Internal Structure
 
-All chainbase objects (accounts, witnesses, transactions, etc.) are stored as C++ objects allocated inside the mapped segment using Boost.Interprocess allocators:
+All chainbase objects (accounts, validators, transactions, etc.) are stored as C++ objects allocated inside the mapped segment using Boost.Interprocess allocators:
 
 ```cpp
 template<typename T>
@@ -139,7 +139,7 @@ All parameters are defined in `plugins/chain/plugin.cpp` and read from `config.i
 
 ### Recommended Configurations
 
-**Witness node (production):**
+**validator node (production):**
 ```ini
 shared-file-size = 4G
 inc-shared-file-size = 2G
@@ -239,8 +239,8 @@ The **resize barrier** (`chainbase::database`) solves this with an atomic operat
 | `with_read_lock()` / `with_write_lock()` | `operation_guard` acquired automatically inside the lock wrapper before the `boost::shared_mutex` lock |
 | `_generate_block()` lockless reads (pre-write-lock) | Explicit scoped `operation_guard` around `get_slot_at_time()`, `get_scheduled_witness()`, `get_witness()`, `find_account()` |
 | `_generate_block()` lockless reads (post-write-lock) | Second `operation_guard` (`op_guard2`) around `get_dynamic_global_properties()`, `head_block_id()`, `get_witness()`, `get_hardfork_property_object()`; released via `release()` before `push_block()` |
-| Witness plugin `maybe_produce_block()` | Explicit `operation_guard` around `get_slot_at_time()`, `get_scheduled_witness()`, index lookups; released via `release()` before `generate_block()` |
-| Witness plugin `is_witness_scheduled_soon()` | Explicit `operation_guard` around `get_slot_at_time()`, `get_scheduled_witness()`, index lookups; released via `release()` before return |
+| Validator Plugin `maybe_produce_block()` | Explicit `operation_guard` around `get_slot_at_time()`, `get_scheduled_witness()`, index lookups; released via `release()` before `generate_block()` |
+| Validator Plugin `is_witness_scheduled_soon()` | Explicit `operation_guard` around `get_slot_at_time()`, `get_scheduled_witness()`, index lookups; released via `release()` before return |
 | P2P plugin block post-validation | Explicit `operation_guard` around `get_witness_key()` calls; released via `release()` before `apply_block_post_validation()` |
 
 **Key classes:**
@@ -256,15 +256,15 @@ The **resize barrier** (`chainbase::database`) solves this with an atomic operat
 Before the resize barrier was added, the resize used `with_strong_write_lock()` which only blocked threads holding or waiting for a `boost::shared_mutex` lock. This left lockless reads unprotected:
 
 - `boost::shared_mutex` does **not** protect against segment destruction — a read lock only prevents concurrent writes, but the resize **is** the write
-- Threads performing lockless reads (witness plugin, `_generate_block()`) could hold stale pointers into the old mapping after `_segment.reset()`
+- Threads performing lockless reads (Validator Plugin, `_generate_block()`) could hold stale pointers into the old mapping after `_segment.reset()`
 
-This was the root cause of shared memory corruption symptoms like `CRITICAL: Witness X account object MISSING from database!`.
+This was the root cause of shared memory corruption symptoms like `CRITICAL: validator X account object MISSING from database!`.
 
 ### Corruption Symptoms
 
 Typical corruption indicators (should not occur with the resize barrier in place, but listed for historical reference and diagnostics):
 
-- `CRITICAL: Witness X account object MISSING from database!` — account index entry not found despite `account_index_size` showing entries exist
+- `CRITICAL: validator X account object MISSING from database!` — account index entry not found despite `account_index_size` showing entries exist
 - `Could not modify object, most likely a uniqueness constraint was violated` — internal index pointers corrupted, uniqueness check fails
 - Node crashes and restarts in an infinite loop — each restart opens the corrupted file, fails to produce/apply blocks, crashes again
 
@@ -319,12 +319,12 @@ with_strong_write_lock([&]() {  // operation_guard acquired inside
 });
 ```
 
-### Lockless Reads (Witness Plugin, Block Generation, P2P)
+### Lockless Reads (Validator Plugin, Block Generation, P2P)
 
 Some code paths read from chainbase indices **without** holding a `boost::shared_mutex` lock. These must explicitly use an `operation_guard` to participate in the resize barrier:
 
 ```cpp
-// witness.cpp — maybe_produce_block()
+// validator.cpp — maybe_produce_block()
 auto op_guard = db.make_operation_guard();
 uint32_t slot = db.get_slot_at_time(now);           // lockless read
 string scheduled = db.get_scheduled_witness(slot);  // lockless read
@@ -333,7 +333,7 @@ op_guard.release();  // release before generate_block() which has its own guard
 ```
 
 ```cpp
-// witness.cpp — is_witness_scheduled_soon()
+// validator.cpp — is_witness_scheduled_soon()
 auto op_guard = db.make_operation_guard();
 uint32_t slot = db.get_slot_at_time(now);
 string scheduled = db.get_scheduled_witness(s);
@@ -358,7 +358,7 @@ auto op_guard2 = make_operation_guard();
 auto maximum_block_size = get_dynamic_global_properties().maximum_block_size;
 // ... with_strong_write_lock, then post-lock reads ...
 pending_block.previous = head_block_id();
-const auto& witness = get_witness(witness_owner);
+const auto& validator = get_witness(witness_owner);
 const auto& hfp = get_hardfork_property_object();
 const auto& dgp_block = get_dynamic_global_properties();
 op_guard2.release();  // release before push_block()
@@ -450,7 +450,7 @@ Approximate memory usage for a VIZ mainnet node at ~79M blocks:
 | Component | Estimated Size |
 |-----------|---------------|
 | Account index (~14K accounts) | ~50 MB |
-| Witness index | ~5 MB |
+| validator index | ~5 MB |
 | Transaction history (operation_history plugin) | ~200–500 MB |
 | Account history (account_history plugin) | ~100–300 MB |
 | Follow/social indexes | ~50–100 MB |
@@ -474,7 +474,7 @@ Memory is almost full on block N, increasing to XmM
 
 ### Detect corruption
 ```
-CRITICAL: Witness X account object MISSING from database!
+CRITICAL: validator X account object MISSING from database!
 Could not modify object, most likely a uniqueness constraint was violated
 ```
 
@@ -493,7 +493,7 @@ FATAL write lock timeout!!!
 1. **`min-free-shared-file-size` must be less than `inc-shared-file-size`** — otherwise cascading resizes occur, causing frequent operation pauses
 2. **Pre-allocate generously** — set `shared-file-size` large enough that resize is rare. Each resize pauses all operations while the segment is remapped.
 3. **Use `single-write-thread = true`** in production — prevents write lock contention
-4. **Avoid resize during witness production** — a witness node should have enough pre-allocated memory that resize never triggers during block generation. The resize barrier guarantees safety but introduces latency.
+4. **Avoid resize during validator production** — a validator node should have enough pre-allocated memory that resize never triggers during block generation. The resize barrier guarantees safety but introduces latency.
 5. **After corruption, always replay** — there is no safe way to repair a corrupted `shared_memory.bin`. Use `--replay-blockchain` or `--snapshot` to rebuild state from block_log/dlt_block_log.
 6. **Backup before config changes** — changing `shared-file-size` to a larger value triggers `grow()` on next startup, which is safe. Reducing it has no effect (file doesn't shrink).
 7. **Any new lockless read path must use `operation_guard`** — if you add code that reads from chainbase indices without `with_read_lock()`/`with_write_lock()`, wrap it with `make_operation_guard()` to participate in the resize barrier. Failing to do so can cause stale pointer access during resize.

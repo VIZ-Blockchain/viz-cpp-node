@@ -1,4 +1,4 @@
-# VIZ Blockchain — Account Recovery Operations
+﻿# VIZ Blockchain — Account Recovery Operations
 
 Spec for implementing account recovery operations in PHP/Node.js libraries.
 
@@ -184,5 +184,5 @@ const op = ['change_recovery_account', {
 - [ ] 30-day delay between submitting the change and it taking effect
 - [ ] This prevents attackers from changing the recovery account during an active attack
 - [ ] `new_recovery_account` must be an existing account
-- [ ] If `new_recovery_account == ""`, top-voted witness becomes recovery account
+- [ ] If `new_recovery_account == ""`, top-voted validator becomes recovery account
 - [ ] Sign with `account_to_recover`'s master key

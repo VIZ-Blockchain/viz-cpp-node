@@ -1,4 +1,4 @@
-# P2P Synchronization & Block Push Workflow
+﻿# P2P Synchronization & Block Push Workflow
 
 ## Overview
 
@@ -127,7 +127,7 @@ Active after sync completes — the node is caught up and receives new blocks in
 ### Flow: Block Production and Propagation
 
 ```
-Witness Node                    Peer A                     Peer B (us)
+validator Node                    Peer A                     Peer B (us)
      |                            |                            |
      | 1. generate_block()        |                            |
      | 2. broadcast_block()       |                            |
@@ -153,7 +153,7 @@ Witness Node                    Peer A                     Peer B (us)
 ### Detailed Steps
 
 #### Step 1-2: Block Production
-A witness node produces a block and calls `p2p_plugin::broadcast_block()`, which sends the block to all connected peers via `node::broadcast()`.
+A validator node produces a block and calls `p2p_plugin::broadcast_block()`, which sends the block to all connected peers via `node::broadcast()`.
 
 #### Step 3: Inventory Advertisement
 When a peer receives a new block (either via broadcast or sync), it advertises it to all its OTHER connected peers via `item_ids_inventory_message`. This is the gossip protocol — blocks propagate through the network hop by hop.
@@ -252,7 +252,7 @@ AND this state has persisted for **30+ seconds** (measured via `last_sync_item_r
 
 ### Detection
 
-In `witness_plugin::impl::maybe_produce_block()` (witness.cpp), if the last 21 blocks in `fork_db` were ALL produced by the node's own configured witnesses, the node is likely on a minority fork (isolated from the network).
+In `witness_plugin::impl::maybe_produce_block()` (validator.cpp), if the last 21 blocks in `fork_db` were ALL produced by the node's own configured validators, the node is likely on a minority fork (isolated from the network).
 
 ### Recovery Flow
 
@@ -285,7 +285,7 @@ In `witness_plugin::impl::maybe_produce_block()` (witness.cpp), if the last 21 b
 The peer state reset logic lives in `node_impl::reset_active_peer_states()` (node.cpp) and is shared by two callers:
 
 1. **`resync()`** — called during minority fork recovery via `resync_from_lib()`. Resets all peer state, clears `_active_sync_requests`, then calls `start_synchronizing()`.
-2. **`reconnect_seeds()`** — called by the witness plugin when producing a block with <2 peers. Resets all peer state, then force-reconnects seed nodes.
+2. **`reconnect_seeds()`** — called by the Validator Plugin when producing a block with <2 peers. Resets all peer state, then force-reconnects seed nodes.
 
 The `resync()` function calls `reset_active_peer_states()` which clears per-peer state:
 
@@ -340,10 +340,10 @@ P2P seed node <ip:port> not responding (5 consecutive failures), check config an
 
 ### Low-Peer Seed Reconnection
 
-The witness plugin checks the connection count after each successfully produced block. If fewer than 2 peers are connected:
+The Validator Plugin checks the connection count after each successfully produced block. If fewer than 2 peers are connected:
 
 ```
-1. Witness produces block, broadcasts it
+1. validator produces block, broadcasts it
 2. Check: get_connections_count() < 2?
 3. YES → p2p_plugin::reconnect_seeds()
    ├── node->reset_active_peer_states()  (clear all blocking state)
@@ -455,8 +455,8 @@ The `_last_block_received_time` is reset to `now` in these situations:
 
 The stale sync detector acts as a **last-resort safety net**. It complements:
 
-- **Minority fork detection** (witness plugin) — triggers faster (after 21 own-witness blocks), but only if the node is actively producing. Stale sync covers the case where the node is NOT a witness or production is already disabled.
-- **Low-peer seed reconnection** (witness plugin) — triggers per-block when <2 peers, but only while producing. Stale sync covers periods when production is halted.
+- **Minority fork detection** (Validator Plugin) — triggers faster (after 21 own-validator blocks), but only if the node is actively producing. Stale sync covers the case where the node is NOT a validator or production is already disabled.
+- **Low-peer seed reconnection** (Validator Plugin) — triggers per-block when <2 peers, but only while producing. Stale sync covers periods when production is halted.
 - **Connection loop backoff** (node.cpp) — handles normal reconnection with exponential backoff. Stale sync overrides this by calling `resync()` which does a full peer state reset + `add_node()` on seeds.
 - **Snapshot stalled sync detection** (snapshot plugin) — a separate, heavier mechanism described below.
 

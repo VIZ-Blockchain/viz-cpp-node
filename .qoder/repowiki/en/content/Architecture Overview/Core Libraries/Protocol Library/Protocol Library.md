@@ -1,4 +1,4 @@
-# Protocol Library
+﻿# Protocol Library
 
 <cite>
 **Referenced Files in This Document**
@@ -115,7 +115,7 @@ COCPP --> CO
 - Operations: A static variant enumerating all transaction operations, including account, asset, content, governance, and virtual operations. Includes helpers to detect virtual and data operations.
 - Transaction: Transaction and signed transaction structures with validation, signature digest computation, Merkle digest, and authority extraction/minimization.
 - Authority: Multi-signature authority model with thresholds, account and key maps, validation, and account name rules.
-- Blocks: Block header and signed block structures with Merkle root computation and witness signature verification.
+- Blocks: Block header and signed block structures with Merkle root computation and validator signature verification.
 - Chain Operations: Strongly-typed operation structs with validation logic and required authority hooks.
 - Types: Core blockchain types (names, keys, amounts, hashes, digests) and serialization support.
 
@@ -129,7 +129,7 @@ COCPP --> CO
 - [types.hpp](file://libraries/protocol/include/graphene/protocol/types.hpp#L75-L235)
 
 ## Architecture Overview
-The Protocol Library composes operations into transactions, validates each operation, computes digests for signing and Merkle roots, and enforces authority requirements. Blocks encapsulate transactions and enforce witness signatures.
+The Protocol Library composes operations into transactions, validates each operation, computes digests for signing and Merkle roots, and enforces authority requirements. Blocks encapsulate transactions and enforce validator signatures.
 
 ```mermaid
 graph TB
@@ -238,12 +238,12 @@ CheckAccounts --> End(["Done"])
 - [authority.cpp](file://libraries/protocol/authority.cpp#L7-L228)
 
 ### Blocks and Block Headers: Validation and Consensus
-- Block header includes previous ID, timestamp, witness, and Merkle root of transactions.
-- Signed block header adds witness signature and methods to compute ID and validate signee.
+- Block header includes previous ID, timestamp, validator, and Merkle root of transactions.
+- Signed block header adds validator signature and methods to compute ID and validate signee.
 - Signed block computes Merkle root over transaction digests.
 
 Consensus implications:
-- Witness signature verification ensures block validity
+- validator signature verification ensures block validity
 - Merkle root ensures transaction integrity
 
 ```mermaid
@@ -265,7 +265,7 @@ C --> D["Set signed_block.transaction_merkle_root"]
 
 ### Chain Operations: Evaluation Logic and Constraints
 - Strongly typed operation structs define required authorities and validation rules.
-- Examples include account creation/update/metadata, transfers, vesting, witness updates, chain property updates, escrow operations, custom operations, and governance-related operations (committee, invite, paid subscription, account sales, awards, etc.).
+- Examples include account creation/update/metadata, transfers, vesting, validator updates, chain property updates, escrow operations, custom operations, and governance-related operations (committee, invite, paid subscription, account sales, awards, etc.).
 - Validation enforces symbol types, numeric bounds, UTF-8 and JSON constraints, permlink rules, and account name rules.
 
 Evaluation highlights:
@@ -353,7 +353,7 @@ Common issues and diagnostics:
 - Transaction missing required signatures or approvals
 - Irrelevant signatures or approvals detected during verification
 - Authority thresholds not met or invalid account names
-- Block header signature mismatch or invalid witness
+- Block header signature mismatch or invalid validator
 
 Diagnostics:
 - verify_authority throws specific exceptions for missing authorities and irrelevant inputs
@@ -398,7 +398,7 @@ The Protocol Library provides a robust foundation for blockchain operations, tra
 - [sign_state.hpp](file://libraries/protocol/include/graphene/protocol/sign_state.hpp#L10-L42)
 
 #### Block Validation
-- Compute signed block header ID and validate witness signature
+- Compute signed block header ID and validate validator signature
 - Recompute Merkle root from transaction digests and compare with block header
 
 **Section sources**

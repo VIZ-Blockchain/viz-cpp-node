@@ -1,4 +1,4 @@
-# Block Processing and Validation
+﻿# Block Processing and Validation
 
 <cite>
 **Referenced Files in This Document**
@@ -36,11 +36,11 @@
 ## Introduction
 This document explains the Block Processing and Validation system responsible for accepting incoming blocks, validating their integrity and consensus compliance, applying state changes, and maintaining blockchain consistency. It focuses on:
 - Efficient block storage and retrieval via the block log
-- The block validation pipeline (header, size, merkle, witness scheduling)
+- The block validation pipeline (header, size, merkle, validator scheduling)
 - The push_block() and validate_block() orchestration
-- Block summary object creation and witness participation tracking
+- Block summary object creation and validator participation tracking
 - Block replay for synchronization and state reconstruction
-- Integration with fork database, witness scheduling, and state persistence
+- Integration with fork database, validator scheduling, and state persistence
 - Block size limits, transaction ordering, and consensus enforcement
 - Enhanced logging system with production-ready visibility
 
@@ -49,7 +49,7 @@ The block processing pipeline spans several core modules:
 - Chain database: orchestrates validation, fork selection, state application, and persistence
 - Fork database: manages canonical chain and forks for reorganization decisions
 - Block log: persistent append-only storage enabling fast replay and random access
-- Block summary and witness schedule: support consensus checks and participation metrics
+- Block summary and validator schedule: support consensus checks and participation metrics
 - Network layer: handles block propagation and synchronization with enhanced logging
 
 ```mermaid
@@ -104,7 +104,7 @@ CHAIN --> DB
 - Network layer: Handles block propagation, synchronization, and enhanced logging with console color formatting.
 
 Key responsibilities:
-- validate_block(): Validates Merkle root, block size, and optionally witness signature and schedule alignment
+- validate_block(): Validates Merkle root, block size, and optionally validator signature and schedule alignment
 - push_block(): Coordinates fork selection, reorganization, and state application
 - apply_block(): Applies all transactions and operations, updates dynamic properties, and creates block summaries
 - block_log: Provides deterministic replay and persistence
@@ -246,7 +246,7 @@ fork_database --> fork_item : "manages"
 
 ### Database: Validation Pipeline and Block Application
 The database coordinates validation and application:
-- validate_block(): Enforces Merkle root, block size, and optionally witness signature and schedule alignment
+- validate_block(): Enforces Merkle root, block size, and optionally validator signature and schedule alignment
 - push_block(): Orchestrates fork selection and reorganization; calls apply_block() on success
 - apply_block(): Applies all transactions and operations, updates dynamic properties, and creates block summaries
 
@@ -280,8 +280,8 @@ DB-->>Caller : "fork_switched?"
 Validation steps:
 - Merkle root verification against transaction set
 - Block size enforcement against dynamic maximum
-- Optional witness signature validation
-- Optional witness schedule alignment (slot correctness)
+- Optional validator signature validation
+- Optional validator schedule alignment (slot correctness)
 
 Fork selection:
 - If new head extends beyond current head, compute branches and switch if heavier
@@ -301,30 +301,30 @@ State application:
 - [database.cpp:3750-3757](file://libraries/chain/database.cpp#L3750-L3757)
 - [database.cpp:3759-3873](file://libraries/chain/database.cpp#L3759-L3873)
 
-### Enhanced Witness Account Validation and Graceful Error Handling
+### Enhanced validator Account Validation and Graceful Error Handling
 
-**Updated** Enhanced witness account validation during block production with comprehensive pre-check mechanisms
+**Updated** Enhanced validator account validation during block production with comprehensive pre-check mechanisms
 
-The system now performs preliminary verification using find_account() calls instead of relying solely on get_account() which would throw exceptions if accounts are missing. This ensures graceful handling of missing witness accounts and prevents node crashes during block production.
+The system now performs preliminary verification using find_account() calls instead of relying solely on get_account() which would throw exceptions if accounts are missing. This ensures graceful handling of missing validator accounts and prevents node crashes during block production.
 
 Key improvements:
 - Pre-check mechanism using find_account() before block generation
 - Graceful error handling with critical logging for shared memory corruption detection
-- Prevention of exceptions during block production when witness accounts are missing
-- Comprehensive error reporting with witness metadata for debugging
+- Prevention of exceptions during block production when validator accounts are missing
+- Comprehensive error reporting with validator metadata for debugging
 
 ```mermaid
 flowchart TD
-WStart(["Witness Block Production"]) --> PreCheck["Pre-check: find_account(witness_owner)"]
+WStart(["validator Block Production"]) --> PreCheck["Pre-check: find_account(witness_owner)"]
 PreCheck --> Found{"Account found?"}
-Found --> |Yes| SigCheck["Validate witness signature"]
+Found --> |Yes| SigCheck["Validate validator signature"]
 Found --> |No| CriticalLog["Critical: Log missing account details"]
 CriticalLog --> Assert["Assert with detailed error message"]
 SigCheck --> GenBlock["Generate block"]
 GenBlock --> PostCheck["Post-check: find_account(cwit.owner)"]
 PostCheck --> PostFound{"Account found?"}
 PostFound --> |Yes| ApplyBlock["Apply block and distribute rewards"]
-PostFound --> |No| CriticalLog2["Critical: Log missing witness account"]
+PostFound --> |No| CriticalLog2["Critical: Log missing validator account"]
 CriticalLog2 --> Assert2["Assert with replay recommendation"]
 ```
 
@@ -339,14 +339,14 @@ CriticalLog2 --> Assert2["Assert with replay recommendation"]
 - [database.cpp:2871-2884](file://libraries/chain/database.cpp#L2871-L2884)
 - [database.hpp:185-187](file://libraries/chain/include/graphene/chain/database.hpp#L185-L187)
 
-### Block Header Validation and Witness Scheduling
+### Block Header Validation and validator Scheduling
 Header validation ensures:
 - Previous block ID matches current head
 - Timestamp monotonicity
-- Witness signature verification (optional)
-- Witness schedule alignment (slot correctness)
+- validator signature verification (optional)
+- validator schedule alignment (slot correctness)
 
-Witness participation tracking:
+validator participation tracking:
 - Missed block counters and penalties
 - Participation rate computation via recent slots
 - Irreversible block updates based on validator majorities
@@ -356,11 +356,11 @@ flowchart TD
 HStart(["validate_block_header"]) --> PrevCheck["Verify previous == head_block_id"]
 PrevCheck --> TSCheck["Verify timestamp > head_block_time"]
 TSCheck --> SigCheck{"skip_witness_signature?"}
-SigCheck --> |No| VerifySig["Validate block.signee against witness key"]
+SigCheck --> |No| VerifySig["Validate block.signee against validator key"]
 SigCheck --> |Yes| SkipSig["Skip signature check"]
 VerifySig --> SchCheck{"skip_witness_schedule_check?"}
 SkipSig --> SchCheck
-SchCheck --> |No| SlotCheck["Get slot_at_time(timestamp) and verify scheduled witness"]
+SchCheck --> |No| SlotCheck["Get slot_at_time(timestamp) and verify scheduled validator"]
 SchCheck --> |Yes| SkipSch["Skip schedule check"]
 SlotCheck --> HEnd(["Valid"])
 SkipSch --> HEnd
@@ -451,7 +451,7 @@ The enhanced logging system follows a production-ready strategy:
 
 - **Info level logging**: Critical block processing events are logged at info level for production visibility
 - **Console color formatting**: Terminal output uses color codes for improved readability
-- **Structured information**: Logs include block numbers, timestamps, witness information, and performance metrics
+- **Structured information**: Logs include block numbers, timestamps, validator information, and performance metrics
 - **Minimal noise**: Debug-level verbose logging is reduced while maintaining essential operational information
 
 ```mermaid
@@ -515,16 +515,16 @@ CHAIN["chain plugin.cpp"] --> DB
 - Skip flags: During reindex or trusted operations, validations can be selectively skipped to improve throughput.
 - Undo sessions: State changes are wrapped in undo sessions to support rollback on errors and efficient reversion during forks.
 - Pending transactions: During block generation, transactions are re-applied to reflect time-dependent semantics and respect block size limits.
-- **Enhanced witness validation**: Pre-check mechanisms using find_account() avoid exception overhead and improve block production reliability.
+- **Enhanced validator validation**: Pre-check mechanisms using find_account() avoid exception overhead and improve block production reliability.
 - **Enhanced logging**: Info level logging provides production visibility without debug-level overhead, while console color formatting improves terminal readability.
 
 ## Troubleshooting Guide
 Common issues and remedies:
 - Block log/head mismatch: The block log automatically detects inconsistencies and reconstructs the index. If repeated failures occur, inspect logs around index construction and ensure proper shutdown procedures.
-- Fork reorganization failures: If applying a fork branch fails, the system removes invalid blocks from the fork database, restores the good fork, and rethrows the error. Review the failing block and witness participation.
+- Fork reorganization failures: If applying a fork branch fails, the system removes invalid blocks from the fork database, restores the good fork, and rethrows the error. Review the failing block and validator participation.
 - Excessive memory usage during replay: The database reserves memory and resizes shared memory if allocation fails mid-replay. Monitor logs for forced resizing events.
-- Invalid witness schedule: If a block's timestamp slot does not align with the scheduled witness, validation fails. Verify time synchronization and witness schedules.
-- **Missing witness accounts**: Enhanced pre-check mechanisms now detect missing witness accounts gracefully, logging critical details and preventing node crashes. Such issues typically indicate shared memory corruption requiring node restart with replay.
+- Invalid validator schedule: If a block's timestamp slot does not align with the scheduled validator, validation fails. Verify time synchronization and validator schedules.
+- **Missing validator accounts**: Enhanced pre-check mechanisms now detect missing validator accounts gracefully, logging critical details and preventing node crashes. Such issues typically indicate shared memory corruption requiring node restart with replay.
 - **Enhanced logging visibility**: Production environments can now monitor block processing through info level logs without debug configuration, while console color formatting improves terminal readability for operators.
 
 **Section sources**
@@ -538,10 +538,10 @@ Common issues and remedies:
 - [p2p_plugin.cpp:152-157](file://plugins/p2p/p2p_plugin.cpp#L152-L157)
 
 ## Conclusion
-The Block Processing and Validation system integrates robust storage (block log), fork management (fork database), and strict consensus validation (database) to ensure blockchain consistency. The validate_block() and push_block() methods coordinate header checks, witness scheduling, Merkle roots, and block size limits. The system supports efficient replay for synchronization and maintains witness participation metrics to enforce consensus.
+The Block Processing and Validation system integrates robust storage (block log), fork management (fork database), and strict consensus validation (database) to ensure blockchain consistency. The validate_block() and push_block() methods coordinate header checks, validator scheduling, Merkle roots, and block size limits. The system supports efficient replay for synchronization and maintains validator participation metrics to enforce consensus.
 
-**Enhanced witness account validation** provides improved reliability during block production by performing preliminary verification using find_account() calls instead of relying on get_account() which would throw exceptions. This change ensures graceful handling of missing witness accounts and prevents node crashes, while maintaining comprehensive error reporting for debugging shared memory corruption scenarios.
+**Enhanced validator account validation** provides improved reliability during block production by performing preliminary verification using find_account() calls instead of relying on get_account() which would throw exceptions. This change ensures graceful handling of missing validator accounts and prevents node crashes, while maintaining comprehensive error reporting for debugging shared memory corruption scenarios.
 
-**Enhanced logging system** provides production-ready visibility with info level logging for sync blocks and normal blocks, upgraded from debug level for better production monitoring. Console color formatting improves terminal readability with white text for block processing notifications and structured information including block numbers, witness information, and performance metrics.
+**Enhanced logging system** provides production-ready visibility with info level logging for sync blocks and normal blocks, upgraded from debug level for better production monitoring. Console color formatting improves terminal readability with white text for block processing notifications and structured information including block numbers, validator information, and performance metrics.
 
 Proper use of skip flags, memory mapping, and undo sessions yields strong performance and reliability, making the system resilient to various operational challenges while maintaining strict consensus enforcement. The enhanced logging system ensures that block processing activities are visible in production environments without overwhelming debug-level verbosity, supporting effective monitoring and troubleshooting of blockchain operations.
