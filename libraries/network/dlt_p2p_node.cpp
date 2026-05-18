@@ -1338,7 +1338,7 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
             _last_block_received_time = fc::time_point::now();
             _last_network_block_time = fc::time_point::now();
 
-            ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by validator " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}]" DLT_LOG_RESET,
+            ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) validated by " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}]" DLT_LOG_RESET,
                  ("n", block.block_num())("tx", block.transactions.size())
                  ("w", block.validator)("ep", state.endpoint));
 
@@ -1576,7 +1576,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
     }
 
     if (result == dlt_block_accept_result::ACCEPTED) {
-        ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by validator " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}]" DLT_LOG_RESET,
+        ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) validated by " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}]" DLT_LOG_RESET,
              ("n", reply.block.block_num())("tx", reply.block.transactions.size())
              ("w", reply.block.validator)("ep", state.endpoint));
 
@@ -1922,7 +1922,7 @@ void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply&
             _last_block_received_time = fc::time_point::now();
             _last_network_block_time = fc::time_point::now();
 
-            ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by validator " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}] (gap fill)" DLT_LOG_RESET,
+            ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) validated by " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}] (gap fill)" DLT_LOG_RESET,
                  ("n", block.block_num())("tx", block.transactions.size())
                  ("w", block.validator)("ep", it->second.endpoint));
 
