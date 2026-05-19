@@ -1,4 +1,4 @@
-# Database Management
+﻿# Database Management
 
 <cite>
 **Referenced Files in This Document**
@@ -15,8 +15,8 @@
 - [database_exceptions.hpp](file://libraries/chain/include/graphene/chain/database_exceptions.hpp)
 - [plugin.cpp](file://plugins/snapshot/plugin.cpp)
 - [db_with.hpp](file://libraries/chain/include/graphene/chain/db_with.hpp)
-- [witness.cpp](file://plugins/witness/witness.cpp)
-- [witness.hpp](file://plugins/witness/include/graphene/plugins/witness/witness.hpp)
+- [validator.cpp](file://plugins/validator/validator.cpp)
+- [validator.hpp](file://plugins/validator/include/graphene/plugins/validator/validator.hpp)
 - [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
 - [node.cpp](file://libraries/network/node.cpp)
 - [exceptions.hpp](file://libraries/network/include/graphene/network/exceptions.hpp)
@@ -49,9 +49,9 @@
 10. [Conclusion](#conclusion)
 
 ## Introduction
-This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, and practical examples of database operations and performance optimization.
+This document describes the Database Management system that serves as the core state persistence layer for the VIZ blockchain. It covers the database class lifecycle, initialization and cleanup, validation steps, session management, memory allocation strategies, shared memory configuration, checkpoints for fast synchronization, block log integration, observer pattern usage, DLT mode detection and conditional operations, enhanced block fetching logic with DLT mode awareness, the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for validator scheduling safety, enhanced P2P plugin block validation with operation guard protection, and practical examples of database operations and performance optimization.
 
-**Updated** - Enhanced with sophisticated exception handling mechanisms that preserve derived exception types during rethrow operations, comprehensive fork database management with improved diagnostic capabilities, and enhanced early rejection logic for blocks far ahead with unknown parents. The system now includes comprehensive database crash debugging capabilities with debug_crash logging throughout critical code paths, debug-block-production configuration option for detailed block production logging, and enhanced diagnostic visibility into database operations. The system also features stacktrace crash handlers for improved crash diagnostics and extensive debug logging markers (DEBUG_CRASH) throughout database and witness production code.
+**Updated** - Enhanced with sophisticated exception handling mechanisms that preserve derived exception types during rethrow operations, comprehensive fork database management with improved diagnostic capabilities, and enhanced early rejection logic for blocks far ahead with unknown parents. The system now includes comprehensive database crash debugging capabilities with debug_crash logging throughout critical code paths, debug-block-production configuration option for detailed block production logging, and enhanced diagnostic visibility into database operations. The system also features stacktrace crash handlers for improved crash diagnostics and extensive debug logging markers (DEBUG_CRASH) throughout database and validator production code.
 
 ## Project Structure
 The database subsystem is implemented primarily in the chain library with enhanced support for operation guards, concurrent access protection, and comprehensive crash debugging:
@@ -64,7 +64,7 @@ The database subsystem is implemented primarily in the chain library with enhanc
 - Database exceptions including unlinkable_block_exception: libraries/chain/include/graphene/chain/database_exceptions.hpp
 - Snapshot plugin integration: plugins/snapshot/plugin.cpp for DLT mode initialization
 - Postponed transaction processing: libraries/chain/include/graphene/chain/db_with.hpp for transaction queue management
-- Witness plugin integration with dual operation guard patterns and debug logging: plugins/witness/witness.cpp and plugins/witness/include/graphene/plugins/witness/witness.hpp
+- Validator Plugin integration with dual operation guard patterns and debug logging: plugins/validator/validator.cpp and plugins/validator/include/graphene/plugins/validator/validator.hpp
 - Protocol configuration: libraries/protocol/include/graphene/protocol/config.hpp for emergency consensus constants
 - Network layer integration: libraries/network/node.cpp for peer connectivity management
 - P2P plugin integration with operation guard protection: plugins/p2p/p2p_plugin.cpp for enhanced exception handling and concurrent access safety
@@ -95,8 +95,8 @@ CBCPP["chainbase.cpp"]
 end
 subgraph "Plugins"
 SNAPH["snapshot/plugin.cpp"]
-WITNESS["witness/witness.cpp"]
-WITNESSH["witness.hpp"]
+validator["validator/validator.cpp"]
+WITNESSH["validator.hpp"]
 P2PH["p2p/p2p_plugin.cpp"]
 end
 subgraph "Network Layer"
@@ -125,8 +125,8 @@ DBCPP --> EXCEPTIONCPP
 DBCPP --> PROTOEX
 DBCPP --> STH
 SNAPH --> DBH
-WITNESS --> DBH
-WITNESSH --> WITNESS
+validator --> DBH
+WITNESSH --> validator
 P2PH --> DBH
 NODE --> DBH
 EXC --> NODE
@@ -146,8 +146,8 @@ EXC --> NODE
 - [database_exceptions.hpp:1-136](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L1-L136)
 - [db_with.hpp:1-154](file://libraries/chain/include/graphene/chain/db_with.hpp#L1-L154)
 - [plugin.cpp:1180-1379](file://plugins/snapshot/plugin.cpp#L1180-L1379)
-- [witness.cpp:270-469](file://plugins/witness/witness.cpp#L270-L469)
-- [witness.hpp:38-73](file://plugins/witness/include/graphene/plugins/witness/witness.hpp#L38-L73)
+- [validator.cpp:270-469](file://plugins/validator/validator.cpp#L270-L469)
+- [validator.hpp:38-73](file://plugins/validator/include/graphene/plugins/validator/validator.hpp#L38-L73)
 - [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
 - [node.cpp:3185-3384](file://libraries/network/node.cpp#L3185-L3384)
 - [exceptions.hpp:27-48](file://libraries/network/include/graphene/network/exceptions.hpp#L27-L48)
@@ -171,8 +171,8 @@ EXC --> NODE
 - [database_exceptions.hpp:1-136](file://libraries/chain/include/graphene/chain/database_exceptions.hpp#L1-L136)
 - [db_with.hpp:1-154](file://libraries/chain/include/graphene/chain/db_with.hpp#L1-L154)
 - [plugin.cpp:1180-1379](file://plugins/snapshot/plugin.cpp#L1180-L1379)
-- [witness.cpp:270-469](file://plugins/witness/witness.cpp#L270-L469)
-- [witness.hpp:38-73](file://plugins/witness/include/graphene/plugins/witness/witness.hpp#L38-L73)
+- [validator.cpp:270-469](file://plugins/validator/validator.cpp#L270-L469)
+- [validator.hpp:38-73](file://plugins/validator/include/graphene/plugins/validator/validator.hpp#L38-L73)
 - [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
 - [node.cpp:3185-3384](file://libraries/network/node.cpp#L3185-L3384)
 - [exceptions.hpp:27-48](file://libraries/network/include/graphene/network/exceptions.hpp#L27-L48)
@@ -195,11 +195,11 @@ EXC --> NODE
 - **Enhanced Fork Database Exception Prevention**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking.
 - **Enhanced Memory Management**: Comprehensive logging system for shared memory allocation with detailed free memory and maximum memory state reporting, plus deferred resize operations.
 - **Enhanced P2P Synchronization**: Improved unlinkable block classification with soft-banning for dead forks and sync restart prevention for far-ahead blocks.
-- **Enhanced Operation Guard System**: Comprehensive concurrent access protection using operation_guard RAII pattern, dual operation guard patterns for witness scheduling safety, and resize barrier mechanisms.
+- **Enhanced Operation Guard System**: Comprehensive concurrent access protection using operation_guard RAII pattern, dual operation guard patterns for validator scheduling safety, and resize barrier mechanisms.
 - **Enhanced Multi-Layered Block Retrieval**: Systematic fallback mechanisms that check fork database when primary block log fails to locate required data, ensuring consistent behavior across different block logging configurations.
 - **Enhanced Last Irreversible Block Advancement**: Enhanced logic that falls back to fork database when block log lacks required data, maintaining data consistency and availability.
 - **Enhanced Emergency Consensus**: Automatic recovery system with comprehensive logging and safety checks for network stall detection and recovery.
-- **Enhanced Shared Memory Corruption Detection**: New shared_memory_corruption_exception type for structured error handling during witness account validation and block processing.
+- **Enhanced Shared Memory Corruption Detection**: New shared_memory_corruption_exception type for structured error handling during validator account validation and block processing.
 - **Enhanced Auto-Recovery System**: Integrated automatic recovery from snapshot for shared memory corruption scenarios with comprehensive error handling and node restart procedures.
 - **Enhanced Crash Debugging Capabilities**: Comprehensive debug_crash logging throughout critical code paths for improved crash diagnostics and troubleshooting.
 - **Enhanced Block Production Debugging**: debug-block-production configuration option for detailed block production logging and monitoring.
@@ -219,10 +219,10 @@ Key responsibilities:
 - Enhanced Early Rejection: Intelligent block rejection for far-ahead blocks with unknown parents using gap-based decision system
 - Enhanced Fork Database Exception Prevention: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
 - Enhanced Memory Management: Detailed logging of memory states before and after resizing operations for administrator visibility
-- Enhanced P2P Protection: Operation guard integration in P2P plugin for safe concurrent access during block validation and witness key retrieval
-- Enhanced Witness Scheduling Safety: Dual operation guard patterns in witness scheduling calculations to ensure thread safety during slot determination and witness validation
-- Enhanced Shared Memory Validation: Graceful error handling for witness account validation with structured exception reporting
-- Enhanced Auto-Recovery Integration: Seamless integration with witness plugin for automatic recovery from shared memory corruption
+- Enhanced P2P Protection: Operation guard integration in P2P plugin for safe concurrent access during block validation and validator key retrieval
+- Enhanced validator Scheduling Safety: Dual operation guard patterns in validator scheduling calculations to ensure thread safety during slot determination and validator validation
+- Enhanced Shared Memory Validation: Graceful error handling for validator account validation with structured exception reporting
+- Enhanced Auto-Recovery Integration: Seamless integration with Validator Plugin for automatic recovery from shared memory corruption
 - **Enhanced Crash Debugging**: Comprehensive debug_crash logging markers throughout database operations for improved troubleshooting
 - **Enhanced Block Production Monitoring**: debug-block-production configuration option for detailed block production logging and monitoring
 - **Enhanced Stacktrace Generation**: Automatic stacktrace generation for crash diagnostics and improved debugging experience
@@ -258,12 +258,12 @@ The database composes four primary subsystems with enhanced DLT mode support, em
 - **Enhanced Fork Database Exception Prevention**: Proper unlinkable_block_exception throwing for dead fork detection and improved fork switching logic with deterministic tie-breaking
 - **Enhanced Memory Management**: Comprehensive logging system for shared memory allocation with detailed state reporting, plus deferred resize operations
 - **Enhanced P2P Synchronization**: Improved unlinkable block classification with soft-banning for dead forks and sync restart prevention for far-ahead blocks
-- **Enhanced Operation Guard System**: Comprehensive concurrent access protection using operation_guard RAII pattern, dual operation guard patterns for witness scheduling safety, and resize barrier mechanisms
+- **Enhanced Operation Guard System**: Comprehensive concurrent access protection using operation_guard RAII pattern, dual operation guard patterns for validator scheduling safety, and resize barrier mechanisms
 - **Enhanced Multi-Layered Block Retrieval**: Systematic fallback mechanisms that check fork database when primary block log fails to locate required data, ensuring consistent behavior across different block logging configurations
 - **Enhanced Last Irreversible Block Advancement**: Enhanced logic that falls back to fork database when block log lacks required data, maintaining data consistency and availability
 - **Enhanced Emergency Consensus**: Automatic recovery system with comprehensive logging and safety checks for network stall detection and recovery
 - **Enhanced Shared Memory Corruption Detection**: New shared_memory_corruption_exception type for structured error reporting during critical validation failures
-- **Enhanced Auto-Recovery Integration**: Seamless integration with witness plugin for automatic recovery from shared memory corruption scenarios
+- **Enhanced Auto-Recovery Integration**: Seamless integration with Validator Plugin for automatic recovery from shared memory corruption scenarios
 - **Enhanced Crash Debugging System**: Comprehensive debug_crash logging throughout critical code paths for improved crash diagnostics and troubleshooting
 - **Enhanced Block Production Monitoring**: debug-block-production configuration option for detailed block production logging and monitoring
 - **Enhanced Stacktrace Crash Handlers**: Automatic stacktrace generation for crash diagnostics and improved debugging experience
@@ -292,7 +292,7 @@ class database {
 +_maybe_warn_multiple_production(height)
 +CHIAN_PENDING_TRANSACTION_EXECUTION_LIMIT : time limit constant
 +emergency_consensus_activation : automatic recovery system
-+hybrid_witness_scheduling : dynamic witness replacement
++hybrid_witness_scheduling : dynamic validator replacement
 +lib_monitoring : timestamp analysis
 +check_free_memory(skip_print, current_block_num, immediate_resize)
 +set_min_free_shared_memory_size(value)
@@ -693,10 +693,10 @@ UpdatePeers --> End(["Complete"])
 **New** - The database now features comprehensive operation guard implementation for concurrent access protection:
 
 - **Operation Guard RAII Pattern**: The `operation_guard` class provides automatic concurrent access protection using RAII pattern, ensuring proper cleanup when guards go out of scope.
-- **Dual Operation Guard Patterns**: Systematic implementation of dual operation guards in witness scheduling calculations to prevent race conditions during complex slot determination operations.
+- **Dual Operation Guard Patterns**: Systematic implementation of dual operation guards in validator scheduling calculations to prevent race conditions during complex slot determination operations.
 - **Resize Barrier Integration**: Operation guards participate in resize barrier mechanisms, blocking during memory resizing operations to prevent stale pointer issues.
-- **P2P Plugin Protection**: Operation guard integration in P2P plugin for safe concurrent access during block validation and witness key retrieval operations.
-- **Witness Scheduling Safety**: Dual operation guard patterns ensure thread safety during witness scheduling calculations, protecting lockless reads from concurrent memory resizing.
+- **P2P Plugin Protection**: Operation guard integration in P2P plugin for safe concurrent access during block validation and validator key retrieval operations.
+- **validator Scheduling Safety**: Dual operation guard patterns ensure thread safety during validator scheduling calculations, protecting lockless reads from concurrent memory resizing.
 - **Concurrent Resize Safety**: Enhanced resize barrier mechanisms that pause all database operations during memory resizing, preventing data corruption and stale pointer issues.
 
 ```mermaid
@@ -713,16 +713,16 @@ NormalOp --> End
 **Diagram sources**
 - [database.cpp:1556-1588](file://libraries/chain/database.cpp#L1556-L1588)
 - [database.cpp:1593-1594](file://libraries/chain/database.cpp#L1593-L1594)
-- [witness.cpp:271-300](file://plugins/witness/witness.cpp#L271-L300)
-- [witness.cpp:506-507](file://plugins/witness/witness.cpp#L506-L507)
+- [validator.cpp:271-300](file://plugins/validator/validator.cpp#L271-L300)
+- [validator.cpp:506-507](file://plugins/validator/validator.cpp#L506-L507)
 - [p2p_plugin.cpp:232-243](file://plugins/p2p/p2p_plugin.cpp#L232-L243)
 
 **Section sources**
 - [chainbase.hpp:1078-1120](file://thirdparty/chainbase/include/chainbase/chainbase.hpp#L1078-L1120)
 - [database.cpp:1556-1588](file://libraries/chain/database.cpp#L1556-L1588)
 - [database.cpp:1593-1594](file://libraries/chain/database.cpp#L1593-L1594)
-- [witness.cpp:271-300](file://plugins/witness/witness.cpp#L271-L300)
-- [witness.cpp:506-507](file://plugins/witness/witness.cpp#L506-L507)
+- [validator.cpp:271-300](file://plugins/validator/validator.cpp#L271-L300)
+- [validator.cpp:506-507](file://plugins/validator/validator.cpp#L506-L507)
 - [p2p_plugin.cpp:232-243](file://plugins/p2p/p2p_plugin.cpp#L232-L243)
 
 ### Enhanced Memory Allocation Strategies and Shared Memory Configuration
@@ -735,7 +735,7 @@ NormalOp --> End
 - **Comprehensive Memory State Reporting**: The `_resize` function now logs detailed information about memory states before and after resizing operations, providing administrators with crucial information about memory usage patterns during blockchain operation.
 - **Deferred Memory Resize**: The new `_pending_resize` and `_pending_resize_target` fields store resize requests until a safe point when no read locks are held, preventing race conditions and stale pointer issues.
 - **Thread-Safe Memory Management**: The `apply_pending_resize()` method acquires its own write lock, waiting for all readers to finish before performing memory operations, ensuring thread safety during high-load scenarios.
-- **Enhanced Error Handling**: Graceful handling of boost::interprocess::bad_alloc exceptions by returning false instead of throwing, preserving peer connectivity and logging witness slot-misses.
+- **Enhanced Error Handling**: Graceful handling of boost::interprocess::bad_alloc exceptions by returning false instead of throwing, preserving peer connectivity and logging validator slot-misses.
 
 ```mermaid
 flowchart TD
@@ -821,7 +821,7 @@ These fields enable the deferred resize mechanism to work seamlessly with the ex
 
 - **push_block()**: Calls `apply_pending_resize()` at the beginning of block processing, before acquiring the main write lock, ensuring memory operations don't interfere with concurrent read operations.
 - **generate_block()**: Calls `apply_pending_resize()` before lockless reads, preventing stale pointer issues when memory is resized during block generation.
-- **Exception Handling**: When memory exhaustion occurs, the system schedules a deferred resize and lets the exception propagate, preserving peer connectivity and logging witness slot-misses.
+- **Exception Handling**: When memory exhaustion occurs, the system schedules a deferred resize and lets the exception propagate, preserving peer connectivity and logging validator slot-misses.
 
 **Updated** - Enhanced error handling for shared memory exhaustion:
 
@@ -835,7 +835,7 @@ These fields enable the deferred resize mechanism to work seamlessly with the ex
 - **Exception Detection**: The system detects boost::interprocess::bad_alloc exceptions by searching for the specific error message pattern "boost::interprocess::bad_alloc".
 - **Graceful Degradation**: Instead of throwing the exception and potentially disconnecting peers, the system schedules a deferred resize and returns false to indicate the block was not applied.
 - **State Preservation**: The system preserves memory state by setting reserved memory to current free memory level before scheduling the resize.
-- **Peer Connectivity**: This approach prevents P2P layer disconnections and maintains witness slot-miss logging while preserving node connectivity.
+- **Peer Connectivity**: This approach prevents P2P layer disconnections and maintains validator slot-miss logging while preserving node connectivity.
 - **Automatic Recovery**: The next push_block() call will apply the deferred resize safely, allowing the missed block to be re-received during normal sync.
 
 ```mermaid
@@ -1022,7 +1022,7 @@ UpdateFields --> End
 - **Same-Parent vs Different-Parent Detection**: The system differentiates between same-parent double production (colliding blocks from the same parent) and different-parent fork scenarios (divergent chain tips).
 - **Rate-Limited Warnings**: Uses a static counter and timestamp to suppress repeated warnings at the same block height to avoid log spam during sustained fork conditions.
 - **Timestamp Delta Analysis**: Calculates time differences between colliding blocks to help diagnose timing issues.
-- **Witness Information Logging**: Logs witness names and timestamps for all colliding blocks to aid in forensic analysis.
+- **validator Information Logging**: Logs validator names and timestamps for all colliding blocks to aid in forensic analysis.
 - **Parent Block ID Tracking**: Records previous block IDs to help analyze fork topology and collision origins.
 
 ```mermaid
@@ -1030,7 +1030,7 @@ flowchart TD
 Start(["Block Height Collision"]) --> FetchBlocks["fetch_block_by_number(height)"]
 FetchBlocks --> CheckSize{"blocks.size() > 1?"}
 CheckSize --> |No| Return["No collision"]
-CheckSize --> |Yes| ExtractInfo["Extract witness, timestamp, previous_id"]
+CheckSize --> |Yes| ExtractInfo["Extract validator, timestamp, previous_id"]
 ExtractInfo --> SameParent{"all previous_ids identical?"}
 SameParent --> |Yes| DoubleProd["Same Parent - Possible Double Production"]
 SameParent --> |No| ForkScenario["Different Parents - Fork Scenario"]
@@ -1083,8 +1083,8 @@ BatchApply --> Finalize["Finalize processing"]
 ### Validation Steps Enumeration and Use Cases
 Validation flags control which checks are performed during block and transaction validation:
 - skip_nothing: Perform all validations
-- skip_witness_signature: Skip witness signature verification (used during reindex)
-- skip_transaction_signatures: Skip transaction signatures (used by non-witness nodes)
+- skip_witness_signature: Skip validator signature verification (used during reindex)
+- skip_transaction_signatures: Skip transaction signatures (used by non-validator nodes)
 - skip_transaction_dupe_check: Skip duplicate transaction checks
 - skip_fork_db: Skip fork database checks
 - skip_block_size_check: Allow oversized blocks when generating locally
@@ -1092,7 +1092,7 @@ Validation flags control which checks are performed during block and transaction
 - skip_authority_check: Skip authority checks
 - skip_merkle_check: Skip Merkle root verification
 - skip_undo_history_check: Skip undo history bounds
-- skip_witness_schedule_check: Skip witness schedule validation
+- skip_witness_schedule_check: Skip validator schedule validation
 - skip_validate_operations: Skip operation validation
 - skip_undo_block: Skip undo db on reindex
 - skip_block_log: Skip writing to block log (used in DLT mode)
@@ -1169,7 +1169,7 @@ Match --> |No| Apply
 
 - Block log: Append-only storage with a secondary index enabling O(1) random access by block number.
 - DLT Block Log: Rolling window storage for DLT mode nodes, maintaining a configurable number of recent blocks.
-- IRV advancement: When sufficient witness validations are collected, the system advances last irreversible block, commits the revision, writes blocks to appropriate log based on DLT mode, and updates dynamic global properties with reference fields.
+- IRV advancement: When sufficient validator validations are collected, the system advances last irreversible block, commits the revision, writes blocks to appropriate log based on DLT mode, and updates dynamic global properties with reference fields.
 - **Enhanced Gap Logging**: Improved logging for DLT block log gaps during block processing to help diagnose synchronization issues with contextual information.
 
 ```mermaid
@@ -1231,8 +1231,8 @@ These signals are used by plugins to react to blockchain events without tight co
 - **Enhanced Diagnostic Visibility**: Debug logging throughout critical code paths provides comprehensive visibility into database operations for improved troubleshooting and performance analysis.
 
 The debug_crash logging system includes markers for:
-- push_block operations with witness information
-- witness schedule updates and emergency consensus handling
+- push_block operations with validator information
+- validator schedule updates and emergency consensus handling
 - block production scheduling and execution
 - fund processing and block notification cycles
 - LIB advancement and fork database operations
@@ -1258,21 +1258,21 @@ The debug_crash logging system includes markers for:
 ### Enhanced Block Production Debugging
 **New** - The debug-block-production configuration option provides detailed block production logging and monitoring:
 
-- **Configuration Option**: The debug-block-production option is available in the witness plugin configuration with default value false.
+- **Configuration Option**: The debug-block-production option is available in the Validator Plugin configuration with default value false.
 - **Runtime Control**: The option can be enabled/disabled at runtime through command-line configuration.
 - **Production Loop Monitoring**: Comprehensive logging for block production loop including entry/exit points, maybe_produce_block results, and scheduling operations.
-- **Witness Production Tracking**: Detailed logging for witness production scheduling, slot determination, and block generation processes.
-- **Emergency Consensus Monitoring**: Enhanced logging for emergency consensus mode operations including witness schedule overrides and hybrid production scenarios.
+- **validator Production Tracking**: Detailed logging for validator production scheduling, slot determination, and block generation processes.
+- **Emergency Consensus Monitoring**: Enhanced logging for emergency consensus mode operations including validator schedule overrides and hybrid production scenarios.
 
 **Section sources**
-- [witness.cpp:159-160](file://plugins/witness/witness.cpp#L159-L160)
-- [witness.cpp:228-233](file://plugins/witness/witness.cpp#L228-L233)
-- [witness.cpp:338-340](file://plugins/witness/witness.cpp#L338-L340)
-- [witness.cpp:356-357](file://plugins/witness/witness.cpp#L356-L357)
-- [witness.cpp:403-405](file://plugins/witness/witness.cpp#L403-L405)
-- [witness.cpp:411-412](file://plugins/witness/witness.cpp#L411-L412)
-- [witness.cpp:416-417](file://plugins/witness/witness.cpp#L416-L417)
-- [witness.cpp:418-419](file://plugins/witness/witness.cpp#L418-L419)
+- [validator.cpp:159-160](file://plugins/validator/validator.cpp#L159-L160)
+- [validator.cpp:228-233](file://plugins/validator/validator.cpp#L228-L233)
+- [validator.cpp:338-340](file://plugins/validator/validator.cpp#L338-L340)
+- [validator.cpp:356-357](file://plugins/validator/validator.cpp#L356-L357)
+- [validator.cpp:403-405](file://plugins/validator/validator.cpp#L403-L405)
+- [validator.cpp:411-412](file://plugins/validator/validator.cpp#L411-L412)
+- [validator.cpp:416-417](file://plugins/validator/validator.cpp#L416-L417)
+- [validator.cpp:418-419](file://plugins/validator/validator.cpp#L418-L419)
 
 ### Enhanced Stacktrace Crash Handlers
 **New** - The stacktrace crash handlers provide improved crash diagnostics and debugging experience:
@@ -1334,15 +1334,15 @@ LogNoRecover --> SuppressWarning
 - **Enhanced Early Rejection Logic**: Gap-based decision system (≤100 gap deferred to fork_db, >100 gap rejected) for intelligent block rejection of far-ahead blocks with unknown parents to prevent unnecessary fork database operations and sync restart loops
 - **Enhanced Fork Database Exception Prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
 - **Enhanced Memory Management**: Comprehensive logging of memory states before and after resizing operations for administrator visibility
-- **Enhanced P2P Protection**: Operation guard integration in P2P plugin for safe concurrent access during block validation and witness key retrieval
-- **Enhanced Witness Scheduling Safety**: Dual operation guard patterns in witness scheduling calculations to ensure thread safety during slot determination and witness validation
+- **Enhanced P2P Protection**: Operation guard integration in P2P plugin for safe concurrent access during block validation and validator key retrieval
+- **Enhanced validator Scheduling Safety**: Dual operation guard patterns in validator scheduling calculations to ensure thread safety during slot determination and validator validation
 - **Enhanced Multi-Layered Block Retrieval**: Hierarchical block fetching with systematic fallback mechanisms that check fork database when primary block log fails to locate required data
 - **Enhanced Last Irreversible Block Advancement**: Improved logic that falls back to fork database when block log lacks required data, maintaining data consistency
 - **Enhanced Collision Detection**: Sophisticated logging for block number collisions with scenario differentiation and rate-limiting
 - **Postponed Transaction Processing**: Automatic transaction queuing with time-based execution limits and smart recovery
 - **Enhanced Emergency Consensus**: Automatic recovery system with comprehensive logging and safety checks for network stall detection and recovery
 - **Enhanced Shared Memory Corruption Detection**: New shared_memory_corruption_exception type for structured error reporting during critical validation failures
-- **Enhanced Auto-Recovery Integration**: Seamless integration with witness plugin for automatic recovery from shared memory corruption scenarios
+- **Enhanced Auto-Recovery Integration**: Seamless integration with Validator Plugin for automatic recovery from shared memory corruption scenarios
 - **Enhanced Crash Debugging**: Comprehensive debug_crash logging throughout critical code paths for improved crash diagnostics and troubleshooting
 - **Enhanced Block Production Monitoring**: debug-block-production configuration option for detailed block production logging and monitoring
 - **Enhanced Stacktrace Crash Handlers**: Automatic stacktrace generation for crash diagnostics and improved debugging experience
@@ -1379,9 +1379,9 @@ Valid --> |Yes| CalcTime["Calculate Time Since LIB"]
 CalcTime --> CheckTimeout{"Time >= Timeout?"}
 CheckTimeout --> |No| Normal
 CheckTimeout --> |Yes| Activate["Activate Emergency Mode"]
-Activate --> CreateWitness["Create/Update Emergency Witness"]
-CreateWitness --> ResetPenalties["Reset Witness Penalties"]
-ResetPenalties --> OverrideSchedule["Override Witness Schedule"]
+Activate --> CreateWitness["Create/Update Emergency validator"]
+CreateWitness --> ResetPenalties["Reset validator Penalties"]
+ResetPenalties --> OverrideSchedule["Override validator Schedule"]
 OverrideSchedule --> NotifyFork["Notify Fork DB"]
 NotifyFork --> LogActivation["Log Emergency Activation"]
 LogActivation --> Normal
@@ -1395,13 +1395,13 @@ LogActivation --> Normal
 - [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
 - [config.hpp:111-118](file://libraries/protocol/include/graphene/protocol/config.hpp#L111-L118)
 
-### Hybrid Witness Scheduling System
-During emergency mode, the system implements a hybrid witness scheduling approach:
+### Hybrid validator Scheduling System
+During emergency mode, the system implements a hybrid validator scheduling approach:
 
-- **Real Witness Priority**: Real witnesses maintain their scheduled slots during normal operation
-- **Committee Replacement**: When real witnesses are unavailable (offline, shutdown, or missing signing keys), committee members automatically replace their slots
+- **Real validator Priority**: Real validators maintain their scheduled slots during normal operation
+- **Committee Replacement**: When real validators are unavailable (offline, shutdown, or missing signing keys), committee members automatically replace their slots
 - **Full Coverage**: Emergency schedule expands to cover all CHAIN_MAX_WITNESSES slots, ensuring continuous block production
-- **Dynamic Adjustment**: Schedule updates dynamically based on real witness availability and network conditions
+- **Dynamic Adjustment**: Schedule updates dynamically based on real validator availability and network conditions
 
 ```mermaid
 flowchart TD
@@ -1409,8 +1409,8 @@ Start(["Schedule Update"]) --> CheckEmergency{"Emergency Active?"}
 CheckEmergency --> |No| NormalSchedule["Normal Schedule Update"]
 CheckEmergency --> |Yes| IterateSlots["Iterate All Schedule Slots"]
 IterateSlots --> CheckSlot{"Slot Available?"}
-CheckSlot --> |Yes| KeepReal["Keep Real Witness"]
-CheckSlot --> |No| ReplaceWithCommittee["Replace with Emergency Witness"]
+CheckSlot --> |Yes| KeepReal["Keep Real validator"]
+CheckSlot --> |No| ReplaceWithCommittee["Replace with Emergency validator"]
 ReplaceWithCommittee --> ExpandSchedule["Expand to Full Schedule"]
 ExpandSchedule --> SyncProps["Sync Props with Latest Median"]
 SyncProps --> CheckExit{"LIB > Start Block?"}
@@ -1427,20 +1427,20 @@ LogDeactivation --> NormalSchedule
 **Section sources**
 - [database.cpp:2047-2144](file://libraries/chain/database.cpp#L2047-L2144)
 
-### Emergency Witness Object Management
-The system creates and manages a dedicated emergency witness object:
+### Emergency validator Object Management
+The system creates and manages a dedicated emergency validator object:
 
-- **Emergency Witness Account**: Uses CHAIN_EMERGENCY_WITNESS_ACCOUNT (committee account) for emergency operations
+- **Emergency validator Account**: Uses CHAIN_EMERGENCY_WITNESS_ACCOUNT (committee account) for emergency operations
 - **Public Key Management**: Assigns CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY for block signing during emergencies
 - **Properties Synchronization**: Copies current median chain properties to prevent skewing median computations
 - **Version Management**: Maintains current binary version and hardfork voting alignment
-- **Penalty Reset**: Emergency witness operates independently of normal penalty systems
+- **Penalty Reset**: Emergency validator operates independently of normal penalty systems
 
 ```mermaid
 flowchart TD
-Start(["Emergency Activation"]) --> CheckWitness{"Emergency Witness Exists?"}
-CheckWitness --> |No| CreateWitness["Create Emergency Witness"]
-CheckWitness --> |Yes| UpdateWitness["Update Existing Witness"]
+Start(["Emergency Activation"]) --> CheckWitness{"Emergency validator Exists?"}
+CheckWitness --> |No| CreateWitness["Create Emergency validator"]
+CheckWitness --> |Yes| UpdateWitness["Update Existing validator"]
 CreateWitness --> SetKey["Set Emergency Public Key"]
 SetKey --> SyncProps["Copy Median Properties"]
 SyncProps --> SyncVersion["Sync Version and Votes"]
@@ -1450,7 +1450,7 @@ SyncVersion --> ResetPenalties["Reset Penalties"]
 ResetPenalties --> RemoveExpire["Remove Penalty Expires"]
 RemoveExpire --> OverrideSchedule["Override Schedule"]
 OverrideSchedule --> NotifyFork["Notify Fork DB"]
-NotifyFork --> LogCreate["Log Witness Creation"]
+NotifyFork --> LogCreate["Log validator Creation"]
 LogCreate --> Continue["Continue Operation"]
 ```
 
@@ -1488,19 +1488,19 @@ LogDeactivation --> Wait
 **Section sources**
 - [database.cpp:2125-2142](file://libraries/chain/database.cpp#L2125-L2142)
 
-### Witness Penalty Handling During Emergencies
-Emergency mode includes special handling for witness penalties:
+### validator Penalty Handling During Emergencies
+Emergency mode includes special handling for validator penalties:
 
-- **Offline Witness Protection**: During emergency mode, penalties for offline witnesses are not applied
+- **Offline validator Protection**: During emergency mode, penalties for offline validators are not applied
 - **Hybrid Schedule Impact**: Committee members filling slots still count as "missed" blocks for normal penalty calculations
-- **Recovery Prevention**: Prevents offline witnesses from accumulating penalties that could lead to permanent shutdown
-- **Network Recovery**: Ensures offline witnesses can recover and resume participation after emergency mode ends
+- **Recovery Prevention**: Prevents offline validators from accumulating penalties that could lead to permanent shutdown
+- **Network Recovery**: Ensures offline validators can recover and resume participation after emergency mode ends
 
 ```mermaid
 flowchart TD
-Start(["Witness Missed Blocks"]) --> CheckEmergency{"Emergency Active?"}
+Start(["validator Missed Blocks"]) --> CheckEmergency{"Emergency Active?"}
 CheckEmergency --> |No| ApplyPenalties["Apply Normal Penalties"]
-CheckEmergency --> |Yes| CheckOffline{"Is Offline Witness?"}
+CheckEmergency --> |Yes| CheckOffline{"Is Offline validator?"}
 CheckOffline --> |No| ApplyPenalties
 CheckOffline --> |Yes| CheckProducer{"Is Producer?"}
 CheckProducer --> |Yes| ApplyPenalties
@@ -1527,11 +1527,11 @@ The emergency consensus system includes comprehensive LIB monitoring:
 ### Enhanced Error Logging Throughout Consensus Process
 **New** - The emergency consensus implementation includes comprehensive error logging and critical error handling:
 
-- **Critical Error Logging**: All emergency consensus activation and deactivation events are logged with detailed context including block numbers, timestamps, and witness information
+- **Critical Error Logging**: All emergency consensus activation and deactivation events are logged with detailed context including block numbers, timestamps, and validator information
 - **Safety Check Logging**: Extensive logging of safety checks to prevent false activations and deadlocks
 - **Transition Logging**: Detailed logging of emergency mode entry and exit conditions
-- **Witness Management Logging**: Comprehensive logging of emergency witness creation, updates, and penalty management
-- **Schedule Override Logging**: Detailed logging of witness schedule overrides and hybrid scheduling decisions
+- **validator Management Logging**: Comprehensive logging of emergency validator creation, updates, and penalty management
+- **Schedule Override Logging**: Detailed logging of validator schedule overrides and hybrid scheduling decisions
 - **LIB Monitoring Logging**: Continuous logging of LIB timestamp analysis and recovery detection
 - **Error Recovery Logging**: Logging of error recovery mechanisms and fallback procedures
 
@@ -1541,17 +1541,17 @@ The enhanced error logging system ensures that operators have comprehensive visi
 **New** - The database now includes comprehensive shared memory corruption detection and automatic recovery mechanisms:
 
 - **Structured Exception Handling**: New shared_memory_corruption_exception type replaces direct assertion failures with structured exception handling for critical validation failures.
-- **Enhanced Witness Validation**: Graceful error handling for witness account validation with detailed logging and structured exception reporting when witness accounts are missing from database.
-- **Auto-Recovery Integration**: Seamless integration with witness plugin for automatic recovery from shared memory corruption scenarios.
+- **Enhanced validator Validation**: Graceful error handling for validator account validation with detailed logging and structured exception reporting when validator accounts are missing from database.
+- **Auto-Recovery Integration**: Seamless integration with Validator Plugin for automatic recovery from shared memory corruption scenarios.
 - **Plugin-Level Recovery**: Comprehensive auto-recovery system in plugin.cpp that can automatically recover from snapshots when corruption is detected.
-- **Structured Error Reporting**: Detailed logging of corruption detection events with comprehensive context including witness information, signing keys, and memory state.
+- **Structured Error Reporting**: Detailed logging of corruption detection events with comprehensive context including validator information, signing keys, and memory state.
 
 ```mermaid
 flowchart TD
-Start(["Shared Memory Corruption Detection"]) --> DetectCorruption["Detect Missing Witness Account"]
+Start(["Shared Memory Corruption Detection"]) --> DetectCorruption["Detect Missing validator Account"]
 DetectCorruption --> LogCritical["Log Critical Error Details"]
 LogCritical --> ThrowException["Throw shared_memory_corruption_exception"]
-ThrowException --> CatchInWitness["Catch in witness plugin"]
+ThrowException --> CatchInWitness["Catch in Validator Plugin"]
 CatchInWitness --> AttemptRecovery["Attempt Auto-Recovery"]
 AttemptRecovery --> FindSnapshot["Find Latest Snapshot"]
 FindSnapshot --> CloseDatabase["Close Corrupted Database"]
@@ -1564,14 +1564,14 @@ ResumeOperation --> End(["Complete"])
 - [database.cpp:1680-1693](file://libraries/chain/database.cpp#L1680-L1693)
 - [database.cpp:3224-3236](file://libraries/chain/database.cpp#L3224-L3236)
 - [database.cpp:3272-3284](file://libraries/chain/database.cpp#L3272-L3284)
-- [witness.cpp:738-742](file://plugins/witness/witness.cpp#L738-L742)
+- [validator.cpp:738-742](file://plugins/validator/validator.cpp#L738-L742)
 - [plugin.cpp:760-770](file://plugins/chain/plugin.cpp#L760-L770)
 
 **Section sources**
 - [database.cpp:1680-1693](file://libraries/chain/database.cpp#L1680-L1693)
 - [database.cpp:3224-3236](file://libraries/chain/database.cpp#L3224-L3236)
 - [database.cpp:3272-3284](file://libraries/chain/database.cpp#L3272-L3284)
-- [witness.cpp:738-742](file://plugins/witness/witness.cpp#L738-L742)
+- [validator.cpp:738-742](file://plugins/validator/validator.cpp#L738-L742)
 - [plugin.cpp:760-770](file://plugins/chain/plugin.cpp#L760-L770)
 
 ## Dependency Analysis
@@ -1588,8 +1588,8 @@ The database depends on:
 - **Enhanced Early Rejection Logic**: Gap-based decision system (≤100 gap deferred to fork_db, >100 gap rejected) for intelligent block validation with early rejection strategies for blocks far ahead with unknown parents
 - **Enhanced Fork Database Exception Prevention**: Comprehensive mechanisms to prevent fork database exceptions through early rejection and proper dead fork detection
 - **Enhanced Memory Management**: Comprehensive logging system for shared memory allocation with detailed state reporting, plus deferred resize operations
-- **Enhanced P2P Plugin Protection**: Operation guard integration in P2P plugin for safe concurrent access during block validation and witness key retrieval
-- **Enhanced Operation Guard System**: Comprehensive concurrent access protection using operation_guard RAII pattern, dual operation guard patterns for witness scheduling safety, and resize barrier mechanisms
+- **Enhanced P2P Plugin Protection**: Operation guard integration in P2P plugin for safe concurrent access during block validation and validator key retrieval
+- **Enhanced Operation Guard System**: Comprehensive concurrent access protection using operation_guard RAII pattern, dual operation guard patterns for validator scheduling safety, and resize barrier mechanisms
 - **Enhanced Multi-Layered Block Retrieval**: Systematic fallback mechanisms for critical block data retrieval across multiple storage layers
 - **Enhanced Last Irreversible Block Advancement**: Enhanced fallback logic for LIB advancement when primary storage fails
 - **Enhanced Emergency Consensus**: Automatic recovery system with comprehensive logging and safety checks for network stall detection and recovery
@@ -1664,7 +1664,7 @@ DB --> DLTGAP["enhanced DLT gap recovery system"]
 - **Enhanced Memory Management**: Comprehensive logging provides administrators with detailed visibility into memory usage patterns, enabling proactive capacity planning and performance optimization.
 - **Enhanced Error Handling**: Graceful handling of shared memory exhaustion prevents peer disconnections and maintains network connectivity during memory pressure situations.
 - **Enhanced Operation Guard Performance**: The operation guard RAII pattern provides automatic concurrent access protection with minimal overhead, ensuring thread safety without significant performance impact.
-- **Enhanced Dual Guard Patterns**: Systematic implementation of dual operation guards in witness scheduling provides comprehensive thread safety with optimized performance characteristics.
+- **Enhanced Dual Guard Patterns**: Systematic implementation of dual operation guards in validator scheduling provides comprehensive thread safety with optimized performance characteristics.
 - **Enhanced P2P Concurrent Safety**: Operation guard protection in P2P plugin ensures safe concurrent access during block validation with minimal performance overhead.
 - **Enhanced Resize Barrier Efficiency**: Enhanced resize barrier mechanisms provide comprehensive concurrent access protection during memory resizing with optimized performance characteristics.
 - **Enhanced Multi-Layered Block Retrieval**: Systematic fallback mechanisms eliminate single points of failure and improve system reliability without significant performance impact.
@@ -1675,7 +1675,7 @@ DB --> DLTGAP["enhanced DLT gap recovery system"]
 - **Enhanced Thread-Safe Memory Operations**: Proper lock management during memory resize operations ensures data consistency and prevents performance degradation from thread contention.
 - **Enhanced P2P Sync Restart Prevention**: The enhanced early rejection logic prevents sync restart loops during snapshot imports, improving synchronization performance and reducing network overhead.
 - **Enhanced Shared Memory Corruption Detection**: Structured exception handling provides detailed error context without significant performance impact during critical validation failures.
-- **Enhanced Auto-Recovery Performance**: Seamless integration with witness plugin enables rapid recovery from shared memory corruption without significant downtime.
+- **Enhanced Auto-Recovery Performance**: Seamless integration with Validator Plugin enables rapid recovery from shared memory corruption without significant downtime.
 - **Enhanced Crash Debugging Overhead**: The debug_crash logging system adds minimal overhead during normal operation while providing comprehensive debugging capabilities when enabled.
 - **Enhanced Block Production Monitoring**: The debug-block-production option provides detailed monitoring capabilities with minimal performance impact.
 - **Enhanced Stacktrace Performance**: Stacktrace crash handlers add minimal overhead and provide significant debugging benefits for crash diagnostics.
@@ -1696,7 +1696,7 @@ Common issues and remedies:
 - **Enhanced P2P Sync Restart Loops**: Verify that the enhanced early rejection logic is working correctly to prevent sync restart loops during snapshot imports and normal operation.
 - **Enhanced Emergency Consensus Logging**: Verify that critical error logs are being generated and that emergency mode activation/deactivation events are properly recorded.
 - **Enhanced Safety Check Failures**: Monitor emergency consensus safety checks to ensure they're functioning correctly and preventing false activations.
-- **Enhanced Witness Management Problems**: Verify that emergency witness objects are being created and updated correctly during emergency mode activation.
+- **Enhanced validator Management Problems**: Verify that emergency validator objects are being created and updated correctly during emergency mode activation.
 - **Enhanced Deferred Memory Resize Issues**: Monitor the new deferred resize mechanism to ensure it's properly deferring operations until safe points and applying them correctly.
 - **Enhanced Thread Safety Problems**: Verify that memory resize operations are not causing race conditions or stale pointer issues during concurrent access.
 - **Enhanced Performance Degradation**: Check if the deferred memory resize mechanism is causing unexpected delays or if memory operations are blocking other threads.
@@ -1706,18 +1706,18 @@ Common issues and remedies:
 - **Enhanced Dead Fork Detection**: Check that the enhanced fork database properly throws unlinkable_block_exception for blocks from dead forks to prevent wasted processing resources.
 - **Enhanced Emergency Consensus Tie-Breaking**: Verify that deterministic hash-based tie-breaking is working correctly during emergency mode to ensure consistent block selection across all nodes.
 - **Enhanced Operation Guard Issues**: Monitor operation guard functionality to ensure concurrent access protection is working correctly during high-load scenarios.
-- **Enhanced Dual Guard Pattern Problems**: Verify that dual operation guards are properly protecting witness scheduling calculations and preventing race conditions.
+- **Enhanced Dual Guard Pattern Problems**: Verify that dual operation guards are properly protecting validator scheduling calculations and preventing race conditions.
 - **Enhanced P2P Concurrent Access Issues**: Check that operation guard protection is working correctly in P2P plugin for safe concurrent access during block validation.
 - **Enhanced Resize Barrier Failures**: Monitor resize barrier mechanisms to ensure they're properly pausing all database operations during memory resizing.
 - **Enhanced Concurrent Resize Safety**: Verify that resize barrier mechanisms are preventing stale pointer issues and data corruption during memory operations.
 - **Enhanced Multi-Layered Block Retrieval Issues**: Monitor the new fallback mechanisms to ensure they're properly checking fork database when primary block log fails to locate required data.
 - **Enhanced Last Irreversible Block Advancement Problems**: Verify that the enhanced fallback logic is working correctly when block log lacks required data.
 - **Enhanced Emergency Mode Activation**: Monitor emergency consensus activation logs and verify LIB timestamp analysis is working correctly.
-- **Enhanced Hybrid Schedule Issues**: Verify that emergency witness is properly replacing unavailable witnesses during network recovery.
+- **Enhanced Hybrid Schedule Issues**: Verify that emergency validator is properly replacing unavailable validators during network recovery.
 - **Enhanced Emergency Mode Deactivation**: Check that LIB advancement is properly detected to trigger emergency mode termination.
-- **Enhanced Witness Penalty Problems**: During emergency mode, verify that offline witness penalties are properly bypassed to prevent network recovery issues.
+- **Enhanced validator Penalty Problems**: During emergency mode, verify that offline validator penalties are properly bypassed to prevent network recovery issues.
 - **Enhanced Shared Memory Corruption Detection**: Monitor shared_memory_corruption_exception logging to ensure critical validation failures are properly reported.
-- **Enhanced Auto-Recovery Integration**: Verify that witness plugin auto-recovery is properly integrated with plugin-level recovery system for seamless corruption handling.
+- **Enhanced Auto-Recovery Integration**: Verify that Validator Plugin auto-recovery is properly integrated with plugin-level recovery system for seamless corruption handling.
 - **Enhanced Auto-Recovery Performance**: Monitor auto-recovery performance to ensure rapid recovery from shared memory corruption without significant downtime.
 - **Enhanced Crash Debugging Issues**: Verify that debug_crash logging is working correctly and providing comprehensive debugging information when enabled.
 - **Enhanced Block Production Monitoring Problems**: Check that debug-block-production option is properly configured and providing detailed block production logging.
@@ -1751,7 +1751,7 @@ Common issues and remedies:
 - [database.cpp:5616-5635](file://libraries/chain/database.cpp#L5616-L5635)
 
 ## Conclusion
-The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support, emergency consensus implementation, operation guard integration, improved error handling, and comprehensive crash debugging capabilities. It integrates chainbase for persistent storage with comprehensive concurrent access protection, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for witness scheduling safety, enhanced P2P plugin block validation with operation guard protection, systematic implementation of resize barrier mechanisms, comprehensive debug_crash logging throughout critical code paths, debug-block-production configuration option for detailed block production monitoring, and enhanced stacktrace crash handlers for improved crash diagnostics, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals.
+The Database Management system provides a robust, event-driven, and efficient state persistence layer for the VIZ blockchain with enhanced DLT mode support, emergency consensus implementation, operation guard integration, improved error handling, and comprehensive crash debugging capabilities. It integrates chainbase for persistent storage with comprehensive concurrent access protection, fork_database for reversible blocks, block_log for immutable history, and dlt_block_log for rolling window storage in DLT mode. Through configurable validation flags, checkpointing, memory management, DLT mode detection with proper setter implementation, enhanced block fetching logic with DLT mode awareness, improved gap logging, the new `_dlt_gap_logged` flag mechanism for intelligent warning suppression, comprehensive operation guard implementation for concurrent access protection, dual operation guard patterns for validator scheduling safety, enhanced P2P plugin block validation with operation guard protection, systematic implementation of resize barrier mechanisms, comprehensive debug_crash logging throughout critical code paths, debug-block-production configuration option for detailed block production monitoring, and enhanced stacktrace crash handlers for improved crash diagnostics, it supports fast synchronization, reliable block processing, conditional block log operations, and extensibility via observer signals.
 
 **Updated** - The system now includes comprehensive database robustness improvements including refined gap-based decision system for unlinkable blocks, enhanced exception handling infrastructure that preserves derived exception types during rethrow operations, comprehensive fork database management with improved diagnostic capabilities and enhanced logging for fork recovery operations, and sophisticated early rejection logic for blocks far ahead with unknown parents. The enhanced fork management logic with improved early rejection mechanisms provides better handling of blocks far ahead with unknown parents, significantly improving the efficiency of the synchronization process and reducing the likelihood of encountering unlinkable blocks that would require peer soft-banning or sync restarts. The enhanced multi-layered block retrieval system represents a significant advancement in database reliability and fault tolerance. The improved last irreversible block advancement logic demonstrates the system's commitment to data consistency and availability. The enhanced exception handling infrastructure ensures that derived exception types are properly preserved during rethrow operations, improving debugging and troubleshooting capabilities. The enhanced memory management system provides comprehensive logging capabilities that offer administrators detailed visibility into memory usage patterns during blockchain operation, while the deferred shared memory resize mechanism significantly improves efficiency during high-load scenarios by preventing race conditions and stale pointer issues through proper thread synchronization and lock management.
 
@@ -1767,7 +1767,7 @@ The enhanced exception handling infrastructure represents a fundamental improvem
 
 **Enhanced P2P Synchronization** - The enhanced P2P synchronization system with improved unlinkable block classification and sync restart prevention represents a significant improvement in network reliability and performance. The P2P layer now properly distinguishes between dead fork blocks (at or below head) and far-ahead blocks that slipped past early rejection, enabling appropriate handling for each scenario. The dead fork handling with soft-banning prevents continued transmission of stale blocks, while the far-ahead block handling with sync restart prevention allows sequential block fetching without causing network stalls. The integration with deferred resize scenarios ensures that P2P operations can continue smoothly even when memory pressure occurs during block processing.
 
-**Enhanced Operation Guard Implementation** - The comprehensive operation guard system represents a fundamental improvement in concurrent access protection throughout the database management system. The systematic implementation of operation_guard RAII pattern provides automatic concurrent access protection across all critical sections, while the dual operation guard patterns in witness scheduling calculations ensure thread safety during complex slot determination operations. The integration of operation guards in P2P plugin block validation protects witness key retrieval operations from concurrent memory modifications, and the comprehensive resize barrier mechanisms prevent data corruption during memory resizing operations. These enhancements ensure that the database management system can handle high-load scenarios safely and reliably while maintaining data consistency and preventing race conditions that could lead to system instability or data corruption.
+**Enhanced Operation Guard Implementation** - The comprehensive operation guard system represents a fundamental improvement in concurrent access protection throughout the database management system. The systematic implementation of operation_guard RAII pattern provides automatic concurrent access protection across all critical sections, while the dual operation guard patterns in validator scheduling calculations ensure thread safety during complex slot determination operations. The integration of operation guards in P2P plugin block validation protects validator key retrieval operations from concurrent memory modifications, and the comprehensive resize barrier mechanisms prevent data corruption during memory resizing operations. These enhancements ensure that the database management system can handle high-load scenarios safely and reliably while maintaining data consistency and preventing race conditions that could lead to system instability or data corruption.
 
 **Enhanced Multi-Layered Block Retrieval System** - The new multi-layered block retrieval system represents a significant advancement in database reliability and fault tolerance. By implementing systematic fallback mechanisms that check fork database when primary block log fails to locate required data, the database ensures consistent behavior across different block logging configurations. This approach eliminates single points of failure and provides improved resilience against storage layer issues, network interruptions, and other operational challenges. The hierarchical retrieval strategy prioritizes current/main branch blocks in the fork database, then checks the primary block log for irreversible blocks, and finally uses the DLT block log as a fallback in DLT mode. This ensures that block retrieval works reliably regardless of which storage layer contains the requested data, providing improved fault tolerance and system reliability.
 
@@ -1775,13 +1775,13 @@ The enhanced exception handling infrastructure represents a fundamental improvem
 
 **Enhanced Emergency Consensus** - The enhanced emergency consensus implementation provides comprehensive logging and safety checks for network stall detection and recovery. The automatic recovery system with detailed logging and safety mechanisms ensures that operators have complete visibility into emergency operations without impacting performance. The enhanced safety check optimization prevents false activations while ensuring network stability, making the system more reliable and suitable for production environments where network reliability is critical.
 
-**Enhanced Shared Memory Corruption Detection** - The introduction of the new shared_memory_corruption_exception type represents a significant advancement in error handling robustness. This structured exception handling approach replaces direct assertion failures with comprehensive error reporting, enabling better debugging and troubleshooting capabilities. The enhanced witness account validation with graceful error handling during block acceptance and generation processes ensures that critical validation failures are properly detected and reported with detailed context information.
+**Enhanced Shared Memory Corruption Detection** - The introduction of the new shared_memory_corruption_exception type represents a significant advancement in error handling robustness. This structured exception handling approach replaces direct assertion failures with comprehensive error reporting, enabling better debugging and troubleshooting capabilities. The enhanced validator account validation with graceful error handling during block acceptance and generation processes ensures that critical validation failures are properly detected and reported with detailed context information.
 
-**Enhanced Auto-Recovery Integration** - The seamless integration with witness plugin for automatic recovery from shared memory corruption scenarios represents a major improvement in system reliability and uptime. The comprehensive auto-recovery system in plugin.cpp provides rapid recovery from corruption scenarios with minimal downtime, while the structured error reporting ensures that operators have complete visibility into recovery operations. This integration makes the database management system more resilient to critical hardware and software failures, improving overall system reliability and operator confidence.
+**Enhanced Auto-Recovery Integration** - The seamless integration with Validator Plugin for automatic recovery from shared memory corruption scenarios represents a major improvement in system reliability and uptime. The comprehensive auto-recovery system in plugin.cpp provides rapid recovery from corruption scenarios with minimal downtime, while the structured error reporting ensures that operators have complete visibility into recovery operations. This integration makes the database management system more resilient to critical hardware and software failures, improving overall system reliability and operator confidence.
 
 **Enhanced Crash Debugging Capabilities** - The comprehensive crash debugging system with debug_crash logging throughout critical code paths represents a significant advancement in troubleshooting and diagnostics capabilities. The extensive debug markers (DEBUG_CRASH) provide detailed visibility into database operations, while the debug-block-production configuration option enables comprehensive monitoring of block production processes. The enhanced stacktrace crash handlers provide automatic crash diagnostics with detailed stacktrace information, significantly improving the debugging experience and reducing troubleshooting time for critical system issues.
 
-**Enhanced Block Production Monitoring** - The debug-block-production configuration option provides operators with detailed visibility into block production processes, enabling comprehensive monitoring and troubleshooting of production-related issues. The integration with witness plugin ensures that block production logging is comprehensive and actionable, while the detailed logging markers throughout the production pipeline provides granular visibility into production scheduling, slot determination, and block generation processes.
+**Enhanced Block Production Monitoring** - The debug-block-production configuration option provides operators with detailed visibility into block production processes, enabling comprehensive monitoring and troubleshooting of production-related issues. The integration with Validator Plugin ensures that block production logging is comprehensive and actionable, while the detailed logging markers throughout the production pipeline provides granular visibility into production scheduling, slot determination, and block generation processes.
 
 **Enhanced Stacktrace Crash Handlers** - The enhanced stacktrace crash handlers provide automatic crash diagnostics with detailed stacktrace information, significantly improving the debugging experience for fatal errors. The integration with the crash debugging system ensures that operators have complete visibility into system crashes and can quickly identify and resolve critical issues through comprehensive stacktrace analysis and crash diagnostics.
 

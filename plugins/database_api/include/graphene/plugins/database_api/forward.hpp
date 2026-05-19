@@ -12,7 +12,7 @@ namespace graphene { namespace plugins { namespace database_api {
             typedef graphene::chain::escrow_object escrow_api_object;
             typedef graphene::chain::withdraw_vesting_route_object withdraw_vesting_route_api_object;
             typedef graphene::chain::witness_vote_object witness_vote_api_object;
-            typedef graphene::chain::witness_schedule_object witness_schedule_api_object;
+            typedef graphene::chain::validator_schedule_object witness_schedule_api_object;
 
 using vesting_delegation_api_object = graphene::chain::vesting_delegation_object;
 using vesting_delegation_expiration_api_object = graphene::chain::vesting_delegation_expiration_object;

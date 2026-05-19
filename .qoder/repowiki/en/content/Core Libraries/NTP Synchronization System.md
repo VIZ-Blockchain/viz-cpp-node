@@ -1,4 +1,4 @@
-# NTP Synchronization System
+﻿# NTP Synchronization System
 
 <cite>
 **Referenced Files in This Document**
@@ -8,7 +8,7 @@
 - [time.cpp](file://libraries/time/time.cpp)
 - [main.cpp](file://programs/vizd/main.cpp)
 - [ntp_test.cpp](file://thirdparty/fc/tests/network/ntp_test.cpp)
-- [witness.cpp](file://plugins/witness/witness.cpp)
+- [validator.cpp](file://plugins/validator/validator.cpp)
 </cite>
 
 ## Update Summary
@@ -333,7 +333,7 @@ The NTP system integrates with the blockchain's block production mechanism to en
 
 | Component | Integration Point | Purpose |
 |-----------|-------------------|---------|
-| Witness Plugin | Block slot calculation | Determines when witnesses can produce blocks |
+| Validator Plugin | Block slot calculation | Determines when validators can produce blocks |
 | Chain Database | Block timestamp validation | Ensures block timestamps are reasonable |
 | P2P Plugin | Peer synchronization | Maintains time consistency across network |
 | Wallet | Transaction timestamping | Provides accurate timestamps for operations |

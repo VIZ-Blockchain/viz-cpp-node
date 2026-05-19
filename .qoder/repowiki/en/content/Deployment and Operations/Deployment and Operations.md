@@ -1,4 +1,4 @@
-# Deployment and Operations
+﻿# Deployment and Operations
 
 <cite>
 **Referenced Files in This Document**
@@ -32,7 +32,7 @@
 10. [Appendices](#appendices)
 
 ## Introduction
-This document provides comprehensive deployment and operations guidance for the VIZ CPP Node. It covers production deployment strategies, hardware and security considerations, containerization with multiple image variants, orchestration options, cloud deployment, high availability, node types (full, witness, seed), monitoring and maintenance, security hardening, troubleshooting, and backup/disaster recovery.
+This document provides comprehensive deployment and operations guidance for the VIZ CPP Node. It covers production deployment strategies, hardware and security considerations, containerization with multiple image variants, orchestration options, cloud deployment, high availability, node types (full, validator, seed), monitoring and maintenance, security hardening, troubleshooting, and backup/disaster recovery.
 
 ## Project Structure
 The repository organizes deployment assets and operational artifacts primarily under share/vizd, with configuration templates, Dockerfiles, and scripts for containerized deployments. Documentation for building and testnet operations resides under documentation/.
@@ -87,8 +87,8 @@ A --> E[".github/workflows/ (CI/CD)"]
   - Low-memory image: Built from Dockerfile-lowmem, optimized for resource-constrained environments.
 - Configuration templates
   - config.ini: General-purpose configuration for mainnet.
-  - config_testnet.ini: Testnet-specific configuration with witness participation enabled.
-  - config_witness.ini: Witness node configuration with RPC bound to localhost and virtual ops skipped.
+  - config_testnet.ini: Testnet-specific configuration with validator participation enabled.
+  - config_witness.ini: validator node configuration with RPC bound to localhost and virtual ops skipped.
   - config_mongo.ini: Extended configuration including MongoDB plugin for analytics.
 - Entrypoint script
   - vizd.sh: Orchestrates seed node injection, RPC/P2P endpoints, replay initialization, and runtime arguments.
@@ -99,7 +99,7 @@ Key operational parameters and behaviors:
 - P2P and RPC endpoints are configurable via environment variables and config files.
 - Shared memory sizing and growth thresholds are tunable to manage memory pressure.
 - Lock wait timeouts and retries are configurable to balance throughput and latency.
-- Plugin selection determines node capabilities (e.g., witness, mongo, debug_node).
+- Plugin selection determines node capabilities (e.g., validator, mongo, debug_node).
 
 **Section sources**
 - [Dockerfile-production](file://share/vizd/docker/Dockerfile-production#L1-L88)
@@ -113,7 +113,7 @@ Key operational parameters and behaviors:
 - [main.cpp](file://programs/vizd/main.cpp#L60-L91)
 
 ## Architecture Overview
-The VIZ node is a modular application with pluggable subsystems for chain processing, P2P networking, webserver APIs, and optional plugins (e.g., witness, mongo, debug_node). Containerization encapsulates dependencies and exposes standardized ports for RPC (HTTP/WebSocket) and P2P communication.
+The VIZ node is a modular application with pluggable subsystems for chain processing, P2P networking, webserver APIs, and optional plugins (e.g., validator, mongo, debug_node). Containerization encapsulates dependencies and exposes standardized ports for RPC (HTTP/WebSocket) and P2P communication.
 
 ```mermaid
 graph TB
@@ -121,7 +121,7 @@ subgraph "Container Runtime"
 C1["vizd container"]
 end
 subgraph "Node Process"
-N1["vizd binary<br/>plugins: chain, p2p, webserver, witness, mongo, etc."]
+N1["vizd binary<br/>plugins: chain, p2p, webserver, validator, mongo, etc."]
 end
 subgraph "Storage"
 S1["/var/lib/vizd (data dir)"]
@@ -194,10 +194,10 @@ Operational notes:
   - Use config.ini as baseline.
   - Typical plugins include chain, p2p, webserver, database_api, account_history, operation_history, and others.
 - Full node (testnet)
-  - Use config_testnet.ini; includes witness participation and a default witness identity.
-- Witness node
+  - Use config_testnet.ini; includes validator participation and a default validator identity.
+- validator node
   - Use config_witness.ini; RPC endpoints bound to localhost, skip virtual ops for reduced overhead.
-  - Configure witness name and private key for block production.
+  - Configure validator name and private key for block production.
 - Analytics node (MongoDB)
   - Use config_mongo.ini; includes mongo_db plugin and market history settings.
 
@@ -237,7 +237,7 @@ ExecNode --> End(["Run"])
 - [vizd.sh](file://share/vizd/vizd.sh#L1-L82)
 
 ### Node Binary and Plugin Registration
-The node binary registers a comprehensive set of plugins, including chain, p2p, webserver, witness, database_api, social_network, account_history, private_message, tags, follow, and optional mongo_db plugin. This defines the node’s capabilities and API surface.
+The node binary registers a comprehensive set of plugins, including chain, p2p, webserver, validator, database_api, social_network, account_history, private_message, tags, follow, and optional mongo_db plugin. This defines the node’s capabilities and API surface.
 
 ```mermaid
 classDiagram
@@ -275,9 +275,9 @@ VizNode --> MongoDbPlugin : "registers (optional)"
 - Health checks
   - Use HTTP RPC to query dynamic global properties or chain info.
   - Monitor P2P connectivity and sync progress.
-- Witness operations
-  - Configure witness name and private key for block production.
-  - Bind RPC to localhost for witness nodes to minimize exposure.
+- validator operations
+  - Configure validator name and private key for block production.
+  - Bind RPC to localhost for validator nodes to minimize exposure.
 
 **Section sources**
 - [config.ini](file://share/vizd/config/config.ini#L16-L20)
@@ -340,13 +340,13 @@ Common operational issues and remedies:
   - Increase write/read wait micros and retries; consider single-write-thread.
 - Insufficient disk space
   - Monitor free space thresholds and ensure adequate headroom for shared memory growth.
-- Witness node not producing blocks
-  - Confirm witness name and private key are set; ensure required participation threshold is appropriate.
+- validator node not producing blocks
+  - Confirm validator name and private key are set; ensure required participation threshold is appropriate.
 - Debugging state changes
   - Use debug_node plugin in isolated, localhost-bound RPC for controlled experiments.
 
 Security hardening tips:
-- Bind RPC to localhost for witness nodes; expose externally via reverse proxy with authentication.
+- Bind RPC to localhost for validator nodes; expose externally via reverse proxy with authentication.
 - Use firewalls to restrict P2P ingress to trusted peers.
 - Rotate private keys and restrict filesystem permissions on /var/lib/vizd.
 
@@ -368,8 +368,8 @@ This guide consolidates deployment and operations practices for VIZ CPP Node acr
 ### Appendix A: Node Types and Operational Procedures
 - Full node
   - Use config.ini; expose RPC publicly as needed; monitor P2P connectivity.
-- Witness node
-  - Use config_witness.ini; bind RPC to localhost; configure witness and private key.
+- validator node
+  - Use config_witness.ini; bind RPC to localhost; configure validator and private key.
 - Seed node
   - Use config.ini; focus on stable connectivity and minimal external exposure; consider low-memory image for constrained environments.
 

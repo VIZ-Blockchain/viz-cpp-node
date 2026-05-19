@@ -1,0 +1,1435 @@
+﻿# validator
+
+<cite>
+**Referenced Files in This Document**
+- [validator.hpp](file://plugins/validator/include/graphene/plugins/validator/validator.hpp)
+- [validator.cpp](file://plugins/validator/validator.cpp)
+- [witness_api_plugin.hpp](file://plugins/witness_api/include/graphene/plugins/witness_api/plugin.hpp)
+- [witness_api_plugin.cpp](file://plugins/witness_api/plugin.cpp)
+- [witness_objects.hpp](file://libraries/chain/include/graphene/chain/witness_objects.hpp)
+- [chain_objects.hpp](file://libraries/chain/include/graphene/chain/chain_objects.hpp)
+- [database.hpp](file://libraries/chain/include/graphene/chain/database.hpp)
+- [database.cpp](file://libraries/chain/database.cpp)
+- [fork_database.hpp](file://libraries/chain/include/graphene/chain/fork_database.hpp)
+- [fork_database.cpp](file://libraries/chain/fork_database.cpp)
+- [time.hpp](file://libraries/time/time.hpp)
+- [time.cpp](file://libraries/time/time.cpp)
+- [ntp.cpp](file://thirdparty/fc/src/network/ntp.cpp)
+- [main.cpp](file://programs/vizd/main.cpp)
+- [snapshot_plugin.cpp](file://plugins/snapshot/plugin.cpp)
+- [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
+- [config.ini](file://share/vizd/config/config.ini)
+- [config_witness.ini](file://share/vizd/config/config_witness.ini)
+- [p2p_plugin.hpp](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp)
+- [witness_guard.hpp](file://plugins/witness_guard/include/graphene/plugins/witness_guard/witness_guard.hpp)
+- [witness_guard.cpp](file://plugins/witness_guard/witness_guard.cpp)
+- [global_property_object.hpp](file://libraries/chain/include/graphene/chain/global_property_object.hpp)
+</cite>
+
+## Update Summary
+**Changes Made**
+- HF13: Implemented validator reward sharing — stakeholder reward distribution, `set_reward_sharing_operation`, `distribution_epoch_length` consensus parameter, `process_validator_epoch_distribution()`, new virtual op `stakeholder_reward_operation`; rewards accumulate as TOKEN and convert to SHARES at epoch end
+- Added comprehensive validator protection and monitoring capabilities with new witness_guard plugin
+- Enhanced emergency recovery mechanisms with auto-disable thresholds and improved network connectivity features
+- Integrated validator key auto-restore functionality with emergency consensus mode support
+- Implemented consecutive block auto-disable protection to prevent validator abuse
+- Added enhanced minority fork detection with automatic recovery mechanisms
+- Integrated emergency consensus detection and recovery procedures
+- Enhanced network connectivity features with improved peer synchronization
+- Isolated production timer on dedicated io_service/thread, preventing P2P I/O from delaying slot callbacks
+- Fixed lag tight loop: tracks missed slot time and skips ahead to avoid rechecking the same slot every 250ms
+- Added production watchdog: fires at 60s (emergency master) or 180s (regular validator) of no block produced
+- Added slot hijack detection: counts consecutive slots where emergency master fills slots assigned to our validator
+- Fixed false-positive hijack: own-validator blocks no longer trigger hijack counter
+- Fixed slot index calculation (current_aslot % num_scheduled_witnesses) for correct schedule position
+- Added not_my_turn streak detection: warns at 500 consecutive iterations (~125s) of schedule misalignment
+- Added on_block_applied missed-slot diagnostic: dumps full plugin state when incoming block reveals our missed slots
+- Refined slot=0 stall detection: only counts real NTP stalls (now ≤ head_block_time), not normal between-slot waits
+
+## Table of Contents
+1. [Introduction](#introduction)
+2. [Project Structure](#project-structure)
+3. [Core Components](#core-components)
+4. [Architecture Overview](#architecture-overview)
+5. [Configuration Parameters](#configuration-parameters)
+6. [Detailed Component Analysis](#detailed-component-analysis)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
+
+## Introduction
+This document explains the validator subsystem of the VIZ node implementation. It covers how validators are scheduled, how blocks are produced, how validator participation is monitored, and how the validator-related APIs expose information to clients. The focus is on the Validator Plugin (block production), the validator API plugin (read-only queries), the validator guard plugin (protection and monitoring), and the underlying chain database that maintains validator state and schedules.
+
+**Updated** Enhanced with comprehensive validator protection and monitoring capabilities, emergency recovery mechanisms, auto-disable thresholds, improved network connectivity features, validator key auto-restore functionality, consecutive block protection, enhanced minority fork detection, emergency consensus integration, and automatic recovery procedures.
+
+## Project Structure
+The validator functionality spans four primary areas:
+- Validator Plugin: Produces blocks and validates blocks posted by other validators with optimized timing.
+- validator Guard plugin: Provides protection and monitoring for validator keys with auto-restore and auto-disable capabilities.
+- validator API plugin: Exposes validator-related read-only queries via JSON-RPC.
+- Chain database: Maintains validator objects, voting, scheduling, and participation metrics.
+
+```mermaid
+graph TB
+subgraph "Node Binary"
+VIZD["vizd main<br/>registers plugins"]
+end
+subgraph "Plugins"
+validator["Validator Plugin<br/>optimized block production<br/>fork collision timeout: 21 blocks<br/>minority fork detection<br/>DEBUG logging: enabled"]
+WGUARD["validator Guard Plugin<br/>key auto-restore<br/>auto-disable protection<br/>emergency consensus support"]
+WAPI["validator API Plugin<br/>JSON-RPC queries"]
+SNAPSHOT["Snapshot Plugin<br/>coordinated operations"]
+P2P["P2P Plugin<br/>broadcast<br/>resync_from_lib()"]
+CHAIN["Chain Plugin<br/>database access"]
+end
+subgraph "Chain Database"
+DB["database.hpp/.cpp<br/>compare_fork_branches()<br/>DEBUG logging: enabled<br/>emergency_consensus_active"]
+WITNESS_OBJ["witness_objects.hpp"]
+BPV_OBJ["chain_objects.hpp<br/>block_post_validation_object"]
+FORK_DB["fork_database.hpp/.cpp<br/>enhanced fork collision detection<br/>automatic stale pruning"]
+end
+subgraph "Time Synchronization"
+TIME["Time Service<br/>NTP synchronization with 250ms ticks"]
+END
+VIZD --> validator
+VIZD --> WGUARD
+VIZD --> WAPI
+VIZD --> SNAPSHOT
+VIZD --> P2P
+VIZD --> CHAIN
+validator --> P2P
+validator --> CHAIN
+validator --> TIME
+WGUARD --> CHAIN
+WGUARD --> P2P
+CHAIN --> DB
+DB --> WITNESS_OBJ
+DB --> BPV_OBJ
+DB --> FORK_DB
+WAPI --> CHAIN
+CHAIN --> DB
+SNAPSHOT --> validator
+```
+
+**Diagram sources**
+- [main.cpp:63-92](file://programs/vizd/main.cpp#L63-L92)
+- [validator.hpp:34-68](file://plugins/validator/include/graphene/plugins/validator/validator.hpp#L34-L68)
+- [validator.cpp:59-118](file://plugins/validator/validator.cpp#L59-L118)
+- [witness_guard.hpp:11-48](file://plugins/witness_guard/include/graphene/plugins/witness_guard/witness_guard.hpp#L11-L48)
+- [witness_guard.cpp:27-78](file://plugins/witness_guard/witness_guard.cpp#L27-L78)
+- [witness_api_plugin.hpp:56-98](file://plugins/witness_api/include/graphene/plugins/witness_api/plugin.hpp#L56-L98)
+- [witness_api_plugin.cpp:13-28](file://plugins/witness_api/plugin.cpp#L13-L28)
+- [database.hpp:37-83](file://libraries/chain/include/graphene/chain/database.hpp#L37-L83)
+- [witness_objects.hpp:27-132](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L27-L132)
+- [chain_objects.hpp:174-201](file://libraries/chain/include/graphene/chain/chain_objects.hpp#L174-L201)
+- [fork_database.hpp:53-81](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L81)
+- [time.cpp:13-53](file://libraries/time/time.cpp#L13-L53)
+- [snapshot_plugin.cpp:1267-1276](file://plugins/snapshot/plugin.cpp#L1267-1276)
+- [p2p_plugin.hpp:50-55](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L50-L55)
+
+**Section sources**
+- [main.cpp:63-92](file://programs/vizd/main.cpp#L63-L92)
+
+## Core Components
+- Validator Plugin
+  - Provides optimized block production loop synchronized to 250ms intervals for deterministic slot time alignment.
+  - Validates whether it is time to produce a block, checks participation thresholds, and signs blocks with configured private keys.
+  - Broadcasts blocks and block post validations via the P2P plugin.
+  - **Enhanced**: Implements forced NTP synchronization when timing issues are detected during block production attempts.
+  - **Enhanced**: Implements comprehensive fork collision detection to prevent competing blocks at the same height.
+  - **Enhanced**: **NEW**: Implements comprehensive minority fork detection system to identify when all recent blocks were produced by local validators only.
+  - **Enhanced**: **NEW**: Provides automatic recovery through resync_from_lib() when minority fork is detected.
+  - **Enhanced**: **NEW**: Integrates with skip_undo_history_check flag to control production during recovery scenarios.
+  - **Enhanced**: **NEW**: Implements comprehensive debug logging with verbose traces for block production and chain internals.
+  - **New**: Provides `is_witness_scheduled_soon()` method to check if any locally-controlled validators are scheduled to produce blocks in the upcoming 4 slots.
+  - **New**: Implements two-level fork collision resolution system with configurable timeout blocks parameter (--fork-collision-timeout-blocks).
+  - **New**: Integrates with enhanced fork database for automatic stale fork pruning after successful block application.
+  - **New**: Runs production timer on a dedicated `boost::asio::io_service` and thread, isolated from P2P network I/O.
+  - **New**: Prevents lag tight loop: records missed slot time and skips ahead to avoid rechecking the same slot every 250ms.
+  - **New**: Production watchdog alerts when no block is produced for 60s (emergency master) or 180s (regular validator); auto-enables verbose debug logging on first fire.
+  - **New**: Slot hijack detection counts consecutive emergency-master-filled slots assigned to our validator in the shuffled schedule.
+  - **New**: not_my_turn streak detection warns after 500 consecutive iterations (~125s) of another validator holding all slots.
+  - **New**: Missed-slot diagnostics via `on_block_applied` signal: detects gaps and dumps full plugin state when our validator missed a slot.
+- validator Guard Plugin
+  - **NEW**: Provides comprehensive validator protection and monitoring capabilities.
+  - **NEW**: Implements validator key auto-restore functionality to automatically restore null signing keys.
+  - **NEW**: Provides consecutive block auto-disable protection to prevent validator abuse by disabling validators after N consecutive blocks.
+  - **NEW**: Supports emergency consensus mode with automatic key restoration and recovery procedures.
+  - **NEW**: Monitors validator signing keys and automatically restores them when detected as null on-chain.
+  - **NEW**: Integrates with P2P plugin to broadcast witness_update transactions for key restoration and disabling.
+  - **NEW**: Implements safety checks including network health monitoring and long fork detection.
+  - **NEW**: Provides configurable check intervals and disable thresholds for flexible protection strategies.
+- validator API Plugin
+  - Exposes read-only queries for active validators, schedule, individual validators, and counts.
+  - Returns API-friendly objects derived from chain validator data.
+- Chain Database
+  - Stores validator objects, schedules, participation metrics, and supports validator scheduling and participation computations.
+  - Manages block post validation objects and updates last irreversible block computation based on validator confirmations.
+  - **Enhanced**: Provides enhanced fork database access with comprehensive querying capabilities for fork collision detection.
+  - **Enhanced**: Implements comprehensive validator reward creation with find_account() validation to prevent crashes from missing account objects.
+  - **Enhanced**: **NEW**: Integrates with skip_undo_history_check flag for controlled production during recovery scenarios.
+  - **Enhanced**: **NEW**: Implements comprehensive debug logging system enabling verbose traces for chain internals and block processing.
+  - **New**: Implements compare_fork_branches() function for intelligent fork weight comparison with +10% longer-chain bonus.
+  - **New**: Provides automatic stale fork pruning mechanism to remove competing blocks from dead forks.
+  - **New**: **Enhanced**: Supports emergency_consensus_active field for emergency consensus mode detection.
+
+**Updated** Added comprehensive error handling and validation for validator reward creation, including find_account() checks before creating vesting rewards, crash prevention mechanisms, clear recovery procedures for database corruption scenarios, new fork collision timeout configuration, two-level fork resolution system with vote-weighted comparison and stuck-head timeout, enhanced fork database querying capabilities, automatic stale fork pruning after successful block application, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: enhanced emergency consensus mode integration, **NEW**: skip_undo_history_check flag for controlled production during recovery scenarios, **NEW**: comprehensive debug logging system enabling verbose traces for block production and chain internals, **NEW**: validator protection and monitoring capabilities with auto-restore and auto-disable features, **NEW**: emergency recovery mechanisms with automatic key restoration, **NEW**: consecutive block protection to prevent validator abuse, **NEW**: enhanced network connectivity with improved peer synchronization.
+
+**Section sources**
+- [validator.hpp:34-68](file://plugins/validator/include/graphene/plugins/validator/validator.hpp#L34-L68)
+- [validator.cpp:59-118](file://plugins/validator/validator.cpp#L59-L118)
+- [validator.cpp:206-249](file://plugins/validator/validator.cpp#L206-L249)
+- [witness_guard.hpp:11-48](file://plugins/witness_guard/include/graphene/plugins/witness_guard/witness_guard.hpp#L11-L48)
+- [witness_guard.cpp:27-78](file://plugins/witness_guard/witness_guard.cpp#L27-L78)
+- [witness_guard.cpp:83-191](file://plugins/witness_guard/witness_guard.cpp#L83-L191)
+- [witness_guard.cpp:360-369](file://plugins/witness_guard/witness_guard.cpp#L360-L369)
+- [witness_api_plugin.hpp:56-98](file://plugins/witness_api/include/graphene/plugins/witness_api/plugin.hpp#L56-L98)
+- [witness_api_plugin.cpp:13-28](file://plugins/witness_api/plugin.cpp#L13-L28)
+- [database.hpp:37-83](file://libraries/chain/include/graphene/chain/database.hpp#L37-L83)
+
+## Architecture Overview
+The validator subsystem integrates tightly with the chain database and P2P layer. The Validator Plugin periodically evaluates conditions to produce a block using optimized 250ms interval scheduling, consults the database for validator scheduling and participation, and broadcasts the resulting block. The validator guard plugin provides continuous monitoring and protection for validator keys, automatically restoring null signing keys and preventing validator abuse through auto-disable mechanisms. The validator API plugin reads from the database to serve JSON-RPC queries. **New**: Other plugins can now coordinate with validator scheduling using the `is_witness_scheduled_soon()` method to avoid conflicts during critical operations.
+
+**Enhanced** The architecture now includes robust NTP time synchronization with automatic fallback mechanisms, crash-safe shutdown procedures, plugin coordination capabilities through the new scheduling method, comprehensive fork collision detection system with two-level resolution, enhanced fork database querying capabilities, automatic stale fork pruning, enhanced validator reward creation with comprehensive validation and error handling, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: enhanced emergency consensus mode integration, **NEW**: skip_undo_history_check flag for controlled production during recovery scenarios, **NEW**: comprehensive debug logging system enabling verbose traces for block production and chain internals, **NEW**: validator protection and monitoring capabilities with auto-restore and auto-disable features, **NEW**: emergency recovery mechanisms with automatic key restoration, **NEW**: consecutive block protection to prevent validator abuse, **NEW**: enhanced network connectivity with improved peer synchronization.
+
+```mermaid
+sequenceDiagram
+participant Timer as "validator Impl<br/>schedule_production_loop (250ms ticks)"
+participant Guard as "validator Guard<br/>auto-restore & protection"
+participant NTP as "NTP Service<br/>time synchronization"
+participant DB as "Chain Database<br/>DEBUG logging : enabled<br/>emergency_consensus_active"
+participant ForkDB as "Fork Database<br/>collision detection<br/>stale pruning"
+participant P2P as "P2P Plugin"
+participant Net as "Network"
+participant Snapshot as "Snapshot Plugin<br/>coordination"
+Guard->>DB : check_and_restore_internal()
+DB-->>Guard : network health & key status
+alt network healthy & key null
+Guard->>P2P : broadcast witness_update
+P2P-->>Guard : transaction broadcast
+Guard->>DB : track pending confirmation
+else network unhealthy
+Guard->>Guard : skip auto-restore
+end
+Timer->>NTP : check_time_sync()
+NTP-->>Timer : synchronized status
+alt timing issues detected
+Timer->>NTP : force_sync()
+NTP-->>Timer : updated time
+end
+Timer->>Timer : compute next 250ms boundary
+Timer->>DB : get_slot_at_time(now + 250ms)
+DB-->>Timer : slot
+alt slot available
+Timer->>DB : get_scheduled_witness(slot)
+Timer->>DB : get_slot_time(slot)
+Timer->>DB : witness_participation_rate()
+alt conditions met
+alt fork collision check
+Timer->>ForkDB : fetch_block_by_number(head_block_num + 1)
+ForkDB-->>Timer : existing blocks at height
+alt competing blocks exist
+alt LEVEL 1 : Vote-weighted comparison
+Timer->>DB : compare_fork_branches(competing_id, head_id)
+DB-->>Timer : weight comparison result
+alt comparison possible
+alt competing fork heavier
+Timer->>NTP : force_sync() on fork collision
+Timer->>Timer : log fork collision and defer
+else our fork heavier
+Timer->>ForkDB : remove(competing_id)
+Timer->>Timer : reset defer count
+else tied/comparison impossible
+alt LEVEL 2 : Stuck-head timeout
+Timer->>Timer : fork_collision_defer_count++
+alt timeout exceeded (21 blocks)
+Timer->>ForkDB : remove_blocks_by_number(head_block_num + 1)
+Timer->>Timer : reset defer count
+Timer->>Timer : fall through to produce
+else timeout not exceeded
+Timer->>NTP : force_sync() on fork collision
+Timer->>Timer : log fork collision and defer
+end
+else no competing blocks
+alt minority fork detection
+Timer->>ForkDB : check last CHAIN_MAX_WITNESSES blocks
+alt all from our validators
+alt emergency consensus active
+Timer->>Timer : skip minority fork detection
+else enable-stale-production enabled
+Timer->>Timer : continue production
+else enable-stale-production disabled
+Timer->>P2P : resync_from_lib()
+Timer->>Timer : production disabled
+Timer->>Timer : return minority_fork
+else not a minority fork
+alt validator reward creation
+Timer->>DB : get_witness(current_witness)
+Timer->>DB : find_account(validator.owner)
+alt account exists
+Timer->>DB : create_vesting(account, reward)
+Timer->>DB : push_virtual_operation(witness_reward)
+else account missing
+Timer->>DB : log critical error
+Timer->>DB : FC_ASSERT restart required
+end
+Timer->>P2P : broadcast_block(block)
+P2P->>Net : transmit block
+end
+else conditions not met
+Timer->>NTP : update_ntp_time() on lag
+Timer->>Timer : log reason (sync, participation, key, lag)
+end
+else no slot
+Timer->>Timer : wait until next 250ms tick
+end
+Timer->>Timer : reschedule for next 250ms tick
+Note over Snapshot : Check if validator scheduled soon<br/>to coordinate operations
+Snapshot->>Timer : is_witness_scheduled_soon()
+Timer-->>Snapshot : true/false
+```
+
+**Diagram sources**
+- [validator.cpp:206-276](file://plugins/validator/validator.cpp#L206-L276)
+- [validator.cpp:278-423](file://plugins/validator/validator.cpp#L278-L423)
+- [validator.cpp:447-471](file://plugins/validator/validator.cpp#L447-L471)
+- [validator.cpp:590-695](file://plugins/validator/validator.cpp#L590-L695)
+- [validator.cpp:263-266](file://plugins/validator/validator.cpp#L263-L266)
+- [validator.cpp:206-249](file://plugins/validator/validator.cpp#L206-L249)
+- [witness_guard.cpp:83-191](file://plugins/witness_guard/witness_guard.cpp#L83-L191)
+- [witness_guard.cpp:455-544](file://plugins/witness_guard/witness_guard.cpp#L455-L544)
+- [database.cpp:4317-4332](file://libraries/chain/database.cpp#L4317-L4332)
+- [time.cpp:74-76](file://libraries/time/time.cpp#L74-L76)
+- [snapshot_plugin.cpp:1267-1276](file://plugins/snapshot/plugin.cpp#L1267-1276)
+- [database.cpp:2824-2839](file://libraries/chain/database.cpp#L2824-L2839)
+- [database.cpp:2871-2886](file://libraries/chain/database.cpp#L2871-2886)
+- [database.cpp:1223-1267](file://libraries/chain/database.cpp#L1223-L1267)
+- [p2p_plugin.hpp:50-55](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L50-L55)
+
+## Configuration Parameters
+
+### Parameter Types and Scaling
+
+The Validator Plugin configuration parameters have been updated with improved type safety and scaling:
+
+- **enable-stale-production**: Boolean parameter controlling whether block production continues when the chain is stale
+  - Type: `bool` (previously `int`)
+  - Default: `false` (changed from `true`)
+  - Purpose: Allows production even when the node is behind the chain head
+  - Command line: `--enable-stale-production`
+  - Config file: `enable-stale-production`
+
+- **required-participation**: Integer parameter specifying minimum validator participation percentage
+  - Type: `uint32_t` (changed from `int`)
+  - Scale: Multiplied by `CHAIN_1_PERCENT` (100 units = 1%)
+  - Range: 0-99% (0-9900 units)
+  - Default: 33% (3300 units)
+  - Command line: `--required-participation`
+  - Config file: `required-participation`
+
+- **fork-collision-timeout-blocks**: New parameter controlling fork collision timeout behavior
+  - Type: `uint32_t`
+  - Default: 21 blocks (one full validator round, 63 seconds)
+  - Purpose: Number of consecutive fork-collision deferrals before forcing production
+  - Command line: `--fork-collision-timeout-blocks`
+  - Config file: `fork-collision-timeout-blocks`
+
+- **debug-block-production**: **NEW** Boolean parameter enabling verbose debug logging for block production and chain internals
+  - Type: `bool`
+  - Default: `false`
+  - Purpose: Enables comprehensive logging with detailed traces of validator participation checks, emergency mode enforcement, block post-validation processes, and minority fork detection
+  - Command line: `--debug-block-production`
+  - Config file: `debug-block-production`
+
+### validator Guard Plugin Configuration
+
+**NEW** The validator guard plugin introduces several new configuration parameters:
+
+- **validator-guard-enabled**: Boolean parameter enabling/disabling the validator protection and monitoring system
+  - Type: `bool`
+  - Default: `true`
+  - Purpose: Controls whether the validator guard plugin is active
+  - Command line: `--validator-guard-enabled`
+  - Config file: `validator-guard-enabled`
+
+- **validator-guard-disable**: Integer parameter controlling consecutive block auto-disable threshold
+  - Type: `uint32_t`
+  - Default: 5 blocks
+  - Purpose: Number of consecutive blocks produced by the same validator before automatic disabling
+  - Command line: `--validator-guard-disable`
+  - Config file: `validator-guard-disable`
+
+- **validator-guard-interval**: Integer parameter controlling check frequency
+  - Type: `uint32_t`
+  - Default: 20 blocks (approximately 60 seconds)
+  - Purpose: How often to check validator signing keys in block intervals
+  - Command line: `--validator-guard-interval`
+  - Config file: `validator-guard-interval`
+
+- **validator-guard-validator**: Array parameter defining validators to monitor
+  - Type: `std::vector<std::string>`
+  - Format: JSON triplet `["name", "signing_wif", "active_wif"]`
+  - Purpose: Specifies which validators to monitor and their key pairs
+  - Command line: `--validator-guard-validator`
+  - Config file: `validator-guard-validator`
+
+### Configuration Defaults
+
+**Updated** The default values have been corrected for production stability:
+
+- **enable-stale-production**: Now defaults to `false` to improve network stability and prevent minority fork propagation
+- **required-participation**: Defaults to 33% participation threshold for balanced security/performance
+- **fork-collision-timeout-blocks**: Defaults to 21 blocks to match one full validator schedule round
+- **debug-block-production**: Defaults to `false` to maintain production performance while providing debugging capability when needed
+- **validator-guard-enabled**: Defaults to `true` to provide comprehensive validator protection by default
+- **validator-guard-disable**: Defaults to 5 consecutive blocks to prevent validator abuse while allowing normal operation
+- **validator-guard-interval**: Defaults to 20 blocks for balanced monitoring frequency
+- **validator-guard-validator**: Defaults to empty (no validators monitored) requiring explicit configuration
+
+### Configuration Processing
+
+The configuration parameters are processed during plugin initialization:
+
+```mermaid
+flowchart TD
+Config["Configuration File"] --> Parser["Parameter Parser"]
+Parser --> TypeCheck{"Type Validation"}
+TypeCheck --> |enable-stale-production| BoolConvert["Convert to bool<br/>Default: false"]
+TypeCheck --> |required-participation| IntConvert["Convert to uint32_t<br/>Scale by CHAIN_1_PERCENT"]
+TypeCheck --> |fork-collision-timeout-blocks| TimeoutConvert["Convert to uint32_t<br/>Default: 21 blocks"]
+TypeCheck --> |debug-block-production| DebugConvert["Convert to bool<br/>Default: false"]
+TypeCheck --> |validator-guard-enabled| GuardEnabled["Convert to bool<br/>Default: true"]
+TypeCheck --> |validator-guard-disable| DisableConvert["Convert to uint32_t<br/>Default: 5"]
+TypeCheck --> |validator-guard-interval| IntervalConvert["Convert to uint32_t<br/>Default: 20"]
+TypeCheck --> |validator-guard-validator| WitnessArray["Parse JSON triplets<br/>Format: [name, signing_wif, active_wif]"]
+BoolConvert --> Storage["Store in plugin state"]
+IntConvert --> Storage
+TimeoutConvert --> Storage
+DebugConvert --> Storage
+GuardEnabled --> Storage
+DisableConvert --> Storage
+IntervalConvert --> Storage
+WitnessArray --> Storage
+Storage --> Runtime["Runtime Usage"]
+```
+
+**Diagram sources**
+- [validator.cpp:125-133](file://plugins/validator/validator.cpp#L125-L133)
+- [validator.cpp:149-155](file://plugins/validator/validator.cpp#L149-L155)
+- [validator.cpp:222-224](file://plugins/validator/validator.cpp#L222-L224)
+- [validator.cpp:228-233](file://plugins/validator/validator.cpp#L228-L233)
+- [witness_guard.cpp:301-328](file://plugins/witness_guard/witness_guard.cpp#L301-L328)
+- [witness_guard.cpp:330-408](file://plugins/witness_guard/witness_guard.cpp#L330-L408)
+- [config.hpp:57-58](file://libraries/protocol/include/graphene/protocol/config.hpp#L57-L58)
+
+**Section sources**
+- [validator.cpp:125-133](file://plugins/validator/validator.cpp#L125-L133)
+- [validator.cpp:149-155](file://plugins/validator/validator.cpp#L149-L155)
+- [validator.cpp:222-224](file://plugins/validator/validator.cpp#L222-L224)
+- [validator.cpp:228-233](file://plugins/validator/validator.cpp#L228-L233)
+- [witness_guard.cpp:301-328](file://plugins/witness_guard/witness_guard.cpp#L301-L328)
+- [witness_guard.cpp:330-408](file://plugins/witness_guard/witness_guard.cpp#L330-L408)
+- [config.hpp:57-58](file://libraries/protocol/include/graphene/protocol/config.hpp#L57-L58)
+- [config.ini:99-103](file://share/vizd/config/config.ini#L99-L103)
+- [config_witness.ini:76-80](file://share/vizd/config/config_witness.ini#L76-L80)
+- [config_witness.ini:128-141](file://share/vizd/config/config_witness.ini#L128-L141)
+
+## Detailed Component Analysis
+
+### Validator Plugin
+Responsibilities:
+- Parse configuration for validator names and private keys.
+- Initialize NTP time synchronization with 250ms interval optimization.
+- Run a production loop that:
+  - Waits until synchronized to the next 250ms boundary for deterministic slot alignment.
+  - Checks participation thresholds and scheduling eligibility.
+  - **Enhanced**: Performs comprehensive fork collision detection before block generation.
+  - **Enhanced**: **NEW**: Implements comprehensive minority fork detection to identify when all recent blocks were produced by local validators only.
+  - **Enhanced**: **NEW**: Provides automatic recovery through resync_from_lib() when minority fork is detected.
+  - **Enhanced**: **NEW**: Integrates with skip_undo_history_check flag for controlled production during recovery scenarios.
+  - **Enhanced**: **NEW**: Implements comprehensive debug logging with verbose traces for block production and chain internals.
+  - **New**: Implements two-level fork collision resolution system with configurable timeout.
+  - Generates and broadcasts blocks when eligible.
+  - Signs and broadcasts block post validations when available.
+  - **Enhanced**: Forces NTP synchronization when timing issues or fork collisions are detected during production attempts.
+  - **New**: Provides `is_witness_scheduled_soon()` method for external coordination.
+
+Key behaviors:
+- Participation threshold enforcement via validator participation rate.
+- Graceful handling of missing private keys, low participation, and timing lags.
+- Optional allowance for stale production during initial sync.
+- **Enhanced**: Automatic NTP synchronization on lag detection and fork collision to prevent timing-related production failures.
+- **Enhanced**: Comprehensive fork collision detection prevents competing blocks at the same height.
+- **Enhanced**: **NEW**: Minority fork detection identifies when all recent blocks were produced by local validators only.
+- **Enhanced**: **NEW**: Automatic recovery through P2P resynchronization when minority fork is detected.
+- **Enhanced**: **NEW**: Controlled production during recovery scenarios using skip_undo_history_check flag.
+- **Enhanced**: **NEW**: Comprehensive debug logging system with verbose traces for detailed visibility into block production pipeline.
+- **New**: Efficient slot checking across 4 upcoming slots to detect validator scheduling conflicts.
+- **New**: Two-level fork collision resolution with vote-weighted comparison and stuck-head timeout mechanism.
+- **New**: Configurable fork collision timeout blocks parameter for fine-tuning fork resolution behavior.
+
+```mermaid
+flowchart TD
+Start(["Startup"]) --> InitKeys["Load validator names and private keys"]
+InitKeys --> InitNTP["Initialize NTP time service with 250ms ticks"]
+InitNTP --> InitTimeout["Initialize fork-collision-timeout-blocks (21)"]
+InitTimeout --> InitSkipFlag["Initialize skip_undo_history_check (false)"]
+InitSkipFlag --> InitDebug["Initialize debug-block-production (false)"]
+InitDebug --> SyncCheck["Wait until synchronized to 250ms boundary"]
+SyncCheck --> SlotCheck{"Slot available?"}
+SlotCheck --> |No| WaitNext["Sleep until next 250ms tick"] --> SyncCheck
+SlotCheck --> |Yes| Scheduled["Get scheduled validator and slot time"]
+Scheduled --> Participation{"Participation >= threshold?"}
+Participation --> |No| LogLowParticipation["Log low participation"] --> Resched["Reschedule"] --> SyncCheck
+Participation --> |Yes| TimeCheck{"Within 500ms window?"}
+TimeCheck --> |No| LogLag["Log lag"] --> ForceSync["Force NTP sync"] --> Resched
+TimeCheck --> |Yes| ForkCollision{"Fork collision check"}
+ForkCollision --> |Competing blocks| Level1["LEVEL 1: Vote-weighted comparison"]
+Level1 --> |Comparison possible| WeightCheck{"Weight comparison"}
+WeightCheck --> |Our fork heavier| RemoveComp["Remove competing block"] --> ResetCount["Reset defer count"] --> SignCheck
+WeightCheck --> |Competing fork heavier| LogCollision["Log fork collision"] --> ForceSync --> Resched
+WeightCheck --> |Tied/Impossible| Level2["LEVEL 2: Stuck-head timeout"]
+Level2 --> TimeoutCheck{"Defer count > timeout (21)?"}
+TimeoutCheck --> |Yes| PruneFork["Prune stale competing blocks"] --> ResetCount
+TimeoutCheck --> |No| LogCollision2["Log fork collision"] --> ForceSync --> Resched
+ForkCollision --> |No competing blocks| MinorityFork{"Minority fork detection"}
+MinorityFork --> |All recent blocks from us| EmergencyCheck{"Emergency consensus active?"}
+EmergencyCheck --> |Yes| SkipMinority["Skip minority fork detection"] --> SignCheck
+EmergencyCheck --> |No| StaleProdCheck{"enable-stale-production enabled?"}
+StaleProdCheck --> |Yes| ContinueProd["Continue production"] --> SignCheck
+StaleProdCheck --> |No| Resync["P2P resync_from_lib()"] --> DisableProd["Disable production"] --> ReturnMinority["Return minority_fork"]
+MinorityFork --> |Not a minority fork| SignCheck{"Private key available?"}
+SignCheck --> |No| LogNoKey["Log missing key"] --> Resched
+SignCheck --> |Yes| RewardValidation{"Validate validator account"}
+RewardValidation --> |Account exists| Produce["Generate block and broadcast"]
+RewardValidation --> |Account missing| CriticalError["Log critical error<br/>Request node restart"]
+Produce --> Resched
+```
+
+**Diagram sources**
+- [validator.cpp:206-276](file://plugins/validator/validator.cpp#L206-L276)
+- [validator.cpp:278-423](file://plugins/validator/validator.cpp#L278-L423)
+- [validator.cpp:447-471](file://plugins/validator/validator.cpp#L447-L471)
+- [validator.cpp:590-695](file://plugins/validator/validator.cpp#L590-L695)
+- [validator.cpp:263-266](file://plugins/validator/validator.cpp#L263-L266)
+- [validator.cpp:509-555](file://plugins/validator/validator.cpp#L509-L555)
+- [p2p_plugin.hpp:50-55](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L50-L55)
+
+**Section sources**
+- [validator.hpp:34-68](file://plugins/validator/include/graphene/plugins/validator/validator.hpp#L34-L68)
+- [validator.cpp:120-169](file://plugins/validator/validator.cpp#L120-L169)
+- [validator.cpp:171-192](file://plugins/validator/validator.cpp#L171-L192)
+- [validator.cpp:206-276](file://plugins/validator/validator.cpp#L206-L276)
+- [validator.cpp:278-423](file://plugins/validator/validator.cpp#L278-L423)
+- [validator.cpp:447-471](file://plugins/validator/validator.cpp#L447-L471)
+- [validator.cpp:590-695](file://plugins/validator/validator.cpp#L590-L695)
+- [validator.cpp:206-249](file://plugins/validator/validator.cpp#L206-L249)
+- [validator.cpp:509-555](file://plugins/validator/validator.cpp#L509-L555)
+
+### New: Enhanced Minoriy Fork Detection System
+The Validator Plugin now implements a comprehensive minority fork detection system to identify when all recent blocks were produced by local validators only, indicating a potential minority fork scenario.
+
+**Detection Logic**:
+- Checks the last CHAIN_MAX_WITNESSES (21) blocks in the fork database
+- Verifies that all blocks were produced by configured local validators
+- Skips detection during emergency consensus mode to prevent false positives
+- Integrates with skip_undo_history_check flag for controlled production during recovery
+
+**Recovery Mechanisms**:
+- **Automatic Recovery**: Calls P2P resync_from_lib() to reset sync from last irreversible block
+- **Production Control**: Disables production temporarily during recovery
+- **Flag Management**: Uses skip_undo_history_check to control production flags during recovery
+- **Emergency Mode Protection**: Skips detection when emergency consensus is active
+
+**Implementation Details**:
+- Uses `db.get_fork_db().head()` to access the fork database head
+- Iterates backwards through CHAIN_MAX_WITNESSES blocks to verify validator ownership
+- Checks `_witnesses.find(current->data.validator) == _witnesses.end()` to detect foreign validators
+- Calls `p2p().resync_from_lib()` for automatic recovery
+- Returns `block_production_condition::minority_fork` to signal recovery state
+- Integrates with emergency consensus detection via `dgp.emergency_consensus_active`
+
+**Section sources**
+- [validator.cpp:509-555](file://plugins/validator/validator.cpp#L509-L555)
+- [validator.hpp:31](file://plugins/validator/include/graphene/plugins/validator/validator.hpp#L31)
+- [database.hpp:88](file://libraries/chain/include/graphene/chain/database.hpp#L88)
+
+### New: Enhanced Fork Collision Detection System
+The Validator Plugin now implements a comprehensive fork collision detection system to prevent competing blocks at the same height.
+
+**Detection Logic**:
+- Queries the fork database for all blocks at the next height level (head_block_num + 1)
+- Identifies competing blocks produced by different validators with different parent blocks
+- Prevents block production when fork collision is detected
+- Automatically triggers NTP synchronization to resolve timing issues
+
+**Two-Level Resolution System**:
+- **LEVEL 1: Vote-weighted comparison** (HF12+)
+  - Uses compare_fork_branches() function to calculate vote weights for both forks
+  - Applies +10% bonus to longer chain for fairness
+  - Removes losing fork or defers production based on weight comparison
+- **LEVEL 2: Stuck-head timeout** (All versions)
+  - Tracks consecutive deferral count for fork collisions
+  - Forces production after timeout exceeds configured blocks (default: 21)
+  - Removes all competing blocks at the target height after timeout
+
+**Implementation Details**:
+- Uses `db.get_fork_db().fetch_block_by_number(db.head_block_num() + 1)` to query all blocks at the target height
+- Analyzes each existing block to determine if it was produced by a different validator with a different parent
+- Captures detailed information including height and scheduled validator for logging
+- Returns `block_production_condition::fork_collision` to defer production
+- Integrates with compare_fork_branches() function for intelligent fork switching decisions
+
+**Section sources**
+- [validator.cpp:447-471](file://plugins/validator/validator.cpp#L447-L471)
+- [validator.cpp:590-695](file://plugins/validator/validator.cpp#L590-L695)
+- [fork_database.hpp:73](file://libraries/chain/include/graphene/chain/fork_database.hpp#L73)
+- [fork_database.cpp:151-166](file://libraries/chain/fork_database.cpp#L151-166)
+- [database.cpp:1223-1267](file://libraries/chain/database.cpp#L1223-L1267)
+
+### New: Enhanced Fork Database Integration with Automatic Stale Pruning
+The fork database now includes automatic stale fork pruning capabilities to maintain database efficiency and prevent memory bloat.
+
+**Automatic Stale Pruning Mechanism**:
+- Executes after successful block application in _push_block() method
+- Identifies competing blocks at the same height that are no longer part of the active chain
+- Removes blocks whose parent is no longer in fork_db (indicating dead fork)
+- Prevents accumulation of stale competing blocks in the fork database
+
+**Pruning Logic**:
+- Called after new block is successfully applied
+- Fetches all competing blocks at new_block.block_num()
+- Checks if competing block has unknown parent (not in fork_db)
+- Removes stale competing blocks with log messages for debugging
+- Preserves legitimate fork switching scenarios by only removing truly dead forks
+
+**Integration Points**:
+- Triggered in database::_push_block() after successful block application
+- Works in conjunction with fork collision detection system
+- Supports both HF12+ vote-weighted comparisons and pre-HF12 longest-chain rules
+- Maintains fork database integrity and performance
+
+**Section sources**
+- [database.cpp:1456-1471](file://libraries/chain/database.cpp#L1456-L1471)
+- [fork_database.cpp:269-274](file://libraries/chain/fork_database.cpp#L269-L274)
+
+### New: Enhanced compare_fork_branches() Function
+The database now includes a sophisticated compare_fork_branches() function that intelligently evaluates fork weight and chain length for decision-making.
+
+**Function Capabilities**:
+- Calculates total vote weight for each fork branch using validator objects
+- Excludes emergency validator account from weight calculations
+- Applies +10% bonus to longer chain to encourage network support
+- Handles tied scenarios and comparison impossibility gracefully
+- Returns 1 (branch_a heavier), -1 (branch_b heavier), or 0 (tied/impossible)
+
+**Weight Calculation Algorithm**:
+- Iterates through branch items to accumulate validator vote weights
+- Uses flat_set to avoid counting the same validator multiple times
+- Skips emergency validator account for fairness
+- Handles exceptions during validator lookup gracefully
+- Returns 0 when comparison cannot be performed
+
+**Integration with Fork Resolution**:
+- Used by Validator Plugin for vote-weighted fork comparisons
+- Supports HF12+ consensus rules with longer-chain bonus
+- Provides fallback for pre-HF12 longest-chain scenarios
+- Enables intelligent fork switching decisions
+
+**Section sources**
+- [database.cpp:1223-1267](file://libraries/chain/database.cpp#L1223-L1267)
+
+### New: is_witness_scheduled_soon() Method
+The `is_witness_scheduled_soon()` method provides a crucial coordination mechanism for other plugins to avoid conflicts during critical operations.
+
+**Method Signature**: `bool is_witness_scheduled_soon() const`
+
+**Purpose**: Checks if any locally-controlled validators are scheduled to produce blocks in the upcoming 4 slots, enabling other plugins to coordinate and avoid conflicts during critical operations like snapshot creation.
+
+**Implementation Details**:
+- Validates that the Validator Plugin has been initialized with validators and private keys
+- Calculates the current slot based on synchronized time plus 250ms buffer for deterministic alignment
+- Iterates through slots 0-3 positions ahead to check for scheduled validators
+- Verifies that the scheduled validator belongs to the locally-controlled set
+- Confirms the validator has a valid signing key (not disabled)
+- Ensures the plugin has the corresponding private key for block signing
+
+**Usage Pattern**: Other plugins can use this method to defer operations when validator production is imminent, particularly useful for snapshot creation which requires exclusive access to the blockchain state.
+
+**Section sources**
+- [validator.cpp:206-249](file://plugins/validator/validator.cpp#L206-L249)
+
+### Enhanced: validator Reward Creation Process
+The validator reward creation process has been significantly enhanced with comprehensive error handling and validation to prevent crashes when validator account objects are missing from the database.
+
+**Enhanced Reward Creation Logic**:
+- **Pre-validation**: Uses `find_account()` to check if the validator account exists before attempting reward creation
+- **Crash Prevention**: Implements comprehensive validation to prevent crashes from shared memory corruption
+- **Clear Recovery Guidance**: Provides explicit instructions for recovery procedures when accounts are missing
+- **Multi-hardfork Support**: Applies validation across all hardfork versions (HF4, HF11, and legacy models)
+
+**Implementation Details**:
+- **HF11 Model**: Validates validator account before creating vesting rewards for new emission model
+- **HF4 Model**: Comprehensive validation for consensus inflation model with detailed error logging
+- **Legacy Model**: Falls back to `get_account()` with clear error messaging for older models
+- **Critical Error Handling**: Logs detailed validator information (signing key, missed blocks, penalties) for debugging
+
+**Error Handling Features**:
+- Detailed logging with validator metadata (signing key, missed blocks, penalties, last confirmed block)
+- Clear FC_ASSERT messages directing users to restart with replay
+- Account index size reporting for diagnostic purposes
+- Prevention of crashes during validator reward distribution
+
+```mermaid
+flowchart TD
+ProcessFunds["process_funds()"] --> HardforkCheck{"Hardfork Version?"}
+HardforkCheck --> |HF11| HF11Path["New Emission Model"]
+HF11Check --> |HF4| HF4Path["Consensus Inflation Model"]
+HF11Check --> |Legacy| LegacyPath["Legacy Model"]
+HF11Path --> HF11Witness["get_witness(current_witness)"]
+HF11Witness --> HF11FindAccount["find_account(owner)"]
+HF11FindAccount --> |Exists| HF11CreateVesting["create_vesting(account, reward)"]
+HF11FindAccount --> |Missing| HF11CriticalError["elog critical error<br/>FC_ASSERT restart required"]
+HF4Path --> HF4Witness["get_witness(current_witness)"]
+HF4Witness --> HF4FindAccount["find_account(owner)"]
+HF4FindAccount --> |Exists| HF4CreateVesting["create_vesting(account, reward)"]
+HF4FindAccount --> |Missing| HF4CriticalError["elog critical error<br/>FC_ASSERT restart required"]
+LegacyPath --> LegacyWitness["get_witness(current_witness)"]
+LegacyWitness --> LegacyGetAccount["get_account(owner)"]
+LegacyGetAccount --> LegacyCreateVesting["create_vesting(account, reward)"]
+```
+
+**Diagram sources**
+- [database.cpp:2807-2839](file://libraries/chain/database.cpp#L2807-L2839)
+- [database.cpp:2871-2886](file://libraries/chain/database.cpp#L2871-L2886)
+- [database.cpp:2897-2914](file://libraries/chain/database.cpp#L2897-L2914)
+
+**Section sources**
+- [database.cpp:2807-2839](file://libraries/chain/database.cpp#L2807-L2839)
+- [database.cpp:2871-2886](file://libraries/chain/database.cpp#L2871-L2886)
+- [database.cpp:2897-2914](file://libraries/chain/database.cpp#L2897-L2914)
+- [database.cpp:1294-1311](file://libraries/chain/database.cpp#L1294-L1311)
+
+### New: Comprehensive Debug Logging System
+The Validator Plugin now implements a comprehensive debug logging system that provides verbose traces for block production and chain internals with detailed visibility into the entire block production pipeline.
+
+**Debug Logging Features**:
+- **Block Production Loop**: Comprehensive logging of block_production_loop() entry and exit points
+- **Maybe Produce Block**: Detailed tracing of maybe_produce_block() execution flow
+- **Condition Tracking**: Timestamped logging of block production condition results
+- **Emergency Mode**: Enhanced logging for emergency consensus mode enforcement
+- **Minority Fork Detection**: Granular visibility into minority fork detection process
+- **Fork Collision Resolution**: Detailed traces of fork collision detection and resolution
+- **Contextual Information**: Rich contextual data including timestamps, block numbers, and validator information
+
+**Logging Implementation**:
+- Uses `database()._debug_block_production` flag to control debug logging
+- Implements comprehensive `ilog()` statements throughout the block production pipeline
+- Provides detailed traces for validator participation checks, emergency mode enforcement, block post-validation processes, and minority fork detection
+- Includes timestamps and contextual information for better debugging and troubleshooting
+- Supports granular visibility into all aspects of block production with minimal performance impact
+
+**Section sources**
+- [validator.cpp:228-233](file://plugins/validator/validator.cpp#L228-L233)
+- [validator.cpp:338-407](file://plugins/validator/validator.cpp#L338-L407)
+- [validator.cpp:411-419](file://plugins/validator/validator.cpp#L411-L419)
+- [database.hpp:60](file://libraries/chain/include/graphene/chain/database.hpp#L60)
+- [database.cpp:1890-1892](file://libraries/chain/database.cpp#L1890-L1892)
+- [database.cpp:4536-4573](file://libraries/chain/database.cpp#L4536-L4573)
+- [database.cpp:5530-5655](file://libraries/chain/database.cpp#L5530-L5655)
+
+### New: Dedicated Production Timer Thread
+The production timer runs on its own `production_io_service_` with a dedicated OS thread, fully isolated from the appbase/P2P shared io_service. This prevents P2P network activity — peer disconnects, TLS handshakes, send-queue drains — from delaying the `async_wait` callback and causing missed-slot lag.
+
+**Implementation**:
+- `production_io_service_` is a private `boost::asio::io_service` declared in `impl`, initialized before `production_timer_`.
+- `production_io_work_` keeps the io_service alive while the thread runs.
+- `production_io_thread_` (`std::thread`) calls `production_io_service_.run()`.
+- Destructor: `production_io_service_.stop()` then `join()` for clean shutdown.
+- All timer operations (`expires_from_now`, `async_wait`) use this dedicated service.
+
+**Benefit**: The 250ms tick fires on its own OS thread with no contention from P2P fiber scheduling. Even under heavy peer churn the production callback is called at the correct wall-clock time.
+
+**Section sources**
+- [validator.cpp:64-83](file://plugins/validator/validator.cpp#L64-L83)
+- [validator.cpp:139-144](file://plugins/validator/validator.cpp#L139-L144)
+- [validator.cpp:374-378](file://plugins/validator/validator.cpp#L374-L378)
+- [validator.cpp:663-685](file://plugins/validator/validator.cpp#L663-L685)
+
+### New: Lag Tight Loop Prevention
+After a `lag` production condition the current slot is already missed. Without a guard the next 250ms tick re-evaluates the same slot and returns `lag` again, spinning in a tight loop until the full 3s slot interval passes.
+
+**Fix**: `_last_lag_slot_time` records the `scheduled_time` of the missed slot. At the top of `schedule_production_loop()` the elapsed time since the lag is computed; if less than one full slot interval (3 s = `CHAIN_BLOCK_INTERVAL * 1000 ms`) has passed, the timer is set to skip the remainder of that slot before resuming normal 250ms scheduling.
+
+**State variable**: `fc::time_point_sec _last_lag_slot_time` (zero when no lag is active).
+
+**Section sources**
+- [validator.cpp:182-186](file://plugins/validator/validator.cpp#L182-L186)
+- [validator.cpp:911-920](file://plugins/validator/validator.cpp#L911-L920)
+- [validator.cpp:945-963](file://plugins/validator/validator.cpp#L945-L963)
+
+### New: Production Watchdog
+The watchdog fires when the node has produced at least one block (`_ever_produced = true`) but has gone silent while production conditions are met. This catches cases where an external factor (e.g., the emergency master blanking our key) silently stops production without returning an explicit error.
+
+**Thresholds**:
+- Emergency master (has `CHAIN_EMERGENCY_WITNESS_ACCOUNT` in `_witnesses`): **60 seconds**.
+- Regular validator: **180 seconds**.
+- Re-fires every **30 seconds** after the first alert.
+
+**Actions on first fire**:
+1. Sets `_watchdog_debug_enabled = true` and enables `database()._debug_block_production` to capture verbose production loop traces automatically.
+2. Logs full diagnostic state: NTP drift, head block, DLT sync status, P2P catchup flag, scheduled validator, how many of our validators appear in the shuffled schedule, and which validators have blanked on-chain keys.
+
+**Relevant state**:
+- `bool _ever_produced` — set to true on first successful production.
+- `fc::time_point _last_production_time` — updated on every produced block.
+- `int _last_slot_result` — last non-`not_time_yet` result (meaningful failure code for diagnostics).
+- `bool _watchdog_debug_enabled` — latching flag; never reset once set.
+
+**Section sources**
+- [validator.cpp:174-191](file://plugins/validator/validator.cpp#L174-L191)
+- [validator.cpp:965-1065](file://plugins/validator/validator.cpp#L965-L1065)
+
+### New: Slot Hijack Detection
+In DLT emergency consensus mode the emergency master may blank a regular validator's signing key and produce `committee` blocks in that validator's scheduled slots. The hijack counter makes this pattern visible in watchdog diagnostics.
+
+**Detection logic** (runs inside `on_block_applied`):
+1. Skip if emergency consensus is not active.
+2. Compute `slot_idx = dgp.current_aslot % num_scheduled_witnesses`.
+3. Look up the expected validator at `slot_idx` in the shuffled schedule.
+4. If the actual block producer (`block.validator`) is `committee` (or any non-local validator) AND `slot_idx` maps to one of our validators → hijack detected.
+5. If the actual producer IS one of our validators (any of them) → reset counter (false-positive guard).
+
+**State variables**:
+- `uint32_t _slot_hijack_count` — consecutive hijacked slots since last own production.
+- `uint32_t _slot_hijack_height` — block number of last detected hijack.
+
+**Logging**: First 3 hijacks are always logged; thereafter once per minute to avoid log spam.
+
+**Section sources**
+- [validator.cpp:192-207](file://plugins/validator/validator.cpp#L192-L207)
+- [validator.cpp:486-562](file://plugins/validator/validator.cpp#L486-L562)
+
+### New: Missed Block Diagnostic via on_block_applied Signal
+The Validator Plugin subscribes to the chain's `applied_block` signal via `on_block_applied()`. When an incoming block reveals that one or more slots were skipped (block number jumped by more than 1 since the last applied block), and any of the missed slots were assigned to one of our validators, the handler dumps the full plugin state for diagnosis.
+
+**Triggered by**: gaps between `_last_applied_block_num` and the new block number.
+
+**State variable**: `uint64_t _last_applied_block_num` — updated on every applied block.
+
+**Section sources**
+- [validator.cpp:200-207](file://plugins/validator/validator.cpp#L200-L207)
+- [validator.cpp:470-562](file://plugins/validator/validator.cpp#L470-L562)
+
+### New: not_my_turn Streak Detection
+When the production loop repeatedly returns `not_my_turn` (another validator is scheduled) for an extended period while our validators are supposed to be in the schedule, it may indicate schedule misalignment, a forked-off chain, or a configuration error.
+
+**Threshold**: **500 consecutive** `not_my_turn` results ≈ 125 seconds of other validators producing uninterrupted.
+
+**On threshold**: Logs a warning with streak count, elapsed time, last scheduled validator name, and our configured validator set.
+
+**Reset**: On any `produced`, `not_synced`, or other non-`not_my_turn` result.
+
+**State variables**:
+- `uint32_t _not_my_turn_streak`
+- `fc::time_point _not_my_turn_streak_start`
+- `std::string _last_scheduled_witness`
+
+**Section sources**
+- [validator.cpp:170-173](file://plugins/validator/validator.cpp#L170-L173)
+- [validator.cpp:754-780](file://plugins/validator/validator.cpp#L754-L780)
+
+### New: validator Guard Plugin - Comprehensive Protection and Monitoring
+The validator guard plugin provides comprehensive protection and monitoring capabilities for validator keys and operations.
+
+**Core Responsibilities**:
+- **Auto-Key Restoration**: Automatically detects and restores null signing keys on-chain
+- **Consecutive Block Protection**: Monitors validator block production and auto-disables validators after N consecutive blocks
+- **Emergency Consensus Support**: Continues monitoring and protection during emergency consensus mode
+- **Network Health Monitoring**: Ensures node synchronization and network health before performing actions
+- **Safety Checks**: Implements comprehensive safety checks to prevent malicious actions
+
+**Auto-Restore Mechanism**:
+- Periodically checks configured validators for null signing keys
+- Broadcasts witness_update transactions to restore keys using stored key pairs
+- Tracks pending transactions and confirms successful restoration
+- Implements retry logic for failed restoration attempts
+- Prevents unbounded growth of pending confirmation tracking
+
+**Auto-Disable Protection**:
+- Monitors consecutive block production by configured validators
+- Auto-disables validators that exceed the configured threshold
+- Prevents validator abuse and ensures fair network participation
+- Maintains records of auto-disabled validators to prevent auto-restore
+- Broadcasts witness_update transactions with null signing key to disable production
+
+**Emergency Consensus Integration**:
+- Continues monitoring during emergency consensus mode
+- Adapts behavior based on emergency_consensus_active flag
+- Supports key restoration even when network is unstable
+- Coordinates with Validator Plugin for seamless operation
+
+**Safety and Validation**:
+- Verifies on-chain authority for configured active keys
+- Implements network health checks before performing actions
+- Detects and warns about long fork scenarios
+- Prevents auto-restore during stale production override periods
+- Provides comprehensive logging for all operations
+
+**Configuration Options**:
+- **validator-guard-enabled**: Enable/disable the protection system
+- **validator-guard-disable**: Set consecutive block threshold for auto-disable
+- **validator-guard-interval**: Configure check frequency in blocks
+- **validator-guard-validator**: Define validators to monitor with key pairs
+
+**Section sources**
+- [witness_guard.hpp:11-48](file://plugins/witness_guard/include/graphene/plugins/witness_guard/witness_guard.hpp#L11-L48)
+- [witness_guard.cpp:27-78](file://plugins/witness_guard/witness_guard.cpp#L27-L78)
+- [witness_guard.cpp:83-191](file://plugins/witness_guard/witness_guard.cpp#L83-L191)
+- [witness_guard.cpp:197-246](file://plugins/witness_guard/witness_guard.cpp#L197-L246)
+- [witness_guard.cpp:252-294](file://plugins/witness_guard/witness_guard.cpp#L252-L294)
+- [witness_guard.cpp:301-408](file://plugins/witness_guard/witness_guard.cpp#L301-L408)
+- [witness_guard.cpp:410-555](file://plugins/witness_guard/witness_guard.cpp#L410-L555)
+
+### validator API Plugin
+Responsibilities:
+- Expose JSON-RPC endpoints for:
+  - Active validators in the current schedule.
+  - Full validator schedule object.
+  - validators by ID, by account, by votes, by counted votes.
+  - Count of validators.
+  - Lookup of validator accounts by name range.
+
+Implementation highlights:
+- Uses weak read locks around database queries.
+- Enforces limits on returned sets (e.g., max 100 for vote-based lists).
+- Converts chain validator objects to API-friendly structures.
+
+```mermaid
+sequenceDiagram
+participant Client as "Client"
+participant RPC as "JSON-RPC"
+participant WAPI as "validator API Plugin"
+participant DB as "Chain Database"
+Client->>RPC : get_active_witnesses()
+RPC->>WAPI : dispatch
+WAPI->>DB : get_witness_schedule_object()
+DB-->>WAPI : witness_schedule_object
+WAPI-->>RPC : active validator names[]
+RPC-->>Client : response
+Client->>RPC : get_witness_by_account(account)
+RPC->>WAPI : dispatch
+WAPI->>DB : find validator by name
+DB-->>WAPI : witness_object
+WAPI-->>RPC : witness_api_object or null
+RPC-->>Client : response
+```
+
+**Diagram sources**
+- [witness_api_plugin.cpp:30-49](file://plugins/witness_api/plugin.cpp#L30-L49)
+- [witness_api_plugin.cpp:75-91](file://plugins/witness_api/plugin.cpp#L75-L91)
+- [witness_api_plugin.cpp:102-125](file://plugins/witness_api/plugin.cpp#L102-L125)
+- [witness_api_plugin.cpp:127-159](file://plugins/witness_api/plugin.cpp#L127-L159)
+- [witness_api_plugin.cpp:161-169](file://plugins/witness_api/plugin.cpp#L161-L169)
+- [witness_api_plugin.cpp:171-203](file://plugins/witness_api/plugin.cpp#L171-L203)
+
+**Section sources**
+- [witness_api_plugin.hpp:56-98](file://plugins/witness_api/include/graphene/plugins/witness_api/plugin.hpp#L56-L98)
+- [witness_api_plugin.cpp:13-28](file://plugins/witness_api/plugin.cpp#L13-L28)
+- [witness_api_plugin.cpp:30-49](file://plugins/witness_api/plugin.cpp#L30-L49)
+- [witness_api_plugin.cpp:75-91](file://plugins/witness_api/plugin.cpp#L75-L91)
+- [witness_api_plugin.cpp:102-159](file://plugins/witness_api/plugin.cpp#L102-L159)
+- [witness_api_plugin.cpp:161-203](file://plugins/witness_api/plugin.cpp#L161-L203)
+
+### Chain Database: Enhanced Fork Database Integration
+The database maintains:
+- validator objects with voting, signing keys, virtual scheduling fields, and participation counters.
+- validator schedule object with shuffled validators, current virtual time, and majority version.
+- Block post validation objects used to coordinate cross-validator validation.
+- **Enhanced**: Direct fork database access through `get_fork_db()` method for comprehensive fork collision detection.
+- **Enhanced**: Comprehensive validator reward creation with find_account() validation to prevent crashes from missing account objects.
+- **Enhanced**: **NEW**: Integration with skip_undo_history_check flag for controlled production during recovery scenarios.
+- **Enhanced**: **NEW**: Comprehensive debug logging system enabling verbose traces for chain internals and block processing.
+- **New**: Enhanced fork database with automatic stale fork pruning after successful block application.
+- **New**: Sophisticated compare_fork_branches() function for intelligent fork weight comparison.
+- **New**: **Enhanced**: Supports emergency_consensus_active field for emergency consensus mode detection.
+
+Behavior highlights:
+- Computes validator participation rate and enforces minimum participation thresholds.
+- Updates last irreversible block (LIB) based on validator confirmations and thresholds.
+- Recomputes validator schedule and shuffles according to virtual time and votes.
+- **Enhanced**: Provides comprehensive fork database querying capabilities for fork collision detection.
+- **Enhanced**: Implements comprehensive validation for validator reward creation across all hardfork versions.
+- **New**: Automatic stale fork pruning removes competing blocks from dead forks to maintain database efficiency.
+- **New**: Intelligent fork comparison with vote-weighted calculations and longer-chain bonuses.
+- **New**: **Enhanced**: Supports emergency consensus detection through emergency_consensus_active flag.
+
+**Enhanced Fork Database Capabilities**:
+- `fetch_block_by_number()`: Retrieves all blocks at a specific height (handles multiple forks)
+- `fetch_block_on_main_branch_by_number()`: Resolves ambiguity between competing blocks
+- `fetch_branch_from()`: Provides branch comparison for fork resolution
+- **New**: `remove_blocks_by_number()`: Removes all blocks at a specific height for stale fork pruning
+- **New**: `compare_fork_branches()`: Intelligent fork weight comparison with +10% longer-chain bonus
+
+```mermaid
+classDiagram
+class witness_object {
++id
++owner
++created
++url
++votes
++penalty_percent
++counted_votes
++virtual_last_update
++virtual_position
++virtual_scheduled_time
++total_missed
++last_aslot
++last_confirmed_block_num
++last_supported_block_num
++signing_key
++props
++last_work
++running_version
++hardfork_version_vote
++hardfork_time_vote
++sharing_rate : uint16_t
++pending_stakeholder_reward : share_type
+}
+class witness_schedule_object {
++id
++current_virtual_time
++next_shuffle_block_num
++current_shuffled_witnesses[]
++num_scheduled_witnesses
++median_props
++majority_version
+}
+class block_post_validation_object {
++id
++block_num
++block_id
++current_shuffled_witnesses[]
++current_shuffled_witnesses_validations[]
+}
+class fork_database {
++MAX_BLOCK_REORDERING : 1024
++push_block()
++fetch_block_by_number()
++fetch_block_on_main_branch_by_number()
++fetch_branch_from()
++remove_blocks_by_number()
++compare_fork_branches()
+}
+class dynamic_global_property_object {
++emergency_consensus_active : bool
++emergency_consensus_start_block : uint32_t
+}
+witness_object --> witness_schedule_object : "referenced by schedule"
+block_post_validation_object --> witness_schedule_object : "mentions scheduled validators"
+fork_database --> witness_schedule_object : "tracks competing blocks"
+dynamic_global_property_object --> fork_database : "emergency consensus state"
+```
+
+**Diagram sources**
+- [witness_objects.hpp:27-132](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L27-L132)
+- [witness_objects.hpp:104-171](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L104-L171)
+- [chain_objects.hpp:174-201](file://libraries/chain/include/graphene/chain/chain_objects.hpp#L174-L201)
+- [fork_database.hpp:53-81](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L81)
+- [fork_database.hpp:90-95](file://libraries/chain/include/graphene/chain/fork_database.hpp#L90-L95)
+- [fork_database.cpp:269-274](file://libraries/chain/fork_database.cpp#L269-L274)
+- [database.cpp:1223-1267](file://libraries/chain/database.cpp#L1223-L1267)
+- [global_property_object.hpp:139](file://libraries/chain/include/graphene/chain/global_property_object.hpp#L139)
+
+**Section sources**
+- [witness_objects.hpp:27-132](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L27-L132)
+- [witness_objects.hpp:104-171](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L104-L171)
+- [chain_objects.hpp:174-201](file://libraries/chain/include/graphene/chain/chain_objects.hpp#L174-L201)
+- [database.cpp:1626-1805](file://libraries/chain/database.cpp#L1626-L1805)
+- [database.cpp:4317-4332](file://libraries/chain/database.cpp#L4317-L4332)
+- [database.cpp:4334-4463](file://libraries/chain/database.cpp#L4334-L4463)
+- [database.hpp:492-499](file://libraries/chain/include/graphene/chain/database.hpp#L492-L499)
+- [fork_database.hpp:73](file://libraries/chain/include/graphene/chain/fork_database.hpp#L73)
+- [fork_database.cpp:151-166](file://libraries/chain/fork_database.cpp#L151-166)
+- [fork_database.cpp:269-274](file://libraries/chain/fork_database.cpp#L269-L274)
+- [database.cpp:1223-1267](file://libraries/chain/database.cpp#L1223-L1267)
+- [global_property_object.hpp:139](file://libraries/chain/include/graphene/chain/global_property_object.hpp#L139)
+
+### Enhanced Time Synchronization Service
+**New Section** The validator system now includes robust time synchronization capabilities managed through the time service layer with enhanced logging for fork collision detection and comprehensive error handling for validator reward creation.
+
+Responsibilities:
+- Provide precise wall-clock time synchronization using NTP with 250ms interval optimization.
+- Handle crash-safe shutdown procedures for NTP services.
+- Monitor and report significant time synchronization changes.
+- Enable forced synchronization on timing issues and fork collisions.
+- **Enhanced**: Comprehensive delta change monitoring with 100ms threshold detection.
+- **Enhanced**: Comprehensive error handling for validator reward creation with find_account() validation.
+
+Key behaviors:
+- Thread-safe NTP service initialization and management with 250ms tick scheduling.
+- Automatic fallback mechanisms for NTP server failures.
+- Significant delta change detection (100ms threshold) for monitoring.
+- Graceful shutdown with proper resource cleanup.
+- **Enhanced**: Automatic NTP synchronization triggered by fork collision detection.
+- **Enhanced**: Comprehensive validation and error handling for validator reward distribution.
+
+**Section sources**
+- [time.cpp:13-53](file://libraries/time/time.cpp#L13-L53)
+- [time.cpp:36-39](file://libraries/time/time.cpp#L36-L39)
+- [time.cpp:74-76](file://libraries/time/time.cpp#L74-L76)
+- [ntp.cpp:184-201](file://thirdparty/fc/src/network/ntp.cpp#L184-L201)
+- [ntp.cpp:236-266](file://thirdparty/fc/src/network/ntp.cpp#L236-L266)
+
+## HF13: Validator Reward Sharing
+
+Introduced in Hardfork 13.  Validators can redirect a fraction of their block reward to the
+accounts that voted for them.  Rewards accumulate in **TOKEN (VIZ)** inside the `witness_object`
+and are converted to SHARES only at epoch end via `create_vesting()`.
+
+### New chain parameter: `distribution_epoch_length`
+
+Added to `chain_properties_hf13` (which becomes the `chain_properties` alias used throughout the
+chain library).  Validators vote on this parameter via `versioned_chain_properties_update_operation`.
+
+| Field | Default | Range | Description |
+|---|---|---|---|
+| `distribution_epoch_length` | 28800 (1 day) | [21, ~10.5M] | Blocks between consecutive distribution epochs |
+
+The median across all scheduled validators becomes the consensus value.
+
+### New operation: `set_reward_sharing_operation`
+
+Active authority of `owner` required.  Rejected before HF13.
+
+| Field | Type | Description |
+|---|---|---|
+| `owner` | `account_name_type` | Validator account name |
+| `sharing_rate` | `uint16_t` | Basis points; 0 = 0%, 10000 = 100% |
+
+### Block reward split (`process_funds`)
+
+When `sharing_rate > 0` and HF13 is active:
+
+```
+stakeholder_token = witness_reward * sharing_rate / CHAIN_100_PERCENT
+validator_token   = witness_reward - stakeholder_token
+
+create_vesting(validator_account, validator_token)
+→ witness_reward_operation(validator, validator_shares)   # only validator's share
+
+witness_object.pending_stakeholder_reward += stakeholder_token  # TOKEN, accumulated
+```
+
+If `sharing_rate == 0`, the full reward goes to the validator as before.
+
+### Mid-epoch sharing rate change
+
+The new rate takes effect **immediately** on the next block.  The accumulated
+`pending_stakeholder_reward` is not recalculated retroactively.  Stakeholders receive a proportional
+mix of the old and new rates at epoch end.
+
+### Epoch distribution (`process_validator_epoch_distribution`)
+
+Called at the end of `_apply_block` when `head_block_num % distribution_epoch_length == 0`.
+
+Uses **time-weighted** stakeholder shares.  Each `witness_vote_object` records `vote_created_block` —
+the block at which the vote was cast.  At epoch end:
+
+```
+epoch_start_block = head_block_num - epoch_length + 1
+
+for each stakeholder:
+    first_block     = max(vote_created_block, epoch_start_block)
+    blocks_in_epoch = head_block_num - first_block + 1
+    weighted        = stakeholder.witness_vote_weight() * blocks_in_epoch
+
+stakeholder_token = total_token * weighted[stakeholder] / Σ weighted
+if stakeholder_token < CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT (1 atomic = 0.001 VIZ):
+    skip (dust)
+else:
+    create_vesting(stakeholder_account, stakeholder_token)
+    → stakeholder_reward_operation(validator, stakeholder, stakeholder_shares)
+
+dust → create_vesting(validator_account, dust) + witness_reward_operation
+witness_object.pending_stakeholder_reward = 0
+```
+
+A stakeholder who joined mid-epoch receives a proportionally smaller reward.  Pre-HF13 votes
+(`vote_created_block == 0`) receive full-epoch weight.
+
+**Dust handling**: sharing rewards is entirely the validator's voluntary decision.  A stakeholder
+whose computed share falls below `CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT` has not earned a viable
+payout — the responsibility is theirs.  Unclaimed dust (rounding remainder + skipped sub-threshold
+shares) is therefore **not burned** but returned to the validator via `witness_reward_operation`.
+
+#### Flash-voter protection
+
+Time-weighting prevents the flash-vote attack (vote just before epoch end, capture full pool).
+A stakeholder who votes in the last block of a 1-day epoch (28800 blocks) receives only `1/28800`
+of their stake-proportional share — economically insignificant.
+
+### New virtual operation: `stakeholder_reward_operation`
+
+| Field | Type | Description |
+|---|---|---|
+| `validator` | `account_name_type` | Validator that produced the accumulated rewards |
+| `stakeholder` | `account_name_type` | Stakeholder account receiving the reward |
+| `shares` | `asset` | SHARES credited to the stakeholder |
+
+**Section sources**
+- [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp) — `CHAIN_MIN_STAKEHOLDER_REWARD_PAYOUT`, `CHAIN_DEFAULT_DISTRIBUTION_EPOCH_LENGTH`
+- [chain_operations.hpp](file://libraries/protocol/include/graphene/protocol/chain_operations.hpp) — `chain_properties_hf13`, `set_reward_sharing_operation`
+- [chain_virtual_operations.hpp](file://libraries/protocol/include/graphene/protocol/chain_virtual_operations.hpp) — `stakeholder_reward_operation`
+- [witness_objects.hpp](file://libraries/chain/include/graphene/chain/witness_objects.hpp) — `sharing_rate`, `pending_stakeholder_reward` fields
+- [database.cpp](file://libraries/chain/database.cpp) — `process_funds` split, `process_validator_epoch_distribution`
+
+---
+
+## Dependency Analysis
+- The Validator Plugin depends on:
+  - Chain plugin for database access and block generation.
+  - P2P plugin for broadcasting blocks and block post validations.
+  - **Enhanced**: NTP time service for precise 250ms slot alignment and timing validation.
+  - **Enhanced**: Fork database for comprehensive fork collision detection and stale pruning.
+  - **Enhanced**: **NEW**: P2P resync_from_lib() method for automatic recovery from minority forks.
+  - **Enhanced**: **NEW**: Comprehensive debug logging system for verbose traces of block production and chain internals.
+  - **New**: External plugins can depend on the `is_witness_scheduled_soon()` method for coordination.
+  - **New**: Enhanced fork database with compare_fork_branches() function for intelligent fork switching.
+- The validator guard plugin depends on:
+  - Chain plugin for database access and validator monitoring.
+  - P2P plugin for broadcasting witness_update transactions.
+  - **New**: Emergency consensus detection through dynamic_global_property_object.
+  - **New**: Configurable check intervals and auto-disable thresholds.
+  - **New**: Key pair management for validator protection.
+- The validator API plugin depends on:
+  - Chain plugin for read-only queries.
+  - JSON-RPC plugin for transport.
+- The chain database depends on:
+  - validator objects and schedule indices.
+  - Block post validation objects for cross-validator coordination.
+  - **Enhanced**: Fork database for tracking competing blocks and fork resolution.
+  - **Enhanced**: Comprehensive validation for validator reward creation with find_account() checks.
+  - **Enhanced**: **NEW**: skip_undo_history_check flag for controlled production during recovery scenarios.
+  - **Enhanced**: **NEW**: Comprehensive debug logging system enabling verbose traces for chain internals.
+  - **New**: Automatic stale fork pruning mechanism for database efficiency.
+  - **New**: Enhanced fork comparison functions for intelligent chain selection.
+  - **New**: **Enhanced**: emergency_consensus_active field for emergency consensus detection.
+
+```mermaid
+graph LR
+validator["Validator Plugin"] --> CHAIN["Chain Plugin"]
+validator --> P2P["P2P Plugin<br/>resync_from_lib()"]
+validator --> TIME["Time Service"]
+validator --> FORK_DB["Fork Database<br/>enhanced with stale pruning"]
+validator --> DEBUG_LOG["Debug Logging<br/>verbose traces"]
+WGUARD["validator Guard Plugin"] --> CHAIN
+WGUARD --> P2P
+WGUARD --> EMERGENCY["Emergency Consensus<br/>emergency_consensus_active"]
+WAPI["validator API Plugin"] --> CHAIN
+SNAPSHOT["Snapshot Plugin"] --> validator
+CHAIN --> DB["database.hpp/.cpp<br/>compare_fork_branches()"]
+DB --> WITNESS_OBJ["witness_objects.hpp"]
+DB --> BPV_OBJ["chain_objects.hpp"]
+DB --> FORK_DB["fork_database.hpp/.cpp"]
+DB --> FIND_ACCOUNT["find_account() validation"]
+DB --> COMPARE_FORK["compare_fork_branches()"]
+DB --> SKIP_UNDO["skip_undo_history_check flag"]
+DB --> EMERGENCY["emergency_consensus_active"]
+TIME --> NTP["NTP Service"]
+```
+
+**Diagram sources**
+- [validator.hpp:34-68](file://plugins/validator/include/graphene/plugins/validator/validator.hpp#L34-L68)
+- [validator.cpp:59-118](file://plugins/validator/validator.cpp#L59-L118)
+- [witness_guard.hpp:11-48](file://plugins/witness_guard/include/graphene/plugins/witness_guard/witness_guard.hpp#L11-L48)
+- [witness_guard.cpp:27-78](file://plugins/witness_guard/witness_guard.cpp#L27-L78)
+- [witness_api_plugin.hpp:56-98](file://plugins/witness_api/include/graphene/plugins/witness_api/plugin.hpp#L56-L98)
+- [database.hpp:37-83](file://libraries/chain/include/graphene/chain/database.hpp#L37-L83)
+- [witness_objects.hpp:27-132](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L27-L132)
+- [chain_objects.hpp:174-201](file://libraries/chain/include/graphene/chain/chain_objects.hpp#L174-L201)
+- [fork_database.hpp:53-81](file://libraries/chain/include/graphene/chain/fork_database.hpp#L53-L81)
+- [time.cpp:13-53](file://libraries/time/time.cpp#L13-L53)
+- [snapshot_plugin.cpp:1267-1276](file://plugins/snapshot/plugin.cpp#L1267-1276)
+- [database.cpp:1223-1267](file://libraries/chain/database.cpp#L1223-L1267)
+- [global_property_object.hpp:139](file://libraries/chain/include/graphene/chain/global_property_object.hpp#L139)
+- [p2p_plugin.hpp:50-55](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L50-L55)
+
+**Section sources**
+- [validator.cpp:59-118](file://plugins/validator/validator.cpp#L59-L118)
+- [witness_guard.cpp:27-78](file://plugins/witness_guard/witness_guard.cpp#L27-L78)
+- [witness_api_plugin.cpp:13-28](file://plugins/witness_api/plugin.cpp#L13-L28)
+- [database.hpp:37-83](file://libraries/chain/include/graphene/chain/database.hpp#L37-L83)
+
+## Performance Considerations
+- Production loop alignment: The loop waits until the next 250ms boundary and sleeps for at least 50ms to avoid excessive polling, reducing CPU overhead and providing deterministic slot time alignment.
+- Retry on block generation failures: On exceptions during block generation, pending transactions are cleared and the generation is retried once to mitigate transient issues.
+- Participation threshold: Ensures sufficient validator participation before producing blocks, preventing premature production on minority forks.
+- Virtual scheduling: Uses virtual time and votes to fairly distribute block production slots among validators, avoiding hot-spotting and ensuring proportional representation.
+- **Enhanced**: Forced NTP synchronization reduces timing-related production failures and improves system reliability during clock drift scenarios.
+- **Enhanced**: Comprehensive fork collision detection adds minimal overhead while preventing costly fork resolution failures.
+- **Enhanced**: **NEW**: Minority fork detection adds minimal overhead while preventing network fragmentation and minority fork propagation.
+- **Enhanced**: **NEW**: Automatic recovery through P2P resynchronization is efficient and prevents prolonged network instability.
+- **Enhanced**: **NEW**: Comprehensive debug logging system provides detailed visibility with minimal performance impact through selective logging.
+- **New**: Efficient slot checking in `is_witness_scheduled_soon()` method performs minimal database operations across 4 slots to detect scheduling conflicts quickly.
+- **Updated**: Improved configuration parameter processing with type safety and proper scaling for better performance and reliability.
+- **Enhanced**: Fork database querying uses efficient multi-index containers for fast block lookup and competition detection.
+- **Enhanced**: find_account() validation adds minimal overhead while providing comprehensive protection against database corruption scenarios.
+- **Enhanced**: Comprehensive error handling in validator reward creation prevents crashes and ensures graceful degradation during critical failures.
+- **New**: 250ms interval optimization provides precise timing alignment for deterministic consensus maintenance.
+- **New**: Deterministic slot time calculation ensures consistent block production timing across all validator nodes.
+- **New**: Two-level fork collision resolution system provides intelligent fork switching decisions with configurable timeout behavior.
+- **New**: Automatic stale fork pruning prevents database bloat and maintains fork database efficiency.
+- **New**: Enhanced compare_fork_branches() function provides intelligent fork weight comparison with +10% longer-chain bonus.
+- **New**: Configurable fork collision timeout blocks parameter allows fine-tuning of fork resolution behavior for different network conditions.
+- **New**: skip_undo_history_check flag provides controlled production during recovery scenarios without disrupting normal operations.
+- **Enhanced**: **NEW**: debug-block-production configuration option enables verbose logging for block production and chain internals with detailed traces and granular visibility.
+- **Enhanced**: **NEW**: validator guard plugin provides comprehensive protection with minimal performance impact through efficient monitoring and safety checks.
+- **Enhanced**: **NEW**: Auto-disable threshold prevents validator abuse while maintaining network stability and fair participation.
+- **Enhanced**: **NEW**: Emergency consensus integration ensures continuous protection and recovery during network distress scenarios.
+- **Enhanced**: **NEW**: Network health monitoring prevents unsafe operations during stale production override periods.
+- **Enhanced**: **NEW**: Pending transaction tracking prevents unbounded memory growth while maintaining reliable restoration mechanisms.
+
+**Updated** Added performance considerations for the corrected configuration parameter types, fork collision detection system, enhanced fork database querying capabilities, comprehensive validator reward creation validation, 250ms interval optimization, deterministic slot time alignment, new fork collision timeout configuration, two-level fork resolution system with intelligent decision-making, automatic stale fork pruning, enhanced fork comparison functions, configurable timeout parameters for optimal network performance, **NEW**: minority fork detection system with minimal overhead, **NEW**: automatic recovery mechanisms through P2P resynchronization, **NEW**: skip_undo_history_check flag for controlled production during recovery scenarios, **NEW**: comprehensive debug logging system enabling verbose traces for block production and chain internals with detailed visibility, **NEW**: validator protection and monitoring capabilities with auto-restore and auto-disable features, **NEW**: emergency recovery mechanisms with automatic key restoration, **NEW**: consecutive block protection to prevent validator abuse, **NEW**: enhanced network connectivity with improved peer synchronization, **NEW**: validator guard plugin with efficient monitoring and safety checks, **NEW**: auto-disable threshold for preventing validator abuse, **NEW**: emergency consensus integration for continuous protection, **NEW**: network health monitoring for safe operations, **NEW**: pending transaction tracking for reliable restoration.
+
+## Troubleshooting Guide
+Common issues and resolutions:
+- No validators configured
+  - Symptom: Startup logs indicate no validators configured.
+  - Resolution: Add validator names and private keys to configuration.
+- Low participation
+  - Symptom: Blocks not produced due to insufficient validator participation.
+  - Resolution: Ensure enough validators are online and participating per configured threshold.
+- Missing private key
+  - Symptom: Logs indicate inability to sign block due to missing private key.
+  - Resolution: Verify private key is provided in the correct WIF format and matches the validator signing key.
+- Timing lag
+  - Symptom: Blocks not produced due to waking up outside the 500ms window.
+  - Resolution: Improve system clock accuracy and reduce latency; consider enabling stale production only as a temporary workaround.
+  - **Enhanced**: System automatically forces NTP synchronization when timing issues are detected.
+- Consecutive block production disabled
+  - Symptom: Blocks not produced because the last block was generated by the same validator.
+  - Resolution: Investigate connectivity issues; disable consecutive production only as a temporary workaround.
+- **New**: Fork collision detection issues
+  - Symptom: Blocks not produced despite good participation and timing, frequent "deferred block production due to fork collision" messages.
+  - Resolution: Check network connectivity and validator coordination; verify fork database integrity; monitor NTP synchronization quality.
+  - **New**: Check fork-collision-timeout-blocks configuration (default: 21 blocks) for appropriate timeout settings.
+  - **New**: Monitor fork collision deferral count and timeout behavior for proper fork resolution.
+- **New**: Two-level fork collision resolution problems
+  - Symptom: Fork collision handling not working as expected with vote-weighted comparisons.
+  - Resolution: Verify HF12+ compatibility for vote-weighted comparisons; check compare_fork_branches() function behavior; ensure fork database has both forks for comparison.
+- **New**: Stale fork pruning issues
+  - Symptom: Memory usage growing or fork database becoming bloated with competing blocks.
+  - Resolution: Verify automatic stale fork pruning is working; check fork database remove_blocks_by_number() function; ensure proper parent-child relationships in fork database.
+- **New**: validator scheduling conflicts
+  - Symptom: Other plugins experience conflicts with validator operations.
+  - Resolution: Use `is_witness_scheduled_soon()` method to coordinate operations and defer critical tasks until validator production is complete.
+- **New**: NTP synchronization issues
+  - Symptom: Frequent timing-related warnings or blocks not produced despite good participation.
+  - Resolution: Check NTP server connectivity and system clock accuracy; verify NTP service is running properly; monitor delta change logs.
+- **New**: Crash race conditions
+  - Symptom: Validator Plugin fails to shut down cleanly or leaves NTP service in inconsistent state.
+  - Resolution: Ensure proper shutdown sequence; the system now handles crash-safe NTP service cleanup.
+- **New**: Configuration parameter type errors
+  - Symptom: Errors indicating incorrect parameter types or values.
+  - Resolution: Verify configuration parameters use correct types:
+    - `enable-stale-production`: boolean value (`true`/`false`)
+    - `required-participation`: integer value scaled by `CHAIN_1_PERCENT` (e.g., 33 for 33%)
+    - `fork-collision-timeout-blocks`: integer value (default: 21 blocks)
+    - `debug-block-production`: boolean value (`true`/`false`) - **NEW**
+    - `validator-guard-enabled`: boolean value (`true`/`false`) - **NEW**
+    - `validator-guard-disable`: integer value (default: 5) - **NEW**
+    - `validator-guard-interval`: integer value (default: 20) - **NEW**
+    - `validator-guard-validator`: JSON triplet format - **NEW**
+    - Check configuration files for proper syntax and values
+- **Enhanced**: Fork collision detection logging
+  - Symptom: Frequent fork collision warnings with "Collision parents at block" messages.
+  - Resolution: Monitor fork database for competing blocks; check validator coordination; verify network stability; ensure proper NTP synchronization.
+  - **New**: Check fork collision deferral count and timeout behavior for proper resolution.
+- **New**: Enhanced fork comparison failures
+  - Symptom: compare_fork_branches() function returning 0 (cannot compare) frequently.
+  - Resolution: Verify both fork tips are in fork database; check validator objects availability; ensure proper fork database state.
+- **New**: Automatic stale pruning not working
+  - Symptom: Fork database grows with stale competing blocks.
+  - Resolution: Verify _push_block() method is calling stale pruning; check fork database state; ensure proper parent-child relationships.
+- **New**: Database corruption detection
+  - Symptom: Multiple critical error messages during validator reward processing with account validation failures.
+  - Resolution:
+    - Immediate restart with replay to rebuild database from genesis
+    - Check disk space and file system integrity
+    - Verify database backup and recovery procedures
+    - Monitor for hardware issues affecting shared memory
+    - Review system logs for memory corruption indicators
+- **New**: 250ms interval timing issues
+  - Symptom: Blocks not produced at expected 250ms boundaries or inconsistent timing.
+  - Resolution: Verify system clock precision; check for high system load causing timing delays; ensure NTP service is functioning properly; review system resources for adequate performance.
+- **New**: Configurable timeout parameter issues
+  - Symptom: Fork collision timeout not triggering as expected or triggering too frequently.
+  - Resolution: Adjust fork-collision-timeout-blocks parameter based on network conditions; monitor fork collision deferral count; verify timeout logic is working correctly.
+- **New**: Minority fork detection false positives
+  - Symptom: Frequent minority fork detection warnings or unexpected recovery behavior.
+  - Resolution: Verify emergency consensus mode is not active; check skip_undo_history_check flag state; ensure proper network connectivity; verify validator configuration is correct.
+- **New**: Recovery mechanism issues
+  - Symptom: Automatic recovery not working or taking too long to complete.
+  - Resolution: Check P2P plugin connectivity; verify resync_from_lib() method is functioning; monitor network synchronization progress; ensure sufficient peer connections.
+- **New**: skip_undo_history_check flag problems
+  - Symptom: Production not behaving as expected during recovery scenarios.
+  - Resolution: Verify flag state during recovery; check enable-stale-production configuration; ensure proper flag management during minority fork detection and recovery.
+- **New**: Debug logging configuration issues
+  - Symptom: Debug logging not providing expected verbose traces or performance impact concerns.
+  - Resolution: Verify debug-block-production configuration is set to `true`; check log level settings; ensure proper log file configuration; monitor performance impact; adjust debug logging scope as needed.
+- **New**: Comprehensive debug trace analysis
+  - Symptom: Difficulty interpreting debug log output or missing expected trace information.
+  - Resolution: Review debug log entries for timestamped traces; verify debug-block-production is enabled; check for granular visibility into validator participation checks, emergency mode enforcement, block post-validation processes, and minority fork detection; ensure proper log rotation and retention policies.
+- **New**: validator guard plugin issues
+  - Symptom: validator key not being restored or auto-disabled unexpectedly.
+  - Resolution: Check validator-guard-enabled configuration; verify validator-guard-validator entries are properly formatted JSON triplets; ensure active keys have proper authority on-chain; monitor validator guard logs for specific error messages.
+- **New**: Auto-disable threshold problems
+  - Symptom: validators being auto-disabled too frequently or not at all.
+  - Resolution: Adjust validator-guard-disable parameter based on network conditions; verify validator block production patterns; ensure proper key management and network connectivity.
+- **New**: Emergency consensus protection issues
+  - Symptom: validator protection not working during emergency consensus mode.
+  - Resolution: Verify emergency_consensus_active flag is detected correctly; check validator guard plugin behavior during emergency mode; ensure proper key restoration procedures.
+- **New**: Network health monitoring failures
+  - Symptom: validator guard performing operations during unhealthy network conditions.
+  - Resolution: Verify network health checks are working; check LIB age monitoring; ensure proper safety checks are in place; review validator guard logs for health check results.
+- **New**: Production watchdog fires unexpectedly
+  - Symptom: `WATCHDOG:` elog appears even though production seems healthy; verbose `DEBUG_CRASH` logging auto-enabled.
+  - Resolution: The watchdog fires when no block has been produced for 60s (emergency master) or 180s (regular validator) while production conditions appear met. Check: is our validator in the shuffled schedule (`our_slots_in_schedule > 0`)? Is the on-chain signing key blanked (`blanked_keys` field in watchdog log)? Is P2P still syncing (`dlt_syncing`)? The watchdog log contains all these fields.
+- **New**: Lag tight loop / high CPU after missed slot
+  - Symptom: After a `lag` condition, node CPU spikes and production loop fires many times per second on the same slot.
+  - Resolution: This was a bug fixed in commit 8fce5f1e. The `_last_lag_slot_time` guard now skips ahead to avoid rechecking the same missed slot. Upgrade to a build that includes this fix.
+- **New**: Slot hijack counter increments for own blocks
+  - Symptom: `hijack #N` messages appear in watchdog diagnostics even when one of our own validators produced the block.
+  - Resolution: Fixed in commit 7b589b71. The hijack counter now resets when any of our validators (not just the slot-assigned one) produced the block. Upgrade to a build containing this fix.
+- **New**: not_my_turn streak warning
+  - Symptom: `NOT_MY_TURN STREAK: N consecutive slots` warning in logs.
+  - Resolution: Another validator has held all slots for ~125s. Check: (1) Is our validator still in the shuffled schedule? (2) Is there a chain fork where the other side has a different schedule? (3) Has our validator been replaced/disabled on-chain? The log includes `our validators` and `last scheduled` fields for quick diagnosis.
+
+**Updated** Added troubleshooting information for fork collision detection, validator scheduling conflicts, the new coordination mechanisms, configuration parameter type issues, comprehensive validator reward creation validation, database corruption scenarios with clear recovery procedures, 250ms interval timing optimization issues, new fork collision timeout configuration, two-level fork resolution system, automatic stale fork pruning, enhanced fork comparison functions, configurable timeout parameters for optimal network behavior, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: recovery mechanism issues through P2P resynchronization, **NEW**: skip_undo_history_check flag management during recovery scenarios, **NEW**: comprehensive debug logging system enabling verbose traces for block production and chain internals with detailed visibility, **NEW**: validator protection and monitoring capabilities with auto-restore and auto-disable features, **NEW**: emergency recovery mechanisms through P2P resynchronization, **NEW**: auto-disable threshold management for preventing validator abuse, **NEW**: emergency consensus integration for continuous protection, **NEW**: network health monitoring for safe operations, **NEW**: pending transaction tracking for reliable restoration, **NEW**: validator guard plugin configuration issues, **NEW**: auto-disable threshold problems, **NEW**: emergency consensus protection failures, **NEW**: network health monitoring failures.
+
+**Section sources**
+- [validator.cpp:171-192](file://plugins/validator/validator.cpp#L171-L192)
+- [validator.cpp:255-271](file://plugins/validator/validator.cpp#L255-L271)
+- [validator.cpp:387-396](file://plugins/validator/validator.cpp#L387-L396)
+- [validator.cpp:263-266](file://plugins/validator/validator.cpp#L263-L266)
+- [validator.cpp:206-249](file://plugins/validator/validator.cpp#L206-L249)
+- [validator.cpp:447-471](file://plugins/validator/validator.cpp#L447-L471)
+- [validator.cpp:590-695](file://plugins/validator/validator.cpp#L590-L695)
+- [time.cpp:36-39](file://libraries/time/time.cpp#L36-L39)
+- [database.cpp:2826-2836](file://libraries/chain/database.cpp#L2826-L2836)
+- [database.cpp:2873-2883](file://libraries/chain/database.cpp#L2873-L2883)
+- [database.cpp:1456-1471](file://libraries/chain/database.cpp#L1456-L1471)
+- [database.cpp:1223-1267](file://libraries/chain/database.cpp#L1223-L1267)
+- [validator.cpp:509-555](file://plugins/validator/validator.cpp#L509-L555)
+- [witness_guard.cpp:83-191](file://plugins/witness_guard/witness_guard.cpp#L83-L191)
+- [witness_guard.cpp:455-544](file://plugins/witness_guard/witness_guard.cpp#L455-L544)
+- [global_property_object.hpp:139](file://libraries/chain/include/graphene/chain/global_property_object.hpp#L139)
+- [p2p_plugin.hpp:50-55](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L50-L55)
+
+## Conclusion
+The validator subsystem integrates tightly with the chain database and P2P layer to ensure timely, secure, and fair block production. The Validator Plugin manages production loops, participation thresholds, and broadcasting, while the validator guard plugin provides comprehensive protection and monitoring capabilities. The validator API plugin exposes essential read-only data to clients.
+
+**Enhanced** The system now includes robust NTP time synchronization with automatic fallback mechanisms, crash-safe shutdown procedures, strengthened timing-related production failure prevention, comprehensive fork collision detection system with two-level resolution, and enhanced fork database querying capabilities. **New** The addition of the `is_witness_scheduled_soon()` method enables sophisticated plugin coordination, allowing other plugins to avoid conflicts during critical operations like snapshot creation. **Updated** The configuration parameter system has been improved with corrected defaults and proper type handling for better reliability and performance. **Enhanced** The validator reward creation process has been significantly strengthened with comprehensive error handling, find_account() validation, crash prevention mechanisms, and clear recovery procedures for database corruption scenarios. **New** The 250ms interval optimization provides precise timing alignment for deterministic consensus maintenance, while the enhanced performance characteristics ensure better system responsiveness and consensus stability. **New** The two-level fork collision resolution system with configurable timeout provides intelligent fork switching decisions, automatic stale fork pruning maintains database efficiency, enhanced fork comparison functions enable sophisticated chain selection, and configurable timeout parameters allow fine-tuning for different network conditions. **NEW** The comprehensive minority fork detection system with automatic recovery mechanisms prevents network fragmentation and ensures proper consensus maintenance, while the enhanced emergency consensus mode integration provides seamless operation during network distress scenarios. **NEW** The skip_undo_history_check flag provides controlled production during recovery scenarios, and the P2P resynchronization mechanism ensures efficient network recovery without disrupting normal operations. **NEW** The comprehensive debug logging system enables verbose traces for block production and chain internals with detailed visibility into validator participation checks, emergency mode enforcement, block post-validation processes, and minority fork detection. **NEW** The validator guard plugin provides comprehensive protection and monitoring capabilities with auto-restore functionality, consecutive block auto-disable protection, emergency consensus support, and safety checks. **NEW** The enhanced network connectivity features include improved peer synchronization and emergency recovery mechanisms. Together, they form a robust foundation for validator operations in the VIZ node, with improved time synchronization, crash handling capabilities, enhanced plugin coordination features, comprehensive fork collision detection, reliable configuration parameter processing, strengthened fork database querying for detecting competing blocks at the same height, comprehensive validator reward creation validation with crash prevention and recovery procedures, 250ms interval optimization for deterministic slot time alignment, enhanced performance characteristics for better consensus maintenance, intelligent fork resolution system, automatic stale fork pruning, configurable timeout parameters for optimal network behavior, **NEW**: comprehensive minority fork detection system with automatic recovery mechanisms, **NEW**: enhanced emergency consensus mode integration, **NEW**: controlled production during recovery scenarios, **NEW**: efficient automatic recovery through P2P resynchronization for network stability, **NEW**: comprehensive debug logging system enabling verbose traces for block production and chain internals with detailed visibility, **NEW**: validator protection and monitoring capabilities with auto-restore and auto-disable features, **NEW**: emergency recovery mechanisms with automatic key restoration, **NEW**: consecutive block protection to prevent validator abuse, **NEW**: enhanced network connectivity with improved peer synchronization, **NEW**: validator guard plugin with comprehensive protection and monitoring, **NEW**: emergency consensus integration for continuous protection, **NEW**: network health monitoring for safe operations, and **NEW**: pending transaction tracking for reliable restoration. These enhancements make the validator system more resilient to various operational challenges while providing better integration points for the broader VIZ ecosystem, comprehensive protection against shared memory corruption, robust validation mechanisms for validator reward distribution across all hardfork versions, optimized timing for improved consensus maintenance, intelligent fork resolution with configurable behavior, automatic database maintenance for optimal performance, **NEW**: comprehensive minority fork detection and recovery mechanisms for network stability, **NEW**: enhanced emergency consensus mode integration for seamless operation during network distress, **NEW**: controlled production during recovery scenarios through skip_undo_history_check flag management, **NEW**: efficient automatic recovery through P2P resynchronization for rapid network stabilization, **NEW**: comprehensive debug logging system enabling verbose traces for block production and chain internals with detailed visibility, **NEW**: validator protection and monitoring capabilities with auto-restore and auto-disable features, **NEW**: emergency recovery mechanisms with automatic key restoration, **NEW**: consecutive block protection to prevent validator abuse, **NEW**: enhanced network connectivity with improved peer synchronization, and **NEW**: validator guard plugin with comprehensive protection and monitoring for enhanced network stability and security.

@@ -70,11 +70,11 @@ namespace graphene { namespace protocol {
         };
 
 
-        struct shutdown_witness_operation : public virtual_operation {
-            shutdown_witness_operation() {
+        struct shutdown_validator_operation : public virtual_operation {
+            shutdown_validator_operation() {
             }
 
-            shutdown_witness_operation(const string &o) : owner(o) {
+            shutdown_validator_operation(const string &o) : owner(o) {
             }
 
             account_name_type owner;
@@ -174,15 +174,15 @@ namespace graphene { namespace protocol {
             asset tokens;
         };
 
-        struct witness_reward_operation : public virtual_operation {
-            witness_reward_operation() {
+        struct validator_reward_operation : public virtual_operation {
+            validator_reward_operation() {
             }
 
-            witness_reward_operation(const account_name_type& w, const asset& s)
-                    : witness(w), shares(s) {
+            validator_reward_operation(const account_name_type& w, const asset& s)
+                    : validator(w), shares(s) {
             }
 
-            account_name_type witness;
+            account_name_type validator;
             asset shares;
         };
 
@@ -324,7 +324,7 @@ FC_REFLECT((graphene::protocol::author_reward_operation), (author)(permlink)(tok
 FC_REFLECT((graphene::protocol::curation_reward_operation), (curator)(reward)(content_author)(content_permlink))
 FC_REFLECT((graphene::protocol::content_reward_operation), (author)(permlink)(payout))
 FC_REFLECT((graphene::protocol::fill_vesting_withdraw_operation), (from_account)(to_account)(withdrawn)(deposited))
-FC_REFLECT((graphene::protocol::shutdown_witness_operation), (owner))
+FC_REFLECT((graphene::protocol::shutdown_validator_operation), (owner))
 FC_REFLECT((graphene::protocol::hardfork_operation), (hardfork_id))
 FC_REFLECT((graphene::protocol::content_payout_update_operation), (author)(permlink))
 FC_REFLECT((graphene::protocol::content_benefactor_reward_operation), (benefactor)(author)(permlink)(reward))
@@ -333,7 +333,7 @@ FC_REFLECT((graphene::protocol::committee_cancel_request_operation), (request_id
 FC_REFLECT((graphene::protocol::committee_approve_request_operation), (request_id))
 FC_REFLECT((graphene::protocol::committee_payout_request_operation), (request_id))
 FC_REFLECT((graphene::protocol::committee_pay_request_operation), (worker)(request_id)(tokens))
-FC_REFLECT((graphene::protocol::witness_reward_operation), (witness)(shares))
+FC_REFLECT((graphene::protocol::validator_reward_operation), (validator)(shares))
 FC_REFLECT((graphene::protocol::receive_award_operation), (initiator)(receiver)(custom_sequence)(memo)(shares))
 FC_REFLECT((graphene::protocol::benefactor_award_operation), (initiator)(benefactor)(receiver)(custom_sequence)(memo)(shares))
 FC_REFLECT((graphene::protocol::paid_subscription_action_operation), (subscriber)(account)(level)(amount)(period)(summary_amount))

@@ -11,7 +11,7 @@ namespace graphene { namespace chain {
         const auto& creator = _db.get_account(o.creator);
         //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
         //    FC_ASSERT(!creator.valid, "Account flagged as invalid");
-        const auto& median_props = _db.get_witness_schedule_object().median_props;
+        const auto& median_props = _db.get_validator_schedule_object().median_props;
 
         FC_ASSERT(creator.balance >= o.balance, "Insufficient balance to create invite.",
                         ("creator.balance", creator.balance)("invite.balance", o.balance));

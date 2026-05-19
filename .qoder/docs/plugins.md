@@ -1,4 +1,4 @@
-# VIZ Blockchain — Plugins Reference
+﻿# VIZ Blockchain — Plugins Reference
 
 Complete specification of all VIZ node plugins: what they do, dependencies, status (active/deprecated), and JSON-RPC API methods.
 
@@ -159,7 +159,7 @@ p2p-stale-sync-timeout-seconds = 120
 - **Block storage diagnostics:** head, LIB, earliest available block, DLT block log range, regular block log end, fork_db linked/unlinked counts and ranges, DLT mode flag, and total `resize()` count
 - In DLT mode, also runs `dlt_block_log::verify_mapping()` to detect and self-heal stale memory-mapped file state
 
-**Minority fork auto-recovery:** The P2P plugin exposes `resync_from_lib()` which is called by the witness plugin when a minority fork is detected (last 21 blocks all from our own witnesses). It pops all reversible blocks back to LIB, resets fork_db, re-initiates P2P sync, and reconnects seed nodes. This replicates the effect of a manual node restart. See [fork-collision-hardfork-proposal.md](fork-collision-hardfork-proposal.md) for details.
+**Minority fork auto-recovery:** The P2P plugin exposes `resync_from_lib()` which is called by the Validator Plugin when a minority fork is detected (last 21 blocks all from our own validators). It pops all reversible blocks back to LIB, resets fork_db, re-initiates P2P sync, and reconnects seed nodes. This replicates the effect of a manual node restart. See [fork-collision-hardfork-proposal.md](fork-collision-hardfork-proposal.md) for details.
 
 **Post-snapshot `trigger_resync()`:** The P2P plugin exposes `trigger_resync()` which is called by the snapshot plugin after a hot-reload (snapshot import while the node is running). It re-initiates P2P sync from the new head block so the P2P layer picks up the chain state change. Without this, the P2P layer would continue advertising stale block IDs.
 
@@ -173,25 +173,25 @@ p2p-stale-sync-timeout-seconds = 120
 
 ---
 
-### `witness`
+### `validator`
 **Status:** Active
 **Category:** Producer
 **Dependencies:** `chain`, `p2p`
 
-Block production and witness scheduling.
+Block production and validator scheduling.
 
 **Purpose:**
 - Produces blocks when scheduled
-- Manages witness signing keys
+- Manages validator signing keys
 - Detects fork collisions and defers production
-- Detects minority fork (last 21 blocks all from own witnesses) and triggers auto-recovery
+- Detects minority fork (last 21 blocks all from own validators) and triggers auto-recovery
 - Supports emergency consensus block production
 
 **JSON-RPC:** None (internal only)
 
 **Config options:**
 ```ini
-witness = "mywitness"
+validator = "mywitness"
 private-key = 5K...
 enable-stale-production = false
 required-participation = 3300
@@ -200,16 +200,16 @@ fork-collision-timeout-blocks = 21
 
 | Option | Default | Description |
 |---|---|---|
-| `witness` | (none) | Witness account name(s) to produce blocks for |
+| `validator` | (none) | validator account name(s) to produce blocks for |
 | `private-key` | (none) | WIF private key(s) for block signing |
 | `emergency-private-key` | (none) | WIF key for emergency consensus production |
 | `enable-stale-production` | `false` | Allow production even if chain is stale or on a minority fork |
-| `required-participation` | `3300` (33%) | Minimum witness participation rate (basis points) |
+| `required-participation` | `3300` (33%) | Minimum validator participation rate (basis points) |
 | `fork-collision-timeout-blocks` | `21` | Deferrals before forcing production past a fork collision |
 
-**Minority fork detection:** Before producing a block, the witness plugin walks the last `CHAIN_MAX_WITNESSES` (21) blocks in fork_db. If ALL were produced by the node's own configured witnesses, the node is stuck on a minority fork. With `enable-stale-production=false` (default), the plugin calls `p2p.resync_from_lib()` to pop back to LIB and resync. With `enable-stale-production=true`, production continues (for bootstrap/testnet scenarios). Detection is skipped during emergency consensus mode.
+**Minority fork detection:** Before producing a block, the Validator Plugin walks the last `CHAIN_MAX_WITNESSES` (21) blocks in fork_db. If ALL were produced by the node's own configured validators, the node is stuck on a minority fork. With `enable-stale-production=false` (default), the plugin calls `p2p.resync_from_lib()` to pop back to LIB and resync. With `enable-stale-production=true`, production continues (for bootstrap/testnet scenarios). Detection is skipped during emergency consensus mode.
 
-**Emergency consensus:** When `emergency-private-key` is configured, the committee account is added to the witness set. During emergency consensus mode (`dgp.emergency_consensus_active`), the node produces blocks using the committee account's schedule.
+**Emergency consensus:** When `emergency-private-key` is configured, the committee account is added to the validator set. During emergency consensus mode (`dgp.emergency_consensus_active`), the node produces blocks using the committee account's schedule.
 
 See [block-processing.md](block-processing.md) for production timing details and [fork-collision-hardfork-proposal.md](fork-collision-hardfork-proposal.md) for fork handling.
 
@@ -284,7 +284,7 @@ Primary read API for blockchain state queries.
 | `database_api.set_block_applied_callback` | Subscribe to new blocks |
 | `database_api.get_config` | Get compile-time chain constants |
 | `database_api.get_dynamic_global_properties` | Get current chain state |
-| `database_api.get_chain_properties` | Get median witness properties |
+| `database_api.get_chain_properties` | Get median validator properties |
 | `database_api.get_hardfork_version` | Get current hardfork version |
 | `database_api.get_next_scheduled_hardfork` | Get next hardfork info |
 | `database_api.get_accounts` | Get accounts by names |
@@ -319,7 +319,7 @@ Broadcasts transactions and blocks to the network.
 
 **Purpose:**
 - Broadcast signed transactions
-- Broadcast signed blocks (for witnesses)
+- Broadcast signed blocks (for validators)
 - Synchronous transaction confirmation
 
 **JSON-RPC Methods:**
@@ -338,25 +338,25 @@ Broadcasts transactions and blocks to the network.
 **Category:** API
 **Dependencies:** `json_rpc`, `chain`
 
-Query witness information.
+Query validator information.
 
 **Purpose:**
-- List active/scheduled witnesses
-- Query witness by account or vote rank
-- Get witness schedule
+- List active/scheduled validators
+- Query validator by account or vote rank
+- Get validator schedule
 
 **JSON-RPC Methods:**
 
 | Method | Description |
 |---|---|
-| `witness_api.get_active_witnesses` | Get current active witness set |
-| `witness_api.get_witness_schedule` | Get witness schedule object |
-| `witness_api.get_witnesses` | Get witnesses by IDs |
-| `witness_api.get_witness_by_account` | Get witness by account name |
-| `witness_api.get_witnesses_by_vote` | Get witnesses ranked by votes |
-| `witness_api.get_witnesses_by_counted_vote` | Get witnesses by counted votes |
-| `witness_api.get_witness_count` | Get total witness count |
-| `witness_api.lookup_witness_accounts` | List witness accounts by prefix |
+| `witness_api.get_active_witnesses` | Get current active validator set |
+| `witness_api.get_witness_schedule` | Get validator schedule object |
+| `witness_api.get_witnesses` | Get validators by IDs |
+| `witness_api.get_witness_by_account` | Get validator by account name |
+| `witness_api.get_witnesses_by_vote` | Get validators ranked by votes |
+| `witness_api.get_witnesses_by_counted_vote` | Get validators by counted votes |
+| `witness_api.get_witness_count` | Get total validator count |
+| `witness_api.lookup_witness_accounts` | List validator accounts by prefix |
 
 ---
 
@@ -744,32 +744,32 @@ Get raw serialized blocks.
 
 ---
 
-## Witness/Producer Plugins
+## validator/Producer Plugins
 
-### `witness`
+### `validator`
 **Status:** Active
 **Category:** Core (for block producers)
 **Dependencies:** `chain`, `p2p`
 
-Block production plugin for witnesses.
+Block production plugin for validators.
 
 **Purpose:**
 - Sign and produce blocks on schedule
-- Manage witness private keys
+- Manage validator private keys
 
 **JSON-RPC:** None
 
 **Config options:**
 ```ini
-witness = "your-witness-account"
+validator = "your-validator-account"
 private-key = 5K...
 enable-stale-production = true          # Produce blocks even on a stale chain (default: false)
-required-participation = 3300            # Min witness participation in basis points to produce (default: 33% = 3300)
+required-participation = 3300            # Min validator participation in basis points to produce (default: 33% = 3300)
 ```
 
 **Bug Fix: `enable-stale-production` and `required-participation` option parsing**
 
-Two bugs were fixed in the witness plugin option definitions ([witness.cpp](../../plugins/witness/witness.cpp)):
+Two bugs were fixed in the Validator Plugin option definitions ([validator.cpp](../../plugins/validator/validator.cpp)):
 
 | Bug | Before | After |
 |---|---|---|
@@ -783,9 +783,9 @@ The `required-participation` value is now always in **basis points** (0–10000 
 
 **Optimization: Block Production Timing**
 
-The witness plugin's production loop uses a timer + look-ahead mechanism to determine when to produce a block. The timer ticks at regular intervals and the look-ahead shifts `now` forward so the slot boundary is detected earlier.
+The Validator Plugin's production loop uses a timer + look-ahead mechanism to determine when to produce a block. The timer ticks at regular intervals and the look-ahead shifts `now` forward so the slot boundary is detected earlier.
 
-Source: [witness.cpp](../../plugins/witness/witness.cpp) — `schedule_production_loop()`, `maybe_produce_block()`
+Source: [validator.cpp](../../plugins/validator/validator.cpp) — `schedule_production_loop()`, `maybe_produce_block()`
 
 | Parameter | Value | Meaning |
 |---|---|---|
@@ -833,7 +833,7 @@ Development and testing utilities. **NOT for production use.**
 | `debug_node.debug_push_blocks` | Push blocks from database |
 | `debug_node.debug_push_json_blocks` | Push blocks from JSON file |
 | `debug_node.debug_pop_block` | Pop and return last block |
-| `debug_node.debug_get_witness_schedule` | Get witness schedule |
+| `debug_node.debug_get_witness_schedule` | Get validator schedule |
 | `debug_node.debug_set_hardfork` | Force set hardfork |
 | `debug_node.debug_has_hardfork` | Check if hardfork applied |
 
@@ -899,7 +899,7 @@ mongodb-db-name = viz
 | `auth_util` | Active | Yes | API |
 | `block_info` | Active | Yes | API |
 | `raw_block` | Active | Yes | API |
-| `witness` | Active | No | Producer |
+| `validator` | Active | No | Producer |
 | `debug_node` | Dev only | Yes | Debug |
 | `test_api` | Test only | Yes | Test |
 | `mongo_db` | Active | No | External |
@@ -930,7 +930,7 @@ All methods use JSON-RPC 2.0 format:
 | `database_api` | `set_block_applied_callback` | Subscribe to blocks |
 | `database_api` | `get_config` | Chain constants |
 | `database_api` | `get_dynamic_global_properties` | Current chain state |
-| `database_api` | `get_chain_properties` | Median witness props |
+| `database_api` | `get_chain_properties` | Median validator props |
 | `database_api` | `get_hardfork_version` | Current HF version |
 | `database_api` | `get_next_scheduled_hardfork` | Next HF info |
 | `database_api` | `get_accounts` | Accounts by names |
@@ -957,14 +957,14 @@ All methods use JSON-RPC 2.0 format:
 | `network_broadcast_api` | `broadcast_transaction_synchronous` | Broadcast TX (sync) |
 | `network_broadcast_api` | `broadcast_transaction_with_callback` | Broadcast TX (callback) |
 | `network_broadcast_api` | `broadcast_block` | Broadcast block |
-| `witness_api` | `get_active_witnesses` | Active witnesses |
-| `witness_api` | `get_witness_schedule` | Witness schedule |
-| `witness_api` | `get_witnesses` | Witnesses by ID |
-| `witness_api` | `get_witness_by_account` | Witness by account |
-| `witness_api` | `get_witnesses_by_vote` | Witnesses by votes |
-| `witness_api` | `get_witnesses_by_counted_vote` | Witnesses by counted votes |
-| `witness_api` | `get_witness_count` | Witness count |
-| `witness_api` | `lookup_witness_accounts` | List witnesses |
+| `witness_api` | `get_active_witnesses` | Active validators |
+| `witness_api` | `get_witness_schedule` | validator schedule |
+| `witness_api` | `get_witnesses` | validators by ID |
+| `witness_api` | `get_witness_by_account` | validator by account |
+| `witness_api` | `get_witnesses_by_vote` | validators by votes |
+| `witness_api` | `get_witnesses_by_counted_vote` | validators by counted votes |
+| `witness_api` | `get_witness_count` | validator count |
+| `witness_api` | `lookup_witness_accounts` | List validators |
 | `account_by_key` | `get_key_references` | Accounts by key |
 | `account_history` | `get_account_history` | Account operations |
 | `operation_history` | `get_ops_in_block` | Block operations |
@@ -1022,7 +1022,7 @@ All methods use JSON-RPC 2.0 format:
 | `debug_node` | `debug_push_blocks` | Push blocks |
 | `debug_node` | `debug_push_json_blocks` | Push JSON blocks |
 | `debug_node` | `debug_pop_block` | Pop block |
-| `debug_node` | `debug_get_witness_schedule` | Witness schedule |
+| `debug_node` | `debug_get_witness_schedule` | validator schedule |
 | `debug_node` | `debug_set_hardfork` | Set hardfork |
 | `debug_node` | `debug_has_hardfork` | Check hardfork |
 
@@ -1061,11 +1061,11 @@ plugin = social_network
 plugin = private_message
 ```
 
-### Witness Node
+### validator Node
 ```ini
 plugin = chain
 plugin = p2p
-plugin = witness
+plugin = validator
 plugin = json_rpc
 plugin = webserver
 plugin = database_api

@@ -180,10 +180,10 @@ namespace graphene { namespace protocol {
                                       CHAIN_100_PERCENT, "Percent must be valid percent");
         }
 
-        void witness_update_operation::validate() const {
+        void validator_update_operation::validate() const {
             validate_account_name(owner);
             FC_ASSERT(url.size() > 0, "URL size must be greater than 0");
-            FC_ASSERT(url.size() < CHAIN_MAX_WITNESS_URL_LENGTH, "URL size must be lesser than CHAIN_MAX_WITNESS_URL_LENGTH");
+            FC_ASSERT(url.size() < CHAIN_MAX_VALIDATOR_URL_LENGTH, "URL size must be lesser than CHAIN_MAX_VALIDATOR_URL_LENGTH");
             FC_ASSERT(fc::is_utf8(url), "URL is not valid UTF8");
         }
 
@@ -206,12 +206,12 @@ namespace graphene { namespace protocol {
             props.visit(chain_properties_validator());
         }
 
-        void account_witness_vote_operation::validate() const {
+        void account_validator_vote_operation::validate() const {
             validate_account_name(account);
-            validate_account_name(witness);
+            validate_account_name(validator);
         }
 
-        void account_witness_proxy_operation::validate() const {
+        void account_validator_proxy_operation::validate() const {
             validate_account_name(account);
             if (proxy.size()) {
                 validate_account_name(proxy);

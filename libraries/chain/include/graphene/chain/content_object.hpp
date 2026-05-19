@@ -4,7 +4,7 @@
 #include <graphene/protocol/chain_operations.hpp>
 
 #include <graphene/chain/chain_object_types.hpp>
-#include <graphene/chain/witness_objects.hpp>
+#include <graphene/chain/validator_objects.hpp>
 
 #include <boost/multi_index/composite_key.hpp>
 

@@ -171,34 +171,34 @@ namespace graphene {
         >
         award_shares_expire_index;
 
-        class block_post_validation_object
-                : public object<block_post_validation_object_type, block_post_validation_object> {
+        class validator_confirmation_object
+                : public object<validator_confirmation_object_type, validator_confirmation_object> {
         public:
             template<typename Constructor, typename Allocator>
-            block_post_validation_object(Constructor &&c, allocator <Allocator> a) {
+            validator_confirmation_object(Constructor &&c, allocator <Allocator> a) {
                 c(*this);
             }
 
-            block_post_validation_object() {
+            validator_confirmation_object() {
             }
 
             id_type id;
 
             uint32_t block_num = 0;
             block_id_type block_id;
-            fc::array<account_name_type, CHAIN_MAX_WITNESSES> current_shuffled_witnesses;
-            fc::array<bool, CHAIN_MAX_WITNESSES> current_shuffled_witnesses_validations;
+            fc::array<account_name_type, CHAIN_MAX_VALIDATORS> current_shuffled_validators;
+            fc::array<bool, CHAIN_MAX_VALIDATORS> current_shuffled_validators_validations;
         };
         typedef multi_index_container <
-            block_post_validation_object,
+            validator_confirmation_object,
             indexed_by<
                 ordered_unique<tag<by_id>,
-                    member<block_post_validation_object, block_post_validation_object_id_type, &block_post_validation_object::id>
+                    member<validator_confirmation_object, validator_confirmation_object_id_type, &validator_confirmation_object::id>
                 >
             >,
-            allocator <block_post_validation_object>
+            allocator <validator_confirmation_object>
         >
-        block_post_validation_index;
+        validator_confirmation_index;
     }
 } // graphene::chain
 
@@ -220,6 +220,6 @@ FC_REFLECT((graphene::chain::award_shares_expire_object),
     (id)(expires)(rshares))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::award_shares_expire_object, graphene::chain::award_shares_expire_index)
 
-FC_REFLECT((graphene::chain::block_post_validation_object),
-    (id)(block_num)(block_id)(current_shuffled_witnesses)(current_shuffled_witnesses_validations))
-CHAINBASE_SET_INDEX_TYPE(graphene::chain::block_post_validation_object, graphene::chain::block_post_validation_index)
+FC_REFLECT((graphene::chain::validator_confirmation_object),
+    (id)(block_num)(block_id)(current_shuffled_validators)(current_shuffled_validators_validations))
+CHAINBASE_SET_INDEX_TYPE(graphene::chain::validator_confirmation_object, graphene::chain::validator_confirmation_index)

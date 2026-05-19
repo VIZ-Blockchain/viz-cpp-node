@@ -1,4 +1,4 @@
-# Data Types and Serialization
+﻿# Data Types and Serialization
 
 <cite>
 **Referenced Files in This Document**
@@ -327,9 +327,9 @@ Usage examples (conceptual):
 - [base.hpp](file://libraries/protocol/include/graphene/protocol/base.hpp#L12-L62)
 
 ### Concrete Operations and Extensions
-- chain_operations.hpp: account creation/update, transfers, vesting, witnesses, escrow, chain properties, invites, subscriptions, sales, awards, bids
+- chain_operations.hpp: account creation/update, transfers, vesting, validators, escrow, chain properties, invites, subscriptions, sales, awards, bids
 - proposal_operations.hpp: proposal lifecycle operations
-- chain_virtual_operations.hpp: reward payouts, hardfork triggers, committee actions, witness rewards, subscription actions, sales, and auction events
+- chain_virtual_operations.hpp: reward payouts, hardfork triggers, committee actions, validator rewards, subscription actions, sales, and auction events
 
 Serialization highlights:
 - FC_REFLECT for each operation struct

@@ -38,7 +38,7 @@ namespace graphene {
             block_id_type head_block_id;
             time_point_sec genesis_time;
             time_point_sec time;
-            account_name_type current_witness;
+            account_name_type current_validator;
 
             asset committee_fund = asset(0, TOKEN_SYMBOL);
             uint32_t committee_requests = 0;
@@ -49,7 +49,7 @@ namespace graphene {
             fc::uint128_t total_reward_shares;
 
 			uint32_t inflation_calc_block_num = 0;
-			int16_t inflation_witness_percent = 0;
+			int16_t inflation_validator_percent = 0;
 			int16_t inflation_ratio = 0;
 
             price get_vesting_share_price() const {
@@ -164,7 +164,7 @@ FC_REFLECT((graphene::chain::dynamic_global_property_object),
                 (head_block_id)
                 (genesis_time)
                 (time)
-                (current_witness)
+                (current_validator)
                 (committee_fund)
                 (committee_requests)
                 (current_supply)
@@ -186,7 +186,7 @@ FC_REFLECT((graphene::chain::dynamic_global_property_object),
                 (vote_regeneration_per_day)
                 (bandwidth_reserve_candidates)
                 (inflation_calc_block_num)
-                (inflation_witness_percent)
+                (inflation_validator_percent)
                 (inflation_ratio)
                 (emergency_consensus_active)
                 (emergency_consensus_start_block)

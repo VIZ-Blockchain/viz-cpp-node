@@ -1,14 +1,14 @@
 #include <graphene/plugins/snapshot/plugin.hpp>
 #include <graphene/plugins/snapshot/snapshot_types.hpp>
 #include <graphene/plugins/snapshot/snapshot_serializer.hpp>
-#include <graphene/plugins/witness/witness.hpp>
+#include <graphene/plugins/validator/validator.hpp>
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
 #include <graphene/plugins/chain/plugin.hpp>
 
 #include <graphene/chain/database.hpp>
 #include <graphene/chain/global_property_object.hpp>
 #include <graphene/chain/account_object.hpp>
-#include <graphene/chain/witness_objects.hpp>
+#include <graphene/chain/validator_objects.hpp>
 #include <graphene/chain/content_object.hpp>
 #include <graphene/chain/chain_objects.hpp>
 #include <graphene/chain/block_summary_object.hpp>
@@ -97,6 +97,24 @@ inline void set_shared_authority(shared_authority& dst, const fc::variant& v) {
     }
 }
 
+/// Rename old witness→validator field names in a chain_properties variant for
+/// backward compatibility with snapshots created before the terminology rename.
+inline fc::variant patch_chain_props_variant(fc::variant v) {
+    if (!v.is_object()) return v;
+    fc::mutable_variant_object mvo(v.get_object());
+    static const std::pair<const char*, const char*> aliases[] = {
+        {"inflation_witness_percent",    "inflation_validator_percent"},
+        {"witness_miss_penalty_percent", "validator_miss_penalty_percent"},
+        {"witness_miss_penalty_duration","validator_miss_penalty_duration"},
+        {"witness_declaration_fee",      "validator_declaration_fee"},
+    };
+    for (auto& kv : aliases) {
+        if (mvo.find(kv.first) != mvo.end() && mvo.find(kv.second) == mvo.end())
+            mvo.set(kv.second, mvo[kv.first]);
+    }
+    return fc::variant(std::move(mvo));
+}
+
 /// Generic import: convert object to variant, then apply fields via from_variant
 /// This works for objects without shared_string/buffer_type members.
 template<typename ObjectType, typename IndexType>
@@ -144,7 +162,9 @@ inline uint32_t import_dynamic_global_properties(
         obj.head_block_id = v["head_block_id"].as<block_id_type>();
         obj.genesis_time = v["genesis_time"].as<fc::time_point_sec>();
         obj.time = v["time"].as<fc::time_point_sec>();
-        obj.current_witness = v["current_witness"].as<account_name_type>();
+        obj.current_validator = v.get_object().contains("current_validator")
+            ? v["current_validator"].as<account_name_type>()
+            : v["current_witness"].as<account_name_type>();
         obj.committee_fund = v["committee_fund"].as<asset>();
         obj.committee_requests = v["committee_requests"].as_uint64();
         obj.current_supply = v["current_supply"].as<asset>();
@@ -166,7 +186,12 @@ inline uint32_t import_dynamic_global_properties(
         obj.vote_regeneration_per_day = v["vote_regeneration_per_day"].as_uint64();
         obj.bandwidth_reserve_candidates = v["bandwidth_reserve_candidates"].as_uint64();
         obj.inflation_calc_block_num = v["inflation_calc_block_num"].as_uint64();
-        obj.inflation_witness_percent = static_cast<int16_t>(v["inflation_witness_percent"].as_int64());
+        // Accept both old and new key names for backward compat with pre-rename snapshots
+        obj.inflation_validator_percent = static_cast<int16_t>(
+            v.get_object().contains("inflation_validator_percent")
+                ? v["inflation_validator_percent"].as_int64()
+                : v["inflation_witness_percent"].as_int64()
+        );
         obj.inflation_ratio = static_cast<int16_t>(v["inflation_ratio"].as_int64());
 
         // HF12: forward-compatible handling of emergency consensus fields
@@ -196,6 +221,9 @@ inline uint32_t import_accounts(
 
         db.create<account_object>([&](account_object& obj) {
             fc::from_variant(v, obj);
+            // backward compat: old snapshots used "witnesses_voted_for"
+            if (obj.validators_voted_for == 0 && v.get_object().contains("witnesses_voted_for"))
+                obj.validators_voted_for = v["witnesses_voted_for"].as<uint16_t>();
         });
         ++count;
     }
@@ -231,10 +259,10 @@ inline uint32_t import_witnesses(
     uint32_t count = 0;
     for (const auto& v : arr) {
         auto id_val = v["id"].as_int64();
-        auto& mutable_idx = db.get_mutable_index<witness_index>();
-        mutable_idx.set_next_id(witness_id_type(id_val));
+        auto& mutable_idx = db.get_mutable_index<validator_index>();
+        mutable_idx.set_next_id(validator_id_type(id_val));
 
-        db.create<witness_object>([&](witness_object& obj) {
+        db.create<validator_object>([&](validator_object& obj) {
             obj.owner = v["owner"].as<account_name_type>();
             obj.created = v["created"].as<fc::time_point_sec>();
             detail::set_shared_string(obj.url, v["url"]);
@@ -244,11 +272,11 @@ inline uint32_t import_witnesses(
             obj.current_run = v["current_run"].as_uint64();
             obj.last_supported_block_num = v["last_supported_block_num"].as_uint64();
             obj.signing_key = v["signing_key"].as<graphene::protocol::public_key_type>();
-            obj.props = v["props"].as<chain_properties>();
+            obj.props = detail::patch_chain_props_variant(v["props"]).as<chain_properties>();
             obj.votes = v["votes"].as<share_type>();
             obj.penalty_percent = v["penalty_percent"].as_uint64();
             obj.counted_votes = v["counted_votes"].as<share_type>();
-            obj.schedule = v["schedule"].as<witness_object::witness_schedule_type>();
+            obj.schedule = v["schedule"].as<validator_object::validator_schedule_type>();
             obj.virtual_last_update = v["virtual_last_update"].as<fc::uint128_t>();
             obj.virtual_position = v["virtual_position"].as<fc::uint128_t>();
             obj.virtual_scheduled_time = v["virtual_scheduled_time"].as<fc::uint128_t>();
@@ -370,7 +398,7 @@ inline uint32_t import_witness_votes(
         mutable_idx.set_next_id(witness_vote_id_type(id_val));
 
         db.create<witness_vote_object>([&](witness_vote_object& obj) {
-            obj.witness = v["witness"].as<witness_id_type>();
+            obj.witness = v["witness"].as<validator_id_type>();
             obj.account = v["account"].as<account_id_type>();
             // HF13: flash-voter protection (default 0 for pre-HF13 snapshots)
             if (v.get_object().contains("vote_created_block"))
@@ -385,12 +413,21 @@ inline uint32_t import_witness_schedule(
     graphene::chain::database& db,
     const fc::variants& arr
 ) {
-    FC_ASSERT(arr.size() == 1, "Expected exactly 1 witness_schedule_object");
-    const auto& v = arr[0];
+    FC_ASSERT(arr.size() == 1, "Expected exactly 1 validator_schedule_object");
+    const auto& v_raw = arr[0];
 
-    const auto& wso = db.get<witness_schedule_object>();
-    db.modify(wso, [&](witness_schedule_object& obj) {
-        fc::from_variant(v, obj);
+    // Patch old field names for backward compat with pre-rename snapshots
+    fc::mutable_variant_object v(v_raw.get_object());
+    if (v.find("current_shuffled_witnesses") != v.end() && v.find("current_shuffled_validators") == v.end())
+        v.set("current_shuffled_validators", v["current_shuffled_witnesses"]);
+    if (v.find("num_scheduled_witnesses") != v.end() && v.find("num_scheduled_validators") == v.end())
+        v.set("num_scheduled_validators", v["num_scheduled_witnesses"]);
+    if (v.find("median_props") != v.end())
+        v.set("median_props", detail::patch_chain_props_variant(v["median_props"]));
+
+    const auto& wso = db.get<validator_schedule_object>();
+    db.modify(wso, [&](validator_schedule_object& obj) {
+        fc::from_variant(fc::variant(v), obj);
     });
     return 1;
 }
@@ -475,11 +512,20 @@ inline uint32_t import_block_post_validations(
     uint32_t count = 0;
     for (const auto& v : arr) {
         auto id_val = v["id"].as_int64();
-        auto& mutable_idx = db.get_mutable_index<block_post_validation_index>();
-        mutable_idx.set_next_id(block_post_validation_object_id_type(id_val));
+        auto& mutable_idx = db.get_mutable_index<validator_confirmation_index>();
+        mutable_idx.set_next_id(validator_confirmation_object_id_type(id_val));
 
-        db.create<block_post_validation_object>([&](block_post_validation_object& obj) {
-            fc::from_variant(v, obj);
+        db.create<validator_confirmation_object>([&](validator_confirmation_object& obj) {
+            // backward compat: old snapshots used current_shuffled_witnesses[_validations]
+            if (v.get_object().contains("current_shuffled_witnesses") &&
+                !v.get_object().contains("current_shuffled_validators")) {
+                fc::mutable_variant_object mv(v.get_object());
+                mv.set("current_shuffled_validators", v["current_shuffled_witnesses"]);
+                mv.set("current_shuffled_validators_validations", v["current_shuffled_witnesses_validations"]);
+                fc::from_variant(fc::variant(mv), obj);
+            } else {
+                fc::from_variant(v, obj);
+            }
         });
         ++count;
     }
@@ -892,16 +938,16 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
 
     // CRITICAL objects
     EXPORT_INDEX(dynamic_global_property_index, dynamic_global_property_object, "dynamic_global_property")
-    EXPORT_INDEX(witness_schedule_index, witness_schedule_object, "witness_schedule")
+    EXPORT_INDEX(validator_schedule_index, validator_schedule_object, "witness_schedule")
     EXPORT_INDEX(hardfork_property_index, hardfork_property_object, "hardfork_property")
     EXPORT_INDEX(account_index, account_object, "account")
     EXPORT_INDEX(account_authority_index, account_authority_object, "account_authority")
-    EXPORT_INDEX(witness_index, witness_object, "witness")
+    EXPORT_INDEX(validator_index, validator_object, "witness")
     EXPORT_INDEX(witness_vote_index, witness_vote_object, "witness_vote")
     EXPORT_INDEX(block_summary_index, block_summary_object, "block_summary")
     EXPORT_INDEX(content_index, content_object, "content")
     EXPORT_INDEX(content_vote_index, content_vote_object, "content_vote")
-    EXPORT_INDEX(block_post_validation_index, block_post_validation_object, "block_post_validation")
+    EXPORT_INDEX(validator_confirmation_index, validator_confirmation_object, "block_post_validation")
 
     if (cancel_snapshot_requested.load(std::memory_order_relaxed)) {
         wlog("Snapshot cancelled during serialization (before transaction)");
@@ -1362,7 +1408,7 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             const auto& auth_idx = db.get_index<account_authority_index>().indices();
             while (!auth_idx.empty()) { db.remove(*auth_idx.begin()); }
 
-            const auto& wit_idx = db.get_index<witness_index>().indices();
+            const auto& wit_idx = db.get_index<validator_index>().indices();
             while (!wit_idx.empty()) { db.remove(*wit_idx.begin()); }
 
             const auto& meta_idx = db.get_index<account_metadata_index>().indices();
@@ -1383,7 +1429,7 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             const auto& cv_idx = db.get_index<content_vote_index>().indices();
             while (!cv_idx.empty()) { db.remove(*cv_idx.begin()); }
 
-            const auto& bpv_idx = db.get_index<block_post_validation_index>().indices();
+            const auto& bpv_idx = db.get_index<validator_confirmation_index>().indices();
             while (!bpv_idx.empty()) { db.remove(*bpv_idx.begin()); }
 
             const auto& tx_idx = db.get_index<transaction_index>().indices();
@@ -1690,9 +1736,9 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     // read lock (the master generated blocks just 3ms after the
     // snapshot started), so cancellation is unnecessary.
     if (snapshot_in_progress.load(std::memory_order_relaxed)) {
-        dlog(SNAP_LOG_YELLOW "New block #${n} (witness ${w}) received while snapshot in progress \u2014 "
+        dlog(SNAP_LOG_YELLOW "New block #${n} (validator ${w}) received while snapshot in progress \u2014 "
              "block will be processed after snapshot completes" SNAP_LOG_RESET,
-             ("n", b.block_num())("w", b.witness));
+             ("n", b.block_num())("w", b.validator));
     }
 
     // Update last block received time for stalled sync detection
@@ -1736,7 +1782,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     // snapshot can wait until after that slot is filled.
     auto is_witness_producing_soon = [&]() -> bool {
         try {
-            auto* witness_plug = appbase::app().find_plugin<graphene::plugins::witness_plugin::witness_plugin>();
+            auto* witness_plug = appbase::app().find_plugin<graphene::plugins::validator_plugin::validator_plugin>();
             if (witness_plug != nullptr && witness_plug->get_state() == appbase::abstract_plugin::started) {
                 bool soon = witness_plug->is_witness_scheduled_soon();
                 if (soon) {
@@ -1848,10 +1894,10 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             snapshot_pending = false;
             pending_snapshot_path.clear();
             pending_snapshot_safe_after_time = fc::time_point_sec();
-            ilog(CLOG_GREEN "Creating deferred snapshot now (witness slot passed): ${p}" CLOG_RESET, ("p", output.string()));
+            ilog(CLOG_GREEN "Creating deferred snapshot now (validator slot passed): ${p}" CLOG_RESET, ("p", output.string()));
             schedule_async_snapshot(output, "deferred");
         } else {
-            dlog("Deferred snapshot waiting for witness slot at ${t} (head_block_time=${h})",
+            dlog("Deferred snapshot waiting for validator slot at ${t} (head_block_time=${h})",
                  ("t", pending_snapshot_safe_after_time)("h", db.head_block_time()));
         }
     }
@@ -1865,7 +1911,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             output = fc::path(snapshot_dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         }
         if (is_witness_producing_soon()) {
-            ilog(CLOG_GREEN "Deferring snapshot-at-block ${b}: witness scheduled to produce next block" CLOG_RESET, ("b", block_num));
+            ilog(CLOG_GREEN "Deferring snapshot-at-block ${b}: validator scheduled to produce next block" CLOG_RESET, ("b", block_num));
             snapshot_pending = true;
             pending_snapshot_path = output.string();
         } else {
@@ -1882,7 +1928,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         std::string dir = snapshot_dir;
         fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         if (is_witness_producing_soon()) {
-            ilog(CLOG_GREEN "Deferring urgent fresh snapshot at block ${b}: witness scheduled" CLOG_RESET, ("b", block_num));
+            ilog(CLOG_GREEN "Deferring urgent fresh snapshot at block ${b}: validator scheduled" CLOG_RESET, ("b", block_num));
             snapshot_pending = true;
             pending_snapshot_path = output.string();
         } else {
@@ -1896,7 +1942,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         std::string dir = snapshot_dir;
         fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         if (is_witness_producing_soon()) {
-            ilog(CLOG_GREEN "Deferring periodic snapshot at block ${b}: witness scheduled to produce next block" CLOG_RESET, ("b", block_num));
+            ilog(CLOG_GREEN "Deferring periodic snapshot at block ${b}: validator scheduled to produce next block" CLOG_RESET, ("b", block_num));
             snapshot_pending = true;
             pending_snapshot_path = output.string();
         } else {
@@ -1984,7 +2030,7 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                     // Skip stalled sync recovery entirely.
                     bool we_are_master = false;
                     try {
-                        auto* witness_plug = appbase::app().find_plugin<graphene::plugins::witness_plugin::witness_plugin>();
+                        auto* witness_plug = appbase::app().find_plugin<graphene::plugins::validator_plugin::validator_plugin>();
                         if (witness_plug && witness_plug->get_state() == appbase::abstract_plugin::started) {
                             we_are_master = witness_plug->is_emergency_master();
                         }

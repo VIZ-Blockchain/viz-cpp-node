@@ -1,4 +1,4 @@
-# Containerization and Docker
+﻿# Containerization and Docker
 
 <cite>
 **Referenced Files in This Document**
@@ -84,7 +84,7 @@ E["MongoDB Plugin"] --> E1["mongo_db_plugin.hpp"]
 
 Key runtime environment variables supported by the entrypoint:
 - VIZD_SEED_NODES: Override seed nodes.
-- VIZD_WITNESS_NAME: Configure witness name for block production.
+- VIZD_WITNESS_NAME: Configure validator name for block production.
 - VIZD_PRIVATE_KEY: Private key for signing blocks.
 - VIZD_RPC_ENDPOINT: Override RPC HTTP endpoint.
 - VIZD_P2P_ENDPOINT: Override P2P endpoint.
@@ -195,7 +195,7 @@ R7 --> R8["Start vizd process"]
 Responsibilities:
 - Initialize ownership for data/config directories.
 - Seed peers from /etc/vizd/seednodes if no explicit override is provided.
-- Apply environment overrides for witness name/private key, RPC/P2P endpoints, and extra options.
+- Apply environment overrides for validator name/private key, RPC/P2P endpoints, and extra options.
 - Optionally initialize blockchain from a cached snapshot if present.
 - Start the node with chpst under the non-root user.
 
@@ -226,7 +226,7 @@ ExecNode --> End(["Container Running"])
 
 ### Configuration Templates
 - config.ini: Default production configuration with RPC endpoints, plugin list, and logging.
-- config_testnet.ini: Testnet-specific configuration with witness participation enabled and test keys.
+- config_testnet.ini: Testnet-specific configuration with validator participation enabled and test keys.
 - config_mongo.ini: MongoDB-enabled configuration with mongodb-uri and mongo_db plugin enabled.
 - Debug configs: Smaller shared memory and debug logging for development/testing.
 

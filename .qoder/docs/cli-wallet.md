@@ -1,4 +1,4 @@
-# VIZ CLI Wallet — Complete Command Reference
+﻿# VIZ CLI Wallet — Complete Command Reference
 
 Complete reference for all `cli_wallet` commands with syntax and examples.
 
@@ -11,7 +11,7 @@ Complete reference for all `cli_wallet` commands with syntax and examples.
 3. [Query Operations](#query-operations)
 4. [Account Operations](#account-operations)
 5. [Transfer & Vesting](#transfer--vesting)
-6. [Witness Operations](#witness-operations)
+6. [validator Operations](#validator-operations)
 7. [Content Operations](#content-operations)
 8. [Escrow Operations](#escrow-operations)
 9. [Recovery Operations](#recovery-operations)
@@ -201,11 +201,11 @@ get_ops_in_block 1000000 false  # all operations
 get_ops_in_block 1000000 true   # only virtual operations
 ```
 
-### get_active_witnesses
-Returns the list of witnesses producing blocks in the current round (21 blocks).
+### get_active_validators
+Returns the list of validators producing blocks in the current round (21 blocks).
 
 ```bash
-get_active_witnesses
+get_active_validators
 ```
 
 ### get_account
@@ -404,37 +404,37 @@ set_withdraw_vesting_route "alice" "charlie" 2500 true true
 
 ---
 
-## Witness Operations
+## validator Operations
 
-### list_witnesses
-Lists all witnesses registered in the blockchain.
+### list_validators
+Lists all validators registered in the blockchain.
 
 ```bash
-list_witnesses "" 100     # First 100 witnesses
-list_witnesses "bob" 100  # 100 witnesses starting from "bob"
+list_validators "" 100     # First 100 validators
+list_validators "bob" 100  # 100 validators starting from "bob"
 ```
 
-### get_witness
-Returns information about the given witness.
+### get_validator
+Returns information about the given validator.
 
 ```bash
-get_witness "witnessname"
+get_validator "validatorname"
 ```
 
-### update_witness
-Update a witness object.
+### update_validator
+Update a validator object.
 
 ```bash
-update_witness "mywitness" "https://mywitness.com" "VIZsigningkey..." true
+update_validator "myvalidator" "https://myvalidator.com" "VIZsigningkey..." true
 # Disable block production (empty key):
-update_witness "mywitness" "" "" true
+update_validator "myvalidator" "" "" true
 ```
 
 ### update_chain_properties
 Vote for the chain properties.
 
 ```bash
-update_chain_properties "mywitness" \
+update_chain_properties "myvalidator" \
   {"account_creation_fee":"1.000 VIZ","maximum_block_size":65536,"create_account_delegation_ratio":10,...} \
   true
 ```
@@ -443,7 +443,7 @@ update_chain_properties "mywitness" \
 Vote for the versioned chain properties.
 
 ```bash
-versioned_update_chain_properties "mywitness" \
+versioned_update_chain_properties "myvalidator" \
   {"account_creation_fee":"1.000 VIZ","maximum_block_size":65536,...} \
   true
 ```
@@ -457,12 +457,12 @@ set_voting_proxy "alice" "trustedvoter" true
 set_voting_proxy "alice" "" true
 ```
 
-### vote_for_witness
-Vote for a witness to become a block producer.
+### vote_for_validator
+Vote for a validator to become a block producer.
 
 ```bash
-vote_for_witness "alice" "mywitness" true true   # Vote for
-vote_for_witness "alice" "mywitness" false true  # Vote against
+vote_for_validator "alice" "myvalidator" true true   # Vote for
+vote_for_validator "alice" "myvalidator" false true  # Vote against
 ```
 
 ---
@@ -1114,7 +1114,7 @@ Weight is in basis points (5000 = 50%).
 | Transfer VIZ | active |
 | Transfer SHARES | master |
 | Vesting operations | active |
-| Witness operations | active |
+| validator operations | active |
 | Content operations | regular |
 | Custom operation | active or regular (specified) |
 | Recovery operations | varies |

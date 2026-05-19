@@ -1,4 +1,4 @@
-# DLT P2P Network Redesign — Plan vs. Implementation Review
+﻿# DLT P2P Network Redesign — Plan vs. Implementation Review
 
 Review of [implementation status](dlt-p2p-network-redesign.md) against the [design plan](../plans/dlt-p2p-network-redesign_91a7ca29.md).
 
@@ -258,9 +258,9 @@ Implemented the body: checks if DLT block log range exceeds `_dlt_block_log_max_
 
 ### Fix 11: `has_emergency_private_key()` returns false (P2)
 
-**Files**: `plugins/p2p/p2p_plugin.cpp`, `plugins/witness/include/graphene/plugins/witness/witness.hpp`, `plugins/witness/witness.cpp`
+**Files**: `plugins/p2p/p2p_plugin.cpp`, `plugins/validator/include/graphene/plugins/validator/validator.hpp`, `plugins/validator/validator.cpp`
 
-Cross-plugin fix. (1) Added `is_emergency_key_configured()` declaration to `witness_plugin` public API — returns true if `CHAIN_EMERGENCY_WITNESS_ACCOUNT` is in `_witnesses` set (which only happens when `--emergency-private-key` is configured). (2) Implemented in witness.cpp with try/catch guard. (3) Updated `has_emergency_private_key()` in `dlt_delegate` to call `appbase::app().find_plugin<witness_plugin>()->is_emergency_key_configured()` instead of returning `false`. Added include for `witness_plugin.hpp`.
+Cross-plugin fix. (1) Added `is_emergency_key_configured()` declaration to `witness_plugin` public API — returns true if `CHAIN_EMERGENCY_WITNESS_ACCOUNT` is in `_witnesses` set (which only happens when `--emergency-private-key` is configured). (2) Implemented in validator.cpp with try/catch guard. (3) Updated `has_emergency_private_key()` in `dlt_delegate` to call `appbase::app().find_plugin<witness_plugin>()->is_emergency_key_configured()` instead of returning `false`. Added include for `witness_plugin.hpp`.
 
 ### Fix 12: `accept_block()` ignores `sync_mode` parameter (P2)
 

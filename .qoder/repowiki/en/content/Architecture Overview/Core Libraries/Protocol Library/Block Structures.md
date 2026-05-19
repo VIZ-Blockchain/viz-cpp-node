@@ -1,4 +1,4 @@
-# Block Structures
+﻿# Block Structures
 
 <cite>
 **Referenced Files in This Document**
@@ -29,8 +29,8 @@
 This document explains the blockchain block format and consensus mechanisms in the VIZ C++ node. It focuses on:
 - Block header structure and metadata
 - Transaction inclusion and Merkle root computation
-- Witness signature validation and block hashing
-- Validation rules for blocks (Merkle root, witness signature, fork resolution)
+- validator signature validation and block hashing
+- Validation rules for blocks (Merkle root, validator signature, fork resolution)
 - Block production and propagation workflows
 - Network synchronization and state progression
 
@@ -38,7 +38,7 @@ This document explains the blockchain block format and consensus mechanisms in t
 The block-related logic spans protocol-level definitions and chain-level validation and persistence:
 - Protocol-level block definitions and cryptographic helpers
 - Chain-level validation, fork management, and block logging
-- Witness scheduling and participation metrics
+- validator scheduling and participation metrics
 
 ```mermaid
 graph TB
@@ -89,13 +89,13 @@ C_DB_IMPL --> C_Wit
 - [witness_objects.hpp](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L1-L200)
 
 ## Core Components
-- Block header and signed header: define block metadata, hash computation, and witness signature validation.
+- Block header and signed header: define block metadata, hash computation, and validator signature validation.
 - Signed block: extends the signed header with a transaction list and Merkle root calculation.
 - Types: defines cryptographic primitives used by blocks and transactions.
 - Fork database: manages unlinked and linked forks, head selection, and branch resolution.
-- Database validation pipeline: validates block headers, Merkle roots, sizes, and witness scheduling; pushes blocks and updates state.
+- Database validation pipeline: validates block headers, Merkle roots, sizes, and validator scheduling; pushes blocks and updates state.
 - Block log: persists blocks to disk for replay and synchronization.
-- Witness objects: track scheduling eligibility, participation, and penalties.
+- validator objects: track scheduling eligibility, participation, and penalties.
 
 **Section sources**
 - [block_header.hpp](file://libraries/protocol/include/graphene/protocol/block_header.hpp#L8-L35)
@@ -113,7 +113,7 @@ The block lifecycle integrates protocol definitions, validation, persistence, an
 - Chain layer validates incoming blocks against local state and schedules.
 - Fork database resolves competing chains and selects the heaviest branch.
 - Block log persists blocks and supports fast random access by number.
-- Witness objects enforce scheduling and participation rules.
+- validator objects enforce scheduling and participation rules.
 
 ```mermaid
 sequenceDiagram
@@ -138,8 +138,8 @@ DB-->>Peer : "result"
 ## Detailed Component Analysis
 
 ### Block Header and Hashing
-- The block header contains previous block identifier, timestamp, witness name, and the transaction Merkle root.
-- The signed block header adds the witness signature and exposes signing and validation helpers.
+- The block header contains previous block identifier, timestamp, validator name, and the transaction Merkle root.
+- The signed block header adds the validator signature and exposes signing and validation helpers.
 - The block ID is derived from a compact hash with the block number embedded.
 
 ```mermaid
@@ -147,7 +147,7 @@ classDiagram
 class block_header {
 +block_id_type previous
 +time_point_sec timestamp
-+string witness
++string validator
 +checksum_type transaction_merkle_root
 +digest() digest_type
 +num_from_id(id) uint32_t
@@ -209,8 +209,8 @@ Cast --> End(["Return Merkle root"])
 ### Block Validation Rules
 - Merkle root verification: The computed Merkle root must match the header’s field.
 - Block size check: Enforced against dynamic global properties.
-- Witness signature validation: The witness signature must be recoverable to the expected signing key.
-- Witness scheduling: The block must be produced by the scheduled witness for the slot derived from the timestamp.
+- validator signature validation: The validator signature must be recoverable to the expected signing key.
+- validator scheduling: The block must be produced by the scheduled validator for the slot derived from the timestamp.
 - Fork resolution: If the new block does not extend the current head, the fork database chooses the heaviest chain and replays or undoes blocks as needed.
 
 ```mermaid
@@ -221,9 +221,9 @@ participant Fork as "fork_database.hpp"
 DB->>DB : "validate_block(new_block)"
 DB->>DB : "calculate_merkle_root()"
 DB->>DB : "compare with header"
-DB->>FH : "validate_signee(witness.signing_key)"
+DB->>FH : "validate_signee(validator.signing_key)"
 FH-->>DB : "ok"
-DB->>DB : "check scheduled witness"
+DB->>DB : "check scheduled validator"
 DB->>Fork : "push_block(new_block)"
 Fork-->>DB : "new_head"
 DB->>DB : "apply_block() if needed"
@@ -240,13 +240,13 @@ DB->>DB : "apply_block() if needed"
 - [fork_database.hpp](file://libraries/chain/include/graphene/chain/fork_database.hpp#L78-L91)
 
 ### Block Production and Propagation
-- Block production is governed by witness scheduling and participation. The witness that produces a block is determined by the slot derived from the block timestamp and the witness schedule.
+- Block production is governed by validator scheduling and participation. The validator that produces a block is determined by the slot derived from the block timestamp and the validator schedule.
 - Propagation occurs when peers receive blocks and validate them before pushing to their chain.
 - Persistence is handled by the block log, which stores blocks in an append-only manner and supports random access by block number.
 
 ```mermaid
 sequenceDiagram
-participant W as "Witness"
+participant W as "validator"
 participant Net as "Network"
 participant Node as "database.cpp"
 participant Log as "block_log.hpp"
@@ -298,14 +298,14 @@ K --> L["abort"]
 
 ### Relationship Between Blocks and Blockchain State Progression
 - Dynamic global properties are updated per block, including head block number/id, timestamp, participation metrics, and reserve ratios.
-- Witness participation and penalties are tracked; missed blocks increment counters and can lead to penalties and potential shutdown of inactive witnesses.
-- The irreversible block number advances when sufficient witness validations reach consensus thresholds.
+- validator participation and penalties are tracked; missed blocks increment counters and can lead to penalties and potential shutdown of inactive validators.
+- The irreversible block number advances when sufficient validator validations reach consensus thresholds.
 
 ```mermaid
 flowchart TD
 S["Start apply_block"] --> U["update_global_dynamic_data()"]
 U --> P["compute missed_blocks and participation"]
-P --> W["modify witness stats (missed, penalties)"]
+P --> W["modify validator stats (missed, penalties)"]
 W --> D["update dgp fields (head, time, sizes)"]
 D --> IR["check irreversible threshold"]
 IR --> E["advance last_irreversible_block_num if met"]
@@ -324,7 +324,7 @@ F --> T["End"]
 ## Dependency Analysis
 - Protocol definitions depend on cryptographic types and reflection macros.
 - Chain validation depends on protocol structures, fork database, and block log.
-- Witness objects provide scheduling and participation data used by validation.
+- validator objects provide scheduling and participation data used by validation.
 
 ```mermaid
 graph LR
@@ -364,16 +364,16 @@ DBIMPL --> Wit["witness_objects.hpp"]
 - Merkle root computation is O(n log n) for n transactions due to the binary hash tree.
 - Fork resolution involves popping and pushing blocks; keep the maximum reordering window reasonable to avoid excessive memory and CPU usage.
 - Block size checks prevent oversized blocks from consuming resources.
-- Witness participation metrics and penalties help maintain network health and reduce spam.
+- validator participation metrics and penalties help maintain network health and reduce spam.
 
 [No sources needed since this section provides general guidance]
 
 ## Troubleshooting Guide
 Common validation failures and remedies:
 - Merkle mismatch: Verify transaction ordering and ensure the Merkle root is recomputed consistently.
-- Witness signature mismatch: Confirm the witness signing key matches the expected key and that the digest used for signing is correct.
-- Incorrect witness scheduling: Ensure the block timestamp yields the correct slot and that the scheduled witness matches the block producer.
-- Fork conflicts: Investigate why the new block did not extend the current head; check timestamps, witness assignments, and fork database logs.
+- validator signature mismatch: Confirm the validator signing key matches the expected key and that the digest used for signing is correct.
+- Incorrect validator scheduling: Ensure the block timestamp yields the correct slot and that the scheduled validator matches the block producer.
+- Fork conflicts: Investigate why the new block did not extend the current head; check timestamps, validator assignments, and fork database logs.
 - Disk or memory errors during block push: The system attempts to resize shared memory on allocation failure; ensure adequate disk space and memory.
 
 **Section sources**
@@ -382,15 +382,15 @@ Common validation failures and remedies:
 - [database.cpp](file://libraries/chain/database.cpp#L847-L925)
 
 ## Conclusion
-Blocks in the VIZ node are defined by a clear protocol structure, validated rigorously by the chain layer, and persisted for resilience. Consensus relies on deterministic witness scheduling, strict signature validation, and robust fork resolution. Understanding these components enables reliable block construction, validation, propagation, and synchronization across the network.
+Blocks in the VIZ node are defined by a clear protocol structure, validated rigorously by the chain layer, and persisted for resilience. Consensus relies on deterministic validator scheduling, strict signature validation, and robust fork resolution. Understanding these components enables reliable block construction, validation, propagation, and synchronization across the network.
 
 [No sources needed since this section summarizes without analyzing specific files]
 
 ## Appendices
 
 ### Example Workflows
-- Constructing a block: Build a signed block with transactions, compute the Merkle root, populate the header fields, and sign with the witness key.
-- Validating a block: Compute the Merkle root, compare against the header; verify the witness signature; confirm the scheduled witness; enforce block size limits.
+- Constructing a block: Build a signed block with transactions, compute the Merkle root, populate the header fields, and sign with the validator key.
+- Validating a block: Compute the Merkle root, compare against the header; verify the validator signature; confirm the scheduled validator; enforce block size limits.
 - Resolving a fork: Use the fork database to select the heaviest chain; if necessary, pop blocks from the current chain and push blocks from the new fork.
 
 [No sources needed since this section provides general guidance]

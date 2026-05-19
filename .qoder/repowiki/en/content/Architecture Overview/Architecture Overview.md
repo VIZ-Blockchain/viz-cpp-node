@@ -1,4 +1,4 @@
-# Architecture Overview
+﻿# Architecture Overview
 
 <cite>
 **Referenced Files in This Document**
@@ -61,7 +61,7 @@ P_JSONRPC["plugins/json_rpc"]
 P_DB_API["plugins/database_api"]
 P_P2P["plugins/p2p"]
 P_WBS["plugins/webserver"]
-P_WITNESS["plugins/witness"]
+P_WITNESS["plugins/validator"]
 P_TAGS["plugins/tags"]
 P_ACCOUNT_HISTORY["plugins/account_history"]
 P_ACCOUNT_BY_KEY["plugins/account_by_key"]
@@ -169,7 +169,7 @@ P_JSONRPC["plugins/json_rpc<br/>plugin.cpp"]
 P_DB_API["plugins/database_api"]
 P_P2P["plugins/p2p"]
 P_WBS["plugins/webserver"]
-P_WITNESS["plugins/witness"]
+P_WITNESS["plugins/validator"]
 P_TAGS["plugins/tags"]
 P_ACCOUNT_HISTORY["plugins/account_history"]
 P_ACCOUNT_BY_KEY["plugins/account_by_key"]
@@ -458,7 +458,7 @@ P_P2P["p2p"]
 P_JSONRPC["json_rpc"]
 P_DB_API["database_api"]
 P_WBS["webserver"]
-P_WITNESS["witness"]
+P_WITNESS["validator"]
 P_TAGS["tags"]
 P_ACCOUNT_HISTORY["account_history"]
 P_ACCOUNT_BY_KEY["account_by_key"]

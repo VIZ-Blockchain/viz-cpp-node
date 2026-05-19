@@ -1,4 +1,4 @@
-# Snapshot Pause Block Workflow
+﻿# Snapshot Pause Block Workflow
 
 ## Overview
 
@@ -6,7 +6,7 @@ When the snapshot plugin creates a snapshot, it **pauses P2P block processing** 
 prevent concurrent database modifications.  During this pause, incoming blocks from
 peers are **buffered in a queue** instead of being dropped.  After the pause ends,
 the P2P layer drains the queue (applying all buffered blocks), then checks whether
-peers are still ahead.  The witness plugin defers block production until all queued
+peers are still ahead.  The Validator Plugin defers block production until all queued
 blocks are applied and any remaining gap is filled.
 
 ## Sequence Diagram: Snapshot Pause Lifecycle
@@ -15,7 +15,7 @@ blocks are applied and any remaining gap is filled.
 sequenceDiagram
     participant SP as Snapshot Plugin
     participant P2P as P2P Layer
-    participant W as Witness Plugin
+    participant W as Validator Plugin
     participant Peer as Remote Peer
 
     Note over SP: Block N applied
@@ -74,7 +74,7 @@ flowchart TD
     J -->|REJECTED| N["Log + track rejections"]
 ```
 
-## Witness Production Workflow (With Catchup Gate)
+## validator Production Workflow (With Catchup Gate)
 
 ```mermaid
 flowchart TD
@@ -84,13 +84,13 @@ flowchart TD
     Gate -->|Yes| Ret2["return not_synced<br/>(defer production)"]
     Gate -->|No| HF12{"Hardfork 12 checks<br/>(prate, emergency)"}
     HF12 -->|prate < 33% AND no stale-production override| RetLP["return low_participation<br/>⚠ partition guard"]
-    HF12 -->|prate >= 33% or override| MinFork{"Minority fork check:<br/>last 21 fork_db blocks<br/>all from our witnesses?"}
+    HF12 -->|prate >= 33% or override| MinFork{"Minority fork check:<br/>last 21 fork_db blocks<br/>all from our validators?"}
     MinFork -->|Yes — isolated| RetMF["resync_from_lib()<br/>return minority_fork"]
     MinFork -->|No| Slot{"get_slot_at_time()"}
     Slot -->|slot == 0| Ret3["return not_time_yet"]
-    Slot -->|slot > 0| Witness{"Our witness scheduled?"}
-    Witness -->|No| Ret4["return not_my_turn"]
-    Witness -->|Yes| Stale{"scheduled_time <=<br/>head_block_time?"}
+    Slot -->|slot > 0| validator{"Our validator scheduled?"}
+    validator -->|No| Ret4["return not_my_turn"]
+    validator -->|Yes| Stale{"scheduled_time <=<br/>head_block_time?"}
     Stale -->|Yes| Ret5["return not_time_yet<br/>(slot already filled)"]
     Stale -->|No| Fork{"Competing block in fork_db?"}
     Fork -->|Yes, weaker fork| Produce
@@ -107,18 +107,18 @@ different failure modes and must both be active:
 
 | Guard | Trigger | Scenario it stops |
 |-------|---------|-------------------|
-| `low_participation` | `prate < 33%` (< 7 of 21 witnesses active) | Node in a small isolated segment — stops it from building a chain alone |
-| `minority_fork` | Last 21 fork_db blocks are ALL from our witnesses | Node is producing in isolation despite appearing to have enough witnesses locally |
+| `low_participation` | `prate < 33%` (< 7 of 21 validators active) | Node in a small isolated segment — stops it from building a chain alone |
+| `minority_fork` | Last 21 fork_db blocks are ALL from our validators | Node is producing in isolation despite appearing to have enough validators locally |
 
 **Why `low_participation` must not be removed:**
 If a network partitions into two datacenters and one segment holds fewer than 7 of the
-21 scheduled witnesses, it sees participation drop below 33% within ~85 missed slots
+21 scheduled validators, it sees participation drop below 33% within ~85 missed slots
 (~4 minutes).  Without this guard that segment would keep building a competing chain
 that neither side recognises as a minority fork, because `minority_fork` only fires when
-**all** recent fork_db blocks are from our witnesses — possible only once the other
+**all** recent fork_db blocks are from our validators — possible only once the other
 segment's blocks are completely absent from our fork_db.
 
-The operator escape hatch for legitimate outages (many witnesses offline but network
+The operator escape hatch for legitimate outages (many validators offline but network
 not partitioned) is `enable-stale-production = true`, which bypasses the `low_participation`
 check explicitly.  See `consensus-emergency-params.md` for the full workflow.
 
@@ -146,14 +146,14 @@ stateDiagram-v2
 | `libraries/network/include/graphene/network/dlt_p2p_node.hpp` | `_catchup_after_pause` flag and getter |
 | `plugins/p2p/p2p_plugin.cpp` | Exposes `is_catching_up_after_pause()` to other plugins |
 | `plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp` | Public API declaration |
-| `plugins/witness/witness.cpp` | Production gate that checks catchup flag |
+| `plugins/validator/validator.cpp` | Production gate that checks catchup flag |
 | `plugins/snapshot/plugin.cpp` | Calls `pause/resume_block_processing()` |
 
 ## The Bug (Before Fix)
 
 Two interrelated bugs:
 
-**Bug 1 — Write lock deadlock**: The emergency master's witness production loop
+**Bug 1 — Write lock deadlock**: The emergency master's validator production loop
 (250ms tick) bypasses all sync checks. During snapshot creation, the snapshot thread
 holds a strong DB read lock for 30–120s. The production loop called `generate_block()`
 → `push_block()` → write lock → **deadlocked** behind the read lock, producing
@@ -176,7 +176,7 @@ Sequence:
 
 **Production gate during pause**: `is_catching_up_after_pause()` returns true when
 either `_block_processing_paused` OR `_catchup_after_pause` is set. This prevents the
-witness plugin from calling `generate_block()` while the snapshot holds the DB read
+Validator Plugin from calling `generate_block()` while the snapshot holds the DB read
 lock (avoids write-lock deadlock) AND during post-pause catchup (avoids stale-head fork).
 
 **Block queue**: During the pause, block-carrying messages (block_reply, block_range_reply,
@@ -193,7 +193,7 @@ runs and cleared when:
 - `transition_to_forward()` runs after a SYNC gap fill (delayed path), or
 - `periodic_task()` confirms no gap exists (5s fallback)
 
-The witness plugin checks `is_catching_up_after_pause()` in `maybe_produce_block()` and
+The Validator Plugin checks `is_catching_up_after_pause()` in `maybe_produce_block()` and
 defers production while the flag is set.
 
 ---
@@ -229,7 +229,7 @@ The chain of events in p72:
           Sync completes → transition_to_forward()
           → currently_syncing NOT cleared  ← BUG
 
-10:54:41–11:04:01  witness loop:
+10:54:41–11:04:01  validator loop:
           is_syncing()=true → return not_synced (rate-limited, silent)
           not_my_turn_streak stays at 0–2 (resets on not_synced)
 
@@ -237,7 +237,7 @@ The chain of events in p72:
           → currently_syncing=false → production resumes
 ```
 
-The circular deadlock: `currently_syncing=true` blocks our witnesses; our witnesses are
+The circular deadlock: `currently_syncing=true` blocks our validators; our validators are
 the only remaining producers; no FORWARD block arrives to self-clear the flag.
 
 ### Why the WATCHDOG evidence confirms this
@@ -311,7 +311,7 @@ returned.  Deadlock.
 `std::atomic<bool>` — no P2P-thread dispatch needed.
 
 **Critical ordering:** `_catchup_after_pause` is set **before** `snapshot_in_progress` is
-cleared.  If reversed, the witness plugin could observe the snapshot complete while the
+cleared.  If reversed, the Validator Plugin could observe the snapshot complete while the
 catchup flag is still false, misclassify the head as a stale fork, and refuse to produce.
 
 **Phase 2 (async, P2P thread, no wait):** An async post (fire-and-forget) to the P2P
@@ -348,7 +348,7 @@ void p2p_plugin::resume_block_processing() {
 
 If the snapshot async task encountered an error or was cancelled, `_block_processing_paused`
 and `_catchup_after_pause` could remain in their paused state indefinitely, permanently
-blocking witness production.
+blocking validator production.
 
 ### Root cause
 
