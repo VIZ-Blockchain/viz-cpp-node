@@ -1,6 +1,6 @@
 # 客户端库
 
-Python、PHP 和 JavaScript 均有官方客户端库。所有库通过 JSON-RPC API 与 VIZ 节点通信，并在本地完成交易签名。
+Python、PHP、JavaScript 和 Swift 均有官方客户端库。所有库通过 JSON-RPC API 与 VIZ 节点通信，并在本地完成交易签名。
 
 ---
 
@@ -125,15 +125,102 @@ viz.config.set('websocket', 'https://node.viz.cx/');
 
 ---
 
+## Swift — viz-swift-lib
+
+**仓库：** https://github.com/VIZ-Blockchain/viz-swift-lib
+
+底层、无强制约定的 Swift 库，提供操作、交易、签名、JSON-RPC 等原语，不隐藏任何细节。适用于需要完全控制的移动钱包、后端服务和机器人应用。
+
+### 安装
+
+Swift Package Manager — 添加到 `Package.swift`：
+
+```swift
+dependencies: [
+    .package(
+        url: "https://github.com/viz-blockchain/viz-swift-lib.git",
+        .upToNextMinor(from: "0.1.0")
+    )
+]
+```
+
+或在 Xcode 中：**File → Add Packages…** 并输入仓库 URL。
+
+### 快速开始
+
+```swift
+import VIZ
+
+let client = VIZ.Client(address: URL(string: "https://node.viz.cx")!)
+
+// 获取链头参数用于引用区块
+let props = try await client.send(VIZ.API.GetDynamicGlobalProperties())
+
+// 派生签名密钥
+let key = VIZ.PrivateKey(seed: "alice" + "active" + "password")!
+
+// 构建操作
+let transfer = VIZ.Operation.Transfer(
+    from: "alice",
+    to: "bob",
+    amount: VIZ.Asset(10.0, .viz),
+    memo: "谢谢！"
+)
+
+// 封装为交易、签名并广播
+let tx = VIZ.Transaction(
+    refBlockNum: UInt16(props.headBlockNumber & 0xFFFF),
+    refBlockPrefix: props.headBlockId.prefix,
+    expiration: props.time.addingTimeInterval(60),
+    operations: [transfer]
+)
+let signed = try tx.sign(usingKey: key)
+let confirmation = try await client.send(
+    VIZ.API.BroadcastTransaction(transaction: signed)
+)
+```
+
+### 密钥工具
+
+```swift
+// 从种子派生密钥
+let privateKey = VIZ.PrivateKey(seed: "username" + "active" + "password")!
+let publicKey  = privateKey.createPublic()
+print(publicKey.address)  // VIZ7…
+print(privateKey.wif)     // 5K…
+
+// 从 WIF 导入
+let imported = VIZ.PrivateKey("5KQwrPbwdL6PhXujxW37FSSQZ1JiwsST4cqQzDeyXtP79zkvFD3")!
+
+// 资产
+let amount = VIZ.Asset(100.5, .viz)    // "100.500 VIZ"
+let shares = VIZ.Asset(1000.0, .vests) // "1000.000000 VESTS"
+```
+
+### 功能特性
+
+- 完整操作覆盖：转账、奖励、账户创建/更新、vesting、escrow、账户恢复等
+- 可组合交易——一笔已签名交易中包含多个操作
+- 纯 Swift `secp256k1` ECDSA 签名；从种子派生密钥；WIF 导入/导出
+- 基于 `async/await` 的 JSON-RPC 客户端，`actor` 并发架构，全 `Sendable` 类型
+- 多签 authority 组合
+- 通过 `viz://` URL 进行委托签名
+- 跨平台：iOS 13+、macOS 10.15+、tvOS 13+、watchOS 6+、Linux
+- 无隐藏状态——密钥管理、重试和广播均由调用方负责
+- MIT 许可证
+
+---
+
 ## 如何选择库
 
-| 标准 | Python | PHP | JavaScript |
-|------|--------|-----|-----------|
-| 安装方式 | `pip` | 手动 PSR-4 | `npm` |
-| 传输协议 | WS / HTTP | HTTP | WS / HTTP |
-| 运行环境 | Python 3 | PHP 7+ | Node.js / 浏览器 |
-| 依赖项 | 极少 | GMP 或 BCMath | 无（已打包） |
-| 许可证 | MIT | MIT | MIT |
+| 标准 | Python | PHP | JavaScript | Swift |
+|------|--------|-----|-----------|-------|
+| 安装方式 | `pip` | 手动 PSR-4 | `npm` / CDN | Swift PM / Xcode |
+| 传输协议 | WS / HTTP | HTTP | WS / HTTP | HTTP（async/await） |
+| 运行环境 | Python 3 | PHP 7+ | Node.js / 浏览器 | iOS / macOS / Linux |
+| 依赖项 | 极少 | GMP 或 BCMath | 无（已打包） | secp256k1、OrderedDictionary |
+| 抽象层次 | 高层 | 高层 | 高层 | 底层原语 |
+| 许可证 | MIT | MIT | MIT | MIT |
 
 ---
 

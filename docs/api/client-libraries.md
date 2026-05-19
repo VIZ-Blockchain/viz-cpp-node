@@ -1,6 +1,6 @@
 # Client Libraries
 
-Official client libraries are available for Python, PHP, and JavaScript. All libraries communicate with a VIZ node over the JSON-RPC API and handle transaction signing locally.
+Official client libraries are available for Python, PHP, JavaScript, and Swift. All libraries communicate with a VIZ node over the JSON-RPC API and handle transaction signing locally.
 
 ---
 
@@ -125,15 +125,102 @@ viz.config.set('websocket', 'https://node.viz.cx/');
 
 ---
 
+## Swift — viz-swift-lib
+
+**Repository:** https://github.com/VIZ-Blockchain/viz-swift-lib
+
+Low-level, unopinionated Swift library providing primitives — operations, transactions, signing, JSON-RPC — without hiding any details. Suitable for mobile wallets, backend services, and bots where full control is required.
+
+### Installation
+
+Swift Package Manager — add to `Package.swift`:
+
+```swift
+dependencies: [
+    .package(
+        url: "https://github.com/viz-blockchain/viz-swift-lib.git",
+        .upToNextMinor(from: "0.1.0")
+    )
+]
+```
+
+Or in Xcode: **File → Add Packages…** and enter the repository URL.
+
+### Quick start
+
+```swift
+import VIZ
+
+let client = VIZ.Client(address: URL(string: "https://node.viz.cx")!)
+
+// Fetch chain head for the reference block
+let props = try await client.send(VIZ.API.GetDynamicGlobalProperties())
+
+// Derive the signing key
+let key = VIZ.PrivateKey(seed: "alice" + "active" + "password")!
+
+// Build the operation
+let transfer = VIZ.Operation.Transfer(
+    from: "alice",
+    to: "bob",
+    amount: VIZ.Asset(10.0, .viz),
+    memo: "Thanks!"
+)
+
+// Wrap in a transaction, sign, and broadcast
+let tx = VIZ.Transaction(
+    refBlockNum: UInt16(props.headBlockNumber & 0xFFFF),
+    refBlockPrefix: props.headBlockId.prefix,
+    expiration: props.time.addingTimeInterval(60),
+    operations: [transfer]
+)
+let signed = try tx.sign(usingKey: key)
+let confirmation = try await client.send(
+    VIZ.API.BroadcastTransaction(transaction: signed)
+)
+```
+
+### Key utilities
+
+```swift
+// Derive keys from seed
+let privateKey = VIZ.PrivateKey(seed: "username" + "active" + "password")!
+let publicKey  = privateKey.createPublic()
+print(publicKey.address)  // VIZ7…
+print(privateKey.wif)     // 5K…
+
+// Import from WIF
+let imported = VIZ.PrivateKey("5KQwrPbwdL6PhXujxW37FSSQZ1JiwsST4cqQzDeyXtP79zkvFD3")!
+
+// Assets
+let amount = VIZ.Asset(100.5, .viz)    // "100.500 VIZ"
+let shares = VIZ.Asset(1000.0, .vests) // "1000.000000 VESTS"
+```
+
+### Features
+
+- Full operation coverage: transfers, awards, account create/update, vesting, escrow, recovery, and more
+- Composable transactions — multiple operations in one signed transaction
+- Pure-Swift `secp256k1` ECDSA signing; key derivation from seed; WIF import/export
+- `async/await` JSON-RPC client with `actor`-based concurrency, `Sendable` types throughout
+- Multi-signature authority composition
+- Delegated signing via `viz://` URLs
+- Cross-platform: iOS 13+, macOS 10.15+, tvOS 13+, watchOS 6+, Linux
+- No hidden state — key management, retries, and broadcasting are left to the caller
+- MIT license
+
+---
+
 ## Choosing a Library
 
-| Criterion | Python | PHP | JavaScript |
-|-----------|--------|-----|-----------|
-| Install | `pip` | Manual PSR-4 | `npm` |
-| Transport | WS / HTTP | HTTP | WS / HTTP |
-| Runtime | Python 3 | PHP 7+ | Node.js / browser |
-| Dependencies | minimal | GMP or BCMath | none (bundled) |
-| License | MIT | MIT | MIT |
+| Criterion | Python | PHP | JavaScript | Swift |
+|-----------|--------|-----|-----------|-------|
+| Install | `pip` | Manual PSR-4 | `npm` / CDN | Swift PM / Xcode |
+| Transport | WS / HTTP | HTTP | WS / HTTP | HTTP (async/await) |
+| Runtime | Python 3 | PHP 7+ | Node.js / browser | iOS / macOS / Linux |
+| Dependencies | minimal | GMP or BCMath | none (bundled) | secp256k1, OrderedDictionary |
+| Level | high-level | high-level | high-level | low-level primitives |
+| License | MIT | MIT | MIT | MIT |
 
 ---
 

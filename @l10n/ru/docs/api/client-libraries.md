@@ -1,6 +1,6 @@
 # Клиентские библиотеки
 
-Официальные клиентские библиотеки доступны для Python, PHP и JavaScript. Все библиотеки взаимодействуют с узлом VIZ через JSON-RPC API и выполняют подписание транзакций локально.
+Официальные клиентские библиотеки доступны для Python, PHP, JavaScript и Swift. Все библиотеки взаимодействуют с узлом VIZ через JSON-RPC API и выполняют подписание транзакций локально.
 
 ---
 
@@ -125,15 +125,102 @@ viz.config.set('websocket', 'https://node.viz.cx/');
 
 ---
 
+## Swift — viz-swift-lib
+
+**Репозиторий:** https://github.com/VIZ-Blockchain/viz-swift-lib
+
+Низкоуровневая, минималистичная Swift-библиотека: предоставляет примитивы — операции, транзакции, подписание, JSON-RPC — без лишних абстракций. Подходит для мобильных кошельков, бэкенд-сервисов и ботов, где нужен полный контроль.
+
+### Установка
+
+Swift Package Manager — добавьте в `Package.swift`:
+
+```swift
+dependencies: [
+    .package(
+        url: "https://github.com/viz-blockchain/viz-swift-lib.git",
+        .upToNextMinor(from: "0.1.0")
+    )
+]
+```
+
+Или в Xcode: **File → Add Packages…** и введите URL репозитория.
+
+### Быстрый старт
+
+```swift
+import VIZ
+
+let client = VIZ.Client(address: URL(string: "https://node.viz.cx")!)
+
+// Получить параметры цепочки для reference block
+let props = try await client.send(VIZ.API.GetDynamicGlobalProperties())
+
+// Получить ключ подписания
+let key = VIZ.PrivateKey(seed: "alice" + "active" + "password")!
+
+// Создать операцию
+let transfer = VIZ.Operation.Transfer(
+    from: "alice",
+    to: "bob",
+    amount: VIZ.Asset(10.0, .viz),
+    memo: "Спасибо!"
+)
+
+// Обернуть в транзакцию, подписать и транслировать
+let tx = VIZ.Transaction(
+    refBlockNum: UInt16(props.headBlockNumber & 0xFFFF),
+    refBlockPrefix: props.headBlockId.prefix,
+    expiration: props.time.addingTimeInterval(60),
+    operations: [transfer]
+)
+let signed = try tx.sign(usingKey: key)
+let confirmation = try await client.send(
+    VIZ.API.BroadcastTransaction(transaction: signed)
+)
+```
+
+### Работа с ключами
+
+```swift
+// Вывод ключей из seed
+let privateKey = VIZ.PrivateKey(seed: "username" + "active" + "password")!
+let publicKey  = privateKey.createPublic()
+print(publicKey.address)  // VIZ7…
+print(privateKey.wif)     // 5K…
+
+// Импорт из WIF
+let imported = VIZ.PrivateKey("5KQwrPbwdL6PhXujxW37FSSQZ1JiwsST4cqQzDeyXtP79zkvFD3")!
+
+// Активы
+let amount = VIZ.Asset(100.5, .viz)    // "100.500 VIZ"
+let shares = VIZ.Asset(1000.0, .vests) // "1000.000000 VESTS"
+```
+
+### Возможности
+
+- Полное покрытие операций: переводы, награды, создание/обновление аккаунтов, vesting, escrow, восстановление и другие
+- Компонуемые транзакции — несколько операций в одной подписанной транзакции
+- Pure-Swift `secp256k1` ECDSA подписание; вывод ключей из seed; импорт/экспорт WIF
+- JSON-RPC клиент на `async/await` с `actor`-архитектурой, типы `Sendable`
+- Составные multi-sig authority
+- Делегированное подписание через `viz://` URL
+- Кроссплатформенность: iOS 13+, macOS 10.15+, tvOS 13+, watchOS 6+, Linux
+- Нет скрытого состояния — управление ключами, повторы и трансляция остаются на стороне разработчика
+- Лицензия MIT
+
+---
+
 ## Выбор библиотеки
 
-| Критерий | Python | PHP | JavaScript |
-|----------|--------|-----|-----------|
-| Установка | `pip` | Ручная PSR-4 | `npm` |
-| Транспорт | WS / HTTP | HTTP | WS / HTTP |
-| Среда | Python 3 | PHP 7+ | Node.js / браузер |
-| Зависимости | минимальные | GMP или BCMath | нет (bundled) |
-| Лицензия | MIT | MIT | MIT |
+| Критерий | Python | PHP | JavaScript | Swift |
+|----------|--------|-----|-----------|-------|
+| Установка | `pip` | Ручная PSR-4 | `npm` / CDN | Swift PM / Xcode |
+| Транспорт | WS / HTTP | HTTP | WS / HTTP | HTTP (async/await) |
+| Среда | Python 3 | PHP 7+ | Node.js / браузер | iOS / macOS / Linux |
+| Зависимости | минимальные | GMP или BCMath | нет (bundled) | secp256k1, OrderedDictionary |
+| Уровень | высокоуровневый | высокоуровневый | высокоуровневый | низкоуровневые примитивы |
+| Лицензия | MIT | MIT | MIT | MIT |
 
 ---
 
