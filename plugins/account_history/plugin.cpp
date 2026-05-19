@@ -331,16 +331,16 @@ if( options.count(name) ) { \
             impacted.insert(op.account);
         }
 
-        void operator()(const witness_update_operation& op) {
+        void operator()(const validator_update_operation& op) {
             impacted.insert(op.owner);
         }
 
-        void operator()(const account_witness_vote_operation& op) {
+        void operator()(const account_validator_vote_operation& op) {
             impacted.insert(op.account);
-            impacted.insert(op.witness);
+            impacted.insert(op.validator);
         }
 
-        void operator()(const account_witness_proxy_operation& op) {
+        void operator()(const account_validator_proxy_operation& op) {
             impacted.insert(op.account);
             impacted.insert(op.proxy);
         }
@@ -350,7 +350,7 @@ if( options.count(name) ) { \
             impacted.insert(op.to_account);
         }
 
-        void operator()(const shutdown_witness_operation& op) {
+        void operator()(const shutdown_validator_operation& op) {
             impacted.insert(op.owner);
         }
 
@@ -425,8 +425,8 @@ if( options.count(name) ) { \
             impacted.insert(op.worker);
         }
 
-        void operator()(const witness_reward_operation& op) {
-            impacted.insert(op.witness);
+        void operator()(const validator_reward_operation& op) {
+            impacted.insert(op.validator);
         }
 
         void operator()(const set_paid_subscription_operation& op) {

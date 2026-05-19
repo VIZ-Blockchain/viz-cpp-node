@@ -79,7 +79,7 @@ namespace graphene { namespace chain {
             }
 
             const auto& v_share_price = _db.get_dynamic_global_properties().get_vesting_share_price();
-            const auto& median_props = _db.get_witness_schedule_object().median_props;
+            const auto& median_props = _db.get_validator_schedule_object().median_props;
             auto target_delegation =
                 median_props.create_account_delegation_ratio *
                 median_props.account_creation_fee * v_share_price;
@@ -306,7 +306,7 @@ namespace graphene { namespace chain {
             FC_ASSERT( _db.has_hardfork(CHAIN_HARDFORK_4), "award_evaluator not enabled until HF 4" );
             try {
                 database &_db = db();
-                const auto& median_props = _db.get_witness_schedule_object().median_props;
+                const auto& median_props = _db.get_validator_schedule_object().median_props;
                 const auto &initiator = _db.get_account(o.initiator);
                 //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
                 //    FC_ASSERT(!initiator.valid, "Account flagged as invalid");
@@ -399,7 +399,7 @@ namespace graphene { namespace chain {
             try {
                 database &_db = db();
                 const dynamic_global_property_object &dgpo = _db.get_dynamic_global_properties();
-                const auto& median_props = _db.get_witness_schedule_object().median_props;
+                const auto& median_props = _db.get_validator_schedule_object().median_props;
                 const auto &initiator = _db.get_account(o.initiator);
                 //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
                 //    FC_ASSERT(!initiator.valid, "Account flagged as invalid");
@@ -870,7 +870,7 @@ namespace graphene { namespace chain {
 
             //VIZ support anonymous account creation
             if(CHAIN_ANONYMOUS_ACCOUNT==to_account.name){
-                const auto& median_props = _db.get_witness_schedule_object().median_props;
+                const auto& median_props = _db.get_validator_schedule_object().median_props;
                 FC_ASSERT(o.amount >= median_props.account_creation_fee,
                     "Inssufficient amount ${f} required, ${p} provided.",
                     ("f", median_props.account_creation_fee)("p", o.amount));
@@ -968,7 +968,7 @@ namespace graphene { namespace chain {
 
         void withdraw_vesting_evaluator::do_apply(const withdraw_vesting_operation &o) {
             database &_db = db();
-            const auto& median_props = _db.get_witness_schedule_object().median_props;
+            const auto& median_props = _db.get_validator_schedule_object().median_props;
 
             const auto &account = _db.get_account(o.account);
             //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
@@ -1076,7 +1076,7 @@ namespace graphene { namespace chain {
             FC_CAPTURE_AND_RETHROW()
         }
 
-        void account_witness_proxy_evaluator::do_apply(const account_witness_proxy_operation &o) {
+        void account_validator_proxy_evaluator::do_apply(const account_validator_proxy_operation &o) {
             database &_db = db();
             const auto &account = _db.get_account(o.account);
             //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
@@ -1089,7 +1089,7 @@ namespace graphene { namespace chain {
             for (int i = 0; i < CHAIN_MAX_PROXY_RECURSION_DEPTH; ++i) {
                 delta[i + 1] = -account.proxied_vsf_votes[i];
             }
-            _db.adjust_proxied_witness_votes(account, delta);
+            _db.adjust_proxied_validator_votes(account, delta);
 
             if (o.proxy.size()) {
                 const auto &new_proxy = _db.get_account(o.proxy);
@@ -1108,7 +1108,7 @@ namespace graphene { namespace chain {
                 }
 
                 /// clear all individual vote records
-                _db.clear_witness_votes(account);
+                _db.clear_validator_votes(account);
 
                 _db.modify(account, [&](account_object &a) {
                     a.proxy = o.proxy;
@@ -1118,7 +1118,7 @@ namespace graphene { namespace chain {
                 for (int i = 0; i <= CHAIN_MAX_PROXY_RECURSION_DEPTH; ++i) {
                     delta[i] = -delta[i];
                 }
-                _db.adjust_proxied_witness_votes(account, delta);
+                _db.adjust_proxied_validator_votes(account, delta);
             } else { /// we are clearing the proxy which means we simply update the account
                 _db.modify(account, [&](account_object &a) {
                     a.proxy = o.proxy;
@@ -1126,7 +1126,7 @@ namespace graphene { namespace chain {
             }
         }
 
-        void account_witness_vote_evaluator::do_apply(const account_witness_vote_operation &o) {
+        void account_validator_vote_evaluator::do_apply(const account_validator_vote_operation &o) {
             database &_db = db();
             const auto &voter = _db.get_account(o.account);
             //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
@@ -1140,7 +1140,7 @@ namespace graphene { namespace chain {
                     for (int i = 0; i < CHAIN_MAX_PROXY_RECURSION_DEPTH; ++i) {
                         delta[i + 1] = -voter.proxied_vsf_votes[i];
                     }
-                    _db.adjust_proxied_witness_votes(voter, delta);
+                    _db.adjust_proxied_validator_votes(voter, delta);
                     _db.modify(voter, [&](account_object &a) {
                         a.proxy = CHAIN_PROXY_TO_SELF_ACCOUNT;//blank proxy
                     });
@@ -1148,31 +1148,31 @@ namespace graphene { namespace chain {
             }
             else{
                 FC_ASSERT(voter.proxy.size() ==
-                          0, "A proxy is currently set, please clear the proxy before voting for a witness.");
+                          0, "A proxy is currently set, please clear the proxy before voting for a validator.");
             }
 
-            const auto &witness = _db.get_witness(o.witness);
+            const auto &witness = _db.get_witness(o.validator);
 
             const auto &by_account_witness_idx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
             auto itr = by_account_witness_idx.find(boost::make_tuple(voter.id, witness.id));
 
             if (itr == by_account_witness_idx.end()) {
-                FC_ASSERT(o.approve, "Vote doesn't exist, user must indicate a desire to approve witness.");
+                FC_ASSERT(o.approve, "Vote doesn't exist, user must indicate a desire to approve validator.");
 
                 if(_db.has_hardfork(CHAIN_HARDFORK_4)){
-                    FC_ASSERT(voter.witnesses_voted_for <
-                              CHAIN_MAX_ACCOUNT_WITNESS_VOTES, "Account has voted for too many witnesses.");
+                    FC_ASSERT(voter.validators_voted_for <
+                              CHAIN_MAX_ACCOUNT_VALIDATOR_VOTES, "Account has voted for too many validators.");
                 }
                 else{
-                    FC_ASSERT(voter.witnesses_voted_for <
-                              CHAIN_MAX_ACCOUNT_WITNESS_VOTES_PRE_HF4, "Account has voted for too many witnesses."); // TODO: Remove after hardfork 2
+                    FC_ASSERT(voter.validators_voted_for <
+                              CHAIN_MAX_ACCOUNT_VALIDATOR_VOTES_PRE_HF4, "Account has voted for too many validators."); // TODO: Remove after hardfork 2
                 }
 
                 if(_db.has_hardfork(CHAIN_HARDFORK_5)){
                     const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
-                    auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, witness_id_type()));
+                    auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr != vidx.end() && vitr->account == voter.id) {
-                        _db.adjust_witness_vote(_db.get(vitr->witness), -voter.witnesses_vote_weight);
+                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.validators_vote_weight);
                         ++vitr;
                     }
 
@@ -1183,25 +1183,25 @@ namespace graphene { namespace chain {
                     });
 
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_voted_for++;
+                        a.validators_voted_for++;
                     });
-                    share_type fair_vote_weight = voter.witness_vote_fair_weight();
+                    share_type fair_vote_weight = voter.validator_vote_fair_weight();
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_vote_weight = fair_vote_weight;
+                        a.validators_vote_weight = fair_vote_weight;
                     });
 
                     const auto &vidx2 = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
-                    auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, witness_id_type()));
+                    auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr2 != vidx2.end() && vitr2->account == voter.id) {
-                        _db.adjust_witness_vote(_db.get(vitr2->witness), voter.witnesses_vote_weight);
+                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.validators_vote_weight);
                         ++vitr2;
                     }
                 }
                 else if(_db.has_hardfork(CHAIN_HARDFORK_4)){
                     const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
-                    auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, witness_id_type()));
+                    auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr != vidx.end() && vitr->account == voter.id) {
-                        _db.adjust_witness_vote(_db.get(vitr->witness), -voter.witness_vote_fair_weight_prehf5());
+                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.validator_vote_fair_weight_prehf5());
                         ++vitr;
                     }
 
@@ -1212,13 +1212,13 @@ namespace graphene { namespace chain {
                     });
 
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_voted_for++;
+                        a.validators_voted_for++;
                     });
 
                     const auto &vidx2 = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
-                    auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, witness_id_type()));
+                    auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr2 != vidx2.end() && vitr2->account == voter.id) {
-                        _db.adjust_witness_vote(_db.get(vitr2->witness), voter.witness_vote_fair_weight_prehf5());
+                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.validator_vote_fair_weight_prehf5());
                         ++vitr2;
                     }
                 }
@@ -1228,64 +1228,64 @@ namespace graphene { namespace chain {
                         v.account = voter.id;
                         v.vote_created_block = _db.head_block_num();
                     });
-                    _db.adjust_witness_vote(witness, voter.witness_vote_weight());
+                    _db.adjust_validator_vote(witness, voter.validator_vote_weight());
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_voted_for++;
+                        a.validators_voted_for++;
                     });
                 }
             } else {
-                FC_ASSERT(!o.approve, "Vote currently exists, user must indicate a desire to reject witness.");
+                FC_ASSERT(!o.approve, "Vote currently exists, user must indicate a desire to reject validator.");
 
                 if(_db.has_hardfork(CHAIN_HARDFORK_5)){
                     const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
-                    auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, witness_id_type()));
+                    auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr != vidx.end() && vitr->account == voter.id) {
-                        _db.adjust_witness_vote(_db.get(vitr->witness), -voter.witnesses_vote_weight);
+                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.validators_vote_weight);
                         ++vitr;
                     }
 
                     _db.remove(*itr);
 
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_voted_for--;
+                        a.validators_voted_for--;
                     });
-                    share_type fair_vote_weight = voter.witness_vote_fair_weight();
+                    share_type fair_vote_weight = voter.validator_vote_fair_weight();
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_vote_weight = fair_vote_weight;
+                        a.validators_vote_weight = fair_vote_weight;
                     });
 
                     const auto &vidx2 = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
-                    auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, witness_id_type()));
+                    auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr2 != vidx2.end() && vitr2->account == voter.id) {
-                        _db.adjust_witness_vote(_db.get(vitr2->witness), voter.witnesses_vote_weight);
+                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.validators_vote_weight);
                         ++vitr2;
                     }
                 }
                 else if(_db.has_hardfork(CHAIN_HARDFORK_4)){
                     const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
-                    auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, witness_id_type()));
+                    auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr != vidx.end() && vitr->account == voter.id) {
-                        _db.adjust_witness_vote(_db.get(vitr->witness), -voter.witness_vote_fair_weight_prehf5());
+                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.validator_vote_fair_weight_prehf5());
                         ++vitr;
                     }
 
                     _db.remove(*itr);
 
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_voted_for--;
+                        a.validators_voted_for--;
                     });
 
                     const auto &vidx2 = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
-                    auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, witness_id_type()));
+                    auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr2 != vidx2.end() && vitr2->account == voter.id) {
-                        _db.adjust_witness_vote(_db.get(vitr2->witness), voter.witness_vote_fair_weight_prehf5());
+                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.validator_vote_fair_weight_prehf5());
                         ++vitr2;
                     }
                 }
                 else{
-                    _db.adjust_witness_vote(witness, -voter.witness_vote_weight());
+                    _db.adjust_validator_vote(witness, -voter.validator_vote_weight());
                     _db.modify(voter, [&](account_object &a) {
-                        a.witnesses_voted_for--;
+                        a.validators_voted_for--;
                     });
                     _db.remove(*itr);
                 }
@@ -1298,7 +1298,7 @@ namespace graphene { namespace chain {
             try {
                 const auto &content = _db.get_content(o.author, o.permlink);
                 const auto &voter = _db.get_account(o.voter);
-                const auto& median_props = _db.get_witness_schedule_object().median_props;
+                const auto& median_props = _db.get_validator_schedule_object().median_props;
 
                 const auto &content_vote_idx = _db.get_index<content_vote_index>().indices().get<by_content_voter>();
                 auto itr = content_vote_idx.find(std::make_tuple(content.id, voter.id));
@@ -1566,8 +1566,8 @@ namespace graphene { namespace chain {
                           o.recovery_account, "Cannot recover an account that does not have you as there recovery partner.");
             else                                                  // Empty string recovery account defaults to top witness
                 FC_ASSERT(
-                        _db.get_index<witness_index>().indices().get<by_vote_name>().begin()->owner ==
-                        o.recovery_account, "Top witness must recover an account with no recovery partner.");
+                        _db.get_index<validator_index>().indices().get<by_vote_name>().begin()->owner ==
+                        o.recovery_account, "Top validator must recover an account with no recovery partner.");
 
             const auto &recovery_request_idx = _db.get_index<account_recovery_request_index>().indices().get<by_account>();
             auto request = recovery_request_idx.find(o.account_to_recover);
@@ -1704,7 +1704,7 @@ namespace graphene { namespace chain {
                 FC_ASSERT(op.vesting_shares.amount != 0,"Delegation did not exist for initiate revoke.");
             }
 
-            const auto& median_props = _db.get_witness_schedule_object().median_props;
+            const auto& median_props = _db.get_validator_schedule_object().median_props;
             const auto v_share_price = _db.get_dynamic_global_properties().get_vesting_share_price();
             auto min_delegation = median_props.min_delegation * v_share_price;
 
@@ -1789,7 +1789,7 @@ namespace graphene { namespace chain {
             //    FC_ASSERT(!account_seller.valid, "Account flagged as invalid")
             if(_db.has_hardfork(CHAIN_HARDFORK_11)){//new auction mechanics while account have time to sale start
                 if(""==account.account_seller){//pay fee if seller is empty
-                    const auto& median_props = _db.get_witness_schedule_object().median_props;
+                    const auto& median_props = _db.get_validator_schedule_object().median_props;
                     const dynamic_global_property_object &dgp = _db.get_dynamic_global_properties();
 
                     FC_ASSERT(account.balance >=
@@ -1875,7 +1875,7 @@ namespace graphene { namespace chain {
             else{//old behaviour
                 if(_db.has_hardfork(CHAIN_HARDFORK_9)){
                     if(""==account.account_seller){
-                        const auto& median_props = _db.get_witness_schedule_object().median_props;
+                        const auto& median_props = _db.get_validator_schedule_object().median_props;
                         const dynamic_global_property_object &dgp = _db.get_dynamic_global_properties();
 
                         FC_ASSERT(account.balance >=
@@ -1911,7 +1911,7 @@ namespace graphene { namespace chain {
             _db.get_account(op.target_buyer); // validate existence
 
             if(""==account.account_seller){//pay fee if seller is empty
-                const auto& median_props = _db.get_witness_schedule_object().median_props;
+                const auto& median_props = _db.get_validator_schedule_object().median_props;
                 const dynamic_global_property_object &dgp = _db.get_dynamic_global_properties();
 
                 FC_ASSERT(account.balance >=
@@ -2068,7 +2068,7 @@ namespace graphene { namespace chain {
             //    FC_ASSERT(!subaccount_seller.valid, "Account flagged as invalid")
             if(_db.has_hardfork(CHAIN_HARDFORK_9)){
                 if(""==account.subaccount_seller){
-                    const auto& median_props = _db.get_witness_schedule_object().median_props;
+                    const auto& median_props = _db.get_validator_schedule_object().median_props;
                     const dynamic_global_property_object &dgp = _db.get_dynamic_global_properties();
 
                     FC_ASSERT(account.balance >=
@@ -2091,7 +2091,7 @@ namespace graphene { namespace chain {
             const auto& buyer = _db.get_account(op.buyer);
             //if(_db.has_hardfork(CHAIN_HARDFORK_9))//can be deleted after fix in CHAIN_HARDFORK_11
             //    FC_ASSERT(!buyer.valid, "Account flagged as invalid");
-            const auto& median_props = _db.get_witness_schedule_object().median_props;
+            const auto& median_props = _db.get_validator_schedule_object().median_props;
 
             FC_ASSERT(op.account_authorities_key != public_key_type(), "Account authorities key cannot be blank.");
 

@@ -4,7 +4,7 @@ list(APPEND CURRENT_TARGET_HEADERS
     include/graphene/api/account_api_object.hpp
     include/graphene/api/content_api_object.hpp
     include/graphene/api/chain_api_properties.hpp
-    include/graphene/api/witness_api_object.hpp
+    include/graphene/api/validator_api_object.hpp
     include/graphene/api/discussion.hpp
     include/graphene/api/vote_state.hpp
     include/graphene/api/account_vote.hpp
@@ -19,7 +19,7 @@ list(APPEND CURRENT_TARGET_SOURCES
     discussion_helper.cpp
     content_api_object.cpp
     chain_api_properties.cpp
-    witness_api_object.cpp
+    validator_api_object.cpp
     committee_api_object.cpp
     invite_api_object.cpp
     paid_subscription_api_object.cpp

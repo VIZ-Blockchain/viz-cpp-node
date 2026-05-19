@@ -1,4 +1,4 @@
-# Service Integration
+﻿# Service Integration
 
 <cite>
 **Referenced Files in This Document**
@@ -268,7 +268,7 @@ Backup and recovery:
 
 High availability:
 - Run multiple node instances behind a load balancer.
-- Prefer witness nodes with redundant infrastructure and monitoring.
+- Prefer validator nodes with redundant infrastructure and monitoring.
 - Use rolling updates to minimize downtime during maintenance.
 
 [No sources needed since this section provides general guidance]
@@ -331,7 +331,7 @@ The VIZ CPP Node is designed for containerized deployment with robust supervisio
 ## Appendices
 - Environment variable overrides in the container script:
   - RPC and P2P endpoints
-  - Witness name and private key
+  - validator name and private key
   - Seed nodes
   - Extra options
 

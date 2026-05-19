@@ -9,6 +9,7 @@ namespace fc {
     using namespace graphene::protocol;
 
     std::string name_from_type(const std::string &type_name);
+    std::string resolve_operation_name(const std::string &name);
 
     struct from_operation {
         variant &var;
@@ -116,9 +117,10 @@ void from_variant( const fc::variant& var,  OperationType& vo )            \
       vo.set_which( ar[0].as_uint64() );                                   \
    else                                                                    \
    {                                                                       \
-      auto itr = to_tag.find(ar[0].as_string());                           \
+      auto resolved = resolve_operation_name(ar[0].as_string());            \
+      auto itr = to_tag.find(resolved);                                     \
       FC_ASSERT( itr != to_tag.end(), "Invalid operation name: ${n}", ("n", ar[0]) ); \
-      vo.set_which( to_tag[ar[0].as_string()] );                           \
+      vo.set_which( to_tag[resolved] );                                     \
    }                                                                       \
       vo.visit( fc::to_static_variant( ar[1] ) );                          \
    }                                                                       \

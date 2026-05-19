@@ -7,21 +7,21 @@
 #include <graphene/plugins/p2p/p2p_plugin.hpp>
 #include <graphene/plugins/webserver/webserver_plugin.hpp>
 #include <graphene/plugins/network_broadcast_api/network_broadcast_api_plugin.hpp>
-#include <graphene/plugins/witness/witness.hpp>
+#include <graphene/plugins/validator/validator.hpp>
 #include <graphene/plugins/database_api/plugin.hpp>
 #include <graphene/plugins/account_history/plugin.hpp>
 #include <graphene/plugins/account_by_key/account_by_key_plugin.hpp>
 #include <graphene/plugins/auth_util/plugin.hpp>
 #include <graphene/plugins/raw_block/plugin.hpp>
 #include <graphene/plugins/block_info/plugin.hpp>
-#include <graphene/plugins/witness_api/plugin.hpp>
+#include <graphene/plugins/validator_api/plugin.hpp>
 #include <graphene/plugins/committee_api/committee_api.hpp>
 #include <graphene/plugins/invite_api/invite_api.hpp>
 #include <graphene/plugins/paid_subscription_api/paid_subscription_api.hpp>
 #include <graphene/plugins/custom_protocol_api/custom_protocol_api.hpp>
 #include <graphene/plugins/snapshot/plugin.hpp>
 
-#include <graphene/plugins/witness_guard/witness_guard.hpp>
+#include <graphene/plugins/validator_guard/validator_guard.hpp>
 
 #include <fc/interprocess/signals.hpp>
 #include <fc/log/console_appender.hpp>
@@ -58,8 +58,8 @@ namespace graphene {
             appbase::app().register_plugin<graphene::plugins::chain::plugin>();
             appbase::app().register_plugin<graphene::plugins::p2p::p2p_plugin>();
             appbase::app().register_plugin<graphene::plugins::webserver::webserver_plugin>();
-            appbase::app().register_plugin<graphene::plugins::witness_plugin::witness_plugin>();
-            appbase::app().register_plugin<graphene::plugins::witness_api::plugin>();
+            appbase::app().register_plugin<graphene::plugins::validator_plugin::validator_plugin>();
+            appbase::app().register_plugin<graphene::plugins::validator_api::plugin>();
             appbase::app().register_plugin<graphene::plugins::network_broadcast_api::network_broadcast_api_plugin>();
             graphene::plugins::database_api::register_database_api();
             appbase::app().register_plugin<graphene::plugins::account_history::plugin>();
@@ -72,7 +72,7 @@ namespace graphene {
             appbase::app().register_plugin<graphene::plugins::paid_subscription_api::paid_subscription_api>();
             appbase::app().register_plugin<graphene::plugins::custom_protocol_api::custom_protocol_api_plugin>();
             appbase::app().register_plugin<graphene::plugins::snapshot::snapshot_plugin>();
-            appbase::app().register_plugin<graphene::plugins::witness_guard::witness_guard_plugin>();
+            appbase::app().register_plugin<graphene::plugins::validator_guard::validator_guard_plugin>();
             ///plugins
         };
     }

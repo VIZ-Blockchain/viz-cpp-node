@@ -1,4 +1,4 @@
-# Chain Plugin
+﻿# Chain Plugin
 
 <cite>
 **Referenced Files in This Document**
@@ -668,7 +668,7 @@ The plugin integrates with several other components with enhanced coordination:
 - JSON-RPC plugin for API exposure
 - Snapshot plugin for state recovery with deferred execution support
 - P2P plugin for block propagation
-- Witness plugin for block production
+- Validator Plugin for block production
 - Database plugin for state persistence
 
 **Updated** Enhanced integration with snapshot plugin includes sophisticated deferred execution mechanisms, automatic callback registration, and comprehensive recovery system coordination. The default shared memory directory has been changed from 'blockchain' to 'state' for better organizational structure and consistent data directory usage. The enhanced logging system provides visual feedback for better debugging experience. **New** The automatic recovery system provides seamless protection against shared memory corruption with immediate detection and restoration capabilities.

@@ -1,4 +1,4 @@
-# Debug Node Plugin
+﻿# Debug Node Plugin
 
 <cite>
 **Referenced Files in This Document**
@@ -27,7 +27,7 @@
 The debug node plugin is a development and debugging tool designed to manipulate blockchain state locally for testing, reproducibility, and experimentation. It enables:
 - Generating blocks programmatically for rapid scenario testing
 - Importing existing blockchain data via binary block logs or JSON arrays
-- Inspecting and modifying witness scheduling and hardfork state
+- Inspecting and modifying validator scheduling and hardfork state
 - Applying targeted database edits during block application
 
 It integrates with the chain plugin for database access and the JSON-RPC plugin for API exposure, allowing controlled manipulation of chain state without affecting consensus on public networks.
@@ -78,7 +78,7 @@ CH --> HF
 - Internal mechanisms
   - Uses database flags to skip validations for faster import
   - Applies targeted database edits per block head to simulate state changes
-  - Logs and conditionally modifies witness signing keys to enable block production
+  - Logs and conditionally modifies validator signing keys to enable block production
 
 Key API definitions and declarations are declared in the plugin header and implemented in the plugin source.
 
@@ -123,14 +123,14 @@ RPC-->>Client : "JSON-RPC response"
   - Imports blocks from a JSON file containing an array of signed blocks.
   - Supports skip flags to bypass validations for faster import.
 - debug_generate_blocks
-  - Generates a given number of blocks by scheduling the current head time and modifying witness signing keys if needed.
-  - Accepts skip flags and optional key editing to align witness keys with the provided private key.
+  - Generates a given number of blocks by scheduling the current head time and modifying validator signing keys if needed.
+  - Accepts skip flags and optional key editing to align validator keys with the provided private key.
 - debug_generate_blocks_until
   - Generates blocks until the chain head reaches a specified absolute time, optionally skipping intermediate slots.
 - debug_pop_block
   - Returns the last block without popping it from the chain (useful for inspection).
 - debug_get_witness_schedule
-  - Retrieves the current witness schedule object for inspection.
+  - Retrieves the current validator schedule object for inspection.
 - debug_set_hardfork
   - Sets the active hardfork to a given ID (no-op if beyond supported range).
 - debug_has_hardfork
@@ -159,7 +159,7 @@ NextOrDone --> |No| Done(["Return total pushed"])
 - [plugin.cpp](file://plugins/debug_node/plugin.cpp#L479-L555)
 
 ### Block Generation Workflow
-The block generation process selects the scheduled witness for the next slot, compares its signing key with the provided debug key, optionally edits the witness object to match, and generates a block signed by the debug key.
+The block generation process selects the scheduled validator for the next slot, compares its signing key with the provided debug key, optionally edits the validator object to match, and generates a block signed by the debug key.
 
 ```mermaid
 flowchart TD
@@ -169,11 +169,11 @@ ZeroCheck --> |No| ParseKey["Parse WIF private key"]
 ParseKey --> ValidKey{"Valid key?"}
 ValidKey --> |No| Exit0
 ValidKey --> |Yes| Loop["While produced < count"]
-Loop --> SlotCalc["Compute slot and scheduled witness"]
+Loop --> SlotCalc["Compute slot and scheduled validator"]
 SlotCalc --> CompareKey{"Scheduled key == debug key?"}
 CompareKey --> |No| EditNeeded{"edit_if_needed?"}
 EditNeeded --> |No| ExitLoop["Break loop"]
-EditNeeded --> |Yes| ApplyEdit["Apply debug_update to modify witness signing key"]
+EditNeeded --> |Yes| ApplyEdit["Apply debug_update to modify validator signing key"]
 ApplyEdit --> Loop
 CompareKey --> |Yes| GenBlock["Generate block at scheduled time"]
 GenBlock --> Inc["Increment produced and slot"]
@@ -188,8 +188,8 @@ ExitLoop --> Return(["Return produced count"])
 **Section sources**
 - [plugin.cpp](file://plugins/debug_node/plugin.cpp#L222-L288)
 
-### Witness Schedule Inspection
-Retrieves the current witness schedule object from the database for inspection and debugging.
+### validator Schedule Inspection
+Retrieves the current validator schedule object from the database for inspection and debugging.
 
 **Section sources**
 - [plugin.cpp](file://plugins/debug_node/plugin.cpp#L427-L430)
@@ -301,7 +301,7 @@ Common issues and resolutions:
   - Verify the block log path and index exist and contain sufficient blocks.
 - Validation failures during import
   - Use appropriate skip flags to bypass checks; confirm compatibility with mainnet/testnet block formats.
-- Witness key mismatch
+- validator key mismatch
   - Provide a valid WIF private key and allow key editing if needed; otherwise, block generation will halt.
 - Hardfork ID out of range
   - Set hardfork ID within supported bounds; exceeding the maximum has no effect.
@@ -319,7 +319,7 @@ Operational tips:
 - [debug_node_plugin.md](file://documentation/debug_node_plugin.md#L50-L134)
 
 ## Conclusion
-The debug node plugin provides powerful tools for blockchain state manipulation in development environments. It supports rapid block generation, efficient import of existing data, witness schedule inspection, and hardfork control. Proper use of skip flags, careful key management, and restricted API exposure ensures safe and effective debugging without compromising production integrity.
+The debug node plugin provides powerful tools for blockchain state manipulation in development environments. It supports rapid block generation, efficient import of existing data, validator schedule inspection, and hardfork control. Proper use of skip flags, careful key management, and restricted API exposure ensures safe and effective debugging without compromising production integrity.
 
 [No sources needed since this section summarizes without analyzing specific files]
 
@@ -329,9 +329,9 @@ The debug node plugin provides powerful tools for blockchain state manipulation 
 - Creating a test environment from live chain data
   - Export blocks from a live node, start a new node with debug_node enabled, and import blocks via debug_push_blocks or debug_push_json_blocks.
 - Reproducing edge cases
-  - Generate blocks until a specific time, adjust hardfork state, and simulate witness key changes to reproduce timing-sensitive issues.
+  - Generate blocks until a specific time, adjust hardfork state, and simulate validator key changes to reproduce timing-sensitive issues.
 - Validating state changes
-  - Inspect witness schedules and hardfork properties, then generate blocks to observe behavioral differences.
+  - Inspect validator schedules and hardfork properties, then generate blocks to observe behavioral differences.
 
 **Section sources**
 - [debug_node_plugin.md](file://documentation/debug_node_plugin.md#L50-L134)

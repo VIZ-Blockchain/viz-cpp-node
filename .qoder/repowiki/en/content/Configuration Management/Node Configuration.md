@@ -1,4 +1,4 @@
-# Node Configuration
+﻿# Node Configuration
 
 <cite>
 **Referenced Files in This Document**
@@ -13,7 +13,7 @@
 - [webserver_plugin.hpp](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp)
 - [p2p_plugin.hpp](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp)
 - [chain_plugin.hpp](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp)
-- [witness_plugin.hpp](file://plugins/witness/include/graphene/plugins/witness/witness.hpp)
+- [witness_plugin.hpp](file://plugins/validator/include/graphene/plugins/validator/validator.hpp)
 - [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
 - [Dockerfile-production](file://share/vizd/docker/Dockerfile-production)
 - [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem)
@@ -32,7 +32,7 @@
 10. [Appendices](#appendices)
 
 ## Introduction
-This document provides comprehensive guidance for configuring a VIZ CPP Node. It explains the configuration file structure, available parameters, defaults, and acceptable ranges. It also covers different node types (full node, witness node, low-memory node, testnet node), essential settings (database location, plugin activation, network parameters, performance tuning), authentication and API access controls, security configurations, and practical deployment examples. Finally, it includes validation tips, syntax guidance, and organizational best practices for configuration files.
+This document provides comprehensive guidance for configuring a VIZ CPP Node. It explains the configuration file structure, available parameters, defaults, and acceptable ranges. It also covers different node types (full node, validator node, low-memory node, testnet node), essential settings (database location, plugin activation, network parameters, performance tuning), authentication and API access controls, security configurations, and practical deployment examples. Finally, it includes validation tips, syntax guidance, and organizational best practices for configuration files.
 
 ## Project Structure
 The configuration system centers around a primary configuration file and several prebuilt templates for different deployment profiles. The node binary loads plugins and applies logging configuration from the same file.
@@ -76,7 +76,7 @@ cfg_stock --> bin_main
 - [webserver_plugin.hpp](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L32-L57)
 - [p2p_plugin.hpp](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L52)
 - [chain_plugin.hpp](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L21-L96)
-- [witness_plugin.hpp](file://plugins/witness/include/graphene/plugins/witness/witness_plugin.hpp#L34-L65)
+- [witness_plugin.hpp](file://plugins/validator/include/graphene/plugins/validator/witness_plugin.hpp#L34-L65)
 
 **Section sources**
 - [config.ini](file://share/vizd/config/config.ini#L1-L130)
@@ -123,11 +123,11 @@ This section enumerates the most important configuration parameters grouped by c
   - follow-max-feed-size: Integer; default 500. See [config.ini](file://share/vizd/config/config.ini#L94-L94).
   - pm-account-range: JSON pair ["from","to"]; default unset. See [config.ini](file://share/vizd/config/config.ini#L97-L97).
 
-- Witness Production
+- validator Production
   - enable-stale-production: Boolean; default false (production), true (testnet). See [config.ini](file://share/vizd/config/config.ini#L100-L100), [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L100-L100).
   - required-participation: Integer percentage (0–99); default unset (plugin default). See [config.ini](file://share/vizd/config/config.ini#L103-L103), [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L103-L103).
-  - witness: String name; default unset (non-witness), "committee" (testnet). See [config.ini](file://share/vizd/config/config.ini#L106-L106), [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L106-L106).
-  - private-key: WIF key; default unset (non-witness), testnet committee key shown. See [config.ini](file://share/vizd/config/config.ini#L109-L109), [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L111-L111).
+  - validator: String name; default unset (non-validator), "committee" (testnet). See [config.ini](file://share/vizd/config/config.ini#L106-L106), [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L106-L106).
+  - private-key: WIF key; default unset (non-validator), testnet committee key shown. See [config.ini](file://share/vizd/config/config.ini#L109-L109), [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L111-L111).
 
 - MongoDB (when enabled)
   - mongodb-uri: URI string; default unset. See [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L72-L72), [config_debug_mongo.ini](file://share/vizd/config/config_debug_mongo.ini#L72-L72).
@@ -153,7 +153,7 @@ Notes on defaults and ranges:
 - [main.cpp](file://programs/vizd/main.cpp#L167-L191)
 
 ## Architecture Overview
-The node binary initializes plugins and applies logging configuration from the selected configuration file. The webserver plugin exposes HTTP and WebSocket endpoints. The P2P plugin manages peer connections. The chain plugin coordinates block acceptance and transaction processing. The witness plugin participates in block production when configured.
+The node binary initializes plugins and applies logging configuration from the selected configuration file. The webserver plugin exposes HTTP and WebSocket endpoints. The P2P plugin manages peer connections. The chain plugin coordinates block acceptance and transaction processing. The Validator Plugin participates in block production when configured.
 
 ```mermaid
 sequenceDiagram
@@ -163,14 +163,14 @@ participant Log as "Logging Loader"
 participant WS as "Webserver Plugin"
 participant P2P as "P2P Plugin"
 participant Chain as "Chain Plugin"
-participant Wit as "Witness Plugin"
+participant Wit as "Validator Plugin"
 CLI->>Bin : Start process with config path
 Bin->>Log : Load logging config from config file
 Log-->>Bin : Apply logging configuration
 Bin->>WS : Initialize webserver plugin
 Bin->>P2P : Initialize p2p plugin
 Bin->>Chain : Initialize chain plugin
-Bin->>Wit : Initialize witness plugin (if enabled)
+Bin->>Wit : Initialize Validator Plugin (if enabled)
 Bin->>Bin : Startup and exec loop
 ```
 
@@ -179,19 +179,19 @@ Bin->>Bin : Startup and exec loop
 - [webserver_plugin.hpp](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L32-L57)
 - [p2p_plugin.hpp](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L52)
 - [chain_plugin.hpp](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L21-L96)
-- [witness_plugin.hpp](file://plugins/witness/include/graphene/plugins/witness/witness_plugin.hpp#L34-L65)
+- [witness_plugin.hpp](file://plugins/validator/include/graphene/plugins/validator/witness_plugin.hpp#L34-L65)
 
 ## Detailed Component Analysis
 
 ### Node Types and Templates
 - Full node (mainnet)
-  - Typical characteristics: Public P2P endpoint, broad plugin set, production RPC endpoints, witness disabled by default.
+  - Typical characteristics: Public P2P endpoint, broad plugin set, production RPC endpoints, validator disabled by default.
   - Reference template: [config.ini](file://share/vizd/config/config.ini#L1-L130)
 - Testnet node
-  - Characteristics: enable-stale-production=true, required-participation=0, witness="committee", private-key for committee.
+  - Characteristics: enable-stale-production=true, required-participation=0, validator="committee", private-key for committee.
   - Reference template: [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132)
-- Witness node
-  - Characteristics: webserver endpoints bound to localhost, witness and private-key configured, skip-virtual-ops=true.
+- validator node
+  - Characteristics: webserver endpoints bound to localhost, validator and private-key configured, skip-virtual-ops=true.
   - Reference template: [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107)
 - Low-memory node
   - Build-time flag: LOW_MEMORY_NODE=TRUE via CMake; exposed via Dockerfile-lowmem.
@@ -205,7 +205,7 @@ Bin->>Bin : Startup and exec loop
 
 Practical selection guidance:
 - Choose config_testnet.ini for development and testing.
-- Use config_witness.ini when operating a validating witness with private keys.
+- Use config_witness.ini when operating a validating validator with private keys.
 - Use config_mongo.ini when integrating external analytics or historical archiving.
 - Use config_stock_exchange.ini for market data consumers requiring minimal overhead.
 
@@ -248,7 +248,7 @@ Operational notes:
 - Examples:
   - Full node: [config.ini](file://share/vizd/config/config.ini#L69-L73)
   - Testnet: [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L69-L73)
-  - Witness: [config_witness.ini](file://share/vizd/config/config_witness.ini#L68-L68)
+  - validator: [config_witness.ini](file://share/vizd/config/config_witness.ini#L68-L68)
   - MongoDB: [config_mongo.ini](file://share/vizd/config/config_mongo.ini#L69-L69), [config_debug_mongo.ini](file://share/vizd/config/config_debug_mongo.ini#L69-L69)
   - Stock exchange: [config_stock_exchange.ini](file://share/vizd/config/config_stock_exchange.ini#L69-L69)
 
@@ -272,7 +272,7 @@ Validation tip:
   - webserver-ws-endpoint: [config.ini](file://share/vizd/config/config.ini#L20-L20)
 
 Security note:
-- Bind RPC to localhost for witness nodes to prevent external exposure: [config_witness.ini](file://share/vizd/config/config_witness.ini#L17-L20).
+- Bind RPC to localhost for validator nodes to prevent external exposure: [config_witness.ini](file://share/vizd/config/config_witness.ini#L17-L20).
 
 **Section sources**
 - [config.ini](file://share/vizd/config/config.ini#L1-L20)
@@ -299,16 +299,16 @@ Recommendations:
 - RPC endpoints:
   - HTTP: [config.ini](file://share/vizd/config/config.ini#L17-L17)
   - WebSocket: [config.ini](file://share/vizd/config/config.ini#L20-L20)
-- Binding to localhost for witness nodes:
+- Binding to localhost for validator nodes:
   - [config_witness.ini](file://share/vizd/config/config_witness.ini#L17-L20)
-- Witness credentials:
-  - witness and private-key: [config_witness.ini](file://share/vizd/config/config_witness.ini#L83-L86), [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L106-L111)
+- validator credentials:
+  - validator and private-key: [config_witness.ini](file://share/vizd/config/config_witness.ini#L83-L86), [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L106-L111)
 - Logging security:
   - Console and file appenders: [config.ini](file://share/vizd/config/config.ini#L112-L130)
   - Program options for logging: [main.cpp](file://programs/vizd/main.cpp#L167-L191)
 
 Best practices:
-- Restrict RPC access to trusted networks or bind to localhost for witness nodes.
+- Restrict RPC access to trusted networks or bind to localhost for validator nodes.
 - Rotate private keys and store them securely; avoid committing secrets to repositories.
 - Use file appenders for persistent logs and monitor log rotation externally if needed.
 
@@ -322,9 +322,9 @@ Best practices:
 - Full node for public API:
   - Use [config.ini](file://share/vizd/config/config.ini#L1-L130) with public RPC endpoints and broad plugin set.
 - Testnet validator:
-  - Use [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132) with enable-stale-production and committee witness settings.
-- Witness operator:
-  - Use [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107) with localhost RPC and configured witness/private-key.
+  - Use [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L1-L132) with enable-stale-production and committee validator settings.
+- validator operator:
+  - Use [config_witness.ini](file://share/vizd/config/config_witness.ini#L1-L107) with localhost RPC and configured validator/private-key.
 - Low-memory deployment:
   - Build with LOW_MEMORY_NODE=TRUE via [Dockerfile-lowmem](file://share/vizd/docker/Dockerfile-lowmem#L48-L48).
 - MongoDB integration:
@@ -349,7 +349,7 @@ Best practices:
   - Ensure numeric values are within reasonable bounds for your hardware.
   - Verify plugin names match available plugins.
   - Confirm file paths for log appenders are writable.
-  - For witness nodes, confirm witness and private-key are set consistently.
+  - For validator nodes, confirm validator and private-key are set consistently.
 - Example references:
   - Logging program options: [main.cpp](file://programs/vizd/main.cpp#L167-L191)
   - Config parsing and logging loader: [main.cpp](file://programs/vizd/main.cpp#L194-L288)
@@ -371,7 +371,7 @@ Best practices:
 [No sources needed since this section provides general guidance]
 
 ## Dependency Analysis
-The node binary registers and initializes plugins, which in turn depend on each other. The webserver plugin requires the JSON-RPC plugin. The P2P plugin depends on the chain plugin. The witness plugin depends on both chain and P2P.
+The node binary registers and initializes plugins, which in turn depend on each other. The webserver plugin requires the JSON-RPC plugin. The P2P plugin depends on the chain plugin. The Validator Plugin depends on both chain and P2P.
 
 ```mermaid
 graph LR
@@ -395,14 +395,14 @@ Wit --> P2P
 - [webserver_plugin.hpp](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L38-L43)
 - [p2p_plugin.hpp](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L20-L21)
 - [chain_plugin.hpp](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L23-L24)
-- [witness_plugin.hpp](file://plugins/witness/include/graphene/plugins/witness/witness_plugin.hpp#L36-L37)
+- [witness_plugin.hpp](file://plugins/validator/include/graphene/plugins/validator/witness_plugin.hpp#L36-L37)
 
 **Section sources**
 - [main.cpp](file://programs/vizd/main.cpp#L62-L90)
 - [webserver_plugin.hpp](file://plugins/webserver/include/graphene/plugins/webserver/webserver_plugin.hpp#L32-L57)
 - [p2p_plugin.hpp](file://plugins/p2p/include/graphene/plugins/p2p/p2p_plugin.hpp#L18-L52)
 - [chain_plugin.hpp](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L21-L96)
-- [witness_plugin.hpp](file://plugins/witness/include/graphene/plugins/witness/witness_plugin.hpp#L34-L65)
+- [witness_plugin.hpp](file://plugins/validator/include/graphene/plugins/validator/witness_plugin.hpp#L34-L65)
 
 ## Performance Considerations
 - Single write thread: Reduces lock contention for database writes; recommended for high RPC throughput.
@@ -420,11 +420,11 @@ Common issues and resolutions:
 - Insufficient disk space for shared memory:
   - Increase min-free-shared-file-size and inc-shared-file-size; monitor growth.
   - References: [config.ini](file://share/vizd/config/config.ini#L58-L62)
-- Witness not producing blocks:
-  - Verify witness name and private-key; ensure enable-stale-production and required-participation are appropriate for the network.
+- validator not producing blocks:
+  - Verify validator name and private-key; ensure enable-stale-production and required-participation are appropriate for the network.
   - References: [config_witness.ini](file://share/vizd/config/config_witness.ini#L83-L86), [config_testnet.ini](file://share/vizd/config/config_testnet.ini#L100-L103)
 - RPC endpoints unreachable:
-  - Confirm binding address and port; for witness nodes, ensure localhost binding is intended.
+  - Confirm binding address and port; for validator nodes, ensure localhost binding is intended.
   - References: [config.ini](file://share/vizd/config/config.ini#L17-L20), [config_witness.ini](file://share/vizd/config/config_witness.ini#L17-L20)
 - Logging misconfiguration:
   - Validate dotted section names and file paths; ensure appenders are writable.

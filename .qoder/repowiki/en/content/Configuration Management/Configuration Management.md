@@ -1,4 +1,4 @@
-# Configuration Management
+﻿# Configuration Management
 
 <cite>
 **Referenced Files in This Document**
@@ -17,7 +17,7 @@
 - [building.md](file://documentation/building.md)
 - [testnet.md](file://documentation/testnet.md)
 - [plugin.md](file://documentation/plugin.md)
-- [witness.cpp](file://plugins/witness/witness.cpp)
+- [validator.cpp](file://plugins/validator/validator.cpp)
 - [config_testnet.hpp](file://libraries/protocol/include/graphene/protocol/config_testnet.hpp)
 - [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
 - [snapshot-plugin.md](file://documentation/snapshot-plugin.md)
@@ -46,13 +46,13 @@
 10. [Appendices](#appendices)
 
 ## Introduction
-This document describes the configuration management system for VIZ CPP Node. It explains configuration file structure, runtime parameters, environment variable overrides, node types (full node, witness node, low-memory node), network configuration, plugin activation, performance tuning, logging, Docker-specific configuration, build-time options, and troubleshooting guidance. Practical deployment scenarios (production, testnet, development) are included.
+This document describes the configuration management system for VIZ CPP Node. It explains configuration file structure, runtime parameters, environment variable overrides, node types (full node, validator node, low-memory node), network configuration, plugin activation, performance tuning, logging, Docker-specific configuration, build-time options, and troubleshooting guidance. Practical deployment scenarios (production, testnet, development) are included.
 
 ## Project Structure
 The configuration system centers around:
 - A primary configuration file template for mainnet
 - Testnet-specific configuration
-- Witness-specific configuration
+- validator-specific configuration
 - MongoDB-enabled configuration variants
 - Dockerfiles for production, testnet, and low-memory builds
 - A container entrypoint script that supports environment variable overrides
@@ -62,7 +62,7 @@ The configuration system centers around:
 graph TB
 cfg_main["Config Template<br/>share/vizd/config/config.ini"]
 cfg_test["Testnet Config<br/>share/vizd/config/config_testnet.ini"]
-cfg_wit["Witness Config<br/>share/vizd/config/config_witness.ini"]
+cfg_wit["validator Config<br/>share/vizd/config/config_witness.ini"]
 cfg_mongo["Mongo Config<br/>share/vizd/config/config_mongo.ini"]
 cfg_dbg["Debug Config<br/>share/vizd/config/config_debug.ini"]
 cfg_dbg_mongo["Debug+Mongo Config<br/>share/vizd/config/config_debug_mongo.ini"]
@@ -122,7 +122,7 @@ Key configuration categories:
 - Lock/wait tuning for database operations
 - Shared memory sizing and growth policy
 - Plugin list and activation
-- Witness production controls
+- validator production controls
 - Logging configuration
 - **Snapshot configuration** (updated with new default behavior)
 
@@ -141,7 +141,7 @@ participant Env as "Environment Variables"
 participant Node as "Node Binary<br/>main.cpp"
 participant Config as "INI Loader<br/>load_config_sections/load_logging_config"
 Entrypoint->>Env : Read VIZD_* variables
-Entrypoint->>Node : Pass CLI flags (--p2p-endpoint, --rpc-endpoint,<br/>--p2p-seed-node, --witness, --private-key)
+Entrypoint->>Node : Pass CLI flags (--p2p-endpoint, --rpc-endpoint,<br/>--p2p-seed-node, --validator, --private-key)
 Node->>Node : Parse program options
 Node->>Config : Load logging config from config path
 Config-->>Node : fc : : logging_config
@@ -179,7 +179,7 @@ Program options include logging configuration and standard node options. The nod
 ### Environment Variable Overrides (Docker)
 The container entrypoint supports the following environment variables:
 - VIZD_SEED_NODES: Comma-separated seed nodes
-- VIZD_WITNESS_NAME: Witness name to operate
+- VIZD_WITNESS_NAME: validator name to operate
 - VIZD_PRIVATE_KEY: Private key for signing
 - VIZD_RPC_ENDPOINT: Override RPC endpoint
 - VIZD_P2P_ENDPOINT: Override P2P endpoint
@@ -197,8 +197,8 @@ These variables override defaults and inject CLI flags at runtime.
   - Uses the main configuration template with default plugin sets suitable for full synchronization and API exposure.
 - Testnet:
   - Includes testnet-specific defaults and enables stale production for continuous block production.
-- Witness node:
-  - Activates witness and witness_api plugins, binds RPC endpoints to localhost by default, and includes witness credentials.
+- validator node:
+  - Activates validator and witness_api plugins, binds RPC endpoints to localhost by default, and includes validator credentials.
 - Low-memory node:
   - Built with a dedicated flag to reduce memory footprint; Dockerfile demonstrates enabling this build-time option.
 
@@ -206,11 +206,11 @@ These variables override defaults and inject CLI flags at runtime.
 flowchart TD
 Start(["Select Node Type"]) --> Full["Full Node<br/>Mainnet"]
 Start --> Testnet["Testnet Node"]
-Start --> Witness["Witness Node"]
+Start --> validator["validator Node"]
 Start --> LowMem["Low-Memory Node"]
 Full --> FullCfg["Use config.ini"]
 Testnet --> TestCfg["Use config_testnet.ini"]
-Witness --> WitCfg["Use config_witness.ini"]
+validator --> WitCfg["Use config_witness.ini"]
 LowMem --> LowMemFlag["Build with LOW_MEMORY_NODE=TRUE"]
 ```
 
@@ -419,10 +419,10 @@ These are set via CMake flags in Dockerfiles and documented in the building guid
   - Use the debug configuration templates to enable additional plugins and adjust logging.
   - Optionally enable MongoDB plugin configuration.
 
-- Witness node
-  - Use the witness configuration template and bind RPC endpoints to localhost.
-  - Provide witness name and private key via environment variables.
-  - **Updated**: Snapshot configuration supports witness-aware deferral to prevent missed production slots.
+- validator node
+  - Use the validator configuration template and bind RPC endpoints to localhost.
+  - Provide validator name and private key via environment variables.
+  - **Updated**: Snapshot configuration supports validator-aware deferral to prevent missed production slots.
 
 **Section sources**
 - [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
@@ -474,15 +474,15 @@ DataDir --> SnapshotDefault["Snapshot Default Dir<br/><data_dir>/snapshots"]
 
 ## Troubleshooting Guide
 
-### Witness Configuration Issues
+### validator Configuration Issues
 
-**Updated** The witness configuration defaults have been updated to improve reliability and participation calculations:
+**Updated** The validator configuration defaults have been updated to improve reliability and participation calculations:
 
-- **enable-stale-production default changed**: The default value for `enable-stale-production` has been changed from `false` to `true`. This means witness nodes will now automatically continue producing blocks even when the chain appears stale, improving network resilience during network partitions or temporary forks.
+- **enable-stale-production default changed**: The default value for `enable-stale-production` has been changed from `false` to `true`. This means validator nodes will now automatically continue producing blocks even when the chain appears stale, improving network resilience during network partitions or temporary forks.
 
 - **required-participation calculation**: The `required-participation` parameter now uses the formula `33 * CHAIN_1_PERCENT` instead of a hardcoded percentage. With `CHAIN_1_PERCENT` equal to 100 (representing 1% in the 10000-point scale), this calculates to 3300, which represents 33% participation threshold.
 
-- **Witness production failures**: If witness production is failing, check the participation threshold calculation. The system now requires at least 33% of witnesses to be participating for block production to continue.
+- **validator production failures**: If validator production is failing, check the participation threshold calculation. The system now requires at least 33% of validators to be participating for block production to continue.
 
 ### Snapshot Configuration Issues
 
@@ -523,10 +523,10 @@ Common configuration issues and validation techniques:
 - Docker volume and permissions
   - Ensure persistent volumes are mounted and owned by the node user.
   - Confirm snapshot extraction occurs when present.
-- Witness production issues
-  - Verify witness name and private key are correctly configured.
+- validator production issues
+  - Verify validator name and private key are correctly configured.
   - Check participation threshold calculations using the CHAIN_1_PERCENT constant.
-  - Monitor for "low participation" errors indicating below-threshold witness participation.
+  - Monitor for "low participation" errors indicating below-threshold validator participation.
 - **Updated**: Snapshot configuration issues
   - Verify snapshot directory permissions and disk space
   - Check snapshot file integrity and naming conventions
@@ -538,7 +538,7 @@ Common configuration issues and validation techniques:
 - [config.ini:118-136](file://share/vizd/config/config.ini#L118-L136)
 - [plugin.md:14-18](file://documentation/plugin.md#L14-L18)
 - [vizd.sh:44-53](file://share/vizd/vizd.sh#L44-L53)
-- [witness.cpp:125-130](file://plugins/witness/witness.cpp#L125-L130)
+- [validator.cpp:125-130](file://plugins/validator/validator.cpp#L125-L130)
 - [config_testnet.hpp:57-59](file://libraries/protocol/include/graphene/protocol/config_testnet.hpp#L57-L59)
 - [config.hpp:57-59](file://libraries/protocol/include/graphene/protocol/config.hpp#L57-L59)
 - [plugin.cpp:2974-2983](file://plugins/snapshot/plugin.cpp#L2974-L2983)
@@ -574,10 +574,10 @@ VIZ CPP Node offers a flexible configuration system combining INI-based settings
   - block-num-check-free-size
 - Plugins
   - plugin (repeatable)
-- Witness
+- validator
   - enable-stale-production (default: true)
   - required-participation (default: 33% calculated as 33 * CHAIN_1_PERCENT)
-  - witness
+  - validator
   - private-key
 - Logging
   - log.console_appender.*
@@ -598,7 +598,7 @@ VIZ CPP Node offers a flexible configuration system combining INI-based settings
   - test-trusted-seeds (default: false)
   - dlt-block-log-max-blocks (default: 100000)
 
-**Updated** Witness configuration defaults now use improved defaults for better network reliability and accurate participation calculations.
+**Updated** validator configuration defaults now use improved defaults for better network reliability and accurate participation calculations.
 
 **Section sources**
 - [config.ini:1-136](file://share/vizd/config/config.ini#L1-L136)
@@ -607,7 +607,7 @@ VIZ CPP Node offers a flexible configuration system combining INI-based settings
 - [config_mongo.ini:1-135](file://share/vizd/config/config_mongo.ini#L1-L135)
 - [config_debug.ini:1-126](file://share/vizd/config/config_debug.ini#L1-L126)
 - [config_debug_mongo.ini:1-135](file://share/vizd/config/config_debug_mongo.ini#L1-L135)
-- [witness.cpp:125-130](file://plugins/witness/witness.cpp#L125-L130)
+- [validator.cpp:125-130](file://plugins/validator/validator.cpp#L125-L130)
 - [config_testnet.hpp:57-59](file://libraries/protocol/include/graphene/protocol/config_testnet.hpp#L57-L59)
 - [config.hpp:57-59](file://libraries/protocol/include/graphene/protocol/config.hpp#L57-L59)
 - [plugin.cpp:2974-2983](file://plugins/snapshot/plugin.cpp#L2974-L2983)
@@ -627,9 +627,9 @@ VIZ CPP Node offers a flexible configuration system combining INI-based settings
 - [vizd.sh:62-72](file://share/vizd/vizd.sh#L62-L72)
 - [vizd.sh:74-81](file://share/vizd/vizd.sh#L74-L81)
 
-### Appendix C: Witness Participation Calculation Details
+### Appendix C: validator Participation Calculation Details
 
-**New** The witness participation calculation system now uses the CHAIN_1_PERCENT constant for precise percentage calculations:
+**New** The validator participation calculation system now uses the CHAIN_1_PERCENT constant for precise percentage calculations:
 
 - **CHAIN_1_PERCENT definition**: Defined as `CHAIN_100_PERCENT/100` where `CHAIN_100_PERCENT` equals 10000
 - **Participation threshold**: Default required participation is 33% (3300/10000)
@@ -639,7 +639,7 @@ VIZ CPP Node offers a flexible configuration system combining INI-based settings
 This change ensures more accurate participation calculations and consistent behavior across mainnet and testnet configurations.
 
 **Section sources**
-- [witness.cpp:125-130](file://plugins/witness/witness.cpp#L125-L130)
+- [validator.cpp:125-130](file://plugins/validator/validator.cpp#L125-L130)
 - [config_testnet.hpp:57-59](file://libraries/protocol/include/graphene/protocol/config_testnet.hpp#L57-L59)
 - [config.hpp:57-59](file://libraries/protocol/include/graphene/protocol/config.hpp#L57-L59)
 

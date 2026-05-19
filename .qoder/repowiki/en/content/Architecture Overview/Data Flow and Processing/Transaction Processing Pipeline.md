@@ -1,4 +1,4 @@
-# Transaction Processing Pipeline
+﻿# Transaction Processing Pipeline
 
 <cite>
 **Referenced Files in This Document**
@@ -331,7 +331,7 @@ DB --> TO["transaction_object.hpp"]
 
 ## Performance Considerations
 - Batch-like processing: pending transactions are accumulated and applied together during block processing, reducing repeated validations
-- Caching: database caches frequently accessed state (accounts, witnesses, etc.) to avoid repeated lookups
+- Caching: database caches frequently accessed state (accounts, validators, etc.) to avoid repeated lookups
 - Validation flags: skip flags allow bypassing expensive checks during reindex or trusted contexts
 - Indexing: transaction index supports duplicate detection and expiration cleanup
 

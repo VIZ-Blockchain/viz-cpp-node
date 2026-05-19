@@ -437,20 +437,20 @@ namespace graphene { namespace chain {
                 // cannot fix this.  Detect and repair it here on startup.
                 if (head_block_num() > 0) {
                     const dynamic_global_property_object &startup_dgp = get_dynamic_global_properties();
-                    const witness_schedule_object &startup_wso = get_witness_schedule_object();
+                    const validator_schedule_object &startup_wso = get_validator_schedule_object();
 
                     bool schedule_broken = false;
-                    for (int i = 0; i < startup_wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
-                        if (startup_wso.current_shuffled_witnesses[i] == account_name_type()) {
+                    for (int i = 0; i < startup_wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                        if (startup_wso.current_shuffled_validators[i] == account_name_type()) {
                             schedule_broken = true;
                             break;
                         }
                     }
 
                     if (schedule_broken) {
-                        wlog("EMERGENCY SCHEDULE RECOVERY: detected empty witness slots "
+                        wlog("EMERGENCY SCHEDULE RECOVERY: detected empty validator slots "
                              "in schedule at startup (head=${h}, emergency=${e}). "
-                             "Filling all slots with committee witness.",
+                             "Filling all slots with committee validator.",
                              ("h", head_block_num())("e", startup_dgp.emergency_consensus_active));
 
                         with_strong_write_lock([&]() {
@@ -465,16 +465,16 @@ namespace graphene { namespace chain {
                             }
 
                             // Fill all schedule slots with committee
-                            modify(startup_wso, [&](witness_schedule_object &_wso) {
-                                for (int i = 0; i < CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT; i++) {
-                                    _wso.current_shuffled_witnesses[i] = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                            modify(startup_wso, [&](validator_schedule_object &_wso) {
+                                for (int i = 0; i < CHAIN_MAX_VALIDATORS * CHAIN_BLOCK_VALIDATOR_REPEAT; i++) {
+                                    _wso.current_shuffled_validators[i] = CHAIN_EMERGENCY_VALIDATOR_ACCOUNT;
                                 }
-                                _wso.num_scheduled_witnesses = CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT;
-                                _wso.next_shuffle_block_num = head_block_num() + _wso.num_scheduled_witnesses;
+                                _wso.num_scheduled_validators = CHAIN_MAX_VALIDATORS * CHAIN_BLOCK_VALIDATOR_REPEAT;
+                                _wso.next_shuffle_block_num = head_block_num() + _wso.num_scheduled_validators;
                             });
 
                             wlog("EMERGENCY SCHEDULE RECOVERY: schedule repaired, all ${n} slots set to committee",
-                                 ("n", CHAIN_MAX_WITNESSES));
+                                 ("n", CHAIN_MAX_VALIDATORS));
                         });
                     } else if (startup_dgp.emergency_consensus_active) {
                         // Schedule is valid but emergency mode is active — restore fork_db flag
@@ -549,7 +549,7 @@ namespace graphene { namespace chain {
 
                 uint64_t skip_flags =
                         skip_block_size_check |
-                        skip_witness_signature |
+                        skip_validator_signature |
                         skip_transaction_signatures |
                         skip_transaction_dupe_check |
                         skip_tapos_check |
@@ -669,7 +669,7 @@ namespace graphene { namespace chain {
 
                 uint64_t skip_flags =
                         skip_block_size_check |
-                        skip_witness_signature |
+                        skip_validator_signature |
                         skip_transaction_signatures |
                         skip_transaction_dupe_check |
                         skip_tapos_check |
@@ -817,7 +817,7 @@ namespace graphene { namespace chain {
 
             // Use the resize barrier to pause ALL database operations.
             // This is stronger than with_strong_write_lock: it also blocks
-            // lockless reads (e.g. get_slot_at_time, get_scheduled_witness,
+            // lockless reads (e.g. get_slot_at_time, get_scheduled_validator,
             // find_account in _generate_block and witness plugin) that do not
             // acquire any chainbase lock.  After begin_resize_barrier()
             // returns, no thread holds any reference into shared memory.
@@ -1151,14 +1151,14 @@ namespace graphene { namespace chain {
             return CHAIN_ID;
         }
 
-        const witness_object &database::get_witness(const account_name_type &name) const {
+        const validator_object &database::get_witness(const account_name_type &name) const {
             try {
-                return get<witness_object, by_name>(name);
+                return get<validator_object, by_name>(name);
             } FC_CAPTURE_AND_RETHROW((name))
         }
 
-        const witness_object *database::find_witness(const account_name_type &name) const {
-            return find<witness_object, by_name>(name);
+        const validator_object *database::find_witness(const account_name_type &name) const {
+            return find<validator_object, by_name>(name);
         }
 
         const account_object &database::get_account(const account_name_type &name) const {
@@ -1218,9 +1218,9 @@ namespace graphene { namespace chain {
             } FC_CAPTURE_AND_RETHROW()
         }
 
-        const witness_schedule_object &database::get_witness_schedule_object() const {
+        const validator_schedule_object &database::get_validator_schedule_object() const {
             try {
-                return get<witness_schedule_object>();
+                return get<validator_schedule_object>();
             } FC_CAPTURE_AND_RETHROW()
         }
 
@@ -1237,7 +1237,7 @@ namespace graphene { namespace chain {
         bool database::update_account_bandwidth(const account_object &a, uint32_t trx_size) {
             const auto &props = get_dynamic_global_properties();
             bool has_bandwidth = true;
-            const witness_schedule_object &consensus = get_witness_schedule_object();
+            const validator_schedule_object &consensus = get_validator_schedule_object();
 
             if (props.total_vesting_shares.amount > 0) {
                 share_type new_bandwidth;
@@ -1435,7 +1435,7 @@ namespace graphene { namespace chain {
                 vector<std::pair<account_name_type, fc::time_point_sec>> witness_time_pairs;
                 vector<block_id_type> previous_ids;
                 for (const auto &b : blocks) {
-                    witness_time_pairs.push_back(std::make_pair(b->data.witness, b->data.timestamp));
+                    witness_time_pairs.push_back(std::make_pair(b->data.validator, b->data.timestamp));
                     previous_ids.push_back(b->data.previous);
                 }
 
@@ -1470,11 +1470,11 @@ namespace graphene { namespace chain {
 
                     if (same_parent) {
                         wlog("Block num collision at block ${n}: ${cnt} blocks with SAME parent "
-                             "(possible double-production), time_delta=${td}s, witnesses: ${w}",
+                             "(possible double-production), time_delta=${td}s, validators: ${w}",
                              ("n", height)("cnt", blocks.size())("td", time_delta_sec)("w", witness_time_pairs));
                     } else {
                         wlog("Block num collision at block ${n}: ${cnt} blocks with DIFFERENT parents "
-                             "(fork from divergent chain tips), time_delta=${td}s, witnesses: ${w}",
+                             "(fork from divergent chain tips), time_delta=${td}s, validators: ${w}",
                              ("n", height)("cnt", blocks.size())("td", time_delta_sec)("w", witness_time_pairs));
                     }
 
@@ -1498,8 +1498,8 @@ namespace graphene { namespace chain {
                     share_type total_weight = 0;
                     bool has_emergency = false;
                     for (const auto& item : branch) {
-                        const auto& wit_name = item->data.witness;
-                        if (wit_name == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                        const auto& wit_name = item->data.validator;
+                        if (wit_name == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) {
                             has_emergency = true;
                             continue;
                         }
@@ -1890,6 +1890,22 @@ namespace graphene { namespace chain {
                                     apply_block((*ritr)->data, skip);
                                     session.push();
                                 }
+                                catch (const wrong_scheduled_validator_exception &e) {
+                                    // Schedule mismatch on a branch already chosen
+                                    // as heavier by vote-weighted comparison.  The
+                                    // branch represents collective consensus of
+                                    // its producers — retry with the schedule
+                                    // check skipped so the heavier chain can win.
+                                    wlog("Fork switch: relaxing schedule check for block #${n} (validator=${w}); branch chosen by vote-weighted comparison: ${e}",
+                                         ("n", (*ritr)->data.block_num())("w", (*ritr)->data.validator)("e", e.to_detail_string()));
+                                    try {
+                                        auto session = start_undo_session();
+                                        apply_block((*ritr)->data, skip | skip_witness_schedule_check);
+                                        session.push();
+                                    } catch (const fc::exception &e2) {
+                                        except = e2;
+                                    }
+                                }
                                 catch (const fc::exception &e) {
                                     except = e;
                                 }
@@ -1956,7 +1972,14 @@ namespace graphene { namespace chain {
                                              ("h", head_block_num()));
                                     }
 
-                                    throw *except;
+                                    // The invalid branch has been removed from fork_db and
+                                    // the original head restored.  Do not propagate the
+                                    // exception to the P2P layer — returning false signals
+                                    // "block rejected" without triggering sync restarts or
+                                    // peer backoff.  Network fork resolution proceeds
+                                    // naturally: nodes on the invalid fork eventually switch
+                                    // to the valid chain when it becomes longer.
+                                    return false;
                                 }
                             }
 
@@ -1980,6 +2003,18 @@ namespace graphene { namespace chain {
                     auto session = start_undo_session();
                     apply_block(new_block, skip);
                     session.push();
+                }
+                catch (const wrong_scheduled_validator_exception &e) {
+                    // Schedule mismatch: keep the block in fork_db as a
+                    // competing tip so descendants can link to it.  When
+                    // a heavier branch builds upon this block, fork-switch
+                    // will apply it with skip_witness_schedule_check.
+                    // Returning false signals "not applied" without
+                    // triggering the P2P rejection / soft-ban path.
+                    wlog("Block #${n} from validator ${w} kept in fork_db as competing tip (schedule mismatch): ${e}",
+                         ("n", new_block.block_num())("w", new_block.validator)
+                         ("e", e.to_detail_string()));
+                    return false;
                 }
                 catch (const fc::exception &e) {
                     elog("Failed to push new block:\n${e}", ("e", e.to_detail_string()));
@@ -2178,7 +2213,7 @@ namespace graphene { namespace chain {
 
                 uint32_t slot_num = get_slot_at_time(when);
                 FC_ASSERT(slot_num > 0);
-                string scheduled_witness = get_scheduled_witness(slot_num);
+                string scheduled_witness = get_scheduled_validator(slot_num);
                 FC_ASSERT(scheduled_witness == witness_owner);
 
                 const auto &witness_obj = get_witness(witness_owner);
@@ -2190,7 +2225,7 @@ namespace graphene { namespace chain {
                 const auto* witness_acct = find_account(witness_owner);
                 if (!witness_acct) {
                     auto& acc_idx = get_index<account_index>().indices().get<by_name>();
-                    elog("CRITICAL: Witness ${w} account object MISSING from database! "
+                    elog("CRITICAL: Validator ${w} account object MISSING from database! "
                          "This is impossible state - shared memory may be corrupted. "
                          "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
                          "account_index_size=${idx_size}",
@@ -2199,11 +2234,11 @@ namespace graphene { namespace chain {
                          ("lc", witness_obj.last_confirmed_block_num)
                          ("idx_size", acc_idx.size()));
                     FC_THROW_EXCEPTION(shared_memory_corruption_exception,
-                              "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected.",
+                              "CRITICAL: Validator ${w} account not found in database! Shared memory corruption suspected.",
                               ("w", witness_owner));
                 }
 
-                if (!(skip & skip_witness_signature))
+                if (!(skip & skip_validator_signature))
                     FC_ASSERT(witness_obj.signing_key ==
                               block_signing_private_key.get_public_key());
             } // op_guard released here
@@ -2287,7 +2322,7 @@ namespace graphene { namespace chain {
             pending_block.previous = head_block_id();
             pending_block.timestamp = when;
             pending_block.transaction_merkle_root = pending_block.calculate_merkle_root();
-            pending_block.witness = witness_owner;
+            pending_block.validator = witness_owner;
 
             const auto &witness = get_witness(witness_owner);
 
@@ -2307,7 +2342,7 @@ namespace graphene { namespace chain {
             bool is_emergency_committee =
                 has_hardfork(CHAIN_HARDFORK_12) &&
                 dgp_block.emergency_consensus_active &&
-                witness_owner == CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                witness_owner == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT;
 
             if (!is_emergency_committee) {
                 if (hfp.current_hardfork_version <
@@ -2332,7 +2367,7 @@ namespace graphene { namespace chain {
                 }
             }
 
-            if (!(skip & skip_witness_signature)) {
+            if (!(skip & skip_validator_signature)) {
                 pending_block.sign(block_signing_private_key);
             }
 
@@ -2465,12 +2500,12 @@ namespace graphene { namespace chain {
             CHAIN_TRY_NOTIFY(on_applied_transaction, tx)
         }
 
-        account_name_type database::get_scheduled_witness(uint32_t slot_num) const {
+        account_name_type database::get_scheduled_validator(uint32_t slot_num) const {
             const dynamic_global_property_object &dpo = get_dynamic_global_properties();
-            const witness_schedule_object &wso = get_witness_schedule_object();
+            const validator_schedule_object &wso = get_validator_schedule_object();
             uint64_t current_aslot = dpo.current_aslot + slot_num;
-            return wso.current_shuffled_witnesses[current_aslot %
-                                                  wso.num_scheduled_witnesses];
+            return wso.current_shuffled_validators[current_aslot %
+                                                  wso.num_scheduled_validators];
         }
 
         fc::time_point_sec database::get_slot_time(uint32_t slot_num) const {
@@ -2554,7 +2589,7 @@ namespace graphene { namespace chain {
                     props.total_vesting_shares += new_vesting;
                 });
 
-                adjust_proxied_witness_votes(to_account, new_vesting.amount);
+                adjust_proxied_validator_votes(to_account, new_vesting.amount);
 
                 return new_vesting;
             }
@@ -2565,7 +2600,7 @@ namespace graphene { namespace chain {
             if ((head_block_num() % CHAIN_BLOCKS_PER_HOUR ) != 0) return;
             uint32_t bandwidth_reserve_candidates = 1;
             const auto &gprops = get_dynamic_global_properties();
-            const witness_schedule_object &consensus = get_witness_schedule_object();
+            const validator_schedule_object &consensus = get_validator_schedule_object();
 
             const auto &widx = get_index<account_index>().indices().get<by_id>();
             for (auto itr = widx.begin(); itr != widx.end(); ++itr) {
@@ -2648,7 +2683,7 @@ namespace graphene { namespace chain {
 
         void database::committee_processing() {
             const auto &props = get_dynamic_global_properties();
-            const witness_schedule_object &consensus = get_witness_schedule_object();
+            const validator_schedule_object &consensus = get_validator_schedule_object();
             const auto &idx0 = get_index<committee_request_index>().indices().get<by_status>();
             auto itr0 = idx0.lower_bound(0);
             while (itr0 != idx0.end() &&
@@ -2762,9 +2797,9 @@ namespace graphene { namespace chain {
         }
 
         void database::update_witness_schedule() {
-            if ((head_block_num() % ( CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT ) ) != 0) return;
+            if ((head_block_num() % ( CHAIN_MAX_VALIDATORS * CHAIN_BLOCK_VALIDATOR_REPEAT ) ) != 0) return;
 
-            if (_debug_block_production) ilog("DEBUG_CRASH: update_witness_schedule ENTER at block ${b}", ("b", head_block_num()));
+            if (_debug_block_production) ilog("DEBUG_CRASH: update_validator_schedule ENTER at block ${b}", ("b", head_block_num()));
 
             if(has_hardfork(CHAIN_HARDFORK_6)){//remove expired witness penalty
                 const auto &idx = get_index<witness_penalty_expire_index>().indices().get<by_expiration>();
@@ -2775,7 +2810,7 @@ namespace graphene { namespace chain {
                     ++itr;
                     if(current.expires <= head_block_time()){
                         const auto &witness_obj = get_witness(current.witness);
-                        modify(witness_obj, [&](witness_object &w) {
+                        modify(witness_obj, [&](validator_object &w) {
                             w.penalty_percent-=current.penalty_percent;
                             w.counted_votes=(fc::uint128_t(w.votes) - (fc::uint128_t(w.votes) * std::min(w.penalty_percent,uint32_t(CHAIN_100_PERCENT)) / CHAIN_100_PERCENT )).to_uint64();
                         });
@@ -2785,19 +2820,19 @@ namespace graphene { namespace chain {
             }
 
             vector<account_name_type> active_witnesses;
-            active_witnesses.reserve(CHAIN_MAX_WITNESSES);
+            active_witnesses.reserve(CHAIN_MAX_VALIDATORS);
 
             vector<account_name_type> support_witnesses;
-            support_witnesses.reserve(CHAIN_MAX_WITNESSES);
+            support_witnesses.reserve(CHAIN_MAX_VALIDATORS);
 
             /// Add the highest voted witnesses
-            flat_set<witness_id_type> selected_voted;
-            selected_voted.reserve(CHAIN_MAX_TOP_WITNESSES);
+            flat_set<validator_id_type> selected_voted;
+            selected_voted.reserve(CHAIN_MAX_TOP_VALIDATORS);
 
-            const auto &widx = get_index<witness_index>().indices().get<by_counted_vote_name>();
+            const auto &widx = get_index<validator_index>().indices().get<by_counted_vote_name>();
             for (auto itr = widx.begin();
                  itr != widx.end() &&
-                 selected_voted.size() < CHAIN_MAX_TOP_WITNESSES;
+                 selected_voted.size() < CHAIN_MAX_TOP_VALIDATORS;
                  ++itr) {
                 if (itr->signing_key == public_key_type()) {
                     continue;
@@ -2805,23 +2840,23 @@ namespace graphene { namespace chain {
                 // Exclude committee/emergency witness from top witness selection.
                 // It fills gaps via the hybrid schedule, not through normal voting.
                 if (has_hardfork(CHAIN_HARDFORK_12) &&
-                    itr->owner == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                    itr->owner == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) {
                     continue;
                 }
                 selected_voted.insert(itr->id);
                 active_witnesses.push_back(itr->owner);
-                modify(*itr, [&](witness_object &wo) { wo.schedule = witness_object::top; });
+                modify(*itr, [&](validator_object &wo) { wo.schedule = validator_object::top; });
             }
 
             /// Add the running witnesses in the lead
-            const witness_schedule_object &wso = get_witness_schedule_object();
+            const validator_schedule_object &wso = get_validator_schedule_object();
             fc::uint128_t new_virtual_time = wso.current_virtual_time;
-            const auto &schedule_idx = get_index<witness_index>().indices().get<by_schedule_time>();
+            const auto &schedule_idx = get_index<validator_index>().indices().get<by_schedule_time>();
             auto sitr = schedule_idx.begin();
             vector<decltype(sitr)> processed_witnesses;
             for (auto witness_count = selected_voted.size();
                  sitr != schedule_idx.end() &&
-                 witness_count < CHAIN_MAX_WITNESSES;
+                 witness_count < CHAIN_MAX_VALIDATORS;
                  ++sitr) {
                 new_virtual_time = sitr->virtual_scheduled_time; /// everyone advances to at least this time
                 processed_witnesses.push_back(sitr);
@@ -2832,13 +2867,13 @@ namespace graphene { namespace chain {
 
                 // Exclude committee/emergency witness from support selection
                 if (has_hardfork(CHAIN_HARDFORK_12) &&
-                    sitr->owner == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                    sitr->owner == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) {
                     continue;
                 }
 
                 if (selected_voted.find(sitr->id) == selected_voted.end()) {
                     support_witnesses.push_back(sitr->owner);
-                    modify(*sitr, [&](witness_object &wo) { wo.schedule = witness_object::support; });
+                    modify(*sitr, [&](validator_object &wo) { wo.schedule = validator_object::support; });
                     ++witness_count;
                 }
             }
@@ -2854,7 +2889,7 @@ namespace graphene { namespace chain {
                     reset_virtual_time = true; /// overflow
                     break;
                 }
-                modify(*(*itr), [&](witness_object &wo) {
+                modify(*(*itr), [&](validator_object &wo) {
                     wo.virtual_position = fc::uint128_t();
                     wo.virtual_last_update = new_virtual_time;
                     wo.virtual_scheduled_time = new_virtual_scheduled_time;
@@ -2865,8 +2900,8 @@ namespace graphene { namespace chain {
                 reset_virtual_schedule_time();
             }
 
-            FC_ASSERT( ( active_witnesses.size() + support_witnesses.size() ) <= CHAIN_MAX_WITNESSES, "Number of active witnesses does cannot be more CHAIN_MAX_WITNESSES",
-                    ("active_witnesses.size()", active_witnesses.size())("support_witnesses.size()", support_witnesses.size())("CHAIN_MAX_WITNESSES", CHAIN_MAX_WITNESSES));
+            FC_ASSERT( ( active_witnesses.size() + support_witnesses.size() ) <= CHAIN_MAX_VALIDATORS, "Number of active validators cannot be more than CHAIN_MAX_VALIDATORS",
+                    ("active_validators.size()", active_witnesses.size())("support_validators.size()", support_witnesses.size())("CHAIN_MAX_VALIDATORS", CHAIN_MAX_VALIDATORS));
 
             auto majority_version = wso.majority_version;
 
@@ -2875,17 +2910,17 @@ namespace graphene { namespace chain {
 
             const dynamic_global_property_object &_dgp = get_dynamic_global_properties();
 
-            for (uint32_t i = 0; i < wso.num_scheduled_witnesses; i+=CHAIN_BLOCK_WITNESS_REPEAT) {
-                auto wname = wso.current_shuffled_witnesses[i];
+            for (uint32_t i = 0; i < wso.num_scheduled_validators; i+=CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                auto wname = wso.current_shuffled_validators[i];
 
                 // During emergency mode, exclude committee witness from hardfork vote tally.
                 // Committee occupies multiple schedule slots but is a single entity with
                 // default (0.0.0) version fields. Counting it would:
                 //   - Inflate its vote weight (counted once per slot, not once per witness)
                 //   - Drag majority_version to 0.0.0
-                //   - Block any hardfork from reaching CHAIN_HARDFORK_REQUIRED_WITNESSES
+                //   - Block any hardfork from reaching CHAIN_HARDFORK_REQUIRED_VALIDATORS
                 if (has_hardfork(CHAIN_HARDFORK_12) && _dgp.emergency_consensus_active &&
-                    wname == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                    wname == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) {
                     continue;
                 }
 
@@ -2914,7 +2949,7 @@ namespace graphene { namespace chain {
                 witnesses_on_version += ver_itr->second;
 
                 if (witnesses_on_version >=
-                    CHAIN_HARDFORK_REQUIRED_WITNESSES) {
+                    CHAIN_HARDFORK_REQUIRED_VALIDATORS) {
                     majority_version = ver_itr->first;
                     break;
                 }
@@ -2925,7 +2960,7 @@ namespace graphene { namespace chain {
             auto hf_itr = hardfork_version_votes.begin();
 
             while (hf_itr != hardfork_version_votes.end()) {
-                if (hf_itr->second >= CHAIN_HARDFORK_REQUIRED_WITNESSES) {
+                if (hf_itr->second >= CHAIN_HARDFORK_REQUIRED_VALIDATORS) {
                     const auto &hfp = get_hardfork_property_object();
                     if (hfp.next_hardfork != std::get<0>(hf_itr->first) ||
                         hfp.next_hardfork_time !=
@@ -2952,8 +2987,8 @@ namespace graphene { namespace chain {
             if (_debug_block_production) ilog("DEBUG_CRASH: schedule normal build: active=${a} support=${s}",
                  ("a", active_witnesses.size())("s", support_witnesses.size()));
 
-            modify(wso, [&](witness_schedule_object &_wso) {
-                // active witnesses has exactly CHAIN_MAX_WITNESSES elements, asserted above
+            modify(wso, [&](validator_schedule_object &_wso) {
+                // active witnesses has exactly CHAIN_MAX_VALIDATORS elements, asserted above
                 size_t j = 0;
                 size_t support_witnesses_count = support_witnesses.size();
                 size_t active_witnesses_count = active_witnesses.size();
@@ -2962,32 +2997,32 @@ namespace graphene { namespace chain {
                 {
                     if(active_witnesses_count > 0){
                         --active_witnesses_count;
-                        for(int repeat=0; repeat < CHAIN_BLOCK_WITNESS_REPEAT; ++repeat){
-                            _wso.current_shuffled_witnesses[j] = active_witnesses[i];
+                        for(int repeat=0; repeat < CHAIN_BLOCK_VALIDATOR_REPEAT; ++repeat){
+                            _wso.current_shuffled_validators[j] = active_witnesses[i];
                             ++j;
                         }
                     }
                     if(support_witnesses_count > 0){
                         --support_witnesses_count;
-                        for(int repeat=0; repeat < CHAIN_BLOCK_WITNESS_REPEAT; ++repeat){
-                            _wso.current_shuffled_witnesses[j] = support_witnesses[i];
+                        for(int repeat=0; repeat < CHAIN_BLOCK_VALIDATOR_REPEAT; ++repeat){
+                            _wso.current_shuffled_validators[j] = support_witnesses[i];
                             ++j;
                         }
                     }
                 }
 
-                for (size_t i = sum_witnesses_count * CHAIN_BLOCK_WITNESS_REPEAT;
-                     i < ( CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT ); i++) {
-                    _wso.current_shuffled_witnesses[i] = account_name_type();
+                for (size_t i = sum_witnesses_count * CHAIN_BLOCK_VALIDATOR_REPEAT;
+                     i < ( CHAIN_MAX_VALIDATORS * CHAIN_BLOCK_VALIDATOR_REPEAT ); i++) {
+                    _wso.current_shuffled_validators[i] = account_name_type();
                 }
 
-                _wso.num_scheduled_witnesses = std::max<uint8_t>(sum_witnesses_count * CHAIN_BLOCK_WITNESS_REPEAT , 1);
+                _wso.num_scheduled_validators = std::max<uint8_t>(sum_witnesses_count * CHAIN_BLOCK_VALIDATOR_REPEAT , 1);
 
                 /* // VIZ remove randomization
                 /// shuffle current shuffled witnesses
                 auto now_hi =
                         uint64_t(head_block_time().sec_since_epoch()) << 32;
-                for (uint32_t i = 0; i < _wso.num_scheduled_witnesses; ++i) {
+                for (uint32_t i = 0; i < _wso.num_scheduled_validators; ++i) {
                     /// High performance random generator
                     /// http://xorshift.di.unimi.it/
                     uint64_t k = now_hi + uint64_t(i) * 2685821657736338717ULL;
@@ -2996,21 +3031,21 @@ namespace graphene { namespace chain {
                     k ^= (k >> 27);
                     k *= 2685821657736338717ULL;
 
-                    uint32_t jmax = _wso.num_scheduled_witnesses - i;
+                    uint32_t jmax = _wso.num_scheduled_validators - i;
                     uint32_t j = i + k % jmax;
-                    std::swap(_wso.current_shuffled_witnesses[i],
-                            _wso.current_shuffled_witnesses[j]);
+                    std::swap(_wso.current_shuffled_validators[i],
+                            _wso.current_shuffled_validators[j]);
                 }
                 */
 
                 _wso.current_virtual_time = new_virtual_time;
                 _wso.next_shuffle_block_num =
-                        head_block_num() + _wso.num_scheduled_witnesses;
+                        head_block_num() + _wso.num_scheduled_validators;
                 _wso.majority_version = majority_version;
             });
 
             if (_debug_block_production) ilog("DEBUG_CRASH: schedule normal build done, num_scheduled=${n}",
-                 ("n", wso.num_scheduled_witnesses));
+                 ("n", wso.num_scheduled_validators));
 
             // === HARDFORK 12: EMERGENCY HYBRID SCHEDULE ===
             // Must run BEFORE update_median_witness_props() because the normal
@@ -3020,29 +3055,29 @@ namespace graphene { namespace chain {
 
             if (has_hardfork(CHAIN_HARDFORK_12) && emergency_dgp.emergency_consensus_active) {
                 if (_debug_block_production) ilog("DEBUG_CRASH: hybrid override ENTER");
-                const witness_schedule_object &emergency_wso = get_witness_schedule_object();
+                const validator_schedule_object &emergency_wso = get_validator_schedule_object();
                 uint32_t real_witness_slots = 0;
                 uint32_t committee_slots = 0;
 
-                modify(emergency_wso, [&](witness_schedule_object &_wso) {
+                modify(emergency_wso, [&](validator_schedule_object &_wso) {
 
                     // First pass: replace unavailable/empty slots with committee
-                    // Iterate the FULL schedule (CHAIN_MAX_WITNESSES), not just
+                    // Iterate the FULL schedule (CHAIN_MAX_VALIDATORS), not just
                     // num_scheduled_witnesses, because the normal schedule may have
-                    // set num_scheduled_witnesses < CHAIN_MAX_WITNESSES when fewer
+                    // set num_scheduled_witnesses < CHAIN_MAX_VALIDATORS when fewer
                     // witnesses have valid signing keys.
-                    for (int i = 0; i < CHAIN_MAX_WITNESSES;
-                         i += CHAIN_BLOCK_WITNESS_REPEAT) {
+                    for (int i = 0; i < CHAIN_MAX_VALIDATORS;
+                         i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
                         // Read from slot i, but only if within current num_scheduled_witnesses
-                        const auto &wname = (i < _wso.num_scheduled_witnesses)
-                            ? _wso.current_shuffled_witnesses[i]
+                        const auto &wname = (i < _wso.num_scheduled_validators)
+                            ? _wso.current_shuffled_validators[i]
                             : account_name_type();
 
                         if (wname == account_name_type()) {
                             // Empty slot -> assign committee
-                            for (int j = 0; j < CHAIN_BLOCK_WITNESS_REPEAT; ++j) {
-                                _wso.current_shuffled_witnesses[i+j] =
-                                    CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                            for (int j = 0; j < CHAIN_BLOCK_VALIDATOR_REPEAT; ++j) {
+                                _wso.current_shuffled_validators[i+j] =
+                                    CHAIN_EMERGENCY_VALIDATOR_ACCOUNT;
                             }
                             committee_slots++;
                             continue;
@@ -3053,9 +3088,9 @@ namespace graphene { namespace chain {
                             w->signing_key != public_key_type();
 
                         if (!witness_available) {
-                            for (int j = 0; j < CHAIN_BLOCK_WITNESS_REPEAT; ++j) {
-                                _wso.current_shuffled_witnesses[i+j] =
-                                    CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                            for (int j = 0; j < CHAIN_BLOCK_VALIDATOR_REPEAT; ++j) {
+                                _wso.current_shuffled_validators[i+j] =
+                                    CHAIN_EMERGENCY_VALIDATOR_ACCOUNT;
                             }
                             committee_slots++;
                         } else {
@@ -3063,20 +3098,20 @@ namespace graphene { namespace chain {
                         }
                     }
 
-                    // Expand num_scheduled_witnesses to CHAIN_MAX_WITNESSES so that
+                    // Expand num_scheduled_witnesses to CHAIN_MAX_VALIDATORS so that
                     // committee slots are included in the production cycle.
-                    _wso.num_scheduled_witnesses = CHAIN_MAX_WITNESSES * CHAIN_BLOCK_WITNESS_REPEAT;
+                    _wso.num_scheduled_validators = CHAIN_MAX_VALIDATORS * CHAIN_BLOCK_VALIDATOR_REPEAT;
                     _wso.next_shuffle_block_num =
-                        head_block_num() + _wso.num_scheduled_witnesses;
+                        head_block_num() + _wso.num_scheduled_validators;
 
-                    dlog(DB_LOG_YELLOW "Emergency hybrid schedule: ${r} real witness slots, "
+                    dlog(DB_LOG_YELLOW "Emergency hybrid schedule: ${r} real validator slots, "
                          "${c} committee slots" DB_LOG_RESET,
                          ("r", real_witness_slots)
                          ("c", committee_slots));
                 });
 
                 if (_debug_block_production) ilog("DEBUG_CRASH: hybrid override done, real=${r} committee=${c} num_scheduled=${n}",
-                     ("r", real_witness_slots)("c", committee_slots)("n", emergency_wso.num_scheduled_witnesses));
+                     ("r", real_witness_slots)("c", committee_slots)("n", emergency_wso.num_scheduled_validators));
 
                 // Sync committee witness props/hardfork-vote with the latest median
                 // and current hardfork state. This runs every schedule update so that
@@ -3084,11 +3119,11 @@ namespace graphene { namespace chain {
                 // committee's props stay in sync and don't skew the next median
                 // computation. Also keeps hardfork vote aligned with the currently
                 // applied on-chain version.
-                auto committee_wit_itr = get_index<witness_index>().indices().get<by_name>().find(CHAIN_EMERGENCY_WITNESS_ACCOUNT);
-                if (committee_wit_itr != get_index<witness_index>().indices().get<by_name>().end()) {
+                auto committee_wit_itr = get_index<validator_index>().indices().get<by_name>().find(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT);
+                if (committee_wit_itr != get_index<validator_index>().indices().get<by_name>().end()) {
                     const auto &latest_hfp = get_hardfork_property_object();
-                    const auto &latest_wso = get_witness_schedule_object();
-                    modify(*committee_wit_itr, [&](witness_object &w) {
+                    const auto &latest_wso = get_validator_schedule_object();
+                    modify(*committee_wit_itr, [&](validator_object &w) {
                         w.props = latest_wso.median_props;
                         w.running_version = CHAIN_VERSION;
                         w.hardfork_version_vote = latest_hfp.current_hardfork_version;
@@ -3100,7 +3135,7 @@ namespace graphene { namespace chain {
                 // EXIT CONDITION: enough real witnesses have re-enabled.
                 // When >= 75% of schedule slots are real witnesses (not committee),
                 // the network has recovered and can sustain normal consensus.
-                uint32_t exit_threshold = (CHAIN_MAX_WITNESSES * CHAIN_IRREVERSIBLE_THRESHOLD) / CHAIN_100_PERCENT;
+                uint32_t exit_threshold = (CHAIN_MAX_VALIDATORS * CHAIN_IRREVERSIBLE_THRESHOLD) / CHAIN_100_PERCENT;
                 if (real_witness_slots >= exit_threshold) {
                     modify(emergency_dgp, [&](dynamic_global_property_object &_dgp) {
                         _dgp.emergency_consensus_active = false;
@@ -3110,7 +3145,7 @@ namespace graphene { namespace chain {
                     _fork_db.set_emergency_mode(false);
 
                     ilog("EMERGENCY CONSENSUS MODE deactivated at block ${b}. "
-                         "${r} real witnesses active (threshold: ${t}).",
+                         "${r} real validators active (threshold: ${t}).",
                          ("b", head_block_num())
                          ("r", real_witness_slots)
                          ("t", exit_threshold));
@@ -3121,19 +3156,19 @@ namespace graphene { namespace chain {
         }
 
         void database::update_median_witness_props() {
-            const witness_schedule_object &wso = get_witness_schedule_object();
+            const validator_schedule_object &wso = get_validator_schedule_object();
             const dynamic_global_property_object &median_dgp = get_dynamic_global_properties();
 
             /// fetch all witness objects (excluding committee during emergency)
-            vector<const witness_object *> active;
-            active.reserve(wso.num_scheduled_witnesses);
-            for (int i = 0; i < wso.num_scheduled_witnesses; i+=CHAIN_BLOCK_WITNESS_REPEAT) {
-                const auto &wname = wso.current_shuffled_witnesses[i];
+            vector<const validator_object *> active;
+            active.reserve(wso.num_scheduled_validators);
+            for (int i = 0; i < wso.num_scheduled_validators; i+=CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                const auto &wname = wso.current_shuffled_validators[i];
                 // During emergency mode, exclude committee witness from median computation.
                 // Committee has default chain_properties (zero fees, zero sizes) and
                 // occupies multiple schedule slots, which would skew the median.
                 if (has_hardfork(CHAIN_HARDFORK_12) && median_dgp.emergency_consensus_active &&
-                    wname == CHAIN_EMERGENCY_WITNESS_ACCOUNT) {
+                    wname == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) {
                     continue;
                 }
                 active.push_back(&get_witness(wname));
@@ -3173,14 +3208,14 @@ namespace graphene { namespace chain {
             calc_median(&chain_properties_init::vote_accounting_min_rshares);
             calc_median(&chain_properties_init::committee_request_approve_min_percent);
             if(has_hardfork(CHAIN_HARDFORK_4)){
-                calc_median(&chain_properties_hf4::inflation_witness_percent);
+                calc_median(&chain_properties_hf4::inflation_validator_percent);
                 calc_median(&chain_properties_hf4::inflation_ratio_committee_vs_reward_fund);
                 calc_median(&chain_properties_hf4::inflation_recalc_period);
             }
             if(has_hardfork(CHAIN_HARDFORK_6)){
                 calc_median(&chain_properties_hf6::data_operations_cost_additional_bandwidth);
-                calc_median(&chain_properties_hf6::witness_miss_penalty_percent);
-                calc_median(&chain_properties_hf6::witness_miss_penalty_duration);
+                calc_median(&chain_properties_hf6::validator_miss_penalty_percent);
+                calc_median(&chain_properties_hf6::validator_miss_penalty_duration);
             }
             if(has_hardfork(CHAIN_HARDFORK_9)){
                 calc_median(&chain_properties_hf9::create_invite_min_balance);
@@ -3188,14 +3223,14 @@ namespace graphene { namespace chain {
                 calc_median(&chain_properties_hf9::create_paid_subscription_fee);
                 calc_median(&chain_properties_hf9::account_on_sale_fee);
                 calc_median(&chain_properties_hf9::subaccount_on_sale_fee);
-                calc_median(&chain_properties_hf9::witness_declaration_fee);
+                calc_median(&chain_properties_hf9::validator_declaration_fee);
                 calc_median(&chain_properties_hf9::withdraw_intervals);
             }
             if(has_hardfork(CHAIN_HARDFORK_13)){
                 calc_median(&chain_properties_hf13::distribution_epoch_length);
             }
 
-            modify(wso, [&](witness_schedule_object &_wso) {
+            modify(wso, [&](validator_schedule_object &_wso) {
                 _wso.median_props = median_props;
             });
 
@@ -3204,7 +3239,7 @@ namespace graphene { namespace chain {
             });
         }
 
-        void database::adjust_proxied_witness_votes(const account_object &a,
+        void database::adjust_proxied_validator_votes(const account_object &a,
                 const std::array<share_type,
                         CHAIN_MAX_PROXY_RECURSION_DEPTH + 1> &delta,
                 int depth) {
@@ -3223,18 +3258,18 @@ namespace graphene { namespace chain {
                     }
                 });
 
-                adjust_proxied_witness_votes(proxy, delta, depth + 1);
+                adjust_proxied_validator_votes(proxy, delta, depth + 1);
             } else {
                 share_type total_delta = 0;
                 for (int i = CHAIN_MAX_PROXY_RECURSION_DEPTH - depth;
                      i >= 0; --i) {
                     total_delta += delta[i];
                 }
-                adjust_witness_votes(a, total_delta);
+                adjust_validator_votes(a, total_delta);
             }
         }
 
-        void database::adjust_proxied_witness_votes(const account_object &a, share_type delta, int depth) {
+        void database::adjust_proxied_validator_votes(const account_object &a, share_type delta, int depth) {
             if (a.proxy != CHAIN_PROXY_TO_SELF_ACCOUNT) {
                 /// nested proxies are not supported, vote will not propagate
                 if (depth >= CHAIN_MAX_PROXY_RECURSION_DEPTH) {
@@ -3247,41 +3282,41 @@ namespace graphene { namespace chain {
                     a.proxied_vsf_votes[depth] += delta;
                 });
 
-                adjust_proxied_witness_votes(proxy, delta, depth + 1);
+                adjust_proxied_validator_votes(proxy, delta, depth + 1);
             } else {
-                adjust_witness_votes(a, delta);
+                adjust_validator_votes(a, delta);
             }
         }
 
-        void database::adjust_witness_votes(const account_object &a, share_type delta) {
+        void database::adjust_validator_votes(const account_object &a, share_type delta) {
             if(has_hardfork(CHAIN_HARDFORK_5)){//need to clear witness vote weight
-                if(a.witnesses_voted_for > 0){
-                    share_type fair_delta = delta / a.witnesses_voted_for;
+                if(a.validators_voted_for > 0){
+                    share_type fair_delta = delta / a.validators_voted_for;
                     modify(a, [&](account_object &acc) {
-                        acc.witnesses_vote_weight += fair_delta;
+                        acc.validators_vote_weight += fair_delta;
                     });
 
                     const auto &vidx = get_index<witness_vote_index>().indices().get<by_account_witness>();
-                    auto itr = vidx.lower_bound(boost::make_tuple(a.id, witness_id_type()));
+                    auto itr = vidx.lower_bound(boost::make_tuple(a.id, validator_id_type()));
                     while (itr != vidx.end() && itr->account == a.id) {
-                        adjust_witness_vote(get(itr->witness), fair_delta);
+                        adjust_validator_vote(get(itr->witness), fair_delta);
                         ++itr;
                     }
                 }
             }
             else{
                 const auto &vidx = get_index<witness_vote_index>().indices().get<by_account_witness>();
-                auto itr = vidx.lower_bound(boost::make_tuple(a.id, witness_id_type()));
+                auto itr = vidx.lower_bound(boost::make_tuple(a.id, validator_id_type()));
                 while (itr != vidx.end() && itr->account == a.id) {
-                    adjust_witness_vote(get(itr->witness), delta);
+                    adjust_validator_vote(get(itr->witness), delta);
                     ++itr;
                 }
             }
         }
 
-        void database::adjust_witness_vote(const witness_object &witness, share_type delta) {
-            const witness_schedule_object &wso = get_witness_schedule_object();
-            modify(witness, [&](witness_object &w) {
+        void database::adjust_validator_vote(const validator_object &witness, share_type delta) {
+            const validator_schedule_object &wso = get_validator_schedule_object();
+            modify(witness, [&](validator_object &w) {
                 auto delta_pos = w.counted_votes.value * (wso.current_virtual_time -
                                                   w.virtual_last_update);
                 w.virtual_position += delta_pos;
@@ -3316,9 +3351,9 @@ namespace graphene { namespace chain {
             });
         }
 
-        void database::clear_witness_votes(const account_object &a) {
+        void database::clear_validator_votes(const account_object &a) {
             const auto &vidx = get_index<witness_vote_index>().indices().get<by_account_witness>();
-            auto itr = vidx.lower_bound(boost::make_tuple(a.id, witness_id_type()));
+            auto itr = vidx.lower_bound(boost::make_tuple(a.id, validator_id_type()));
             while (itr != vidx.end() && itr->account == a.id) {
                 const auto &current = *itr;
                 ++itr;
@@ -3326,9 +3361,9 @@ namespace graphene { namespace chain {
             }
 
             modify(a, [&](account_object &acc) {
-                acc.witnesses_voted_for = 0;
+                acc.validators_voted_for = 0;
                 if(has_hardfork(CHAIN_HARDFORK_5)){//need to clear witness vote weight
-                    acc.witnesses_vote_weight = 0;
+                    acc.validators_vote_weight = 0;
                 }
             });
         }
@@ -3518,7 +3553,7 @@ namespace graphene { namespace chain {
                                 a.vesting_shares.amount += to_deposit;
                             });
 
-                            adjust_proxied_witness_votes(to_account, to_deposit);
+                            adjust_proxied_validator_votes(to_account, to_deposit);
 
                             push_virtual_operation(fill_vesting_withdraw_operation(from_account.name, to_account.name, asset(to_deposit, SHARES_SYMBOL), asset(to_deposit, SHARES_SYMBOL)));
                         }
@@ -3586,7 +3621,7 @@ namespace graphene { namespace chain {
                 });
 
                 if (to_withdraw > 0) {
-                    adjust_proxied_witness_votes(from_account, -to_withdraw);
+                    adjust_proxied_validator_votes(from_account, -to_withdraw);
                     push_virtual_operation(fill_vesting_withdraw_operation(from_account.name, from_account.name, asset(to_withdraw, SHARES_SYMBOL), converted_tokens));
                 }
             }
@@ -3617,7 +3652,7 @@ namespace graphene { namespace chain {
 
                     asset total_payout;
                     if (reward_tokens > 0) {
-                        const witness_schedule_object &props = get_witness_schedule_object();
+                        const validator_schedule_object &props = get_validator_schedule_object();
                         auto consensus_curation_percent=std::min(content.curation_percent,props.median_props.max_curation_percent);
                         consensus_curation_percent=std::max(consensus_curation_percent,props.median_props.min_curation_percent);
                         share_type curation_tokens = ((reward_tokens *
@@ -3754,11 +3789,11 @@ namespace graphene { namespace chain {
 
         void database::process_inflation_recalc(){
             const auto &props = get_dynamic_global_properties();
-            const witness_schedule_object &consensus = get_witness_schedule_object();
+            const validator_schedule_object &consensus = get_validator_schedule_object();
             if(props.inflation_calc_block_num + consensus.median_props.inflation_recalc_period < props.head_block_number){
                 modify( props, [&]( dynamic_global_property_object& p ){
                    p.inflation_calc_block_num = props.head_block_number;
-                   p.inflation_witness_percent = consensus.median_props.inflation_witness_percent;
+                   p.inflation_validator_percent = consensus.median_props.inflation_validator_percent;
                    p.inflation_ratio = consensus.median_props.inflation_ratio_committee_vs_reward_fund;
                 });
             }
@@ -3768,7 +3803,7 @@ namespace graphene { namespace chain {
             const auto &props = get_dynamic_global_properties();
             if(has_hardfork(CHAIN_HARDFORK_11)){//new emission model (fixed amount of digital asset per block)
                 share_type digital_asset_per_block = int64_t( CHAIN_DIGITAL_ASSET_ISSUED_PER_BLOCK );
-                auto witness_reward = ( digital_asset_per_block * props.inflation_witness_percent ) / CHAIN_100_PERCENT;
+                auto witness_reward = ( digital_asset_per_block * props.inflation_validator_percent ) / CHAIN_100_PERCENT;
                 auto ratio_reward = digital_asset_per_block - witness_reward;
                 auto committee_part = ( ratio_reward * props.inflation_ratio ) / CHAIN_100_PERCENT;
                 auto reward_fund_part = ratio_reward - committee_part;
@@ -3780,11 +3815,11 @@ namespace graphene { namespace chain {
                     p.current_supply += asset( digital_asset_per_block, TOKEN_SYMBOL );
                 });
 
-                const auto& cwit = get_witness( props.current_witness );
+                const auto& cwit = get_witness( props.current_validator );
                 const auto* witness_account = find_account(cwit.owner);
                 if (!witness_account) {
                     auto& acc_idx = get_index<account_index>().indices().get<by_name>();
-                    elog("CRITICAL: Witness ${w} account object MISSING from database! "
+                    elog("CRITICAL: Validator ${w} account object MISSING from database! "
                          "This is impossible state - shared memory may be corrupted. "
                          "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
                          "account_index_size=${idx_size}",
@@ -3792,7 +3827,7 @@ namespace graphene { namespace chain {
                          ("p", cwit.penalty_percent)("lc", cwit.last_confirmed_block_num)
                          ("idx_size", acc_idx.size()));
                     FC_THROW_EXCEPTION(shared_memory_corruption_exception,
-                              "CRITICAL: Witness ${w} account not found in database! Shared memory corruption suspected.",
+                              "CRITICAL: Validator ${w} account not found in database! Shared memory corruption suspected.",
                               ("w", cwit.owner));
                 }
                 if (has_hardfork(CHAIN_HARDFORK_13) && cwit.sharing_rate > 0) {
@@ -3806,17 +3841,17 @@ namespace graphene { namespace chain {
 
                     if (validator_token > 0) {
                         auto validator_vshares = create_vesting(*witness_account, asset(validator_token, TOKEN_SYMBOL));
-                        push_virtual_operation(witness_reward_operation(cwit.owner, validator_vshares));
+                        push_virtual_operation(validator_reward_operation(cwit.owner, validator_vshares));
                     }
 
                     if (stakeholder_token > 0) {
-                        modify(cwit, [&](witness_object& w) {
+                        modify(cwit, [&](validator_object& w) {
                             w.pending_stakeholder_reward += stakeholder_token;
                         });
                     }
                 } else {
                     auto witness_reward_shares = create_vesting(*witness_account, asset(witness_reward, TOKEN_SYMBOL));
-                    push_virtual_operation(witness_reward_operation(cwit.owner, witness_reward_shares));
+                    push_virtual_operation(validator_reward_operation(cwit.owner, witness_reward_shares));
                 }
             }
             else{
@@ -3836,7 +3871,7 @@ namespace graphene { namespace chain {
                 share_type inflation_per_block = inflation_per_year / int64_t( CHAIN_BLOCKS_PER_YEAR );
 
                 if(has_hardfork(CHAIN_HARDFORK_4)){//consensus inflation model
-                    auto witness_reward = ( inflation_per_block * props.inflation_witness_percent ) / CHAIN_100_PERCENT;
+                    auto witness_reward = ( inflation_per_block * props.inflation_validator_percent ) / CHAIN_100_PERCENT;
                     auto inflation_ratio_reward = inflation_per_block - witness_reward;
                     auto committee_reward = ( inflation_ratio_reward * props.inflation_ratio ) / CHAIN_100_PERCENT;
                     auto content_reward = inflation_ratio_reward - committee_reward;
@@ -3849,11 +3884,11 @@ namespace graphene { namespace chain {
                         p.current_supply += asset( inflation_per_block, TOKEN_SYMBOL );
                     });
 
-                    const auto& cwit = get_witness( props.current_witness );
+                    const auto& cwit = get_witness( props.current_validator );
                     const auto* witness_account = find_account(cwit.owner);
                     if (!witness_account) {
                         auto& acc_idx = get_index<account_index>().indices().get<by_name>();
-                        elog("CRITICAL: Witness ${w} account object MISSING from database (HF4 path)! "
+                        elog("CRITICAL: Validator ${w} account object MISSING from database (HF4 path)! "
                              "This is impossible state - shared memory may be corrupted. "
                              "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
                              "account_index_size=${idx_size}",
@@ -3861,11 +3896,11 @@ namespace graphene { namespace chain {
                              ("p", cwit.penalty_percent)("lc", cwit.last_confirmed_block_num)
                              ("idx_size", acc_idx.size()));
                         FC_THROW_EXCEPTION(shared_memory_corruption_exception,
-                                  "CRITICAL: Witness ${w} account not found in database (HF4 path)! Shared memory corruption suspected.",
+                                  "CRITICAL: Validator ${w} account not found in database (HF4 path)! Shared memory corruption suspected.",
                                   ("w", cwit.owner));
                     }
                     auto witness_reward_shares = create_vesting(*witness_account, asset(witness_reward, TOKEN_SYMBOL));
-                    push_virtual_operation(witness_reward_operation(cwit.owner,witness_reward_shares));
+                    push_virtual_operation(validator_reward_operation(cwit.owner,witness_reward_shares));
                 }
                 else{
                     /*ilog( "Inflation status: props.head_block_number=${h1}, inflation_per_year=${h2}, new_supply=${h3}, inflation_per_block=${h4}",
@@ -3876,7 +3911,7 @@ namespace graphene { namespace chain {
                     auto committee_reward = ( inflation_per_block * CHAIN_COMMITTEE_FUND_PERCENT ) / CHAIN_100_PERCENT;
                     auto witness_reward = inflation_per_block - content_reward - vesting_reward - committee_reward; /// Remaining 10% to witness pay
 
-                    const auto& cwit = get_witness( props.current_witness );
+                    const auto& cwit = get_witness( props.current_validator );
 
                     inflation_per_block = content_reward + vesting_reward + committee_reward + witness_reward;
                     /*
@@ -3893,13 +3928,13 @@ namespace graphene { namespace chain {
                     });
 
                     auto witness_reward_shares = create_vesting(get_account(cwit.owner), asset(witness_reward, TOKEN_SYMBOL));
-                    push_virtual_operation(witness_reward_operation(cwit.owner,witness_reward_shares));
+                    push_virtual_operation(validator_reward_operation(cwit.owner,witness_reward_shares));
                 }
             }
         }
 
         void database::process_validator_epoch_distribution() {
-            const auto& wso = get_witness_schedule_object();
+            const auto& wso = get_validator_schedule_object();
             uint32_t epoch_length = wso.median_props.distribution_epoch_length;
 
             // Only run at epoch boundaries; guard against zero (shouldn't happen).
@@ -3911,7 +3946,7 @@ namespace graphene { namespace chain {
             uint32_t epoch_start_block = head_block_num() - epoch_length + 1;
 
             const auto& vote_idx = get_index<witness_vote_index>().indices().get<by_witness_account>();
-            const auto& widx = get_index<witness_index>().indices().get<by_name>();
+            const auto& widx = get_index<validator_index>().indices().get<by_name>();
 
             for (const auto& wit : widx) {
                 if (wit.pending_stakeholder_reward == 0) continue;
@@ -3939,7 +3974,7 @@ namespace graphene { namespace chain {
                         const auto& stakeholder = get(itr->account);
                         // Fair weight: total stake divided by number of validators voted for,
                         // matching the actual per-validator weight used in consensus scheduling.
-                        share_type vote_weight = stakeholder.witness_vote_fair_weight();
+                        share_type vote_weight = stakeholder.validator_vote_fair_weight();
                         if (vote_weight > 0) {
                             uint32_t first_block = (itr->vote_created_block > epoch_start_block)
                                 ? itr->vote_created_block : epoch_start_block;
@@ -3956,8 +3991,8 @@ namespace graphene { namespace chain {
                 if (total_weighted == 0) {
                     // No stakeholders — entire pool returns to validator.
                     auto dust_shares = create_vesting(*witness_account, asset(total_token, TOKEN_SYMBOL));
-                    push_virtual_operation(witness_reward_operation(wit.owner, dust_shares));
-                    modify(wit, [&](witness_object& w) { w.pending_stakeholder_reward = 0; });
+                    push_virtual_operation(validator_reward_operation(wit.owner, dust_shares));
+                    modify(wit, [&](validator_object& w) { w.pending_stakeholder_reward = 0; });
                     continue;
                 }
 
@@ -3980,10 +4015,10 @@ namespace graphene { namespace chain {
                 share_type dust_token = total_token - total_distributed_token;
                 if (dust_token > 0) {
                     auto dust_shares = create_vesting(*witness_account, asset(dust_token, TOKEN_SYMBOL));
-                    push_virtual_operation(witness_reward_operation(wit.owner, dust_shares));
+                    push_virtual_operation(validator_reward_operation(wit.owner, dust_shares));
                 }
 
-                modify(wit, [&](witness_object& w) { w.pending_stakeholder_reward = 0; });
+                modify(wit, [&](validator_object& w) { w.pending_stakeholder_reward = 0; });
             }
         }
 
@@ -4466,9 +4501,9 @@ namespace graphene { namespace chain {
             _my->_evaluator_registry.register_evaluator<account_create_evaluator>();
             _my->_evaluator_registry.register_evaluator<account_update_evaluator>();
             _my->_evaluator_registry.register_evaluator<account_metadata_evaluator>();
-            _my->_evaluator_registry.register_evaluator<witness_update_evaluator>();
-            _my->_evaluator_registry.register_evaluator<account_witness_vote_evaluator>();
-            _my->_evaluator_registry.register_evaluator<account_witness_proxy_evaluator>();
+            _my->_evaluator_registry.register_evaluator<validator_update_evaluator>();
+            _my->_evaluator_registry.register_evaluator<account_validator_vote_evaluator>();
+            _my->_evaluator_registry.register_evaluator<account_validator_proxy_evaluator>();
             _my->_evaluator_registry.register_evaluator<custom_evaluator>();
             _my->_evaluator_registry.register_evaluator<request_account_recovery_evaluator>();
             _my->_evaluator_registry.register_evaluator<recover_account_evaluator>();
@@ -4519,10 +4554,10 @@ namespace graphene { namespace chain {
             add_core_index<dynamic_global_property_index>(*this);
             add_core_index<account_index>(*this);
             add_core_index<account_authority_index>(*this);
-            add_core_index<witness_index>(*this);
+            add_core_index<validator_index>(*this);
             add_core_index<transaction_index>(*this);
             add_core_index<block_summary_index>(*this);
-            add_core_index<witness_schedule_index>(*this);
+            add_core_index<validator_schedule_index>(*this);
             add_core_index<content_index>(*this);
             add_core_index<content_type_index>(*this);
             add_core_index<content_vote_index>(*this);
@@ -4546,7 +4581,7 @@ namespace graphene { namespace chain {
             add_core_index<paid_subscription_index>(*this);
             add_core_index<paid_subscribe_index>(*this);
             add_core_index<witness_penalty_expire_index>(*this);
-            add_core_index<block_post_validation_index>(*this);
+            add_core_index<validator_confirmation_index>(*this);
 
             _plugin_index_signal();
         }
@@ -4651,10 +4686,10 @@ namespace graphene { namespace chain {
                     auth.active.weight_threshold = 1;
                     auth.regular.weight_threshold = 1;
                 });
-                create<witness_object>([&](witness_object &w) {
+                create<validator_object>([&](validator_object &w) {
                     w.owner = CHAIN_COMMITTEE_ACCOUNT;
                     w.signing_key = committee_public_key;
-                    w.schedule = witness_object::top;
+                    w.schedule = validator_object::top;
                 });
 
                 create<account_object>([&](account_object &a) {
@@ -4718,10 +4753,10 @@ namespace graphene { namespace chain {
                             auth.active = auth.master;
                             auth.regular = auth.active;
                         });
-                        create<witness_object>([&](witness_object &w) {
+                        create<validator_object>([&](validator_object &w) {
                             w.owner = name;
                             w.signing_key = initiator_public_key;
-                            w.schedule = witness_object::top;
+                            w.schedule = validator_object::top;
                         });
                     }
                 }
@@ -4757,8 +4792,8 @@ namespace graphene { namespace chain {
                 });
 
                 // Create witness scheduler
-                create<witness_schedule_object>([&](witness_schedule_object &wso) {
-                    wso.current_shuffled_witnesses[0] = CHAIN_COMMITTEE_ACCOUNT;
+                create<validator_schedule_object>([&](validator_schedule_object &wso) {
+                    wso.current_shuffled_validators[0] = CHAIN_COMMITTEE_ACCOUNT;
                 });
 
                 if(CHAIN_STARTUP_HARDFORKS>0){
@@ -4771,14 +4806,14 @@ namespace graphene { namespace chain {
 
                     FC_ASSERT( hardfork_state.current_hardfork_version == _hardfork_versions[n], "Unexpected genesis hardfork state" );
 
-                    const auto& witness_idx = get_index<witness_index>().indices().get<by_id>();
-                    vector<witness_id_type> wit_ids_to_update;
+                    const auto& witness_idx = get_index<validator_index>().indices().get<by_id>();
+                    vector<validator_id_type> wit_ids_to_update;
                     for( auto it=witness_idx.begin(); it!=witness_idx.end(); ++it )
                      wit_ids_to_update.push_back(it->id);
 
-                    for( witness_id_type wit_id : wit_ids_to_update )
+                    for( validator_id_type wit_id : wit_ids_to_update )
                     {
-                        modify( get( wit_id ), [&]( witness_object& wit )
+                        modify( get( wit_id ), [&]( validator_object& wit )
                         {
                             wit.running_version = _hardfork_versions[n];
                             wit.hardfork_version_vote = _hardfork_versions[n];
@@ -4787,14 +4822,14 @@ namespace graphene { namespace chain {
                     }
                 }
                 else{
-                    const auto& witness_idx = get_index<witness_index>().indices().get<by_id>();
-                    vector<witness_id_type> wit_ids_to_update;
+                    const auto& witness_idx = get_index<validator_index>().indices().get<by_id>();
+                    vector<validator_id_type> wit_ids_to_update;
                     for( auto it=witness_idx.begin(); it!=witness_idx.end(); ++it )
                      wit_ids_to_update.push_back(it->id);
 
-                    for( witness_id_type wit_id : wit_ids_to_update )
+                    for( validator_id_type wit_id : wit_ids_to_update )
                     {
-                        modify( get( wit_id ), [&]( witness_object& wit )
+                        modify( get( wit_id ), [&]( validator_object& wit )
                         {
                             wit.running_version = _hardfork_versions[0];
                             wit.hardfork_version_vote = _hardfork_versions[0];
@@ -4804,7 +4839,7 @@ namespace graphene { namespace chain {
                 }
 
                 create<dynamic_global_property_object>([&](dynamic_global_property_object &p) {
-                    p.current_witness = CHAIN_COMMITTEE_ACCOUNT;
+                    p.current_validator = CHAIN_COMMITTEE_ACCOUNT;
                     p.recent_slots_filled = fc::uint128_t::max_value();
                     p.participation_count = 128;
                     p.committee_fund = asset(0, TOKEN_SYMBOL);
@@ -5019,7 +5054,7 @@ namespace graphene { namespace chain {
                                   itr->second, "Block did not match checkpoint", ("checkpoint", *itr)("block_id", next_block.id()));
 
                     if (_checkpoints.rbegin()->first >= block_num) {
-                        skip = skip_witness_signature
+                        skip = skip_validator_signature
                                | skip_transaction_signatures
                                | skip_transaction_dupe_check
                                | skip_fork_db
@@ -5072,16 +5107,16 @@ namespace graphene { namespace chain {
 
                 _validate_block(next_block, skip);
 
-                const witness_object &signing_witness = validate_block_header(skip, next_block);
+                const validator_object &signing_witness = validate_block_header(skip, next_block);
 
                 _current_block_num = next_block_num;
                 _current_trx_in_block = 0;
                 _current_virtual_op = 0;
 
                 /// modify current witness so transaction evaluators can know who included the transaction,
-                /// this is mostly for POW operations which must pay the current_witness
+                /// this is mostly for POW operations which must pay the current_validator
                 modify(gprops, [&](dynamic_global_property_object &dgp) {
-                    dgp.current_witness = next_block.witness;
+                    dgp.current_validator = next_block.validator;
                 });
 
                 if( BOOST_UNLIKELY( next_block_num == 1 ) )//change genesis
@@ -5098,10 +5133,10 @@ namespace graphene { namespace chain {
                 /// parse witness version reporting
                 process_header_extensions(next_block);
 
-                const auto &witness = get_witness(next_block.witness);
+                const auto &witness = get_witness(next_block.validator);
                 FC_ASSERT(witness.running_version >= hardfork_state.current_hardfork_version,
-                        "Block produced by witness that is not running current hardfork",
-                        ("witness", witness)("next_block.witness", next_block.witness)("hardfork_state", hardfork_state)
+                        "Block produced by validator that is not running current hardfork",
+                        ("validator", witness)("next_block.validator", next_block.validator)("hardfork_state", hardfork_state)
                 );
 
                 for (const auto &trx : next_block.transactions) {
@@ -5134,7 +5169,7 @@ namespace graphene { namespace chain {
                 }
                 update_bandwidth_reserve_candidates();
                 update_witness_schedule();
-                if (_debug_block_production) ilog("DEBUG_CRASH: update_witness_schedule done");
+                if (_debug_block_production) ilog("DEBUG_CRASH: update_validator_schedule done");
 
                 if (_debug_block_production) ilog("DEBUG_CRASH: process_funds start");
                 if(has_hardfork(CHAIN_HARDFORK_4)){
@@ -5165,7 +5200,7 @@ namespace graphene { namespace chain {
                 process_hardforks();
 
                 check_block_post_validation_chain();
-                create_block_post_validation(next_block_num,next_block_id,next_block.witness);
+                create_block_post_validation(next_block_num,next_block_id,next_block.validator);
 
                 // notify observers that the block has been applied
                 if (_debug_block_production) ilog("DEBUG_CRASH: notify_applied_block start");
@@ -5197,12 +5232,12 @@ namespace graphene { namespace chain {
                     case 1: // version
                     {
                         auto reported_version = itr->get<version>();
-                        const auto &signing_witness = get_witness(next_block.witness);
-                        //idump( (next_block.witness)(signing_witness.running_version)(reported_version) );
+                        const auto &signing_witness = get_witness(next_block.validator);
+                        //idump( (next_block.validator)(signing_witness.running_version)(reported_version) );
 
                         if (reported_version !=
                             signing_witness.running_version) {
-                            modify(signing_witness, [&](witness_object &wo) {
+                            modify(signing_witness, [&](validator_object &wo) {
                                 wo.running_version = reported_version;
                             });
                         }
@@ -5211,13 +5246,13 @@ namespace graphene { namespace chain {
                     case 2: // hardfork_version vote
                     {
                         auto hfv = itr->get<hardfork_version_vote>();
-                        const auto &signing_witness = get_witness(next_block.witness);
-                        //idump( (next_block.witness)(signing_witness.running_version)(hfv) );
+                        const auto &signing_witness = get_witness(next_block.validator);
+                        //idump( (next_block.validator)(signing_witness.running_version)(hfv) );
 
                         if (hfv.hf_version !=
                             signing_witness.hardfork_version_vote ||
                             hfv.hf_time != signing_witness.hardfork_time_vote) {
-                            modify(signing_witness, [&](witness_object &wo) {
+                            modify(signing_witness, [&](validator_object &wo) {
                                 wo.hardfork_version_vote = hfv.hf_version;
                                 wo.hardfork_time_vote = hfv.hf_time;
                             });
@@ -5258,7 +5293,7 @@ namespace graphene { namespace chain {
 
                 auto trx_size = fc::raw::pack_size(trx);
 
-                const witness_schedule_object &consensus = get_witness_schedule_object();
+                const validator_schedule_object &consensus = get_validator_schedule_object();
 
                 for (const auto& auth : required) {
                     const auto& acnt = get_account(auth);
@@ -5305,19 +5340,19 @@ namespace graphene { namespace chain {
             notify_post_apply_operation(note);
         }
 
-        const witness_object &database::validate_block_header(uint32_t skip, const signed_block &next_block) const {
+        const validator_object &database::validate_block_header(uint32_t skip, const signed_block &next_block) const {
             try {
                 FC_ASSERT(head_block_id() ==
                           next_block.previous, "", ("head_block_id", head_block_id())("next.prev", next_block.previous));
                 FC_ASSERT(head_block_time() <
                           next_block.timestamp, "", ("head_block_time", head_block_time())("next", next_block.timestamp)("blocknum", next_block.block_num()));
-                const witness_object &witness = get_witness(next_block.witness);
+                const validator_object &witness = get_witness(next_block.validator);
 
-                if (!(skip & skip_witness_signature)) {
+                if (!(skip & skip_validator_signature)) {
                     FC_ASSERT(witness.signing_key != public_key_type(),
-                              "Witness '${w}' has null signing key — cannot validate block #${n}. "
-                              "The witness disabled their key or the node is on a different fork.",
-                              ("w", next_block.witness)("n", next_block.block_num()));
+                              "Validator '${w}' has null signing key — cannot validate block #${n}. "
+                              "The validator disabled their key or the node is on a different fork.",
+                              ("w", next_block.validator)("n", next_block.block_num()));
                     FC_ASSERT(next_block.validate_signee(witness.signing_key));
                 }
 
@@ -5325,7 +5360,7 @@ namespace graphene { namespace chain {
                     uint32_t slot_num = get_slot_at_time(next_block.timestamp);
                     FC_ASSERT(slot_num > 0);
 
-                    string scheduled_witness = get_scheduled_witness(slot_num);
+                    string scheduled_witness = get_scheduled_validator(slot_num);
 
                     // During emergency consensus, the witness schedule can diverge
                     // between competing forks (different blocks → different shuffle).
@@ -5347,26 +5382,34 @@ namespace graphene { namespace chain {
                             // This prevents arbitrary key holders from producing
                             // blocks in random slots while allowing competing
                             // forks with different shuffles to interoperate.
-                            const witness_schedule_object &wso = get_witness_schedule_object();
+                            const validator_schedule_object &wso = get_validator_schedule_object();
                             bool in_schedule = false;
-                            for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
-                                if (wso.current_shuffled_witnesses[i] == witness.owner) {
+                            for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                                if (wso.current_shuffled_validators[i] == witness.owner) {
                                     in_schedule = true;
                                     break;
                                 }
                             }
                             FC_ASSERT(in_schedule,
-                                "Emergency mode: block from witness ${w} not in current schedule",
+                                "Emergency mode: block from validator ${w} not in current schedule",
                                 ("w", witness.owner));
                             dlog("Emergency mode: accepting block from ${bw} at slot scheduled for ${sw} "
                                  "(slot_num=${slot}, block=#${num})",
-                                 ("bw", next_block.witness)("sw", scheduled_witness)
+                                 ("bw", next_block.validator)("sw", scheduled_witness)
                                  ("slot", slot_num)("num", next_block.block_num()));
                         }
                     } else {
-                        FC_ASSERT(witness.owner ==
-                                  scheduled_witness, "Witness produced block at wrong time",
-                                ("block witness", next_block.witness)("scheduled", scheduled_witness)("slot_num", slot_num));
+                        if (witness.owner != scheduled_witness) {
+                            // Throw a typed exception so the caller can
+                            // distinguish a schedule mismatch from other
+                            // validation failures.  Schedule mismatch is
+                            // a soft fork-resolution condition: the block
+                            // is kept in fork_db, and a heavier branch can
+                            // win via vote-weighted comparison.
+                            FC_THROW_EXCEPTION(wrong_scheduled_validator_exception,
+                                "Validator produced block at wrong time",
+                                ("block validator", next_block.validator)("scheduled", scheduled_witness)("slot_num", slot_num));
+                        }
                     }
                 }
 
@@ -5388,7 +5431,7 @@ namespace graphene { namespace chain {
                 auto block_size = fc::raw::pack_size(b);
                 const dynamic_global_property_object &_dgp =
                         get_dynamic_global_properties();
-                const witness_schedule_object &consensus = get_witness_schedule_object();
+                const validator_schedule_object &consensus = get_validator_schedule_object();
 
                 uint32_t missed_blocks = 0;
                 if (head_block_time() != fc::time_point_sec()) {
@@ -5396,7 +5439,7 @@ namespace graphene { namespace chain {
                     assert(missed_blocks != 0);
                     missed_blocks--;
                     for (uint32_t i = 0; i < missed_blocks; ++i) {
-                        const auto &witness_missed = get_witness(get_scheduled_witness(i + 1));
+                        const auto &witness_missed = get_witness(get_scheduled_validator(i + 1));
 
                         // During emergency mode, skip penalties for offline witnesses.
                         // The hybrid schedule assigns committee to fill their slots, but
@@ -5407,18 +5450,18 @@ namespace graphene { namespace chain {
                         bool is_emergency_offline_witness =
                             has_hardfork(CHAIN_HARDFORK_12) &&
                             _dgp.emergency_consensus_active &&
-                            witness_missed.owner != b.witness &&
-                            witness_missed.owner != CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                            witness_missed.owner != b.validator &&
+                            witness_missed.owner != CHAIN_EMERGENCY_VALIDATOR_ACCOUNT;
 
-                        if (!is_emergency_offline_witness && witness_missed.owner != b.witness) {
-                            ilog("\033[91mMissed block: witness ${w} did not produce block #${n} at ${t} (next: ${next})\033[0m",
+                        if (!is_emergency_offline_witness && witness_missed.owner != b.validator) {
+                            ilog("\033[91mMissed block: validator ${w} did not produce block #${n} at ${t} (next: ${next})\033[0m",
                                  ("w", witness_missed.owner)
                                  ("n", head_block_num() + i + 1)
                                  ("t", get_slot_time(i + 1))
-                                 ("next", b.witness));
+                                 ("next", b.validator));
                         }
 
-                        modify(witness_missed, [&](witness_object &w) {
+                        modify(witness_missed, [&](validator_object &w) {
                             // Only reset current_run for witnesses that actually missed their slot.
                             // In emergency hybrid mode, the committee witness occupies multiple
                             // schedule slots and produces the current block.  If we reset current_run
@@ -5426,28 +5469,28 @@ namespace graphene { namespace chain {
                             // because committee can't fill all slots simultaneously), current_run
                             // never reaches CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN, so
                             // last_supported_block_num never advances and LIB stalls.
-                            if (w.owner != b.witness) {
+                            if (w.owner != b.validator) {
                                 w.current_run = 0;
                             }
                             if(is_emergency_offline_witness) {
                                 // Emergency mode: skip per-block vote penalties and total_missed.
                                 // Key-blanking uses a deterministic consensus check:
                                 // head_block_num - last_confirmed_block_num (both on-chain state)
-                                // against CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS.
+                                // against CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS.
                                 // All nodes compute the same result.
                                 if (w.signing_key != public_key_type() &&
                                     head_block_num() -
                                     w.last_confirmed_block_num >
-                                    CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS) {
-                                    elog("Emergency consensus: Witness ${w} missed ${missed} blocks since last confirmed ${lc} "
+                                    CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS) {
+                                    elog("Emergency consensus: Validator ${w} missed ${missed} blocks since last confirmed ${lc} "
                                          "(threshold=${t}), blanking signing_key",
                                          ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
-                                         ("lc", w.last_confirmed_block_num)("t", CHAIN_EMERGENCY_MAX_WITNESS_MISSED_BLOCKS));
+                                         ("lc", w.last_confirmed_block_num)("t", CHAIN_EMERGENCY_MAX_VALIDATOR_MISSED_BLOCKS));
                                     w.signing_key = public_key_type();
-                                    push_virtual_operation(shutdown_witness_operation(w.owner));
+                                    push_virtual_operation(shutdown_validator_operation(w.owner));
                                 }
-                            } else if(witness_missed.owner != b.witness){
-                                // total_missed does not increment when witness_missed.owner == b.witness
+                            } else if(witness_missed.owner != b.validator){
+                                // total_missed does not increment when witness_missed.owner == b.validator
                                 // because a low total_missed is a "prestige" item and a witness that
                                 // restarts a dead network is "rewarded" by not having total_missed
                                 // increase for any blocks they missed in the gap.
@@ -5455,25 +5498,25 @@ namespace graphene { namespace chain {
                                 w.total_missed++;
 
                                 if(has_hardfork(CHAIN_HARDFORK_6)){// Consensus counted votes penalty to witness for block missing
-                                    w.penalty_percent+=consensus.median_props.witness_miss_penalty_percent;
+                                    w.penalty_percent+=consensus.median_props.validator_miss_penalty_percent;
                                     w.counted_votes=(fc::uint128_t(w.votes) - (fc::uint128_t(w.votes) * std::min(w.penalty_percent,uint32_t(CHAIN_100_PERCENT)) / CHAIN_100_PERCENT )).to_uint64();
 
                                     create<witness_penalty_expire_object>([&](witness_penalty_expire_object& wpe) {
                                         wpe.witness = witness_missed.owner;
-                                        wpe.penalty_percent = consensus.median_props.witness_miss_penalty_percent;
-                                        wpe.expires = head_block_time() + fc::seconds(consensus.median_props.witness_miss_penalty_duration);
+                                        wpe.penalty_percent = consensus.median_props.validator_miss_penalty_percent;
+                                        wpe.expires = head_block_time() + fc::seconds(consensus.median_props.validator_miss_penalty_duration);
                                     });
                                 }
 
                                 if (w.signing_key != public_key_type() &&
                                     head_block_num() -
                                     w.last_confirmed_block_num >
-                                    CHAIN_MAX_WITNESS_MISSED_BLOCKS) {
-                                    elog("Witness ${w} missed too many blocks (${missed} since last confirmed ${lc}), blanking signing_key (was ${k})",
+                                    CHAIN_MAX_VALIDATOR_MISSED_BLOCKS) {
+                                    elog("Validator ${w} missed too many blocks (${missed} since last confirmed ${lc}), blanking signing_key (was ${k})",
                                          ("w", w.owner)("missed", head_block_num() - w.last_confirmed_block_num)
                                          ("lc", w.last_confirmed_block_num)("k", w.signing_key));
                                     w.signing_key = public_key_type();
-                                    push_virtual_operation(shutdown_witness_operation(w.owner));
+                                    push_virtual_operation(shutdown_validator_operation(w.owner));
                                 }
                             }
                         });
@@ -5602,15 +5645,15 @@ namespace graphene { namespace chain {
                             });
 
                             // Change 5: Ensure emergency witness object exists with correct key
-                            const auto &witness_by_name = get_index<witness_index>().indices().get<by_name>();
-                            auto wit_itr = witness_by_name.find(CHAIN_EMERGENCY_WITNESS_ACCOUNT);
+                            const auto &witness_by_name = get_index<validator_index>().indices().get<by_name>();
+                            auto wit_itr = witness_by_name.find(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT);
 
                             if (wit_itr == witness_by_name.end()) {
-                                create<witness_object>([&](witness_object &w) {
-                                    w.owner = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
-                                    w.signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY;
+                                create<validator_object>([&](validator_object &w) {
+                                    w.owner = CHAIN_EMERGENCY_VALIDATOR_ACCOUNT;
+                                    w.signing_key = CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY;
                                     w.created = head_block_time();
-                                    w.schedule = witness_object::top;
+                                    w.schedule = validator_object::top;
                                     // Set running version to match the binary
                                     w.running_version = CHAIN_VERSION;
                                     // Vote for the CURRENTLY APPLIED hardfork version, not
@@ -5625,39 +5668,39 @@ namespace graphene { namespace chain {
                                     // counted in update_median_witness_props(). With median
                                     // props, N committee entries are invisible to the median
                                     // computation (they just reinforce the existing median).
-                                    w.props = get_witness_schedule_object().median_props;
+                                    w.props = get_validator_schedule_object().median_props;
                                 });
                             } else {
-                                modify(*wit_itr, [&](witness_object &w) {
-                                    w.signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY;
-                                    w.schedule = witness_object::top;
+                                modify(*wit_itr, [&](validator_object &w) {
+                                    w.signing_key = CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY;
+                                    w.schedule = validator_object::top;
                                     // Update version fields on re-activation too
                                     w.running_version = CHAIN_VERSION;
                                     const auto &hfp = get_hardfork_property_object();
                                     w.hardfork_version_vote = hfp.current_hardfork_version;
                                     w.hardfork_time_vote = hfp.processed_hardforks[hfp.last_hardfork];
                                     // Sync chain properties with current median
-                                    w.props = get_witness_schedule_object().median_props;
+                                    w.props = get_validator_schedule_object().median_props;
                                 });
                             }
 
                             // Change 7: Disable all real witnesses and reset penalties.
                             // On emergency start, zero signing_key so ONLY committee produces.
                             // Operators must manually re-enable witnesses via update_witness tx.
-                            const auto &witness_idx = get_index<witness_index>().indices().get<by_id>();
+                            const auto &witness_idx = get_index<validator_index>().indices().get<by_id>();
                             uint32_t blanked_count = 0;
                             for (auto witr = witness_idx.begin(); witr != witness_idx.end(); ++witr) {
-                                if (witr->owner == CHAIN_EMERGENCY_WITNESS_ACCOUNT) continue;
+                                if (witr->owner == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) continue;
                                 if (witr->signing_key != public_key_type()) blanked_count++;
-                                modify(*witr, [&](witness_object &w) {
+                                modify(*witr, [&](validator_object &w) {
                                     w.signing_key = public_key_type();
                                     w.penalty_percent = 0;
                                     w.counted_votes = w.votes;
                                     w.current_run = 0;
                                 });
                             }
-                            elog("Emergency consensus started: blanked signing_key for ${n} witnesses. "
-                                 "Operators must send update_witness tx to re-enable after emergency ends.",
+                            elog("Emergency consensus started: blanked signing_key for ${n} validators. "
+                                 "Operators must send update_validator tx to re-enable after emergency ends.",
                                  ("n", blanked_count));
 
                             // Remove all pending penalty expiration objects
@@ -5675,12 +5718,12 @@ namespace graphene { namespace chain {
                             // next_shuffle_block_num is still N blocks away, the node
                             // would run an all-committee schedule until then, rejecting
                             // blocks from real witnesses during that window.
-                            const witness_schedule_object &wso = get_witness_schedule_object();
-                            modify(wso, [&](witness_schedule_object &_wso) {
-                                for (int i = 0; i < _wso.num_scheduled_witnesses; i++) {
-                                    _wso.current_shuffled_witnesses[i] = CHAIN_EMERGENCY_WITNESS_ACCOUNT;
+                            const validator_schedule_object &wso = get_validator_schedule_object();
+                            modify(wso, [&](validator_schedule_object &_wso) {
+                                for (int i = 0; i < _wso.num_scheduled_validators; i++) {
+                                    _wso.current_shuffled_validators[i] = CHAIN_EMERGENCY_VALIDATOR_ACCOUNT;
                                 }
-                                _wso.next_shuffle_block_num = head_block_num() + _wso.num_scheduled_witnesses;
+                                _wso.next_shuffle_block_num = head_block_num() + _wso.num_scheduled_validators;
                             });
 
                             // Notify fork_db about emergency mode
@@ -5688,10 +5731,10 @@ namespace graphene { namespace chain {
 
                             ilog("EMERGENCY CONSENSUS MODE activated at block ${b}. "
                                 "No blocks for ${sec} seconds since LIB ${lib}. "
-                                "Emergency witness: ${w}",
+                                "Emergency validator: ${w}",
                                 ("b", b.block_num())("sec", seconds_since_lib)
                                 ("lib", _dgp.last_irreversible_block_num)
-                                ("w", CHAIN_EMERGENCY_WITNESS_ACCOUNT));
+                                ("w", CHAIN_EMERGENCY_VALIDATOR_ACCOUNT));
                         } // end if (seconds_since_lib >= TIMEOUT)
                     } // end else (lib_time_available)
                 } // end if (has_hardfork(HF12) && !emergency_active)
@@ -5708,10 +5751,10 @@ namespace graphene { namespace chain {
                     return;
                 }
 
-                const auto& validation_list = get_index<block_post_validation_index>().indices().get<by_id>();
+                const auto& validation_list = get_index<validator_confirmation_index>().indices().get<by_id>();
                 if(!validation_list.empty()){
                     const dynamic_global_property_object &dpo = get_dynamic_global_properties();
-                    const witness_schedule_object &wso = get_witness_schedule_object();
+                    const validator_schedule_object &wso = get_validator_schedule_object();
                     //ilog("! check_block_post_validation_chain = ${n}", ("n", validation_list.size()));
                     auto itr = validation_list.begin();
                     while(itr != validation_list.end())
@@ -5721,12 +5764,12 @@ namespace graphene { namespace chain {
                         itr++;
                         if((1 + dpo.last_irreversible_block_num) == current.block_num){
                             size_t count=0;
-                            for (size_t j = 0; j< CHAIN_MAX_WITNESSES; j++) {
-                                if(current.current_shuffled_witnesses_validations[j] == true){//already validated
+                            for (size_t j = 0; j< CHAIN_MAX_VALIDATORS; j++) {
+                                if(current.current_shuffled_validators_validations[j] == true){//already validated
                                     count++;
                                 }
                             }
-                            if(count >= (size_t(wso.num_scheduled_witnesses) * CHAIN_IRREVERSIBLE_THRESHOLD / CHAIN_100_PERCENT)){
+                            if(count >= (size_t(wso.num_scheduled_validators) * CHAIN_IRREVERSIBLE_THRESHOLD / CHAIN_100_PERCENT)){
                                 modify(dpo, [&](dynamic_global_property_object &_dpo) {
                                     _dpo.last_irreversible_block_num = current.block_num;
                                     _dpo.last_irreversible_block_id = block_id_type();
@@ -5891,10 +5934,10 @@ namespace graphene { namespace chain {
                 // Only scheduled witnesses can contribute to LIB advancement; accepting
                 // validations from non-scheduled witnesses is pointless and could be
                 // exploited for spam.
-                const witness_schedule_object &wso = get_witness_schedule_object();
+                const validator_schedule_object &wso = get_validator_schedule_object();
                 bool is_scheduled = false;
-                for (int i = 0; i < wso.num_scheduled_witnesses; i += CHAIN_BLOCK_WITNESS_REPEAT) {
-                    if (wso.current_shuffled_witnesses[i] == witness_account) {
+                for (int i = 0; i < wso.num_scheduled_validators; i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                    if (wso.current_shuffled_validators[i] == witness_account) {
                         is_scheduled = true;
                         break;
                     }
@@ -5903,7 +5946,7 @@ namespace graphene { namespace chain {
                     return;
                 }
 
-                const auto& validation_list = get_index<block_post_validation_index>().indices().get<by_id>();
+                const auto& validation_list = get_index<validator_confirmation_index>().indices().get<by_id>();
                 if(!validation_list.empty()){
                     auto itr = validation_list.begin();
                     bool find = false;
@@ -5915,16 +5958,16 @@ namespace graphene { namespace chain {
                         const auto& current = *itr;
                         if(current.block_id == block_id){
                             find_block_num = current.block_num;
-                            modify(current, [&](block_post_validation_object &o) {
+                            modify(current, [&](validator_confirmation_object &o) {
                                 //remove witness from shuffled witnesses
-                                for (size_t j = 0; j< CHAIN_MAX_WITNESSES; j++) {
-                                    if(o.current_shuffled_witnesses[j] == witness_account){
-                                        o.current_shuffled_witnesses_validations[j] = true;
+                                for (size_t j = 0; j< CHAIN_MAX_VALIDATORS; j++) {
+                                    if(o.current_shuffled_validators[j] == witness_account){
+                                        o.current_shuffled_validators_validations[j] = true;
                                         //need update
                                         find = true;
                                         find_obj=*itr;
                                     }
-                                    if(o.current_shuffled_witnesses_validations[j] == true){//already validated
+                                    if(o.current_shuffled_validators_validations[j] == true){//already validated
                                         count++;
                                     }
                                 }
@@ -5936,8 +5979,8 @@ namespace graphene { namespace chain {
                     if(find){
                         const dynamic_global_property_object &dpo = get_dynamic_global_properties();
                         if((1 + dpo.last_irreversible_block_num) == find_block_num){
-                            const witness_schedule_object &wso = get_witness_schedule_object();
-                            if(count >= (size_t(wso.num_scheduled_witnesses) * CHAIN_IRREVERSIBLE_THRESHOLD / CHAIN_100_PERCENT)){
+                            const validator_schedule_object &wso = get_validator_schedule_object();
+                            if(count >= (size_t(wso.num_scheduled_validators) * CHAIN_IRREVERSIBLE_THRESHOLD / CHAIN_100_PERCENT)){
                                 modify(dpo, [&](dynamic_global_property_object &_dpo) {
                                     _dpo.last_irreversible_block_num = find_block_num;
                                     _dpo.last_irreversible_block_id = block_id_type();
@@ -6081,10 +6124,10 @@ namespace graphene { namespace chain {
         }
 
         //get block post validation objects for witness
-        //return array of block_post_validation_object event if it is empty
-        std::array<block_post_validation_object, CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT> database::get_block_post_validations(const account_name_type &witness_account){
-            std::array<block_post_validation_object, CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT> result;
-            const auto& validation_list = get_index<block_post_validation_index>().indices().get<by_id>();
+        //return array of validator_confirmation_object event if it is empty
+        std::array<validator_confirmation_object, CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT> database::get_validator_confirmations(const account_name_type &witness_account){
+            std::array<validator_confirmation_object, CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT> result;
+            const auto& validation_list = get_index<validator_confirmation_index>().indices().get<by_id>();
             auto itr = validation_list.begin();
             size_t i = 0;
             while(itr != validation_list.end() && i < CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT)
@@ -6094,10 +6137,10 @@ namespace graphene { namespace chain {
                 //if witness is in the list add it to result
                 //only count the first match per validation object (committee can occupy multiple slots)
                 bool matched = false;
-                for (size_t j = 0; j < CHAIN_MAX_WITNESSES && !matched; j++) {
-                    if(current.current_shuffled_witnesses[j] == witness_account){
-                        if(current.current_shuffled_witnesses_validations[j] == false){//need validate
-                            result[i] = block_post_validation_object(current);
+                for (size_t j = 0; j < CHAIN_MAX_VALIDATORS && !matched; j++) {
+                    if(current.current_shuffled_validators[j] == witness_account){
+                        if(current.current_shuffled_validators_validations[j] == false){//need validate
+                            result[i] = validator_confirmation_object(current);
                             ++i;
                             matched = true;
                         }
@@ -6106,7 +6149,7 @@ namespace graphene { namespace chain {
             }
             //fill result with empty objects to return array with fixed size
             for(; i < CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT; i++){
-                result[i] = block_post_validation_object();
+                result[i] = validator_confirmation_object();
             }
             return result;
         }
@@ -6117,7 +6160,7 @@ namespace graphene { namespace chain {
         void database::create_block_post_validation(uint32_t block_num, block_id_type block_id, const account_name_type& witness_account){
             const dynamic_global_property_object &dpo = get_dynamic_global_properties();
             //remove blocks if they height is less than last irreversible block
-            const auto& validation_list = get_index<block_post_validation_index>().indices().get<by_id>();
+            const auto& validation_list = get_index<validator_confirmation_index>().indices().get<by_id>();
             auto itr1 = validation_list.begin();
             while(itr1 != validation_list.end())
             {
@@ -6128,7 +6171,7 @@ namespace graphene { namespace chain {
                 }
             }
             //remove old blocks from post validation list if it is full
-            const auto& validation_list2 = get_index<block_post_validation_index>().indices().get<by_id>();
+            const auto& validation_list2 = get_index<validator_confirmation_index>().indices().get<by_id>();
             size_t max_block_post_validation_size = 0;
             auto first=validation_list2.begin();
             for (auto itr = validation_list2.begin();
@@ -6142,33 +6185,33 @@ namespace graphene { namespace chain {
                 }
             }
             //create new block in post validation list
-            create<block_post_validation_object>([&](block_post_validation_object& o) {
+            create<validator_confirmation_object>([&](validator_confirmation_object& o) {
                 o.block_num = block_num;
                 o.block_id = block_id_type(block_id);
-                const witness_schedule_object &wso = get_witness_schedule_object();
-                size_t witness_index=0;
+                const validator_schedule_object &wso = get_validator_schedule_object();
+                size_t validator_index=0;
                 size_t i = 0;
-                for (; i < wso.num_scheduled_witnesses; i+=CHAIN_BLOCK_WITNESS_REPEAT) {
-                    if(witness_account != wso.current_shuffled_witnesses[i]){
-                        o.current_shuffled_witnesses[witness_index] = account_name_type(wso.current_shuffled_witnesses[i]);
-                        o.current_shuffled_witnesses_validations[witness_index] = false;
-                        witness_index++;
+                for (; i < wso.num_scheduled_validators; i+=CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                    if(witness_account != wso.current_shuffled_validators[i]){
+                        o.current_shuffled_validators[validator_index] = account_name_type(wso.current_shuffled_validators[i]);
+                        o.current_shuffled_validators_validations[validator_index] = false;
+                        validator_index++;
                     }
                 }
-                for (; i < CHAIN_MAX_WITNESSES; i+=CHAIN_BLOCK_WITNESS_REPEAT) {
-                    o.current_shuffled_witnesses[i] = account_name_type();
-                    o.current_shuffled_witnesses_validations[i] = false;
+                for (; i < CHAIN_MAX_VALIDATORS; i+=CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                    o.current_shuffled_validators[i] = account_name_type();
+                    o.current_shuffled_validators_validations[i] = false;
                 }
             });
         }
 
-        void database::update_signing_witness(const witness_object &signing_witness, const signed_block &new_block) {
+        void database::update_signing_witness(const validator_object &signing_witness, const signed_block &new_block) {
             try {
                 const dynamic_global_property_object &dpo = get_dynamic_global_properties();
                 uint64_t new_block_aslot = dpo.current_aslot +
                                            get_slot_at_time(new_block.timestamp);
 
-                modify(signing_witness, [&](witness_object &_wit) {
+                modify(signing_witness, [&](validator_object &_wit) {
                     _wit.last_aslot = new_block_aslot;
                     _wit.last_confirmed_block_num = new_block.block_num();
                     if( _wit.current_run >= CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN ){
@@ -6182,7 +6225,7 @@ namespace graphene { namespace chain {
         void database::update_last_irreversible_block(uint32_t skip) {
             try {
                 const dynamic_global_property_object &dpo = get_dynamic_global_properties();
-                const witness_schedule_object &wso = get_witness_schedule_object();
+                const validator_schedule_object &wso = get_validator_schedule_object();
 
                 // === HARDFORK 12: EMERGENCY LIB ===
                 // During emergency mode, LIB advances normally using all witnesses
@@ -6195,10 +6238,10 @@ namespace graphene { namespace chain {
                 // normal LIB computation continues seamlessly.
                 // === END HARDFORK 12 EMERGENCY LIB ===
 
-                vector<const witness_object *> wit_objs;
-                wit_objs.reserve(wso.num_scheduled_witnesses);
-                for (int i = 0; i < wso.num_scheduled_witnesses; i+=CHAIN_BLOCK_WITNESS_REPEAT) {
-                    wit_objs.push_back(&get_witness(wso.current_shuffled_witnesses[i]));
+                vector<const validator_object *> wit_objs;
+                wit_objs.reserve(wso.num_scheduled_validators);
+                for (int i = 0; i < wso.num_scheduled_validators; i+=CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                    wit_objs.push_back(&get_witness(wso.current_shuffled_validators[i]));
                 }
 
                 static_assert(CHAIN_IRREVERSIBLE_THRESHOLD >
@@ -6214,7 +6257,7 @@ namespace graphene { namespace chain {
 
                 std::nth_element(wit_objs.begin(),
                         wit_objs.begin() + offset, wit_objs.end(),
-                        [](const witness_object *a, const witness_object *b) {
+                        [](const validator_object *a, const validator_object *b) {
                             return a->last_supported_block_num <
                                    b->last_supported_block_num;
                         });
@@ -6553,14 +6596,14 @@ namespace graphene { namespace chain {
         }
 
         void database::reset_virtual_schedule_time() {
-            const witness_schedule_object &wso = get_witness_schedule_object();
-            modify(wso, [&](witness_schedule_object &o) {
+            const validator_schedule_object &wso = get_validator_schedule_object();
+            modify(wso, [&](validator_schedule_object &o) {
                 o.current_virtual_time = fc::uint128_t(); // reset it 0
             });
 
-            const auto &idx = get_index<witness_index>().indices();
+            const auto &idx = get_index<validator_index>().indices();
             for (const auto &witness : idx) {
-                modify(witness, [&](witness_object &wobj) {
+                modify(witness, [&](validator_object &wobj) {
                     wobj.virtual_position = fc::uint128_t();
                     wobj.virtual_last_update = wso.current_virtual_time;
                     wobj.virtual_scheduled_time = VIRTUAL_SCHEDULE_LAP_LENGTH2 /
@@ -6714,10 +6757,10 @@ namespace graphene { namespace chain {
                     const auto &widx = get_index<witness_vote_index>().indices();
                     for(auto witr = widx.begin(); witr != widx.end(); ++witr) {
                         const auto &voter = get(witr->account);
-                        share_type old_weight=voter.witness_vote_weight();
-                        share_type new_weight=voter.witness_vote_fair_weight_prehf5();
-                        adjust_witness_vote(get(witr->witness), -old_weight);
-                        adjust_witness_vote(get(witr->witness), new_weight);
+                        share_type old_weight=voter.validator_vote_weight();
+                        share_type new_weight=voter.validator_vote_fair_weight_prehf5();
+                        adjust_validator_vote(get(witr->witness), -old_weight);
+                        adjust_validator_vote(get(witr->witness), new_weight);
                     }
 
                     break;
@@ -6725,12 +6768,12 @@ namespace graphene { namespace chain {
                 case CHAIN_HARDFORK_5:
                 {
                     //clear votes for each witness
-                    const auto &widx = get_index<witness_index>().indices().get<by_id>();
+                    const auto &widx = get_index<validator_index>().indices().get<by_id>();
                     for (auto itr = widx.begin();
                          itr != widx.end();
                          ++itr) {
-                        modify(*itr, [&](witness_object &w) {
-                            elog("HF5 witness ${a} was votes: ${n}", ("a", w.owner)("n", w.votes));
+                        modify(*itr, [&](validator_object &w) {
+                            elog("HF5 validator ${a} was votes: ${n}", ("a", w.owner)("n", w.votes));
                             w.votes = 0;
                             w.counted_votes = 0;
                         });
@@ -6741,13 +6784,13 @@ namespace graphene { namespace chain {
                         const auto &voter = get(witr->account);
                         const auto &witness = get(witr->witness);
 
-                        share_type fair_weight=voter.witness_vote_fair_weight();
+                        share_type fair_weight=voter.validator_vote_fair_weight();
                         modify(voter, [&](account_object &a) {
-                            a.witnesses_vote_weight = fair_weight;
+                            a.validators_vote_weight = fair_weight;
                         });
-                        elog("HF5 witness ${a} calc votes: ${n}", ("a", witness.owner)("n", fair_weight));
+                        elog("HF5 validator ${a} calc votes: ${n}", ("a", witness.owner)("n", fair_weight));
 
-                        adjust_witness_vote(get(witr->witness), fair_weight);
+                        adjust_validator_vote(get(witr->witness), fair_weight);
                     }
                     break;
                 }
@@ -6770,7 +6813,7 @@ namespace graphene { namespace chain {
                             for (int i = 0; i < CHAIN_MAX_PROXY_RECURSION_DEPTH; ++i) {
                                 delta[i + 1] = -(itr->proxied_vsf_votes[i]);
                             }
-                            adjust_proxied_witness_votes(get_account(itr->name), delta);
+                            adjust_proxied_validator_votes(get_account(itr->name), delta);
                         }
 
                         auto old_shares=itr->vesting_shares;
@@ -6801,7 +6844,7 @@ namespace graphene { namespace chain {
                             for (int i = 0; i < CHAIN_MAX_PROXY_RECURSION_DEPTH; ++i) {
                                 delta[i + 1] = itr->proxied_vsf_votes[i];
                             }
-                            adjust_proxied_witness_votes(get_account(itr->name), delta);
+                            adjust_proxied_validator_votes(get_account(itr->name), delta);
                         }
                     }
 
@@ -6877,12 +6920,12 @@ namespace graphene { namespace chain {
                     }
 
                     //clear votes for each witness
-                    const auto &widx = get_index<witness_index>().indices().get<by_id>();
+                    const auto &widx = get_index<validator_index>().indices().get<by_id>();
                     for (auto itr = widx.begin();
                          itr != widx.end();
                          ++itr) {
-                        modify(*itr, [&](witness_object &w) {
-                            elog("HF6 witness ${a} has votes: ${n}", ("a", w.owner)("n", w.votes));
+                        modify(*itr, [&](validator_object &w) {
+                            elog("HF6 validator ${a} has votes: ${n}", ("a", w.owner)("n", w.votes));
                             w.votes = 0;
                             w.counted_votes = 0;
                         });
@@ -6893,13 +6936,13 @@ namespace graphene { namespace chain {
                         const auto &voter = get(witr->account);
                         const auto &witness = get(witr->witness);
 
-                        share_type fair_weight=voter.witness_vote_fair_weight();
+                        share_type fair_weight=voter.validator_vote_fair_weight();
                         modify(voter, [&](account_object &a) {
-                            a.witnesses_vote_weight = fair_weight;
+                            a.validators_vote_weight = fair_weight;
                         });
-                        elog("HF6 witness ${a} recalc votes from ${a}: ${n}", ("a", witness.owner)("n", fair_weight));
+                        elog("HF6 validator ${a} recalc votes from ${a}: ${n}", ("a", witness.owner)("n", fair_weight));
 
-                        adjust_witness_vote(get(witr->witness), fair_weight);
+                        adjust_validator_vote(get(witr->witness), fair_weight);
                     }
                     break;
                 }
@@ -6941,7 +6984,7 @@ namespace graphene { namespace chain {
                                 for (int i = 0; i < CHAIN_MAX_PROXY_RECURSION_DEPTH; ++i) {
                                     delta[i + 1] = -(current.proxied_vsf_votes[i]);
                                 }
-                                adjust_proxied_witness_votes(get_account(current.name), delta);
+                                adjust_proxied_validator_votes(get_account(current.name), delta);
                             }
                             //move shares and balance to committee
                             elog("- add to committee funds: ${a} SHARES, ${b} TOKEN", ("a", current.vesting_shares)("b", current.balance));
@@ -7045,36 +7088,36 @@ namespace graphene { namespace chain {
                                 remove(delete_current);
                             }
 
-                            //decrease witnesses_vote_weight from all votes by invalid account
+                            //decrease validators_vote_weight from all votes by invalid account
                             const auto &vidx = get_index<witness_vote_index>().indices().get<by_account_witness>();
-                            auto vitr = vidx.lower_bound(boost::make_tuple(current.id, witness_id_type()));
+                            auto vitr = vidx.lower_bound(boost::make_tuple(current.id, validator_id_type()));
                             while (vitr != vidx.end() && vitr->account == current.id) {
-                                adjust_witness_vote(get(vitr->witness),-current.witnesses_vote_weight);
+                                adjust_validator_vote(get(vitr->witness),-current.validators_vote_weight);
                                 ++vitr;
                             }
 
                             //remove from witness_vote_index by_account_witness (remove all votes from invalid account)
                             const auto &d10idx = get_index<witness_vote_index>().indices().get<by_account_witness>();
-                            auto delete_itr10 = d10idx.lower_bound(boost::make_tuple(current.id, witness_id_type()));
+                            auto delete_itr10 = d10idx.lower_bound(boost::make_tuple(current.id, validator_id_type()));
                             while(delete_itr10 != d10idx.end() &&
                                    delete_itr10->account == current.id) {
                                 const auto &delete_current = *delete_itr10;
-                                adjust_witness_vote(get(delete_itr10->witness),-current.witnesses_vote_weight);
+                                adjust_validator_vote(get(delete_itr10->witness),-current.validators_vote_weight);
                                 modify(current, [&](account_object &a) {
-                                    a.witnesses_voted_for--;
+                                    a.validators_voted_for--;
                                 });
                                 ++delete_itr10;
                                 remove(delete_current);
                             }
 
-                            //recalc witnesses_vote_weight (must be 0 after remove all witness votes from invalid account)
-                            share_type current_fair_vote_weight = current.witness_vote_fair_weight();
+                            //recalc validators_vote_weight (must be 0 after remove all witness votes from invalid account)
+                            share_type current_fair_vote_weight = current.validator_vote_fair_weight();
                             modify(current, [&](account_object &a) {
-                                a.witnesses_vote_weight = current_fair_vote_weight;
+                                a.validators_vote_weight = current_fair_vote_weight;
                             });
 
                             //look witness object from invalid account
-                            const auto &invalid_witness = find<witness_object, by_name>(current.name);
+                            const auto &invalid_witness = find<validator_object, by_name>(current.name);
                             if(invalid_witness != nullptr){//found witness
                                 //remove invalid witness account from penalty index
                                 const auto &d8idx = get_index<witness_penalty_expire_index>().indices().get<by_account>();
@@ -7086,48 +7129,48 @@ namespace graphene { namespace chain {
                                     remove(delete_current);
                                 }
                                 //remove invalid witness account from schedule
-                                const witness_schedule_object &wso = get_witness_schedule_object();
-                                modify(wso, [&](witness_schedule_object &_wso) {
-                                    for (int i = 0; i < _wso.num_scheduled_witnesses; i+=CHAIN_BLOCK_WITNESS_REPEAT) {
-                                        if(_wso.current_shuffled_witnesses[i] == invalid_witness->owner){
-                                            _wso.current_shuffled_witnesses[i] = account_name_type();
+                                const validator_schedule_object &wso = get_validator_schedule_object();
+                                modify(wso, [&](validator_schedule_object &_wso) {
+                                    for (int i = 0; i < _wso.num_scheduled_validators; i+=CHAIN_BLOCK_VALIDATOR_REPEAT) {
+                                        if(_wso.current_shuffled_validators[i] == invalid_witness->owner){
+                                            _wso.current_shuffled_validators[i] = account_name_type();
                                         }
                                     }
                                 });
-                                //recalc witnesses_vote_weight from all votes to invalid witness account (remove votes to invalid witness account)
+                                //recalc validators_vote_weight from all votes to invalid witness account (remove votes to invalid witness account)
                                 const auto &vidx = get_index<witness_vote_index>().indices().get<by_witness_account>();
                                 auto vitr = vidx.lower_bound(boost::make_tuple(invalid_witness->id, account_id_type()));
                                 while (vitr != vidx.end() && vitr->witness == invalid_witness->id) {
                                     const auto &voter_account = get(vitr->account);
                                     const auto &vidx2 = get_index<witness_vote_index>().indices().get<by_account_witness>();
-                                    auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter_account.id, witness_id_type()));
+                                    auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter_account.id, validator_id_type()));
                                     while (vitr2 != vidx2.end() && vitr2->account == voter_account.id) {
-                                        adjust_witness_vote(get(vitr2->witness), -voter_account.witnesses_vote_weight);
+                                        adjust_validator_vote(get(vitr2->witness), -voter_account.validators_vote_weight);
                                         ++vitr2;
                                     }
 
                                     remove(*vitr);
 
                                     modify(voter_account, [&](account_object &a) {
-                                        a.witnesses_voted_for--;
+                                        a.validators_voted_for--;
                                     });
 
-                                    share_type fair_vote_weight = voter_account.witness_vote_fair_weight();
+                                    share_type fair_vote_weight = voter_account.validator_vote_fair_weight();
                                     modify(voter_account, [&](account_object &a) {
-                                        a.witnesses_vote_weight = fair_vote_weight;
+                                        a.validators_vote_weight = fair_vote_weight;
                                     });
 
                                     const auto &vidx3 = get_index<witness_vote_index>().indices().get<by_account_witness>();
-                                    auto vitr3 = vidx3.lower_bound(boost::make_tuple(voter_account.id, witness_id_type()));
+                                    auto vitr3 = vidx3.lower_bound(boost::make_tuple(voter_account.id, validator_id_type()));
                                     while (vitr3 != vidx3.end() && vitr3->account == voter_account.id) {
-                                        adjust_witness_vote(get(vitr3->witness), voter_account.witnesses_vote_weight);
+                                        adjust_validator_vote(get(vitr3->witness), voter_account.validators_vote_weight);
                                         ++vitr3;
                                     }
                                     ++vitr;
                                 }
 
-                                //remove from witness_index invalid witness account
-                                const auto &d9idx = get_index<witness_index>().indices().get<by_name>();
+                                //remove from validator_index invalid witness account
+                                const auto &d9idx = get_index<validator_index>().indices().get<by_name>();
                                 auto delete_itr9 = d9idx.lower_bound(current.name);
                                 while(delete_itr9 != d9idx.end() &&
                                        delete_itr9->owner == current.name) {
@@ -7343,7 +7386,7 @@ namespace graphene { namespace chain {
                 case CHAIN_HARDFORK_9:
                 {
                     //remove witnesses without signed block
-                    const auto &idx = get_index<witness_index>().indices().get<by_id>();
+                    const auto &idx = get_index<validator_index>().indices().get<by_id>();
                     auto itr = idx.begin();
                     while(itr != idx.end()){
                         const auto &current = *itr;
@@ -7359,39 +7402,39 @@ namespace graphene { namespace chain {
                                 ++delete_itr8;
                                 remove(delete_current);
                             }
-                            //recalc witnesses_vote_weight from all votes to invalid witness account (remove votes to invalid witness account)
+                            //recalc validators_vote_weight from all votes to invalid witness account (remove votes to invalid witness account)
                             const auto &vidx = get_index<witness_vote_index>().indices().get<by_witness_account>();
                             auto vitr = vidx.lower_bound(boost::make_tuple(current.id, account_id_type()));
                             while (vitr != vidx.end() && vitr->witness == current.id) {
                                 const auto &voter_account = get(vitr->account);
                                 const auto &vidx2 = get_index<witness_vote_index>().indices().get<by_account_witness>();
-                                auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter_account.id, witness_id_type()));
+                                auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter_account.id, validator_id_type()));
                                 while (vitr2 != vidx2.end() && vitr2->account == voter_account.id) {
-                                    adjust_witness_vote(get(vitr2->witness), -voter_account.witnesses_vote_weight);
+                                    adjust_validator_vote(get(vitr2->witness), -voter_account.validators_vote_weight);
                                     ++vitr2;
                                 }
 
                                 remove(*vitr);
 
                                 modify(voter_account, [&](account_object &a) {
-                                    a.witnesses_voted_for--;
+                                    a.validators_voted_for--;
                                     a.valid=false;
                                 });
 
-                                share_type fair_vote_weight = voter_account.witness_vote_fair_weight();
+                                share_type fair_vote_weight = voter_account.validator_vote_fair_weight();
                                 modify(voter_account, [&](account_object &a) {
-                                    a.witnesses_vote_weight = fair_vote_weight;
+                                    a.validators_vote_weight = fair_vote_weight;
                                 });
 
                                 const auto &vidx3 = get_index<witness_vote_index>().indices().get<by_account_witness>();
-                                auto vitr3 = vidx3.lower_bound(boost::make_tuple(voter_account.id, witness_id_type()));
+                                auto vitr3 = vidx3.lower_bound(boost::make_tuple(voter_account.id, validator_id_type()));
                                 while (vitr3 != vidx3.end() && vitr3->account == voter_account.id) {
-                                    adjust_witness_vote(get(vitr3->witness), voter_account.witnesses_vote_weight);
+                                    adjust_validator_vote(get(vitr3->witness), voter_account.validators_vote_weight);
                                     ++vitr3;
                                 }
                                 ++vitr;
                             }
-                            elog("HF9 remove empty/spam witness ${a}", ("a", current.owner));
+                            elog("HF9 remove empty/spam validator ${a}", ("a", current.owner));
                             remove(current);
                         }
                     }
@@ -7453,7 +7496,7 @@ namespace graphene { namespace chain {
                     break;
                 case CHAIN_HARDFORK_13:
                     // Validator reward sharing: new fields sharing_rate and
-                    // pending_stakeholder_reward on witness_object default to 0 (replay
+                    // pending_stakeholder_reward on validator_object default to 0 (replay
                     // initialises them), no extra migration needed.
                     break;
                 default:

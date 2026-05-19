@@ -62,7 +62,7 @@ if(BUILD_SHARED_LIBRARIES)
             include/graphene/chain/chain_object_types.hpp
             include/graphene/chain/chain_objects.hpp
             include/graphene/chain/transaction_object.hpp
-            include/graphene/chain/witness_objects.hpp
+            include/graphene/chain/validator_objects.hpp
             include/graphene/chain/committee_objects.hpp
             include/graphene/chain/paid_subscription_objects.hpp
 
@@ -117,7 +117,7 @@ else()
             include/graphene/chain/chain_object_types.hpp
             include/graphene/chain/chain_objects.hpp
             include/graphene/chain/transaction_object.hpp
-            include/graphene/chain/witness_objects.hpp
+            include/graphene/chain/validator_objects.hpp
             include/graphene/chain/committee_objects.hpp
             include/graphene/chain/invite_objects.hpp
             include/graphene/chain/paid_subscription_objects.hpp

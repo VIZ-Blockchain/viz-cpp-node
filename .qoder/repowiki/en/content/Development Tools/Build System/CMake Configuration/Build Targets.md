@@ -1,4 +1,4 @@
-# Build Targets
+﻿# Build Targets
 
 <cite>
 **Referenced Files in This Document**
@@ -118,7 +118,7 @@ subgraph "Plugins"
 PChain["graphene::chain_plugin"]
 PWeb["graphene::webserver_plugin"]
 PJson["graphene::json_rpc"]
-PWitness["graphene::witness"]
+PWitness["graphene::validator"]
 PTags["graphene::tags"]
 PFollow["graphene::follow"]
 PCommittee["graphene::committee_api"]
@@ -163,7 +163,7 @@ SER --> Utilities
 
 ### vizd (Full Node Executable)
 - Purpose: The primary node executable with a broad set of enabled plugins.
-- Linkage: Links to appbase, webserver plugin, p2p, chain plugin, network broadcast API, witness, witness API, database API, test API, social network, tags, operation history, account by key, account history, private message, auth utility, debug node, raw block, block info, JSON RPC, follow, committee API, invite API, paid subscription API, custom protocol API, and optionally MongoDB plugin. Also links to protocol, fc, and platform-specific libraries.
+- Linkage: Links to appbase, webserver plugin, p2p, chain plugin, network broadcast API, validator, validator API, database API, test API, social network, tags, operation history, account by key, account history, private message, auth utility, debug node, raw block, block info, JSON RPC, follow, committee API, invite API, paid subscription API, custom protocol API, and optionally MongoDB plugin. Also links to protocol, fc, and platform-specific libraries.
 - Installation: Installable under bin with standard DESTINATION entries.
 - Platform specifics:
   - UNIX (non-Apple): Links to rt if found.
@@ -182,7 +182,7 @@ VIZD->>Plugs : "link graphene : : webserver_plugin"
 VIZD->>Plugs : "link graphene : : p2p"
 VIZD->>Plugs : "link graphene : : chain_plugin"
 VIZD->>Plugs : "link graphene : : network_broadcast_api"
-VIZD->>Plugs : "link graphene : : witness"
+VIZD->>Plugs : "link graphene : : validator"
 VIZD->>Plugs : "link graphene : : witness_api"
 VIZD->>Plugs : "link graphene : : database_api"
 VIZD->>Plugs : "link graphene : : test_api_plugin"

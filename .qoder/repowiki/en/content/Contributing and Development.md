@@ -1,4 +1,4 @@
-# Contributing and Development
+﻿# Contributing and Development
 
 <cite>
 **Referenced Files in This Document**
@@ -219,7 +219,7 @@ HTML --> End
 
 ### Performance Criteria
 - Build types: Prefer Release builds for production and benchmarking; use Debug with coverage for development and profiling
-- Low-memory builds: Consider low-memory node builds for resource-constrained environments (e.g., witnesses)
+- Low-memory builds: Consider low-memory node builds for resource-constrained environments (e.g., validators)
 
 **Section sources**
 - [documentation/building.md](file://documentation/building.md#L3-L16)

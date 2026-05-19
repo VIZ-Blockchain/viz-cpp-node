@@ -9,7 +9,7 @@
 #include <graphene/chain/fork_database.hpp>
 #include <graphene/chain/block_summary_object.hpp>
 
-#include <graphene/plugins/witness/witness.hpp>
+#include <graphene/plugins/validator/validator.hpp>
 
 #include <fc/network/resolve.hpp>
 #include <fc/thread/thread.hpp>
@@ -84,7 +84,7 @@ public:
     }
 
     bool has_emergency_private_key() const override {
-        auto* wit_plug = appbase::app().find_plugin<graphene::plugins::witness_plugin::witness_plugin>();
+        auto* wit_plug = appbase::app().find_plugin<graphene::plugins::validator_plugin::validator_plugin>();
         if (wit_plug) {
             return wit_plug->is_emergency_key_configured();
         }
@@ -607,7 +607,7 @@ void p2p_plugin::plugin_startup() {
         my->node->set_witness_diag_provider([]() -> std::string {
             try {
                 auto* wp = appbase::app().find_plugin<
-                    graphene::plugins::witness_plugin::witness_plugin>();
+                    graphene::plugins::validator_plugin::validator_plugin>();
                 if (wp && wp->get_state() == appbase::abstract_plugin::started)
                     return wp->get_production_diagnostics();
             } catch (...) {}
@@ -639,22 +639,22 @@ void p2p_plugin::broadcast_block(const graphene::protocol::signed_block& block) 
 void p2p_plugin::broadcast_block_post_validation(
     const graphene::protocol::block_id_type block_id,
     const std::string& witness_account,
-    const graphene::protocol::signature_type& witness_signature) {
-    my->p2p_thread.async([this, block_id, witness_account, witness_signature]() {
-        my->node->broadcast_block_post_validation(block_id, witness_account, witness_signature);
+    const graphene::protocol::signature_type& validator_signature) {
+    my->p2p_thread.async([this, block_id, witness_account, validator_signature]() {
+        my->node->broadcast_block_post_validation(block_id, witness_account, validator_signature);
     }).wait();
 }
 
 void p2p_plugin::post_broadcast_block_post_validation(
     const graphene::protocol::block_id_type block_id,
     const std::string& witness_account,
-    const graphene::protocol::signature_type& witness_signature) {
+    const graphene::protocol::signature_type& validator_signature) {
     // Fire-and-forget: queue the broadcast on the P2P thread without
     // blocking the caller.  The production timer thread must never
     // wait for slow peer socket I/O — a blocked wait would cause the
     // production loop to miss its slot window.
-    my->p2p_thread.async([this, block_id, witness_account, witness_signature]() {
-        my->node->broadcast_block_post_validation(block_id, witness_account, witness_signature);
+    my->p2p_thread.async([this, block_id, witness_account, validator_signature]() {
+        my->node->broadcast_block_post_validation(block_id, witness_account, validator_signature);
     });
 }
 

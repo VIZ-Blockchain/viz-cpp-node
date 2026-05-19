@@ -57,7 +57,7 @@ target_link_libraries(
         graphene::account_history
         graphene::operation_history
         graphene::account_by_key
-        graphene::witness_api
+        graphene::validator_api
         graphene_protocol
         graphene_utilities
         fc

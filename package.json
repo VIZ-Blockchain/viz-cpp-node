@@ -1,0 +1,13 @@
+{
+  "name": "viz-ledger-docs",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "realm dev",
+    "build": "realm build",
+    "preview": "realm preview"
+  },
+  "devDependencies": {
+    "@redocly/realm": "latest"
+  }
+}

@@ -1,4 +1,4 @@
-# Plugin System
+﻿# Plugin System
 
 <cite>
 **Referenced Files in This Document**
@@ -441,7 +441,7 @@ The following plugins are part of the built-in set. Each plugin exposes specific
 - mongo_db: MongoDB integration for archival/indexing.
 - json_rpc: JSON-RPC dispatcher and method registry.
 - **snapshot**: DLT mode snapshot management and P2P synchronization.
-- Additional plugins include: account_by_key, auth_util, block_info, committee_api, custom_protocol_api, debug_node, follow, invite_api, network_broadcast_api, operation_history, paid_subscription_api, private_message, raw_block, social_network, tags, test_api, witness, witness_api.
+- Additional plugins include: account_by_key, auth_util, block_info, committee_api, custom_protocol_api, debug_node, follow, invite_api, network_broadcast_api, operation_history, paid_subscription_api, private_message, raw_block, social_network, tags, test_api, validator, witness_api.
 
 **Section sources**
 - [plugins/chain/include/graphene/plugins/chain/plugin.hpp:21-42](file://plugins/chain/include/graphene/plugins/chain/plugin.hpp#L21-L42)
@@ -660,7 +660,7 @@ The P2P plugin now provides improved logging for sync block processing with bett
 - **Sync Mode Detection**: Distinguishes between sync mode and regular block processing
 - **Head Block Context**: Logs current head block number alongside block processing
 - **Progress Tracking**: Provides clear indication of synchronization progress
-- **Performance Metrics**: Includes transaction count and witness information for non-sync blocks
+- **Performance Metrics**: Includes transaction count and validator information for non-sync blocks
 
 **Logging Categories:**
 - **Sync Mode**: Uses `fc_ilog` with "sync" logger for synchronization operations

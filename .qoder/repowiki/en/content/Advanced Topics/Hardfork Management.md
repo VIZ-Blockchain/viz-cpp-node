@@ -1,4 +1,4 @@
-# Hardfork Management
+﻿# Hardfork Management
 
 <cite>
 **Referenced Files in This Document**
@@ -20,17 +20,17 @@
 - [config.hpp](file://libraries/protocol/include/graphene/protocol/config.hpp)
 - [fork_database.hpp](file://libraries/chain/include/graphene/chain/fork_database.hpp)
 - [global_property_object.hpp](file://libraries/chain/include/graphene/chain/global_property_object.hpp)
-- [witness.cpp](file://plugins/witness/witness.cpp)
+- [validator.cpp](file://plugins/validator/validator.cpp)
 </cite>
 
 ## Update Summary
 **Changes Made**
 - Added Emergency Consensus Recovery (HF12) as the latest hardfork implementation
 - Updated hardfork numbering from 11 to 12 with CHAIN_HARDFORK_12_VERSION and CHAIN_HARDFORK_12_TIME configurations
-- Enhanced witness scheduling logic with emergency mode activation
+- Enhanced validator scheduling logic with emergency mode activation
 - Added emergency consensus recovery mechanisms and three-state safety enforcement
 - Updated CHAIN_NUM_HARDFORKS from 11 to 12 in preamble
-- Added comprehensive emergency mode functionality including fork switching and witness management
+- Added comprehensive emergency mode functionality including fork switching and validator management
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -45,7 +45,7 @@
 10. [Appendices](#appendices)
 
 ## Introduction
-This document explains the hardfork management system in the VIZ C++ Node. It covers how hardforks are defined, stored, loaded, and enforced during node runtime; how scheduled upgrades are coordinated with witness voting; how backward compatibility is maintained; and how migrations and state transitions are executed. The system now includes Emergency Consensus Recovery (HF12) as the latest hardfork implementation with sophisticated emergency mode activation and witness scheduling changes designed to recover from network consensus failures.
+This document explains the hardfork management system in the VIZ C++ Node. It covers how hardforks are defined, stored, loaded, and enforced during node runtime; how scheduled upgrades are coordinated with validator voting; how backward compatibility is maintained; and how migrations and state transitions are executed. The system now includes Emergency Consensus Recovery (HF12) as the latest hardfork implementation with sophisticated emergency mode activation and validator scheduling changes designed to recover from network consensus failures.
 
 ## Project Structure
 The hardfork system is centered around:
@@ -73,7 +73,7 @@ HF12["HF12<br/>12.hf"]
 DBHdr["Database Hardfork Properties<br/>database.hpp"]
 DBInit["Hardfork Init & Evaluation<br/>database.cpp"]
 Emergency["Emergency Consensus<br/>Recovery"]
-Witness["Enhanced Witness<br/>Scheduling"]
+validator["Enhanced validator<br/>Scheduling"]
 Config["Configuration<br/>Parameters"]
 HFDir --> Preamble
 HFDir --> HF1
@@ -92,7 +92,7 @@ Preamble --> DBHdr
 HFDir --> DBInit
 DBHdr --> DBInit
 HF12 --> Emergency
-HF12 --> Witness
+HF12 --> validator
 HF12 --> Config
 ```
 
@@ -117,7 +117,7 @@ HF12 --> Config
 
 Key responsibilities:
 - Version management: Maintains arrays of hardfork times and versions used by the node, now supporting up to 12 hardforks.
-- Scheduled upgrades: Watches witness votes and sets next hardfork according to majority.
+- Scheduled upgrades: Watches validator votes and sets next hardfork according to majority.
 - Backward compatibility: Uses has_hardfork() checks to branch behavior depending on applied hardfork level.
 - Migration and state transitions: Applies changes to chain properties, validators, and runtime logic when crossing hardfork boundaries.
 - **Network recovery**: Implements automatic emergency mode activation and recovery mechanisms.
@@ -151,7 +151,7 @@ DB-->>Node : ready to validate/apply blocks
 loop Block Processing
 Node->>DB : push_block(new_block)
 DB->>DB : evaluate hardfork boundaries
-DB->>HFProps : update next_hardfork if witness consensus changes
+DB->>HFProps : update next_hardfork if validator consensus changes
 DB->>Emergency : monitor LIB timestamp
 Emergency-->>DB : activate/deactivate emergency mode
 DB-->>Node : block accepted or rejected based on hardfork rules
@@ -173,14 +173,14 @@ end
   - Hardfork 1: timestamp and version for fixing a median calculation.
   - Hardfork 2: timestamp and version for fixing a committee approval threshold.
   - Hardfork 4: introduces major protocol changes (award operations, custom sequences).
-  - Hardfork 6: modifies witness penalties and vote counting.
+  - Hardfork 6: modifies validator penalties and vote counting.
   - Hardfork 9: adjusts chain parameters for invites, subscriptions, and fees.
   - Hardfork 11: emission model changes.
-  - **Hardfork 12: Emergency Consensus Recovery with emergency mode activation and witness scheduling changes**.
+  - **Hardfork 12: Emergency Consensus Recovery with emergency mode activation and validator scheduling changes**.
 
 Practical notes:
 - Modify *.hf files to define a new hardfork; do not edit generated files.
-- Keep timestamps realistic and coordinated with witness voting.
+- Keep timestamps realistic and coordinated with validator voting.
 - **Updated CHAIN_NUM_HARDFORKS from 11 to 12 in preamble**.
 
 **Section sources**
@@ -201,7 +201,7 @@ Practical notes:
 ### Hardfork Property Object and Runtime State
 - Schema: Contains processed hardforks vector, last hardfork ID, current hardfork version, and next hardfork version/time.
 - Initialization: During open(), the node loads persisted hardfork state and ensures consistency with the chainbase revision and block log.
-- Updates: During block application, the node evaluates witness consensus and updates next_hardfork accordingly.
+- Updates: During block application, the node evaluates validator consensus and updates next_hardfork accordingly.
 - **Enhanced**: Now supports emergency consensus properties for HF12.
 
 ```mermaid
@@ -244,18 +244,18 @@ Database --> HardforkPropertyObject : "reads/writes"
 
 #### Emergency Mode Activation
 - **Automatic Detection**: Monitors last irreversible block (LIB) timestamp and activates emergency mode after CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC (1 hour) without new blocks.
-- **Emergency Witness**: Creates and activates the CHAIN_EMERGENCY_WITNESS_ACCOUNT ("committee") with CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY to produce blocks.
-- **Neutral Voting**: Emergency witness votes for the currently applied hardfork version (status quo) to avoid pushing for new hardforks.
+- **Emergency validator**: Creates and activates the CHAIN_EMERGENCY_WITNESS_ACCOUNT ("committee") with CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY to produce blocks.
+- **Neutral Voting**: Emergency validator votes for the currently applied hardfork version (status quo) to avoid pushing for new hardforks.
 
 #### Three-State Safety Enforcement
 - **Healthy Network**: Participation ≥ 33% - enforces safe defaults automatically, overriding manual config overrides.
 - **Distressed Network**: Participation < 33% - honors manual config overrides to allow operators to accelerate recovery.
 - **Emergency Mode**: Automatically bypasses both stale and participation checks when emergency consensus is active.
 
-#### Enhanced Witness Scheduling
-- **Hybrid Schedule**: During emergency mode, replaces unavailable witness slots with emergency witness while maintaining real witness positions.
-- **Vote Weighted Fork Switching**: HF12 implements vote-weighted chain comparison during fork switching, using sum of raw votes from unique non-committee witnesses as primary criterion.
-- **Median Computation**: Excludes emergency witness from median property computations to prevent skewing chain parameters.
+#### Enhanced validator Scheduling
+- **Hybrid Schedule**: During emergency mode, replaces unavailable validator slots with emergency validator while maintaining real validator positions.
+- **Vote Weighted Fork Switching**: HF12 implements vote-weighted chain comparison during fork switching, using sum of raw votes from unique non-committee validators as primary criterion.
+- **Median Computation**: Excludes emergency validator from median property computations to prevent skewing chain parameters.
 
 ```mermaid
 flowchart TD
@@ -273,7 +273,7 @@ Legacy --> End
 ```
 
 **Diagram sources**
-- [witness.cpp:354-392](file://plugins/witness/witness.cpp#L354-L392)
+- [validator.cpp:354-392](file://plugins/validator/validator.cpp#L354-L392)
 - [database.cpp:2052-2143](file://libraries/chain/database.cpp#L2052-L2143)
 - [database.cpp:1096-1135](file://libraries/chain/database.cpp#L1096-L1135)
 
@@ -282,21 +282,21 @@ Legacy --> End
 - [database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
 - [database.cpp:2052-2143](file://libraries/chain/database.cpp#L2052-L2143)
 - [database.cpp:1096-1135](file://libraries/chain/database.cpp#L1096-L1135)
-- [witness.cpp:354-392](file://plugins/witness/witness.cpp#L354-L392)
+- [validator.cpp:354-392](file://plugins/validator/validator.cpp#L354-L392)
 
 ### Hardfork Evaluation and Block Application
 - During block validation and application, the node checks:
   - Whether the current hardfork version requires applying changes.
-  - Whether witness consensus indicates a scheduled upgrade.
+  - Whether validator consensus indicates a scheduled upgrade.
   - **Emergency mode activation conditions** based on LIB timestamp monitoring.
-- The node compares witness votes against configured hardfork versions/times and updates next_hardfork accordingly.
+- The node compares validator votes against configured hardfork versions/times and updates next_hardfork accordingly.
 - Behavior changes are gated behind has_hardfork() checks to preserve backward compatibility.
 - **Enhanced**: HF12 adds emergency consensus detection and three-state safety enforcement logic.
 
 ```mermaid
 flowchart TD
 Start(["Start Block Apply"]) --> CheckHF["Check current_hardfork_version vs next_hardfork"]
-CheckHF --> Consensus{"Witness consensus<br/>requires upgrade?"}
+CheckHF --> Consensus{"validator consensus<br/>requires upgrade?"}
 Consensus --> |Yes| UpdateNext["Update next_hardfork and time"]
 Consensus --> |No| CheckEmergency["Check Emergency Mode Conditions"]
 CheckEmergency --> EmergencyActive{"Emergency Mode<br/>Active?"}
@@ -345,7 +345,7 @@ Operational guidance:
 ### Rollback and Recovery for Failed Upgrades
 - Undo sessions: The database uses undo sessions to roll back partial changes when block application fails.
 - Fork switching: If a new head does not build off the current head, the node switches forks and reapplies blocks safely.
-- **Enhanced fork switching**: HF12 implements vote-weighted chain comparison during fork switching, using sum of raw votes from unique non-committee witnesses as primary criterion.
+- **Enhanced fork switching**: HF12 implements vote-weighted chain comparison during fork switching, using sum of raw votes from unique non-committee validators as primary criterion.
 - Pop block: Removes the head block and restores transactions to pending state.
 - **Emergency mode recovery**: Automatic recovery mechanisms handle emergency consensus state transitions.
 
@@ -391,7 +391,7 @@ Steps to add a new hardfork:
 Examples of where to add logic:
 - Operation evaluators: Wrap validation or execution in has_hardfork() branches.
 - Chain properties: Adjust median properties or inflation logic based on hardfork level.
-- Witness scheduling: Update vote counting or penalties depending on hardfork.
+- validator scheduling: Update vote counting or penalties depending on hardfork.
 - **Emergency mode handling**: Implement recovery mechanisms for network failure scenarios.
 
 **Section sources**
@@ -408,7 +408,7 @@ Examples of where to add logic:
 - **Consider emergency mode compatibility** for critical operations.
 
 ### Modifying Existing Behavior
-- Identify the affected subsystem (e.g., witness voting, inflation, chain properties, emergency mode).
+- Identify the affected subsystem (e.g., validator voting, inflation, chain properties, emergency mode).
 - Add a new hardfork constant and timestamp.
 - Update the relevant runtime logic to branch on has_hardfork().
 - **Implement emergency mode considerations** for network recovery scenarios.
@@ -422,11 +422,11 @@ Examples of where to add logic:
 ### Common Hardfork Scenarios
 - Protocol changes: Introduce new operations or modify semantics (e.g., award operations, custom sequences).
 - Bug fixes: Correct calculations or state transitions (e.g., median properties, vote accounting).
-- Feature additions: Enable new chain parameters or fee structures (e.g., invites, subscriptions, witness penalties).
+- Feature additions: Enable new chain parameters or fee structures (e.g., invites, subscriptions, validator penalties).
 - **Network recovery**: Emergency consensus activation and recovery mechanisms for consensus failures.
 
 Validation procedures:
-- Confirm hardfork timestamps align with witness votes.
+- Confirm hardfork timestamps align with validator votes.
 - Verify has_hardfork() branches execute the intended logic.
 - Run reindex tests to ensure deterministic replay.
 - **Test emergency mode activation and recovery scenarios**.
@@ -444,7 +444,7 @@ Validation procedures:
 The hardfork system depends on:
 - Hardfork definition files for compile-time constants.
 - Database hardfork property object for runtime state.
-- Witness consensus for determining next hardfork.
+- validator consensus for determining next hardfork.
 - Block log and fork database for replay and fork switching.
 - **Emergency consensus parameters and configurations**.
 
@@ -459,7 +459,7 @@ HFProps["HardforkPropertyObject"]
 ForkDB["Fork DB"]
 BlockLog["Block Log"]
 Config["config.hpp<br/>Emergency Params"]
-Witness["witness.cpp<br/>Three-State Safety"]
+validator["validator.cpp<br/>Three-State Safety"]
 Emergency["Emergency Logic"]
 HFFiles --> Preamble
 Preamble --> DBHdr
@@ -469,7 +469,7 @@ ForkDB --> DBInit
 BlockLog --> DBInit
 HF12 --> DBInit
 Config --> DBInit
-Witness --> DBInit
+validator --> DBInit
 Emergency --> DBInit
 ```
 
@@ -479,7 +479,7 @@ Emergency --> DBInit
 - [database.hpp:577-578](file://libraries/chain/include/graphene/chain/database.hpp#L577-L578)
 - [database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
 - [config.hpp:110-123](file://libraries/protocol/include/graphene/protocol/config.hpp#L110-L123)
-- [witness.cpp:354-392](file://plugins/witness/witness.cpp#L354-L392)
+- [validator.cpp:354-392](file://plugins/validator/validator.cpp#L354-L392)
 
 **Section sources**
 - [0-preamble.hf:54-56](file://libraries/chain/hardfork.d/0-preamble.hf#L54-L56)
@@ -492,14 +492,14 @@ Emergency --> DBInit
 - Reindexing with skip flags reduces overhead by bypassing expensive validations.
 - Periodic revision setting during reindex prevents excessive memory pressure.
 - Auto-scaling shared memory helps avoid failures during heavy reindex workloads.
-- **Emergency mode optimization**: Minimal performance impact through efficient emergency witness creation and activation.
+- **Emergency mode optimization**: Minimal performance impact through efficient emergency validator creation and activation.
 - **Enhanced fork switching**: Vote-weighted chain comparison adds computational overhead but improves network stability.
 
 Recommendations:
 - Configure shared memory sizing appropriately for your hardware.
 - Monitor free memory and adjust thresholds to trigger resizing proactively.
 - **Monitor emergency mode activation frequency** to assess network health.
-- **Optimize witness scheduling algorithms** for emergency mode scenarios.
+- **Optimize validator scheduling algorithms** for emergency mode scenarios.
 
 **Section sources**
 - [database.cpp:270-350](file://libraries/chain/database.cpp#L270-L350)
@@ -511,15 +511,15 @@ Common issues and resolutions:
 - Revision mismatch on open: Indicates chainbase revision does not match head block number; reindex or restore from a compatible backup.
 - Chain state mismatch with block log: Requires reindex to reconcile state.
 - Memory exhaustion during reindex: Increase shared memory size or tune auto-resize parameters.
-- Hardfork not triggering: Verify witness consensus matches configured hardfork version/time; check has_hardfork() branches.
+- Hardfork not triggering: Verify validator consensus matches configured hardfork version/time; check has_hardfork() branches.
 - **Emergency mode activation failures**: Check CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC configuration and LIB timestamp monitoring.
-- **Emergency witness creation issues**: Verify CHAIN_EMERGENCY_WITNESS_ACCOUNT and CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY settings.
-- **Three-state safety enforcement problems**: Review witness participation rate calculations and configuration overrides.
+- **Emergency validator creation issues**: Verify CHAIN_EMERGENCY_WITNESS_ACCOUNT and CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY settings.
+- **Three-state safety enforcement problems**: Review validator participation rate calculations and configuration overrides.
 
 Diagnostic steps:
 - Review logs around open() and reindex() for explicit assertions or exceptions.
 - Confirm hardfork timestamps and versions in *.hf files.
-- Validate that next_hardfork updates according to witness votes.
+- Validate that next_hardfork updates according to validator votes.
 - **Monitor emergency mode activation and deactivation events**.
 - **Check fork switching behavior** during emergency mode.
 
@@ -528,7 +528,7 @@ Diagnostic steps:
 - [database.cpp:270-350](file://libraries/chain/database.cpp#L270-L350)
 - [database.cpp:1600-1654](file://libraries/chain/database.cpp#L1600-L1654)
 - [database.cpp:4334-4438](file://libraries/chain/database.cpp#L4334-L4438)
-- [witness.cpp:354-392](file://plugins/witness/witness.cpp#L354-L392)
+- [validator.cpp:354-392](file://plugins/validator/validator.cpp#L354-L392)
 
 ## Conclusion
 The VIZ hardfork system provides a robust, versioned mechanism for managing protocol upgrades, now enhanced with comprehensive emergency consensus recovery capabilities. By combining compile-time definitions, runtime state tracking, consensus-driven scheduling, and automatic network recovery mechanisms, it enables safe, backward-compatible upgrades even during network failure scenarios. The addition of HF12 (Emergency Consensus Recovery) significantly strengthens the system's resilience and reliability for critical network operations.
@@ -540,11 +540,11 @@ The VIZ hardfork system provides a robust, versioned mechanism for managing prot
   - Deploy *.hf files and rebuild (remember to increment CHAIN_NUM_HARDFORKS to 12).
   - Start node in read-only mode to validate.
   - Monitor logs and metrics.
-  - Coordinate with witnesses to reach consensus.
+  - Coordinate with validators to reach consensus.
   - **Monitor emergency mode activation and recovery scenarios**.
   - Proceed with full node operation after verification.
 - **Emergency mode operational procedures**:
   - Monitor CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC threshold.
-  - Verify emergency witness activation and block production.
+  - Verify emergency validator activation and block production.
   - Track emergency mode duration and automatic deactivation.
   - Test fork switching behavior during emergency scenarios.

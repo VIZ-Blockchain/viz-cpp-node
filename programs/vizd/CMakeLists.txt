@@ -21,8 +21,8 @@ target_link_libraries(
         graphene_utilities
         graphene::chain_plugin
         graphene::network_broadcast_api
-        graphene::witness
-        graphene::witness_api
+        graphene::validator
+        graphene::validator_api
         graphene::database_api
         graphene::operation_history
         graphene::account_by_key
@@ -36,7 +36,7 @@ target_link_libraries(
         graphene::paid_subscription_api
         graphene::custom_protocol_api
         graphene::snapshot
-        graphene::witness_guard
+        graphene::validator_guard
         graphene_protocol
         fc
         ${CMAKE_DL_LIBS}

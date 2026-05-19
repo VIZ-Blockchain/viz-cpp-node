@@ -1,4 +1,4 @@
-# VIZ Blockchain — Consensus Emergency Parameters
+﻿# VIZ Blockchain — Consensus Emergency Parameters
 
 Parameters used to restart stuck consensus, their operational mechanics, and the micro-fork risks when operators forget to revert them after the emergency is resolved.
 
@@ -6,15 +6,15 @@ Parameters used to restart stuck consensus, their operational mechanics, and the
 
 ## Overview
 
-When the VIZ network stalls — no blocks are produced because too few witnesses are online — operators can activate emergency parameters to unblock production:
+When the VIZ network stalls — no blocks are produced because too few validators are online — operators can activate emergency parameters to unblock production:
 
 | Parameter | Normal Value | Emergency Value | Location |
 |---|---|---|---|
-| `enable-stale-production` | `false` | `true` | witness plugin |
-| `required-participation` | `3300` (33%) | `0` | witness plugin |
+| `enable-stale-production` | `false` | `true` | Validator Plugin |
+| `required-participation` | `3300` (33%) | `0` | Validator Plugin |
 | `fork_db` `_max_size` | `1024` (dynamic) | `1024` (initial) | chain library |
 
-Starting with Hardfork 12, the on-chain **emergency consensus activation** is fully automatic and deterministic. When the network stalls for >1 hour (`b.timestamp - lib_block.timestamp >= 3600`), emergency consensus mode activates on every node — no config flags needed. The activation uses only signed block timestamps from the chain state, ensuring identical results during replay. **All real witnesses are disabled** on activation (signing_key zeroed); operators must re-register via `witness_update_operation`. LIB advances every block (capped at HEAD−1), so the undo limit is never reached. Emergency exits automatically when 75% (16/21) of schedule slots are real witnesses. The older `enable-stale-production` and `required-participation` overrides are still available for pre-HF12 scenarios or manual recovery.
+Starting with Hardfork 12, the on-chain **emergency consensus activation** is fully automatic and deterministic. When the network stalls for >1 hour (`b.timestamp - lib_block.timestamp >= 3600`), emergency consensus mode activates on every node — no config flags needed. The activation uses only signed block timestamps from the chain state, ensuring identical results during replay. **All real validators are disabled** on activation (signing_key zeroed); operators must re-register via `witness_update_operation`. LIB advances every block (capped at HEAD−1), so the undo limit is never reached. Emergency exits automatically when 75% (16/21) of schedule slots are real validators. The older `enable-stale-production` and `required-participation` overrides are still available for pre-HF12 scenarios or manual recovery.
 
 These parameters are essential for chain recovery, but if left in emergency mode after the network stabilizes, they become the **root cause of micro-forks**: isolated delegates continue producing blocks on their own divergent chain during any subsequent network partition.
 
@@ -24,7 +24,7 @@ These parameters are essential for chain recovery, but if left in emergency mode
 
 ### Definition
 
-Controls whether the witness node produces blocks when the chain is "stale" — i.e., the node has not received recent blocks and its head block is behind the network.
+Controls whether the validator node produces blocks when the chain is "stale" — i.e., the node has not received recent blocks and its head block is behind the network.
 
 | Property | Value |
 |---|---|
@@ -32,11 +32,11 @@ Controls whether the witness node produces blocks when the chain is "stale" — 
 | Default | `false` |
 | Command line | `--enable-stale-production` |
 | Config file | `enable-stale-production = true` |
-| Source | [witness.cpp:126](../../plugins/witness/witness.cpp#L126) |
+| Source | [validator.cpp:126](../../plugins/validator/validator.cpp#L126) |
 
 ### How It Works
 
-When `enable-stale-production = false` (default), the witness plugin starts with `_production_enabled = false`. Before each production attempt, the check at [witness.cpp:333-339](../../plugins/witness/witness.cpp#L333) runs:
+When `enable-stale-production = false` (default), the Validator Plugin starts with `_production_enabled = false`. Before each production attempt, the check at [validator.cpp:333-339](../../plugins/validator/validator.cpp#L333) runs:
 
 ```cpp
 if (!_production_enabled) {
@@ -50,11 +50,11 @@ if (!_production_enabled) {
 
 The node will **not** produce blocks until it receives a block whose timestamp places the next slot in the present or future — confirming it is synchronized with the network. Once caught up, production auto-enables permanently.
 
-When `enable-stale-production = true`, `_production_enabled` is set to `true` immediately at initialization ([witness.cpp:149-151](../../plugins/witness/witness.cpp#L149)), bypassing the sync check entirely.
+When `enable-stale-production = true`, `_production_enabled` is set to `true` immediately at initialization ([validator.cpp:149-151](../../plugins/validator/validator.cpp#L149)), bypassing the sync check entirely.
 
 ### Side Effect: `skip_undo_history_check`
 
-Setting `enable-stale-production = true` also activates the `skip_undo_history_check` production flag ([witness.cpp:184](../../plugins/witness/witness.cpp#L184)):
+Setting `enable-stale-production = true` also activates the `skip_undo_history_check` production flag ([validator.cpp:184](../../plugins/validator/validator.cpp#L184)):
 
 ```cpp
 if (pimpl->_production_enabled) {
@@ -73,17 +73,17 @@ if (!(skip & skip_undo_history_check)) {
 }
 ```
 
-`CHAIN_MAX_UNDO_HISTORY` = 10000 blocks ([config.hpp:108](../../libraries/protocol/include/graphene/protocol/config.hpp#L108)). Without this check, a node producing blocks alone can accumulate an unlimited gap between head and last irreversible block (LIB), since LIB only advances when enough witnesses sign off via block post-validation.
+`CHAIN_MAX_UNDO_HISTORY` = 10000 blocks ([config.hpp:108](../../libraries/protocol/include/graphene/protocol/config.hpp#L108)). Without this check, a node producing blocks alone can accumulate an unlimited gap between head and last irreversible block (LIB), since LIB only advances when enough validators sign off via block post-validation.
 
 ### Emergency Use Case
 
-When the network has completely stalled (no witnesses producing), setting `enable-stale-production = true` on at least one witness node allows it to start producing blocks from its current head, even if it considers the chain stale. This breaks the deadlock and restarts block production.
+When the network has completely stalled (no validators producing), setting `enable-stale-production = true` on at least one validator node allows it to start producing blocks from its current head, even if it considers the chain stale. This breaks the deadlock and restarts block production.
 
 ### Micro-Fork Risk
 
 **If the operator forgets to revert this to `false` after the network recovers**, any subsequent network partition causes the node to continue producing blocks in isolation:
 
-1. The node loses P2P connectivity to other witnesses
+1. The node loses P2P connectivity to other validators
 2. No new blocks are received, so `get_slot_time(1) < now` — but since `enable-stale-production = true`, this check is skipped
 3. The node keeps producing blocks on its own fork
 4. `skip_undo_history_check` means there is **no limit** on how far the head-LIB gap grows
@@ -95,7 +95,7 @@ When the network has completely stalled (no witnesses producing), setting `enabl
 
 ### Definition
 
-The minimum witness participation rate (in basis points) required for block production. The participation rate measures what fraction of the last 128 block slots were actually filled by witnesses.
+The minimum validator participation rate (in basis points) required for block production. The participation rate measures what fraction of the last 128 block slots were actually filled by validators.
 
 | Property | Value |
 |---|---|
@@ -104,7 +104,7 @@ The minimum witness participation rate (in basis points) required for block prod
 | Range | 0–9900 (0%–99%) |
 | Command line | `--required-participation <value>` |
 | Config file | `required-participation = <value>` |
-| Source | [witness.cpp:127](../../plugins/witness/witness.cpp#L127) |
+| Source | [validator.cpp:127](../../plugins/validator/validator.cpp#L127) |
 
 ### Internal Representation
 
@@ -126,7 +126,7 @@ uint32_t database::witness_participation_rate() const {
 }
 ```
 
-`recent_slots_filled` is a 128-bit bitmask ([global_property_object.hpp:94](../../libraries/chain/include/graphene/chain/global_property_object.hpp#L94)) where each bit represents one of the last 128 block slots. A `1` means the slot was filled by a witness, `0` means it was missed. The rate is the percentage of filled slots.
+`recent_slots_filled` is a 128-bit bitmask ([global_property_object.hpp:94](../../libraries/chain/include/graphene/chain/global_property_object.hpp#L94)) where each bit represents one of the last 128 block slots. A `1` means the slot was filled by a validator, `0` means it was missed. The rate is the percentage of filled slots.
 
 The bitmask is updated on each block application at [database.cpp:4060-4063](../../libraries/chain/database.cpp#L4060):
 
@@ -142,7 +142,7 @@ For each missed block, a `0` is shifted in. For the current block, a `1` is shif
 
 ### Production Check
 
-Before producing a block, the witness plugin checks ([witness.cpp:436-439](../../plugins/witness/witness.cpp#L436)):
+Before producing a block, the Validator Plugin checks ([validator.cpp:436-439](../../plugins/validator/validator.cpp#L436)):
 
 ```cpp
 uint32_t prate = db.witness_participation_rate();
@@ -154,7 +154,7 @@ if (prate < _required_witness_participation) {
 
 If the participation rate is below the threshold, block production is suppressed and the error message logs:
 ```
-Not producing block because node appears to be on a minority fork with only X% witness participation
+Not producing block because node appears to be on a minority fork with only X% validator participation
 ```
 
 ### Emergency Use Case
@@ -169,7 +169,7 @@ When the network has stalled, `recent_slots_filled` will be mostly zeros (many m
 2. On the minority fork, `recent_slots_filled` decays (more missed slots)
 3. With the default 33% threshold, production would stop within ~85 missed slots (when participation drops below 33%)
 4. With `required-participation = 0`, the node **never stops producing** regardless of how isolated it is
-5. A single witness on a completely isolated node continues producing blocks alone
+5. A single validator on a completely isolated node continues producing blocks alone
 
 This is the most dangerous of the three parameters because it removes the **last automatic safeguard** against solo block production on a minority fork.
 
@@ -255,11 +255,11 @@ Timeline:
 
 ### Step-by-step breakdown
 
-1. **Network stalls**: Insufficient witnesses are online to meet the 33% participation threshold. No blocks are produced.
+1. **Network stalls**: Insufficient validators are online to meet the 33% participation threshold. No blocks are produced.
 
 2. **Emergency activated**: A delegate sets `enable-stale-production = true` and `required-participation = 0` in their config. The node starts producing blocks, restarting the chain.
 
-3. **Network recovers**: Other witnesses come online, see the new blocks, and start participating. The network is healthy again — but the emergency settings are still active in the delegate's config.
+3. **Network recovers**: Other validators come online, see the new blocks, and start participating. The network is healthy again — but the emergency settings are still active in the delegate's config.
 
 4. **Normal operation with emergency settings**: Everything appears fine. The delegate is producing blocks normally. The participation rate is high, so `required-participation = 0` makes no difference. The node is synced, so `enable-stale-production = true` makes no difference.
 
@@ -280,13 +280,13 @@ Timeline:
 
 With normal settings (`enable-stale-production = false`, `required-participation = 3300`):
 
-1. **Network partition occurs**: The node stops receiving blocks from other witnesses.
+1. **Network partition occurs**: The node stops receiving blocks from other validators.
 
 2. **Participation decays**: `recent_slots_filled` shifts in zeros for each missed slot. After ~85 missed slots (about 4 minutes), participation drops below 33%.
 
 3. **Production stops**: The `low_participation` check suppresses block production. The node logs:
    ```
-   Not producing block because node appears to be on a minority fork with only X% witness participation
+   Not producing block because node appears to be on a minority fork with only X% validator participation
    ```
 
 4. **Even if participation hasn't decayed yet**: When the node's chain becomes stale (no recent blocks), the `_production_enabled` check would block production if `enable-stale-production = false` had been set and the node had somehow lost its synced state.
@@ -319,7 +319,7 @@ When the network has stalled and block production must be restarted:
    Generated block #N with timestamp T at time C by W
    ```
 
-4. **Wait for network recovery** — once other witnesses are back online and the participation rate stabilizes above 33%, **immediately revert the settings**.
+4. **Wait for network recovery** — once other validators are back online and the participation rate stabilizes above 33%, **immediately revert the settings**.
 
 ### Reverting Emergency Mode (Critical Step)
 
@@ -343,21 +343,21 @@ Then restart the node. **Do not skip this step.** Leaving emergency settings act
 
 ### Red Flags: Emergency Settings Still Active
 
-If you observe any of these log patterns, a witness is likely running with emergency settings still active:
+If you observe any of these log patterns, a validator is likely running with emergency settings still active:
 
-- **Blocks produced during a network partition**: A witness that should have stopped continues generating blocks
+- **Blocks produced during a network partition**: A validator that should have stopped continues generating blocks
 - **Participation rate logs showing < 33% but blocks still produced**: `required-participation = 0` is active
 - **Head-LIB gap growing beyond 10000 blocks**: `skip_undo_history_check` is active (via `enable-stale-production = true`)
-- **Fork collision warnings with rapid reoccurrence**: Isolated witness creates competing blocks at the same heights
+- **Fork collision warnings with rapid reoccurrence**: Isolated validator creates competing blocks at the same heights
 
 ---
 
 ## Configuration File Examples
 
-### Production Witness (Normal Operation)
+### Production validator (Normal Operation)
 
 ```ini
-# Normal witness configuration — SAFE
+# Normal validator configuration — SAFE
 enable-stale-production = false
 required-participation = 3300
 ```
@@ -394,7 +394,7 @@ required-participation = 0
 | `CHAIN_1_PERCENT` | 100 | 1% in basis points | [config.hpp:58](../../libraries/protocol/include/graphene/protocol/config.hpp#L58) |
 | `CHAIN_MAX_UNDO_HISTORY` | 10000 | Max head-LIB gap before undo history exception | [config.hpp:108](../../libraries/protocol/include/graphene/protocol/config.hpp#L108) |
 | `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` | 3600 | Seconds since LIB before emergency activates | [config.hpp:112](../../libraries/protocol/include/graphene/protocol/config.hpp#L112) |
-| `CHAIN_IRREVERSIBLE_THRESHOLD` | 7500 (75%) | Witness validation threshold for LIB advancement | [config.hpp:110](../../libraries/protocol/include/graphene/protocol/config.hpp#L110) |
+| `CHAIN_IRREVERSIBLE_THRESHOLD` | 7500 (75%) | validator validation threshold for LIB advancement | [config.hpp:110](../../libraries/protocol/include/graphene/protocol/config.hpp#L110) |
 | `fork_db._max_size` | 1024 | Default fork database depth | [fork_database.hpp:117](../../libraries/chain/include/graphene/chain/fork_database.hpp#L117) |
 | `MAX_BLOCK_REORDERING` | 1024 | Max out-of-order block insertion distance | [fork_database.hpp:57](../../libraries/chain/include/graphene/chain/fork_database.hpp#L57) |
 
@@ -404,7 +404,7 @@ With 3-second block intervals and 128-slot window:
 
 | Missed Slots | Participation Rate | Status |
 |---|---|---|
-| 0 | 100% | All witnesses active |
+| 0 | 100% | All validators active |
 | 32 (1.6 min) | 75% | Healthy |
 | 64 (3.2 min) | 50% | Degraded |
 | 85 (4.3 min) | 33.6% | Just above default threshold |
@@ -442,7 +442,7 @@ maybe_produce_block()
   │   │   └─ No: return not_synced          ← BYPASSED when enable-stale-production=true
   │   └─ Yes: continue
   │
-  ├─ Is it my turn? (scheduled witness check)
+  ├─ Is it my turn? (scheduled validator check)
   │   └─ No: return not_my_turn
   │
   ├─ Do I have the private key?

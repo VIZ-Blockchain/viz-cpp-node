@@ -1,4 +1,4 @@
-# Emergency Consensus Mode — Full Workflow Tree
+﻿# Emergency Consensus Mode — Full Workflow Tree
 
 Comprehensive analysis of the emergency consensus system introduced in Hardfork 12. Covers all processes, code paths, component interactions, and guard conditions across the entire node codebase.
 
@@ -6,7 +6,7 @@ Comprehensive analysis of the emergency consensus system introduced in Hardfork 
 
 ## 1. Overview
 
-Emergency consensus mode activates when the network has stalled for 1 hour (no blocks have been accepted since the Last Irreversible Block timestamp). During emergency, a special "committee" witness produces blocks to maintain chain continuity. Once enough real witnesses re-enable their signing keys (\(\ge\) 75% of schedule slots), emergency mode auto-deactivates.
+Emergency consensus mode activates when the network has stalled for 1 hour (no blocks have been accepted since the Last Irreversible Block timestamp). During emergency, a special "committee" validator produces blocks to maintain chain continuity. Once enough real validators re-enable their signing keys (\(\ge\) 75% of schedule slots), emergency mode auto-deactivates.
 
 ### Key Constants
 
@@ -15,9 +15,9 @@ Emergency consensus mode activates when the network has stalled for 1 hour (no b
 | `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` | 3600 | Seconds since LIB before activation |
 | `CHAIN_EMERGENCY_WITNESS_ACCOUNT` | `"committee"` | Emergency block producer |
 | `CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY` | `VIZ75CR...` | Deterministic signing key |
-| `CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS` | 21 | Consecutive real-witness blocks for exit |
+| `CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS` | 21 | Consecutive real-validator blocks for exit |
 | `CHAIN_IRREVERSIBLE_THRESHOLD` | 75% (`75 * CHAIN_1_PERCENT`) | Required to advance LIB / exit emergency |
-| `CHAIN_MAX_WITNESSES` | 21 | Maximum unique witness slots |
+| `CHAIN_MAX_WITNESSES` | 21 | Maximum unique validator slots |
 | `CHAIN_HARDFORK_12` | Hardfork #12 | Gates all emergency logic |
 
 ### System State
@@ -64,8 +64,8 @@ Block applied (update_global_dynamic_data)
       │       dgp.emergency_consensus_active = true
       │       dgp.emergency_consensus_start_block = b.block_num()
       │
-      ├── 2. Create/Update emergency witness object:
-      │   ├── Witness "committee" exists?
+      ├── 2. Create/Update emergency validator object:
+      │   ├── validator "committee" exists?
       │   │   ├── No  → create<witness_object>:
       │   │   │         owner = "committee"
       │   │   │         signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY
@@ -77,8 +77,8 @@ Block applied (update_global_dynamic_data)
       │   │             schedule = top
       │   │             sync version + hardfork votes + props
       │   │
-      │   ├── 3. Disable ALL real witnesses:
-      │   │       For each witness (except committee):
+      │   ├── 3. Disable ALL real validators:
+      │   │       For each validator (except committee):
       │   │         signing_key = zero (public_key_type())
       │   │         penalty_percent = 0
       │   │         counted_votes = votes
@@ -86,7 +86,7 @@ Block applied (update_global_dynamic_data)
       │   │
       │   ├── 4. Remove ALL penalty expiration objects
       │   │
-      │   ├── 5. Override witness schedule:
+      │   ├── 5. Override validator schedule:
       │   │       All num_scheduled_witnesses slots → "committee"
       │   │       next_shuffle_block_num = head + num_scheduled
       │   │
@@ -111,8 +111,8 @@ Block applied (update_global_dynamic_data)
 ```
 update_witness_schedule()
   │
-  ├── 1. Build normal witness schedule
-  │      (may have empty slots if witnesses have zero signing_key)
+  ├── 1. Build normal validator schedule
+  │      (may have empty slots if validators have zero signing_key)
   │
   ├── Gate: has_hardfork(HF12) && emergency_consensus_active?
   │   └── No  → skip hybrid override, proceed with normal schedule
@@ -122,37 +122,37 @@ update_witness_schedule()
       ├── For each slot i in [0, CHAIN_MAX_WITNESSES) (by CHAIN_BLOCK_WITNESS_REPEAT):
       │   ├── Slot name == "" ?
       │   │   └── Fill slot + repeats with "committee" → committee_slots++
-      │   ├── Witness has signing_key != zero ?
-      │   │   └── Keep witness → real_witness_slots++
-      │   └── Witness unavailable (key=0 or not found)?
+      │   ├── validator has signing_key != zero ?
+      │   │   └── Keep validator → real_witness_slots++
+      │   └── validator unavailable (key=0 or not found)?
       │       └── Fill slot + repeats with "committee" → committee_slots++
       │
       ├── Expand: num_scheduled_witnesses = CHAIN_MAX_WITNESSES × REPEAT
       ├── Set: next_shuffle_block_num = head + num_scheduled
       ├── Log: "Emergency hybrid schedule: R real, C committee slots"
       │
-      ├── Sync committee witness:
+      ├── Sync committee validator:
       │       props = current median_props
       │       hardfork votes = current applied version (neutral voter)
       │
       └── === EXIT CHECK ===
           ├── exit_threshold = (CHAIN_MAX_WITNESSES × 75%) / 100  (= 15)
           ├── real_witness_slots >= exit_threshold?
-          │   ├── No  → emergency continues (not enough real witnesses)
+          │   ├── No  → emergency continues (not enough real validators)
           │   └── Yes → DEACTIVATE:
           │       ├── dgp.emergency_consensus_active = false
           │       ├── _fork_db.set_emergency_mode(false)
           │       └── Log: "EMERGENCY CONSENSUS MODE deactivated at block #N.
-          │                R real witnesses active (threshold: T)."
+          │                R real validators active (threshold: T)."
           │
-          └── After deactivation: witnesses with restored keys produce normally
+          └── After deactivation: validators with restored keys produce normally
 ```
 
 ---
 
-### 2C. Witness Block Production in Emergency Mode
+### 2C. validator Block Production in Emergency Mode
 
-**Location:** [`witness_plugin::maybe_produce_block()`](file://plugins/witness/witness.cpp#L468-L870)
+**Location:** [`witness_plugin::maybe_produce_block()`](file://plugins/validator/validator.cpp#L468-L870)
 
 ```
 maybe_produce_block() {now = NTP + 250ms}
@@ -180,7 +180,7 @@ maybe_produce_block() {now = NTP + 250ms}
   │   │       │       ├── Yes → _production_enabled = true
   │   │       │       └── No  → return not_synced
   │   │       └── _witnesses.empty()?
-  │   │           └── Yes → ERROR: "no witnesses configured"
+  │   │           └── Yes → ERROR: "no validators configured"
   │   │
   │   ├── Not emergency, participation >= 33%?
   │   │   └── Yes → HEALTHY PATH:
@@ -192,12 +192,12 @@ maybe_produce_block() {now = NTP + 250ms}
   │           ├── Honor enable-stale-production override
   │           └── Else: check sync + participation normally
   │
-  ├── Block post-validation broadcast (every witness we have, scheduled only)
+  ├── Block post-validation broadcast (every validator we have, scheduled only)
   │
   ├── === MINORITY FORK DETECTION ===
   │   │
   │   ├── NOT emergency: standard 21-block check
-  │   │   └── All 21 blocks from our witnesses?
+  │   │   └── All 21 blocks from our validators?
   │   │       ├── stale-production enabled → continue
   │   │       └── stale-production disabled → resync_from_lib()
   │   │
@@ -207,7 +207,7 @@ maybe_produce_block() {now = NTP + 250ms}
   │   │
   │   └── Emergency + DLT + NOT MASTER (follower):
   │       └── 21-block check (1 full round via CHAIN_MAX_WITNESSES)
-  │           └── All 21 blocks from our witnesses?
+  │           └── All 21 blocks from our validators?
   │               └── Yes → DLT EMERGENCY MINORITY FORK:
   │                   resync_from_lib()  [but see guard in §2G below]
   │
@@ -224,7 +224,7 @@ maybe_produce_block() {now = NTP + 250ms}
   │   ├── Emergency mode: ANY block at this height IS competing
   │   │   → defer to fork_db deterministic hash resolution
   │   │
-  │   └── Normal mode: only different witness + different parent
+  │   └── Normal mode: only different validator + different parent
   │       → vote-weight comparison
   │
   └── generate_block() with committee private key
@@ -315,7 +315,7 @@ fork_db._push_block(item)
 update_last_irreversible_block()
   │
   ├── Normal LIB computation:
-  │   ├── Collect witness objects for all schedule slots
+  │   ├── Collect validator objects for all schedule slots
   │   ├── nth_element by last_supported_block_num
   │   └── new_lib = wit_objs[offset]->last_supported_block_num
   │       where offset = (100% - 75%) × num_witnesses / 100%
@@ -331,7 +331,7 @@ update_last_irreversible_block()
   │       │   would leave permanently corrupted state (zeroed schedule).
   │       └── No  → use computed value
   │
-  ├── Committee witness: current_run advances by CHAIN_BLOCK_WITNESS_REPEAT each block
+  ├── Committee validator: current_run advances by CHAIN_BLOCK_WITNESS_REPEAT each block
   │   → after 3 blocks (CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN), LIB moves every block
   │   → gap between LIB and HEAD stays small → fork_db won't overflow
   │
@@ -440,15 +440,15 @@ resync_from_lib() — called from minority fork detection
 ```
 verify_signing_witness(next_block)
   │
-  ├── Normal mode: FC_ASSERT(witness.owner == scheduled_witness)
-  │   └── "Witness produced block at wrong time"
+  ├── Normal mode: FC_ASSERT(validator.owner == scheduled_witness)
+  │   └── "validator produced block at wrong time"
   │
   └── Emergency mode:
-      └── If block.witness != scheduled_witness:
+      └── If block.validator != scheduled_witness:
           └── dlog (debug, not assertion)
               "Emergency mode: accepting block from BW at slot scheduled for SW"
-          → Block accepted regardless of slot-to-witness mapping
-          → Signature still validated against block.witness's signing_key
+          → Block accepted regardless of slot-to-validator mapping
+          → Signature still validated against block.validator's signing_key
 ```
 
 ---
@@ -503,7 +503,7 @@ handle_block(blk_msg, sync_mode)
   │   └── sync_mode AND gap 0-2 AND dlt_mode AND block_age < 30s?
   │       ├── Yes → treat as NORMAL block (sync_mode = false)
   │       │   Reason: Prevents "Syncing Blockchain started" triggers
-  │       │   when only a few blocks behind. Emergency witnesses must
+  │       │   when only a few blocks behind. Emergency validators must
   │       │   continue producing — entering full sync mode would set
   │       │   currently_syncing=true and disrupt the production loop.
   │       └── No  → keep sync_mode
@@ -515,12 +515,12 @@ handle_block(blk_msg, sync_mode)
 
 ---
 
-### 2L. Witness Guard — Emergency-Aware Key Restoration
+### 2L. validator guard — Emergency-Aware Key Restoration
 
 **Location:** [`witness_guard::plugin.cpp`](file://plugins/witness_guard/witness_guard.cpp#L87-L107)
 
 ```
-Witness key auto-restore check:
+validator key auto-restore check:
   │
   ├── stale_production_config override active?
   │   ├── Non-emergency + participation >= 33% → auto-clear stale flag
@@ -541,7 +541,7 @@ Witness key auto-restore check:
 **Location:** [`database::update_witness_schedule()`](file://libraries/chain/database.cpp#L2553-L2564)
 
 ```
-During emergency mode, committee witness is excluded from:
+During emergency mode, committee validator is excluded from:
   ├── running_version (majority_version) tally
   └── hardfork_version_vote tally
 
@@ -552,7 +552,7 @@ majority_version to 0.0.0, blocking hardfork progression.
 
 ---
 
-### 2N. Median Witness Props — Committee Exclusion
+### 2N. Median validator Props — Committee Exclusion
 
 **Location:** [`database::update_median_witness_props()`](file://libraries/chain/database.cpp#L2796-L2820)
 
@@ -561,7 +561,7 @@ update_median_witness_props():
   └── Excludes CHAIN_EMERGENCY_WITNESS_ACCOUNT from the active set
       when emergency_consensus_active is true.
 
-Reason: Committee witness copies current median_props and should
+Reason: Committee validator copies current median_props and should
 not skew the median computation. Its entries are invisible to
 the median — they reinforce the existing value.
 ```
@@ -573,9 +573,9 @@ the median — they reinforce the existing value.
 ```mermaid
 graph TB
     subgraph "NORMAL OPERATION"
-        N1[Blocks produced by witnesses]
+        N1[Blocks produced by validators]
         N2[LIB advances normally]
-        N3[Witness schedule normal]
+        N3[validator schedule normal]
     end
 
     subgraph "ACTIVATION TRIGGER"
@@ -586,8 +586,8 @@ graph TB
 
     subgraph "ACTIVATION SEQUENCE"
         AS1[Set emergency_consensus_active=true]
-        AS2[Create/Update committee witness]
-        AS3[Disable all real witnesses]
+        AS2[Create/Update committee validator]
+        AS3[Disable all real validators]
         AS4[Reset all penalties]
         AS5[Override schedule → all committee]
         AS6[Notify fork_db]
@@ -652,7 +652,7 @@ graph TB
                            │ emergency guards
                            ▼
     ┌──────────┐    ┌──────────────────────┐    ┌──────────────┐
-    │ Witness  │◄───│    Database (chain)   │───►│  Fork DB     │
+    │ validator  │◄───│    Database (chain)   │───►│  Fork DB     │
     │ Plugin   │    │  • activation         │    │  • hash tie- │
     │          │    │  • deactivation       │    │    breaking  │
     │ • prod.  │    │  • hybrid schedule    │    │  • emergency │
@@ -664,7 +664,7 @@ graph TB
          │          └──────────┬───────────┘    │  Snapshot    │
          │                     │                 │  Plugin      │
     ┌────┴─────┐          ┌────┴──────┐         │  • import    │
-    │ Witness  │          │  Dynamic   │         │  • stall     │
+    │ validator  │          │  Dynamic   │         │  • stall     │
     │ Guard    │          │  Global    │         │    detection │
     │ • key    │          │  Properties│         └──────────────┘
     │   rest.  │          │  • flags   │
@@ -678,12 +678,12 @@ graph TB
 | # | Location | File | Guard |
 |---|----------|------|-------|
 | 1 | `update_global_dynamic_data` | `database.cpp` | Only activate if HF12 + !already_active + LIB available |
-| 2 | `update_witness_schedule` | `database.cpp` | Hybrid override + exit check via 75% real witness slots |
+| 2 | `update_witness_schedule` | `database.cpp` | Hybrid override + exit check via 75% real validator slots |
 | 3 | `update_last_irreversible_block` | `database.cpp` | Cap LIB to HEAD-1 during emergency |
 | 4 | `check_block_post_validation_chain` | `database.cpp` | Skip BPV-based LIB advancement during emergency |
-| 5 | `verify_signing_witness` | `database.cpp` | Relax slot-to-witness mapping during emergency |
+| 5 | `verify_signing_witness` | `database.cpp` | Relax slot-to-validator mapping during emergency |
 | 6 | `fork_db._push_block` | `fork_database.cpp` | Deterministic hash tie-breaking during emergency |
-| 7 | `maybe_produce_block` | `witness.cpp` | Emergency master: bypass sync+stale+participation, skip minority fork; slave: must sync first, standard production gate |
+| 7 | `maybe_produce_block` | `validator.cpp` | Emergency master: bypass sync+stale+participation, skip minority fork; slave: must sync first, standard production gate |
 | 8 | `resync_from_lib` | `p2p_plugin.cpp` | SKIP entirely during emergency (prevent crash) |
 | 9 | `stale_sync_check_task` | `p2p_plugin.cpp` | Skip recovery if master's head advancing; allow if follower stuck |
 | 10 | `handle_block` | `p2p_plugin.cpp` | Near-caught-up blocks treated as normal in DLT emergency |

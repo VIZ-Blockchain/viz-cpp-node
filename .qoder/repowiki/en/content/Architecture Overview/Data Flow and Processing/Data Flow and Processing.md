@@ -1,4 +1,4 @@
-# Data Flow and Processing
+﻿# Data Flow and Processing
 
 <cite>
 **Referenced Files in This Document**
@@ -203,7 +203,7 @@ NotifyPost --> Done(["Transaction applied"])
 
 ### Block Processing Flow
 - validate_block performs Merkle root and block size checks.
-- push_block integrates a block into the chain, updating dynamic properties, witness participation, and last irreversible block.
+- push_block integrates a block into the chain, updating dynamic properties, validator participation, and last irreversible block.
 - apply_block coordinates per-block state transitions and emits applied_block signals.
 
 ```mermaid
@@ -334,7 +334,7 @@ DB --> BLOCK["protocol::signed_block"]
 - Batch processing: JSON-RPC plugin supports batch requests and streams responses efficiently.
 
 Recommendations:
-- Tune skip flags for trusted environments (e.g., skip signatures for non-witness nodes).
+- Tune skip flags for trusted environments (e.g., skip signatures for non-validator nodes).
 - Monitor free memory and adjust shared file sizing to avoid frequent resizes.
 - Use checkpoints to reduce validation overhead on startup.
 - Leverage evaluators’ early exits and minimal authority checks where safe.

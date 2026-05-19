@@ -1,4 +1,4 @@
-# CMake Configuration
+﻿# CMake Configuration
 
 <cite>
 **Referenced Files in This Document**
@@ -286,7 +286,7 @@ Vizd --> P2P["graphene::p2p"]
 Vizd --> Utilities["graphene_utilities"]
 Vizd --> ChainPlugin["graphene::chain_plugin"]
 Vizd --> NetworkBroadcast["graphene::network_broadcast_api"]
-Vizd --> Witness["graphene::witness"]
+Vizd --> validator["graphene::validator"]
 Vizd --> WitnessApi["graphene::witness_api"]
 Vizd --> DatabaseApi["graphene::database_api"]
 Vizd --> TestApi["graphene::test_api_plugin"]

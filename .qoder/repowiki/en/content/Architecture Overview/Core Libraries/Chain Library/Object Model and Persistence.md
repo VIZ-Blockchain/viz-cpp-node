@@ -1,4 +1,4 @@
-# Object Model and Persistence
+﻿# Object Model and Persistence
 
 <cite>
 **Referenced Files in This Document**
@@ -98,7 +98,7 @@ P --> D
 This section summarizes the primary object types and their roles in the blockchain state.
 
 - Dynamic Global Property
-  - Purpose: Tracks global blockchain state (head block, supply, witness participation, reserve ratios).
+  - Purpose: Tracks global blockchain state (head block, supply, validator participation, reserve ratios).
   - Schema: See [dynamic_global_property_object](file://libraries/chain/include/graphene/chain/global_property_object.hpp#L24-L133).
   - Index: Single-entry unique index by id.
 
@@ -122,10 +122,10 @@ This section summarizes the primary object types and their roles in the blockcha
   - Indices: by_id, by_cashout_time, by_permlink, by_root, by_parent, and more; plus content_vote indices.
   - Reference: [content_object.hpp](file://libraries/chain/include/graphene/chain/content_object.hpp#L56-L270).
 
-- Witnesses and Voting
-  - witness_object: Witness identity, votes, virtual scheduling, signing key, props.
-  - witness_vote_object: Voter-to-witness mapping.
-  - witness_schedule_object: Current shuffled witnesses and majority version.
+- validators and Voting
+  - witness_object: validator identity, votes, virtual scheduling, signing key, props.
+  - witness_vote_object: Voter-to-validator mapping.
+  - witness_schedule_object: Current shuffled validators and majority version.
   - References: [witness_objects.hpp](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L27-L313).
 
 - Committee and Proposals
@@ -402,8 +402,8 @@ UpdateVotes --> Done
 **Section sources**
 - [content_object.hpp](file://libraries/chain/include/graphene/chain/content_object.hpp#L56-L270)
 
-### Witness Object Lifecycle and Indices
-- Purpose: Track witness identities, votes, virtual scheduling, and penalties.
+### validator Object Lifecycle and Indices
+- Purpose: Track validator identities, votes, virtual scheduling, and penalties.
 - Indices:
   - witness_index: by_id, by_work, by_name, by_vote_name, by_counted_vote_name, by_schedule_time
   - witness_vote_index: by_id, by_account_witness, by_witness_account
@@ -427,7 +427,7 @@ class witness_object {
 }
 class witness_vote_object {
 +id
-+witness
++validator
 +account
 }
 class witness_schedule_object {
@@ -438,7 +438,7 @@ class witness_schedule_object {
 }
 class witness_penalty_expire_object {
 +id
-+witness
++validator
 +penalty_percent
 +expires
 }
@@ -538,7 +538,7 @@ DBH --> PS
 - Hashed indices (e.g., by_trx_id) offer near O(1) lookup for deduplication.
 - Composite indices enable efficient range queries and uniqueness constraints for complex relationships.
 - Shared memory layout and allocation via chainbase minimize memory fragmentation.
-- Virtual scheduling for witnesses uses large integer arithmetic; keep computations localized to reduce overhead.
+- Virtual scheduling for validators uses large integer arithmetic; keep computations localized to reduce overhead.
 
 [No sources needed since this section provides general guidance]
 
@@ -550,7 +550,7 @@ Common issues and diagnostics:
   - Reference: [account_object.hpp](file://libraries/chain/include/graphene/chain/account_object.hpp#L291-L315)
 - Content not found by permlink: Confirm by_permlink index and string comparison behavior.
   - Reference: [content_object.hpp](file://libraries/chain/include/graphene/chain/content_object.hpp#L210-L226)
-- Witness scheduling anomalies: Inspect virtual_scheduled_time and vote indices.
+- validator scheduling anomalies: Inspect virtual_scheduled_time and vote indices.
   - Reference: [witness_objects.hpp](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L183-L219)
 - Committee vote conflicts: Ensure by_voter and by_request_id uniqueness.
   - Reference: [committee_objects.hpp](file://libraries/chain/include/graphene/chain/committee_objects.hpp#L107-L122)
@@ -563,7 +563,7 @@ Common issues and diagnostics:
 - [committee_objects.hpp](file://libraries/chain/include/graphene/chain/committee_objects.hpp#L107-L122)
 
 ## Conclusion
-The VIZ blockchain object model leverages a robust registry of object types, multi-index containers for efficient querying, and chainbase-backed persistence. The design cleanly separates consensus-critical indices from API-friendly ones, supports complex relationships (accounts, content, witnesses, committees), and provides strong serialization hooks. Proper index selection and lifecycle management are key to maintaining performance and correctness.
+The VIZ blockchain object model leverages a robust registry of object types, multi-index containers for efficient querying, and chainbase-backed persistence. The design cleanly separates consensus-critical indices from API-friendly ones, supports complex relationships (accounts, content, validators, committees), and provides strong serialization hooks. Proper index selection and lifecycle management are key to maintaining performance and correctness.
 
 [No sources needed since this section summarizes without analyzing specific files]
 
@@ -584,7 +584,7 @@ The VIZ blockchain object model leverages a robust registry of object types, mul
   - Insert or update content_vote_object; maintain content_index and permlink indices.
   - References: [content_object.hpp](file://libraries/chain/include/graphene/chain/content_object.hpp#L144-L184)
 
-- Vote for a witness
+- Vote for a validator
   - Insert witness_vote_object; update witness_object votes and virtual scheduling.
   - References: [witness_objects.hpp](file://libraries/chain/include/graphene/chain/witness_objects.hpp#L224-L248)
 

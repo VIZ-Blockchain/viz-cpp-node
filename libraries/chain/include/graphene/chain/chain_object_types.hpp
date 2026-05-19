@@ -45,10 +45,10 @@ namespace graphene { namespace chain {
             dynamic_global_property_object_type,
             account_object_type,
             account_authority_object_type,
-            witness_object_type,
+            validator_object_type,
             transaction_object_type,
             block_summary_object_type,
-            witness_schedule_object_type,
+            validator_schedule_object_type,
             content_object_type,
             content_type_object_type,
             content_vote_object_type,
@@ -73,16 +73,16 @@ namespace graphene { namespace chain {
             paid_subscription_object_type,
             paid_subscribe_object_type,
             witness_penalty_expire_object_type,
-            block_post_validation_object_type
+            validator_confirmation_object_type
         };
 
         class dynamic_global_property_object;
         class account_object;
         class account_authority_object;
-        class witness_object;
+        class validator_object;
         class transaction_object;
         class block_summary_object;
-        class witness_schedule_object;
+        class validator_schedule_object;
         class proposal_object;
         class required_approval_object;
         class content_object;
@@ -108,15 +108,15 @@ namespace graphene { namespace chain {
         class paid_subscription_object;
         class paid_subscribe_object;
         class witness_penalty_expire_object;
-        class block_post_validation_object;
+        class validator_confirmation_object;
 
         typedef object_id<dynamic_global_property_object> dynamic_global_property_id_type;
         typedef object_id<account_object> account_id_type;
         typedef object_id<account_authority_object> account_authority_id_type;
-        typedef object_id<witness_object> witness_id_type;
+        typedef object_id<validator_object> validator_id_type;
         typedef object_id<transaction_object> transaction_object_id_type;
         typedef object_id<block_summary_object> block_summary_id_type;
-        typedef object_id<witness_schedule_object> witness_schedule_id_type;
+        typedef object_id<validator_schedule_object> validator_schedule_id_type;
         typedef object_id<content_object> content_id_type;
         typedef object_id<content_type_object> content_type_id_type;
         typedef object_id<content_vote_object> content_vote_id_type;
@@ -141,7 +141,7 @@ namespace graphene { namespace chain {
         typedef object_id<paid_subscription_object> paid_subscription_object_id_type;
         typedef object_id<paid_subscribe_object> paid_subscribe_object_id_type;
         typedef object_id<witness_penalty_expire_object> witness_penalty_expire_object_id_type;
-        typedef object_id<block_post_validation_object> block_post_validation_object_id_type;
+        typedef object_id<validator_confirmation_object> validator_confirmation_object_id_type;
 
 } } //graphene::chain
 
@@ -210,10 +210,10 @@ FC_REFLECT_ENUM(graphene::chain::object_type,
         (dynamic_global_property_object_type)
                 (account_object_type)
                 (account_authority_object_type)
-                (witness_object_type)
+                (validator_object_type)
                 (transaction_object_type)
                 (block_summary_object_type)
-                (witness_schedule_object_type)
+                (validator_schedule_object_type)
                 (content_object_type)
                 (content_type_object_type)
                 (content_vote_object_type)
@@ -238,7 +238,7 @@ FC_REFLECT_ENUM(graphene::chain::object_type,
                 (paid_subscription_object_type)
                 (paid_subscribe_object_type)
                 (witness_penalty_expire_object_type)
-                (block_post_validation_object_type)
+                (validator_confirmation_object_type)
 )
 
 FC_REFLECT_TYPENAME((graphene::chain::shared_string))

@@ -26,7 +26,7 @@ namespace graphene { namespace chain {
         }
         else{
             if(_db.has_hardfork(CHAIN_HARDFORK_9)){
-                const auto& median_props = _db.get_witness_schedule_object().median_props;
+                const auto& median_props = _db.get_validator_schedule_object().median_props;
                 const dynamic_global_property_object &dgp = _db.get_dynamic_global_properties();
 
                 FC_ASSERT(account.balance >=

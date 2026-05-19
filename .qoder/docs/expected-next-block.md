@@ -1,4 +1,4 @@
-# DLT P2P `expected_next_block` — Design, Data Flow, and Fixes
+﻿# DLT P2P `expected_next_block` — Design, Data Flow, and Fixes
 
 ## 1. Overview
 
@@ -192,10 +192,10 @@ There is a small race between when a block is applied and when the next block ar
 ## 7. Concrete Bug Scenario (from production logs)
 
 ```
-206774ms  witness.cpp:431    Generated block #79720273 ... by creativity
+206774ms  validator.cpp:431    Generated block #79720273 ... by creativity
 ...
 209818ms  dlt_p2p_node.cpp:1208  Block #79720274 from 80.87.202.57 out of order (expected #79720273)
-209822ms  dlt_p2p_node.cpp:1298  Got block #79720274 ... by witness m0ssa99 [80.87.202.57]
+209822ms  dlt_p2p_node.cpp:1298  Got block #79720274 ... by validator m0ssa99 [80.87.202.57]
 ```
 
 **Trace:**
@@ -300,4 +300,4 @@ This eliminates the per-peer tracking entirely for FORWARD mode and uses the onl
 | `libraries/network/dlt_p2p_node.cpp:1678` | `on_block_applied()` call in gap fill reply |
 | `libraries/network/dlt_p2p_node.cpp:1849-1861` | `broadcast_block()` — now calls `on_block_applied()` (Fix 8.2) |
 | `libraries/network/dlt_p2p_node.cpp:2457-2469` | `on_block_applied()` — bulk peer advance (Fix 8.1) |
-| `plugins/witness/witness.cpp:1092-1099` | Block production → broadcast |
+| `plugins/validator/validator.cpp:1092-1099` | Block production → broadcast |

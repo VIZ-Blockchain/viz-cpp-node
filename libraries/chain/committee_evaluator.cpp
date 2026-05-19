@@ -6,7 +6,7 @@
 namespace graphene { namespace chain {
 
      void committee_worker_create_request_evaluator::do_apply(const committee_worker_create_request_operation& o) {
-        const auto& median_props = _db.get_witness_schedule_object().median_props;
+        const auto& median_props = _db.get_validator_schedule_object().median_props;
         const auto &creator = _db.get_account(o.creator);
         _db.get_account(o.worker);
 

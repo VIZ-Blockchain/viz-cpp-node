@@ -99,7 +99,7 @@ namespace graphene { namespace chain {
 
             enum validation_steps {
                 skip_nothing = 0,
-                skip_witness_signature = 1 << 0,  ///< used while reindexing
+                skip_validator_signature = 1 << 0,  ///< used while reindexing
                 skip_transaction_signatures = 1 << 1,  ///< used by non-witness nodes
                 skip_transaction_dupe_check = 1 << 2,  ///< used while reindexing
                 skip_fork_db = 1 << 3,  ///< used while reindexing
@@ -221,9 +221,9 @@ namespace graphene { namespace chain {
             chain_id_type get_chain_id() const;
 
 
-            const witness_object &get_witness(const account_name_type &name) const;
+            const validator_object &get_witness(const account_name_type &name) const;
 
-            const witness_object *find_witness(const account_name_type &name) const;
+            const validator_object *find_witness(const account_name_type &name) const;
 
             const account_object &get_account(const account_name_type &name) const;
 
@@ -251,7 +251,7 @@ namespace graphene { namespace chain {
 
             const dynamic_global_property_object &get_dynamic_global_properties() const;
 
-            const witness_schedule_object &get_witness_schedule_object() const;
+            const validator_schedule_object &get_validator_schedule_object() const;
 
             const hardfork_property_object &get_hardfork_property_object() const;
 
@@ -397,7 +397,7 @@ namespace graphene { namespace chain {
              *
              * Passing slot_num == 0 returns CHAIN_NULL_WITNESS
              */
-            account_name_type get_scheduled_witness(uint32_t slot_num) const;
+            account_name_type get_scheduled_validator(uint32_t slot_num) const;
 
             /**
              * Get the time at which the given slot occurs.
@@ -444,25 +444,25 @@ namespace graphene { namespace chain {
             }
 
             /** this updates the votes for witnesses as a result of account voting proxy changing */
-            void adjust_proxied_witness_votes(const account_object &a,
+            void adjust_proxied_validator_votes(const account_object &a,
                     const std::array<share_type,
                             CHAIN_MAX_PROXY_RECURSION_DEPTH + 1> &delta,
                     int depth = 0);
 
             /** this updates the votes for all witnesses as a result of account SHARES changing */
-            void adjust_proxied_witness_votes(const account_object &a, share_type delta, int depth = 0);
+            void adjust_proxied_validator_votes(const account_object &a, share_type delta, int depth = 0);
 
-            /** this is called by `adjust_proxied_witness_votes` when account proxy to self */
-            void adjust_witness_votes(const account_object &a, share_type delta);
+            /** this is called by `adjust_proxied_validator_votes` when account proxy to self */
+            void adjust_validator_votes(const account_object &a, share_type delta);
 
             /** this updates the vote of a single witness as a result of a vote being added or removed*/
-            void adjust_witness_vote(const witness_object &obj, share_type delta);
+            void adjust_validator_vote(const validator_object &obj, share_type delta);
 
             /** clears all vote records for a particular account but does not update the
              * witness vote totals.  Vote totals should be updated first via a call to
-             * adjust_proxied_witness_votes( a, -a.witness_vote_weight() )
+             * adjust_proxied_validator_votes( a, -a.validator_vote_weight() )
              */
-            void clear_witness_votes(const account_object &a);
+            void clear_validator_votes(const account_object &a);
 
             void process_vesting_withdrawals();
 
@@ -564,7 +564,7 @@ namespace graphene { namespace chain {
 
             void create_block_post_validation(uint32_t block_num, block_id_type block_id, const account_name_type &witness_account);
 
-            std::array<block_post_validation_object, CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT> get_block_post_validations(const account_name_type &witness_account);
+            std::array<validator_confirmation_object, CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT> get_validator_confirmations(const account_name_type &witness_account);
 
             void apply_block_post_validation(block_id_type block_id, const account_name_type &witness_account);
 
@@ -607,7 +607,7 @@ namespace graphene { namespace chain {
             ///Steps involved in applying a new block
             ///@{
 
-            const witness_object &validate_block_header(uint32_t skip, const signed_block &next_block) const;
+            const validator_object &validate_block_header(uint32_t skip, const signed_block &next_block) const;
 
             void create_block_summary(const signed_block &next_block);
 
@@ -621,7 +621,7 @@ namespace graphene { namespace chain {
 
             void update_global_dynamic_data(const signed_block &b, uint32_t skip);
 
-            void update_signing_witness(const witness_object &signing_witness, const signed_block &new_block);
+            void update_signing_witness(const validator_object &signing_witness, const signed_block &new_block);
 
             void update_last_irreversible_block(uint32_t skip);
 

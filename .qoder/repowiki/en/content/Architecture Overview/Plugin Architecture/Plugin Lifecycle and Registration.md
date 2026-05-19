@@ -1,4 +1,4 @@
-# Plugin Lifecycle and Registration
+﻿# Plugin Lifecycle and Registration
 
 <cite>
 **Referenced Files in This Document**
@@ -327,7 +327,7 @@ end
 The deferred execution model ensures that snapshot operations occur at the appropriate time in the plugin lifecycle:
 
 - **Snapshot Loading**: Executed during chain plugin startup, before on_sync() fires, ensuring P2P sync starts from the snapshot head block.
-- **Snapshot Creation**: Executed after full database load (including replay), but before on_sync(), preventing P2P/witness startup.
+- **Snapshot Creation**: Executed after full database load (including replay), but before on_sync(), preventing P2P/validator startup.
 - **P2P Snapshot Sync**: Executed when state is empty (head_block_num == 0), before on_sync(), enabling bootstrap from trusted peers.
 
 **Section sources**

@@ -1,4 +1,4 @@
-# Security Hardening
+﻿# Security Hardening
 
 <cite>
 **Referenced Files in This Document**
@@ -90,7 +90,7 @@ Key security-relevant elements:
 The node exposes:
 - P2P endpoint for peer-to-peer synchronization
 - HTTP and WebSocket endpoints for API access
-- Optional witness production and related APIs
+- Optional validator production and related APIs
 
 ```mermaid
 graph TB

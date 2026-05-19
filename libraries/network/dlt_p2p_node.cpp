@@ -1338,9 +1338,9 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
             _last_block_received_time = fc::time_point::now();
             _last_network_block_time = fc::time_point::now();
 
-            ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by witness ${w} [${ep}]" DLT_LOG_RESET,
+            ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) validated by " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}]" DLT_LOG_RESET,
                  ("n", block.block_num())("tx", block.transactions.size())
-                 ("w", block.witness)("ep", state.endpoint));
+                 ("w", block.validator)("ep", state.endpoint));
 
             on_block_applied(block, /*caused_fork_switch=*/false);
 
@@ -1397,6 +1397,7 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
     // (no applied, no fork_db) should NOT end sync mode.
     if (_node_status == DLT_NODE_STATUS_SYNC) {
         if (any_block_applied) {
+            state.fork_only_batch_count = 0;
             if (reply.is_last) {
                 transition_to_forward();
             } else if (reply.last_block_next_available > 0) {
@@ -1407,9 +1408,19 @@ void dlt_p2p_node::on_dlt_block_range_reply(peer_id peer, const dlt_block_range_
             // Blocks went to fork_db but weren't applied — competing fork.
             // Continue fetching so fork_db accumulates the full competing
             // chain and can evaluate a fork switch.
-            ilog(DLT_LOG_ORANGE "Range stored in fork_db only (competing fork?), continuing fetch from #${n}" DLT_LOG_RESET,
-                 ("n", reply.last_block_next_available));
-            request_blocks_from_peer(peer);
+            // P77 fix: if after FORK_ONLY_BATCH_LIMIT consecutive batches
+            // nothing is applied, this peer is on a permanently diverging
+            // fork — soft-ban to break the infinite fetch loop.
+            state.fork_only_batch_count++;
+            if (state.fork_only_batch_count >= dlt_peer_state::FORK_ONLY_BATCH_LIMIT) {
+                wlog(DLT_LOG_RED "Peer ${ep}: ${n} consecutive fork-only batches with no blocks applied — soft-banning" DLT_LOG_RESET,
+                     ("ep", state.endpoint)("n", state.fork_only_batch_count));
+                soft_ban_peer(peer, "fork-only spam: " + std::to_string(state.fork_only_batch_count) + " batches with no progress");
+            } else {
+                ilog(DLT_LOG_ORANGE "Range stored in fork_db only (competing fork?), continuing fetch from #${n}" DLT_LOG_RESET,
+                     ("n", reply.last_block_next_available));
+                request_blocks_from_peer(peer);
+            }
         }
     }
 }
@@ -1545,7 +1556,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
         }
         if (_gap_rejected_count >= GAP_REJECT_MAX_RETRIES) {
             elog(DLT_LOG_RED "Block #${n} rejected ${c} times from peers — blacklisting gap fill for ${t}s "
-                 "(witness key likely invalid on this fork)" DLT_LOG_RESET,
+                 "(validator key likely invalid on this fork)" DLT_LOG_RESET,
                  ("n", block_num)("c", _gap_rejected_count)("t", GAP_REJECT_BLACKLIST_SEC));
             _gap_rejected_blacklist_until = fc::time_point::now() + fc::seconds(GAP_REJECT_BLACKLIST_SEC);
             _gap_rejected_count = 0;
@@ -1565,9 +1576,9 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
     }
 
     if (result == dlt_block_accept_result::ACCEPTED) {
-        ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by witness ${w} [${ep}]" DLT_LOG_RESET,
+        ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) validated by " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}]" DLT_LOG_RESET,
              ("n", reply.block.block_num())("tx", reply.block.transactions.size())
-             ("w", reply.block.witness)("ep", state.endpoint));
+             ("w", reply.block.validator)("ep", state.endpoint));
 
         _last_network_block_time = fc::time_point::now();
         _last_block_received_time = fc::time_point::now();
@@ -1590,7 +1601,7 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
 
         // Retransmit to our-fork peers
         dlog(DLT_LOG_DGRAY "Retransmitting block #${n} by ${w} to fork peers (excluding ${ep})" DLT_LOG_RESET,
-             ("n", reply.block.block_num())("w", reply.block.witness)("ep", state.endpoint));
+             ("n", reply.block.block_num())("w", reply.block.validator)("ep", state.endpoint));
         send_to_all_our_fork_peers(message(dlt_block_reply_message(reply)), peer, reply.block.id());
 
         // P26 fix: Check if we've caught up to all peers via single-block replies
@@ -1602,8 +1613,8 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
         // FORK_DB_ONLY: block stored in fork_db but not applied to chain.
         // Do NOT call on_block_applied (which would corrupt mempool),
         // do NOT retransmit (block is not on our main chain).
-        dlog(DLT_LOG_ORANGE "Stored block #${n} by witness ${w} in fork_db (not applied, head=${h}) from ${ep}" DLT_LOG_RESET,
-             ("n", block_num)("w", reply.block.witness)("h", _delegate->get_head_block_num())("ep", state.endpoint));
+        dlog(DLT_LOG_ORANGE "Stored block #${n} by validator ${w} in fork_db (not applied, head=${h}) from ${ep}" DLT_LOG_RESET,
+             ("n", block_num)("w", reply.block.validator)("h", _delegate->get_head_block_num())("ep", state.endpoint));
     }
 
     // Update peer's expected_next_block regardless of outcome so the
@@ -1911,9 +1922,9 @@ void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply&
             _last_block_received_time = fc::time_point::now();
             _last_network_block_time = fc::time_point::now();
 
-            ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) by witness ${w} [${ep}] (gap fill)" DLT_LOG_RESET,
+            ilog(DLT_LOG_BWHITE "Got block #${n} with ${tx} transaction(s) validated by " DLT_LOG_YELLOW "${w}" DLT_LOG_BWHITE " [${ep}] (gap fill)" DLT_LOG_RESET,
                  ("n", block.block_num())("tx", block.transactions.size())
-                 ("w", block.witness)("ep", it->second.endpoint));
+                 ("w", block.validator)("ep", it->second.endpoint));
 
             on_block_applied(block, /*caused_fork_switch=*/false);
 
@@ -1961,7 +1972,7 @@ void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply&
             }
             if (_gap_rejected_count >= GAP_REJECT_MAX_RETRIES) {
                 elog(DLT_LOG_RED "Gap fill: block #${n} rejected ${c} times — blacklisting for ${t}s "
-                     "(witness key likely invalid on this fork)" DLT_LOG_RESET,
+                     "(validator key likely invalid on this fork)" DLT_LOG_RESET,
                      ("n", block.block_num())("c", _gap_rejected_count)("t", GAP_REJECT_BLACKLIST_SEC));
                 _gap_rejected_blacklist_until = fc::time_point::now() + fc::seconds(GAP_REJECT_BLACKLIST_SEC);
                 _gap_rejected_count = 0;
@@ -2147,7 +2158,7 @@ void dlt_p2p_node::broadcast_block(const signed_block& block) {
 void dlt_p2p_node::broadcast_block_post_validation(
     const block_id_type& block_id,
     const std::string& witness_account,
-    const signature_type& witness_signature) {
+    const signature_type& validator_signature) {
     // For now, send as fork_status message with block_id
     dlt_fork_status_message msg;
     msg.fork_status = _fork_status;
@@ -2308,8 +2319,8 @@ void dlt_p2p_node::drain_paused_block_queue() {
             _last_block_received_time = fc::time_point::now();
             _last_network_block_time = fc::time_point::now();
 
-            ilog(DLT_LOG_BWHITE "Got queued block #${n} with ${tx} transaction(s) by witness ${w}" DLT_LOG_RESET,
-                 ("n", block.block_num())("tx", block.transactions.size())("w", block.witness));
+            ilog(DLT_LOG_BWHITE "Got queued block #${n} with ${tx} transaction(s) by validator ${w}" DLT_LOG_RESET,
+                 ("n", block.block_num())("tx", block.transactions.size())("w", block.validator));
 
             on_block_applied(block, /*caused_fork_switch=*/false);
         }
@@ -2389,7 +2400,7 @@ void dlt_p2p_node::transition_to_forward() {
     // transition, blocking witness production indefinitely.
     if (_catchup_after_pause) {
         _catchup_after_pause = false;
-        ilog(DLT_LOG_GREEN "Post-pause catchup complete, clearing flag (witness production may resume)" DLT_LOG_RESET);
+        ilog(DLT_LOG_GREEN "Post-pause catchup complete, clearing flag (validator production may resume)" DLT_LOG_RESET);
     }
 
     // Clear chain's currently_syncing flag so the witness plugin can produce.
@@ -2405,6 +2416,7 @@ void dlt_p2p_node::transition_to_forward() {
     _sync_stagnation_retries = 0;
     _last_forward_head_num = 0;   // P37: reset so check_forward_stagnation initializes
     _last_forward_progress_time = fc::time_point();
+    _forward_entered_time = fc::time_point::now();
 
     ilog(DLT_LOG_GREEN "=== DLT P2P: transitioning to FORWARD mode ===" DLT_LOG_RESET);
 
@@ -2643,6 +2655,18 @@ void dlt_p2p_node::emergency_peer_reset() {
 void dlt_p2p_node::check_forward_behind() {
     if (_node_status != DLT_NODE_STATUS_FORWARD) return;
     if (!_delegate) return;
+
+    // Grace period: don't check for falling behind immediately after
+    // entering FORWARD. SYNC stagnation fires transition_to_forward()
+    // and then check_forward_behind() runs on the SAME periodic tick —
+    // instant SYNC→FORWARD→SYNC oscillation.  Give FORWARD mode a
+    // chance to receive broadcast blocks before checking peer heads.
+    if (_forward_entered_time != fc::time_point()) {
+        auto grace = fc::time_point::now() - _forward_entered_time;
+        if (grace.count() < FORWARD_BEHIND_GRACE_SEC * 1000000) {
+            return;
+        }
+    }
 
     uint32_t our_head = _delegate->get_head_block_num();
 

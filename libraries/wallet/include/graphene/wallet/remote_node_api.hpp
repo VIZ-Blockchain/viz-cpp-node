@@ -8,7 +8,7 @@
 #include <graphene/plugins/network_broadcast_api/network_broadcast_api_plugin.hpp>
 
 #include <graphene/api/account_api_object.hpp>
-#include <graphene/plugins/witness_api/plugin.hpp>
+#include <graphene/plugins/validator_api/plugin.hpp>
 
 namespace graphene { namespace wallet {
 
@@ -22,7 +22,7 @@ using namespace plugins;
 using namespace plugins::database_api;
 using namespace plugins::network_broadcast_api;
 using namespace graphene::api;
-using namespace plugins::witness_api;
+using namespace plugins::validator_api;
 
 /**
  * This is a dummy class exists only to provide method signature information to fc::api, not to execute calls.
@@ -93,14 +93,14 @@ struct remote_network_broadcast_api {
 * This is a dummy class exists only to provide method signature information to fc::api, not to execute calls.
 * Class is used by wallet to send formatted API calls to witness_api plugin on remote node.
 */
-struct remote_witness_api {
-    vector< account_name_type > get_active_witnesses();
-    graphene::chain::witness_schedule_object get_witness_schedule();
-    vector< optional< witness_api::witness_api_object > > get_witnesses( vector< witness_id_type > );
-    vector< witness_api::witness_api_object > get_witnesses_by_vote( account_name_type, uint32_t );
-    optional< witness_api::witness_api_object > get_witness_by_account( account_name_type );
-    vector< account_name_type > lookup_witness_accounts( string, uint32_t );
-    uint64_t get_witness_count();
+struct remote_validator_api {
+    vector< account_name_type > get_active_validators();
+    graphene::chain::validator_schedule_object get_validator_schedule();
+    vector< optional< validator_api::validator_api_object > > get_validators( vector< validator_id_type > );
+    vector< validator_api::validator_api_object > get_validators_by_vote( account_name_type, uint32_t );
+    optional< validator_api::validator_api_object > get_validator_by_account( account_name_type );
+    vector< account_name_type > lookup_validator_accounts( string, uint32_t );
+    uint64_t get_validator_count();
 };
 
 } }
@@ -167,12 +167,12 @@ FC_API( graphene::wallet::remote_account_by_key,
 /**
  * Declaration of remote API formatter to witness_api plugin on remote node
  */
-FC_API( graphene::wallet::remote_witness_api,
-        (get_active_witnesses)
-        (get_witness_schedule)
-        (get_witnesses)
-        (get_witnesses_by_vote)
-        (get_witness_count)
-        (get_witness_by_account)
-        (lookup_witness_accounts)
+FC_API( graphene::wallet::remote_validator_api,
+        (get_active_validators)
+        (get_validator_schedule)
+        (get_validators)
+        (get_validators_by_vote)
+        (get_validator_count)
+        (get_validator_by_account)
+        (lookup_validator_accounts)
 )
