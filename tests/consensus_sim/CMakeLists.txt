@@ -18,7 +18,7 @@ target_include_directories(consensus_sim_harness
 )
 
 target_link_libraries(consensus_sim_harness
-    PUBLIC graphene_chain graphene_protocol fc
+    PUBLIC graphene_chain graphene_protocol graphene_utilities fc
 )
 
 # Sanitizers on by default for the harness
