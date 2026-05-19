@@ -1,0 +1,189 @@
+seo:
+  title: VIZ Ledger Documentation
+  description: Official documentation for VIZ Ledger — hybrid DLT with Fair-DPOS consensus
+
+l10n:
+  defaultLocale: en-US
+  locales:
+    - code: en-US
+      name: English
+    - code: ru
+      name: Русский
+    - code: zh-CN
+      name: 中文
+
+navbar:
+  items:
+    - label: Introduction
+      page: docs/introduction/what-is-viz.md
+    - label: Run a Node
+      page: docs/node/getting-started.md
+    - label: Protocol
+      page: docs/protocol/data-types.md
+    - label: API
+      page: docs/api/json-rpc.md
+    - label: GitHub
+      href: https://github.com/VIZ-Blockchain/viz-cpp-node
+      external: true
+
+footer:
+  copyrightText: VIZ Ledger
+
+sidebars:
+  docs:
+    - group: Introduction
+      items:
+        - label: What is VIZ Ledger?
+          page: docs/introduction/what-is-viz.md
+        - label: Architecture
+          page: docs/introduction/architecture.md
+        - label: Key Concepts
+          page: docs/introduction/key-concepts.md
+
+    - group: Run a Node
+      items:
+        - label: Getting Started
+          page: docs/node/getting-started.md
+        - label: Configuration
+          page: docs/node/configuration.md
+        - label: Building from Source
+          page: docs/node/building.md
+        - label: Docker
+          page: docs/node/docker.md
+        - label: Validator Node
+          page: docs/node/validator-node.md
+        - label: Validator Guard
+          page: docs/node/validator-guard.md
+        - label: Snapshots
+          page: docs/node/snapshot.md
+        - label: Monitoring
+          page: docs/node/monitoring.md
+
+    - group: Consensus
+      items:
+        - label: Fair-DPOS
+          page: docs/consensus/fair-dpos.md
+        - label: Block Processing
+          page: docs/consensus/block-processing.md
+        - label: Fork Resolution
+          page: docs/consensus/fork-resolution.md
+        - label: Emergency Consensus
+          page: docs/consensus/emergency-consensus.md
+        - label: Hardforks
+          page: docs/consensus/hardforks.md
+
+    - group: P2P Network
+      items:
+        - label: Overview
+          page: docs/p2p/overview.md
+        - label: Messages
+          page: docs/p2p/messages.md
+        - label: Sync Scenarios
+          page: docs/p2p/sync-scenarios.md
+        - label: Forward Mode
+          page: docs/p2p/forward-mode.md
+        - label: Stats Reference
+          page: docs/p2p/stats-reference.md
+
+    - group: Plugins
+      items:
+        - label: Overview
+          page: docs/plugins/overview.md
+        - label: Validator
+          page: docs/plugins/validator.md
+        - label: Snapshot
+          page: docs/plugins/snapshot.md
+        - label: Chain
+          page: docs/plugins/chain.md
+        - label: Database API
+          page: docs/plugins/database-api.md
+        - label: Webserver
+          page: docs/plugins/webserver.md
+
+    - group: Protocol
+      items:
+        - label: Data Types
+          page: docs/protocol/data-types.md
+        - label: Virtual Operations
+          page: docs/protocol/virtual-operations.md
+        - group: Operations
+          items:
+            - label: Overview
+              page: docs/protocol/operations/overview.md
+            - label: Accounts
+              page: docs/protocol/operations/accounts.md
+            - label: Transfers & Vesting
+              page: docs/protocol/operations/transfers.md
+            - label: Validators
+              page: docs/protocol/operations/validators.md
+            - label: Content
+              page: docs/protocol/operations/content.md
+            - label: Recovery
+              page: docs/protocol/operations/recovery.md
+            - label: Escrow
+              page: docs/protocol/operations/escrow.md
+            - label: Committee
+              page: docs/protocol/operations/committee.md
+            - label: Invites
+              page: docs/protocol/operations/invites.md
+            - label: Awards
+              page: docs/protocol/operations/awards.md
+            - label: Subscriptions
+              page: docs/protocol/operations/subscriptions.md
+            - label: Account Market
+              page: docs/protocol/operations/account-market.md
+            - label: Proposals
+              page: docs/protocol/operations/proposals.md
+
+    - group: Storage
+      items:
+        - label: Shared Memory
+          page: docs/storage/shared-memory.md
+        - label: Block Log
+          page: docs/storage/block-log.md
+        - label: Snapshots
+          page: docs/storage/snapshots.md
+
+    - group: Governance
+      items:
+        - label: Chain Properties
+          page: docs/governance/chain-properties.md
+        - label: Staking & DAO
+          page: docs/governance/staking-and-dao.md
+        - label: Committee
+          page: docs/governance/committee.md
+
+    - group: API Reference
+      items:
+        - label: JSON-RPC
+          page: docs/api/json-rpc.md
+        - label: CLI Wallet
+          page: docs/api/cli-wallet.md
+        - label: Client Libraries
+          page: docs/api/client-libraries.md
+
+    - group: Development
+      items:
+        - label: Building
+          page: docs/development/building.md
+        - label: Testing
+          page: docs/development/testing.md
+        - label: Debugging
+          page: docs/development/debugging.md
+        - label: Plugin Development
+          page: docs/development/plugin-development.md
+
+    - group: Advanced
+      items:
+        - label: Security
+          page: docs/advanced/security.md
+        - label: Database Schema
+          page: docs/advanced/database-schema.md
+        - label: DLT Architecture
+          page: docs/advanced/dlt-architecture.md
+        - label: Hardfork Management
+          page: docs/advanced/hardfork-management.md
+
+sidebarAssociations:
+  - sidebarName: docs
+    basePath: /
