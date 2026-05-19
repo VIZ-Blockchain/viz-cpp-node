@@ -21,7 +21,7 @@
 ```ini
 # P2P — 允许公共入站连接以传播区块
 p2p-endpoint = 0.0.0.0:2001
-p2p-seed-node = seed1.viz.media:2001
+p2p-seed-node = seed1.viz.world:2001
 
 # RPC — 绑定到 localhost 以确保安全（验证者不需要公共 API）
 webserver-http-endpoint = 127.0.0.1:8090

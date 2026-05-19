@@ -24,8 +24,8 @@ p2p-endpoint = 0.0.0.0:2001
 p2p-max-connections = 200
 
 # Начальные узлы для установки соединений (повторяемый параметр)
-p2p-seed-node = seed1.viz.media:2001
-p2p-seed-node = seed2.viz.media:2001
+p2p-seed-node = seed1.viz.world:2001
+p2p-seed-node = seed2.viz.world:2001
 
 # Контрольные точки: доверенные пары (block_num, block_id) (повторяемый параметр)
 # checkpoint = [12345,"0003039..." ]

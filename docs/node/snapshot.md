@@ -123,7 +123,7 @@ vizd \
   --snapshot /data/snapshots/viz-snapshot.json \
   --plugin snapshot \
   --plugin p2p \
-  --p2p-seed-node seed1.viz.media:2001
+  --p2p-seed-node seed1.viz.world:2001
 ```
 
 The node loads state in seconds and begins P2P sync from the snapshot's block height.
@@ -286,8 +286,8 @@ snapshot-dir = /data/viz-snapshots
 
 ```ini
 plugin = snapshot
-trusted-snapshot-peer = seed1.viz.media:8092
-trusted-snapshot-peer = seed2.viz.media:8092
+trusted-snapshot-peer = seed1.viz.world:8092
+trusted-snapshot-peer = seed2.viz.world:8092
 sync-snapshot-from-trusted-peer = true
 ```
 
@@ -350,7 +350,7 @@ dlt-block-log-max-blocks = 100000
 
 shared-file-size = 4G
 plugin = p2p
-p2p-seed-node = seed1.viz.media:2001
+p2p-seed-node = seed1.viz.world:2001
 ```
 
 ---
