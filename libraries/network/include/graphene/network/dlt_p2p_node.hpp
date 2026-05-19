@@ -315,6 +315,8 @@ private:
 
     // ── FORWARD fallbehind ──────────────────────────────────────
     static constexpr uint32_t       FORWARD_FALLBEHIND_THRESHOLD = 2; ///< Blocks behind peer before FORWARD→SYNC
+    static constexpr uint32_t       FORWARD_BEHIND_GRACE_SEC = 15;   ///< Grace period after SYNC→FORWARD before checking peers
+    fc::time_point                  _forward_entered_time;            ///< When we last entered FORWARD mode
 
     // ── Peer state ───────────────────────────────────────────────
     peer_id                         _next_peer_id = 1;

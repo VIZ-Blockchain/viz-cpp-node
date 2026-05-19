@@ -2416,6 +2416,7 @@ void dlt_p2p_node::transition_to_forward() {
     _sync_stagnation_retries = 0;
     _last_forward_head_num = 0;   // P37: reset so check_forward_stagnation initializes
     _last_forward_progress_time = fc::time_point();
+    _forward_entered_time = fc::time_point::now();
 
     ilog(DLT_LOG_GREEN "=== DLT P2P: transitioning to FORWARD mode ===" DLT_LOG_RESET);
 
@@ -2654,6 +2655,18 @@ void dlt_p2p_node::emergency_peer_reset() {
 void dlt_p2p_node::check_forward_behind() {
     if (_node_status != DLT_NODE_STATUS_FORWARD) return;
     if (!_delegate) return;
+
+    // Grace period: don't check for falling behind immediately after
+    // entering FORWARD. SYNC stagnation fires transition_to_forward()
+    // and then check_forward_behind() runs on the SAME periodic tick —
+    // instant SYNC→FORWARD→SYNC oscillation.  Give FORWARD mode a
+    // chance to receive broadcast blocks before checking peer heads.
+    if (_forward_entered_time != fc::time_point()) {
+        auto grace = fc::time_point::now() - _forward_entered_time;
+        if (grace.count() < FORWARD_BEHIND_GRACE_SEC * 1000000) {
+            return;
+        }
+    }
 
     uint32_t our_head = _delegate->get_head_block_num();
 
