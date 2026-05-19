@@ -21,6 +21,13 @@ target_link_libraries(consensus_sim_harness
     PUBLIC graphene_chain graphene_protocol graphene_utilities fc
 )
 
+# Harness uses std::optional and structured bindings; chain code itself
+# stays C++14, so this is scoped to the harness + scenarios targets.
+set_target_properties(consensus_sim_harness PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+
 # Sanitizers on by default for the harness
 target_compile_options(consensus_sim_harness PUBLIC
     -fsanitize=address
@@ -55,6 +62,11 @@ add_executable(consensus_sim_tests ${SCENARIO_SOURCES})
 target_link_libraries(consensus_sim_tests
     PRIVATE consensus_sim_harness
             Boost::unit_test_framework
+)
+
+set_target_properties(consensus_sim_tests PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
 )
 
 # We link against the static libboost_unit_test_framework.a in the viz-dev
