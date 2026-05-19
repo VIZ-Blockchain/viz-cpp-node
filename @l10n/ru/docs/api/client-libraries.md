@@ -56,7 +56,7 @@ require_once '/path/to/viz-php-lib/autoload.php';
 
 ```php
 $private_key = '5...your_private_key...';
-$tx = new VIZ\Transaction('https://node.viz.plus/', $private_key);
+$tx = new VIZ\Transaction('https://api.viz.world/', $private_key);
 
 // Сформировать и транслировать транзакцию награды
 $tx_data   = $tx->award($account, 'committee', 1000, 0, 'memo');
@@ -74,7 +74,7 @@ $tx_status = $tx->execute($tx_data['json']);
 
 ## JavaScript — viz-js-lib
 
-**Репозиторий:** https://github.com/VIZ-Blockchain/viz-js-lib  
+**Репозиторий:** https://github.com/VIZ-Blockchain/viz-js-lib
 **npm:** https://www.npmjs.com/package/viz-js-lib
 
 ### Установка
