@@ -51,6 +51,8 @@ documentation/doxygen/latex
 *.egg-info/
 build
 
+node_modules/*
+
 .qoder/logs/*
 # Local design specs and implementation plans (not part of repo)
 docs/superpowers/
