@@ -133,7 +133,7 @@ This ensures the schedule is always consistent after an unclean shutdown during 
 
 ## Validator Guard Integration
 
-The `witness_guard` plugin continues to operate during emergency and is in fact more critical:
+The `validator_guard` plugin continues to operate during emergency and is in fact more critical:
 
 - Real validators are disabled (signing key set to null) during activation.
 - The validator guard automatically broadcasts `validator_update_operation` to restore each validator's signing key once the null key is detected on-chain.
@@ -199,7 +199,7 @@ Snapshots created during an active emergency preserve the state correctly; snaps
 | 9 | `stale_sync_check_task` | Skip if master's head advancing; allow if follower stuck |
 | 10 | `handle_block` | Near-caught-up blocks treated as normal in DLT emergency |
 | 11 | `database::open` | Startup schedule repair |
-| 12 | `witness_guard` | Do not suppress key restoration during emergency |
+| 12 | `validator_guard` | Do not suppress key restoration during emergency |
 | 13 | `snapshot import` | Forward-compatible field handling |
 | 14 | `update_witness_schedule` | Exclude committee from hardfork version tallying |
 | 15 | `update_median_witness_props` | Exclude committee from median computation |

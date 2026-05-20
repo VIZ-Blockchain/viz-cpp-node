@@ -94,9 +94,9 @@ VIZ Ledger 使用 ChainBase——一个基于 Boost.Interprocess 构建的内存
 
 ---
 
-## 验证者（Witness）对象
+## 验证者对象
 
-**`witness_object` 的索引：**
+**`validator_object` 的索引：**
 
 | 标签 | 键 |
 |------|-----|

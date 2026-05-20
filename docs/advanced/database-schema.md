@@ -94,9 +94,9 @@ Content objects represent posts and comments with voting, payout, and nesting me
 
 ---
 
-## Validator (Witness) Objects
+## Validator Objects
 
-**`witness_object` indexes:**
+**`validator_object` indexes:**
 
 | Tag | Key |
 |-----|-----|

@@ -52,7 +52,7 @@
 |---------|------|------|
 | `database_api` | 活跃 | 区块、账户、链状态查询 |
 | `network_broadcast_api` | 活跃 | 交易和区块广播 |
-| `witness_api` | 活跃 | 验证者查询 |
+| `validator_api` | 活跃 | 验证者查询 |
 | `account_by_key` | 活跃 | 反向密钥查找 |
 | `account_history` | 活跃 | 每账户操作历史 |
 | `operation_history` | 活跃 | 区块操作查询 |
@@ -119,18 +119,18 @@
 
 ---
 
-## `witness_api` 方法
+## `validator_api` 方法
 
 | 方法 | 描述 |
 |------|------|
-| `get_active_witnesses()` | 当前活跃验证者集合（21 个账户） |
-| `get_witness_schedule()` | 完整验证者计划对象 |
-| `get_witnesses(ids[])` | 按内部 ID 查询验证者 |
-| `get_witness_by_account(account)` | 账户的验证者对象 |
-| `get_witnesses_by_vote(lower_bound, limit)` | 按投票权重排名的验证者 |
-| `get_witnesses_by_counted_vote(lower_bound, limit)` | 按计票排名的验证者 |
-| `get_witness_count()` | 已注册验证者总数 |
-| `lookup_witness_accounts(lower_bound, limit)` | 列出验证者账户名 |
+| `get_active_validators()` | 当前活跃验证者集合（21 个账户） |
+| `get_validator_schedule()` | 完整验证者计划对象 |
+| `get_validators(ids[])` | 按内部 ID 查询验证者 |
+| `get_validator_by_account(account)` | 账户的验证者对象 |
+| `get_validators_by_vote(lower_bound, limit)` | 按投票权重排名的验证者 |
+| `get_validators_by_counted_vote(lower_bound, limit)` | 按计票排名的验证者 |
+| `get_validator_count()` | 已注册验证者总数 |
+| `lookup_validator_accounts(lower_bound, limit)` | 列出验证者账户名 |
 
 ---
 
@@ -214,7 +214,7 @@ plugin = database_api network_broadcast_api
 
 **完整 API 节点（添加）：**
 ```ini
-plugin = witness_api account_by_key account_history operation_history
+plugin = validator_api account_by_key account_history operation_history
 plugin = committee_api invite_api paid_subscription_api
 ```
 

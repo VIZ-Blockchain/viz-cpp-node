@@ -44,7 +44,7 @@ HF13 (version 3.2.0) introduced:
 
 **Validator reward sharing**: part of each block's validator reward is redistributed proportionally to the accounts that voted for that validator (by their SHARES vote weight).
 
-- New field on `witness_object`: `reward_percent` — fraction of block reward shared with voters (0–10000 basis points).
+- New field on `validator_object`: `reward_percent` — fraction of block reward shared with voters (0–10000 basis points).
 - New virtual operation: `validator_reward_virtual_operation` — fired once per reward distribution.
 - Set via `validator_update_operation`.
 
@@ -121,7 +121,7 @@ case CHAIN_HARDFORK_N: {
 | Plugin | What to update |
 |--------|----------------|
 | `account_history` | Add impact extractor for any new virtual operation |
-| `witness_api` | Add new fields from `witness_object` to `witness_api_object` |
+| `validator_api` | Add new fields from `validator_object` to `validator_api_object` |
 | `snapshot` | Add new chainbase objects to `serialize_state` / `load_snapshot` |
 
 ---
@@ -163,7 +163,7 @@ Normal restart:
 - [ ] All new fields have zero defaults; `apply_hardfork` comment explains why no migration needed
 - [ ] New evaluator registered in `initialize_evaluators()`
 - [ ] New virtual op registered in `account_history` plugin
-- [ ] `witness_api_object` updated if `witness_object` changed
+- [ ] `validator_api_object` updated if `validator_object` changed
 - [ ] Snapshot plugin updated if new chainbase objects added
 
 ---

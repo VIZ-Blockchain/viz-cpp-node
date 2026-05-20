@@ -405,4 +405,4 @@ Returns account namespace registrations available for sale (subaccount creation 
 
 ---
 
-See also: [Plugin Overview](./overview.md), [witness_api methods](./overview.md#witness_api), [JSON-RPC API](../api/json-rpc.md).
+See also: [Plugin Overview](./overview.md), [validator_api methods](./overview.md#validator_api), [JSON-RPC API](../api/json-rpc.md).

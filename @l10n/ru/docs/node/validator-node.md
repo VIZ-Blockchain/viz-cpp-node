@@ -28,7 +28,7 @@ webserver-http-endpoint = 127.0.0.1:8090
 webserver-ws-endpoint   = 127.0.0.1:8091
 
 # Обязательные плагины для валидатора
-plugin = chain p2p webserver json_rpc database_api network_broadcast_api validator witness_api
+plugin = chain p2p webserver json_rpc database_api network_broadcast_api validator validator_api
 
 # Пропустить индексирование виртуальных операций для экономии памяти
 skip-virtual-ops = true

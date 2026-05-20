@@ -133,7 +133,7 @@ real_witness_slots >= CHAIN_MAX_WITNESSES × 75%
 
 ## 验证者守护集成
 
-`witness_guard` 插件在紧急期间继续运行，实际上更加关键：
+`validator_guard` 插件在紧急期间继续运行，实际上更加关键：
 
 - 真实验证者在激活时被禁用（签名密钥设为 null）。
 - 验证者守护自动广播 `validator_update_operation`，一旦在链上检测到 null 密钥就恢复每个验证者的签名密钥。
@@ -199,7 +199,7 @@ real_witness_slots >= CHAIN_MAX_WITNESSES × 75%
 | 9 | `stale_sync_check_task` | 主节点头部推进时跳过；从节点卡住时允许 |
 | 10 | `handle_block` | DLT 紧急中几乎追上的区块视为正常 |
 | 11 | `database::open` | 启动计划修复 |
-| 12 | `witness_guard` | 紧急期间不抑制密钥恢复 |
+| 12 | `validator_guard` | 紧急期间不抑制密钥恢复 |
 | 13 | `snapshot import` | 向前兼容的字段处理 |
 | 14 | `update_witness_schedule` | 从硬分叉版本统计中排除 committee |
 | 15 | `update_median_witness_props` | 从中位数计算中排除 committee |

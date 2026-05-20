@@ -1,6 +1,6 @@
 # 验证者守护（Validator Guard）
 
-`witness_guard` 插件为验证者账户自动化签名密钥恢复。当验证者的签名密钥被重置为 null（禁用区块生产）时，插件检测到此变化并广播 `witness_update_operation` 以恢复密钥——无需手动干预。
+`validator_guard` 插件为验证者账户自动化签名密钥恢复。当验证者的签名密钥被重置为 null（禁用区块生产）时，插件检测到此变化并广播 `witness_update_operation` 以恢复密钥——无需手动干预。
 
 ---
 
@@ -15,7 +15,7 @@
 ## 启用插件
 
 ```ini
-plugin = witness_guard
+plugin = validator_guard
 ```
 
 ---
@@ -34,7 +34,7 @@ plugin = witness_guard
 ### 示例
 
 ```ini
-plugin = witness_guard
+plugin = validator_guard
 
 # 监控一个验证者
 validator-guard-validator = ["alice", "5K_SIGNING_WIF", "5K_ACTIVE_WIF"]

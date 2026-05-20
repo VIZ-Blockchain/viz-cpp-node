@@ -28,7 +28,7 @@ webserver-http-endpoint = 127.0.0.1:8090
 webserver-ws-endpoint   = 127.0.0.1:8091
 
 # 验证者所需插件
-plugin = chain p2p webserver json_rpc database_api network_broadcast_api validator witness_api
+plugin = chain p2p webserver json_rpc database_api network_broadcast_api validator validator_api
 
 # 跳过虚拟操作索引以节省内存
 skip-virtual-ops = true

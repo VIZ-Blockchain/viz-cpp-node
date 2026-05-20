@@ -60,7 +60,7 @@ The entry script (`vizd.sh`) reads these environment variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `VIZD_SEED_NODES` | Space-delimited seed node list (overrides `/etc/vizd/seednodes`) | `seed1.viz.world:2001 seed2.viz.world:2001` |
+| `VIZD_SEED_NODES` | Space-delimited seed node list (overrides `/etc/vizd/seednodes`) | `seed1.viz.world:2001 seed2.viz.world:2001 seed3.viz.world:2001` |
 | `VIZD_RPC_ENDPOINT` | Override HTTP RPC endpoint | `0.0.0.0:8090` |
 | `VIZD_P2P_ENDPOINT` | Override P2P endpoint | `0.0.0.0:2001` |
 | `VIZD_WITNESS` | Validator account name (enables block production) | `alice` |

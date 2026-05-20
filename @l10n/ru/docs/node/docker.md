@@ -60,7 +60,7 @@ docker run -d \
 
 | Переменная | Описание | Пример |
 |------------|----------|--------|
-| `VIZD_SEED_NODES` | Список сид-узлов через пробел (переопределяет `/etc/vizd/seednodes`) | `seed1.viz.world:2001 seed2.viz.world:2001` |
+| `VIZD_SEED_NODES` | Список сид-узлов через пробел (переопределяет `/etc/vizd/seednodes`) | `seed1.viz.world:2001 seed2.viz.world:2001 seed3.viz.world:2001` |
 | `VIZD_RPC_ENDPOINT` | Переопределить HTTP RPC endpoint | `0.0.0.0:8090` |
 | `VIZD_P2P_ENDPOINT` | Переопределить P2P endpoint | `0.0.0.0:2001` |
 | `VIZD_WITNESS` | Имя аккаунта валидатора (включает производство блоков) | `alice` |

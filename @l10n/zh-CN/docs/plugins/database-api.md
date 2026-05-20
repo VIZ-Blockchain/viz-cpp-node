@@ -405,4 +405,4 @@ json_rpc::plugin, chain::plugin
 
 ---
 
-参见：[插件概述](./overview.md)、[witness_api 方法](./overview.md#witness_api)、[JSON-RPC API](../api/json-rpc.md)。
+参见：[插件概述](./overview.md)、[validator_api 方法](./overview.md#validator_api)、[JSON-RPC API](../api/json-rpc.md)。

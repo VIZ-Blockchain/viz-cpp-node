@@ -57,7 +57,7 @@ Plugins are registered with the `AppBase` framework at startup and implement lif
 | `account_by_key` | Lookup accounts by public key |
 | `follow` | Follow/ignore relationship index |
 | `tags` | Tag-based content indexing |
-| `witness_api` | Validator schedule and signing key queries |
+| `validator_api` | Validator schedule and signing key queries |
 | `debug_node` | Test utilities: inject blocks, set time |
 
 ---

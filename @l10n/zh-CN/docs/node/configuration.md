@@ -24,6 +24,7 @@ p2p-max-connections = 200
 # 引导连接的种子节点（可重复）
 p2p-seed-node = seed1.viz.world:2001
 p2p-seed-node = seed2.viz.world:2001
+p2p-seed-node = seed3.viz.world:2001
 
 # 检查点：受信任的 (block_num, block_id) 对（可重复）
 # checkpoint = [12345,"0003039..." ]
@@ -110,7 +111,7 @@ plugin = social_network tags follow account_history account_by_key
 plugin = committee_api invite_api paid_subscription_api custom_protocol_api
 
 # 仅用于验证者节点：
-plugin = validator witness_api
+plugin = validator validator_api
 ```
 
 ### 按节点类型划分的插件集
@@ -118,7 +119,7 @@ plugin = validator witness_api
 | 节点类型 | 插件 |
 |---------|------|
 | 全节点 | 以上所有 |
-| 验证者 | `chain p2p webserver json_rpc database_api network_broadcast_api validator witness_api` |
+| 验证者 | `chain p2p webserver json_rpc database_api network_broadcast_api validator validator_api` |
 | 低内存种子 | `chain p2p` |
 | 交易所 | `chain p2p webserver json_rpc database_api network_broadcast_api account_history` |
 

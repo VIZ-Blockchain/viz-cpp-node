@@ -33,7 +33,7 @@ VIZ Ledger uses the **AppBase** plugin framework. Each plugin has a lifecycle (`
 | `webserver` | Required for API | `json_rpc` | — |
 | `p2p` | Required for network | `chain` | — |
 | `snapshot` | Recommended | `chain` | — |
-| `witness_guard` | Recommended for validators | `chain`, `p2p` | — |
+| `validator_guard` | Recommended for validators | `chain`, `p2p` | — |
 
 ### API
 
@@ -41,7 +41,7 @@ VIZ Ledger uses the **AppBase** plugin framework. Each plugin has a lifecycle (`
 |--------|--------|------|---------|
 | `database_api` | Active | `json_rpc`, `chain` | Yes |
 | `network_broadcast_api` | Active | `json_rpc`, `chain`, `p2p` | Yes |
-| `witness_api` | Active | `json_rpc`, `chain` | Yes |
+| `validator_api` | Active | `json_rpc`, `chain` | Yes |
 | `account_by_key` | Active | `json_rpc`, `chain` | Yes |
 | `account_history` | Active | `json_rpc`, `chain`, `operation_history` | Yes |
 | `operation_history` | Active | `json_rpc`, `chain` | Yes |
@@ -189,20 +189,20 @@ Submit and broadcast signed transactions and blocks.
 
 ---
 
-### `witness_api`
+### `validator_api`
 
 Query validator state: active set, schedule, individual validators, vote rankings.
 
 | Method | Description |
 |--------|-------------|
-| `get_active_witnesses` | Current 21-validator active set |
-| `get_witness_schedule` | Full schedule object |
-| `get_witnesses` | Validators by database IDs |
-| `get_witness_by_account` | Single validator by account name |
-| `get_witnesses_by_vote` | Validators sorted by total vote weight |
-| `get_witnesses_by_counted_vote` | Validators sorted by counted vote weight |
-| `get_witness_count` | Total number of registered validators |
-| `lookup_witness_accounts` | List validator account names by prefix |
+| `get_active_validators` | Current 21-validator active set |
+| `get_validator_schedule` | Full schedule object |
+| `get_validators` | Validators by database IDs |
+| `get_validator_by_account` | Single validator by account name |
+| `get_validators_by_vote` | Validators sorted by total vote weight |
+| `get_validators_by_counted_vote` | Validators sorted by counted vote weight |
+| `get_validator_count` | Total number of registered validators |
+| `lookup_validator_accounts` | List validator account names by prefix |
 
 ---
 
@@ -340,7 +340,7 @@ plugin = webserver
 plugin = p2p
 plugin = database_api
 plugin = network_broadcast_api
-plugin = witness_api
+plugin = validator_api
 plugin = account_by_key
 plugin = account_history
 plugin = operation_history
@@ -359,7 +359,7 @@ plugin = json_rpc
 plugin = webserver
 plugin = database_api
 plugin = network_broadcast_api
-plugin = witness_api
+plugin = validator_api
 plugin = snapshot
 
 snapshot-every-n-blocks = 28800

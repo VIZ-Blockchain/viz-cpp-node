@@ -1,6 +1,6 @@
 # Validator Guard
 
-The `witness_guard` plugin automates signing-key restoration for validator accounts. When a validator's signing key is reset to null (disabling block production), the plugin detects the change and broadcasts a `witness_update_operation` to restore the key — without manual intervention.
+The `validator_guard` plugin automates signing-key restoration for validator accounts. When a validator's signing key is reset to null (disabling block production), the plugin detects the change and broadcasts a `witness_update_operation` to restore the key — without manual intervention.
 
 ---
 
@@ -15,7 +15,7 @@ The `witness_guard` plugin automates signing-key restoration for validator accou
 ## Enabling the Plugin
 
 ```ini
-plugin = witness_guard
+plugin = validator_guard
 ```
 
 ---
@@ -34,7 +34,7 @@ The plugin also reads `enable-stale-production` from the validator plugin config
 ### Example
 
 ```ini
-plugin = witness_guard
+plugin = validator_guard
 
 # Monitor one validator
 validator-guard-validator = ["alice", "5K_SIGNING_WIF", "5K_ACTIVE_WIF"]

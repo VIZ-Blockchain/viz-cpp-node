@@ -405,4 +405,4 @@ json_rpc::plugin, chain::plugin
 
 ---
 
-См. также: [Обзор плагинов](./overview.md), [Методы witness_api](./overview.md#witness_api), [JSON-RPC API](../api/json-rpc.md).
+См. также: [Обзор плагинов](./overview.md), [Методы validator_api](./overview.md#validator_api), [JSON-RPC API](../api/json-rpc.md).

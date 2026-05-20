@@ -24,6 +24,7 @@ p2p-max-connections = 200
 # Начальные узлы для установки соединений (повторяемый параметр)
 p2p-seed-node = seed1.viz.world:2001
 p2p-seed-node = seed2.viz.world:2001
+p2p-seed-node = seed3.viz.world:2001
 
 # Контрольные точки: доверенные пары (block_num, block_id) (повторяемый параметр)
 # checkpoint = [12345,"0003039..." ]
@@ -110,7 +111,7 @@ plugin = social_network tags follow account_history account_by_key
 plugin = committee_api invite_api paid_subscription_api custom_protocol_api
 
 # Только для узлов-валидаторов:
-plugin = validator witness_api
+plugin = validator validator_api
 ```
 
 ### Наборы плагинов по типу узла
@@ -118,7 +119,7 @@ plugin = validator witness_api
 | Тип узла | Плагины |
 |---------|--------|
 | Полный узел | Все перечисленные выше |
-| Валидатор | `chain p2p webserver json_rpc database_api network_broadcast_api validator witness_api` |
+| Валидатор | `chain p2p webserver json_rpc database_api network_broadcast_api validator validator_api` |
 | Маломощный сид | `chain p2p` |
 | Биржа | `chain p2p webserver json_rpc database_api network_broadcast_api account_history` |
 
