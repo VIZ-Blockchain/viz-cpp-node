@@ -36,61 +36,61 @@ struct validator_guard_plugin::impl {
     // ── config ────────────────────────────────────────────────────────────────
     bool                        _enabled        = true;
     uint32_t                    _check_interval = 20;   // blocks between periodic checks
-    uint32_t                    _disable_threshold = 5; // consecutive blocks by same witness before auto-disable
+    uint32_t                    _disable_threshold = 5; // consecutive blocks by same validator before auto-disable
     bool                        _initial_check_done = false; // true once the node is confirmed in sync at startup
-    bool                        _stale_production_config = false; // mirrors enable-stale-production from witness config
+    bool                        _stale_production_config = false; // mirrors enable-stale-production from validator config
     boost::signals2::connection _applied_block_connection;   // applied_block signal connection
 
-    // Per-witness consecutive block counter: witness_name -> count of consecutive blocks produced
+    // Per-validator consecutive block counter: validator_name -> count of consecutive blocks produced
     std::map<std::string, uint32_t> _consecutive_blocks;
 
-    // Witnesses that have been auto-disabled and are awaiting manual intervention
+    // Validators that have been auto-disabled and are awaiting manual intervention
     // (we should NOT auto-restore them — only a restart or explicit action should re-enable)
-    std::set<std::string> _auto_disabled_witnesses;
+    std::set<std::string> _auto_disabled_validators;
 
-    // Per-witness key pair used for signing and for broadcasting the update
-    struct witness_info {
+    // Per-validator key pair used for signing and for broadcasting the update
+    struct validator_info {
         fc::ecc::private_key signing_key;
         fc::ecc::private_key active_key;
     };
 
-    // Configured witnesses: witness_name -> key pair
-    std::map<std::string, witness_info> _witness_configs;
+    // Configured validators: validator_name -> key pair
+    std::map<std::string, validator_info> _validator_configs;
 
-    // Witnesses with an in-flight restore: witness_name -> tx expiration time
+    // Witnesses with an in-flight restore: validator_name -> tx expiration time
     std::map<std::string, fc::time_point_sec> _restore_pending;
 
-    // Transaction IDs awaiting block inclusion: tx_id -> (witness_name, expiration)
+    // Transaction IDs awaiting block inclusion: tx_id -> (validator_name, expiration)
     std::map<graphene::chain::transaction_id_type, std::pair<std::string, fc::time_point_sec>> _pending_confirmations;
 
     // ── core ──────────────────────────────────────────────────────────────────
 
     bool check_and_restore_internal();
-    void send_witness_update(const std::string& witness_name,
+    void send_validator_update(const std::string& validator_name,
                              const graphene::chain::validator_object& obj,
-                             const witness_info& config);
-    void send_witness_disable(const std::string& witness_name,
+                             const validator_info& config);
+    void send_validator_disable(const std::string& validator_name,
                               const graphene::chain::validator_object& obj,
-                              const witness_info& config);
+                              const validator_info& config);
 
     graphene::plugins::chain::plugin&   chain_;
     graphene::plugins::p2p::p2p_plugin& p2p_;
 };
 
 // ─── check_and_restore ───────────────────────────────────────────────────────
-// Checks all monitored witnesses and restores signing keys when needed.
+// Checks all monitored validators and restores signing keys when needed.
 // Returns true if the node is in sync and the full check was performed.
 bool validator_guard_plugin::impl::check_and_restore_internal() {
     auto& database = db();
 
     // Skip auto-restore when stale production is enabled AND the network is
     // not yet healthy. Once participation reaches >= 33% the stale-production
-    // override is no longer needed — auto-clear it (same logic as witness plugin)
+    // override is no longer needed — auto-clear it (same logic as validator plugin)
     // to remove operator human error and re-enable key restoration.
     if (_stale_production_config) {
         const auto& dgp = database.get_dynamic_global_properties();
         if (!dgp.emergency_consensus_active) {
-            uint32_t prate = database.witness_participation_rate();
+            uint32_t prate = database.validator_participation_rate();
             if (prate >= 33 * CHAIN_1_PERCENT) {
                 ilog("validator_guard: network is healthy (participation ${p}%), "
                      "auto-clearing stale production override",
@@ -147,11 +147,11 @@ bool validator_guard_plugin::impl::check_and_restore_internal() {
 
     static const graphene::protocol::public_key_type null_key;
 
-    // Iterate over configured witnesses and check their on-chain signing key.
-    // If a key is null, initiate a witness_update to restore it.
-    for (const auto& entry : _witness_configs) {
+    // Iterate over configured validators and check their on-chain signing key.
+    // If a key is null, initiate a validator_update to restore it.
+    for (const auto& entry : _validator_configs) {
         const std::string& name = entry.first;
-        const witness_info& config = entry.second;
+        const validator_info& config = entry.second;
 
         auto itr = idx.find(name);
         if (itr == idx.end()) {
@@ -162,15 +162,15 @@ bool validator_guard_plugin::impl::check_and_restore_internal() {
         // Signing key is present on-chain — nothing to do
         if (itr->signing_key != null_key) {
             _restore_pending.erase(name);
-            // If this witness was auto-disabled and the key is now present on-chain,
+            // If this validator was auto-disabled and the key is now present on-chain,
             // clear the auto-disabled flag (operator must have manually restored)
-            _auto_disabled_witnesses.erase(name);
+            _auto_disabled_validators.erase(name);
             continue;
         }
 
-        // If this witness was auto-disabled by the consecutive-block guard,
+        // If this validator was auto-disabled by the consecutive-block guard,
         // do NOT auto-restore it — the operator must investigate and restart
-        if (_auto_disabled_witnesses.count(name)) {
+        if (_auto_disabled_validators.count(name)) {
             dlog("validator_guard: '${w}' was auto-disabled (consecutive block limit), "
                  "skipping auto-restore", ("w", name));
             continue;
@@ -184,35 +184,35 @@ bool validator_guard_plugin::impl::check_and_restore_internal() {
 
         ilog("validator_guard: '${w}' has null signing key on-chain — initiating restore",
              ("w", name));
-        send_witness_update(name, *itr, config);
+        send_validator_update(name, *itr, config);
     }
 
     return true; // node was in sync, full check performed
 }
 
-// ─── send_witness_update ─────────────────────────────────────────────────────
-// Builds, signs, and broadcasts a witness_update transaction that restores
-// the on-chain signing key for the given witness.
+// ─── send_validator_update ─────────────────────────────────────────────────────
+// Builds, signs, and broadcasts a validator_update transaction that restores
+// the on-chain signing key for the given validator.
 
-void validator_guard_plugin::impl::send_witness_update(
-        const std::string& witness_name,
+void validator_guard_plugin::impl::send_validator_update(
+        const std::string& validator_name,
         const graphene::chain::validator_object& obj,
-        const witness_info& config)
+        const validator_info& config)
 {
     try {
         const auto signing_pub = config.signing_key.get_public_key();
         const auto& active_priv = config.active_key;
 
-        // Build the witness_update operation with the correct signing key
+        // Build the validator_update operation with the correct signing key
         graphene::protocol::validator_update_operation op;
-        op.owner            = witness_name;
+        op.owner            = validator_name;
         op.url              = std::string(obj.url.begin(), obj.url.end());
         op.block_signing_key = signing_pub;
 
         // 30-second expiration window for the transaction
         fc::time_point_sec expiration(graphene::time::now() + fc::seconds(30));
 
-        // Assemble and sign the transaction with the witness's active authority key
+        // Assemble and sign the transaction with the validator's active authority key
         graphene::chain::signed_transaction tx;
         tx.operations.push_back(op);
         tx.set_expiration(expiration);
@@ -228,47 +228,47 @@ void validator_guard_plugin::impl::send_witness_update(
         }
 
         ilog("validator_guard: broadcasting validator_update [ID: ${id}] for '${w}' — restoring key to ${k}",
-             ("id", tx_id)("w", witness_name)("k", signing_pub));
+             ("id", tx_id)("w", validator_name)("k", signing_pub));
 
         p2p_.broadcast_transaction(tx);
 
         // Track so we can confirm inclusion in a future block
-        _restore_pending[witness_name] = expiration;
-        _pending_confirmations[tx_id] = { witness_name, expiration };
+        _restore_pending[validator_name] = expiration;
+        _pending_confirmations[tx_id] = { validator_name, expiration };
 
-        ilog("validator_guard: validator_update for '${w}' sent successfully", ("w", witness_name));
+        ilog("validator_guard: validator_update for '${w}' sent successfully", ("w", validator_name));
 
     } catch (const fc::exception& e) {
         elog("validator_guard: validator_update FAILED for '${w}': ${e}",
-             ("w", witness_name)("e", e.to_detail_string()));
+             ("w", validator_name)("e", e.to_detail_string()));
         // Do not mark as pending — retry will happen on the next check cycle
     }
 }
 
-// ─── send_witness_disable ─────────────────────────────────────────────────────
-// Builds, signs, and broadcasts a witness_update transaction that sets the
+// ─── send_validator_disable ─────────────────────────────────────────────────────
+// Builds, signs, and broadcasts a validator_update transaction that sets the
 // on-chain signing key to null, effectively disabling block production.
 
-void validator_guard_plugin::impl::send_witness_disable(
-        const std::string& witness_name,
+void validator_guard_plugin::impl::send_validator_disable(
+        const std::string& validator_name,
         const graphene::chain::validator_object& obj,
-        const witness_info& config)
+        const validator_info& config)
 {
     try {
         const auto& active_priv = config.active_key;
 
         static const graphene::protocol::public_key_type null_key;
 
-        // Build the witness_update operation with null signing key to disable
+        // Build the validator_update operation with null signing key to disable
         graphene::protocol::validator_update_operation op;
-        op.owner             = witness_name;
+        op.owner             = validator_name;
         op.url               = std::string(obj.url.begin(), obj.url.end());
         op.block_signing_key = null_key;
 
         // 30-second expiration window for the transaction
         fc::time_point_sec expiration(graphene::time::now() + fc::seconds(30));
 
-        // Assemble and sign the transaction with the witness's active authority key
+        // Assemble and sign the transaction with the validator's active authority key
         graphene::chain::signed_transaction tx;
         tx.operations.push_back(op);
         tx.set_expiration(expiration);
@@ -278,18 +278,18 @@ void validator_guard_plugin::impl::send_witness_disable(
         const auto tx_id = tx.id();
 
         ilog("validator_guard: broadcasting validator_update [ID: ${id}] for '${w}' — DISABLING (setting key to null)",
-             ("id", tx_id)("w", witness_name));
+             ("id", tx_id)("w", validator_name));
 
         p2p_.broadcast_transaction(tx);
 
-        // Mark this witness as auto-disabled so we don't auto-restore it
-        _auto_disabled_witnesses.insert(witness_name);
+        // Mark this validator as auto-disabled so we don't auto-restore it
+        _auto_disabled_validators.insert(validator_name);
 
-        ilog("validator_guard: validator_disable for '${w}' sent successfully", ("w", witness_name));
+        ilog("validator_guard: validator_disable for '${w}' sent successfully", ("w", validator_name));
 
     } catch (const fc::exception& e) {
         elog("validator_guard: validator_disable FAILED for '${w}': ${e}",
-             ("w", witness_name)("e", e.to_detail_string()));
+             ("w", validator_name)("e", e.to_detail_string()));
     }
 }
 
@@ -419,7 +419,7 @@ void validator_guard_plugin::plugin_initialize(
                     FC_ASSERT(sign_priv.valid(), "witness-guard-witness: invalid signing WIF for ${n}", ("n", name));
                     FC_ASSERT(active_priv.valid(), "witness-guard-witness: invalid active WIF for ${n}", ("n", name));
 
-                    pimpl->_witness_configs[name] = { *sign_priv, *active_priv };
+                    pimpl->_validator_configs[name] = { *sign_priv, *active_priv };
 
                     ilog("validator_guard: monitoring validator '${w}' (signing key: ${k})",
                          ("w", name)("k", sign_priv->get_public_key()));
@@ -431,13 +431,13 @@ void validator_guard_plugin::plugin_initialize(
             }
         }
 
-        if (pimpl->_witness_configs.empty()) {
+        if (pimpl->_validator_configs.empty()) {
             wlog("validator_guard: no validators configured for monitoring");
         }
 
         ilog("validator_guard: plugin_initialize() end — "
              "monitoring ${n} validator(s), interval=${i} blocks",
-             ("n", pimpl->_witness_configs.size())("i", pimpl->_check_interval));
+             ("n", pimpl->_validator_configs.size())("i", pimpl->_check_interval));
 
     } FC_LOG_AND_RETHROW()
 }
@@ -445,15 +445,15 @@ void validator_guard_plugin::plugin_initialize(
 void validator_guard_plugin::plugin_startup() {
     ilog("validator_guard: plugin_startup() begin");
 
-    if (!pimpl->_enabled || pimpl->_witness_configs.empty()) {
+    if (!pimpl->_enabled || pimpl->_validator_configs.empty()) {
         ilog("validator_guard: nothing to monitor, plugin inactive");
         return;
     }
-    // Verify on-chain authority for every configured witness.
+    // Verify on-chain authority for every configured validator 
     // The chain database is open at this point so we can query account objects.
-    for (auto it = pimpl->_witness_configs.begin(); it != pimpl->_witness_configs.end(); ) {
+    for (auto it = pimpl->_validator_configs.begin(); it != pimpl->_validator_configs.end(); ) {
         const std::string& name = it->first;
-        const impl::witness_info& config = it->second;
+        const impl::validator_info& config = it->second;
 
         try {
            // VIZ stores authorities in account_authority_object (not account_object)
@@ -474,11 +474,11 @@ void validator_guard_plugin::plugin_startup() {
             ++it;
         } catch (const fc::exception& e) {
             elog("validator_guard: account '${w}' not found on chain, removing from monitor list", ("w", name));
-            it = pimpl->_witness_configs.erase(it);
+            it = pimpl->_validator_configs.erase(it);
         }
     }
 
-    if (pimpl->_witness_configs.empty()) return;
+    if (pimpl->_validator_configs.empty()) return;
 
     // Run an initial check at startup; mark done if the node is already in sync
     // (check_and_restore_internal returns true when the node is synchronized).
@@ -492,39 +492,39 @@ void validator_guard_plugin::plugin_startup() {
         if (!pimpl->_enabled) return;
 
         // 0. Consecutive-block auto-disable check:
-        //    If one of our witnesses produces N consecutive blocks, disable it.
-        if (pimpl->_disable_threshold > 0 && pimpl->_witness_configs.count(b.validator)) {
+        //    If one of our validators produces N consecutive blocks, disable it.
+        if (pimpl->_disable_threshold > 0 && pimpl->_validator_configs.count(b.validator)) {
             const std::string& producer = b.validator;
-            // Reset counters for all OTHER witnesses — only the current producer's streak continues
+            // Reset counters for all OTHER validators — only the current producer's streak continues
             for (auto& entry : pimpl->_consecutive_blocks) {
                 if (entry.first != producer) entry.second = 0;
             }
-            // Increment the consecutive counter for this witness
+            // Increment the consecutive counter for this validator
             pimpl->_consecutive_blocks[producer]++;
             const uint32_t count = pimpl->_consecutive_blocks[producer];
 
             if (count >= pimpl->_disable_threshold) {
                 // Already auto-disabled? Skip repeated broadcasts
-                if (!pimpl->_auto_disabled_witnesses.count(producer)) {
+                if (!pimpl->_auto_disabled_validators.count(producer)) {
                     wlog("validator_guard: validator '${w}' produced ${c} consecutive blocks — "
                          "auto-disabling (threshold=${t})",
                          ("w", producer)("c", count)("t", pimpl->_disable_threshold));
 
-                    // Look up the witness object and send disable transaction
+                    // Look up the validator object and send disable transaction
                     const auto& idx = pimpl->db()
                         .get_index<graphene::chain::validator_index>()
                         .indices()
                         .get<graphene::chain::by_name>();
                     auto itr = idx.find(producer);
                     if (itr != idx.end()) {
-                        const auto& config = pimpl->_witness_configs.at(producer);
-                        pimpl->send_witness_disable(producer, *itr, config);
+                        const auto& config = pimpl->_validator_configs.at(producer);
+                        pimpl->send_validator_disable(producer, *itr, config);
                     }
                 }
             }
         }
         else {
-            // Block produced by a different witness — reset ALL our consecutive counters
+            // Block produced by a different validator — reset ALL our consecutive counters
             // because the streak is broken
             if (!pimpl->_consecutive_blocks.empty()) {
                 for (auto& entry : pimpl->_consecutive_blocks) {
@@ -553,12 +553,12 @@ void validator_guard_plugin::plugin_startup() {
             }
         }
 
-        // 2. Look-ahead: if one of our witnesses is scheduled within the next 3 slots
+        // 2. Look-ahead: if one of our validators is scheduled within the next 3 slots
         //    run an immediate check so the key is restored before the slot arrives
         bool scheduled_soon = false;
         if (pimpl->_initial_check_done) {
             for (uint32_t i = 1; i <= 3; ++i) {
-                if (pimpl->_witness_configs.count(pimpl->db().get_scheduled_validator(i))) {
+                if (pimpl->_validator_configs.count(pimpl->db().get_scheduled_validator(i))) {
                     scheduled_soon = true;
                     break;
                 }
@@ -566,7 +566,7 @@ void validator_guard_plugin::plugin_startup() {
         }
 
         // 3. Decide whether to run the periodic check:
-        //    - scheduled_soon: one of our witnesses produces very soon
+        //    - scheduled_soon: one of our validators produces very soon
         //    - !_initial_check_done: keep probing every 10 blocks until the node syncs
         //    - regular interval: every _check_interval blocks
         if (scheduled_soon) {

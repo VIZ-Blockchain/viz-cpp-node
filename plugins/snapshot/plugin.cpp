@@ -252,7 +252,7 @@ inline uint32_t import_account_authorities(
     return count;
 }
 
-inline uint32_t import_witnesses(
+inline uint32_t import_validators(
     graphene::chain::database& db,
     const fc::variants& arr
 ) {
@@ -387,18 +387,18 @@ inline uint32_t import_content_votes(
     return count;
 }
 
-inline uint32_t import_witness_votes(
+inline uint32_t import_validator_votes(
     graphene::chain::database& db,
     const fc::variants& arr
 ) {
     uint32_t count = 0;
     for (const auto& v : arr) {
         auto id_val = v["id"].as_int64();
-        auto& mutable_idx = db.get_mutable_index<witness_vote_index>();
-        mutable_idx.set_next_id(witness_vote_id_type(id_val));
+        auto& mutable_idx = db.get_mutable_index<validator_vote_index>();
+        mutable_idx.set_next_id(validator_vote_id_type(id_val));
 
-        db.create<witness_vote_object>([&](witness_vote_object& obj) {
-            obj.witness = v["witness"].as<validator_id_type>();
+        db.create<validator_vote_object>([&](validator_vote_object& obj) {
+            obj.validator = v["validator"].as<validator_id_type>();
             obj.account = v["account"].as<account_id_type>();
             // HF13: flash-voter protection (default 0 for pre-HF13 snapshots)
             if (v.get_object().contains("vote_created_block"))
@@ -409,7 +409,7 @@ inline uint32_t import_witness_votes(
     return count;
 }
 
-inline uint32_t import_witness_schedule(
+inline uint32_t import_validator_schedule(
     graphene::chain::database& db,
     const fc::variants& arr
 ) {
@@ -763,7 +763,7 @@ public:
     std::string snapshot_dir;         // --snapshot-dir: directory for auto-generated snapshots
     uint32_t snapshot_max_age_days = 90; // --snapshot-max-age-days: delete snapshots older than N days (0 = disabled)
 
-    // Deferred snapshot creation (to avoid interrupting witness block production)
+    // Deferred snapshot creation (to avoid interrupting validator block production)
     bool snapshot_pending = false;        // deferred snapshot flag
     std::string pending_snapshot_path;    // path for deferred snapshot
     fc::time_point_sec pending_snapshot_safe_after_time; // earliest head_block_time safe to start deferred snapshot
@@ -938,12 +938,12 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
 
     // CRITICAL objects
     EXPORT_INDEX(dynamic_global_property_index, dynamic_global_property_object, "dynamic_global_property")
-    EXPORT_INDEX(validator_schedule_index, validator_schedule_object, "witness_schedule")
+    EXPORT_INDEX(validator_schedule_index, validator_schedule_object, "validator_schedule")
     EXPORT_INDEX(hardfork_property_index, hardfork_property_object, "hardfork_property")
     EXPORT_INDEX(account_index, account_object, "account")
     EXPORT_INDEX(account_authority_index, account_authority_object, "account_authority")
-    EXPORT_INDEX(validator_index, validator_object, "witness")
-    EXPORT_INDEX(witness_vote_index, witness_vote_object, "witness_vote")
+    EXPORT_INDEX(validator_index, validator_object, "validator")
+    EXPORT_INDEX(validator_vote_index, validator_vote_object, "validator_vote")
     EXPORT_INDEX(block_summary_index, block_summary_object, "block_summary")
     EXPORT_INDEX(content_index, content_object, "content")
     EXPORT_INDEX(content_vote_index, content_vote_object, "content_vote")
@@ -965,7 +965,7 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     // snapshot time and is included in that block will trigger
     // "Duplicate transaction check failed".
     //
-    // The witness node needs this index to avoid producing blocks with
+    // The validator node needs this index to avoid producing blocks with
     // duplicate transactions, so we must export confirmed entries.
     {
         fc::flat_set<transaction_id_type> pending_ids;
@@ -1064,7 +1064,7 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(award_shares_expire_index, award_shares_expire_object, "award_shares_expire")
     EXPORT_INDEX(paid_subscription_index, paid_subscription_object, "paid_subscription")
     EXPORT_INDEX(paid_subscribe_index, paid_subscribe_object, "paid_subscribe")
-    EXPORT_INDEX(witness_penalty_expire_index, witness_penalty_expire_object, "witness_penalty_expire")
+    EXPORT_INDEX(validator_penalty_expire_index, validator_penalty_expire_object, "validator_penalty_expire")
 
     // OPTIONAL objects
     EXPORT_INDEX(content_type_index, content_type_object, "content_type")
@@ -1397,8 +1397,8 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         // For initial load (fresh DB from open_from_snapshot), these indexes
         // are empty and the loops are no-ops.
         //
-        // init_genesis() creates initial accounts, authorities, witnesses, and metadata
-        // that would conflict with the snapshot's objects. Singletons (dgp, witness_schedule,
+        // init_genesis() creates initial accounts, authorities, validators, and metadata
+        // that would conflict with the snapshot's objects. Singletons (dgp, validator_schedule,
         // hardfork_property) and block_summaries are handled separately (modify-in-place).
         {
             ilog(CLOG_ORANGE "Clearing existing objects before snapshot import..." CLOG_RESET);
@@ -1417,7 +1417,7 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             // Also clear all other multi-instance object types that may exist
             // from a previous snapshot (hot-reload path). These are no-ops on
             // a fresh database.
-            const auto& wv_idx = db.get_index<witness_vote_index>().indices();
+            const auto& wv_idx = db.get_index<validator_vote_index>().indices();
             while (!wv_idx.empty()) { db.remove(*wv_idx.begin()); }
 
             const auto& bs_idx = db.get_index<block_summary_index>().indices();
@@ -1474,7 +1474,7 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             const auto& psb_idx = db.get_index<paid_subscribe_index>().indices();
             while (!psb_idx.empty()) { db.remove(*psb_idx.begin()); }
 
-            const auto& wpe_idx = db.get_index<witness_penalty_expire_index>().indices();
+            const auto& wpe_idx = db.get_index<validator_penalty_expire_index>().indices();
             while (!wpe_idx.empty()) { db.remove(*wpe_idx.begin()); }
 
             const auto& ct_idx = db.get_index<content_type_index>().indices();
@@ -1496,9 +1496,9 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             detail::import_dynamic_global_properties(db, state["dynamic_global_property"].get_array());
             ilog(CLOG_ORANGE "Imported dynamic_global_property" CLOG_RESET);
         }
-        if (state.contains("witness_schedule")) {
-            detail::import_witness_schedule(db, state["witness_schedule"].get_array());
-            ilog(CLOG_ORANGE "Imported witness_schedule" CLOG_RESET);
+        if (state.contains("validator_schedule")) {
+            detail::import_validator_schedule(db, state["validator_schedule"].get_array());
+            ilog(CLOG_ORANGE "Imported validator_schedule" CLOG_RESET);
         }
         if (state.contains("hardfork_property")) {
             detail::import_hardfork_property(db, state["hardfork_property"].get_array());
@@ -1514,13 +1514,13 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             auto n = detail::import_account_authorities(db, state["account_authority"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} account authorities" CLOG_RESET, ("n", n));
         }
-        if (state.contains("witness")) {
-            auto n = detail::import_witnesses(db, state["witness"].get_array());
-            ilog(CLOG_ORANGE "Imported ${n} witnesses" CLOG_RESET, ("n", n));
+        if (state.contains("validator")) {
+            auto n = detail::import_validators(db, state["validator"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} validators" CLOG_RESET, ("n", n));
         }
-        if (state.contains("witness_vote")) {
-            auto n = detail::import_witness_votes(db, state["witness_vote"].get_array());
-            ilog(CLOG_ORANGE "Imported ${n} witness votes" CLOG_RESET, ("n", n));
+        if (state.contains("validator_vote")) {
+            auto n = detail::import_validator_votes(db, state["validator_vote"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} validator votes" CLOG_RESET, ("n", n));
         }
         if (state.contains("block_summary")) {
             auto n = detail::import_block_summaries(db, state["block_summary"].get_array());
@@ -1596,9 +1596,9 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             auto n = detail::import_simple_objects<paid_subscribe_object, paid_subscribe_index>(db, state["paid_subscribe"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} paid subscribes" CLOG_RESET, ("n", n));
         }
-        if (state.contains("witness_penalty_expire")) {
-            auto n = detail::import_simple_objects<witness_penalty_expire_object, witness_penalty_expire_index>(db, state["witness_penalty_expire"].get_array());
-            ilog(CLOG_ORANGE "Imported ${n} witness penalty expire objects" CLOG_RESET, ("n", n));
+        if (state.contains("validator_penalty_expire")) {
+            auto n = detail::import_simple_objects<validator_penalty_expire_object, validator_penalty_expire_index>(db, state["validator_penalty_expire"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} validator penalty expire objects" CLOG_RESET, ("n", n));
         }
 
         // OPTIONAL objects
@@ -1776,17 +1776,17 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         return;
     }
 
-    // Helper lambda: check if local witness is scheduled to produce soon.
+    // Helper lambda: check if local validator is scheduled to produce soon.
     // When returning true, also stores the slot time of the earliest upcoming
-    // witness production in pending_snapshot_safe_after_time so the deferred
+    // validator production in pending_snapshot_safe_after_time so the deferred
     // snapshot can wait until after that slot is filled.
-    auto is_witness_producing_soon = [&]() -> bool {
+    auto is_validator_producing_soon = [&]() -> bool {
         try {
-            auto* witness_plug = appbase::app().find_plugin<graphene::plugins::validator_plugin::validator_plugin>();
-            if (witness_plug != nullptr && witness_plug->get_state() == appbase::abstract_plugin::started) {
-                bool soon = witness_plug->is_witness_scheduled_soon();
+            auto* validator_plug = appbase::app().find_plugin<graphene::plugins::validator_plugin::validator_plugin>();
+            if (validator_plug != nullptr && validator_plug->get_state() == appbase::abstract_plugin::started) {
+                bool soon = validator_plug->is_validator_scheduled_soon();
                 if (soon) {
-                    pending_snapshot_safe_after_time = witness_plug->get_next_validator_slot_time();
+                    pending_snapshot_safe_after_time = validator_plug->get_next_validator_slot_time();
                 }
                 return soon;
             }
@@ -1830,7 +1830,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             // Guard clears snapshot_in_progress on scope exit.
             // release() disables the destructor once the DB read lock drops —
             // compression and file I/O below don't block the write lock,
-            // so the witness can produce as soon as the lock is released.
+            // so the validator can produce as soon as the lock is released.
             struct flag_guard {
                 std::atomic<bool>& flag;
                 bool released = false;
@@ -1844,7 +1844,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             bool p2p_resumed = false;
             try {
                 create_snapshot(output, [&p2p_resumed, &guard, p2p_plug]() {
-                    // DB read lock just dropped — resume P2P and unblock the witness.
+                    // DB read lock just dropped — resume P2P and unblock the validator.
                     // Compression and file I/O that follow don't hold any DB lock.
                     if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
                         p2p_plug->resume_block_processing();
@@ -1874,18 +1874,18 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     };
 
     // Handle deferred (pending) snapshot from a previous block.
-    // The witness check was already performed once when the snapshot was originally
-    // deferred. We do NOT re-check is_witness_producing_soon() here to avoid an
-    // infinite deferral loop where the witness is always scheduled soon.
+    // The validator check was already performed once when the snapshot was originally
+    // deferred. We do NOT re-check is_validator_producing_soon() here to avoid an
+    // infinite deferral loop where the validator is always scheduled soon.
     //
-    // Instead, we wait for the specific witness slot to be filled: the deferred
+    // Instead, we wait for the specific validator slot to be filled: the deferred
     // snapshot only fires once head_block_time() >= pending_snapshot_safe_after_time,
-    // meaning the witness's block has been produced and applied (or the slot was
+    // meaning the validator's block has been produced and applied (or the slot was
     // missed and the chain moved past it). This prevents the snapshot from starting
-    // while the witness is about to produce.
+    // while the validator is about to produce.
     if (snapshot_pending && !is_syncing) {
         // If safe_after_time is epoch (lookup failed), fire immediately as fallback.
-        // If head_block_time has reached/passed the witness slot time, the block
+        // If head_block_time has reached/passed the validator slot time, the block
         // at that slot has been applied (or the slot was skipped by a gap).
         bool safe_to_fire = (pending_snapshot_safe_after_time == fc::time_point_sec()) ||
                             (db.head_block_time() >= pending_snapshot_safe_after_time);
@@ -1910,7 +1910,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         } else {
             output = fc::path(snapshot_dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
         }
-        if (is_witness_producing_soon()) {
+        if (is_validator_producing_soon()) {
             ilog(CLOG_GREEN "Deferring snapshot-at-block ${b}: validator scheduled to produce next block" CLOG_RESET, ("b", block_num));
             snapshot_pending = true;
             pending_snapshot_path = output.string();
@@ -1927,7 +1927,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
         needs_fresh_snapshot = false;
         std::string dir = snapshot_dir;
         fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
-        if (is_witness_producing_soon()) {
+        if (is_validator_producing_soon()) {
             ilog(CLOG_GREEN "Deferring urgent fresh snapshot at block ${b}: validator scheduled" CLOG_RESET, ("b", block_num));
             snapshot_pending = true;
             pending_snapshot_path = output.string();
@@ -1941,7 +1941,7 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     if (snapshot_every_n_blocks > 0 && block_num % snapshot_every_n_blocks == 0 && !is_syncing) {
         std::string dir = snapshot_dir;
         fc::path output = fc::path(dir) / ("snapshot-block-" + std::to_string(block_num) + ".vizjson");
-        if (is_witness_producing_soon()) {
+        if (is_validator_producing_soon()) {
             ilog(CLOG_GREEN "Deferring periodic snapshot at block ${b}: validator scheduled to produce next block" CLOG_RESET, ("b", block_num));
             snapshot_pending = true;
             pending_snapshot_path = output.string();
@@ -2030,9 +2030,9 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
                     // Skip stalled sync recovery entirely.
                     bool we_are_master = false;
                     try {
-                        auto* witness_plug = appbase::app().find_plugin<graphene::plugins::validator_plugin::validator_plugin>();
-                        if (witness_plug && witness_plug->get_state() == appbase::abstract_plugin::started) {
-                            we_are_master = witness_plug->is_emergency_master();
+                        auto* validator_plug = appbase::app().find_plugin<graphene::plugins::validator_plugin::validator_plugin>();
+                        if (validator_plug && validator_plug->get_state() == appbase::abstract_plugin::started) {
+                            we_are_master = validator_plug->is_emergency_master();
                         }
                     } catch (...) {}
 
@@ -3742,7 +3742,7 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
 
     // Register snapshot creation callback on the chain plugin.
     // This ensures the snapshot is created AFTER full DB load (including replay),
-    // but BEFORE on_sync() — so P2P/witness never start.
+    // but BEFORE on_sync() — so P2P/validator never start.
     if (!my->create_snapshot_path.empty()) {
         auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
         chain_plug.snapshot_create_callback = [this]() {
@@ -3837,7 +3837,7 @@ void snapshot_plugin::plugin_startup() {
 
     // Note: --create-snapshot is handled via snapshot_create_callback registered
     // in plugin_initialize(). It runs during chain plugin's startup, after full DB load
-    // (including replay), but before on_sync() — so P2P/witness never start.
+    // (including replay), but before on_sync() — so P2P/validator never start.
 
     // Note: --sync-snapshot-from-trusted-peer is handled via snapshot_p2p_sync_callback
     // registered in plugin_initialize(). It runs during chain plugin's startup when

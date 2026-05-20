@@ -1494,7 +1494,7 @@ namespace graphene { namespace chain {
                 auto branches = _fork_db.fetch_branch_from(branch_a_tip, branch_b_tip);
 
                 auto compute_branch_info = [&](const fork_database::branch_type& branch) -> std::pair<share_type, bool> {
-                    flat_set<account_name_type> seen_validatores;
+                    flat_set<account_name_type> seen_validators;
                     share_type total_weight = 0;
                     bool has_emergency = false;
                     for (const auto& item : branch) {
@@ -1503,7 +1503,7 @@ namespace graphene { namespace chain {
                             has_emergency = true;
                             continue;
                         }
-                        if (seen_validatores.insert(wit_name).second) {
+                        if (seen_validators.insert(wit_name).second) {
                             try {
                                 const auto& wit_obj = get_validator(wit_name);
                                 total_weight += wit_obj.votes;
@@ -2819,11 +2819,11 @@ namespace graphene { namespace chain {
                 }
             }
 
-            vector<account_name_type> active_validatores;
-            active_validatores.reserve(CHAIN_MAX_VALIDATORS);
+            vector<account_name_type> active_validators;
+            active_validators.reserve(CHAIN_MAX_VALIDATORS);
 
-            vector<account_name_type> support_validatores;
-            support_validatores.reserve(CHAIN_MAX_VALIDATORS);
+            vector<account_name_type> support_validators;
+            support_validators.reserve(CHAIN_MAX_VALIDATORS);
 
             /// Add the highest voted validators
             flat_set<validator_id_type> selected_voted;
@@ -2844,7 +2844,7 @@ namespace graphene { namespace chain {
                     continue;
                 }
                 selected_voted.insert(itr->id);
-                active_validatores.push_back(itr->owner);
+                active_validators.push_back(itr->owner);
                 modify(*itr, [&](validator_object &wo) { wo.schedule = validator_object::top; });
             }
 
@@ -2853,13 +2853,13 @@ namespace graphene { namespace chain {
             fc::uint128_t new_virtual_time = wso.current_virtual_time;
             const auto &schedule_idx = get_index<validator_index>().indices().get<by_schedule_time>();
             auto sitr = schedule_idx.begin();
-            vector<decltype(sitr)> processed_validatores;
+            vector<decltype(sitr)> processed_validators;
             for (auto validator_count = selected_voted.size();
                  sitr != schedule_idx.end() &&
                  validator_count < CHAIN_MAX_VALIDATORS;
                  ++sitr) {
                 new_virtual_time = sitr->virtual_scheduled_time; /// everyone advances to at least this time
-                processed_validatores.push_back(sitr);
+                processed_validators.push_back(sitr);
 
                 if (sitr->signing_key == public_key_type()) {
                     continue;
@@ -2872,7 +2872,7 @@ namespace graphene { namespace chain {
                 }
 
                 if (selected_voted.find(sitr->id) == selected_voted.end()) {
-                    support_validatores.push_back(sitr->owner);
+                    support_validators.push_back(sitr->owner);
                     modify(*sitr, [&](validator_object &wo) { wo.schedule = validator_object::support; });
                     ++validator_count;
                 }
@@ -2880,8 +2880,8 @@ namespace graphene { namespace chain {
 
             /// Update virtual schedule of processed validators
             bool reset_virtual_time = false;
-            for (auto itr = processed_validatores.begin();
-                 itr != processed_validatores.end(); ++itr) {
+            for (auto itr = processed_validators.begin();
+                 itr != processed_validators.end(); ++itr) {
                 auto new_virtual_scheduled_time = new_virtual_time +
                                                   VIRTUAL_SCHEDULE_LAP_LENGTH2 /
                                                   ((*itr)->counted_votes.value + 1);
@@ -2900,8 +2900,8 @@ namespace graphene { namespace chain {
                 reset_virtual_schedule_time();
             }
 
-            FC_ASSERT( ( active_validatores.size() + support_validatores.size() ) <= CHAIN_MAX_VALIDATORS, "Number of active validators cannot be more than CHAIN_MAX_VALIDATORS",
-                    ("active_validators.size()", active_validatores.size())("support_validators.size()", support_validatores.size())("CHAIN_MAX_VALIDATORS", CHAIN_MAX_VALIDATORS));
+            FC_ASSERT( ( active_validators.size() + support_validators.size() ) <= CHAIN_MAX_VALIDATORS, "Number of active validators cannot be more than CHAIN_MAX_VALIDATORS",
+                    ("active_validators.size()", active_validators.size())("support_validators.size()", support_validators.size())("CHAIN_MAX_VALIDATORS", CHAIN_MAX_VALIDATORS));
 
             auto majority_version = wso.majority_version;
 
@@ -2941,14 +2941,14 @@ namespace graphene { namespace chain {
                 }
             }
 
-            int validatores_on_version = 0;
+            int validators_on_version = 0;
             auto ver_itr = validator_versions.begin();
 
             // The map should be sorted highest version to smallest, so we iterate until we hit the majority of validators on at least this version
             while (ver_itr != validator_versions.end()) {
-                validatores_on_version += ver_itr->second;
+                validators_on_version += ver_itr->second;
 
-                if (validatores_on_version >=
+                if (validators_on_version >=
                     CHAIN_HARDFORK_REQUIRED_VALIDATORS) {
                     majority_version = ver_itr->first;
                     break;
@@ -2985,38 +2985,38 @@ namespace graphene { namespace chain {
             }
 
             if (_debug_block_production) ilog("DEBUG_CRASH: schedule normal build: active=${a} support=${s}",
-                 ("a", active_validatores.size())("s", support_validatores.size()));
+                 ("a", active_validators.size())("s", support_validators.size()));
 
             modify(wso, [&](validator_schedule_object &_wso) {
                 // active validators has exactly CHAIN_MAX_VALIDATORS elements, asserted above
                 size_t j = 0;
-                size_t support_validatores_count = support_validatores.size();
-                size_t active_validatores_count = active_validatores.size();
-                size_t sum_validatores_count = support_validatores_count+active_validatores_count;
-                for( size_t i = 0; i < sum_validatores_count; i++ )
+                size_t support_validators_count = support_validators.size();
+                size_t active_validators_count = active_validators.size();
+                size_t sum_validators_count = support_validators_count+active_validators_count;
+                for( size_t i = 0; i < sum_validators_count; i++ )
                 {
-                    if(active_validatores_count > 0){
-                        --active_validatores_count;
+                    if(active_validators_count > 0){
+                        --active_validators_count;
                         for(int repeat=0; repeat < CHAIN_BLOCK_VALIDATOR_REPEAT; ++repeat){
-                            _wso.current_shuffled_validators[j] = active_validatores[i];
+                            _wso.current_shuffled_validators[j] = active_validators[i];
                             ++j;
                         }
                     }
-                    if(support_validatores_count > 0){
-                        --support_validatores_count;
+                    if(support_validators_count > 0){
+                        --support_validators_count;
                         for(int repeat=0; repeat < CHAIN_BLOCK_VALIDATOR_REPEAT; ++repeat){
-                            _wso.current_shuffled_validators[j] = support_validatores[i];
+                            _wso.current_shuffled_validators[j] = support_validators[i];
                             ++j;
                         }
                     }
                 }
 
-                for (size_t i = sum_validatores_count * CHAIN_BLOCK_VALIDATOR_REPEAT;
+                for (size_t i = sum_validators_count * CHAIN_BLOCK_VALIDATOR_REPEAT;
                      i < ( CHAIN_MAX_VALIDATORS * CHAIN_BLOCK_VALIDATOR_REPEAT ); i++) {
                     _wso.current_shuffled_validators[i] = account_name_type();
                 }
 
-                _wso.num_scheduled_validators = std::max<uint8_t>(sum_validatores_count * CHAIN_BLOCK_VALIDATOR_REPEAT , 1);
+                _wso.num_scheduled_validators = std::max<uint8_t>(sum_validators_count * CHAIN_BLOCK_VALIDATOR_REPEAT , 1);
 
                 /* // VIZ remove randomization
                 /// shuffle current shuffled validators
@@ -3063,12 +3063,12 @@ namespace graphene { namespace chain {
 
                     // First pass: replace unavailable/empty slots with committee
                     // Iterate the FULL schedule (CHAIN_MAX_VALIDATORS), not just
-                    // num_scheduled_validatores, because the normal schedule may have
-                    // set num_scheduled_validatores < CHAIN_MAX_VALIDATORS when fewer
+                    // num_scheduled_validators, because the normal schedule may have
+                    // set num_scheduled_validators < CHAIN_MAX_VALIDATORS when fewer
                     // validators have valid signing keys.
                     for (int i = 0; i < CHAIN_MAX_VALIDATORS;
                          i += CHAIN_BLOCK_VALIDATOR_REPEAT) {
-                        // Read from slot i, but only if within current num_scheduled_validatores
+                        // Read from slot i, but only if within current num_scheduled_validators
                         const auto &wname = (i < _wso.num_scheduled_validators)
                             ? _wso.current_shuffled_validators[i]
                             : account_name_type();
@@ -3098,7 +3098,7 @@ namespace graphene { namespace chain {
                         }
                     }
 
-                    // Expand num_scheduled_validatores to CHAIN_MAX_VALIDATORS so that
+                    // Expand num_scheduled_validators to CHAIN_MAX_VALIDATORS so that
                     // committee slots are included in the production cycle.
                     _wso.num_scheduled_validators = CHAIN_MAX_VALIDATORS * CHAIN_BLOCK_VALIDATOR_REPEAT;
                     _wso.next_shuffle_block_num =
