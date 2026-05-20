@@ -101,4 +101,17 @@ uint32_t simulated_node::last_irreversible_block_num() const {
     return db_->last_non_undoable_block_num();
 }
 
+std::vector<chain_block_info> simulated_node::recent_blocks(uint32_t count) const {
+    std::vector<chain_block_info> out;
+    auto cur = db_->head_block_id();
+    for (uint32_t i = 0; i < count; ++i) {
+        if (cur == graphene::protocol::block_id_type()) break;
+        auto b = db_->fetch_block_by_id(cur);
+        if (!b) break;
+        out.push_back({b->block_num(), cur, b->witness, b->timestamp});
+        cur = b->previous;
+    }
+    return out;
+}
+
 } // namespace consensus_sim

@@ -10,8 +10,16 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace consensus_sim {
+
+struct chain_block_info {
+    uint32_t block_num;
+    graphene::protocol::block_id_type id;
+    std::string witness;
+    fc::time_point_sec timestamp;
+};
 
 enum class block_outcome {
     accepted_extends_head,
@@ -49,6 +57,11 @@ public:
     graphene::protocol::block_id_type head_block_id() const;
     fc::time_point_sec head_block_time() const;
     uint32_t last_irreversible_block_num() const;
+
+    /// Walks the canonical chain backward from head, returns up to `count`
+    /// entries (newest first). Exposes witness + timestamp so equivocation
+    /// invariants can detect repeated (witness, slot) pairs.
+    std::vector<chain_block_info> recent_blocks(uint32_t count) const;
 
     const std::string& label() const noexcept { return label_; }
 

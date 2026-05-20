@@ -1,5 +1,10 @@
 #include "invariants.hpp"
 
+#include <graphene/protocol/config.hpp>
+
+#include <map>
+#include <utility>
+
 namespace consensus_sim {
 
 std::optional<violation_report> chains_consistent(
@@ -51,7 +56,26 @@ std::optional<violation_report> supply_conserved(
 
 std::optional<violation_report> no_double_signed_in_canonical(
     const std::vector<simulated_node*>& nodes) {
-    (void)nodes;
+    for (auto* n : nodes) {
+        auto blocks = n->recent_blocks(200);
+        std::map<std::pair<std::string, uint32_t>,
+                 graphene::protocol::block_id_type> seen;
+        for (auto& b : blocks) {
+            uint32_t slot = b.timestamp.sec_since_epoch() / CHAIN_BLOCK_INTERVAL;
+            std::pair<std::string, uint32_t> key{b.witness, slot};
+            auto it = seen.find(key);
+            if (it != seen.end() && !(it->second == b.id)) {
+                return violation_report{
+                    "no_double_signed_in_canonical",
+                    "witness " + b.witness + " has two distinct blocks at slot "
+                        + std::to_string(slot),
+                    n->label(),
+                    b.block_num
+                };
+            }
+            seen[key] = b.id;
+        }
+    }
     return std::nullopt;
 }
 
