@@ -114,4 +114,85 @@ WebSocket-клиенты могут регистрировать колбеки:
 
 ---
 
+## Публикация API через HTTPS (nginx + certbot)
+
+Привяжите узел к localhost, затем поставьте перед ним nginx. certbot автоматически дополнит конфиг при запуске `certbot --nginx`.
+
+### 1. config.ini узла
+
+```ini
+webserver-http-endpoint = 127.0.0.1:8090
+webserver-ws-endpoint   = 127.0.0.1:8091
+```
+
+### 2. /etc/nginx/sites-enabled/viz-node
+
+```nginx
+server {
+    listen 80;
+    server_name your.domain.com;  # ← замените на ваш домен
+
+    # ACME-challenge для certbot
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        # CORS — разрешить любой источник (публичный API)
+        add_header 'Access-Control-Allow-Origin'   '*'                                                                                         always;
+        add_header 'Access-Control-Allow-Methods'  'GET, POST, PUT, DELETE, PATCH, OPTIONS'                                                    always;
+        add_header 'Access-Control-Allow-Headers'  'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization' always;
+        add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range'                                                              always;
+
+        if ($request_method = 'OPTIONS') {
+            add_header 'Access-Control-Allow-Origin'  '*'                                                                                         always;
+            add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, PATCH, OPTIONS'                                                    always;
+            add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization' always;
+            add_header 'Access-Control-Max-Age'       1728000;
+            add_header 'Content-Type'                 'text/plain charset=UTF-8';
+            add_header 'Content-Length'               0;
+            return 204;
+        }
+
+        proxy_pass http://127.0.0.1:8090;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
+    }
+}
+```
+
+### 3. Получить TLS-сертификат
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d your.domain.com
+```
+
+certbot автоматически добавит блок `listen 443 ssl`, директивы `ssl_certificate` и редирект HTTP→HTTPS. После этого узел доступен по адресу `https://your.domain.com`.
+
+### WebSocket через HTTPS
+
+WebSocket-клиентам нужна проксировка заголовка `Upgrade`. Добавьте отдельный location (или второй server block на порту 8091):
+
+```nginx
+location /ws {
+    proxy_pass http://127.0.0.1:8091;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade    $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host       $host;
+    proxy_read_timeout 3600s;
+}
+```
+
+---
+
 См. также: [Обзор плагинов](./overview.md), [Database API](./database-api.md), [JSON-RPC API](../api/json-rpc.md).

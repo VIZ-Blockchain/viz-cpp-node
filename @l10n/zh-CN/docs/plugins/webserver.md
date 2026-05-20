@@ -114,4 +114,85 @@ WebSocket 客户端可以注册回调：
 
 ---
 
+## 通过 HTTPS 公开 API（nginx + certbot）
+
+将节点绑定到本地地址，再用 nginx 作为前端代理。运行 `certbot --nginx` 时，certbot 会自动修改配置。
+
+### 1. 节点 config.ini
+
+```ini
+webserver-http-endpoint = 127.0.0.1:8090
+webserver-ws-endpoint   = 127.0.0.1:8091
+```
+
+### 2. /etc/nginx/sites-enabled/viz-node
+
+```nginx
+server {
+    listen 80;
+    server_name your.domain.com;  # ← 替换为您的域名
+
+    # certbot 的 ACME challenge
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        # CORS — 允许任意来源（公开 API）
+        add_header 'Access-Control-Allow-Origin'   '*'                                                                                         always;
+        add_header 'Access-Control-Allow-Methods'  'GET, POST, PUT, DELETE, PATCH, OPTIONS'                                                    always;
+        add_header 'Access-Control-Allow-Headers'  'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization' always;
+        add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range'                                                              always;
+
+        if ($request_method = 'OPTIONS') {
+            add_header 'Access-Control-Allow-Origin'  '*'                                                                                         always;
+            add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, PATCH, OPTIONS'                                                    always;
+            add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization' always;
+            add_header 'Access-Control-Max-Age'       1728000;
+            add_header 'Content-Type'                 'text/plain charset=UTF-8';
+            add_header 'Content-Length'               0;
+            return 204;
+        }
+
+        proxy_pass http://127.0.0.1:8090;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
+    }
+}
+```
+
+### 3. 获取 TLS 证书
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d your.domain.com
+```
+
+certbot 会自动添加 `listen 443 ssl` 块、`ssl_certificate` 指令以及 HTTP→HTTPS 重定向。完成后，节点可通过 `https://your.domain.com` 访问。
+
+### HTTPS 上的 WebSocket
+
+WebSocket 客户端需要转发 `Upgrade` 头。添加单独的 location（或在 8091 端口上新增 server 块）：
+
+```nginx
+location /ws {
+    proxy_pass http://127.0.0.1:8091;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade    $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host       $host;
+    proxy_read_timeout 3600s;
+}
+```
+
+---
+
 参见：[插件概述](./overview.md)、[Database API](./database-api.md)、[JSON-RPC API](../api/json-rpc.md)。
