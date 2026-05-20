@@ -1878,6 +1878,8 @@ namespace graphene { namespace chain {
                                 ? block_id_type()
                                 : branches.second.back()->data.id();
 
+                            bool schedule_was_relaxed = false;
+
                             for (auto ritr = branches.first.rbegin();
                                  ritr != branches.first.rend(); ++ritr) {
                                 if (is_linear_extension &&
@@ -1902,6 +1904,7 @@ namespace graphene { namespace chain {
                                         auto session = start_undo_session();
                                         apply_block((*ritr)->data, skip | skip_validator_schedule_check);
                                         session.push();
+                                        schedule_was_relaxed = true;
                                     } catch (const fc::exception &e2) {
                                         except = e2;
                                     }
@@ -1980,6 +1983,45 @@ namespace graphene { namespace chain {
                                     // naturally: nodes on the invalid fork eventually switch
                                     // to the valid chain when it becomes longer.
                                     return false;
+                                }
+                            }
+
+                            // Auto-correct current_aslot if a persistent schedule
+                            // offset was detected during a linear extension.  In a
+                            // linear extension the blocks ARE the correct next blocks
+                            // for this chain — a schedule mismatch means our
+                            // current_aslot drifted (e.g. from snapshot import or a
+                            // prior unclean fork switch).  Verify by checking that
+                            // the head block's validator occupies the expected
+                            // position in the schedule: after apply_block,
+                            // shuffled[current_aslot % num] must equal block.validator.
+                            if (schedule_was_relaxed && is_linear_extension) {
+                                const auto &corr_dpo = get_dynamic_global_properties();
+                                const auto &corr_wso = get_validator_schedule_object();
+                                uint32_t num = corr_wso.num_scheduled_validators;
+                                if (num > 0) {
+                                    uint64_t cur_pos = corr_dpo.current_aslot % num;
+                                    // Find actual position of head block's validator
+                                    int actual_pos = -1;
+                                    for (int i = 0; i < num; ++i) {
+                                        if (corr_wso.current_shuffled_validators[i] == new_head->data.validator) {
+                                            actual_pos = i;
+                                            break;
+                                        }
+                                    }
+                                    if (actual_pos >= 0 && (uint64_t)actual_pos != cur_pos) {
+                                        int64_t delta = (int64_t)actual_pos - (int64_t)cur_pos;
+                                        if (delta < 0) delta += num;
+                                        wlog("Schedule offset auto-correction: current_aslot=${a} "
+                                             "(pos=${cp}) but head validator '${v}' is at pos=${ap}. "
+                                             "Adjusting current_aslot by +${d}.",
+                                             ("a", corr_dpo.current_aslot)("cp", cur_pos)
+                                             ("v", new_head->data.validator)("ap", actual_pos)
+                                             ("d", delta));
+                                        modify(corr_dpo, [&](dynamic_global_property_object &dgp) {
+                                            dgp.current_aslot += delta;
+                                        });
+                                    }
                                 }
                             }
 
