@@ -301,7 +301,7 @@ vizd --replay-from-snapshot --snapshot-auto-latest --plugin snapshot
 **Node crashed / shared memory corrupted:**
 1. If `--auto-recover-from-snapshot` is enabled (default) and snapshots exist, the node recovers automatically — check logs.
 2. Manual recovery: `vizd --replay-from-snapshot --snapshot-auto-latest --plugin snapshot`.
-3. If no snapshots exist: `vizd --replay-blockchain` (requires full block log; unavailable in DLT mode).
+3. If no snapshots exist: obtain a fresh snapshot from a trusted peer or another node, then use `--snapshot <path>`.
 
 **RPC unreachable:**
 1. Check `webserver-http-endpoint` binding — validators default to `127.0.0.1:8090`.

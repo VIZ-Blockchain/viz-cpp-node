@@ -52,10 +52,6 @@ VIZ Ledger 使用 **AppBase** 插件框架。每个插件都有生命周期（`p
 | `auth_util` | 活跃 | `json_rpc`, `chain` | 是 |
 | `block_info` | 活跃 | `json_rpc`, `chain` | 是 |
 | `raw_block` | 活跃 | `json_rpc`, `chain` | 是 |
-| `follow` | 已弃用 | `json_rpc`, `chain` | 是 |
-| `tags` | 已弃用 | `json_rpc`, `chain`, `follow` | 是 |
-| `social_network` | 已弃用 | `json_rpc`, `chain` | 是 |
-| `private_message` | 已弃用 | `json_rpc`, `chain` | 是 |
 
 ### 生产
 
@@ -66,8 +62,7 @@ VIZ Ledger 使用 **AppBase** 插件框架。每个插件都有生命周期（`p
 ### 调试/测试
 
 | 插件 | 状态 | 依赖 | JSON-RPC |
-|------|------|------|---------|
-| `debug_node` | 仅开发 | `chain` | 是 |
+|------|------|------|----------|
 | `test_api` | 仅测试 | `json_rpc` | — |
 
 ---
@@ -94,9 +89,8 @@ VIZ Ledger 使用 **AppBase** 插件框架。每个插件都有生命周期（`p
 
 | 标志 | 描述 |
 |------|------|
-| `--replay-blockchain` | 清除 chainbase 并从区块日志重放 |
-| `--force-replay-blockchain` | 同上，忽略损坏检查 |
 | `--replay-from-snapshot` | 导入快照然后重放 DLT 区块日志（崩溃恢复） |
+| `--snapshot-auto-latest` | 自动发现 `snapshot-dir` 中的最新快照 |
 | `--auto-recover-from-snapshot` | 启用共享内存损坏时的自动恢复 |
 | `--resync-blockchain` | 清除 chainbase 和区块日志；从创世或快照重新开始 |
 
@@ -134,7 +128,7 @@ VIZ Ledger 使用 **AppBase** 插件框架。每个插件都有生命周期（`p
 | `webserver-cache-enabled` | `true` | 启用响应缓存 |
 | `webserver-cache-size` | `10000` | 最大缓存条目数 |
 
-缓存键由 `method + params`（非 `id`）派生，防止通过轮换请求 `id` 来绕过。变更方法（`network_broadcast_api.*`、`debug_node.*`）永不缓存。每个新应用区块时缓存清空。
+缓存键由 `method + params`（非 `id`）派生，防止通过轮换请求 `id` 来绕过。变更方法（`network_broadcast_api.*`）永不缓存。每个新应用区块时缓存清空。
 
 完整详情参见 [Web 服务器](./webserver.md)。
 
@@ -281,17 +275,6 @@ DLT P2P 网络——区块和交易传播、节点管理、少数派 fork 恢复
 | `get_paid_subscription_status(subscriber, account)` | 特定订阅的状态 |
 | `get_active_paid_subscriptions(subscriber)` | 订阅者的活跃订阅 |
 | `get_inactive_paid_subscriptions(subscriber)` | 已过期订阅 |
-
----
-
-### 已弃用的 API 插件
-
-| 插件 | 方法 | 说明 |
-|------|------|------|
-| `follow` | 关注者/关注、动态、博客、转发 | 仍可用；不建议新集成使用 |
-| `tags` | 按标签的热门/最新内容 | 仍可用；不建议新集成使用 |
-| `social_network` | 内容、投票、回复 | 封装委员会/邀请查询；仍可用 |
-| `private_message` | 加密消息的收件箱/发件箱 | 基于 `custom_operation`；仍可用 |
 
 ---
 

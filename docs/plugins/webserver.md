@@ -50,7 +50,6 @@ Every read-only JSON-RPC response is eligible for caching. The cache key is a SH
 | Namespace | Reason |
 |-----------|--------|
 | `network_broadcast_api.*` | State-changing (transaction/block broadcast) |
-| `debug_node.*` | State-changing debug operations |
 | Malformed / unparseable requests | No reliable key can be derived |
 
 Batch requests (JSON array) are treated as a single atomic cache entry keyed on the full array hash.
@@ -98,7 +97,7 @@ Subscriptions require a persistent WebSocket connection. They are not available 
 
 - **Bind to localhost** (`127.0.0.1`) and use a reverse proxy (nginx/Caddy) for public exposure. Binding to `0.0.0.0` exposes the RPC directly to the network.
 - The plugin has no built-in authentication or rate limiting. Apply those at the reverse proxy layer.
-- Mutating methods (`network_broadcast_api`, `debug_node`) are blocked from cache poisoning by design, but they remain callable from any connected client — restrict access at the network level if needed.
+- Mutating methods (`network_broadcast_api`) are blocked from cache poisoning by design, but they remain callable from any connected client — restrict access at the network level if needed.
 
 ---
 

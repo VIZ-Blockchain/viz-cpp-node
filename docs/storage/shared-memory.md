@@ -134,16 +134,16 @@ Approximate usage for a VIZ mainnet full node:
 
 | Symptom | Action |
 |---------|--------|
-| `CRITICAL: validator X account object MISSING` | Corruption — use `--replay-blockchain` |
-| `Could not modify object, uniqueness constraint violated` | Corruption — replay or resync |
+| `CRITICAL: validator X account object MISSING` | Corruption — use `--replay-from-snapshot --snapshot-auto-latest` |
+| `Could not modify object, uniqueness constraint violated` | Corruption — use `--replay-from-snapshot --snapshot-auto-latest` |
 | `Unable to acquire READ lock` | Lock contention — increase `read-wait-micro` / enable `single-write-thread` |
-| Node crashes in a loop on startup | Corrupted file — `--replay-blockchain` or `--snapshot` |
+| Node crashes in a loop on startup | Corrupted file — `--replay-from-snapshot --snapshot-auto-latest` |
 
 Recovery options:
 
-- `--replay-blockchain` — delete shared memory, replay from block log.
+- `--replay-from-snapshot --snapshot-auto-latest` — delete shared memory, import latest snapshot, replay dlt_block_log.
 - `--resync-blockchain` — delete shared memory and block log, sync from peers.
-- `--snapshot <path>` — load from snapshot, replay dlt_block_log on top.
+- `--snapshot <path>` — load from specific snapshot, replay dlt_block_log on top.
 
 ---
 

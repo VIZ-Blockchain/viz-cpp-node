@@ -107,7 +107,7 @@ block-num-check-free-size = 1000
 plugin = chain p2p webserver json_rpc database_api network_broadcast_api
 
 # Дополнительные плагины индексирования (отключить на маломощных узлах):
-plugin = social_network tags follow account_history account_by_key
+plugin = account_history account_by_key
 plugin = committee_api invite_api paid_subscription_api custom_protocol_api
 
 # Только для узлов-валидаторов:
@@ -144,10 +144,7 @@ skip-virtual-ops = false
 # Начать индексирование истории с данного номера блока
 # history-start-block = 1000000
 
-# Максимальное количество записей в ленте аккаунта (плагин follow)
-follow-max-feed-size = 500
-
-# Диапазон отслеживания личных сообщений (опционально)
+# Диапазон отслеживания личных сообщений (опционально, пример плагина)
 # pm-account-range = ["alice","alice.zzz"]
 ```
 
@@ -207,5 +204,3 @@ logger.p2p.appenders = p2p
 | `plugins/p2p/p2p_plugin.hpp` | `p2p-endpoint`, `p2p-max-connections`, `p2p-seed-node`, `checkpoint` |
 | `plugins/webserver/webserver_plugin.hpp` | `webserver-http-endpoint`, `webserver-ws-endpoint`, `webserver-thread-pool-size` |
 | `plugins/validator/validator.hpp` | `enable-stale-production`, `required-participation`, `validator`, `private-key`, `emergency-private-key`, `fork-collision-timeout-blocks`, `ntp-server`, `ntp-request-interval`, `debug-block-production` |
-| `plugins/follow/` | `follow-max-feed-size` |
-| `plugins/private_message/` | `pm-account-range` |

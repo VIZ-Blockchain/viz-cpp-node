@@ -107,7 +107,7 @@ block-num-check-free-size = 1000
 plugin = chain p2p webserver json_rpc database_api network_broadcast_api
 
 # 额外的索引插件（低内存节点上注释掉）：
-plugin = social_network tags follow account_history account_by_key
+plugin = account_history account_by_key
 plugin = committee_api invite_api paid_subscription_api custom_protocol_api
 
 # 仅用于验证者节点：
@@ -144,10 +144,7 @@ skip-virtual-ops = false
 # 从此区块号开始索引历史记录
 # history-start-block = 1000000
 
-# 每个账户的最大动态信息条目数（follow 插件）
-follow-max-feed-size = 500
-
-# 私信追踪范围（可选）
+# 私信追踪范围（可选，示例插件）
 # pm-account-range = ["alice","alice.zzz"]
 ```
 
@@ -207,5 +204,3 @@ logger.p2p.appenders = p2p
 | `plugins/p2p/p2p_plugin.hpp` | `p2p-endpoint`, `p2p-max-connections`, `p2p-seed-node`, `checkpoint` |
 | `plugins/webserver/webserver_plugin.hpp` | `webserver-http-endpoint`, `webserver-ws-endpoint`, `webserver-thread-pool-size` |
 | `plugins/validator/validator.hpp` | `enable-stale-production`, `required-participation`, `validator`, `private-key`, `emergency-private-key`, `fork-collision-timeout-blocks`, `ntp-server`, `ntp-request-interval`, `debug-block-production` |
-| `plugins/follow/` | `follow-max-feed-size` |
-| `plugins/private_message/` | `pm-account-range` |

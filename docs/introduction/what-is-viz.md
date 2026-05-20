@@ -31,6 +31,17 @@ In technical documentation the full description is used where needed: *"VIZ Ledg
 
 ---
 
+## History
+
+| Milestone | Date | Block |
+|-----------|------|-------|
+| Mainnet genesis | 29 September 2018, 10:23:27 GMT | Block 0 |
+| Transition to VIZ Ledger (DLT) | March 2026 | Block 79,105,800 |
+
+The network launched as a classical blockchain on **29 September 2018 at 10:23:27 GMT**. After seven and a half years of continuous operation — producing over 79 million blocks — the protocol evolved from a traditional full-history blockchain into a **distributed ledger (DLT)** at block 79,105,800. This transition introduced snapshot-assisted state storage, DLT-mode block logs, and the hybrid architecture described in this documentation.
+
+---
+
 ## Core Properties
 
 ### Fair-DPOS Consensus

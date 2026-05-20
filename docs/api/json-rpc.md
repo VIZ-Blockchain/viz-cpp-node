@@ -63,11 +63,6 @@ All VIZ node APIs use JSON-RPC 2.0 over HTTP POST or WebSocket.
 | `auth_util` | Active | Authority verification |
 | `block_info` | Active | Extended block info |
 | `raw_block` | Active | Raw block export |
-| `follow` | Deprecated | Follow/feed indexes |
-| `tags` | Deprecated | Content discovery by tag |
-| `social_network` | Deprecated | High-level content queries |
-| `private_message` | Deprecated | Encrypted message index |
-| `debug_node` | Dev only | Test/debug operations |
 
 ---
 

@@ -23,10 +23,8 @@ json_rpc::plugin
 Это одноразовые операции восстановления или обслуживания; они заставляют узел выполнить конкретное действие при запуске и не могут быть заданы в `config.ini`.
 
 | Флаг | Описание |
-|------|---------|
-| `--replay-blockchain` | Очистить chainbase shared memory и воспроизвести полный block log с блока 1. |
-| `--force-replay-blockchain` | То же, что `--replay-blockchain`, но пропускает проверку повреждений. Используется, когда block log цел, но chainbase нечитаем. |
-| `--replay-from-snapshot <path>` | Восстановление после сбоя для DLT-узлов: очистить shared memory, импортировать снимок, затем воспроизвести скользящий DLT block log. См. [Плагин Snapshot](./snapshot.md). |
+|------|----------|
+| `--replay-from-snapshot <path>` | Восстановление после сбоя: очистить shared memory, импортировать снимок, затем воспроизвести скользящий DLT block log. См. [Плагин Snapshot](./snapshot.md). |
 | `--snapshot-auto-latest` | С `--replay-from-snapshot`: автоматически обнаружить последний снимок в `snapshot-dir` вместо ручного указания пути. |
 | `--auto-recover-from-snapshot` | По умолчанию `true`. Автоматически восстанавливаться во время работы при обнаружении повреждения shared memory во время обработки или генерации блоков, без перезапуска. Отключить через `--no-auto-recover-from-snapshot`. |
 | `--resync-blockchain` | Очистить и shared memory, и block log; начать с genesis или из снимка. Деструктивно — использовать только при восстановлении после полной потери данных. |
@@ -73,7 +71,6 @@ json_rpc::plugin
 plugin_initialize()    ← разобрать CLI и опции конфигурации; проверить путь к снимку
 plugin_startup()       ← открыть или создать базу данных
   ├─ --resync          → очистить shared memory + block log; инициализировать genesis
-  ├─ --replay          → очистить shared memory; воспроизвести из block log
   ├─ --snapshot        → импортировать снимок; запустить DLT-режим
   ├─ --replay-from-snapshot → импортировать снимок; воспроизвести dlt_block_log
   └─ нормальный перезапуск → открыть существующую shared memory; воспроизвести при несовпадении ревизии
@@ -105,7 +102,7 @@ emit on_sync()         ← активируются плагины P2P и вал
 - Начните с `shared-file-size = 4G` для узла, загружающегося из недавнего снимка.
 - База данных автоматически увеличивается на `inc-shared-file-size`, когда свободное место падает ниже `min-free-shared-file-size`.
 - После чистого завершения работы файл уменьшается до фактически используемого размера.
-- После сбоя запустите с `--replay-blockchain` или `--replay-from-snapshot` для восстановления консистентного состояния.
+- После сбоя запустите с `--replay-from-snapshot --snapshot-auto-latest` для восстановления консистентного состояния.
 
 ---
 
@@ -113,8 +110,8 @@ emit on_sync()         ← активируются плагины P2P и вал
 
 | Симптом | Действие |
 |---------|---------|
-| `FC_ASSERT` или `database_revision_exception` при запуске | Несовпадение ревизии — запустить `--replay-blockchain` |
-| Открытие chainbase завершается ошибкой повреждения | Запустить `--replay-from-snapshot --snapshot-auto-latest` (DLT-узлы) или `--replay-blockchain` (полные узлы) |
+| `FC_ASSERT` или `database_revision_exception` при запуске | Несовпадение ревизии — запустить `--replay-from-snapshot --snapshot-auto-latest` |
+| Открытие chainbase завершается ошибкой повреждения | Запустить `--replay-from-snapshot --snapshot-auto-latest` |
 | Узел застрял на genesis после `--resync-blockchain` | Block log также был очищен; предоставьте `--snapshot` для загрузки состояния из снимка |
 | Разделяемая память растёт без ограничений | Проверить настройки `inc-shared-file-size` и `min-free-shared-file-size`; убедиться, что цепочка применяет блоки нормально |
 | Ошибки `write lock timeout` | Другой процесс удерживает блокировку записи; проверить наличие устаревших процессов `vizd` |

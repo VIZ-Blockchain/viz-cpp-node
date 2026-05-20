@@ -89,6 +89,26 @@ With 21 validators: `ceil(21 × 2/3) = 14` confirmations. Once 14 validators hav
 
 LIB advancement is **skipped during emergency consensus mode** (see [Emergency Consensus](./emergency-consensus.md)).
 
+### Fast LIB via Block Post-Validation
+
+The classic LIB path requires 14 validators to **produce** blocks above the target — at 3 s per slot that takes ~63 seconds. Block post-validation provides a fast path by replacing implicit block-production confirmation with explicit out-of-band signature messages, reducing finality to **~4 seconds**.
+
+**Flow:**
+
+1. After `apply_block(N)`, the chain stores a `validator_confirmation_object` for block N.
+2. Each scheduled validator with a loaded signing key signs `chain_id + block_id` and broadcasts a `block_post_validation_message` (P2P message type **6009**).
+3. Receiving peers verify the signature against the on-chain `validator.signing_key`, then mark that validator as confirmed for the block.
+4. `check_block_post_validation_chain()` walks from LIB+1 forward — if ≥14 of 21 scheduled validators have confirmed a block, LIB advances to that block and the process repeats.
+
+The classic DPOS path (~63 s) remains active as a **fallback** if confirmation messages are lost.
+
+**Constraints:**
+- Only validators in the **current shuffled schedule** count toward the 2/3 threshold.
+- Post-validation LIB is **disabled during emergency consensus** to avoid deadlocking recovery.
+- The confirmation list is capped at 20 entries (`CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT`).
+
+For the full technical details including wire format and timing breakdown, see [Block Processing → Block Post-Validation](./block-processing.md#block-post-validation-fast-lib-finality).
+
 ---
 
 ## Hardfork Voting
@@ -159,7 +179,10 @@ See [Fork Resolution](./fork-resolution.md) for the full fork collision algorith
 |-----------|------|
 | Validator schedule construction | `libraries/chain/database.cpp` — `update_witness_schedule()` |
 | Participation bitmask update | `libraries/chain/database.cpp` — `update_global_dynamic_data()` |
-| LIB advancement | `libraries/chain/database.cpp` — `update_last_irreversible_block()` |
+| LIB advancement (classic) | `libraries/chain/database.cpp` — `update_last_irreversible_block()` |
+| LIB advancement (fast) | `libraries/chain/database.cpp` — `check_block_post_validation_chain()`, `apply_block_post_validation()` |
+| Post-validation creation | `libraries/chain/database.cpp` — `create_block_post_validation()` |
+| Post-validation broadcast | `plugins/validator/validator.cpp` — block post-validation timer tick |
 | Hardfork voting | `libraries/chain/database.cpp` — `process_hardforks()` |
 | Production loop | `plugins/validator/validator.cpp` — `maybe_produce_block()` |
 | Emergency mode activation | `libraries/chain/database.cpp` — `check_emergency_consensus()` |

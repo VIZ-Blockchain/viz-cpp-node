@@ -107,7 +107,7 @@ Tune `shared-file-size` based on chain size. For mainnet, start at `4G` and moni
 plugin = chain p2p webserver json_rpc database_api network_broadcast_api
 
 # Additional indexing plugins (comment out on low-memory nodes):
-plugin = social_network tags follow account_history account_by_key
+plugin = account_history account_by_key
 plugin = committee_api invite_api paid_subscription_api custom_protocol_api
 
 # For validator nodes only:
@@ -144,10 +144,7 @@ skip-virtual-ops = false
 # Start indexing history from this block number
 # history-start-block = 1000000
 
-# Maximum feed entries per account (follow plugin)
-follow-max-feed-size = 500
-
-# Private message tracking range (optional)
+# Private message tracking range (optional, example plugin)
 # pm-account-range = ["alice","alice.zzz"]
 ```
 
@@ -207,5 +204,3 @@ All options listed by source file:
 | `plugins/p2p/p2p_plugin.hpp` | `p2p-endpoint`, `p2p-max-connections`, `p2p-seed-node`, `checkpoint` |
 | `plugins/webserver/webserver_plugin.hpp` | `webserver-http-endpoint`, `webserver-ws-endpoint`, `webserver-thread-pool-size` |
 | `plugins/validator/validator.hpp` | `enable-stale-production`, `required-participation`, `validator`, `private-key`, `emergency-private-key`, `fork-collision-timeout-blocks`, `ntp-server`, `ntp-request-interval`, `debug-block-production` |
-| `plugins/follow/` | `follow-max-feed-size` |
-| `plugins/private_message/` | `pm-account-range` |

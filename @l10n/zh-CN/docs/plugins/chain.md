@@ -24,9 +24,7 @@ json_rpc::plugin
 
 | 标志 | 描述 |
 |------|------|
-| `--replay-blockchain` | 清除 chainbase 共享内存并从区块 1 重放完整的区块日志。 |
-| `--force-replay-blockchain` | 与 `--replay-blockchain` 相同，但跳过损坏检查。当区块日志完整但 chainbase 不可读时使用。 |
-| `--replay-from-snapshot <path>` | DLT 节点的崩溃恢复：清除共享内存，导入快照，然后重放 DLT 滚动区块日志。参见[快照插件](./snapshot.md)。 |
+| `--replay-from-snapshot <path>` | 崩溃恢复：清除共享内存，导入快照，然后重放 DLT 滚动区块日志。参见[快照插件](./snapshot.md)。 |
 | `--snapshot-auto-latest` | 与 `--replay-from-snapshot` 一起：自动发现 `snapshot-dir` 中的最新快照，而不是手动指定路径。 |
 | `--auto-recover-from-snapshot` | 默认 `true`。当区块处理或生成期间检测到共享内存损坏时，无需重启即可自动运行时恢复。通过 `--no-auto-recover-from-snapshot` 禁用。 |
 | `--resync-blockchain` | 清除共享内存和区块日志；从 genesis 或快照重新开始。具有破坏性 — 仅在从完全数据损失中恢复时使用。 |
@@ -73,7 +71,6 @@ json_rpc::plugin
 plugin_initialize()    ← 解析 CLI 和配置选项；验证快照路径
 plugin_startup()       ← 打开或创建数据库
   ├─ --resync          → 清除共享内存 + 区块日志；初始化 genesis
-  ├─ --replay          → 清除共享内存；从区块日志重放
   ├─ --snapshot        → 导入快照；启动 DLT 模式
   ├─ --replay-from-snapshot → 导入快照；重放 dlt_block_log
   └─ 正常重启          → 打开现有共享内存；修订不匹配时重放
@@ -105,7 +102,7 @@ chainbase 数据库存在于 `shared-file-dir` 中的单个内存映射文件（
 - 对于从近期快照加载的节点，从 `shared-file-size = 4G` 开始。
 - 当可用空间低于 `min-free-shared-file-size` 时，数据库自动增长 `inc-shared-file-size`。
 - 干净关闭后，文件缩小到实际使用大小。
-- 崩溃后，使用 `--replay-blockchain` 或 `--replay-from-snapshot` 重建一致状态。
+- 崩溃后，使用 `--replay-from-snapshot --snapshot-auto-latest` 重建一致状态。
 
 ---
 
@@ -113,8 +110,8 @@ chainbase 数据库存在于 `shared-file-dir` 中的单个内存映射文件（
 
 | 症状 | 操作 |
 |------|------|
-| 启动时 `FC_ASSERT` 或 `database_revision_exception` | 修订不匹配 — 运行 `--replay-blockchain` |
-| Chainbase 打开因损坏错误而失败 | 运行 `--replay-from-snapshot --snapshot-auto-latest`（DLT 节点）或 `--replay-blockchain`（完整节点） |
+| 启动时 `FC_ASSERT` 或 `database_revision_exception` | 修订不匹配 — 运行 `--replay-from-snapshot --snapshot-auto-latest` |
+| Chainbase 打开因损坏错误而失败 | 运行 `--replay-from-snapshot --snapshot-auto-latest` |
 | `--resync-blockchain` 后节点卡在 genesis | 区块日志也被清除；提供 `--snapshot` 从快照加载状态 |
 | 共享内存无限增长 | 检查 `inc-shared-file-size` 和 `min-free-shared-file-size` 设置；验证链正常应用区块 |
 | `write lock timeout` 错误 | 另一个进程持有写锁；检查过时的 `vizd` 进程 |
