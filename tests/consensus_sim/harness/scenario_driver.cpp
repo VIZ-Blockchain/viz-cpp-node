@@ -40,18 +40,18 @@ simulated_node* scenario_driver::witness_to_node_(
 }
 
 void scenario_driver::default_slot_producer_(uint32_t slot, fc::time_point_sec when) {
-    // Round-robin: witness index = slot % num_witnesses. This is a
-    // simplification — real graphene uses a shuffled schedule. It also
-    // assumes the per-index witness identities in params_.witness_keys
-    // are registered on the chain; with the Milestone 1 genesis (only
-    // CHAIN_COMMITTEE_ACCOUNT exists) the chain will reject these
-    // signatures. Milestone 3+ either rotates keys via witness_update
-    // or runs the scenarios with a multi-witness genesis.
+    // Milestone 2 producer: round-robin which node generates the block, but
+    // every block is signed by the genesis witness (CHAIN_COMMITTEE_ACCOUNT
+    // is the only on-chain witness with init_genesis + CHAIN_NUM_INITIATORS=0).
+    // This exercises bus delivery + convergence + invariants without needing
+    // multi-witness genesis. Milestone 3+ will replace this with a producer
+    // that uses the per-index witness identities from params_.witness_keys
+    // once register_witness_keys_ actually rotates keys via witness_update.
     uint32_t idx = slot % cfg_.num_witnesses;
-    auto& [name, key] = params_.witness_keys[idx];
     auto* producer = node_ptrs_[idx];
 
-    auto block = producer->produce_block(name, key, when);
+    auto block = producer->produce_block(params_.genesis_witness_name,
+                                         params_.genesis_witness_key, when);
     auto ptr = std::make_shared<graphene::protocol::signed_block>(block);
 
     events_.push_back("slot=" + std::to_string(slot)
