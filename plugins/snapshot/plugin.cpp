@@ -398,7 +398,11 @@ inline uint32_t import_validator_votes(
         mutable_idx.set_next_id(validator_vote_id_type(id_val));
 
         db.create<validator_vote_object>([&](validator_vote_object& obj) {
-            obj.validator = v["validator"].as<validator_id_type>();
+            // backward compat: old snapshots used "witness" field name
+            if (v.get_object().contains("validator"))
+                obj.validator = v["validator"].as<validator_id_type>();
+            else if (v.get_object().contains("witness"))
+                obj.validator = v["witness"].as<validator_id_type>();
             obj.account = v["account"].as<account_id_type>();
             // HF13: flash-voter protection (default 0 for pre-HF13 snapshots)
             if (v.get_object().contains("vote_created_block"))
@@ -546,6 +550,33 @@ uint32_t import_simple_objects(
 
         db.create<ObjectType>([&](ObjectType& obj) {
             fc::from_variant(v, obj);
+        });
+        ++count;
+    }
+    return count;
+}
+
+/// Import validator_penalty_expire objects with backward compat for old
+/// "witness" field name inside the object (pre-rename snapshots).
+inline uint32_t import_validator_penalty_expire(
+    graphene::chain::database& db,
+    const fc::variants& arr
+) {
+    uint32_t count = 0;
+    for (const auto& v : arr) {
+        auto id_val = v["id"].as_int64();
+        auto& mutable_idx = db.get_mutable_index<validator_penalty_expire_index>();
+        mutable_idx.set_next_id(validator_penalty_expire_object::id_type(id_val));
+
+        db.create<validator_penalty_expire_object>([&](validator_penalty_expire_object& obj) {
+            // backward compat: old snapshots used "witness" field name
+            if (v.get_object().contains("validator")) {
+                obj.validator = v["validator"].as<account_name_type>();
+            } else if (v.get_object().contains("witness")) {
+                obj.validator = v["witness"].as<account_name_type>();
+            }
+            obj.penalty_percent = static_cast<int16_t>(v["penalty_percent"].as_int64());
+            obj.expires = v["expires"].as<fc::time_point_sec>();
         });
         ++count;
     }
@@ -1499,6 +1530,10 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         if (state.contains("validator_schedule")) {
             detail::import_validator_schedule(db, state["validator_schedule"].get_array());
             ilog(CLOG_ORANGE "Imported validator_schedule" CLOG_RESET);
+        } else if (state.contains("witness_schedule")) {
+            // backward compat: old snapshots used "witness_schedule" key
+            detail::import_validator_schedule(db, state["witness_schedule"].get_array());
+            ilog(CLOG_ORANGE "Imported validator_schedule (from witness_schedule)" CLOG_RESET);
         }
         if (state.contains("hardfork_property")) {
             detail::import_hardfork_property(db, state["hardfork_property"].get_array());
@@ -1517,10 +1552,18 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         if (state.contains("validator")) {
             auto n = detail::import_validators(db, state["validator"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} validators" CLOG_RESET, ("n", n));
+        } else if (state.contains("witness")) {
+            // backward compat: old snapshots used "witness" key
+            auto n = detail::import_validators(db, state["witness"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} validators (from witness)" CLOG_RESET, ("n", n));
         }
         if (state.contains("validator_vote")) {
             auto n = detail::import_validator_votes(db, state["validator_vote"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} validator votes" CLOG_RESET, ("n", n));
+        } else if (state.contains("witness_vote")) {
+            // backward compat: old snapshots used "witness_vote" key
+            auto n = detail::import_validator_votes(db, state["witness_vote"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} validator votes (from witness_vote)" CLOG_RESET, ("n", n));
         }
         if (state.contains("block_summary")) {
             auto n = detail::import_block_summaries(db, state["block_summary"].get_array());
@@ -1597,8 +1640,12 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             ilog(CLOG_ORANGE "Imported ${n} paid subscribes" CLOG_RESET, ("n", n));
         }
         if (state.contains("validator_penalty_expire")) {
-            auto n = detail::import_simple_objects<validator_penalty_expire_object, validator_penalty_expire_index>(db, state["validator_penalty_expire"].get_array());
+            auto n = detail::import_validator_penalty_expire(db, state["validator_penalty_expire"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} validator penalty expire objects" CLOG_RESET, ("n", n));
+        } else if (state.contains("witness_penalty_expire")) {
+            // backward compat: old snapshots used "witness_penalty_expire" key
+            auto n = detail::import_validator_penalty_expire(db, state["witness_penalty_expire"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} validator penalty expire objects (from witness_penalty_expire)" CLOG_RESET, ("n", n));
         }
 
         // OPTIONAL objects
@@ -1621,6 +1668,34 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         if (state.contains("change_recovery_account_request")) {
             auto n = detail::import_simple_objects<change_recovery_account_request_object, change_recovery_account_request_index>(db, state["change_recovery_account_request"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} change recovery account requests" CLOG_RESET, ("n", n));
+        }
+
+        // Self-healing: detect validators with penalty_percent > 0 but no
+        // corresponding expire records (orphaned penalties from incomplete
+        // snapshot migration).  Reset them so counted_votes reflects true votes.
+        {
+            uint32_t healed = 0;
+            const auto& val_idx = db.get_index<validator_index>().indices();
+            const auto& pe_idx = db.get_index<validator_penalty_expire_index>().indices().get<by_account>();
+            for (auto itr = val_idx.begin(); itr != val_idx.end(); ++itr) {
+                if (itr->penalty_percent > 0) {
+                    // Check if there are any matching expire records
+                    auto pe_itr = pe_idx.find(itr->owner);
+                    if (pe_itr == pe_idx.end()) {
+                        // Orphaned penalty: no expire record exists
+                        db.modify(*itr, [&](validator_object& w) {
+                            wlog("Self-healing: validator '${v}' has penalty_percent=${p} but no expire records, resetting",
+                                 ("v", w.owner)("p", w.penalty_percent));
+                            w.penalty_percent = 0;
+                            w.counted_votes = w.votes;
+                        });
+                        ++healed;
+                    }
+                }
+            }
+            if (healed > 0) {
+                ilog(CLOG_ORANGE "Self-healing: reset ${n} orphaned validator penalties" CLOG_RESET, ("n", healed));
+            }
         }
 
         // Set the chainbase revision to match the snapshot head block
