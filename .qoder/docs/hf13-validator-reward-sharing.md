@@ -113,14 +113,14 @@ wit.pending_stakeholder_reward = 0
 
 ### Important notes
 
-- **Vote weight** used: `stakeholder.witness_vote_fair_weight()` — total stake (own vesting
+- **Vote weight** used: `stakeholder.validator_vote_fair_weight()` — total stake (own vesting
   shares + shares proxied by accounts that delegated voting to this stakeholder) divided by
-  `witnesses_voted_for`.  This matches the per-validator weight used in consensus scheduling:
+  `validators_voted_for`.  This matches the per-validator weight used in consensus scheduling:
   a stakeholder who splits their vote across N validators contributes 1/N of their stake to
   each validator's distribution pool.
 - **Time-weighted distribution**: each stakeholder's weight is multiplied by the number of blocks
   they were actually voting for this validator within the current epoch (see `vote_created_block`
-  on `witness_vote_object`).  A stakeholder who joined mid-epoch receives a proportionally smaller
+  on `validator_vote_object`).  A stakeholder who joined mid-epoch receives a proportionally smaller
   share.
 - **Pre-HF13 votes** (`vote_created_block == 0`) are treated as having voted since epoch start
   (`first_block = epoch_start_block`), so they receive a full-epoch weight.  No penalty for
@@ -129,7 +129,7 @@ wit.pending_stakeholder_reward = 0
   Stakeholders with a computed share below this threshold receive nothing; their portion is
   returned to the validator as dust (see design rationale below).
 - **No-stakeholder case**: if a validator has no stakeholders, the entire accumulated pool is
-  returned to the validator via `witness_reward_operation`.
+  returned to the validator via `validator_reward_operation`.
 
 #### Dust design rationale
 
@@ -141,7 +141,7 @@ lies with the stakeholder, not with the validator.
 
 Consequently, unclaimed dust is **not burned**.  After all eligible stakeholders are paid, any
 remainder (dust from integer rounding, plus skipped sub-threshold shares) is transferred back to
-the validator via `witness_reward_operation`.  The validator retains what their stakeholders
+the validator via `validator_reward_operation`.  The validator retains what their stakeholders
 collectively failed to claim — no TOKEN leaves the system, and the validator is not penalised for
 stakeholders with negligible weight.
 
@@ -163,7 +163,7 @@ pending_stakeholder_reward =
 
 The pool that stakeholders receive at epoch end is thus a weighted mix of both rates.  This is the
 intended behaviour: the validator controls their own split on a per-block basis, and stakeholders
-observe the change immediately on-chain via the `sharing_rate` field of the `witness_object`.
+observe the change immediately on-chain via the `sharing_rate` field of the `validator_object`.
 
 ---
 
@@ -174,7 +174,7 @@ the **time-weighted distribution** described above.
 
 ### How it works
 
-`witness_vote_object` stores `vote_created_block` — the block number when the vote was cast.  At
+`validator_vote_object` stores `vote_created_block` — the block number when the vote was cast.  At
 epoch end, each stakeholder's effective weight is scaled by:
 
 ```
@@ -191,7 +191,7 @@ The protection covers **new votes** only.  If a stakeholder already held a vote 
 epoch, they receive a full-epoch weight regardless of their stake changes within the epoch.  This
 is acceptable: they were genuine stakeholders.
 
-Vote removal before epoch end results in the stakeholder not appearing in `witness_vote_index` at
+Vote removal before epoch end results in the stakeholder not appearing in `validator_vote_index` at
 distribution time, so they receive nothing — no exploit in this direction.
 
 ---
@@ -323,15 +323,14 @@ If auto-recovery is not configured, or the recovery path fails, perform the foll
 systemctl stop vizd
 
 # 2. Delete shared memory (forces clean open on next start)
-rm -f /path/to/witness_node_data_dir/shared_memory.bin
-rm -f /path/to/witness_node_data_dir/shared_memory.meta
+rm -f /path/to/node_data_dir/shared_memory.bin
 
 # Option A — restore from snapshot + replay dlt_block_log:
 ./vizd --replay-from-snapshot /path/to/snapshot-block-XXXXXXXX.json \
-       --data-dir /path/to/witness_node_data_dir
+       --data-dir /path/to/node_data_dir
 
 # Option B — full replay from block_log (slow):
-./vizd --replay --data-dir /path/to/witness_node_data_dir
+./vizd --replay --data-dir /path/to/node_data_dir
 ```
 
 After Option A the node replays `dlt_block_log` automatically (same path as auto-recovery),

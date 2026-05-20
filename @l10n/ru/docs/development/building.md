@@ -113,9 +113,7 @@ build-msvc.bat
 
 | Dockerfile | Описание |
 |-----------|---------|
-| `Dockerfile-production` | Полный узел, Release, без MongoDB |
-| `Dockerfile-lowmem` | То же, но с `LOW_MEMORY_NODE=ON` |
-| `Dockerfile-mongo` | Включён плагин MongoDB |
+| `Dockerfile-production` | Полный узел мейннета (Release) |
 | `Dockerfile-testnet` | Testnet (`BUILD_TESTNET=ON`) |
 
 Все Dockerfile используют двухэтапную сборку для минимизации размера образа и пакеты Boost 1.71 (`libboost-coroutine-dev`, `libboost-context-dev`).
@@ -129,7 +127,6 @@ build-msvc.bat
 | `BUILD_TESTNET` | OFF | Сборка для testnet |
 | `LOW_MEMORY_NODE` | OFF | Исключить неконсенсусные данные (уменьшает RAM) |
 | `CHAINBASE_CHECK_LOCKING` | OFF | Включить проверку блокировок (только для разработки) |
-| `ENABLE_MONGO_PLUGIN` | OFF | Включить плагин MongoDB |
 | `BUILD_SHARED_LIBRARIES` | OFF | Собирать разделяемые библиотеки |
 | `USE_PCH` | OFF | Включить предкомпилированные заголовки (ускоряет пересборку) |
 

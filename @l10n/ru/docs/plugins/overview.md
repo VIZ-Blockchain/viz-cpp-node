@@ -13,7 +13,6 @@ VIZ Ledger использует фреймворк плагинов **AppBase**.
 | **API** | Предоставляют JSON-RPC эндпоинты для клиентов |
 | **Индексирование** | Индексируют данные цепочки в chainbase для быстрых запросов |
 | **Производство** | Подписание и производство блоков |
-| **Внешние** | Интеграция с внешними системами (MongoDB) |
 | **Отладка/Тестирование** | Только для разработки; не для продакшна |
 
 ---
@@ -34,7 +33,7 @@ VIZ Ledger использует фреймворк плагинов **AppBase**.
 | `webserver` | Нужен для API | `json_rpc` | — |
 | `p2p` | Нужен для сети | `chain` | — |
 | `snapshot` | Рекомендуется | `chain` | — |
-| `witness_guard` | Рекомендуется для валидаторов | `chain`, `p2p` | — |
+| `validator_guard` | Рекомендуется для валидаторов | `chain`, `p2p` | — |
 
 ### API
 
@@ -42,7 +41,7 @@ VIZ Ledger использует фреймворк плагинов **AppBase**.
 |--------|--------|------------|---------|
 | `database_api` | Активен | `json_rpc`, `chain` | Да |
 | `network_broadcast_api` | Активен | `json_rpc`, `chain`, `p2p` | Да |
-| `witness_api` | Активен | `json_rpc`, `chain` | Да |
+| `validator_api` | Активен | `json_rpc`, `chain` | Да |
 | `account_by_key` | Активен | `json_rpc`, `chain` | Да |
 | `account_history` | Активен | `json_rpc`, `chain`, `operation_history` | Да |
 | `operation_history` | Активен | `json_rpc`, `chain` | Да |
@@ -63,12 +62,6 @@ VIZ Ledger использует фреймворк плагинов **AppBase**.
 | Плагин | Статус | Зависимости | JSON-RPC |
 |--------|--------|------------|---------|
 | `validator` | Активен | `chain`, `p2p` | — |
-
-### Внешние
-
-| Плагин | Статус | Зависимости | JSON-RPC |
-|--------|--------|------------|---------|
-| `mongo_db` | Активен | `chain` | — |
 
 ### Отладка / Тестирование
 
@@ -196,20 +189,20 @@ DLT P2P-сетевое взаимодействие — распростране
 
 ---
 
-### `witness_api`
+### `validator_api`
 
 Запросы состояния валидаторов: активный набор, расписание, отдельные валидаторы, рейтинги голосов.
 
 | Метод | Описание |
 |-------|---------|
-| `get_active_witnesses` | Текущий активный набор из 21 валидатора |
-| `get_witness_schedule` | Полный объект расписания |
-| `get_witnesses` | Валидаторы по ID в базе данных |
-| `get_witness_by_account` | Один валидатор по имени аккаунта |
-| `get_witnesses_by_vote` | Валидаторы, отсортированные по суммарному весу голосов |
-| `get_witnesses_by_counted_vote` | Валидаторы по числу голосов |
-| `get_witness_count` | Общее количество зарегистрированных валидаторов |
-| `lookup_witness_accounts` | Список имён аккаунтов валидаторов по префиксу |
+| `get_active_validators` | Текущий активный набор из 21 валидатора |
+| `get_validator_schedule` | Полный объект расписания |
+| `get_validators` | Валидаторы по ID в базе данных |
+| `get_validator_by_account` | Один валидатор по имени аккаунта |
+| `get_validators_by_vote` | Валидаторы, отсортированные по суммарному весу голосов |
+| `get_validators_by_counted_vote` | Валидаторы по числу голосов |
+| `get_validator_count` | Общее количество зарегистрированных валидаторов |
+| `lookup_validator_accounts` | Список имён аккаунтов валидаторов по префиксу |
 
 ---
 
@@ -347,7 +340,7 @@ plugin = webserver
 plugin = p2p
 plugin = database_api
 plugin = network_broadcast_api
-plugin = witness_api
+plugin = validator_api
 plugin = account_by_key
 plugin = account_history
 plugin = operation_history
@@ -366,7 +359,7 @@ plugin = json_rpc
 plugin = webserver
 plugin = database_api
 plugin = network_broadcast_api
-plugin = witness_api
+plugin = validator_api
 plugin = snapshot
 
 snapshot-every-n-blocks = 28800

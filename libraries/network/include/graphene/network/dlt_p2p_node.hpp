@@ -84,7 +84,7 @@ public:
     // currently_syncing flag is cleared.  P2P sets currently_syncing=true
     // via call_accept_block(sync_mode=true) during bulk sync; without this
     // call the flag stays true after sync ends until the next FORWARD-mode
-    // block arrives.  If our witnesses are the only remaining producers and
+    // block arrives.  If our validators are the only remaining producers and
     // are themselves blocked by is_syncing()→not_synced, that arrival never
     // happens — causing indefinite silent production deadlock (p72: 570 s gap).
     virtual void           clear_syncing() = 0;

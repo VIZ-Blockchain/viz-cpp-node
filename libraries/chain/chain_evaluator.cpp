@@ -1151,12 +1151,12 @@ namespace graphene { namespace chain {
                           0, "A proxy is currently set, please clear the proxy before voting for a validator.");
             }
 
-            const auto &witness = _db.get_witness(o.validator);
+            const auto &validator = _db.get_validator(o.validator);
 
-            const auto &by_account_witness_idx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
-            auto itr = by_account_witness_idx.find(boost::make_tuple(voter.id, witness.id));
+            const auto &by_account_validator_idx = _db.get_index<validator_vote_index>().indices().get<by_account_validator>();
+            auto itr = by_account_validator_idx.find(boost::make_tuple(voter.id, validator.id));
 
-            if (itr == by_account_witness_idx.end()) {
+            if (itr == by_account_validator_idx.end()) {
                 FC_ASSERT(o.approve, "Vote doesn't exist, user must indicate a desire to approve validator.");
 
                 if(_db.has_hardfork(CHAIN_HARDFORK_4)){
@@ -1169,15 +1169,15 @@ namespace graphene { namespace chain {
                 }
 
                 if(_db.has_hardfork(CHAIN_HARDFORK_5)){
-                    const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
+                    const auto &vidx = _db.get_index<validator_vote_index>().indices().get<by_account_validator>();
                     auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr != vidx.end() && vitr->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.validators_vote_weight);
+                        _db.adjust_validator_vote(_db.get(vitr->validator), -voter.validators_vote_weight);
                         ++vitr;
                     }
 
-                    _db.create<witness_vote_object>([&](witness_vote_object &v) {
-                        v.witness = witness.id;
+                    _db.create<validator_vote_object>([&](validator_vote_object &v) {
+                        v.validator = validator.id;
                         v.account = voter.id;
                         v.vote_created_block = _db.head_block_num();
                     });
@@ -1190,23 +1190,23 @@ namespace graphene { namespace chain {
                         a.validators_vote_weight = fair_vote_weight;
                     });
 
-                    const auto &vidx2 = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
+                    const auto &vidx2 = _db.get_index<validator_vote_index>().indices().get<by_account_validator>();
                     auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr2 != vidx2.end() && vitr2->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.validators_vote_weight);
+                        _db.adjust_validator_vote(_db.get(vitr2->validator), voter.validators_vote_weight);
                         ++vitr2;
                     }
                 }
                 else if(_db.has_hardfork(CHAIN_HARDFORK_4)){
-                    const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
+                    const auto &vidx = _db.get_index<validator_vote_index>().indices().get<by_account_validator>();
                     auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr != vidx.end() && vitr->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.validator_vote_fair_weight_prehf5());
+                        _db.adjust_validator_vote(_db.get(vitr->validator), -voter.validator_vote_fair_weight_prehf5());
                         ++vitr;
                     }
 
-                    _db.create<witness_vote_object>([&](witness_vote_object &v) {
-                        v.witness = witness.id;
+                    _db.create<validator_vote_object>([&](validator_vote_object &v) {
+                        v.validator = validator.id;
                         v.account = voter.id;
                         v.vote_created_block = _db.head_block_num();
                     });
@@ -1215,20 +1215,20 @@ namespace graphene { namespace chain {
                         a.validators_voted_for++;
                     });
 
-                    const auto &vidx2 = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
+                    const auto &vidx2 = _db.get_index<validator_vote_index>().indices().get<by_account_validator>();
                     auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr2 != vidx2.end() && vitr2->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.validator_vote_fair_weight_prehf5());
+                        _db.adjust_validator_vote(_db.get(vitr2->validator), voter.validator_vote_fair_weight_prehf5());
                         ++vitr2;
                     }
                 }
                 else{
-                    _db.create<witness_vote_object>([&](witness_vote_object &v) {
-                        v.witness = witness.id;
+                    _db.create<validator_vote_object>([&](validator_vote_object &v) {
+                        v.validator = validator.id;
                         v.account = voter.id;
                         v.vote_created_block = _db.head_block_num();
                     });
-                    _db.adjust_validator_vote(witness, voter.validator_vote_weight());
+                    _db.adjust_validator_vote(validator, voter.validator_vote_weight());
                     _db.modify(voter, [&](account_object &a) {
                         a.validators_voted_for++;
                     });
@@ -1237,10 +1237,10 @@ namespace graphene { namespace chain {
                 FC_ASSERT(!o.approve, "Vote currently exists, user must indicate a desire to reject validator.");
 
                 if(_db.has_hardfork(CHAIN_HARDFORK_5)){
-                    const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
+                    const auto &vidx = _db.get_index<validator_vote_index>().indices().get<by_account_validator>();
                     auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr != vidx.end() && vitr->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.validators_vote_weight);
+                        _db.adjust_validator_vote(_db.get(vitr->validator), -voter.validators_vote_weight);
                         ++vitr;
                     }
 
@@ -1254,18 +1254,18 @@ namespace graphene { namespace chain {
                         a.validators_vote_weight = fair_vote_weight;
                     });
 
-                    const auto &vidx2 = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
+                    const auto &vidx2 = _db.get_index<validator_vote_index>().indices().get<by_account_validator>();
                     auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr2 != vidx2.end() && vitr2->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.validators_vote_weight);
+                        _db.adjust_validator_vote(_db.get(vitr2->validator), voter.validators_vote_weight);
                         ++vitr2;
                     }
                 }
                 else if(_db.has_hardfork(CHAIN_HARDFORK_4)){
-                    const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
+                    const auto &vidx = _db.get_index<validator_vote_index>().indices().get<by_account_validator>();
                     auto vitr = vidx.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr != vidx.end() && vitr->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr->witness), -voter.validator_vote_fair_weight_prehf5());
+                        _db.adjust_validator_vote(_db.get(vitr->validator), -voter.validator_vote_fair_weight_prehf5());
                         ++vitr;
                     }
 
@@ -1275,15 +1275,15 @@ namespace graphene { namespace chain {
                         a.validators_voted_for--;
                     });
 
-                    const auto &vidx2 = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
+                    const auto &vidx2 = _db.get_index<validator_vote_index>().indices().get<by_account_validator>();
                     auto vitr2 = vidx2.lower_bound(boost::make_tuple(voter.id, validator_id_type()));
                     while (vitr2 != vidx2.end() && vitr2->account == voter.id) {
-                        _db.adjust_validator_vote(_db.get(vitr2->witness), voter.validator_vote_fair_weight_prehf5());
+                        _db.adjust_validator_vote(_db.get(vitr2->validator), voter.validator_vote_fair_weight_prehf5());
                         ++vitr2;
                     }
                 }
                 else{
-                    _db.adjust_validator_vote(witness, -voter.validator_vote_weight());
+                    _db.adjust_validator_vote(validator, -voter.validator_vote_weight());
                     _db.modify(voter, [&](account_object &a) {
                         a.validators_voted_for--;
                     });
@@ -1564,7 +1564,7 @@ namespace graphene { namespace chain {
             if (account_to_recover.recovery_account.length())   // Make sure recovery matches expected recovery account
                 FC_ASSERT(account_to_recover.recovery_account ==
                           o.recovery_account, "Cannot recover an account that does not have you as there recovery partner.");
-            else                                                  // Empty string recovery account defaults to top witness
+            else                                                  // Empty string recovery account defaults to top validator
                 FC_ASSERT(
                         _db.get_index<validator_index>().indices().get<by_vote_name>().begin()->owner ==
                         o.recovery_account, "Top validator must recover an account with no recovery partner.");

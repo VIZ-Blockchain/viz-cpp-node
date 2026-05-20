@@ -122,6 +122,7 @@ cp share/vizd/config/config.ini /data/vizd/config.ini
 p2p-endpoint = 0.0.0.0:2001
 p2p-seed-node = seed1.viz.world:2001
 p2p-seed-node = seed2.viz.world:2001
+p2p-seed-node = seed3.viz.world:2001
 
 # RPC
 webserver-http-endpoint = 0.0.0.0:8090
@@ -172,7 +173,6 @@ curl -s -X POST http://localhost:8090 \
 | Валидатор | `config_witness.ini` | Производство блоков, RPC только на localhost |
 | Тестовая сеть | `config_testnet.ini` | Разработка и тестирование |
 | Малая память | `config.ini` + флаг сборки `LOW_MEMORY_NODE` | Только консенсус, без индексов истории |
-| MongoDB | `config_mongo.ini` | Полная история в MongoDB |
 
 ---
 

@@ -376,7 +376,7 @@ DEFINE_API(plugin, get_accounts) {
 
 std::vector<account_api_object> plugin::api_impl::get_accounts(std::vector<std::string> names) const {
     const auto &idx = _db.get_index<account_index>().indices().get<by_name>();
-    const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
+    const auto &vidx = _db.get_index<validator_vote_index>().indices().get<by_account_validator>();
     std::vector<account_api_object> results;
 
     for (auto name: names) {
@@ -385,7 +385,7 @@ std::vector<account_api_object> plugin::api_impl::get_accounts(std::vector<std::
             results.push_back(account_api_object(*itr, _db));
             auto vitr = vidx.lower_bound(boost::make_tuple(itr->id, validator_id_type()));
             while (vitr != vidx.end() && vitr->account == itr->id) {
-                results.back().validator_votes.insert(_db.get(vitr->witness).owner);
+                results.back().validator_votes.insert(_db.get(vitr->validator).owner);
                 ++vitr;
             }
         }

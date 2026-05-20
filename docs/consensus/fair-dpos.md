@@ -116,8 +116,8 @@ The check is bypassed when:
 
 If no block has been produced for `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` (default 1 hour), the chain switches to **emergency mode**:
 
-- All 21 validator slots are assigned to `CHAIN_EMERGENCY_WITNESS_ACCOUNT` ("committee").
-- The emergency validator signs blocks using `CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY`.
+- All 21 validator slots are assigned to `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` ("committee").
+- The emergency validator signs blocks using `CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY`.
 - All validator penalties are reset; shut-down validators are re-enabled.
 - LIB advancement is paused during the emergency period.
 - Emergency mode exits after `CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS` (21) consecutive normal blocks advance LIB past the emergency start block.
@@ -146,7 +146,7 @@ See [Fork Resolution](./fork-resolution.md) for the full fork collision algorith
 | `required-participation` | `33` (33%) | Minimum participation to produce blocks |
 | `enable-stale-production` | `false` | Bypass participation check (testnet only) |
 | `emergency-private-key` | — | Optional emergency consensus signing key |
-| Active validators | 21 | Hardcoded in `CHAIN_MAX_WITNESSES` |
+| Active validators | 21 | Hardcoded in `CHAIN_MAX_VALIDATORS` |
 | Block interval | 3 s | `CHAIN_BLOCK_INTERVAL` |
 | LIB threshold | ⌈21 × 2/3⌉ = 14 | Blocks confirming irreversibility |
 | Emergency timeout | 3600 s | `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` |

@@ -115,7 +115,7 @@
 
 ## Операции валидатора
 
-### `shutdown_witness_operation` (ID 30)
+### `shutdown_validator_operation` (ID 30)
 
 **Триггер:** Валидатор деактивирован из-за недостаточного веса голосов
 
@@ -125,7 +125,7 @@
 
 ---
 
-### `witness_reward_operation` (ID 42)
+### `validator_reward_operation` (ID 42)
 
 **Триггер:** Произведён блок — валидатор получает вознаграждение за блок
 

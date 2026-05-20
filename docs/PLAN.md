@@ -242,7 +242,7 @@ Copy EN structure to `@l10n/ru/docs/` and `@l10n/zh-CN/docs/`, translate P0+P1 p
 | VIZ Blockchain | **VIZ Ledger** | Public name; explain hybrid DLT on intro page |
 | witness | **validator** | Already renamed in codebase (branch `witness-rename`) |
 | blockchain | ledger / chain | Context-dependent; "chain" OK in technical contexts |
-| witness_update_operation | `validator_update_operation` | Use current operation name in docs |
+| validator_update_operation | `validator_update_operation` | Use current operation name in docs |
 
 ---
 

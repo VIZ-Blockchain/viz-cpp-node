@@ -13,7 +13,6 @@ VIZ Ledger 使用 **AppBase** 插件框架。每个插件都有生命周期（`p
 | **API** | 为客户端公开 JSON-RPC 端点 |
 | **索引** | 将链数据索引到 chainbase 以进行快速查询 |
 | **生产** | 区块签名和生产 |
-| **外部** | 与外部系统集成（MongoDB） |
 | **调试/测试** | 仅用于开发；不用于生产 |
 
 ---
@@ -34,7 +33,7 @@ VIZ Ledger 使用 **AppBase** 插件框架。每个插件都有生命周期（`p
 | `webserver` | API 必需 | `json_rpc` | — |
 | `p2p` | 网络必需 | `chain` | — |
 | `snapshot` | 推荐 | `chain` | — |
-| `witness_guard` | 验证者推荐 | `chain`, `p2p` | — |
+| `validator_guard` | 验证者推荐 | `chain`, `p2p` | — |
 
 ### API
 
@@ -42,7 +41,7 @@ VIZ Ledger 使用 **AppBase** 插件框架。每个插件都有生命周期（`p
 |------|------|------|---------|
 | `database_api` | 活跃 | `json_rpc`, `chain` | 是 |
 | `network_broadcast_api` | 活跃 | `json_rpc`, `chain`, `p2p` | 是 |
-| `witness_api` | 活跃 | `json_rpc`, `chain` | 是 |
+| `validator_api` | 活跃 | `json_rpc`, `chain` | 是 |
 | `account_by_key` | 活跃 | `json_rpc`, `chain` | 是 |
 | `account_history` | 活跃 | `json_rpc`, `chain`, `operation_history` | 是 |
 | `operation_history` | 活跃 | `json_rpc`, `chain` | 是 |
@@ -63,12 +62,6 @@ VIZ Ledger 使用 **AppBase** 插件框架。每个插件都有生命周期（`p
 | 插件 | 状态 | 依赖 | JSON-RPC |
 |------|------|------|---------|
 | `validator` | 活跃 | `chain`, `p2p` | — |
-
-### 外部
-
-| 插件 | 状态 | 依赖 | JSON-RPC |
-|------|------|------|---------|
-| `mongo_db` | 活跃 | `chain` | — |
 
 ### 调试/测试
 
@@ -196,20 +189,20 @@ DLT P2P 网络——区块和交易传播、节点管理、少数派 fork 恢复
 
 ---
 
-### `witness_api`
+### `validator_api`
 
 查询验证者状态：活跃集合、计划、单个验证者、投票排名。
 
 | 方法 | 描述 |
 |------|------|
-| `get_active_witnesses` | 当前 21 验证者活跃集合 |
-| `get_witness_schedule` | 完整计划对象 |
-| `get_witnesses` | 按数据库 ID 查询验证者 |
-| `get_witness_by_account` | 按账户名查询单个验证者 |
-| `get_witnesses_by_vote` | 按总投票权重排序的验证者 |
-| `get_witnesses_by_counted_vote` | 按计票权重排序的验证者 |
-| `get_witness_count` | 已注册验证者总数 |
-| `lookup_witness_accounts` | 按前缀列出验证者账户名 |
+| `get_active_validators` | 当前 21 验证者活跃集合 |
+| `get_validator_schedule` | 完整计划对象 |
+| `get_validators` | 按数据库 ID 查询验证者 |
+| `get_validator_by_account` | 按账户名查询单个验证者 |
+| `get_validators_by_vote` | 按总投票权重排序的验证者 |
+| `get_validators_by_counted_vote` | 按计票权重排序的验证者 |
+| `get_validator_count` | 已注册验证者总数 |
+| `lookup_validator_accounts` | 按前缀列出验证者账户名 |
 
 ---
 
@@ -347,7 +340,7 @@ plugin = webserver
 plugin = p2p
 plugin = database_api
 plugin = network_broadcast_api
-plugin = witness_api
+plugin = validator_api
 plugin = account_by_key
 plugin = account_history
 plugin = operation_history
@@ -366,7 +359,7 @@ plugin = json_rpc
 plugin = webserver
 plugin = database_api
 plugin = network_broadcast_api
-plugin = witness_api
+plugin = validator_api
 plugin = snapshot
 
 snapshot-every-n-blocks = 28800

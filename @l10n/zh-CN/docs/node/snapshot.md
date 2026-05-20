@@ -288,6 +288,7 @@ snapshot-dir = /data/viz-snapshots
 plugin = snapshot
 trusted-snapshot-peer = seed1.viz.world:8092
 trusted-snapshot-peer = seed2.viz.world:8092
+trusted-snapshot-peer = seed3.viz.world:8092
 sync-snapshot-from-trusted-peer = true
 ```
 

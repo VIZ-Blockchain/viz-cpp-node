@@ -41,7 +41,7 @@ The median resists extremes: a single validator cannot cause a sudden large shif
 
 ### 3. Application
 
-The resulting `median_props` object is stored in the `witness_schedule_object` and enforced across all block processing.
+The resulting `median_props` object is stored in the `validator_schedule_object` and enforced across all block processing.
 
 ---
 
@@ -69,11 +69,11 @@ The resulting `median_props` object is stored in the `witness_schedule_object` a
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `inflation_witness_percent` | uint16 (bp) | 2000 (20%) | Validator share of block inflation |
+| `inflation_validator_percent` | uint16 (bp) | 2000 (20%) | Validator share of block inflation |
 | `inflation_ratio_committee_vs_reward_fund` | uint16 (bp) | 5000 (50%) | Split of remaining inflation: committee fund vs reward fund |
 | `inflation_recalc_period` | uint32 (blocks) | 806400 (~28d) | How often inflation is recalculated |
 
-Inflation flow: `block_reward × inflation_witness_percent` → validator. Remainder split: `inflation_ratio_committee_vs_reward_fund` → committee fund; the rest → award reward fund.
+Inflation flow: `block_reward × inflation_validator_percent` → validator. Remainder split: `inflation_ratio_committee_vs_reward_fund` → committee fund; the rest → award reward fund.
 
 ### Reward System
 
@@ -88,8 +88,8 @@ Inflation flow: `block_reward × inflation_witness_percent` → validator. Remai
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `witness_miss_penalty_percent` | uint16 (bp) | 100 (1%) | Vote weight reduction on missed block |
-| `witness_miss_penalty_duration` | uint32 (s) | 86400 (1d) | How long the miss penalty lasts |
+| `validator_miss_penalty_percent` | uint16 (bp) | 100 (1%) | Vote weight reduction on missed block |
+| `validator_miss_penalty_duration` | uint32 (s) | 86400 (1d) | How long the miss penalty lasts |
 
 ### Fees
 
@@ -101,7 +101,7 @@ All fees go to the committee fund (DAO treasury).
 | `create_paid_subscription_fee` | asset (VIZ) | 100.000 VIZ | Fee to create a paid subscription |
 | `account_on_sale_fee` | asset (VIZ) | 10.000 VIZ | Fee to list an account for sale |
 | `subaccount_on_sale_fee` | asset (VIZ) | 100.000 VIZ | Fee to list subaccount creation rights for sale |
-| `witness_declaration_fee` | asset (VIZ) | 10.000 VIZ | One-time fee for validator registration |
+| `validator_declaration_fee` | asset (VIZ) | 10.000 VIZ | One-time fee for validator registration |
 | `create_invite_min_balance` | asset (VIZ) | 10.000 VIZ | Minimum invite balance |
 
 ### Vesting Withdrawal
@@ -119,9 +119,9 @@ Properties were introduced in hardfork stages:
 | Version | Index | Hardfork | Fields added |
 |---------|-------|----------|--------------|
 | `chain_properties_init` | 0 | Genesis | account_creation_fee, maximum_block_size, delegation params, curation, bandwidth, flag cost, vote min rshares, committee threshold |
-| `chain_properties_hf4` | 1 | HF4 | inflation_witness_percent, inflation_ratio_committee_vs_reward_fund, inflation_recalc_period |
-| `chain_properties_hf6` | 2 | HF6 | data_operations_cost_additional_bandwidth, witness_miss_penalty_percent, witness_miss_penalty_duration |
-| `chain_properties_hf9` | 3 | HF9 | create_invite_min_balance, committee_create_request_fee, create_paid_subscription_fee, account_on_sale_fee, subaccount_on_sale_fee, witness_declaration_fee, withdraw_intervals |
+| `chain_properties_hf4` | 1 | HF4 | inflation_validator_percent, inflation_ratio_committee_vs_reward_fund, inflation_recalc_period |
+| `chain_properties_hf6` | 2 | HF6 | data_operations_cost_additional_bandwidth, validator_miss_penalty_percent, validator_miss_penalty_duration |
+| `chain_properties_hf9` | 3 | HF9 | create_invite_min_balance, committee_create_request_fee, create_paid_subscription_fee, account_on_sale_fee, subaccount_on_sale_fee, validator_declaration_fee, withdraw_intervals |
 
 Use version index 3 (`chain_properties_hf9`) for all new validator property submissions.
 

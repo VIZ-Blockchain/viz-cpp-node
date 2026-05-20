@@ -7,8 +7,6 @@ VIZ Ledger nodes are configured via an INI file. The repository ships several te
 | `config.ini` | Full mainnet node with public RPC |
 | `config_witness.ini` | Validator node (localhost RPC, block production) |
 | `config_testnet.ini` | Testnet / development |
-| `config_mongo.ini` | Node with MongoDB history backend |
-| `config_lowmem.ini` | Low-memory consensus/seed node |
 | `config_stock_exchange.ini` | Market data consumer (minimal plugins) |
 | `config_debug.ini` | Debug mode |
 
@@ -26,6 +24,7 @@ p2p-max-connections = 200
 # Seed nodes to bootstrap connectivity (repeatable)
 p2p-seed-node = seed1.viz.world:2001
 p2p-seed-node = seed2.viz.world:2001
+p2p-seed-node = seed3.viz.world:2001
 
 # Checkpoints: trusted (block_num, block_id) pairs (repeatable)
 # checkpoint = [12345,"0003039..." ]
@@ -112,7 +111,7 @@ plugin = social_network tags follow account_history account_by_key
 plugin = committee_api invite_api paid_subscription_api custom_protocol_api
 
 # For validator nodes only:
-plugin = validator witness_api
+plugin = validator validator_api
 ```
 
 ### Plugin sets by node type
@@ -120,7 +119,7 @@ plugin = validator witness_api
 | Node type | Plugins |
 |-----------|---------|
 | Full node | All above |
-| Validator | `chain p2p webserver json_rpc database_api network_broadcast_api validator witness_api` |
+| Validator | `chain p2p webserver json_rpc database_api network_broadcast_api validator validator_api` |
 | Low-memory seed | `chain p2p` |
 | Stock exchange | `chain p2p webserver json_rpc database_api network_broadcast_api account_history` |
 
@@ -194,17 +193,6 @@ logger.default.appenders = stderr
 
 logger.p2p.level = warn
 logger.p2p.appenders = p2p
-```
-
----
-
-## MongoDB (Optional)
-
-Only relevant when the node is built with `ENABLE_MONGO_PLUGIN=ON`:
-
-```ini
-plugin = mongo_db
-mongodb-uri = mongodb://localhost:27017/vizd
 ```
 
 ---

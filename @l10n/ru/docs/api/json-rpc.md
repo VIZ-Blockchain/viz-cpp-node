@@ -52,7 +52,7 @@
 |-----------------|-------|---------|
 | `database_api` | Активен | Запросы блоков, аккаунтов, состояния цепочки |
 | `network_broadcast_api` | Активен | Трансляция транзакций и блоков |
-| `witness_api` | Активен | Запросы валидаторов |
+| `validator_api` | Активен | Запросы валидаторов |
 | `account_by_key` | Активен | Обратный поиск по ключу |
 | `account_history` | Активен | История операций аккаунта |
 | `operation_history` | Активен | Запросы операций блока |
@@ -119,18 +119,18 @@
 
 ---
 
-## Методы `witness_api`
+## Методы `validator_api`
 
 | Метод | Описание |
 |-------|---------|
-| `get_active_witnesses()` | Текущий активный набор валидаторов (21 аккаунт) |
-| `get_witness_schedule()` | Полный объект расписания валидаторов |
-| `get_witnesses(ids[])` | Валидаторы по внутренним ID |
-| `get_witness_by_account(account)` | Объект валидатора для аккаунта |
-| `get_witnesses_by_vote(lower_bound, limit)` | Валидаторы по убыванию веса голосов |
-| `get_witnesses_by_counted_vote(lower_bound, limit)` | Валидаторы по числу голосов |
-| `get_witness_count()` | Общее количество зарегистрированных валидаторов |
-| `lookup_witness_accounts(lower_bound, limit)` | Список имён аккаунтов валидаторов |
+| `get_active_validators()` | Текущий активный набор валидаторов (21 аккаунт) |
+| `get_validator_schedule()` | Полный объект расписания валидаторов |
+| `get_validators(ids[])` | Валидаторы по внутренним ID |
+| `get_validator_by_account(account)` | Объект валидатора для аккаунта |
+| `get_validators_by_vote(lower_bound, limit)` | Валидаторы по убыванию веса голосов |
+| `get_validators_by_counted_vote(lower_bound, limit)` | Валидаторы по числу голосов |
+| `get_validator_count()` | Общее количество зарегистрированных валидаторов |
+| `lookup_validator_accounts(lower_bound, limit)` | Список имён аккаунтов валидаторов |
 
 ---
 
@@ -214,7 +214,7 @@ plugin = database_api network_broadcast_api
 
 **Полный API-узел (добавить):**
 ```ini
-plugin = witness_api account_by_key account_history operation_history
+plugin = validator_api account_by_key account_history operation_history
 plugin = committee_api invite_api paid_subscription_api
 ```
 

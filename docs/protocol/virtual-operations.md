@@ -115,7 +115,7 @@ Fired once per interval for each active withdrawal route.
 
 ## Validator Operations
 
-### `shutdown_witness_operation` (ID 30)
+### `shutdown_validator_operation` (ID 30)
 
 **Trigger:** Validator deactivated due to insufficient vote weight
 
@@ -125,7 +125,7 @@ Fired once per interval for each active withdrawal route.
 
 ---
 
-### `witness_reward_operation` (ID 42)
+### `validator_reward_operation` (ID 42)
 
 **Trigger:** Block produced — validator receives block reward
 

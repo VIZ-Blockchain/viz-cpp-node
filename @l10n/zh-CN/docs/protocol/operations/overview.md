@@ -16,9 +16,9 @@ VIZ Ledger 操作是包含在交易中的原子状态变更动作。每个操作
 | 3 | `transfer_to_vesting_operation` | active | [转账](./transfers.md) |
 | 4 | `withdraw_vesting_operation` | active | [转账](./transfers.md) |
 | 5 | `account_update_operation` | master / active | [账户](./accounts.md) |
-| 6 | `witness_update_operation` | active | [验证者](./validators.md) |
-| 7 | `account_witness_vote_operation` | active | [验证者](./validators.md) |
-| 8 | `account_witness_proxy_operation` | active | [验证者](./validators.md) |
+| 6 | `validator_update_operation` | active | [验证者](./validators.md) |
+| 7 | `account_validator_vote_operation` | active | [验证者](./validators.md) |
+| 8 | `account_validator_proxy_operation` | active | [验证者](./validators.md) |
 | 9 | `delete_content_operation` *（已弃用）* | regular | [内容](./content.md) |
 | 10 | `custom_operation` | active / regular | [内容](./content.md) |
 | 11 | `set_withdraw_vesting_route_operation` | active | [转账](./transfers.md) |
@@ -65,7 +65,7 @@ VIZ Ledger 操作是包含在交易中的原子状态变更动作。每个操作
 | 27 | `curation_reward_operation` | 内容支付 | [虚拟操作](../virtual-operations.md) |
 | 28 | `content_reward_operation` | 内容支付 | [虚拟操作](../virtual-operations.md) |
 | 29 | `fill_vesting_withdraw_operation` | 提取间隔触发 | [虚拟操作](../virtual-operations.md) |
-| 30 | `shutdown_witness_operation` | 验证者停用 | [虚拟操作](../virtual-operations.md) |
+| 30 | `shutdown_validator_operation` | 验证者停用 | [虚拟操作](../virtual-operations.md) |
 | 31 | `hardfork_operation` | 硬分叉激活 | [虚拟操作](../virtual-operations.md) |
 | 32 | `content_payout_update_operation` | 内容支付更新 | [虚拟操作](../virtual-operations.md) |
 | 33 | `content_benefactor_reward_operation` | 内容支付 | [虚拟操作](../virtual-operations.md) |
@@ -74,7 +74,7 @@ VIZ Ledger 操作是包含在交易中的原子状态变更动作。每个操作
 | 39 | `committee_approve_request_operation` | 委员会请求获批 | [虚拟操作](../virtual-operations.md) |
 | 40 | `committee_payout_request_operation` | 委员会支付处理 | [虚拟操作](../virtual-operations.md) |
 | 41 | `committee_pay_request_operation` | 委员会工作者已付款 | [虚拟操作](../virtual-operations.md) |
-| 42 | `witness_reward_operation` | 区块已生产 | [虚拟操作](../virtual-operations.md) |
+| 42 | `validator_reward_operation` | 区块已生产 | [虚拟操作](../virtual-operations.md) |
 | 48 | `receive_award_operation` | 奖励已接收 | [虚拟操作](../virtual-operations.md) |
 | 49 | `benefactor_award_operation` | 带受益人的奖励 | [虚拟操作](../virtual-operations.md) |
 | 52 | `paid_subscription_action_operation` | 订阅支付 | [虚拟操作](../virtual-operations.md) |

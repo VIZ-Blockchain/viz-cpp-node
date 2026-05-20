@@ -172,7 +172,7 @@ The DLT P2P layer maintains its own mempool separate from the chain's `_pending_
 
 ## Fork Resolution
 
-The DLT P2P layer tracks fork state with a **42-block threshold** (2 full validator rounds = `CHAIN_MAX_WITNESSES × 2`).
+The DLT P2P layer tracks fork state with a **42-block threshold** (2 full validator rounds = `CHAIN_MAX_VALIDATORS × 2`).
 
 `track_fork_state()` is called after each block application. When a competing fork is detected and sustained for ≥ 42 blocks, `resolve_fork()` computes the **heaviest branch** by total vote weight. A candidate branch must accumulate **6 consecutive confirmation blocks** (`dlt_fork_resolution_state::CONFIRMATION_BLOCKS`) before the node switches to it (hysteresis).
 

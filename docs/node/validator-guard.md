@@ -1,6 +1,6 @@
 # Validator Guard
 
-The `witness_guard` plugin automates signing-key restoration for validator accounts. When a validator's signing key is reset to null (disabling block production), the plugin detects the change and broadcasts a `witness_update_operation` to restore the key — without manual intervention.
+The `validator_guard` plugin automates signing-key restoration for validator accounts. When a validator's signing key is reset to null (disabling block production), the plugin detects the change and broadcasts a `validator_update_operation` to restore the key — without manual intervention.
 
 ---
 
@@ -15,7 +15,7 @@ The `witness_guard` plugin automates signing-key restoration for validator accou
 ## Enabling the Plugin
 
 ```ini
-plugin = witness_guard
+plugin = validator_guard
 ```
 
 ---
@@ -34,7 +34,7 @@ The plugin also reads `enable-stale-production` from the validator plugin config
 ### Example
 
 ```ini
-plugin = witness_guard
+plugin = validator_guard
 
 # Monitor one validator
 validator-guard-validator = ["alice", "5K_SIGNING_WIF", "5K_ACTIVE_WIF"]
@@ -63,7 +63,7 @@ validator-guard-interval = 10
 
 On every block:
 
-1. **Consecutive-block auto-disable**: If a monitored validator produced `validator-guard-disable` consecutive blocks, a `witness_update_operation` with a null key is broadcast to disable it, and the validator is flagged as auto-disabled. Any block by a *different* validator resets all consecutive counters.
+1. **Consecutive-block auto-disable**: If a monitored validator produced `validator-guard-disable` consecutive blocks, a `validator_update_operation` with a null key is broadcast to disable it, and the validator is flagged as auto-disabled. Any block by a *different* validator resets all consecutive counters.
 2. **Transaction confirmation**: Scans for pending restore transaction IDs in the block. On match, marks the restore confirmed and clears tracking state.
 3. **Look-ahead scheduling**: If any monitored validator is scheduled within the next 3 slots, triggers an immediate check so the key can be restored before the slot arrives.
 4. **Periodic check**: Otherwise runs the core check every `validator-guard-interval` blocks. While the node is still catching up after startup, checks run every 10 blocks.
@@ -83,7 +83,7 @@ Each check (in order):
 
 ### Restore Transaction
 
-1. Builds a `witness_update_operation` preserving the current on-chain URL and setting the signing key to the configured public key.
+1. Builds a `validator_update_operation` preserving the current on-chain URL and setting the signing key to the configured public key.
 2. Wraps in a `signed_transaction` with 30-second expiration and current head block reference.
 3. Signs with the configured active private key.
 4. Broadcasts via P2P.
@@ -113,12 +113,12 @@ Each check (in order):
 | `enable-stale-production detected — auto-restore is DISABLED` | Stale production mode active; restore suppressed |
 | `network is healthy (XX%), auto-clearing stale production override` | Stale guard lifted |
 | `'alice' has null signing key on-chain — initiating restore` | Null key detected, about to broadcast |
-| `broadcasting witness_update [ID: ...] for 'alice' — restoring key to VIZ...` | Restore transaction sent |
+| `broadcasting validator_update [ID: ...] for 'alice' — restoring key to VIZ...` | Restore transaction sent |
 | `CONFIRMED restoration for 'alice' in block #N` | Restore confirmed on-chain |
 | `POTENTIAL LONG FORK DETECTED! LIB #N is Xs old. Skipping restoration.` | Restoration skipped due to stale LIB |
 | `validator 'alice' produced N consecutive blocks — auto-disabling` | Consecutive-block threshold reached |
 | `'alice' was auto-disabled (consecutive block limit), skipping auto-restore` | Auto-restore suppressed after auto-disable |
-| `witness_update FAILED for 'alice': [error]` | Broadcast failed |
+| `validator_update FAILED for 'alice': [error]` | Broadcast failed |
 
 ---
 

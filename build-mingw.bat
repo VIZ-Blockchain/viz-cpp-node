@@ -15,7 +15,7 @@ REM    OPENSSL_ROOT_DIR  - Path to OpenSSL installation (e.g. C:\OpenSSL-Win64)
 REM
 REM  Optional Environment Variables:
 REM    VIZ_BUILD_TYPE    - Release or Debug (default: Release)
-REM    VIZ_LOW_MEMORY    - ON or OFF (default: OFF)
+
 REM    VIZ_BUILD_TESTNET - ON or OFF (default: OFF)
 REM    VIZ_FULL_STATIC   - ON or OFF (default: OFF, produces static exe)
 REM    VIZ_CMAKE_EXTRA   - Additional CMake options
@@ -25,7 +25,7 @@ setlocal enabledelayedexpansion
 
 REM --- Defaults ---
 if not defined VIZ_BUILD_TYPE set VIZ_BUILD_TYPE=Release
-if not defined VIZ_LOW_MEMORY set VIZ_LOW_MEMORY=OFF
+
 if not defined VIZ_BUILD_TESTNET set VIZ_BUILD_TESTNET=OFF
 if not defined VIZ_FULL_STATIC set VIZ_FULL_STATIC=OFF
 
@@ -73,7 +73,7 @@ echo ============================================
 echo  VIZ Windows Build (MinGW)
 echo ============================================
 echo  Build Type:      %VIZ_BUILD_TYPE%
-echo  Low Memory Node: %VIZ_LOW_MEMORY%
+
 echo  Build Testnet:   %VIZ_BUILD_TESTNET%
 echo  Full Static:     %VIZ_FULL_STATIC%
 echo  BOOST_ROOT:      %BOOST_ROOT%
@@ -93,7 +93,7 @@ cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" ^
     -DCMAKE_BUILD_TYPE=%VIZ_BUILD_TYPE% ^
     -DBOOST_ROOT="%BOOST_ROOT%" ^
     -DOPENSSL_ROOT_DIR="%OPENSSL_ROOT_DIR%" ^
-    -DLOW_MEMORY_NODE=%VIZ_LOW_MEMORY% ^
+
     -DBUILD_TESTNET=%VIZ_BUILD_TESTNET% ^
     -DBUILD_SHARED_LIBRARIES=OFF ^
     -DFULL_STATIC_BUILD=%VIZ_FULL_STATIC% ^

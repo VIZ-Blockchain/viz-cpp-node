@@ -116,8 +116,8 @@ irreversibility_threshold = ceil(num_scheduled_validators * 2 / 3)
 
 Если в течение `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` (по умолчанию 1 час) не было произведено ни одного блока, цепочка переходит в **режим чрезвычайной ситуации**:
 
-- Все 21 слот валидаторов назначаются `CHAIN_EMERGENCY_WITNESS_ACCOUNT` («committee»).
-- Экстренный валидатор подписывает блоки с использованием `CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY`.
+- Все 21 слот валидаторов назначаются `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` («committee»).
+- Экстренный валидатор подписывает блоки с использованием `CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY`.
 - Все штрафы валидаторов сбрасываются; отключённые валидаторы повторно включаются.
 - Продвижение LIB приостанавливается в период чрезвычайной ситуации.
 - Режим чрезвычайной ситуации завершается после того, как `CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS` (21) последовательных обычных блоков продвигают LIB выше начального блока чрезвычайной ситуации.
@@ -146,7 +146,7 @@ irreversibility_threshold = ceil(num_scheduled_validators * 2 / 3)
 | `required-participation` | `33` (33%) | Минимальное участие для производства блоков |
 | `enable-stale-production` | `false` | Обход проверки участия (только для тестовой сети) |
 | `emergency-private-key` | — | Опциональный ключ подписи для экстренного консенсуса |
-| Активные валидаторы | 21 | Задано в `CHAIN_MAX_WITNESSES` |
+| Активные валидаторы | 21 | Задано в `CHAIN_MAX_VALIDATORS` |
 | Интервал блока | 3 с | `CHAIN_BLOCK_INTERVAL` |
 | Порог LIB | ⌈21 × 2/3⌉ = 14 | Блоки, подтверждающие необратимость |
 | Таймаут чрезвычайной ситуации | 3600 с | `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` |

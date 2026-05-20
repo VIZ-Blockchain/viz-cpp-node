@@ -52,7 +52,7 @@ All VIZ node APIs use JSON-RPC 2.0 over HTTP POST or WebSocket.
 |-----------|--------|-------------|
 | `database_api` | Active | Block, account, chain state queries |
 | `network_broadcast_api` | Active | Transaction and block broadcast |
-| `witness_api` | Active | Validator queries |
+| `validator_api` | Active | Validator queries |
 | `account_by_key` | Active | Reverse key lookup |
 | `account_history` | Active | Per-account operation history |
 | `operation_history` | Active | Block operation queries |
@@ -119,18 +119,18 @@ All VIZ node APIs use JSON-RPC 2.0 over HTTP POST or WebSocket.
 
 ---
 
-## `witness_api` Methods
+## `validator_api` Methods
 
 | Method | Description |
 |--------|-------------|
-| `get_active_witnesses()` | Current active validator set (21 accounts) |
-| `get_witness_schedule()` | Full validator schedule object |
-| `get_witnesses(ids[])` | Validators by internal IDs |
-| `get_witness_by_account(account)` | Validator object for an account |
-| `get_witnesses_by_vote(lower_bound, limit)` | Validators ranked by vote weight |
-| `get_witnesses_by_counted_vote(lower_bound, limit)` | Validators by counted votes |
-| `get_witness_count()` | Total registered validators |
-| `lookup_witness_accounts(lower_bound, limit)` | List validator account names |
+| `get_active_validators()` | Current active validator set (21 accounts) |
+| `get_validator_schedule()` | Full validator schedule object |
+| `get_validators(ids[])` | Validators by internal IDs |
+| `get_validator_by_account(account)` | Validator object for an account |
+| `get_validators_by_vote(lower_bound, limit)` | Validators ranked by vote weight |
+| `get_validators_by_counted_vote(lower_bound, limit)` | Validators by counted votes |
+| `get_validator_count()` | Total registered validators |
+| `lookup_validator_accounts(lower_bound, limit)` | List validator account names |
 
 ---
 
@@ -214,7 +214,7 @@ plugin = database_api network_broadcast_api
 
 **Full API node (add):**
 ```ini
-plugin = witness_api account_by_key account_history operation_history
+plugin = validator_api account_by_key account_history operation_history
 plugin = committee_api invite_api paid_subscription_api
 ```
 

@@ -113,9 +113,7 @@ build-msvc.bat
 
 | Dockerfile | 描述 |
 |-----------|------|
-| `Dockerfile-production` | 完整节点，Release，无 MongoDB |
-| `Dockerfile-lowmem` | 同上但启用 `LOW_MEMORY_NODE=ON` |
-| `Dockerfile-mongo` | 启用 MongoDB 插件 |
+| `Dockerfile-production` | 完整主网节点（Release） |
 | `Dockerfile-testnet` | Testnet（`BUILD_TESTNET=ON`） |
 
 所有 Dockerfile 使用两阶段构建以最小化镜像大小，并使用 Boost 1.71 包（`libboost-coroutine-dev`、`libboost-context-dev`）。
@@ -129,7 +127,6 @@ build-msvc.bat
 | `BUILD_TESTNET` | OFF | 为 testnet 构建 |
 | `LOW_MEMORY_NODE` | OFF | 排除非共识数据（减少 RAM） |
 | `CHAINBASE_CHECK_LOCKING` | OFF | 启用锁检查（仅用于开发） |
-| `ENABLE_MONGO_PLUGIN` | OFF | 包含 MongoDB 插件 |
 | `BUILD_SHARED_LIBRARIES` | OFF | 构建共享库 |
 | `USE_PCH` | OFF | 启用预编译头文件（加速重新构建） |
 

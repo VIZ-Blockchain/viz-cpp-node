@@ -38,7 +38,7 @@ tests/intense_test
 tests/performance_test
 
 wallet.json
-witness_node_data_dir
+node_data_dir
 
 *.wallet
 

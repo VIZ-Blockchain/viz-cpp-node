@@ -40,7 +40,7 @@
 #define CHAIN_MAX_TOP_VALIDATORS               11
 #define CHAIN_MAX_SUPPORT_VALIDATORS           10
 #define CHAIN_MAX_VALIDATORS                   (CHAIN_MAX_TOP_VALIDATORS+CHAIN_MAX_SUPPORT_VALIDATORS) /// 21 is more than enough
-#define CHAIN_HARDFORK_REQUIRED_VALIDATORS     17 // 17 of the 20 dpos witnesses (19 elected and 1 virtual time) required for hardfork. This guarantees 75% participation on all subsequent rounds.
+#define CHAIN_HARDFORK_REQUIRED_VALIDATORS     17 // 17 of the 21 dpos validators required for hardfork. This guarantees 75% participation on all subsequent rounds.
 #define CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT 20
 #define CHAIN_MAX_TIME_UNTIL_EXPIRATION       (60*60) // seconds,  aka: 1 hour
 #define CHAIN_MAX_PROXY_RECURSION_DEPTH       4
@@ -120,8 +120,8 @@
 #define CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY       (graphene::protocol::public_key_type(CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY_STR))
 
 /// Number of consecutive blocks produced by the emergency witness that
-/// triggers automatic exit from emergency mode (witnesses have rejoined).
-#define CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS       21  // 1 full round of 21 witnesses
+/// triggers automatic exit from emergency mode (validators have rejoined).
+#define CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS       21  // 1 full round of 21 validators
 
 #define CHAIN_IRREVERSIBLE_THRESHOLD          (75 * CHAIN_1_PERCENT)
 /** Irreversibility only counts blocks produced if wit.current_run >= CHAIN_IRREVERSIBLE_SUPPORT_MIN_RUN */

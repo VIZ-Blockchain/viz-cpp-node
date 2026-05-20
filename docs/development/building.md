@@ -113,9 +113,7 @@ The repository ships Dockerfiles for multiple configurations:
 
 | Dockerfile | Description |
 |-----------|-------------|
-| `Dockerfile-production` | Full node, Release, no MongoDB |
-| `Dockerfile-lowmem` | Same but with `LOW_MEMORY_NODE=ON` |
-| `Dockerfile-mongo` | MongoDB plugin enabled |
+| `Dockerfile-production` | Full mainnet node (Release) |
 | `Dockerfile-testnet` | Testnet (`BUILD_TESTNET=ON`) |
 
 All Dockerfiles use a two-stage build to minimize image size and use Boost 1.71 packages (`libboost-coroutine-dev`, `libboost-context-dev`).
@@ -129,7 +127,6 @@ All Dockerfiles use a two-stage build to minimize image size and use Boost 1.71 
 | `BUILD_TESTNET` | OFF | Build for testnet |
 | `LOW_MEMORY_NODE` | OFF | Exclude non-consensus data (reduces RAM) |
 | `CHAINBASE_CHECK_LOCKING` | OFF | Enable lock checking (development only) |
-| `ENABLE_MONGO_PLUGIN` | OFF | Include MongoDB plugin |
 | `BUILD_SHARED_LIBRARIES` | OFF | Build shared libraries |
 | `USE_PCH` | OFF | Enable precompiled headers (faster rebuilds) |
 

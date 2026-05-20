@@ -95,7 +95,7 @@ json_rpc::plugin, chain::plugin
 { "method": "database_api.get_dynamic_global_properties", "params": [] }
 ```
 
-Ключевые поля: `head_block_number`, `head_block_id`, `time`, `current_witness`, `total_vesting_shares`, `total_vesting_fund_viz`, `committee_fund`, `last_irreversible_block_num`, `participation_count`.
+Ключевые поля: `head_block_number`, `head_block_id`, `time`, `current_validator`, `total_vesting_shares`, `total_vesting_fund_viz`, `committee_fund`, `last_irreversible_block_num`, `participation_count`.
 
 ---
 
@@ -405,4 +405,4 @@ json_rpc::plugin, chain::plugin
 
 ---
 
-См. также: [Обзор плагинов](./overview.md), [Методы witness_api](./overview.md#witness_api), [JSON-RPC API](../api/json-rpc.md).
+См. также: [Обзор плагинов](./overview.md), [Методы validator_api](./overview.md#validator_api), [JSON-RPC API](../api/json-rpc.md).

@@ -116,8 +116,8 @@ irreversibility_threshold = ceil(num_scheduled_validators * 2 / 3)
 
 如果在 `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC`（默认 1 小时）内没有生产区块，链切换到**紧急模式**：
 
-- 所有 21 个验证者槽位分配给 `CHAIN_EMERGENCY_WITNESS_ACCOUNT`（"committee"）。
-- 紧急验证者使用 `CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY` 签名区块。
+- 所有 21 个验证者槽位分配给 `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT`（"committee"）。
+- 紧急验证者使用 `CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY` 签名区块。
 - 所有验证者惩罚被重置；已关闭的验证者重新启用。
 - 紧急期间 LIB 推进暂停。
 - 在 `CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS`（21）个连续正常区块将 LIB 推进到紧急开始区块之后，紧急模式退出。
@@ -146,7 +146,7 @@ irreversibility_threshold = ceil(num_scheduled_validators * 2 / 3)
 | `required-participation` | `33`（33%） | 生产区块所需的最低参与度 |
 | `enable-stale-production` | `false` | 绕过参与度检查（仅限测试网） |
 | `emergency-private-key` | — | 可选的紧急共识签名密钥 |
-| 活跃验证者 | 21 | 在 `CHAIN_MAX_WITNESSES` 中硬编码 |
+| 活跃验证者 | 21 | 在 `CHAIN_MAX_VALIDATORS` 中硬编码 |
 | 区块间隔 | 3 秒 | `CHAIN_BLOCK_INTERVAL` |
 | LIB 阈值 | ⌈21 × 2/3⌉ = 14 | 确认不可逆性所需的区块数 |
 | 紧急超时 | 3600 秒 | `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` |

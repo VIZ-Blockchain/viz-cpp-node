@@ -57,7 +57,7 @@ HF12 引入了区块生产停滞时的自动网络恢复。
 
 ### 激活
 
-如果最后一个不可逆区块（LIB）的时间戳比挂钟时间滞后超过 `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC`（1 小时），紧急模式自动激活。创建一个具有已知公钥（`CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY`）的紧急验证者账户（`CHAIN_EMERGENCY_WITNESS_ACCOUNT = "committee"`），并插入区块生产调度中。
+如果最后一个不可逆区块（LIB）的时间戳比挂钟时间滞后超过 `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC`（1 小时），紧急模式自动激活。创建一个具有已知公钥（`CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY`）的紧急验证者账户（`CHAIN_EMERGENCY_VALIDATOR_ACCOUNT = "committee"`），并插入区块生产调度中。
 
 ### 三态安全执行
 

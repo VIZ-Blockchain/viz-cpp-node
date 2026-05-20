@@ -128,8 +128,6 @@ CI-матрица собирает Docker-образы для нескольки
 | Вариант | Dockerfile |
 |---------|-----------|
 | Стандартный | `Dockerfile-production` |
-| Low-memory | `Dockerfile-lowmem` |
-| MongoDB | `Dockerfile-mongo` |
 | Testnet | `Dockerfile-testnet` |
 
 Сборки запускаются для каждой ветки и тега, с публикацией артефактов при наличии учётных данных.

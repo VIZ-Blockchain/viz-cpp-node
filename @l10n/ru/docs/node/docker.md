@@ -9,8 +9,6 @@ VIZ Ledger поставляется с четырьмя Docker-образами 
 | Dockerfile | Тег | Описание |
 |-----------|-----|----------|
 | `Dockerfile-production` | `latest` | Полный узел мейннета (Release, все плагины) |
-| `Dockerfile-lowmem` | `lowmem` | Низкопамятный узел (`LOW_MEMORY_NODE=ON`, без индексов истории) |
-| `Dockerfile-mongo` | `mongo` | Полный узел с плагином истории MongoDB |
 | `Dockerfile-testnet` | `testnet` | Узел тестнета (`BUILD_TESTNET=ON`) |
 
 ---
@@ -62,7 +60,7 @@ docker run -d \
 
 | Переменная | Описание | Пример |
 |------------|----------|--------|
-| `VIZD_SEED_NODES` | Список сид-узлов через пробел (переопределяет `/etc/vizd/seednodes`) | `seed1.viz.world:2001 seed2.viz.world:2001` |
+| `VIZD_SEED_NODES` | Список сид-узлов через пробел (переопределяет `/etc/vizd/seednodes`) | `seed1.viz.world:2001 seed2.viz.world:2001 seed3.viz.world:2001` |
 | `VIZD_RPC_ENDPOINT` | Переопределить HTTP RPC endpoint | `0.0.0.0:8090` |
 | `VIZD_P2P_ENDPOINT` | Переопределить P2P endpoint | `0.0.0.0:2001` |
 | `VIZD_WITNESS` | Имя аккаунта валидатора (включает производство блоков) | `alice` |
@@ -123,21 +121,19 @@ docker build \
   -t vizd:local \
   .
 
-# Low-memory
+# Testnet
 docker build \
-  -f share/vizd/docker/Dockerfile-lowmem \
-  -t vizd:lowmem \
+  -f share/vizd/docker/Dockerfile-testnet \
+  -t vizd:testnet \
   .
 ```
 
 ### CMake-флаги для каждого образа
 
-| Образ | `LOW_MEMORY_NODE` | `ENABLE_MONGO_PLUGIN` | `BUILD_TESTNET` |
-|-------|:-----------------:|:---------------------:|:---------------:|
-| production | OFF | OFF | OFF |
-| lowmem | ON | OFF | OFF |
-| mongo | OFF | ON | OFF |
-| testnet | OFF | OFF | ON |
+| Образ | `LOW_MEMORY_NODE` | `BUILD_TESTNET` |
+|-------|:-----------------:|:---------------:|
+| production | OFF | OFF |
+| testnet | OFF | ON |
 
 ---
 
@@ -161,7 +157,7 @@ docker build \
 | Тип узла | RAM | Диск |
 |----------|-----|------|
 | Полный узел (мейннет) | 8 ГБ+ | 50 ГБ+ |
-| Низкопамятный / валидатор | 4 ГБ | 20 ГБ |
+| Узел-валидатор | 4 ГБ | 20 ГБ |
 | Тестнет | 4 ГБ | 10 ГБ |
 
 Начинайте с размера разделяемой памяти, удобно помещающегося в RAM. В `config.ini`:

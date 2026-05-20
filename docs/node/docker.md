@@ -1,6 +1,6 @@
 # Docker Deployment
 
-VIZ Ledger ships four Docker images for different deployment profiles. All use a two-stage build: the builder stage compiles the binary; the runtime stage contains only the binary and configuration.
+VIZ Ledger ships Docker images for different deployment profiles. All use a two-stage build: the builder stage compiles the binary; the runtime stage contains only the binary and configuration.
 
 ---
 
@@ -9,8 +9,6 @@ VIZ Ledger ships four Docker images for different deployment profiles. All use a
 | Dockerfile | Tag | Description |
 |-----------|-----|-------------|
 | `Dockerfile-production` | `latest` | Full mainnet node (Release, all plugins) |
-| `Dockerfile-lowmem` | `lowmem` | Low-memory node (`LOW_MEMORY_NODE=ON`, no history indexes) |
-| `Dockerfile-mongo` | `mongo` | Full node with MongoDB history plugin |
 | `Dockerfile-testnet` | `testnet` | Testnet node (`BUILD_TESTNET=ON`) |
 
 ---
@@ -62,7 +60,7 @@ The entry script (`vizd.sh`) reads these environment variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `VIZD_SEED_NODES` | Space-delimited seed node list (overrides `/etc/vizd/seednodes`) | `seed1.viz.world:2001 seed2.viz.world:2001` |
+| `VIZD_SEED_NODES` | Space-delimited seed node list (overrides `/etc/vizd/seednodes`) | `seed1.viz.world:2001 seed2.viz.world:2001 seed3.viz.world:2001` |
 | `VIZD_RPC_ENDPOINT` | Override HTTP RPC endpoint | `0.0.0.0:8090` |
 | `VIZD_P2P_ENDPOINT` | Override P2P endpoint | `0.0.0.0:2001` |
 | `VIZD_WITNESS` | Validator account name (enables block production) | `alice` |
@@ -123,21 +121,19 @@ docker build \
   -t vizd:local \
   .
 
-# Low-memory
+# Testnet
 docker build \
-  -f share/vizd/docker/Dockerfile-lowmem \
-  -t vizd:lowmem \
+  -f share/vizd/docker/Dockerfile-testnet \
+  -t vizd:testnet \
   .
 ```
 
 ### CMake flags per image
 
-| Image | `LOW_MEMORY_NODE` | `ENABLE_MONGO_PLUGIN` | `BUILD_TESTNET` |
-|-------|:-----------------:|:---------------------:|:---------------:|
-| production | OFF | OFF | OFF |
-| lowmem | ON | OFF | OFF |
-| mongo | OFF | ON | OFF |
-| testnet | OFF | OFF | ON |
+| Image | `LOW_MEMORY_NODE` | `BUILD_TESTNET` |
+|-------|:-----------------:|:---------------:|
+| production | OFF | OFF |
+| testnet | OFF | ON |
 
 ---
 
@@ -161,7 +157,7 @@ The repository ships `.github/workflows/docker-main.yml` which builds and pushes
 | Node type | RAM | Disk |
 |-----------|-----|------|
 | Full node (mainnet) | 8 GB+ | 50 GB+ |
-| Low-memory / validator | 4 GB | 20 GB |
+| Validator node | 4 GB | 20 GB |
 | Testnet | 4 GB | 10 GB |
 
 Start with a shared memory size that fits comfortably in RAM. In `config.ini`:

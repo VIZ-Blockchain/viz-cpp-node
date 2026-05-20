@@ -349,8 +349,8 @@ namespace graphene { namespace protocol {
         struct chain_properties_hf13;
 
         /**
-         * Witnesses must vote on how to set certain chain properties to ensure a smooth
-         * and well functioning network. Any time @owner is in the active set of witnesses these
+         * Validators must vote on how to set certain chain properties to ensure a smooth
+         * and well functioning network. Any time @owner is in the active set of validators these
          * properties will be used to control the blockchain configuration.
          */
         struct chain_properties_init {
@@ -363,7 +363,7 @@ namespace graphene { namespace protocol {
             asset account_creation_fee = asset(CHAIN_MIN_ACCOUNT_CREATION_FEE, TOKEN_SYMBOL);
 
             /**
-             *  This witnesses vote for the maximum_block_size which is used by the network
+             *  This validators vote for the maximum_block_size which is used by the network
              *  to tune rate limiting and capacity
              */
             uint32_t maximum_block_size = CHAIN_MIN_BLOCK_SIZE_LIMIT * 2;
@@ -444,7 +444,7 @@ namespace graphene { namespace protocol {
 
         struct chain_properties_hf4: public chain_properties_init {
             /**
-             *  Consensus - Witness reward percent from block inflation
+             *  Consensus - Validator reward percent from block inflation
              */
             int16_t inflation_validator_percent = CHAIN_CONSENSUS_INFLATION_VALIDATOR_PERCENT;
 
@@ -483,12 +483,12 @@ namespace graphene { namespace protocol {
             uint32_t data_operations_cost_additional_bandwidth = CONSENSUS_DATA_OPERATIONS_COST_ADDITIONAL_BANDWIDTH;
 
             /**
-             *  Consensus - Witness who missed the block will receive a penality of a percentage of the votes
+             *  Consensus - Validator who missed the block will receive a penality of a percentage of the votes
              */
             int16_t validator_miss_penalty_percent = CONSENSUS_VALIDATOR_MISS_PENALTY_PERCENT;
 
             /**
-             *  Consensus - Witness who missed the block will receive a penality with duration (in seconds)
+             *  Consensus - Validator who missed the block will receive a penality with duration (in seconds)
              */
             uint32_t validator_miss_penalty_duration = CONSENSUS_VALIDATOR_MISS_PENALTY_DURATION;
 
@@ -541,7 +541,7 @@ namespace graphene { namespace protocol {
             asset subaccount_on_sale_fee = asset(CONSENSUS_SUBACCOUNT_ON_SALE_FEE, TOKEN_SYMBOL);
 
             /**
-             *  Consensus - Fee to the network committee for declare account as witness
+             *  Consensus - Fee to the network committee for declare account as validator
              */
             asset validator_declaration_fee = asset(CONSENSUS_VALIDATOR_DECLARATION_FEE, TOKEN_SYMBOL);
 
@@ -700,11 +700,11 @@ namespace graphene { namespace protocol {
         >;
 
         /**
-         *  If the owner isn't a witness they will become a witness.
+         *  If the owner isn't a validator they will become a validator.
          *
-         *  If the block_signing_key is null then the witness is removed from
-         *  contention. The network will pick the top 21 witnesses for
-         *  producing blocks.
+         *  If the block_signing_key is null then the validator is removed from
+         *  contention. The network will pick the top 21 validators for
+         *  validate blocks.
          */
         struct validator_update_operation : public base_operation {
             account_name_type owner;
@@ -748,7 +748,7 @@ namespace graphene { namespace protocol {
 
 
         /**
-         * All accounts with a VFS can vote for or against any witness.
+         * All accounts with a VFS can vote for or against any validator.
          *
          * If a proxy is specified then all existing votes are removed.
          */
@@ -911,11 +911,11 @@ namespace graphene { namespace protocol {
          * On account creation the recovery account is set either to the creator of
          * the account (The account that pays the creation fee and is a signer on the transaction)
          * or to the empty string if the account was in snapshot. An account with no recovery
-         * has the top voted witness as a recovery account, at the time the recover
+         * has the top voted validator as a recovery account, at the time the recover
          * request is created. Note: This does mean the effective recovery account
          * of an account with no listed recovery account can change at any time as
-         * witness vote weights. The top voted witness is explicitly the most trusted
-         * witness according to stake.
+         * validator vote weights. The top voted validator is explicitly the most trusted
+         * validator according to stake.
          */
         struct change_recovery_account_operation : public base_operation {
             account_name_type account_to_recover;     ///< The account that would be recovered in case of compromise
