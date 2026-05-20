@@ -170,6 +170,7 @@ function localizedNav(
 export default defineConfig({
   title: 'VIZ Ledger Documentation',
   description: 'Official documentation for VIZ Ledger — hybrid DLT with Fair-DPOS consensus',
+  base: '/viz-cpp-node/',
   cleanUrls: true,
   lastUpdated: true,
   outDir: '../dist',
