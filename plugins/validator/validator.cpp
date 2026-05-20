@@ -1065,7 +1065,7 @@ namespace graphene {
                         const auto& dgp_watch = database().get_dynamic_global_properties();
                         // Production should be active if:
                         // - Not in minority fork recovery
-                        // - Witnesses are configured
+                        // - Validators are configured
                         // - Either emergency master OR network is healthy (participation >= 33%)
                         if (!_minority_fork_recovering && !_validators.empty()) {
                             if (dgp_watch.emergency_consensus_active) {

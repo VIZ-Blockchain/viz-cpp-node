@@ -57,7 +57,7 @@ struct validator_guard_plugin::impl {
     // Configured validators: validator_name -> key pair
     std::map<std::string, validator_info> _validator_configs;
 
-    // Witnesses with an in-flight restore: validator_name -> tx expiration time
+    // validators with an in-flight restore: validator_name -> tx expiration time
     std::map<std::string, fc::time_point_sec> _restore_pending;
 
     // Transaction IDs awaiting block inclusion: tx_id -> (validator_name, expiration)
@@ -449,7 +449,7 @@ void validator_guard_plugin::plugin_startup() {
         ilog("validator_guard: nothing to monitor, plugin inactive");
         return;
     }
-    // Verify on-chain authority for every configured validator 
+    // Verify on-chain authority for every configured validator
     // The chain database is open at this point so we can query account objects.
     for (auto it = pimpl->_validator_configs.begin(); it != pimpl->_validator_configs.end(); ) {
         const std::string& name = it->first;

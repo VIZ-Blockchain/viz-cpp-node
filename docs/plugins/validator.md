@@ -175,7 +175,7 @@ Returns `true` if a locally-controlled validator is scheduled to produce in the 
 ### `is_emergency_master()`
 
 Returns `true` when:
-1. `emergency-private-key` is configured (`CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` in `_witnesses`).
+1. `emergency-private-key` is configured (`CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` in `_validators`).
 2. The "committee" account is in the current validator schedule.
 
 Only nodes where both conditions hold should produce solo during emergency mode; others are followers and must sync first.

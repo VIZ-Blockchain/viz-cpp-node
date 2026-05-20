@@ -255,7 +255,7 @@ namespace graphene { namespace wallet {
             vector<graphene::plugins::operation_history::applied_operation> get_ops_in_block( uint32_t block_num, bool only_virtual = true );
 
             /**
-             * Returns the list of witnesses producing blocks in the current round (21 Blocks)
+             * Returns the list of validators producing blocks in the current round (21 Blocks)
              */
             vector< account_name_type > get_active_validators()const;
 
@@ -605,9 +605,9 @@ namespace graphene { namespace wallet {
              */
             transaction_id_type get_transaction_id( const signed_transaction& trx )const { return trx.id(); }
 
-            /** Lists all witnesses registered in the blockchain.
-             * This returns a list of all account names that own witnesses, and the associated witness id,
-             * sorted by name. This lists witnesses whether they are currently voted in or not.
+            /** Lists all validators registered in the blockchain.
+             * This returns a list of all account names that own validators, and the associated witness id,
+             * sorted by name. This lists validators whether they are currently voted in or not.
              *
              * Use the \c lowerbound and limit parameters to page through the list. To retrieve all witnesss,
              * start by setting \c lowerbound to the empty string \c "", and then each iteration, pass

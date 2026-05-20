@@ -182,24 +182,24 @@ std::set<account_name_type> plugin::validator_plugin_impl::lookup_witness_accoun
     uint32_t limit
 ) const {
     FC_ASSERT(limit <= 1000);
-    const auto &witnesses_by_id = database.get_index<validator_index>().indices().get<by_id>();
+    const auto &validators_by_id = database.get_index<validator_index>().indices().get<by_id>();
 
     // get all the names and look them all up, sort them, then figure out what
     // records to return.  This could be optimized, but we expect the
-    // number of witnesses to be few and the frequency of calls to be rare
-    std::set<account_name_type> witnesses_by_account_name;
-    for (const auto& witness : witnesses_by_id) {
+    // number of validators to be few and the frequency of calls to be rare
+    std::set<account_name_type> validators_by_account_name;
+    for (const auto& witness : validators_by_id) {
         if (witness.owner >= lower_bound_name) { // we can ignore anything below lower_bound_name
-            witnesses_by_account_name.insert(witness.owner);
+            validators_by_account_name.insert(witness.owner);
         }
     }
 
-    auto end_iter = witnesses_by_account_name.begin();
-    while (end_iter != witnesses_by_account_name.end() && limit--) {
+    auto end_iter = validators_by_account_name.begin();
+    while (end_iter != validators_by_account_name.end() && limit--) {
         ++end_iter;
     }
-    witnesses_by_account_name.erase(end_iter, witnesses_by_account_name.end());
-    return witnesses_by_account_name;
+    validators_by_account_name.erase(end_iter, validators_by_account_name.end());
+    return validators_by_account_name;
 }
 
 // Preferred-name aliases — forward to the legacy implementations above

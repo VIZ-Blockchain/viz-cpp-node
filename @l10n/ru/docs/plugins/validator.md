@@ -175,7 +175,7 @@ Watchdog срабатывает каждые 30 секунд и записыва
 ### `is_emergency_master()`
 
 Возвращает `true`, когда:
-1. Настроен `emergency-private-key` (`CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` в `_witnesses`).
+1. Настроен `emergency-private-key` (`CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` в `_validators`).
 2. Аккаунт «committee» находится в текущем расписании валидаторов.
 
 Только узлы, где выполняются оба условия, должны производить блоки в одиночку в экстренном режиме; остальные являются ведомыми и должны сначала синхронизироваться.

@@ -1045,7 +1045,7 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
     }
 
     // P49 fix: Start from our_head (not our_head+1) so the peer's version
-    // of our head block is fetched. If two witnesses signed different blocks
+    // of our head block is fetched. If two validators signed different blocks
     // at the same height, the peer may have the competing version. Without
     // this, the sync range skips the divergence point and blocks from the
     // competing fork accumulate as unlinkable in fork_db forever.
@@ -1054,7 +1054,7 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
     //
     // LIB fallback: When significantly behind a peer (gap > threshold),
     // start from LIB instead of head. If our head diverged from the
-    // network (e.g. our witness produced blocks the network rejected),
+    // network (e.g. our validator produced blocks the network rejected),
     // requesting from head only gets ALREADY_KNOWN for head, then all
     // subsequent blocks go to fork_db as unlinkable. LIB is guaranteed
     // on the majority fork, giving the chain a chance to switch forks.
@@ -2406,7 +2406,7 @@ void dlt_p2p_node::transition_to_forward() {
     // Clear chain's currently_syncing flag so the witness plugin can produce.
     // call_accept_block(sync_mode=true) during SYNC sets currently_syncing=true;
     // it only self-clears when the next accept_block(sync_mode=false) runs.
-    // If our witnesses are the only producers and they're blocked by
+    // If our validators are the only producers and they're blocked by
     // is_syncing()→not_synced, no FORWARD block ever arrives to clear it —
     // indefinite deadlock.  Must clear here on every SYNC→FORWARD transition.
     if (_delegate) _delegate->clear_syncing();
