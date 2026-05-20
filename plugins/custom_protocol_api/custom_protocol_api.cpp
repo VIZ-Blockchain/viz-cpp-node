@@ -117,7 +117,7 @@ namespace graphene { namespace plugins { namespace custom_protocol_api {
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             const auto &idx = db.get_index<account_index>().indices().get<by_name>();
-            const auto &vidx = db.get_index<witness_vote_index>().indices().get<by_account_witness>();
+            const auto &vidx = db.get_index<validator_vote_index>().indices().get<by_account_validator>();
             account_api_object result;
 
             auto itr = idx.find(account);
@@ -126,7 +126,7 @@ namespace graphene { namespace plugins { namespace custom_protocol_api {
 
                 auto vitr = vidx.lower_bound(boost::make_tuple(itr->id, validator_id_type()));
                 while (vitr != vidx.end() && vitr->account == itr->id) {
-                    result.validator_votes.insert(db.get(vitr->witness).owner);
+                    result.validator_votes.insert(db.get(vitr->validator).owner);
                     ++vitr;
                 }
 
