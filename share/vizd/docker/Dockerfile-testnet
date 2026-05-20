@@ -100,7 +100,6 @@ RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_SHARED_LIBRARIES=FALSE \
         -DBUILD_TESTNET=TRUE \
-        -DLOW_MEMORY_NODE=FALSE \
         -DCHAINBASE_CHECK_LOCKING=FALSE \
         .. \
     && \

@@ -16,7 +16,7 @@ REM
 REM  Optional Environment Variables:
 REM    VIZ_VS_VERSION    - Visual Studio generator version (default: "Visual Studio 17 2022")
 REM    VIZ_BUILD_TYPE    - Release or Debug (default: Release)
-REM    VIZ_LOW_MEMORY    - ON or OFF (default: OFF)
+
 REM    VIZ_BUILD_TESTNET - ON or OFF (default: OFF)
 REM    VIZ_CMAKE_EXTRA   - Additional CMake options
 REM ===========================================================================
@@ -26,7 +26,7 @@ setlocal enabledelayedexpansion
 REM --- Defaults ---
 if not defined VIZ_VS_VERSION set VIZ_VS_VERSION=Visual Studio 17 2022
 if not defined VIZ_BUILD_TYPE set VIZ_BUILD_TYPE=Release
-if not defined VIZ_LOW_MEMORY set VIZ_LOW_MEMORY=OFF
+
 if not defined VIZ_BUILD_TESTNET set VIZ_BUILD_TESTNET=OFF
 
 REM --- Validate required environment variables ---
@@ -66,7 +66,7 @@ echo  VIZ Windows Build (MSVC)
 echo ============================================
 echo  Generator:       %VIZ_VS_VERSION%
 echo  Build Type:      %VIZ_BUILD_TYPE%
-echo  Low Memory Node: %VIZ_LOW_MEMORY%
+
 echo  Build Testnet:   %VIZ_BUILD_TESTNET%
 echo  BOOST_ROOT:      %BOOST_ROOT%
 echo  OPENSSL_ROOT:    %OPENSSL_ROOT_DIR%
@@ -85,7 +85,7 @@ cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" ^
     -DCMAKE_BUILD_TYPE=%VIZ_BUILD_TYPE% ^
     -DBOOST_ROOT="%BOOST_ROOT%" ^
     -DOPENSSL_ROOT_DIR="%OPENSSL_ROOT_DIR%" ^
-    -DLOW_MEMORY_NODE=%VIZ_LOW_MEMORY% ^
+
     -DBUILD_TESTNET=%VIZ_BUILD_TESTNET% ^
     -DBUILD_SHARED_LIBRARIES=OFF ^
     %VIZ_CMAKE_EXTRA%
