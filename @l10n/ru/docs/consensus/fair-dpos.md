@@ -89,6 +89,26 @@ irreversibility_threshold = ceil(num_scheduled_validators * 2 / 3)
 
 Продвижение LIB **приостанавливается в режиме экстренного консенсуса** (см. [Экстренный консенсус](./emergency-consensus.md)).
 
+### Быстрое продвижение LIB через пост-валидацию блоков
+
+Классический путь LIB требует, чтобы 14 валидаторов **произвели** блоки поверх целевого — при 3 с на слот это занимает ~63 секунды. Пост-валидация блоков обеспечивает быстрый путь, заменяя неявное подтверждение производством блоков на явные подписные сообщения, сокращая время финальности до **~4 секунд**.
+
+**Поток данных:**
+
+1. После `apply_block(N)` цепочка сохраняет `validator_confirmation_object` для блока N.
+2. Каждый запланированный валидатор с загруженным подписывающим ключом подписывает `chain_id + block_id` и транслирует `block_post_validation_message` (P2P-сообщение типа **6009**).
+3. Принимающие пиры проверяют подпись по ончейн `validator.signing_key`, затем помечают валидатора как подтвердившего этот блок.
+4. `check_block_post_validation_chain()` проходит от LIB+1 вперёд — если ≥14 из 21 запланированных валидаторов подтвердили блок, LIB продвигается к этому блоку, и процесс повторяется.
+
+Классический путь DPOS (~63 с) остаётся активным как **резервный** на случай потери подтверждающих сообщений.
+
+**Ограничения:**
+- Только валидаторы в **текущем перемешанном расписании** учитываются в пороге 2/3.
+- Пост-валидация LIB **отключена во время экстренного консенсуса** во избежание блокировки восстановления.
+- Список подтверждений ограничен 20 записями (`CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT`).
+
+Полные технические детали, включая формат сообщения и разбивку по времени — в разделе [Обработка блоков → Пост-валидация блоков](./block-processing.md#block-post-validation-fast-lib-finality).
+
 ---
 
 ## Голосование по хардфоркам
@@ -159,7 +179,10 @@ irreversibility_threshold = ceil(num_scheduled_validators * 2 / 3)
 |----------|------|
 | Построение расписания валидаторов | `libraries/chain/database.cpp` — `update_witness_schedule()` |
 | Обновление битовой маски участия | `libraries/chain/database.cpp` — `update_global_dynamic_data()` |
-| Продвижение LIB | `libraries/chain/database.cpp` — `update_last_irreversible_block()` |
+| Продвижение LIB (классическое) | `libraries/chain/database.cpp` — `update_last_irreversible_block()` |
+| Продвижение LIB (быстрое) | `libraries/chain/database.cpp` — `check_block_post_validation_chain()`, `apply_block_post_validation()` |
+| Создание пост-валидации | `libraries/chain/database.cpp` — `create_block_post_validation()` |
+| Трансляция пост-валидации | `plugins/validator/validator.cpp` — тик таймера пост-валидации |
 | Голосование по хардфоркам | `libraries/chain/database.cpp` — `process_hardforks()` |
 | Цикл производства | `plugins/validator/validator.cpp` — `maybe_produce_block()` |
 | Активация режима чрезвычайной ситуации | `libraries/chain/database.cpp` — `check_emergency_consensus()` |

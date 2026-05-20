@@ -134,16 +134,16 @@ skip-virtual-ops = true
 
 | Симптом | Действие |
 |---------|---------|
-| `CRITICAL: validator X account object MISSING` | Повреждение — использовать `--replay-blockchain` |
-| `Could not modify object, uniqueness constraint violated` | Повреждение — реплей или ресинхронизация |
+| `CRITICAL: validator X account object MISSING` | Повреждение — использовать `--replay-from-snapshot --snapshot-auto-latest` |
+| `Could not modify object, uniqueness constraint violated` | Повреждение — использовать `--replay-from-snapshot --snapshot-auto-latest` |
 | `Unable to acquire READ lock` | Конкуренция за блокировку — увеличить `read-wait-micro` / включить `single-write-thread` |
-| Узел зацикливается при запуске | Повреждённый файл — `--replay-blockchain` или `--snapshot` |
+| Узел зацикливается при запуске | Повреждённый файл — `--replay-from-snapshot --snapshot-auto-latest` |
 
 Варианты восстановления:
 
-- `--replay-blockchain` — удалить разделяемую память, выполнить реплей из block log.
+- `--replay-from-snapshot --snapshot-auto-latest` — удалить разделяемую память, импортировать последний снимок, выполнить реплей dlt_block_log.
 - `--resync-blockchain` — удалить разделяемую память и block log, синхронизироваться от пиров.
-- `--snapshot <path>` — загрузить из снапшота, выполнить реплей dlt_block_log поверх.
+- `--snapshot <path>` — загрузить из указанного снапшота, выполнить реплей dlt_block_log поверх.
 
 ---
 

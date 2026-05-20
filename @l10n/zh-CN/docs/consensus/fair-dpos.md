@@ -89,6 +89,26 @@ irreversibility_threshold = ceil(num_scheduled_validators * 2 / 3)
 
 **在紧急共识模式期间，LIB 推进被跳过**（参见[紧急共识](./emergency-consensus.md)）。
 
+### 通过区块后验证实现快速 LIB
+
+经典 LIB 路径需要 14 个验证者**生产**目标之后的区块——每个槽位 3 秒，总计约 63 秒。区块后验证通过用显式的带外签名消息替代隐式的区块生产确认，提供快速路径，将终结性缩短至 **~4 秒**。
+
+**流程：**
+
+1. `apply_block(N)` 完成后，链为区块 N 存储 `validator_confirmation_object`。
+2. 每个持有已加载签名密钥的已调度验证者签名 `chain_id + block_id` 并广播 `block_post_validation_message`（P2P 消息类型 **6009**）。
+3. 接收对等节点根据链上 `validator.signing_key` 验证签名，然后将该验证者标记为已确认该区块。
+4. `check_block_post_validation_chain()` 从 LIB+1 向前遍历——如果 21 个已调度验证者中 ≥14 个确认了某个区块，LIB 推进到该区块，过程重复。
+
+经典 DPOS 路径（~63 秒）作为**回退**保持活跃，以防确认消息丢失。
+
+**约束条件：**
+- 只有**当前打乱调度**中的验证者计入 2/3 阈值。
+- 紧急共识期间**禁用**后验证 LIB，以避免恢复过程死锁。
+- 确认列表上限为 20 条（`CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT`）。
+
+完整技术细节（包括消息格式和时序分析），参见[区块处理 → 区块后验证](./block-processing.md#block-post-validation-fast-lib-finality)。
+
 ---
 
 ## 硬分叉投票
@@ -159,7 +179,10 @@ irreversibility_threshold = ceil(num_scheduled_validators * 2 / 3)
 |------|------|
 | 验证者计划构建 | `libraries/chain/database.cpp` — `update_witness_schedule()` |
 | 参与位掩码更新 | `libraries/chain/database.cpp` — `update_global_dynamic_data()` |
-| LIB 推进 | `libraries/chain/database.cpp` — `update_last_irreversible_block()` |
+| LIB 推进（经典） | `libraries/chain/database.cpp` — `update_last_irreversible_block()` |
+| LIB 推进（快速） | `libraries/chain/database.cpp` — `check_block_post_validation_chain()`, `apply_block_post_validation()` |
+| 后验证创建 | `libraries/chain/database.cpp` — `create_block_post_validation()` |
+| 后验证广播 | `plugins/validator/validator.cpp` — 区块后验证定时器触发 |
 | 硬分叉投票 | `libraries/chain/database.cpp` — `process_hardforks()` |
 | 生产循环 | `plugins/validator/validator.cpp` — `maybe_produce_block()` |
 | 紧急模式激活 | `libraries/chain/database.cpp` — `check_emergency_consensus()` |

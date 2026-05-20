@@ -52,10 +52,6 @@ VIZ Ledger uses the **AppBase** plugin framework. Each plugin has a lifecycle (`
 | `auth_util` | Active | `json_rpc`, `chain` | Yes |
 | `block_info` | Active | `json_rpc`, `chain` | Yes |
 | `raw_block` | Active | `json_rpc`, `chain` | Yes |
-| `follow` | Deprecated | `json_rpc`, `chain` | Yes |
-| `tags` | Deprecated | `json_rpc`, `chain`, `follow` | Yes |
-| `social_network` | Deprecated | `json_rpc`, `chain` | Yes |
-| `private_message` | Deprecated | `json_rpc`, `chain` | Yes |
 
 ### Producer
 
@@ -66,8 +62,7 @@ VIZ Ledger uses the **AppBase** plugin framework. Each plugin has a lifecycle (`
 ### Debug / Test
 
 | Plugin | Status | Deps | JSON-RPC |
-|--------|--------|------|---------|
-| `debug_node` | Dev only | `chain` | Yes |
+|--------|--------|------|----------|
 | `test_api` | Test only | `json_rpc` | — |
 
 ---
@@ -94,9 +89,8 @@ Manages the chainbase database, applies blocks and transactions, and emits signa
 
 | Flag | Description |
 |------|-------------|
-| `--replay-blockchain` | Wipe chainbase and replay from block log |
-| `--force-replay-blockchain` | Same as above, ignores corruption check |
 | `--replay-from-snapshot` | Import snapshot then replay DLT block log (crash recovery) |
+| `--snapshot-auto-latest` | Auto-discover latest snapshot in `snapshot-dir` |
 | `--auto-recover-from-snapshot` | Enable automatic recovery from shared memory corruption |
 | `--resync-blockchain` | Wipe chainbase and block log; start from genesis or snapshot |
 
@@ -134,7 +128,7 @@ HTTP and WebSocket server that forwards requests to `json_rpc`. Includes a read-
 | `webserver-cache-enabled` | `true` | Enable response caching |
 | `webserver-cache-size` | `10000` | Maximum cached entries |
 
-Cache keys are derived from `method + params` (not `id`), preventing bypass by rotating the request `id`. Mutating methods (`network_broadcast_api.*`, `debug_node.*`) are never cached. The cache clears on each new applied block.
+Cache keys are derived from `method + params` (not `id`), preventing bypass by rotating the request `id`. Mutating methods (`network_broadcast_api.*`) are never cached. The cache clears on each new applied block.
 
 See [Webserver](./webserver.md) for full details.
 
@@ -281,17 +275,6 @@ Query subscription offerings and subscriber status.
 | `get_paid_subscription_status(subscriber, account)` | Status of a specific subscription |
 | `get_active_paid_subscriptions(subscriber)` | Active subscriptions for a subscriber |
 | `get_inactive_paid_subscriptions(subscriber)` | Expired subscriptions |
-
----
-
-### Deprecated API Plugins
-
-| Plugin | Methods | Notes |
-|--------|---------|-------|
-| `follow` | Followers/following, feeds, blog, reblogs | Still functional; not recommended for new integrations |
-| `tags` | Trending/hot/new content by tag | Still functional; not recommended for new integrations |
-| `social_network` | Content, votes, replies | Wraps committee/invite queries; still functional |
-| `private_message` | Inbox/outbox for encrypted messages | `custom_operation`-based; still functional |
 
 ---
 

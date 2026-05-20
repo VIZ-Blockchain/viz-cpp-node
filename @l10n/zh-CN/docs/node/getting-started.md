@@ -133,7 +133,7 @@ shared-file-size = 4G
 
 # 插件（全节点）
 plugin = chain p2p webserver json_rpc database_api network_broadcast_api
-plugin = social_network tags follow account_history
+plugin = account_history
 ```
 
 验证者节点配置参见[验证者节点](./validator-node.md)。

@@ -206,7 +206,7 @@ When the log exceeds this size, old blocks are pruned from the front. The implem
 
 ## Crash Recovery: `--replay-from-snapshot`
 
-Use this when `shared_memory.bin` is corrupted (unclean shutdown, disk full, hardware fault). Normal `--replay-blockchain` is not available in DLT mode because `block_log` is empty.
+Use this when `shared_memory.bin` is corrupted (unclean shutdown, disk full, hardware fault). In DLT mode the main `block_log` is empty, so snapshot-based recovery is the only option.
 
 ```bash
 # Specify snapshot path explicitly

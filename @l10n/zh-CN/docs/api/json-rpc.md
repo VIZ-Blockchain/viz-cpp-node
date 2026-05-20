@@ -63,11 +63,6 @@
 | `auth_util` | 活跃 | 权限验证 |
 | `block_info` | 活跃 | 扩展区块信息 |
 | `raw_block` | 活跃 | 原始区块导出 |
-| `follow` | 已弃用 | 关注/动态索引 |
-| `tags` | 已弃用 | 按标签发现内容 |
-| `social_network` | 已弃用 | 高级内容查询 |
-| `private_message` | 已弃用 | 加密消息索引 |
-| `debug_node` | 仅开发 | 测试/调试操作 |
 
 ---
 

@@ -134,16 +134,16 @@ VIZ 主网全节点的大致使用量：
 
 | 症状 | 操作 |
 |------|------|
-| `CRITICAL: validator X account object MISSING` | 损坏 — 使用 `--replay-blockchain` |
-| `Could not modify object, uniqueness constraint violated` | 损坏 — 重放或重新同步 |
+| `CRITICAL: validator X account object MISSING` | 损坏 — 使用 `--replay-from-snapshot --snapshot-auto-latest` |
+| `Could not modify object, uniqueness constraint violated` | 损坏 — 使用 `--replay-from-snapshot --snapshot-auto-latest` |
 | `Unable to acquire READ lock` | 锁竞争 — 增大 `read-wait-micro` / 启用 `single-write-thread` |
-| 节点启动时循环崩溃 | 文件损坏 — `--replay-blockchain` 或 `--snapshot` |
+| 节点启动时循环崩溃 | 文件损坏 — `--replay-from-snapshot --snapshot-auto-latest` |
 
 恢复选项：
 
-- `--replay-blockchain` — 删除共享内存，从区块日志重放。
+- `--replay-from-snapshot --snapshot-auto-latest` — 删除共享内存，导入最新快照，重放 dlt_block_log。
 - `--resync-blockchain` — 删除共享内存和区块日志，从对等节点同步。
-- `--snapshot <path>` — 从快照加载，在其之上重放 dlt_block_log。
+- `--snapshot <path>` — 从指定快照加载，在其之上重放 dlt_block_log。
 
 ---
 

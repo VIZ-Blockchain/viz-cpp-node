@@ -55,8 +55,7 @@ You should see peer connections and block sync progress within a few minutes.
 ### Environment variables (Docker)
 
 | Variable | Purpose | Example |
-|----------|---------|---------|
-| `VIZD_SEED_NODES` | Override default seed nodes | `node1.viz.world:2001` |
+|----------|---------|----------|
 | `VIZD_WITNESS` | Validator name (if validator node) | `alice` |
 | `VIZD_PRIVATE_KEY` | Validator signing key (WIF) | `5J...` |
 
@@ -133,7 +132,7 @@ shared-file-size = 4G
 
 # Plugins (full node)
 plugin = chain p2p webserver json_rpc database_api network_broadcast_api
-plugin = social_network tags follow account_history
+plugin = account_history
 ```
 
 For a validator node, see [Validator Node](./validator-node.md).

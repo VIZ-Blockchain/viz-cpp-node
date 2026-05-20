@@ -301,7 +301,7 @@ vizd --replay-from-snapshot --snapshot-auto-latest --plugin snapshot
 **节点崩溃 / 共享内存损坏：**
 1. 如果 `--auto-recover-from-snapshot` 已启用（默认）且快照存在，节点自动恢复——检查日志。
 2. 手动恢复：`vizd --replay-from-snapshot --snapshot-auto-latest --plugin snapshot`。
-3. 如果没有快照：`vizd --replay-blockchain`（需要完整 block log；DLT 模式下不可用）。
+3. 如果没有快照：从受信任节点或其他节点获取最新快照，然后使用 `--snapshot <path>`。
 
 **RPC 不可达：**
 1. 检查 `webserver-http-endpoint` 绑定——验证者默认使用 `127.0.0.1:8090`。

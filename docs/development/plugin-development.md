@@ -223,15 +223,9 @@ AppBase resolves the initialization order automatically.
 
 ## Testing Plugins
 
-Use the `debug_node` plugin to simulate chain conditions:
-
-```json
-{"method":"debug_node.debug_generate_blocks","params":["5K...",10,0,0,{}]}
-```
-
 Write unit tests using Boost.Test and the existing test harness. Add tests to the appropriate category suite (`operation_tests`, `block_tests`, etc.).
 
-For integration tests, load your plugin alongside the chain and replay a known block sequence with `debug_push_blocks`.
+For integration tests, load your plugin alongside the chain and replay a known block sequence with `--replay-from-snapshot --snapshot-auto-latest`.
 
 ---
 

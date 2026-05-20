@@ -39,7 +39,7 @@ docker logs -f vizd
 | 容器路径 | 用途 |
 |---------|------|
 | `/var/lib/vizd` | 区块链数据、共享内存、block log |
-| `/etc/vizd` | 配置文件和种子节点列表 |
+| `/etc/vizd` | 配置文件 |
 
 始终挂载 `/var/lib/vizd` 以在容器重启后保留状态。
 
@@ -60,7 +60,6 @@ docker run -d \
 
 | 变量 | 描述 | 示例 |
 |------|------|------|
-| `VIZD_SEED_NODES` | 空格分隔的种子节点列表（覆盖 `/etc/vizd/seednodes`） | `seed1.viz.world:2001 seed2.viz.world:2001 seed3.viz.world:2001` |
 | `VIZD_RPC_ENDPOINT` | 覆盖 HTTP RPC 端点 | `0.0.0.0:8090` |
 | `VIZD_P2P_ENDPOINT` | 覆盖 P2P 端点 | `0.0.0.0:2001` |
 | `VIZD_WITNESS` | 验证者账户名（启用区块生产） | `alice` |
