@@ -228,7 +228,7 @@ namespace graphene {
                         ("enable-stale-production", bpo::value<bool>()->implicit_value(true) , "Enable block production, even if the chain is stale.")
                         ("required-participation", bpo::value<uint32_t>()->default_value(33 * CHAIN_1_PERCENT), "Percent of validators (0-99) that must be participating in order to produce blocks")
                         ("validator,v", bpo::value<vector<string>>()->composing()->multitoken(), ("name of validator controlled by this node (e.g. " + validator_id_example + " )").c_str())
-                        ("validator,w", bpo::value<vector<string>>()->composing()->multitoken(), "[DEPRECATED] Use --validator. Name of validator controlled by this node.")
+                        ("witness,w", bpo::value<vector<string>>()->composing()->multitoken(), "[DEPRECATED] Use --validator. Name of validator controlled by this node (legacy 'witness' option, kept for config.ini backward compatibility).")
                         ("private-key", bpo::value<vector<string>>()->composing()->multitoken(), "WIF PRIVATE KEY to be used by one or more validators")
                         ("emergency-private-key", bpo::value<vector<string>>()->composing()->multitoken(),
                          "WIF PRIVATE KEY for emergency consensus block production. "
@@ -273,10 +273,10 @@ namespace graphene {
                     pimpl->total_hashes_.store(0, std::memory_order_relaxed);
                     pimpl->_options = &options;
                     LOAD_VALUE_SET(options, "validator", pimpl->_validators, string)
-                    if (options.count("validator")) {
-                        // Deprecated: --validator is kept for config.ini backward compatibility.
-                        wlog("Config option 'validator' is deprecated, use 'validator' instead.");
-                        LOAD_VALUE_SET(options, "validator", pimpl->_validators, string)
+                    if (options.count("witness")) {
+                        // Deprecated: --witness / config 'witness' is kept for backward compatibility.
+                        wlog("Config option 'witness' is deprecated, use 'validator' instead.");
+                        LOAD_VALUE_SET(options, "witness", pimpl->_validators, string)
                     }
                     edump((pimpl->_validators));
 
