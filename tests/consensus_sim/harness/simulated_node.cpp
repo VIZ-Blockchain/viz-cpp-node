@@ -114,4 +114,33 @@ std::vector<chain_block_info> simulated_node::recent_blocks(uint32_t count) cons
     return out;
 }
 
+std::vector<graphene::protocol::signed_block> simulated_node::canonical_blocks_from(
+    uint32_t from_height) const {
+    std::vector<graphene::protocol::signed_block> out;
+    const uint32_t head = db_->head_block_num();
+    if (from_height == 0 || from_height > head) return out;
+    out.reserve(head - from_height + 1);
+    for (uint32_t n = from_height; n <= head; ++n) {
+        auto b = db_->fetch_block_by_number(n);
+        if (!b) break;
+        out.push_back(std::move(*b));
+    }
+    return out;
+}
+
+void simulated_node::push_pending_transaction(
+    const graphene::protocol::signed_transaction& tx) {
+    try {
+        db_->push_transaction(tx, graphene::chain::database::skip_nothing);
+    } catch (const fc::exception& e) {
+        throw std::runtime_error(
+            "simulated_node::push_pending_transaction failed: " +
+            e.to_detail_string());
+    }
+}
+
+graphene::protocol::chain_id_type simulated_node::chain_id() const {
+    return db_->get_chain_id();
+}
+
 } // namespace consensus_sim

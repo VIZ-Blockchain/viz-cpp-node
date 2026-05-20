@@ -18,6 +18,14 @@ namespace consensus_sim {
 static const char* kGenesisWitnessPrivateKeyWif =
     "5Hw9YPABaFxa2LooiANLrhUK5TPryy8f7v9Y1rk923PuYqbYdfC";
 
+// Matches CHAIN_INITIATOR_PUBLIC_KEY_STR. The "viz" account holds the entire
+// initial supply at genesis and is the only account with a signable authority
+// (committee/anonymous/invite are special; see database.cpp init_genesis path).
+// The private key is documented as a comment in config.hpp:35 but is not
+// exposed as a macro, so the harness has to hard-code the WIF here.
+static const char* kInitiatorPrivateKeyWif =
+    "5JabcrvaLnBTCkCVFX5r4rmeGGfuJuVp4NAKRNLTey6pxhRQmf4";
+
 static fc::ecc::private_key derive_key(uint64_t seed, uint32_t idx) {
     // Deterministic key derivation: sha256(seed || idx) -> private key.
     char buf[16];
@@ -28,9 +36,10 @@ static fc::ecc::private_key derive_key(uint64_t seed, uint32_t idx) {
     return fc::ecc::private_key::regenerate(digest);
 }
 
-static fc::ecc::private_key load_genesis_witness_key() {
-    auto k = graphene::utilities::wif_to_key(kGenesisWitnessPrivateKeyWif);
-    FC_ASSERT(k.valid(), "consensus_sim: failed to parse genesis witness WIF");
+static fc::ecc::private_key load_wif_(const char* wif, const char* role) {
+    auto k = graphene::utilities::wif_to_key(wif);
+    FC_ASSERT(k.valid(), "consensus_sim: failed to parse ${role} WIF",
+              ("role", std::string(role)));
     return *k;
 }
 
@@ -47,7 +56,9 @@ genesis_params make_genesis_params(uint64_t seed, uint32_t num_witnesses) {
             derive_key(seed, i));
     }
     p.genesis_witness_name = graphene::protocol::account_name_type(CHAIN_COMMITTEE_ACCOUNT);
-    p.genesis_witness_key = load_genesis_witness_key();
+    p.genesis_witness_key = load_wif_(kGenesisWitnessPrivateKeyWif, "genesis witness");
+    p.initiator_name = graphene::protocol::account_name_type(CHAIN_INITIATOR_NAME);
+    p.initiator_key = load_wif_(kInitiatorPrivateKeyWif, "initiator");
     return p;
 }
 

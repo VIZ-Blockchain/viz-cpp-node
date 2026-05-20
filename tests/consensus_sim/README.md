@@ -60,19 +60,24 @@ code.
 
 ## Current state
 
-- 17 test cases across 8 suites; all pass.
 - Milestone 2: deterministic harness, single-witness genesis, 7-node smoke,
   determinism replay, failure log.
-- Milestone 3 (this commit set): `fault_injector` facade, single-seed +
-  100-seed equivocation scenarios, coverage tooling.
+- Milestone 3: `fault_injector` facade with real equivocation. A shadow
+  `simulated_node` is caught up to canonical state at height N-1, a no-op
+  `account_metadata_operation` tx is injected into the shadow's pool to
+  force a different transaction_merkle_root, and the shadow produces
+  block_b at the same `(witness, slot, when)` as prod's block_a. Bus is
+  partitioned {prod} vs {everyone else} for that slot, so block_a stays
+  with prod and block_b reaches the rest. `chains_consistent` fires at
+  the equivocation slot.
 
 ## Known limitations
 
-- `fault_injector::instruct_equivocation` ships block_a only; producing a
-  second validly-signed block for the same (witness, slot) requires either
-  extending `simulated_node` to return full `signed_block` bodies (to
-  catch up a shadow node) or constructing a no-op transaction inside
-  `fault_injector` and re-signing. Either path is a focused follow-up; the
-  invariant plumbing and sweep scaffolding are in place.
 - Slot producer signs every block with the genesis witness; multi-witness
-  key rotation will land alongside the shadow-block work.
+  key rotation is a follow-up. With `CHAIN_NUM_INITIATORS=0` genesis,
+  `CHAIN_COMMITTEE_ACCOUNT` owns every slot, so the equivocation scenario
+  is unaffected — but heterogeneous-witness scenarios cannot be expressed
+  until rotation lands.
+- No heal-and-reorg scenario yet: `instruct_equivocation` partitions the
+  bus and never heals, so the divergence is detected but not resolved by
+  the harness. Reorg behavior under heal is the next fault to script.

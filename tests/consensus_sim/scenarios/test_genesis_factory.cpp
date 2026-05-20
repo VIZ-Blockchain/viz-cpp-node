@@ -1,6 +1,8 @@
 #include <boost/test/unit_test.hpp>
 #include "genesis_factory.hpp"
 
+#include <graphene/protocol/config.hpp>
+
 #include <set>
 #include <string>
 
@@ -30,6 +32,19 @@ BOOST_AUTO_TEST_CASE(witness_names_are_distinct) {
     std::set<std::string> names;
     for (auto& [name, _] : p.witness_keys) names.insert(std::string(name));
     BOOST_CHECK_EQUAL(names.size(), 7u);
+}
+
+BOOST_AUTO_TEST_CASE(initiator_key_matches_genesis_constant) {
+    // The initiator account is funded with the full initial supply at genesis
+    // and is the only signable account on a CHAIN_NUM_INITIATORS=0 chain.
+    // Anyone touching make_genesis_params should know that changing the WIF
+    // here invalidates the tx_factory's signing assumption.
+    auto p = make_genesis_params(0, 1);
+    BOOST_CHECK_EQUAL(std::string(p.initiator_name),
+                      std::string(CHAIN_INITIATOR_NAME));
+    graphene::protocol::public_key_type derived(p.initiator_key.get_public_key());
+    BOOST_CHECK_EQUAL(static_cast<std::string>(derived),
+                      std::string(CHAIN_INITIATOR_PUBLIC_KEY_STR));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

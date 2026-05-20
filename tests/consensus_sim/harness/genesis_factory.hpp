@@ -27,6 +27,15 @@ struct genesis_params {
     graphene::protocol::account_name_type genesis_witness_name;
     /// Private key matching CHAIN_COMMITTEE_PUBLIC_KEY_STR.
     fc::ecc::private_key genesis_witness_key;
+
+    /// The account VIZ's init_genesis funds with the entire initial supply
+    /// (CHAIN_INITIATOR_NAME = "viz"). Unlike the committee account, "viz" has
+    /// the initiator public key wired into all three authorities, so it can
+    /// sign transactions. The harness uses this account to craft no-op
+    /// transactions that force shadow/canonical divergence at equivocation
+    /// scenarios — see harness/tx_factory.hpp.
+    graphene::protocol::account_name_type initiator_name;
+    fc::ecc::private_key initiator_key;
 };
 
 /// Deterministically build genesis parameters from a seed.

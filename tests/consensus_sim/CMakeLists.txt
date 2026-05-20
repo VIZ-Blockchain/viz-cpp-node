@@ -9,6 +9,7 @@ set(HARNESS_SOURCES
     harness/scenario_driver.cpp
     harness/invariants.cpp
     harness/failure_log.cpp
+    harness/tx_factory.cpp
 )
 
 add_library(consensus_sim_harness STATIC ${HARNESS_SOURCES})

@@ -5,6 +5,8 @@
 
 #include <graphene/chain/database.hpp>
 #include <graphene/protocol/block.hpp>
+#include <graphene/protocol/transaction.hpp>
+#include <graphene/protocol/types.hpp>
 
 #include <fc/filesystem.hpp>
 
@@ -62,6 +64,22 @@ public:
     /// entries (newest first). Exposes witness + timestamp so equivocation
     /// invariants can detect repeated (witness, slot) pairs.
     std::vector<chain_block_info> recent_blocks(uint32_t count) const;
+
+    /// Returns full signed_block bodies on the canonical chain at heights
+    /// [from_height, head_block_num()] in ascending order. Empty if
+    /// from_height > head. Used by the equivocation fault to catch a
+    /// shadow node up to canonical state before forking it.
+    std::vector<graphene::protocol::signed_block> canonical_blocks_from(
+        uint32_t from_height) const;
+
+    /// Push a transaction into the pending pool. Wraps database::push_transaction
+    /// and maps fc::exception into std::runtime_error so the caller doesn't
+    /// have to know about the chain's exception hierarchy. Used by the fault
+    /// injector to force shadow/canonical divergence before producing
+    /// equivocating blocks.
+    void push_pending_transaction(const graphene::protocol::signed_transaction& tx);
+
+    graphene::protocol::chain_id_type chain_id() const;
 
     const std::string& label() const noexcept { return label_; }
 
