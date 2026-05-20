@@ -76,3 +76,25 @@ set_target_properties(consensus_sim_tests PROPERTIES
 add_test(NAME consensus_sim COMMAND consensus_sim_tests)
 
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/failures)
+
+if(WITH_COVERAGE)
+    find_program(GCOVR_PATH gcovr)
+    if(GCOVR_PATH)
+        add_custom_target(consensus_sim_coverage
+            COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_BINARY_DIR}/coverage
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/coverage
+            COMMAND ${GCOVR_PATH}
+                --root ${CMAKE_SOURCE_DIR}
+                --filter ${CMAKE_SOURCE_DIR}/libraries/chain
+                --filter ${CMAKE_SOURCE_DIR}/libraries/protocol
+                --filter ${CMAKE_SOURCE_DIR}/tests/consensus_sim
+                --html-details
+                --output ${CMAKE_BINARY_DIR}/coverage/index.html
+                ${CMAKE_BINARY_DIR}
+            DEPENDS consensus_sim_tests
+            COMMENT "Generating consensus_sim coverage report"
+        )
+    else()
+        message(WARNING "gcovr not found; coverage report target unavailable")
+    endif()
+endif()
