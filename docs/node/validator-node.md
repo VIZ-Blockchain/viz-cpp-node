@@ -88,10 +88,8 @@ docker run -d \
   -v /data/vizd:/var/lib/vizd \
   -e VIZD_WITNESS=myvalidator \
   -e VIZD_PRIVATE_KEY=5Jxxx... \
-  vizblockchain/vizd:lowmem
+  vizblockchain/vizd:latest
 ```
-
-Use the `lowmem` image for validators — it excludes unnecessary indexing plugins.
 
 ---
 

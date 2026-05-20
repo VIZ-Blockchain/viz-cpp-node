@@ -88,10 +88,8 @@ docker run -d \
   -v /data/vizd:/var/lib/vizd \
   -e VIZD_WITNESS=myvalidator \
   -e VIZD_PRIVATE_KEY=5Jxxx... \
-  vizblockchain/vizd:lowmem
+  vizblockchain/vizd:latest
 ```
-
-验证者请使用 `lowmem` 镜像——它不含不必要的索引插件。
 
 ---
 

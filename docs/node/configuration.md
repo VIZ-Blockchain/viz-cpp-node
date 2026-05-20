@@ -7,8 +7,6 @@ VIZ Ledger nodes are configured via an INI file. The repository ships several te
 | `config.ini` | Full mainnet node with public RPC |
 | `config_witness.ini` | Validator node (localhost RPC, block production) |
 | `config_testnet.ini` | Testnet / development |
-| `config_mongo.ini` | Node with MongoDB history backend |
-| `config_lowmem.ini` | Low-memory consensus/seed node |
 | `config_stock_exchange.ini` | Market data consumer (minimal plugins) |
 | `config_debug.ini` | Debug mode |
 
@@ -194,17 +192,6 @@ logger.default.appenders = stderr
 
 logger.p2p.level = warn
 logger.p2p.appenders = p2p
-```
-
----
-
-## MongoDB (Optional)
-
-Only relevant when the node is built with `ENABLE_MONGO_PLUGIN=ON`:
-
-```ini
-plugin = mongo_db
-mongodb-uri = mongodb://localhost:27017/vizd
 ```
 
 ---

@@ -126,7 +126,6 @@ build-msvc.bat
 | `BUILD_TESTNET` | `OFF` | 启用测试网专用代码 |
 | `LOW_MEMORY_NODE` | `OFF` | 排除历史/索引插件 |
 | `CHAINBASE_CHECK_LOCKING` | `OFF` | 启用锁断言检查（debug） |
-| `ENABLE_MONGO_PLUGIN` | `OFF` | 构建 MongoDB 插件 |
 | `BUILD_SHARED_LIBRARIES` | `OFF` | 构建共享库 |
 | `USE_PCH` | `OFF` | 启用预编译头文件（加快重新构建） |
 
@@ -165,8 +164,6 @@ python3 programs/build_helpers/configure_build.py --release
 | 文件 | 用途 |
 |------|------|
 | `Dockerfile-production` | 完整主网节点（Release） |
-| `Dockerfile-lowmem` | 低内存节点（`LOW_MEMORY_NODE=ON`） |
-| `Dockerfile-mongo` | 含 MongoDB 插件的节点 |
 | `Dockerfile-testnet` | 测试网节点（`BUILD_TESTNET=ON`） |
 
 构建示例：

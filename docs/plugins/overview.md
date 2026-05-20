@@ -13,7 +13,6 @@ VIZ Ledger uses the **AppBase** plugin framework. Each plugin has a lifecycle (`
 | **API** | Expose JSON-RPC endpoints for clients |
 | **Index** | Index chain data into chainbase for fast queries |
 | **Producer** | Block signing and production |
-| **External** | Integration with external systems (MongoDB) |
 | **Debug/Test** | Development only; not for production |
 
 ---
@@ -63,12 +62,6 @@ VIZ Ledger uses the **AppBase** plugin framework. Each plugin has a lifecycle (`
 | Plugin | Status | Deps | JSON-RPC |
 |--------|--------|------|---------|
 | `validator` | Active | `chain`, `p2p` | — |
-
-### External
-
-| Plugin | Status | Deps | JSON-RPC |
-|--------|--------|------|---------|
-| `mongo_db` | Active | `chain` | — |
 
 ### Debug / Test
 

@@ -126,7 +126,6 @@ For direct CMake usage (advanced):
 | `BUILD_TESTNET` | `OFF` | Enable testnet-specific code |
 | `LOW_MEMORY_NODE` | `OFF` | Exclude history/indexing plugins |
 | `CHAINBASE_CHECK_LOCKING` | `OFF` | Enable lock assertion checks (debug) |
-| `ENABLE_MONGO_PLUGIN` | `OFF` | Build MongoDB plugin |
 | `BUILD_SHARED_LIBRARIES` | `OFF` | Build shared libraries |
 | `USE_PCH` | `OFF` | Enable precompiled headers (faster rebuilds) |
 
@@ -165,8 +164,6 @@ The repository ships four Dockerfiles:
 | File | Purpose |
 |------|---------|
 | `Dockerfile-production` | Full mainnet node (Release) |
-| `Dockerfile-lowmem` | Low-memory node (`LOW_MEMORY_NODE=ON`) |
-| `Dockerfile-mongo` | Node with MongoDB plugin |
 | `Dockerfile-testnet` | Testnet node (`BUILD_TESTNET=ON`) |
 
 Build example:

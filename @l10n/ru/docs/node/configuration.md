@@ -7,8 +7,6 @@
 | `config.ini` | Полный узел основной сети с публичным RPC |
 | `config_witness.ini` | Узел-валидатор (RPC на localhost, производство блоков) |
 | `config_testnet.ini` | Тестовая сеть / разработка |
-| `config_mongo.ini` | Узел с бэкендом истории MongoDB |
-| `config_lowmem.ini` | Маломощный консенсусный/сид-узел |
 | `config_stock_exchange.ini` | Потребитель рыночных данных (минимум плагинов) |
 | `config_debug.ini` | Режим отладки |
 
@@ -194,17 +192,6 @@ logger.default.appenders = stderr
 
 logger.p2p.level = warn
 logger.p2p.appenders = p2p
-```
-
----
-
-## MongoDB (опционально)
-
-Применимо только при сборке с `ENABLE_MONGO_PLUGIN=ON`:
-
-```ini
-plugin = mongo_db
-mongodb-uri = mongodb://localhost:27017/vizd
 ```
 
 ---

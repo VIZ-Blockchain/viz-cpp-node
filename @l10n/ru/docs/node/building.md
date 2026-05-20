@@ -126,7 +126,6 @@ build-msvc.bat
 | `BUILD_TESTNET` | `OFF` | Включить код для тестнета |
 | `LOW_MEMORY_NODE` | `OFF` | Исключить плагины истории/индексирования |
 | `CHAINBASE_CHECK_LOCKING` | `OFF` | Включить проверки блокировок (debug) |
-| `ENABLE_MONGO_PLUGIN` | `OFF` | Собрать плагин MongoDB |
 | `BUILD_SHARED_LIBRARIES` | `OFF` | Собрать разделяемые библиотеки |
 | `USE_PCH` | `OFF` | Включить предкомпилированные заголовки (ускоряет пересборку) |
 
@@ -165,8 +164,6 @@ python3 programs/build_helpers/configure_build.py --release
 | Файл | Назначение |
 |------|-----------|
 | `Dockerfile-production` | Полный узел мейннета (Release) |
-| `Dockerfile-lowmem` | Низкопамятный узел (`LOW_MEMORY_NODE=ON`) |
-| `Dockerfile-mongo` | Узел с плагином MongoDB |
 | `Dockerfile-testnet` | Узел тестнета (`BUILD_TESTNET=ON`) |
 
 Пример сборки:

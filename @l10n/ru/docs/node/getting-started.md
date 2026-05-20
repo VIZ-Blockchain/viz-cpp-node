@@ -172,7 +172,6 @@ curl -s -X POST http://localhost:8090 \
 | Валидатор | `config_witness.ini` | Производство блоков, RPC только на localhost |
 | Тестовая сеть | `config_testnet.ini` | Разработка и тестирование |
 | Малая память | `config.ini` + флаг сборки `LOW_MEMORY_NODE` | Только консенсус, без индексов истории |
-| MongoDB | `config_mongo.ini` | Полная история в MongoDB |
 
 ---
 

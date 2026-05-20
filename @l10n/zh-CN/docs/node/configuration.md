@@ -7,8 +7,6 @@ VIZ Ledger 节点通过 INI 文件进行配置。仓库在 `share/vizd/config/` 
 | `config.ini` | 带公共 RPC 的完整主网节点 |
 | `config_witness.ini` | 验证者节点（本地 RPC，区块生产） |
 | `config_testnet.ini` | 测试网/开发环境 |
-| `config_mongo.ini` | 带 MongoDB 历史后端的节点 |
-| `config_lowmem.ini` | 低内存共识/种子节点 |
 | `config_stock_exchange.ini` | 市场数据消费者（最少插件） |
 | `config_debug.ini` | 调试模式 |
 
@@ -194,17 +192,6 @@ logger.default.appenders = stderr
 
 logger.p2p.level = warn
 logger.p2p.appenders = p2p
-```
-
----
-
-## MongoDB（可选）
-
-仅当节点使用 `ENABLE_MONGO_PLUGIN=ON` 构建时有效：
-
-```ini
-plugin = mongo_db
-mongodb-uri = mongodb://localhost:27017/vizd
 ```
 
 ---
