@@ -75,10 +75,10 @@ SHARES 是通用治理代币。每个有意义的操作都按 `effective_vesting
 投票权重在账户投票的所有验证者之间**均等分配**：
 
 ```
-fair_weight = effective_vesting_shares / witnesses_voted_for
+fair_weight = effective_vesting_shares / validators_voted_for
 ```
 
-这防止了集中——为 10 个验证者投票，每人获得你权重的 1/10。账户也可以设置代理（`account_witness_proxy_operation`），将所有验证者投票委托给另一个账户。
+这防止了集中——为 10 个验证者投票，每人获得你权重的 1/10。账户也可以设置代理（`account_validator_proxy_operation`），将所有验证者投票委托给另一个账户。
 
 ### 2. 委员会 DAO 投票
 
@@ -159,7 +159,7 @@ rshares = effective_vesting_shares × energy / 10000
 | `CHAIN_MAX_WITHDRAW_ROUTES` | 10 | 每账户最大提取路由数 |
 | `CHAIN_ENERGY_REGENERATION_SECONDS` | 432000（5天） | 完全能量恢复时间 |
 | `CHAIN_100_PERCENT` | 10000 | 基点分母 |
-| `CHAIN_MAX_ACCOUNT_WITNESS_VOTES` | 100 | 每账户最大验证者投票数 |
+| `CHAIN_MAX_ACCOUNT_VALIDATOR_VOTES` | 100 | 每账户最大验证者投票数 |
 
 ---
 

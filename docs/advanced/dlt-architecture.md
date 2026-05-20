@@ -124,7 +124,7 @@ This multi-tier check prevents false "different fork" disconnections in DLT mode
 
 The fork resolution subsystem tracks competing chain tips:
 
-- **Threshold:** 42 blocks of divergence triggers `resolve_fork()` (= `CHAIN_MAX_WITNESSES × 2`, one full schedule rotation).
+- **Threshold:** 42 blocks of divergence triggers `resolve_fork()` (= `CHAIN_MAX_VALIDATORS × 2`, one full schedule rotation).
 - **Selection:** Heaviest branch by vote weight.
 - **Hysteresis:** 6 consecutive blocks as winner before switching (`CONFIRMATION_BLOCKS`).
 - **Status:** `_fork_status` exposed via `is_on_majority_fork()` for the validator plugin to check before producing blocks.

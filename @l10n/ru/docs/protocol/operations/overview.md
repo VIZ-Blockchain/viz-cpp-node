@@ -16,9 +16,9 @@
 | 3 | `transfer_to_vesting_operation` | active | [Переводы](./transfers.md) |
 | 4 | `withdraw_vesting_operation` | active | [Переводы](./transfers.md) |
 | 5 | `account_update_operation` | master / active | [Аккаунты](./accounts.md) |
-| 6 | `witness_update_operation` | active | [Валидаторы](./validators.md) |
-| 7 | `account_witness_vote_operation` | active | [Валидаторы](./validators.md) |
-| 8 | `account_witness_proxy_operation` | active | [Валидаторы](./validators.md) |
+| 6 | `validator_update_operation` | active | [Валидаторы](./validators.md) |
+| 7 | `account_validator_vote_operation` | active | [Валидаторы](./validators.md) |
+| 8 | `account_validator_proxy_operation` | active | [Валидаторы](./validators.md) |
 | 9 | `delete_content_operation` *(устарела)* | regular | [Контент](./content.md) |
 | 10 | `custom_operation` | active / regular | [Контент](./content.md) |
 | 11 | `set_withdraw_vesting_route_operation` | active | [Переводы](./transfers.md) |
@@ -65,7 +65,7 @@
 | 27 | `curation_reward_operation` | Выплата за контент | [Виртуальные операции](../virtual-operations.md) |
 | 28 | `content_reward_operation` | Выплата за контент | [Виртуальные операции](../virtual-operations.md) |
 | 29 | `fill_vesting_withdraw_operation` | Срабатывание интервала вывода | [Виртуальные операции](../virtual-operations.md) |
-| 30 | `shutdown_witness_operation` | Деактивация валидатора | [Виртуальные операции](../virtual-operations.md) |
+| 30 | `shutdown_validator_operation` | Деактивация валидатора | [Виртуальные операции](../virtual-operations.md) |
 | 31 | `hardfork_operation` | Активация хардфорка | [Виртуальные операции](../virtual-operations.md) |
 | 32 | `content_payout_update_operation` | Обновление выплаты за контент | [Виртуальные операции](../virtual-operations.md) |
 | 33 | `content_benefactor_reward_operation` | Выплата за контент | [Виртуальные операции](../virtual-operations.md) |
@@ -74,7 +74,7 @@
 | 39 | `committee_approve_request_operation` | Одобрение заявки комитета | [Виртуальные операции](../virtual-operations.md) |
 | 40 | `committee_payout_request_operation` | Обработка выплаты комитета | [Виртуальные операции](../virtual-operations.md) |
 | 41 | `committee_pay_request_operation` | Оплата работнику комитета | [Виртуальные операции](../virtual-operations.md) |
-| 42 | `witness_reward_operation` | Произведён блок | [Виртуальные операции](../virtual-operations.md) |
+| 42 | `validator_reward_operation` | Произведён блок | [Виртуальные операции](../virtual-operations.md) |
 | 48 | `receive_award_operation` | Получена награда | [Виртуальные операции](../virtual-operations.md) |
 | 49 | `benefactor_award_operation` | Награда с бенефициаром | [Виртуальные операции](../virtual-operations.md) |
 | 52 | `paid_subscription_action_operation` | Оплата подписки | [Виртуальные операции](../virtual-operations.md) |

@@ -57,7 +57,7 @@ HF12 introduces automatic network recovery when block production stalls.
 
 ### Activation
 
-If the last irreversible block (LIB) timestamp is more than `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` (1 hour) behind wall clock, emergency mode activates automatically. An emergency validator account (`CHAIN_EMERGENCY_WITNESS_ACCOUNT = "committee"`) with a known public key (`CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY`) is created and inserted into the block production schedule.
+If the last irreversible block (LIB) timestamp is more than `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` (1 hour) behind wall clock, emergency mode activates automatically. An emergency validator account (`CHAIN_EMERGENCY_VALIDATOR_ACCOUNT = "committee"`) with a known public key (`CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY`) is created and inserted into the block production schedule.
 
 ### Three-state safety enforcement
 

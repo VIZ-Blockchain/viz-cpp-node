@@ -225,7 +225,7 @@ Backoff сбрасывается до начального значения (30 
 | `GAP_FILL_TIMEOUT_SEC` | 15 | Таймаут флага gap fill в процессе |
 | `FORWARD_STAGNATION_SEC` | 30 | Порог непродвижения head в режиме FORWARD |
 | `SYNC_STAGNATION_SEC` | 30 | Порог отсутствия блоков в режиме SYNC |
-| `FORK_RESOLUTION_BLOCK_THRESHOLD` | 42 | Блоки до срабатывания разрешения форка (2 × CHAIN_MAX_WITNESSES) |
+| `FORK_RESOLUTION_BLOCK_THRESHOLD` | 42 | Блоки до срабатывания разрешения форка (2 × CHAIN_MAX_VALIDATORS) |
 | `FORK_RESOLUTION_CONFIRMATION_BLOCKS` | 6 | Последовательных блоков для подтверждения разрешения форка |
 
 ---

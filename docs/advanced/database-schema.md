@@ -48,7 +48,7 @@ Every persistent object has a unique numeric type ID declared in `chain_object_t
 
 Accounts store balances, vesting state, delegation metrics, bandwidth, auction/sale flags, and governance participation.
 
-**Key fields:** `name`, `balance` (VIZ), `vesting_shares`, `delegated_vesting_shares`, `received_vesting_shares`, `energy`, `next_vesting_withdrawal`, `witnesses_voted_for`, `recovery_account`.
+**Key fields:** `name`, `balance` (VIZ), `vesting_shares`, `delegated_vesting_shares`, `received_vesting_shares`, `energy`, `next_vesting_withdrawal`, `validators_voted_for`, `recovery_account`.
 
 **Indexes:**
 

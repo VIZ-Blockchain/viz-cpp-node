@@ -48,7 +48,7 @@ VIZ Ledger 使用 ChainBase——一个基于 Boost.Interprocess 构建的内存
 
 账户存储余额、锁仓状态、委托指标、带宽、拍卖/出售标志和治理参与情况。
 
-**关键字段：** `name`、`balance`（VIZ）、`vesting_shares`、`delegated_vesting_shares`、`received_vesting_shares`、`energy`、`next_vesting_withdrawal`、`witnesses_voted_for`、`recovery_account`。
+**关键字段：** `name`、`balance`（VIZ）、`vesting_shares`、`delegated_vesting_shares`、`received_vesting_shares`、`energy`、`next_vesting_withdrawal`、`validators_voted_for`、`recovery_account`。
 
 **索引：**
 

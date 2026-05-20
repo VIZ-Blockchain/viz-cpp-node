@@ -22,7 +22,7 @@ chain::plugin, p2p::p2p_plugin, snapshot::snapshot_plugin
 |--------|---------|-------------|
 | `validator` / `-w` | — | Validator account name(s); may be repeated |
 | `private-key` | — | WIF private key(s) for signing; may be repeated |
-| `emergency-private-key` | — | WIF key for emergency consensus; auto-adds `CHAIN_EMERGENCY_WITNESS_ACCOUNT` to the validator set |
+| `emergency-private-key` | — | WIF key for emergency consensus; auto-adds `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` to the validator set |
 | `enable-stale-production` | `false` | Bypass participation and sync checks (testnet / network recovery only) |
 | `required-participation` | `3300` | Minimum validator participation in **basis points** (3300 = 33%) |
 | `fork-collision-timeout-blocks` | `21` | Consecutive fork-collision deferrals before forcing production (one full validator round) |
@@ -175,7 +175,7 @@ Returns `true` if a locally-controlled validator is scheduled to produce in the 
 ### `is_emergency_master()`
 
 Returns `true` when:
-1. `emergency-private-key` is configured (`CHAIN_EMERGENCY_WITNESS_ACCOUNT` in `_witnesses`).
+1. `emergency-private-key` is configured (`CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` in `_witnesses`).
 2. The "committee" account is in the current validator schedule.
 
 Only nodes where both conditions hold should produce solo during emergency mode; others are followers and must sync first.

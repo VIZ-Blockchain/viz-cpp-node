@@ -217,7 +217,7 @@ private-key = 5Jyyy...   # Alice.backup 的密钥
 emergency-private-key = 5Jzzz...   # 委员会紧急密钥
 ```
 
-设置后，节点自动将 `CHAIN_EMERGENCY_WITNESS_ACCOUNT` 添加到其验证者集合，并参与紧急区块生产。参见[紧急共识](../consensus/emergency-consensus.md)。
+设置后，节点自动将 `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` 添加到其验证者集合，并参与紧急区块生产。参见[紧急共识](../consensus/emergency-consensus.md)。
 
 ---
 

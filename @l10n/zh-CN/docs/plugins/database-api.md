@@ -95,7 +95,7 @@ json_rpc::plugin, chain::plugin
 { "method": "database_api.get_dynamic_global_properties", "params": [] }
 ```
 
-关键字段：`head_block_number`、`head_block_id`、`time`、`current_witness`、`total_vesting_shares`、`total_vesting_fund_viz`、`committee_fund`、`last_irreversible_block_num`、`participation_count`。
+关键字段：`head_block_number`、`head_block_id`、`time`、`current_validator`、`total_vesting_shares`、`total_vesting_fund_viz`、`committee_fund`、`last_irreversible_block_num`、`participation_count`。
 
 ---
 

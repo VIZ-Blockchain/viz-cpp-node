@@ -217,7 +217,7 @@ private-key = 5Jyyy...   # Ключ Alice.backup
 emergency-private-key = 5Jzzz...   # Ключ экстренного комитета
 ```
 
-При его наличии узел автоматически добавляет `CHAIN_EMERGENCY_WITNESS_ACCOUNT` в свой набор валидаторов и участвует в производстве экстренных блоков. См. [Экстренный консенсус](../consensus/emergency-consensus.md).
+При его наличии узел автоматически добавляет `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` в свой набор валидаторов и участвует в производстве экстренных блоков. См. [Экстренный консенсус](../consensus/emergency-consensus.md).
 
 ---
 

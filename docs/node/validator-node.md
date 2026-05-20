@@ -217,7 +217,7 @@ For nodes involved in emergency consensus recovery:
 emergency-private-key = 5Jzzz...   # Committee emergency key
 ```
 
-When set, the node automatically adds `CHAIN_EMERGENCY_WITNESS_ACCOUNT` to its validator set and participates in emergency block production. See [Emergency Consensus](../consensus/emergency-consensus.md).
+When set, the node automatically adds `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` to its validator set and participates in emergency block production. See [Emergency Consensus](../consensus/emergency-consensus.md).
 
 ---
 

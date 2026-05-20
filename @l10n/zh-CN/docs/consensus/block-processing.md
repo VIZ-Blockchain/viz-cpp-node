@@ -279,7 +279,7 @@ check_block_post_validation_chain()：
 struct block_post_validation_message {
     block_id_type  block_id;
     std::string    witness_account;   // 验证者名称
-    signature_type witness_signature; // sign(chain_id + block_id)
+    signature_type validator_signature; // sign(chain_id + block_id)
 };
 ```
 
