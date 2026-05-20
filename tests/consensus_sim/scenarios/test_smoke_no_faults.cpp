@@ -1,5 +1,6 @@
 #include <boost/test/unit_test.hpp>
 #include "scenario_driver.hpp"
+#include "failure_log.hpp"
 
 using namespace consensus_sim;
 
@@ -22,6 +23,7 @@ BOOST_AUTO_TEST_CASE(seven_nodes_one_hundred_slots) {
 
     auto result = d.run();
     if (result) {
+        write_failure_log("smoke_no_faults", d);
         BOOST_FAIL("invariant violated: " + result->invariant_name + " - " + result->detail);
     }
 
