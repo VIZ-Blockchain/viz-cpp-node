@@ -24,8 +24,8 @@ p2p-endpoint = 0.0.0.0:2001
 p2p-max-connections = 200
 
 # 引导连接的种子节点（可重复）
-p2p-seed-node = seed1.viz.media:2001
-p2p-seed-node = seed2.viz.media:2001
+p2p-seed-node = seed1.viz.world:2001
+p2p-seed-node = seed2.viz.world:2001
 
 # 检查点：受信任的 (block_num, block_id) 对（可重复）
 # checkpoint = [12345,"0003039..." ]

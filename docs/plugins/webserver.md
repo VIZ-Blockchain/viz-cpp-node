@@ -114,4 +114,85 @@ Subscriptions require a persistent WebSocket connection. They are not available 
 
 ---
 
+## Exposing the API via HTTPS (nginx + certbot)
+
+Bind the node to localhost, then front it with nginx. certbot patches the config automatically when you run `certbot --nginx`.
+
+### 1. Node config.ini
+
+```ini
+webserver-http-endpoint = 127.0.0.1:8090
+webserver-ws-endpoint   = 127.0.0.1:8091
+```
+
+### 2. /etc/nginx/sites-enabled/viz-node
+
+```nginx
+server {
+    listen 80;
+    server_name your.domain.com;  # ← replace with your domain
+
+    # ACME challenge for certbot
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        # CORS — allow any origin (public API)
+        add_header 'Access-Control-Allow-Origin'   '*'                                                                                         always;
+        add_header 'Access-Control-Allow-Methods'  'GET, POST, PUT, DELETE, PATCH, OPTIONS'                                                    always;
+        add_header 'Access-Control-Allow-Headers'  'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization' always;
+        add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range'                                                              always;
+
+        if ($request_method = 'OPTIONS') {
+            add_header 'Access-Control-Allow-Origin'  '*'                                                                                         always;
+            add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, PATCH, OPTIONS'                                                    always;
+            add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization' always;
+            add_header 'Access-Control-Max-Age'       1728000;
+            add_header 'Content-Type'                 'text/plain charset=UTF-8';
+            add_header 'Content-Length'               0;
+            return 204;
+        }
+
+        proxy_pass http://127.0.0.1:8090;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
+    }
+}
+```
+
+### 3. Obtain the TLS certificate
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d your.domain.com
+```
+
+certbot adds the `listen 443 ssl` block, `ssl_certificate` directives, and an HTTP→HTTPS redirect automatically. After this your node is reachable at `https://your.domain.com`.
+
+### WebSocket via HTTPS
+
+WebSocket clients need the `Upgrade` header forwarded. Add a separate location (or a second server block on port 8091):
+
+```nginx
+location /ws {
+    proxy_pass http://127.0.0.1:8091;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade    $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host       $host;
+    proxy_read_timeout 3600s;
+}
+```
+
+---
+
 See also: [Plugin Overview](./overview.md), [Database API](./database-api.md), [JSON-RPC API](../api/json-rpc.md).

@@ -6,7 +6,10 @@ on:
     paths:
       - 'docs/**'
       - '@l10n/**'
-      - 'redocly.yaml'
+      - 'scripts/sync-l10n.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 permissions:

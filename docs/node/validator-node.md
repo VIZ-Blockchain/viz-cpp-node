@@ -21,7 +21,7 @@ Key settings:
 ```ini
 # P2P — allow public inbound connections for block propagation
 p2p-endpoint = 0.0.0.0:2001
-p2p-seed-node = seed1.viz.media:2001
+p2p-seed-node = seed1.viz.world:2001
 
 # RPC — bind to localhost for security (validators don't need public API)
 webserver-http-endpoint = 127.0.0.1:8090

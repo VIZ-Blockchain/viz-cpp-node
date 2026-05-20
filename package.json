@@ -2,12 +2,18 @@
   "name": "viz-ledger-docs",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "start": "realm dev",
-    "build": "realm build",
-    "preview": "realm preview"
+    "sync-l10n": "node scripts/sync-l10n.mjs",
+    "predev": "npm run sync-l10n",
+    "prebuild": "npm run sync-l10n",
+    "prepreview": "npm run sync-l10n",
+    "dev": "vitepress dev docs",
+    "build": "vitepress build docs",
+    "preview": "vitepress preview docs",
+    "start": "npm run dev"
   },
   "devDependencies": {
-    "@redocly/realm": "latest"
+    "vitepress": "^1.5.0"
   }
 }

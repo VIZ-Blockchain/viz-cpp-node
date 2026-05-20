@@ -21,7 +21,7 @@
 ```ini
 # P2P — разрешить публичные входящие соединения для распространения блоков
 p2p-endpoint = 0.0.0.0:2001
-p2p-seed-node = seed1.viz.media:2001
+p2p-seed-node = seed1.viz.world:2001
 
 # RPC — привязать к localhost для безопасности (валидаторам публичный API не нужен)
 webserver-http-endpoint = 127.0.0.1:8090
