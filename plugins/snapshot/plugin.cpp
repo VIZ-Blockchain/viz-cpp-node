@@ -975,6 +975,18 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(account_authority_index, account_authority_object, "account_authority")
     EXPORT_INDEX(validator_index, validator_object, "validator")
     EXPORT_INDEX(validator_vote_index, validator_vote_object, "validator_vote")
+    // Sanity: if validators exist but votes are absent, the chainbase type enum
+    // likely shifted (types added/removed before validator_vote_object_type).
+    // This would silently corrupt the snapshot.
+    {
+        auto n_validators = state["validator"].get_array().size();
+        auto n_votes      = state["validator_vote"].get_array().size();
+        if (n_validators > 0 && n_votes == 0)
+            wlog("SNAPSHOT INTEGRITY: ${v} validators but 0 validator votes — "
+                 "validator_vote_index may be empty due to chainbase type-enum mismatch. "
+                 "Snapshot will be INCOMPLETE.",
+                 ("v", n_validators));
+    }
     EXPORT_INDEX(block_summary_index, block_summary_object, "block_summary")
     EXPORT_INDEX(content_index, content_object, "content")
     EXPORT_INDEX(content_vote_index, content_vote_object, "content_vote")
@@ -1560,6 +1572,14 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         if (state.contains("validator_vote")) {
             auto n = detail::import_validator_votes(db, state["validator_vote"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} validator votes" CLOG_RESET, ("n", n));
+            // Defensive fallback: validator_vote was present but empty; the snapshot may have
+            // been produced from a chainbase DB with a type-enum mismatch (see export warning).
+            // If an old witness_vote key also exists with data, use it to recover.
+            if (n == 0 && state.contains("witness_vote")) {
+                auto n2 = detail::import_validator_votes(db, state["witness_vote"].get_array());
+                if (n2 > 0)
+                    ilog(CLOG_ORANGE "Imported ${n} validator votes (recovered from witness_vote)" CLOG_RESET, ("n", n2));
+            }
         } else if (state.contains("witness_vote")) {
             // backward compat: old snapshots used "witness_vote" key
             auto n = detail::import_validator_votes(db, state["witness_vote"].get_array());
