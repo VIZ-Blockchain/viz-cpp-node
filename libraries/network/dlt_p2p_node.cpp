@@ -285,7 +285,7 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
 
                 // Send hello
                 send_message(pid, message(build_hello_message()));
-                ilog(DLT_LOG_GREEN "Connected to peer ${ep}, sent DLT hello" DLT_LOG_RESET, ("ep", ep));
+                dlog(DLT_LOG_GREEN "Connected to peer ${ep}, sent DLT hello" DLT_LOG_RESET, ("ep", ep));
 
                 // Start read loop as a fiber on the p2p thread
                 start_read_loop(pid);
@@ -1770,7 +1770,7 @@ void dlt_p2p_node::on_dlt_peer_exchange_reply(peer_id peer, const dlt_peer_excha
 void dlt_p2p_node::on_dlt_peer_exchange_rate_limited(peer_id peer, const dlt_peer_exchange_rate_limited& msg) {
     auto it = _peer_states.find(peer);
     auto ep = (it != _peer_states.end()) ? std::string(it->second.endpoint) : std::to_string(peer);
-    ilog(DLT_LOG_DGRAY "Peer ${ep} rate-limited our exchange request, wait ${w}s" DLT_LOG_RESET,
+    dlog(DLT_LOG_DGRAY "Peer ${ep} rate-limited our exchange request, wait ${w}s" DLT_LOG_RESET,
          ("ep", ep)("w", msg.wait_seconds));
 
     // Record the rate-limit locally so periodic_peer_exchange() stops
