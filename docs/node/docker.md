@@ -129,10 +129,10 @@ docker build \
 
 ### CMake flags per image
 
-| Image | `LOW_MEMORY_NODE` | `BUILD_TESTNET` |
-|-------|:-----------------:|:---------------:|
-| production | OFF | OFF |
-| testnet | OFF | ON |
+| Image | `BUILD_TESTNET` |
+|-------|:---------------:|
+| production | OFF |
+| testnet | ON |
 
 ---
 

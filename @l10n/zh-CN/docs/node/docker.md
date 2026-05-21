@@ -129,10 +129,10 @@ docker build \
 
 ### 各镜像的 CMake 标志
 
-| 镜像 | `LOW_MEMORY_NODE` | `BUILD_TESTNET` |
-|------|:-----------------:|:---------------:|
-| production | OFF | OFF |
-| testnet | OFF | ON |
+| 镜像 | `BUILD_TESTNET` |
+|------|:---------------:|
+| production | OFF |
+| testnet | ON |
 
 ---
 

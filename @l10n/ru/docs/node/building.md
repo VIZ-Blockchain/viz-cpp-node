@@ -46,9 +46,6 @@ chmod +x build-linux.sh
 ### Основные флаги сборки
 
 ```bash
-# Низкопамятный узел (для валидаторов/сид-узлов — без плагинов индексирования истории)
-./build-linux.sh -l
-
 # Сборка для тестнета
 ./build-linux.sh -n
 
@@ -57,9 +54,6 @@ chmod +x build-linux.sh
 
 # Параллельные задания
 ./build-linux.sh -j 8
-
-# Пропустить установку зависимостей (уже установлены)
-./build-linux.sh --skip-deps
 
 # Пользовательские пути к Boost / OpenSSL
 ./build-linux.sh --boost-root /opt/boost_1_74_0 --openssl-root /opt/openssl
@@ -99,7 +93,6 @@ build-mingw.bat
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
 | `VIZ_BUILD_TYPE` | `Release` | `Release` или `Debug` |
-| `VIZ_LOW_MEMORY` | `OFF` | `ON` для низкопамятного узла |
 | `VIZ_BUILD_TESTNET` | `OFF` | `ON` для сборки тестнета |
 | `VIZ_FULL_STATIC` | `OFF` | `ON` для полностью статического бинарного файла |
 
@@ -124,7 +117,6 @@ build-msvc.bat
 | Опция | По умолчанию | Описание |
 |-------|--------------|----------|
 | `BUILD_TESTNET` | `OFF` | Включить код для тестнета |
-| `LOW_MEMORY_NODE` | `OFF` | Исключить плагины истории/индексирования |
 | `CHAINBASE_CHECK_LOCKING` | `OFF` | Включить проверки блокировок (debug) |
 | `BUILD_SHARED_LIBRARIES` | `OFF` | Собрать разделяемые библиотеки |
 | `USE_PCH` | `OFF` | Включить предкомпилированные заголовки (ускоряет пересборку) |
@@ -134,7 +126,6 @@ build-msvc.bat
 ```bash
 mkdir build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release \
-      -DLOW_MEMORY_NODE=ON \
       -DCMAKE_INSTALL_PREFIX=/usr/local \
       ..
 make -j$(nproc)

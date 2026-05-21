@@ -129,10 +129,10 @@ docker build \
 
 ### CMake-флаги для каждого образа
 
-| Образ | `LOW_MEMORY_NODE` | `BUILD_TESTNET` |
-|-------|:-----------------:|:---------------:|
-| production | OFF | OFF |
-| testnet | OFF | ON |
+| Образ | `BUILD_TESTNET` |
+|-------|:---------------:|
+| production | OFF |
+| testnet | ON |
 
 ---
 

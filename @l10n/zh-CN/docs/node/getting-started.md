@@ -172,7 +172,6 @@ curl -s -X POST http://localhost:8090 \
 | 全节点 | `config.ini` | 所有插件，公共 RPC 端点 |
 | 验证者 | `config_witness.ini` | 区块生产，RPC 仅限本地 |
 | 测试网 | `config_testnet.ini` | 开发和测试 |
-| 低内存 | `config.ini` + `LOW_MEMORY_NODE` 构建标志 | 仅共识，无历史索引 |
 
 ---
 
