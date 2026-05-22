@@ -342,21 +342,27 @@ void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason, bo
         }
     }
 
-    // Cancel read fiber — cancel_and_wait yields, allowing drain_send_queue
-    // to resume on this thread.  The reentrancy guard above ensures that
-    // reentrant handle_disconnect call returns immediately without touching
-    // _peer_states, so state/it remain valid when we resume here.
-    auto fiber_it = _read_fibers.find(peer);
-    if (fiber_it != _read_fibers.end()) {
-        try { if (fiber_it->second.valid()) fiber_it->second.cancel_and_wait(__FUNCTION__); } catch (...) {}
-        _read_fibers.erase(fiber_it);
-    }
-
-    // Close connection
+    // Close the socket FIRST — this immediately unblocks any pending readsome/writesome
+    // in the read fiber and drain_send_queue fiber, causing them to throw and exit.
+    // drain_send_queue holds sock by owning shared_ptr copy, so erasing _connections
+    // here does not leave it with a dangling reference.
+    // If we closed AFTER cancel_and_wait, the fiber would be stuck waiting for network
+    // I/O that can never arrive on a dead peer — causing a multi-second hang per peer,
+    // and a full deadlock when N peers disconnect simultaneously (p82: silent reboot).
     auto conn_it = _connections.find(peer);
     if (conn_it != _connections.end()) {
         try { if (conn_it->second) conn_it->second->close(); } catch (...) {}
         _connections.erase(conn_it);
+    }
+
+    // Cancel read fiber — cancel_and_wait yields, but the fiber exits immediately
+    // because its socket I/O is already unblocked by the close() above.
+    // The reentrancy guard above ensures that reentrant handle_disconnect calls
+    // return immediately without touching _peer_states, so state/it remain valid.
+    auto fiber_it = _read_fibers.find(peer);
+    if (fiber_it != _read_fibers.end()) {
+        try { if (fiber_it->second.valid()) fiber_it->second.cancel_and_wait(__FUNCTION__); } catch (...) {}
+        _read_fibers.erase(fiber_it);
     }
 
     // Clear send guard and drain any queued messages
@@ -542,7 +548,7 @@ void dlt_p2p_node::drain_send_queue(peer_id peer, std::vector<char> buf) {
         _peer_sending.erase(peer);
         return;
     }
-    auto& sock = conn_it->second;
+    auto sock = conn_it->second; // owning copy — handle_disconnect may erase _connections while we yield in writesome
 
     // Cache endpoint before entering the try block — handle_disconnect may
     // remove the peer from _peer_states before the catch block runs, making
