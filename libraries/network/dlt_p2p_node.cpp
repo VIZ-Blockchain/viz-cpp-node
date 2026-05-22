@@ -514,6 +514,10 @@ void dlt_p2p_node::send_message(peer_id peer, const message& msg) {
                 ++state.send_queue_total;
             } else {
                 // Queue is at max depth — peer can't consume data fast enough.
+                // Skip if disconnect is already in progress: handle_disconnect yields
+                // at cancel_and_wait, allowing other fibers to call send_message for
+                // the same peer, which would re-enter this branch and spam the log.
+                if (_disconnect_in_progress.count(peer)) return;
                 // Capture info before handle_disconnect potentially erases the state.
                 std::string ep = std::string(state.endpoint);
                 uint32_t dropped = state.send_queue_dropped;
