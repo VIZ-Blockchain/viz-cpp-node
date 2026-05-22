@@ -93,6 +93,25 @@ Subscriptions require a persistent WebSocket connection. They are not available 
 
 ---
 
+## CORS
+
+The webserver plugin handles browser cross-origin requests natively — no reverse proxy is required for local or development setups.
+
+**Preflight requests** (`OPTIONS`) are answered immediately with:
+
+| Response header | Value |
+|----------------|-------|
+| `Access-Control-Allow-Origin` | `*` |
+| `Access-Control-Allow-Methods` | `POST, GET, OPTIONS` |
+| `Access-Control-Allow-Headers` | `Content-Type, Authorization` |
+| `Access-Control-Max-Age` | `86400` |
+
+**All other HTTP responses** include `Access-Control-Allow-Origin: *`.
+
+This allows browser-based wallets and dApps to call the JSON-RPC endpoint directly. For production deployments behind nginx, CORS is handled at the proxy layer (see [Exposing the API via HTTPS](#exposing-the-api-via-https-nginx--certbot)) — both layers setting the header is harmless.
+
+---
+
 ## Security
 
 - **Bind to localhost** (`127.0.0.1`) and use a reverse proxy (nginx/Caddy) for public exposure. Binding to `0.0.0.0` exposes the RPC directly to the network.
