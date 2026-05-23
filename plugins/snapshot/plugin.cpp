@@ -1973,26 +1973,38 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     // deferred. We do NOT re-check is_validator_producing_soon() here to avoid an
     // infinite deferral loop where the validator is always scheduled soon.
     //
-    // Instead, we wait for the specific validator slot to be filled: the deferred
-    // snapshot only fires once head_block_time() >= pending_snapshot_safe_after_time,
-    // meaning the validator's block has been produced and applied (or the slot was
-    // missed and the chain moved past it). This prevents the snapshot from starting
-    // while the validator is about to produce.
+    // We wait for a block to be applied that is STRICTLY AFTER the validator slot
+    // we deferred for: head_block_time() > pending_snapshot_safe_after_time.
+    //
+    // Why strictly greater (not >=):
+    //   The applied_block signal is dispatched synchronously inside _push_block,
+    //   BEFORE generate_block() returns to the validator and BEFORE the validator
+    //   calls p2p().broadcast_block(). If we fired the snapshot on the same block
+    //   the local validator just produced, the snapshot read-lock could start
+    //   before the produced block has been broadcast to peers.
+    //
+    //   Requiring head_block_time > slot_time means we wait until a SUBSEQUENT
+    //   block is applied. That block is necessarily produced by another validator
+    //   on top of ours, which proves our block was successfully produced, applied
+    //   locally, and propagated through the network. Only then is it safe to
+    //   start the snapshot read pass.
+    //
+    //   Cost: ~one block interval of additional delay, but only when the local
+    //   validator was the deferral target. When we are not the producer, the
+    //   snapshot fires immediately at the originating block (no deferral path).
     if (snapshot_pending && !is_syncing) {
         // If safe_after_time is epoch (lookup failed), fire immediately as fallback.
-        // If head_block_time has reached/passed the validator slot time, the block
-        // at that slot has been applied (or the slot was skipped by a gap).
         bool safe_to_fire = (pending_snapshot_safe_after_time == fc::time_point_sec()) ||
-                            (db.head_block_time() >= pending_snapshot_safe_after_time);
+                            (db.head_block_time() > pending_snapshot_safe_after_time);
         if (safe_to_fire) {
             fc::path output(pending_snapshot_path);
             snapshot_pending = false;
             pending_snapshot_path.clear();
             pending_snapshot_safe_after_time = fc::time_point_sec();
-            ilog(CLOG_GREEN "Creating deferred snapshot now (validator slot passed): ${p}" CLOG_RESET, ("p", output.string()));
+            ilog(CLOG_GREEN "Creating deferred snapshot now (validator slot passed and block broadcast): ${p}" CLOG_RESET, ("p", output.string()));
             schedule_async_snapshot(output, "deferred");
         } else {
-            dlog("Deferred snapshot waiting for validator slot at ${t} (head_block_time=${h})",
+            dlog("Deferred snapshot waiting for block strictly after validator slot ${t} (head_block_time=${h})",
                  ("t", pending_snapshot_safe_after_time)("h", db.head_block_time()));
         }
     }
