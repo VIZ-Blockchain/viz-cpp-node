@@ -946,6 +946,19 @@ namespace chain {
             wlog("=== AUTO-RECOVERY COMPLETE: node resumed at block ${n} ===",
                  ("n", my->db.head_block_num()));
 
+            // Recovery is complete: clear the syncing flag so the validator
+            // plugin can resume block production once the post-pause catchup
+            // window closes.  The DLT P2P delegate calls db.push_block()
+            // directly and bypasses plugin_impl::accept_block(), so the
+            // flag-update path that would otherwise self-clear this on the
+            // next applied block never runs on the DLT path.  Without this
+            // explicit reset, the flag set above stays true forever and
+            // is_syncing() permanently gates production with not_synced.
+            // The remaining catchup window is gated by _catchup_after_pause
+            // in the P2P layer, which clears itself once peers are no longer
+            // ahead of our head.
+            my->currently_syncing.store(false, std::memory_order_relaxed);
+
             // 5. Resume P2P now that the database is fully rebuilt.
             //    do_snapshot_load(is_recovery=true) already set LIB = head
             //    so P2P will request blocks after the snapshot head.
