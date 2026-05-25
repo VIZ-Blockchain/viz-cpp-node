@@ -2131,21 +2131,16 @@ void dlt_p2p_node::request_gap_fill() {
              ("ep", peer_state.endpoint)("ph", peer_state.peer_head_num)("ex", peer_state.exchange_enabled));
         send_message(any_active_peer, message(req));
     } else {
-        // P39 fix: No peer at all with a higher head — gap fill
-        // can't help.  Transition to SYNC immediately instead of
-        // waiting for stagnation detection.
-        wlog("Gap fill: no peer available — transitioning to SYNC");
+        // No peer with a higher head is available for gap fill.
+        // Do NOT transition to SYNC — without a peer ahead of us,
+        // request_blocks_from_peer() would immediately see all peers
+        // as "caught up" and call transition_to_forward(), producing
+        // rapid SYNC→FORWARD oscillation.  Instead, just log and let
+        // the periodic task retry when new peers connect or existing
+        // peers advance their head.
+        wlog("Gap fill: no peer available with higher head — waiting for peers");
         _gap_fill_in_progress = false;
         _gap_fill_start_time = fc::time_point();
-        transition_to_sync();
-        // Request blocks from all active peers
-        for (const auto& _pi : _peer_states) {
-            const auto& state = _pi.second;
-            if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
-                state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) {
-                request_blocks_from_peer(_pi.first);
-            }
-        }
     }
 }
 

@@ -884,13 +884,40 @@ namespace chain {
 
     void plugin::attempt_auto_recovery() {
         static std::atomic<bool> recovery_in_progress{false};
+        static constexpr int MAX_CONSECUTIVE_RECOVERIES = 3;
+        static constexpr int RECOVERY_COOLDOWN_SEC = 300; // 5 minutes
+        static int consecutive_recoveries = 0;
+        static fc::time_point last_recovery_time;
+
         bool expected = false;
         if (!recovery_in_progress.compare_exchange_strong(expected, true)) {
             wlog("Auto-recovery already in progress, skipping duplicate attempt");
             return;
         }
 
-        wlog("=== IMMEDIATE AUTO-RECOVERY: shared memory corruption detected ===");
+        // Guard against infinite recovery loops: if the same block keeps
+        // failing after recovery, the snapshot or block log may be corrupted.
+        // Reset the counter after a cooldown period to allow eventual retry.
+        auto now = fc::time_point::now();
+        if (last_recovery_time != fc::time_point() &&
+            (now - last_recovery_time).to_seconds() > RECOVERY_COOLDOWN_SEC) {
+            consecutive_recoveries = 0;
+        }
+        consecutive_recoveries++;
+        last_recovery_time = now;
+
+        if (consecutive_recoveries > MAX_CONSECUTIVE_RECOVERIES) {
+            elog("Auto-recovery limit reached: ${n} consecutive attempts within ${c}s cooldown. "
+                 "The snapshot or block log may be corrupted — manual intervention required. "
+                 "Try a fresh snapshot or delete the block log.",
+                 ("n", consecutive_recoveries)("c", RECOVERY_COOLDOWN_SEC));
+            recovery_in_progress.store(false, std::memory_order_release);
+            appbase::app().quit();
+            return;
+        }
+
+        wlog("=== IMMEDIATE AUTO-RECOVERY: shared memory corruption detected (attempt ${n}/${max}) ===",
+             ("n", consecutive_recoveries)("max", MAX_CONSECUTIVE_RECOVERIES));
 
         // 1. Find latest snapshot
         fc::path snap = my->find_latest_snapshot();
@@ -971,6 +998,12 @@ namespace chain {
             } catch (...) {
                 wlog("Auto-recovery: failed to resume P2P");
             }
+
+            // Allow future recovery attempts.  Without this reset the
+            // static atomic stays true forever and any subsequent
+            // corruption event is silently discarded, leaving the node
+            // permanently stuck.
+            recovery_in_progress.store(false, std::memory_order_release);
         } catch (const fc::exception& e) {
             elog("Auto-recovery FAILED during snapshot load: ${e}", ("e", e.to_detail_string()));
             appbase::app().quit();
