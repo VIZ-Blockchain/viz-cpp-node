@@ -631,7 +631,9 @@ namespace chain {
         try {
             ilog("Opening shared memory from ${path}", ("path", my->shared_memory_dir.generic_string()));
             my->db.open(data_dir, my->shared_memory_dir, CHAIN_INIT_SUPPLY, my->shared_memory_size, chainbase::database::read_write/*, my->validate_invariants*/ );
+            ilog("db.open() completed successfully, head_block_num=${h}", ("h", my->db.head_block_num()));
             auto head_block_log = my->db.get_block_log().head();
+            ilog("block_log head=${h}", ("h", head_block_log ? std::to_string(head_block_log->block_num()) : std::string("none")));
             my->replay |= head_block_log && my->db.revision() != head_block_log->block_num();
 
             if (my->replay) {

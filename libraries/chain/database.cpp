@@ -253,9 +253,12 @@ namespace graphene { namespace chain {
                     }
 
                     _block_log.open(data_dir / "block_log");
+                    ilog("block_log opened, head=${h}", ("h", _block_log.head() ? std::to_string(_block_log.head()->block_num()) : std::string("none")));
                     _dlt_block_log.open(data_dir / "dlt_block_log");
+                    ilog("dlt_block_log opened, head=${h}", ("h", _dlt_block_log.head() ? std::to_string(_dlt_block_log.head_block_num()) : std::string("none")));
 
                     // Rewind all undo state. This should return us to the state at the last irreversible block.
+                    ilog("Calling undo_all()...");
                     // Wrap in a try-catch for boost::interprocess::lock_exception:
                     // After a hard crash, the previous process may have died while holding
                     // shared-memory internal mutexes (e.g., inside managed_mapped_file allocator).
@@ -275,8 +278,12 @@ namespace graphene { namespace chain {
                             "Shared memory lock corrupted (previous crash): ${what}",
                             ("what", e.what()));
                     }
+                    ilog("undo_all() completed, revision=${rev} head_block_num=${hbn}",
+                         ("rev", revision())("hbn", head_block_num()));
 
                     if (revision() != head_block_num()) {
+                        ilog("Revision mismatch: revision=${rev} != head_block_num=${hbn}, calling init_hardforks()",
+                             ("rev", revision())("hbn", head_block_num()));
                         with_strong_read_lock([&]() {
                             init_hardforks(); // Writes to local state, but reads from db
                         });
@@ -290,6 +297,7 @@ namespace graphene { namespace chain {
                     }
 
                     if (head_block_num()) {
+                        ilog("Validating block log consistency, head_block_num=${h}", ("h", head_block_num()));
                         // Validate DLT block log consistency before seeding fork_db.
                         // After a crash, the DLT block log index/data files can become
                         // truncated (e.g., only 1 block when database has thousands).
@@ -303,14 +311,16 @@ namespace graphene { namespace chain {
                             _dlt_block_log.reset();
                         }
 
+                        ilog("Reading head block #${n} from block_log", ("n", head_block_num()));
                         auto head_block = _block_log.read_block_by_num(head_block_num());
                         if (head_block.valid()) {
                             // Block_log has the head block
                             FC_ASSERT(head_block->id() == head_block_id(),
                                 "Chain state does not match block log. Please reindex blockchain.");
+                            ilog("Head block found in block_log, starting fork_db and seeding");
                             _fork_db.start_block(*head_block);
 
-                            // P22 fix: Seed fork_db with recent blocks (up to 100)
+                            // Seed fork_db with recent blocks (up to 100)
                             // so that incoming sync blocks from peers near our head
                             // can find their parent chain. After restart, fork_db only
                             // has the head block; if peers send blocks a few behind
@@ -343,9 +353,8 @@ namespace graphene { namespace chain {
                         } else {
                             // DLT mode: block_log is empty but chainbase has state (loaded from snapshot).
                             set_dlt_mode(true);
-                            wlog("DLT mode detected: block log is empty but database has state at block ${n}. "
-                                 "Skipping block log validation.",
-                                 ("n", head_block_num()));
+                            ilog("DLT mode: block_log empty, seeding fork_db from DLT log for head_block_num=${h}",
+                                 ("h", head_block_num()));
 
                             // Seed fork_db bottom-up from the oldest available DLT block
                             // within a seeding window so that all blocks from oldest to
@@ -424,11 +433,14 @@ namespace graphene { namespace chain {
                     wlog("Done opening block log, elapsed time ${t} sec", ("t", double((end - start).count()) / 1000000.0));
                 }
 
+                ilog("Block log open complete, calling init_hardforks()");
                 with_strong_read_lock([&]() {
                     init_hardforks(); // Writes to local state, but reads from db
                 });
+                ilog("init_hardforks() completed");
 
                 // === HARDFORK 12: EMERGENCY SCHEDULE RECOVERY ===
+                ilog("Checking validator schedule integrity at head_block_num=${h}", ("h", head_block_num()));
                 // If the node shut down (or crashed) during emergency mode while
                 // update_validator_schedule() had zeroed the schedule but before the
                 // hybrid override could fill it with committee, the schedule may
