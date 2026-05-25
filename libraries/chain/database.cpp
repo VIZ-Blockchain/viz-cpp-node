@@ -5500,7 +5500,7 @@ namespace graphene { namespace chain {
                                  ("w", validator_missed.owner)
                                  ("n", head_block_num() + i + 1)
                                  ("t", get_slot_time(i + 1))
-                                 ("next", b.validator));
+                                 ("next", get_scheduled_validator(i + 2)));
                         }
 
                         modify(validator_missed, [&](validator_object &w) {
