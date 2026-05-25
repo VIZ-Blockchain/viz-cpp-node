@@ -139,7 +139,7 @@ namespace chain {
         // particularly when the emergency master receives blocks from a
         // competing fork that have gap=0 but previous != head_block_id.
         if (block_applied) {
-            currently_syncing.store(currently_syncing_flag, std::memory_order_relaxed);
+            currently_syncing.store(currently_syncing_flag, std::memory_order_release);
             if (currently_syncing_flag) {
                 if (!sync_start_logged) {
                     ilog("\033[92m>>> Syncing Blockchain started from block #${n} (head: ${head})\033[0m",
@@ -280,11 +280,11 @@ namespace chain {
     }
 
     bool plugin::is_syncing() const {
-        return my->currently_syncing.load(std::memory_order_relaxed);
+        return my->currently_syncing.load(std::memory_order_acquire);
     }
 
     void plugin::clear_syncing() {
-        if (my->currently_syncing.exchange(false, std::memory_order_relaxed)) {
+        if (my->currently_syncing.exchange(false, std::memory_order_acq_rel)) {
             ilog("Sync complete: cleared currently_syncing flag (validator block production may resume)");
             my->sync_start_logged = false;
         }
@@ -955,7 +955,7 @@ namespace chain {
         }
 
         // Mark syncing so witness plugin defers block production during recovery.
-        my->currently_syncing.store(true, std::memory_order_relaxed);
+        my->currently_syncing.store(true, std::memory_order_release);
 
         wlog("Auto-recovery: closing database and recovering from snapshot ${p}...", ("p", snap.string()));
 
@@ -986,7 +986,7 @@ namespace chain {
             // The remaining catchup window is gated by _catchup_after_pause
             // in the P2P layer, which clears itself once peers are no longer
             // ahead of our head.
-            my->currently_syncing.store(false, std::memory_order_relaxed);
+            my->currently_syncing.store(false, std::memory_order_release);
 
             // 5. Resume P2P now that the database is fully rebuilt.
             //    do_snapshot_load(is_recovery=true) already set LIB = head
