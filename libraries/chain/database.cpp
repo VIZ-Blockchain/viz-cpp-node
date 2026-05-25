@@ -258,6 +258,25 @@ namespace graphene { namespace chain {
                     ilog("dlt_block_log opened, head=${h}", ("h", _dlt_block_log.head() ? std::to_string(_dlt_block_log.head_block_num()) : std::string("none")));
 
                     // Rewind all undo state. This should return us to the state at the last irreversible block.
+                    //
+                    // Crash guard: undo_all() walks shared-memory data structures that may
+                    // be corrupted after a hard crash (SIGSEGV). Since a segfault kills the
+                    // process instantly, no C++ exception handler can catch it.  We use a
+                    // marker file to detect that a previous run died inside undo_all() and
+                    // throw database_revision_exception to trigger the recovery path instead.
+                    auto undo_marker = shared_mem_dir / "undo_all_in_progress";
+                    if (boost::filesystem::exists(undo_marker)) {
+                        wlog("Detected incomplete undo_all from previous startup. "
+                             "Shared memory is likely corrupted. "
+                             "Throwing revision mismatch to trigger recovery.");
+                        FC_THROW_EXCEPTION(database_revision_exception,
+                            "Shared memory corrupted: previous undo_all() crashed (marker detected)");
+                    }
+
+                    // Write marker — will be removed after undo_all() succeeds.
+                    // If the process crashes inside undo_all(), the marker survives
+                    // and triggers recovery on the next startup.
+                    { std::ofstream f(undo_marker.string()); }
                     ilog("Calling undo_all()...");
                     // Wrap in a try-catch for boost::interprocess::lock_exception:
                     // After a hard crash, the previous process may have died while holding
@@ -278,6 +297,8 @@ namespace graphene { namespace chain {
                             "Shared memory lock corrupted (previous crash): ${what}",
                             ("what", e.what()));
                     }
+                    // undo_all() completed successfully — remove the crash marker.
+                    boost::filesystem::remove(undo_marker);
                     ilog("undo_all() completed, revision=${rev} head_block_num=${hbn}",
                          ("rev", revision())("hbn", head_block_num()));
 
@@ -512,6 +533,15 @@ namespace graphene { namespace chain {
                 wlog("Opening database for snapshot import. Please wait...");
 
                 _dlt_mode = true;  // Set before init_genesis so all subsequent code sees DLT mode
+
+                // Clean up undo_all crash marker if present from a previous failed startup.
+                // chainbase::database::wipe() only removes shared_memory.bin, not other files
+                // in the directory, so we must do this explicitly.
+                auto undo_marker = shared_mem_dir / "undo_all_in_progress";
+                if (boost::filesystem::exists(undo_marker)) {
+                    wlog("Removing stale undo_all crash marker before snapshot import");
+                    boost::filesystem::remove(undo_marker);
+                }
 
                 // Always wipe shared memory before snapshot import to ensure clean state.
                 // This prevents conflicts if:
@@ -909,6 +939,11 @@ namespace graphene { namespace chain {
         void database::wipe(const fc::path &data_dir, const fc::path &shared_mem_dir, bool include_blocks) {
             close();
             chainbase::database::wipe(shared_mem_dir);
+            // Remove undo_all crash marker if present (chainbase::wipe only removes shared_memory.bin)
+            auto undo_marker = shared_mem_dir / "undo_all_in_progress";
+            if (boost::filesystem::exists(undo_marker)) {
+                boost::filesystem::remove(undo_marker);
+            }
             if (include_blocks) {
                 fc::remove_all(data_dir / "block_log");
                 fc::remove_all(data_dir / "block_log.index");
