@@ -92,10 +92,21 @@ skip-virtual-ops = true
 
 The database auto-grows when free space drops below `min-free-shared-file-size`. Each resize:
 
-1. Pauses all operations (including block production and API requests).
-2. Destroys the current memory mapping.
-3. Extends the file by `inc-shared-file-size`.
-4. Re-maps the file and rebuilds all index pointers.
+1. Writes a `resize_in_progress` crash marker file.
+2. Flushes all dirty pages to disk (`flush()`).
+3. Pauses all operations (including block production and API requests).
+4. Destroys the current memory mapping.
+5. Extends the file by `inc-shared-file-size`.
+6. Re-maps the file and rebuilds all index pointers.
+7. Validates key objects (e.g., `dynamic_global_property_object`) survived the remap.
+8. Removes the crash marker.
+
+### Safety Mechanisms
+
+- **Flush-before-resize:** Dirty pages are written to disk before the mapping is destroyed, ensuring the on-disk file is consistent if anything fails during grow.
+- **Crash marker:** A `resize_in_progress` file is written before the destructive remap and removed after success. If the process crashes mid-resize, the marker survives and triggers automatic recovery on the next startup.
+- **Post-resize validation:** After the remap, the node verifies that `max_memory()` matches the expected size and that critical objects (e.g., `dynamic_global_property_object`) are intact. Corruption is detected early instead of causing confusing downstream failures.
+- **bad_alloc safety:** If shared memory is exhausted during block application, the undo session is safely discarded (rather than attempting a doomed undo that would crash the process via `std::terminate`). A deferred resize is scheduled for the next block.
 
 Pre-allocate `shared-file-size` generously to minimize resize frequency. Each resize causes a latency spike.
 
@@ -121,11 +132,12 @@ Approximate usage for a VIZ mainnet full node:
 ```
 1. Open shared_memory.bin (grow if shared-file-size is larger)
 2. Acquire exclusive file lock
-3. Initialize indices
-4. If genesis missing → init_genesis()
-5. Open block_log or dlt_block_log
-6. undo_all() → rewind to last irreversible block
-7. Verify head block matches block log
+3. Check for resize_in_progress crash marker → trigger recovery if found
+4. Initialize indices
+5. If genesis missing → init_genesis()
+6. Open block_log or dlt_block_log
+7. undo_all() → rewind to last irreversible block
+8. Verify head block matches block log
 ```
 
 ---
@@ -137,6 +149,8 @@ Approximate usage for a VIZ mainnet full node:
 | `CRITICAL: validator X account object MISSING` | Corruption — use `--replay-from-snapshot --snapshot-auto-latest` |
 | `Could not modify object, uniqueness constraint violated` | Corruption — use `--replay-from-snapshot --snapshot-auto-latest` |
 | `Unable to acquire READ lock` | Lock contention — increase `read-wait-micro` / enable `single-write-thread` |
+| `Shared memory corrupted: previous resize() crashed` | Interrupted resize — use `--replay-from-snapshot --snapshot-auto-latest` |
+| `dynamic_global_property_object missing after resize` | Resize corruption — use `--replay-from-snapshot --snapshot-auto-latest` |
 | Node crashes in a loop on startup | Corrupted file — `--replay-from-snapshot --snapshot-auto-latest` |
 
 Recovery options:

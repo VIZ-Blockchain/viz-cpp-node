@@ -259,6 +259,21 @@ namespace graphene { namespace chain {
 
                     // Rewind all undo state. This should return us to the state at the last irreversible block.
                     //
+                    // Crash guard: detect incomplete resize from a previous run.
+                    // resize() writes a marker before the destructive grow/remap
+                    // and removes it after success.  If the marker survived, the
+                    // shared memory file may be in an inconsistent state (file was
+                    // grown but the mapping was never rebuilt).  Treat this the
+                    // same as undo_all corruption and trigger recovery.
+                    auto resize_marker = shared_mem_dir / "resize_in_progress";
+                    if (boost::filesystem::exists(resize_marker)) {
+                        wlog("Detected incomplete resize from previous startup. "
+                             "Shared memory is likely corrupted. "
+                             "Throwing revision mismatch to trigger recovery.");
+                        FC_THROW_EXCEPTION(database_revision_exception,
+                            "Shared memory corrupted: previous resize() crashed (marker detected)");
+                    }
+
                     // Crash guard: undo_all() walks shared-memory data structures that may
                     // be corrupted after a hard crash (SIGSEGV). Since a segfault kills the
                     // process instantly, no C++ exception handler can catch it.  We use a
@@ -837,6 +852,25 @@ namespace graphene { namespace chain {
                 ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem / (1024 * 1024)));
             resize(new_max);
 
+            // Post-resize validation: verify key objects survived the remap.
+            // A silent grow failure (file unchanged but open succeeds with
+            // old size) or corrupted segment metadata would cause later
+            // operations to fail in confusing ways.  Catch it early here.
+            if (max_memory() < new_max) {
+                elog("CRITICAL: shared memory resize did not increase capacity! "
+                     "expected=${exp} actual=${act}. File may be corrupted.",
+                     ("exp", new_max)("act", max_memory()));
+                FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                    "Resize failed: capacity ${act} < expected ${exp}",
+                    ("act", max_memory())("exp", new_max));
+            }
+            if (!find<dynamic_global_property_object>()) {
+                elog("CRITICAL: dynamic_global_property_object MISSING after resize. "
+                     "Shared memory is corrupted.");
+                FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                    "dynamic_global_property_object missing after resize");
+            }
+
             uint64_t free_mem = free_memory();
             uint64_t reserved_mem = reserved_memory();
             uint64_t used_mem_after = new_max - free_mem;
@@ -879,6 +913,22 @@ namespace graphene { namespace chain {
                      ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem_before / (1024 * 1024))
                      ("mem", target / (1024 * 1024)));
                 resize(target);
+
+                // Post-resize validation: verify key objects survived the remap.
+                if (max_memory() < target) {
+                    elog("CRITICAL: deferred shared memory resize did not increase capacity! "
+                         "expected=${exp} actual=${act}. File may be corrupted.",
+                         ("exp", target)("act", max_memory()));
+                    FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                        "Deferred resize failed: capacity ${act} < expected ${exp}",
+                        ("act", max_memory())("exp", target));
+                }
+                if (!find<dynamic_global_property_object>()) {
+                    elog("CRITICAL: dynamic_global_property_object MISSING after deferred resize. "
+                         "Shared memory is corrupted.");
+                    FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                        "dynamic_global_property_object missing after resize");
+                }
 
                 uint64_t free_mem = free_memory();
                 uint64_t reserved_mem = reserved_memory();
@@ -943,6 +993,11 @@ namespace graphene { namespace chain {
             auto undo_marker = shared_mem_dir / "undo_all_in_progress";
             if (boost::filesystem::exists(undo_marker)) {
                 boost::filesystem::remove(undo_marker);
+            }
+            // Remove resize crash marker if present
+            auto resize_marker = shared_mem_dir / "resize_in_progress";
+            if (boost::filesystem::exists(resize_marker)) {
+                boost::filesystem::remove(resize_marker);
             }
             if (include_blocks) {
                 fc::remove_all(data_dir / "block_log");
@@ -2089,9 +2144,31 @@ namespace graphene { namespace chain {
                 }
 
                 try {
-                    auto session = start_undo_session();
-                    apply_block(new_block, skip);
-                    session.push();
+                    // Heap-allocate the undo session so we can explicitly
+                    // destroy it before exception unwinding reaches it.
+                    // If bad_alloc fires inside apply_block(), the session
+                    // destructor would call undo() which writes to shared
+                    // memory.  With memory exhausted, undo() throws another
+                    // bad_alloc during stack unwinding -> double exception
+                    // -> std::terminate.  By resetting the unique_ptr in
+                    // our catch block, the session is destroyed cleanly
+                    // before the exception propagates further.
+                    auto session = std::unique_ptr<chainbase::database::session>(
+                        new chainbase::database::session(start_undo_session()));
+                    try {
+                        apply_block(new_block, skip);
+                    } catch (const std::exception& e) {
+                        // Attempt explicit undo before rethrowing.  If undo()
+                        // throws (shared memory exhausted), suppress it — the
+                        // chainbase session destructor's uncaught_exceptions()
+                        // guard will NOT fire here (we're in a catch block, not
+                        // in stack unwinding), so we must protect manually.
+                        // The original exception is preserved and rethrown.
+                        try { session.reset(); } catch (...) {}
+                        throw;
+                    }
+                    session->push();
+                    session.reset();
                 }
                 catch (const wrong_scheduled_validator_exception &e) {
                     // Schedule mismatch: keep the block in fork_db as a
