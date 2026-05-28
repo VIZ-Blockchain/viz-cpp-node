@@ -537,13 +537,9 @@ if( options.count(name) ) { \
             boost::program_options::value<std::vector<std::string>>()->composing()->multitoken(),
             "Defines a range of accounts to track as a json pair [\"from\",\"to\"] [from,to]. "
             "Can be specified multiple times"
-        )(
-            "history-count-blocks",
-            boost::program_options::value<uint32_t>(),
-            "Defines depth of history for recording account history (same as operation_history's history-count-blocks). "
-            "If set here, account_history will purge at least as aggressively as this value, "
-            "and will also coordinate with operation_history's setting."
         );
+        // history-count-blocks is registered by operation_history plugin and shared;
+        // account_history reads it in plugin_initialize() without re-registering.
         cfg.add(cli);
     }
 
