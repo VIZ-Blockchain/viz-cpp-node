@@ -1277,8 +1277,17 @@ namespace graphene {
                 //   - No blocks arrive to clear the syncing flag
                 //   - The production loop is the only path to advance the chain
                 if (db._debug_block_production) ilog("DEBUG_CRASH: getting dgp");
-                const auto &dgp = db.get_dynamic_global_properties();
-                if (db._debug_block_production) ilog("DEBUG_CRASH: dgp ok, head=${h} emergency=${e}", ("h", dgp.head_block_number)("e", dgp.emergency_consensus_active));
+                // Copy emergency_consensus_active under a read lock so the local bool
+                // stays valid even if a concurrent P2P resize remaps the segment between
+                // here and the op_guard created below at line ~1629.  Keeping a raw
+                // const& into shared memory without an op_guard is a dangling-reference
+                // risk: begin_resize_barrier() can complete while _active_operations==0
+                // and unmap the old segment before we dereference the field.
+                bool emergency_active = false;
+                db.with_weak_read_lock([&]() {
+                    emergency_active = db.get_dynamic_global_properties().emergency_consensus_active;
+                });
+                if (db._debug_block_production) ilog("DEBUG_CRASH: dgp ok, head=${h} emergency=${e}", ("h", db.head_block_num())("e", emergency_active));
 
                 // === DLT MODE: DEFER PRODUCTION DURING ACTIVE SYNC ===
                 // In DLT mode, the validator must not produce blocks while the
@@ -1304,7 +1313,7 @@ namespace graphene {
                 // while the network is catching up.
                 if (db._dlt_mode && chain().is_syncing()) {
                     bool we_are_emergency_master =
-                        dgp.emergency_consensus_active &&
+                        emergency_active &&
                         _validators.find(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) != _validators.end();
                     if (!we_are_emergency_master) {
                         return block_validation_condition::not_synced;
@@ -1350,7 +1359,7 @@ namespace graphene {
                 if (db._debug_block_production) ilog("DEBUG_CRASH: checking hardfork12 and emergency path");
 
                 if (db.has_hardfork(CHAIN_HARDFORK_12)) {
-                    if (dgp.emergency_consensus_active) {
+                    if (emergency_active) {
                         // EMERGENCY MODE: auto-bypass both stale and participation checks
                         // for the emergency master only.  The master holds the
                         // emergency-private-key and MUST produce to avoid deadlock.
@@ -1501,7 +1510,7 @@ namespace graphene {
                 //   continue producing (bootstrap / testnet / recovery scenario).
                 // With enable-stale-production=false (default): we're on the wrong fork,
                 //   pop back to LIB and resync from the P2P network.
-                if (!dgp.emergency_consensus_active) {
+                if (!emergency_active) {
                     auto fork_head = db.get_fork_db().head();
                     if (fork_head) {
                         bool all_ours = true;
@@ -1564,7 +1573,7 @@ namespace graphene {
                 // "ours" is expected — other nodes sync from us.  Skip minority fork
                 // detection entirely to avoid false positives and the production
                 // deadlock that would otherwise occur.
-                if (dgp.emergency_consensus_active && db._dlt_mode) {
+                if (emergency_active && db._dlt_mode) {
                     // If committee is in the schedule and we have its key, WE are the
                     // emergency master.  All blocks being "ours" is expected -- other
                     // nodes sync from us.  Skip minority fork detection to prevent
@@ -1852,7 +1861,7 @@ namespace graphene {
                         bool has_competing_block = false;
                         graphene::chain::item_ptr competing_block;
 
-                        if (dgp.emergency_consensus_active) {
+                        if (emergency_active) {
                             // During emergency mode: ANY block at this height is competing.
                             // Multiple nodes with the emergency key may have produced.
                             // Defer to the deterministic hash-based resolution in fork_db.
@@ -2010,7 +2019,7 @@ namespace graphene {
                         // Roll back to LIB and resync from P2P network.
                         elog("unlinkable_block_exception during block generation: fork_db broken. "
                              "Rolling back to LIB and resyncing from P2P network.");
-                        p2p().resync_from_lib(dgp.emergency_consensus_active /*force_emergency*/);
+                        p2p().resync_from_lib(emergency_active /*force_emergency*/);
                         _minority_fork_recovering = true;
                         _minority_fork_recovery_start = fc::time_point::now();
                         return block_validation_condition::minority_fork;
