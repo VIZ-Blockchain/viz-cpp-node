@@ -747,6 +747,12 @@ void p2p_plugin::clear_catchup_flag() {
     if (my->node) my->node->clear_catchup_after_pause();
 }
 
+void p2p_plugin::reset_peers_after_recovery() {
+    my->p2p_thread.async([this]() {
+        if (my->node) my->node->reset_peers_after_recovery();
+    });
+}
+
 } // namespace p2p
 } // namespace plugins
 } // namespace graphene

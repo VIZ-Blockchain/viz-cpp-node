@@ -994,6 +994,10 @@ namespace chain {
             try {
                 auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
                 if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                    // Clear soft-bans BEFORE resuming so that peers banned
+                    // before the corruption (which may carry the majority fork)
+                    // can reconnect and serve blocks immediately after recovery.
+                    p2p_plug->reset_peers_after_recovery();
                     p2p_plug->resume_block_processing();
                     wlog("Auto-recovery: P2P block processing resumed");
                 }

@@ -2408,6 +2408,14 @@ void dlt_p2p_node::resume_block_processing() {
     run_resume_on_p2p_thread();
 }
 
+void dlt_p2p_node::reset_peers_after_recovery() {
+    // Called from the P2P thread after auto-recovery completes.
+    // Clears all soft-bans so peers that were banned before the
+    // corruption (and may carry the majority fork) can reconnect
+    // and serve blocks immediately.
+    emergency_peer_reset();
+}
+
 bool dlt_p2p_node::is_on_majority_fork() const {
     return _fork_status != DLT_FORK_STATUS_MINORITY;
 }

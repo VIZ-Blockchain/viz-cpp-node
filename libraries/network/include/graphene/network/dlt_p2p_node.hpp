@@ -143,6 +143,7 @@ public:
     void        reconnect_seeds();
     void        pause_block_processing();
     void        resume_block_processing();
+    void        reset_peers_after_recovery();
 
     // ── Our node state ───────────────────────────────────────────
     dlt_node_status get_node_status() const { return _node_status; }
