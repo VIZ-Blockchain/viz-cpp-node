@@ -130,6 +130,8 @@ public:
     block_applied_callback_info::cont active_block_applied_callback;
     block_applied_callback_info::cont free_block_applied_callback;
 
+    boost::signals2::connection _applied_block_conn;
+
 private:
 
     graphene::chain::database &_db;
@@ -912,7 +914,7 @@ void plugin::plugin_initialize(const boost::program_options::variables_map &opti
     ilog("database_api plugin: plugin_initialize() begin");
     my = std::make_unique<api_impl>();
     JSON_RPC_REGISTER_API(plugin_name)
-    my->database().applied_block.connect([this](const protocol::signed_block &) {
+    my->_applied_block_conn = my->database().applied_block.connect([this](const protocol::signed_block &) {
         this->clear_block_applied_callback();
     });
     ilog("database_api plugin: plugin_initialize() end");
@@ -920,6 +922,12 @@ void plugin::plugin_initialize(const boost::program_options::variables_map &opti
 
 void plugin::plugin_startup() {
     my->startup();
+}
+
+void plugin::plugin_shutdown() {
+    if (my) {
+        my->_applied_block_conn.disconnect();
+    }
 }
 
 } } } // graphene::plugins::database_api

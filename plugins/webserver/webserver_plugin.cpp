@@ -630,6 +630,8 @@ namespace graphene {
             }
 
             void webserver_plugin::plugin_shutdown() {
+                my->chain_sync_con.disconnect();
+                my->applied_block_conn.disconnect();
                 my->stop_webserver();
             }
 

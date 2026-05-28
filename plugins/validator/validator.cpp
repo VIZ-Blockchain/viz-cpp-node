@@ -208,6 +208,8 @@ namespace graphene {
                 // Updated in the applied_block signal handler.
                 uint64_t _last_applied_block_num = 0;
 
+                boost::signals2::connection _applied_block_connection;
+
                 // Protects cross-thread diagnostic fields shared between
                 // production_io_thread_ and the P2P thread (on_block_applied /
                 // get_production_diagnostics).  Never held during database() calls.
@@ -368,7 +370,7 @@ namespace graphene {
                         // Connect to applied_block signal to detect missed slots
                         // that belong to our validators and log diagnostic state.
                         pimpl->_last_applied_block_num = d.head_block_num();
-                        d.applied_block.connect([this](const graphene::chain::signed_block &block) {
+                        pimpl->_applied_block_connection = d.applied_block.connect([this](const graphene::chain::signed_block &block) {
                             pimpl->on_block_applied(block);
                         });
 
@@ -387,6 +389,7 @@ namespace graphene {
             void validator_plugin::plugin_shutdown() {
                 graphene::time::shutdown_ntp_time();
                 if (!pimpl->_validators.empty()) {
+                    pimpl->_applied_block_connection.disconnect();
                     ilog("shutting downing production timer");
                     // Stop the dedicated io_service so the production thread exits.
                     // io_service::stop() is thread-safe; it causes run() to return
