@@ -210,20 +210,6 @@ Reverse-lookup accounts by public key.
 
 ---
 
-### `account_history`
-
-Per-account operation history, paginated.
-
-| Method | Description |
-|--------|-------------|
-| `get_account_history(account, from, limit)` | Get operations; `from=-1` returns newest; max 1000 per call |
-
-**Config options:**
-- `track-account-range` — account name range to index (default: all accounts)
-- `history-count-blocks` — retain N blocks of history
-
----
-
 ### `operation_history`
 
 All-operations index for block-level and transaction queries.
@@ -237,6 +223,37 @@ All-operations index for block-level and transaction queries.
 - `history-whitelist-ops` / `history-blacklist-ops` — filter which op types are stored
 - `history-start-block` — start indexing from this block number
 - `history-count-blocks` — retain N blocks of history
+
+---
+
+### `account_history`
+
+Per-account operation history, paginated.
+
+| Method | Description |
+|--------|-------------|
+| `get_account_history(account, from, limit)` | Get operations; `from=-1` returns newest; max 1000 per call |
+
+**Config options:**
+- `track-account-range` — account name range to index (default: all accounts)
+- `history-count-blocks` — retain N blocks of history
+
+> **Dependency:** `account_history` **requires** `operation_history` as a parent plugin
+> (`APPBASE_PLUGIN_REQUIRES`). The node will not start if `operation_history` is absent.
+> `account_history` stores `operation_id_type` references (foreign keys) to `operation_object` rows
+> managed by `operation_history`; at query time `get_account_history` resolves them via
+> `database.get(itr->op)`.
+>
+> **Always enable both plugins together:**
+> ```ini
+> plugin = operation_history
+> plugin = account_history
+> ```
+>
+> **Purge coordination:** Both plugins read the same `history-count-blocks` key from `config.ini` —
+> there is no per-plugin separation. Setting it once applies to both simultaneously. Internally,
+> `account_history` also calls `operation_history::get_min_keep_block()` on every block as a safety
+> check, ensuring its entries never reference a purged `operation_object`.
 
 ---
 
@@ -325,8 +342,8 @@ plugin = database_api
 plugin = network_broadcast_api
 plugin = validator_api
 plugin = account_by_key
-plugin = account_history
 plugin = operation_history
+plugin = account_history
 plugin = committee_api
 plugin = invite_api
 plugin = paid_subscription_api

@@ -222,6 +222,23 @@ DLT P2P 网络——区块和交易传播、节点管理、少数派 fork 恢复
 - `track-account-range` — 索引的账户名范围（默认：所有账户）
 - `history-count-blocks` — 保留 N 个区块的历史
 
+> **依赖关系：** `account_history` **需要** `operation_history` 作为父插件
+> （`APPBASE_PLUGIN_REQUIRES`）。若缺少 `operation_history`，节点将无法启动。
+> `account_history` 存储指向 `operation_object` 行的 `operation_id_type` 引用（外键），
+> 这些行由 `operation_history` 管理；查询时 `get_account_history` 通过
+> `database.get(itr->op)` 解析这些引用。
+>
+> **始终同时启用两个插件：**
+> ```ini
+> plugin = operation_history
+> plugin = account_history
+> ```
+>
+> **清理协调：** 两个插件从 `config.ini` 读取同一个 `history-count-blocks` 键——
+> 不存在按插件分别设置的机制。设置一次即同时作用于两个插件。
+> 内部实现上，`account_history` 还在每个区块调用 `operation_history::get_min_keep_block()`
+> 作为安全检查，确保其条目永远不会引用已被删除的 `operation_object`。
+
 ---
 
 ### `operation_history`

@@ -228,7 +228,15 @@ if( options.count(name) ) { \
 
             std::map<uint32_t, applied_operation> result;
             for (; itr != end; ++itr) {
-                result[itr->sequence] = database.get(itr->op);
+                // Guard against dangling operation_object references:
+                // operation_history may purge operation_objects before account_history
+                // purges the corresponding account_history_objects (e.g., different history-count-blocks).
+                // If the referenced object no longer exists, skip it silently.
+                auto op_obj = database.find(itr->op);
+                if (!op_obj) {
+                    continue;
+                }
+                result[itr->sequence] = applied_operation(*op_obj);
             }
             return result;
         }
@@ -529,6 +537,12 @@ if( options.count(name) ) { \
             boost::program_options::value<std::vector<std::string>>()->composing()->multitoken(),
             "Defines a range of accounts to track as a json pair [\"from\",\"to\"] [from,to]. "
             "Can be specified multiple times"
+        )(
+            "history-count-blocks",
+            boost::program_options::value<uint32_t>(),
+            "Defines depth of history for recording account history (same as operation_history's history-count-blocks). "
+            "If set here, account_history will purge at least as aggressively as this value, "
+            "and will also coordinate with operation_history's setting."
         );
         cfg.add(cli);
     }

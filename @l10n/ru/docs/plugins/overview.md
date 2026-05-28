@@ -222,6 +222,24 @@ DLT P2P-сетевое взаимодействие — распростране
 - `track-account-range` — диапазон имён аккаунтов для индексирования (по умолчанию: все аккаунты)
 - `history-count-blocks` — сохранять историю за N блоков
 
+> **Зависимость:** `account_history` **требует** `operation_history` как родительский плагин
+> (`APPBASE_PLUGIN_REQUIRES`). Нода не запустится при отсутствии `operation_history`.
+> `account_history` хранит ссылки `operation_id_type` (внешние ключи) на строки `operation_object`,
+> которыми управляет `operation_history`; при запросе `get_account_history` разрешает их через
+> `database.get(itr->op)`.
+>
+> **Всегда включать оба плагина вместе:**
+> ```ini
+> plugin = operation_history
+> plugin = account_history
+> ```
+>
+> **Координация очистки:** Оба плагина читают один и тот же ключ `history-count-blocks` из
+> `config.ini` — разделения по плагинам нет. Одно значение применяется к обоим одновременно.
+> Внутри `account_history` дополнительно вызывает `operation_history::get_min_keep_block()`
+> при каждом блоке как защитную проверку, гарантируя, что его записи никогда не будут ссылаться
+> на уже удалённый `operation_object`.
+
 ---
 
 ### `operation_history`
