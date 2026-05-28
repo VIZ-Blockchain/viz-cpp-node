@@ -891,6 +891,17 @@ namespace graphene { namespace chain {
                 return;
             }
 
+            // Serialize concurrent resize attempts: the P2P thread (push_block)
+            // and the validator thread (generate_block) both call this before
+            // acquiring their respective write locks.  Without this mutex both
+            // can see _pending_resize==true simultaneously, both pass
+            // begin_resize_barrier(), and both call resize() concurrently —
+            // corrupting the chainbase segment (double-resize race).
+            std::unique_lock<std::mutex> resize_entry_guard(_apply_resize_mutex);
+            if (!_pending_resize) {
+                return; // another thread completed the resize while we waited
+            }
+
             // Use the resize barrier to pause ALL database operations.
             // This is stronger than with_strong_write_lock: it also blocks
             // lockless reads (e.g. get_slot_at_time, get_scheduled_validator,
