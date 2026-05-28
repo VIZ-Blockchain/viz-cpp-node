@@ -388,6 +388,13 @@ private:
     static constexpr uint32_t       GAP_FILL_TIMEOUT_SEC = 15;  ///< Max seconds to wait for gap fill reply
     uint32_t                        _highest_seen_block_num = 0; ///< Highest block num seen from any source
 
+    // When "our fork is losing" is detected in gap fill reply, this is set to
+    // our LIB so the next request_gap_fill() starts from LIB instead of
+    // our_head.  Blocks from LIB onward include the divergence point, giving
+    // fork_db the majority chain blocks it needs to trigger a fork switch.
+    // Reset to 0 after use (one-shot).
+    uint32_t                        _gap_fill_fork_override_start = 0;
+
     // ── Gap fill rejection tracking ──────────────────────────────
     uint32_t                        _gap_rejected_block_num = 0;  ///< Last block num rejected by gap fill
     uint32_t                        _gap_rejected_count = 0;      ///< How many times that block was rejected

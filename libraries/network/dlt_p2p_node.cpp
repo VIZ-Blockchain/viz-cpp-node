@@ -1976,9 +1976,18 @@ void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply&
             uint32_t our_head_now   = _delegate->get_head_block_num();
             uint32_t peer_latest    = std::max(it->second.peer_dlt_latest, it->second.peer_head_num);
             if (peer_latest > our_head_now) {
+                uint32_t our_lib = _delegate->get_lib_block_num();
                 wlog(DLT_LOG_ORANGE "Gap fill: dead-fork block #${n} from peer ${ep} (peer=#${p} > our head #${h})"
-                     " — our fork is losing, re-syncing from LIB instead of banning" DLT_LOG_RESET,
-                     ("n", block.block_num())("ep", it->second.endpoint)("p", peer_latest)("h", our_head_now));
+                     " — our fork is losing, next gap fill will start from LIB #${lib}" DLT_LOG_RESET,
+                     ("n", block.block_num())("ep", it->second.endpoint)("p", peer_latest)
+                     ("h", our_head_now)("lib", our_lib));
+                // Set override so request_gap_fill() starts from LIB on the
+                // next call: blocks from LIB include the divergence point and
+                // land in fork_db as FORK_DB_ONLY, allowing a fork switch once
+                // the majority chain reaches sufficient length.
+                if (our_lib > 0 && our_lib < our_head_now) {
+                    _gap_fill_fork_override_start = our_lib;
+                }
                 transition_to_sync();
                 request_blocks_from_peer(peer);
             } else {
@@ -2054,6 +2063,19 @@ void dlt_p2p_node::request_gap_fill() {
 
     uint32_t our_head = _delegate->get_head_block_num();
     if (our_head == 0) return;
+
+    // Fork-losing override: when on_dlt_gap_fill_repl detected that our fork
+    // is losing (dead-fork block, peer is ahead), it sets this to our LIB.
+    // Starting from LIB instead of our_head ensures the request covers the
+    // divergence point; the majority-chain blocks land in fork_db as
+    // FORK_DB_ONLY and eventually trigger a fork switch.  One-shot: cleared
+    // after use so normal gap fill resumes from our_head on subsequent calls.
+    if (_gap_fill_fork_override_start > 0 && _gap_fill_fork_override_start < our_head) {
+        ilog(DLT_LOG_ORANGE "Gap fill fork override: starting from LIB #${lib} instead of head #${h} to find majority chain divergence" DLT_LOG_RESET,
+             ("lib", _gap_fill_fork_override_start)("h", our_head));
+        our_head = _gap_fill_fork_override_start;
+    }
+    _gap_fill_fork_override_start = 0;
 
     // Gap fill works in both FORWARD and SYNC modes.
     // In SYNC mode, when request_blocks_from_peer() can't bridge a gap
