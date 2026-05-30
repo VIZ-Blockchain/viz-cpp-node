@@ -850,7 +850,10 @@ namespace graphene { namespace chain {
                 "\033[33mShared memory growing on block ${block}: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
                 ("block", current_block_num)("mem", new_max / (1024 * 1024))
                 ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem / (1024 * 1024)));
+            dlog("Shared memory resize: flushing segment and remapping ${cur}M -> ${new}M",
+                 ("cur", max_mem / (1024 * 1024))("new", new_max / (1024 * 1024)));
             resize(new_max);
+            dlog("Shared memory resize: remap complete, validating segment");
 
             // Post-resize validation: verify key objects survived the remap.
             // A silent grow failure (file unchanged but open succeeds with
@@ -923,7 +926,10 @@ namespace graphene { namespace chain {
                 ilog("\033[33mApplying deferred shared memory resize: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
                      ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem_before / (1024 * 1024))
                      ("mem", target / (1024 * 1024)));
+                dlog("Shared memory resize: flushing segment and remapping ${cur}M -> ${new}M",
+                     ("cur", max_mem_before / (1024 * 1024))("new", target / (1024 * 1024)));
                 resize(target);
+                dlog("Shared memory resize: remap complete, validating segment");
 
                 // Post-resize validation: verify key objects survived the remap.
                 if (max_memory() < target) {
