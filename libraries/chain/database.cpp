@@ -2385,6 +2385,15 @@ namespace graphene { namespace chain {
             // while we hold raw pointers/references into the mapped segment.
             // The guard is scoped so it is released before with_strong_write_lock
             // (which acquires its own operation guard internally).
+            // Diagnostic fields saved from validator_obj for the locked re-check below.
+            // validator_obj is a shared-memory reference valid only inside the op_guard scope;
+            // copy before the scope ends so we can log them if the re-check confirms missing.
+            bool lockless_validator_account_missing = false;
+            public_key_type diag_signing_key;
+            uint32_t diag_total_missed = 0;
+            uint16_t diag_penalty = 0;
+            uint32_t diag_last_confirmed = 0;
+            size_t   diag_account_index_size = 0;
             {
                 auto op_guard = make_operation_guard();
 
@@ -2395,30 +2404,48 @@ namespace graphene { namespace chain {
 
                 const auto &validator_obj = get_validator(validator_owner);
 
-                // Pre-check: ensure the validator account exists before generating the block.
-                // If the account is missing from the database (shared memory corruption),
-                // the block will be produced but fail to apply internally (process_funds
-                // calls get_account which would throw "unknown key").
-                const auto* validator_acct = find_account(validator_owner);
-                if (!validator_acct) {
-                    auto& acc_idx = get_index<account_index>().indices().get<by_name>();
+                if (!(skip & skip_validator_signature))
+                    FC_ASSERT(validator_obj.signing_key ==
+                              block_signing_private_key.get_public_key());
+
+                // Lockless hint: does the validator account exist?
+                // op_guard coordinates with resize only — it does NOT exclude writers.
+                // A concurrent P2P writer rebalancing the by_name red-black tree can make
+                // this lookup transiently return null for an existing key. Save the hint
+                // and re-verify under a read lock AFTER this scope (op_guard released),
+                // to avoid a deadlock: with_strong_read_lock() nests its own op_guard, and
+                // if resize set _resize_in_progress between now and then, the nested
+                // enter_operation() would wait for resize while resize waits for us → deadlock.
+                if (!find_account(validator_owner)) {
+                    lockless_validator_account_missing = true;
+                    diag_signing_key    = validator_obj.signing_key;
+                    diag_total_missed   = validator_obj.total_missed;
+                    diag_penalty        = validator_obj.penalty_percent;
+                    diag_last_confirmed = validator_obj.last_confirmed_block_num;
+                    diag_account_index_size =
+                        get_index<account_index>().indices().get<by_name>().size();
+                }
+            } // op_guard released here
+
+            // Re-verify suspected missing account under a read lock, which blocks writers
+            // and yields a consistent index traversal. If still missing — real corruption.
+            if (lockless_validator_account_missing) {
+                with_strong_read_lock([&]() {
+                    if (find_account(validator_owner)) {
+                        return; // false alarm: lockless read raced a concurrent P2P writer
+                    }
                     elog("CRITICAL: Validator ${w} account object MISSING from database! "
                          "This is impossible state - shared memory may be corrupted. "
                          "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
                          "account_index_size=${idx_size}",
-                         ("w", validator_owner)("k", validator_obj.signing_key)
-                         ("m", validator_obj.total_missed)("p", validator_obj.penalty_percent)
-                         ("lc", validator_obj.last_confirmed_block_num)
-                         ("idx_size", acc_idx.size()));
+                         ("w", validator_owner)("k", diag_signing_key)
+                         ("m", diag_total_missed)("p", diag_penalty)
+                         ("lc", diag_last_confirmed)("idx_size", diag_account_index_size));
                     FC_THROW_EXCEPTION(shared_memory_corruption_exception,
                               "CRITICAL: Validator ${w} account not found in database! Shared memory corruption suspected.",
                               ("w", validator_owner));
-                }
-
-                if (!(skip & skip_validator_signature))
-                    FC_ASSERT(validator_obj.signing_key ==
-                              block_signing_private_key.get_public_key());
-            } // op_guard released here
+                });
+            }
 
             // Second operation guard covers all remaining lockless reads
             // in this function: get_dynamic_global_properties(), head_block_id(),
