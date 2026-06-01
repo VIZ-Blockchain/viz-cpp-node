@@ -3715,9 +3715,8 @@ void dlt_p2p_node::accept_loop() {
 		 
     }
 }
-        }
-    }
-}
+
+
 
 // ── Read loop (runs as fiber on p2p thread) ──────────────────────────
 

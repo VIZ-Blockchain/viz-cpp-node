@@ -103,7 +103,7 @@ RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
         -DCHAINBASE_CHECK_LOCKING=FALSE \
         .. \
     && \
-    make -j$(nproc) vizd cli_wallet && \
+    make -j$(($(nproc)-20)) vizd cli_wallet && \
     ccache -s
 
 # `make install` would re-trigger the `all` target through CMake's install-depends-on-all
