@@ -72,12 +72,12 @@ namespace graphene {
             uint32_t average_block_size = 0;
 
             /**
-             *  Maximum block size is decided by the set of active witnesses which change every round.
-             *  Each witness posts what they think the maximum size should be as part of their witness
+             *  Maximum block size is decided by the set of active validators which change every round.
+             *  Each validator posts what they think the maximum size should be as part of their validator
              *  properties, the median size is chosen to be the maximum block size for the round.
              *
              *  @note the minimum value for maximum_block_size is defined by the protocol to prevent the
-             *  network from getting stuck by witnesses attempting to set this too low.
+             *  network from getting stuck by validators attempting to set this too low.
              */
             uint32_t maximum_block_size = 0;
 
@@ -127,7 +127,7 @@ namespace graphene {
             uint32_t vote_regeneration_per_day = CHAIN_VOTE_ENERGY_RATE;
 
             /**
-             * The number of accounts who can use bandwidth reserve assigned by witnesses consensus
+             * The number of accounts who can use bandwidth reserve assigned by validators consensus
              */
             uint32_t bandwidth_reserve_candidates = 1;
 

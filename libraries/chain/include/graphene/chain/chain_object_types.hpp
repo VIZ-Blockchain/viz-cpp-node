@@ -52,7 +52,7 @@ namespace graphene { namespace chain {
             content_object_type,
             content_type_object_type,
             content_vote_object_type,
-            witness_vote_object_type,
+            validator_vote_object_type,
             hardfork_property_object_type,
             withdraw_vesting_route_object_type,
             master_authority_history_object_type,
@@ -72,7 +72,7 @@ namespace graphene { namespace chain {
             award_shares_expire_object_type,
             paid_subscription_object_type,
             paid_subscribe_object_type,
-            witness_penalty_expire_object_type,
+            validator_penalty_expire_object_type,
             validator_confirmation_object_type
         };
 
@@ -88,7 +88,7 @@ namespace graphene { namespace chain {
         class content_object;
         class content_type_object;
         class content_vote_object;
-        class witness_vote_object;
+        class validator_vote_object;
         class hardfork_property_object;
         class withdraw_vesting_route_object;
         class master_authority_history_object;
@@ -107,7 +107,7 @@ namespace graphene { namespace chain {
         class award_shares_expire_object;
         class paid_subscription_object;
         class paid_subscribe_object;
-        class witness_penalty_expire_object;
+        class validator_penalty_expire_object;
         class validator_confirmation_object;
 
         typedef object_id<dynamic_global_property_object> dynamic_global_property_id_type;
@@ -120,7 +120,7 @@ namespace graphene { namespace chain {
         typedef object_id<content_object> content_id_type;
         typedef object_id<content_type_object> content_type_id_type;
         typedef object_id<content_vote_object> content_vote_id_type;
-        typedef object_id<witness_vote_object> witness_vote_id_type;
+        typedef object_id<validator_vote_object> validator_vote_id_type;
         typedef object_id<hardfork_property_object> hardfork_property_id_type;
         typedef object_id<withdraw_vesting_route_object> withdraw_vesting_route_id_type;
         typedef object_id<master_authority_history_object> master_authority_history_id_type;
@@ -140,7 +140,7 @@ namespace graphene { namespace chain {
         typedef object_id<award_shares_expire_object> award_shares_expire_object_id_type;
         typedef object_id<paid_subscription_object> paid_subscription_object_id_type;
         typedef object_id<paid_subscribe_object> paid_subscribe_object_id_type;
-        typedef object_id<witness_penalty_expire_object> witness_penalty_expire_object_id_type;
+        typedef object_id<validator_penalty_expire_object> validator_penalty_expire_object_id_type;
         typedef object_id<validator_confirmation_object> validator_confirmation_object_id_type;
 
 } } //graphene::chain
@@ -217,7 +217,7 @@ FC_REFLECT_ENUM(graphene::chain::object_type,
                 (content_object_type)
                 (content_type_object_type)
                 (content_vote_object_type)
-                (witness_vote_object_type)
+                (validator_vote_object_type)
                 (hardfork_property_object_type)
                 (withdraw_vesting_route_object_type)
                 (master_authority_history_object_type)
@@ -237,7 +237,7 @@ FC_REFLECT_ENUM(graphene::chain::object_type,
                 (award_shares_expire_object_type)
                 (paid_subscription_object_type)
                 (paid_subscribe_object_type)
-                (witness_penalty_expire_object_type)
+                (validator_penalty_expire_object_type)
                 (validator_confirmation_object_type)
 )
 

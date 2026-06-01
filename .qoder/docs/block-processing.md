@@ -393,7 +393,7 @@ When block at T=6 is pushed, `update_global_dynamic_data()` counts `missed_block
 |---|---|---|
 | Sync status | Chain is not stale (or `enable-stale-production`) | `not_synced` |
 | Slot time | `get_slot_at_time(now) > 0` | `not_time_yet` |
-| validator ownership | Scheduled validator is in our `_witnesses` set | `not_my_turn` |
+| validator ownership | Scheduled validator is in our `_validators` set | `not_my_turn` |
 | Signing key | validator has non-zero `signing_key` on chain | `not_my_turn` |
 | Private key | We have the private key for the signing key | `no_private_key` |
 | Participation | Network participation ≥ required (pre-HF12 only) | `low_participation` |

@@ -84,7 +84,7 @@ public:
     // currently_syncing flag is cleared.  P2P sets currently_syncing=true
     // via call_accept_block(sync_mode=true) during bulk sync; without this
     // call the flag stays true after sync ends until the next FORWARD-mode
-    // block arrives.  If our witnesses are the only remaining producers and
+    // block arrives.  If our validators are the only remaining producers and
     // are themselves blocked by is_syncing()→not_synced, that arrival never
     // happens — causing indefinite silent production deadlock (p72: 570 s gap).
     virtual void           clear_syncing() = 0;
@@ -143,6 +143,7 @@ public:
     void        reconnect_seeds();
     void        pause_block_processing();
     void        resume_block_processing();
+    void        reset_peers_after_recovery();
 
     // ── Our node state ───────────────────────────────────────────
     dlt_node_status get_node_status() const { return _node_status; }
@@ -315,6 +316,8 @@ private:
 
     // ── FORWARD fallbehind ──────────────────────────────────────
     static constexpr uint32_t       FORWARD_FALLBEHIND_THRESHOLD = 2; ///< Blocks behind peer before FORWARD→SYNC
+    static constexpr uint32_t       FORWARD_BEHIND_GRACE_SEC = 15;   ///< Grace period after SYNC→FORWARD before checking peers
+    fc::time_point                  _forward_entered_time;            ///< When we last entered FORWARD mode
 
     // ── Peer state ───────────────────────────────────────────────
     peer_id                         _next_peer_id = 1;
@@ -385,6 +388,13 @@ private:
     static constexpr uint32_t       GAP_FILL_COOLDOWN_SEC = 5;  ///< Min seconds between gap fill attempts
     static constexpr uint32_t       GAP_FILL_TIMEOUT_SEC = 15;  ///< Max seconds to wait for gap fill reply
     uint32_t                        _highest_seen_block_num = 0; ///< Highest block num seen from any source
+
+    // When "our fork is losing" is detected in gap fill reply, this is set to
+    // our LIB so the next request_gap_fill() starts from LIB instead of
+    // our_head.  Blocks from LIB onward include the divergence point, giving
+    // fork_db the majority chain blocks it needs to trigger a fork switch.
+    // Reset to 0 after use (one-shot).
+    uint32_t                        _gap_fill_fork_override_start = 0;
 
     // ── Gap fill rejection tracking ──────────────────────────────
     uint32_t                        _gap_rejected_block_num = 0;  ///< Last block num rejected by gap fill

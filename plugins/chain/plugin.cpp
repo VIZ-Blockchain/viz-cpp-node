@@ -139,7 +139,7 @@ namespace chain {
         // particularly when the emergency master receives blocks from a
         // competing fork that have gap=0 but previous != head_block_id.
         if (block_applied) {
-            currently_syncing.store(currently_syncing_flag, std::memory_order_relaxed);
+            currently_syncing.store(currently_syncing_flag, std::memory_order_release);
             if (currently_syncing_flag) {
                 if (!sync_start_logged) {
                     ilog("\033[92m>>> Syncing Blockchain started from block #${n} (head: ${head})\033[0m",
@@ -280,11 +280,11 @@ namespace chain {
     }
 
     bool plugin::is_syncing() const {
-        return my->currently_syncing.load(std::memory_order_relaxed);
+        return my->currently_syncing.load(std::memory_order_acquire);
     }
 
     void plugin::clear_syncing() {
-        if (my->currently_syncing.exchange(false, std::memory_order_relaxed)) {
+        if (my->currently_syncing.exchange(false, std::memory_order_acq_rel)) {
             ilog("Sync complete: cleared currently_syncing flag (validator block production may resume)");
             my->sync_start_logged = false;
         }
@@ -631,7 +631,9 @@ namespace chain {
         try {
             ilog("Opening shared memory from ${path}", ("path", my->shared_memory_dir.generic_string()));
             my->db.open(data_dir, my->shared_memory_dir, CHAIN_INIT_SUPPLY, my->shared_memory_size, chainbase::database::read_write/*, my->validate_invariants*/ );
+            ilog("db.open() completed successfully, head_block_num=${h}", ("h", my->db.head_block_num()));
             auto head_block_log = my->db.get_block_log().head();
+            ilog("block_log head=${h}", ("h", head_block_log ? std::to_string(head_block_log->block_num()) : std::string("none")));
             my->replay |= head_block_log && my->db.revision() != head_block_log->block_num();
 
             if (my->replay) {
@@ -884,13 +886,40 @@ namespace chain {
 
     void plugin::attempt_auto_recovery() {
         static std::atomic<bool> recovery_in_progress{false};
+        static constexpr int MAX_CONSECUTIVE_RECOVERIES = 3;
+        static constexpr int RECOVERY_COOLDOWN_SEC = 300; // 5 minutes
+        static int consecutive_recoveries = 0;
+        static fc::time_point last_recovery_time;
+
         bool expected = false;
         if (!recovery_in_progress.compare_exchange_strong(expected, true)) {
             wlog("Auto-recovery already in progress, skipping duplicate attempt");
             return;
         }
 
-        wlog("=== IMMEDIATE AUTO-RECOVERY: shared memory corruption detected ===");
+        // Guard against infinite recovery loops: if the same block keeps
+        // failing after recovery, the snapshot or block log may be corrupted.
+        // Reset the counter after a cooldown period to allow eventual retry.
+        auto now = fc::time_point::now();
+        if (last_recovery_time != fc::time_point() &&
+            (now - last_recovery_time).to_seconds() > RECOVERY_COOLDOWN_SEC) {
+            consecutive_recoveries = 0;
+        }
+        consecutive_recoveries++;
+        last_recovery_time = now;
+
+        if (consecutive_recoveries > MAX_CONSECUTIVE_RECOVERIES) {
+            elog("Auto-recovery limit reached: ${n} consecutive attempts within ${c}s cooldown. "
+                 "The snapshot or block log may be corrupted — manual intervention required. "
+                 "Try a fresh snapshot or delete the block log.",
+                 ("n", consecutive_recoveries)("c", RECOVERY_COOLDOWN_SEC));
+            recovery_in_progress.store(false, std::memory_order_release);
+            appbase::app().quit();
+            return;
+        }
+
+        wlog("=== IMMEDIATE AUTO-RECOVERY: shared memory corruption detected (attempt ${n}/${max}) ===",
+             ("n", consecutive_recoveries)("max", MAX_CONSECUTIVE_RECOVERIES));
 
         // 1. Find latest snapshot
         fc::path snap = my->find_latest_snapshot();
@@ -926,7 +955,7 @@ namespace chain {
         }
 
         // Mark syncing so witness plugin defers block production during recovery.
-        my->currently_syncing.store(true, std::memory_order_relaxed);
+        my->currently_syncing.store(true, std::memory_order_release);
 
         wlog("Auto-recovery: closing database and recovering from snapshot ${p}...", ("p", snap.string()));
 
@@ -946,18 +975,41 @@ namespace chain {
             wlog("=== AUTO-RECOVERY COMPLETE: node resumed at block ${n} ===",
                  ("n", my->db.head_block_num()));
 
+            // Recovery is complete: clear the syncing flag so the validator
+            // plugin can resume block production once the post-pause catchup
+            // window closes.  The DLT P2P delegate calls db.push_block()
+            // directly and bypasses plugin_impl::accept_block(), so the
+            // flag-update path that would otherwise self-clear this on the
+            // next applied block never runs on the DLT path.  Without this
+            // explicit reset, the flag set above stays true forever and
+            // is_syncing() permanently gates production with not_synced.
+            // The remaining catchup window is gated by _catchup_after_pause
+            // in the P2P layer, which clears itself once peers are no longer
+            // ahead of our head.
+            my->currently_syncing.store(false, std::memory_order_release);
+
             // 5. Resume P2P now that the database is fully rebuilt.
             //    do_snapshot_load(is_recovery=true) already set LIB = head
             //    so P2P will request blocks after the snapshot head.
             try {
                 auto* p2p_plug = appbase::app().find_plugin<graphene::plugins::p2p::p2p_plugin>();
                 if (p2p_plug && p2p_plug->get_state() == appbase::abstract_plugin::started) {
+                    // Clear soft-bans BEFORE resuming so that peers banned
+                    // before the corruption (which may carry the majority fork)
+                    // can reconnect and serve blocks immediately after recovery.
+                    p2p_plug->reset_peers_after_recovery();
                     p2p_plug->resume_block_processing();
                     wlog("Auto-recovery: P2P block processing resumed");
                 }
             } catch (...) {
                 wlog("Auto-recovery: failed to resume P2P");
             }
+
+            // Allow future recovery attempts.  Without this reset the
+            // static atomic stays true forever and any subsequent
+            // corruption event is silently discarded, leaving the node
+            // permanently stuck.
+            recovery_in_progress.store(false, std::memory_order_release);
         } catch (const fc::exception& e) {
             elog("Auto-recovery FAILED during snapshot load: ${e}", ("e", e.to_detail_string()));
             appbase::app().quit();

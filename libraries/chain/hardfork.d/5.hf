@@ -1,4 +1,4 @@
-// 5 Hardfork on VIZ mainnet, fix witnesses votes
+// 5 Hardfork on VIZ mainnet, fix validators votes
 #ifndef CHAIN_HARDFORK_5
 #define CHAIN_HARDFORK_5 5
 #define CHAIN_HARDFORK_5_TIME 1550656800 // 20 Feb 2019 10:00:00 GMT

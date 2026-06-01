@@ -421,10 +421,22 @@ namespace graphene {
                 auto con = server->get_con_from_hdl(hdl);
                 con->defer_http_response();
 
+                // CORS preflight
+                if (con->get_request().get_method() == "OPTIONS") {
+                    con->append_header("Access-Control-Allow-Origin", "*");
+                    con->append_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+                    con->append_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+                    con->append_header("Access-Control-Max-Age", "86400");
+                    con->set_status(websocketpp::http::status_code::ok);
+                    try { con->send_http_response(); } catch (...) {}
+                    return;
+                }
+
                 thread_pool_ios.post([con, this]() {
                     auto body = con->get_request_body();
 
                     if (body.empty()) {
+                        con->append_header("Access-Control-Allow-Origin", "*");
                         con->set_body("empty request body");
                         con->set_status(websocketpp::http::status_code::bad_request);
                         try { con->send_http_response(); } catch (...) {}
@@ -439,12 +451,14 @@ namespace graphene {
                         // Invalid JSON — skip cache, let json_rpc handle the error
                         try {
                             api->call(body, [con](const std::string &data){
+                                con->append_header("Access-Control-Allow-Origin", "*");
                                 con->set_body(data);
                                 con->set_status(websocketpp::http::status_code::ok);
                                 con->send_http_response();
                             });
                         } catch (fc::exception &e) {
                             edump((e));
+                            con->append_header("Access-Control-Allow-Origin", "*");
                             con->set_body("Could not call API");
                             con->set_status(websocketpp::http::status_code::not_found);
                             try { con->send_http_response(); } catch (...) {}
@@ -466,6 +480,7 @@ namespace graphene {
                         if (cached_response.valid()) {
                             // Patch the id in cached response to match request
                             std::string patched = patch_response_id(*cached_response, request_id);
+                            con->append_header("Access-Control-Allow-Origin", "*");
                             con->set_body(patched);
                             con->set_status(websocketpp::http::status_code::ok);
                             con->send_http_response();
@@ -477,6 +492,7 @@ namespace graphene {
                         api->call(body, [con, this, request_hash, cacheable](const std::string &data){
                             // this lambda can be called from any thread in application
                             //   for example, when task was delegated ( see msg_pack(msg_pack&&) )
+                            con->append_header("Access-Control-Allow-Origin", "*");
                             con->set_body(data);
                             con->set_status(websocketpp::http::status_code::ok);
                             con->send_http_response();
@@ -489,6 +505,7 @@ namespace graphene {
                     } catch (fc::exception &e) {
                         // this case happens if exception was thrown on parsing request
                         edump((e));
+                        con->append_header("Access-Control-Allow-Origin", "*");
                         con->set_body("Could not call API");
                         con->set_status(websocketpp::http::status_code::not_found);
                         // this sending response can't be merged with sending response from try-block
@@ -613,6 +630,8 @@ namespace graphene {
             }
 
             void webserver_plugin::plugin_shutdown() {
+                my->chain_sync_con.disconnect();
+                my->applied_block_conn.disconnect();
                 my->stop_webserver();
             }
 
