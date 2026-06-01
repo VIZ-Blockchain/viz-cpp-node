@@ -2174,6 +2174,12 @@ namespace graphene { namespace chain {
                         new chainbase::database::session(start_undo_session()));
                     try {
                         apply_block(new_block, skip);
+                    } catch (const fc::exception& e) {
+                        // fc::exception is the actual type thrown by apply_block()
+                        // (FC_CAPTURE_AND_RETHROW wraps std::exception into fc::exception).
+                        // Same bad_alloc guard as the std::exception handler below.
+                        try { session.reset(); } catch (...) {}
+                        throw;
                     } catch (const std::exception& e) {
                         // Attempt explicit undo before rethrowing.  If undo()
                         // throws (shared memory exhausted), suppress it — the

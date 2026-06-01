@@ -12,6 +12,7 @@
 
 #include <fc/log/logger.hpp>
 
+#include <atomic>
 #include <map>
 #include <mutex>
 
@@ -678,8 +679,8 @@ namespace graphene { namespace chain {
 
             uint32_t _block_num_check_free_memory = 1000;
 
-            bool _pending_resize = false;
-            size_t _pending_resize_target = 0;
+            std::atomic<bool> _pending_resize{false};
+            std::atomic<size_t> _pending_resize_target{0};
             // Serializes concurrent apply_pending_resize() calls from the
             // validator thread and the P2P thread.  Both call it before their
             // respective write locks, so without this mutex both threads can

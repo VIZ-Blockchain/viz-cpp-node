@@ -3411,12 +3411,16 @@ void dlt_p2p_node::block_validation_timeout() {
 void dlt_p2p_node::periodic_task() {
     // Non-DB-access housekeeping always runs.
     try { periodic_reconnect_check(); }
+        catch (const fc::exception& e) { wlog("periodic_reconnect_check: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("periodic_reconnect_check: ${e}", ("e", std::string(e.what()))); }
     try { periodic_lifecycle_timeout_check(); }
+        catch (const fc::exception& e) { wlog("periodic_lifecycle_timeout_check: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("periodic_lifecycle_timeout_check: ${e}", ("e", std::string(e.what()))); }
     try { block_validation_timeout(); }
+        catch (const fc::exception& e) { wlog("block_validation_timeout: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("block_validation_timeout: ${e}", ("e", std::string(e.what()))); }
     try { periodic_mempool_cleanup(); }
+        catch (const fc::exception& e) { wlog("periodic_mempool_cleanup: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("periodic_mempool_cleanup: ${e}", ("e", std::string(e.what()))); }
 
     // When block processing is paused (snapshot creation in progress),
@@ -3439,22 +3443,29 @@ void dlt_p2p_node::periodic_task() {
                     }
                 }
             }
-        } catch (const std::exception& e) { wlog("unban_check(paused): ${e}", ("e", std::string(e.what()))); }
+        } catch (const fc::exception& e) { wlog("unban_check(paused): ${e}", ("e", e.to_detail_string())); }
+          catch (const std::exception& e) { wlog("unban_check(paused): ${e}", ("e", std::string(e.what()))); }
         return;
     }
 
     // Normal path: all periodic operations run.
     try { sync_stagnation_check(); }
+        catch (const fc::exception& e) { wlog("sync_stagnation_check: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("sync_stagnation_check: ${e}", ("e", std::string(e.what()))); }
     try { check_sync_catchup(); }   // P26 fix: periodic catch-up detection
+        catch (const fc::exception& e) { wlog("check_sync_catchup: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("check_sync_catchup: ${e}", ("e", std::string(e.what()))); }
     try { check_forward_behind(); } // P27 fix: detect falling behind in FORWARD mode
+        catch (const fc::exception& e) { wlog("check_forward_behind: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("check_forward_behind: ${e}", ("e", std::string(e.what()))); }
     try { check_forward_stagnation(); } // P37 fix: detect head stuck in FORWARD mode
+        catch (const fc::exception& e) { wlog("check_forward_stagnation: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("check_forward_stagnation: ${e}", ("e", std::string(e.what()))); }
     try { request_gap_fill(); }     // P36 fix: fill gaps via exchange-enabled peers
+        catch (const fc::exception& e) { wlog("request_gap_fill: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("request_gap_fill: ${e}", ("e", std::string(e.what()))); }
     try { periodic_peer_exchange(); }
+        catch (const fc::exception& e) { wlog("periodic_peer_exchange: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("periodic_peer_exchange: ${e}", ("e", std::string(e.what()))); }
 
     // Post-pause catchup: drain queued blocks and/or clear the flag
@@ -3483,7 +3494,8 @@ void dlt_p2p_node::periodic_task() {
                 ilog(DLT_LOG_GREEN "Post-pause catchup complete, no gap remaining (head=#${h})" DLT_LOG_RESET,
                      ("h", our_head));
             }
-        } catch (const std::exception& e) { wlog("catchup_after_pause: ${e}", ("e", std::string(e.what()))); }
+        } catch (const fc::exception& e) { wlog("catchup_after_pause: ${e}", ("e", e.to_detail_string())); }
+          catch (const std::exception& e) { wlog("catchup_after_pause: ${e}", ("e", std::string(e.what()))); }
     }
 
     // Log node status every 1 minute (12 cycles at 5s)
@@ -3491,6 +3503,7 @@ void dlt_p2p_node::periodic_task() {
     if (_status_log_counter >= 12) {
         _status_log_counter = 0;
         try { log_node_status(); }
+            catch (const fc::exception& e) { wlog("log_node_status: ${e}", ("e", e.to_detail_string())); }
             catch (const std::exception& e) { wlog("log_node_status: ${e}", ("e", std::string(e.what()))); }
     }
 
@@ -3499,6 +3512,7 @@ void dlt_p2p_node::periodic_task() {
     if (_stats_log_counter >= _stats_log_interval_sec) {
         _stats_log_counter = 0;
         try { log_peer_stats(); }
+            catch (const fc::exception& e) { wlog("log_peer_stats: ${e}", ("e", e.to_detail_string())); }
             catch (const std::exception& e) { wlog("log_peer_stats: ${e}", ("e", std::string(e.what()))); }
     }
 
@@ -3517,7 +3531,8 @@ void dlt_p2p_node::periodic_task() {
                 }
             }
         }
-    } catch (const std::exception& e) { wlog("unban_check: ${e}", ("e", std::string(e.what()))); }
+    } catch (const fc::exception& e) { wlog("unban_check: ${e}", ("e", e.to_detail_string())); }
+      catch (const std::exception& e) { wlog("unban_check: ${e}", ("e", std::string(e.what()))); }
 }
 
 // ── Accept loop ─────────────────────────────────────────────────
