@@ -1,6 +1,7 @@
 #include <graphene/plugins/webserver/webserver_plugin.hpp>
 
 #include <graphene/plugins/chain/plugin.hpp>
+#include <graphene/plugins/snapshot/plugin.hpp>
 #include <graphene/protocol/block.hpp>
 
 #include <fc/network/ip.hpp>
@@ -225,6 +226,7 @@ namespace graphene {
 
                 plugins::json_rpc::plugin *api;
                 chain::plugin *chain_plugin = nullptr;
+                snapshot::snapshot_plugin *snap_plugin = nullptr;
                 boost::signals2::connection chain_sync_con;
                 boost::signals2::connection applied_block_conn;
 
@@ -360,7 +362,8 @@ namespace graphene {
                 auto con = server->get_con_from_hdl(hdl);
                 thread_pool_ios.post([con, msg, this]() {
                     try {
-                        if (chain_plugin && chain_plugin->is_recovering()) {
+                        if ((chain_plugin && chain_plugin->is_recovering()) ||
+                        (snap_plugin && snap_plugin->is_snapshot_reloading())) {
                             auto ec = con->send("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32003,\"message\":\"Node is recovering from shared memory corruption, please retry later\"},\"id\":null}");
                             if (ec) throw websocketpp::exception(ec);
                             return;
@@ -440,7 +443,8 @@ namespace graphene {
                 }
 
                 thread_pool_ios.post([con, this]() {
-                    if (chain_plugin && chain_plugin->is_recovering()) {
+                    if ((chain_plugin && chain_plugin->is_recovering()) ||
+                        (snap_plugin && snap_plugin->is_snapshot_reloading())) {
                         con->append_header("Access-Control-Allow-Origin", "*");
                         con->set_body("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32003,\"message\":\"Node is recovering from shared memory corruption, please retry later\"},\"id\":null}");
                         con->set_status(websocketpp::http::status_code::service_unavailable);
@@ -624,6 +628,7 @@ namespace graphene {
                 FC_ASSERT(my->api != nullptr, "Could not find API Register Plugin");
 
                 my->chain_plugin = appbase::app().find_plugin<chain::plugin>();
+                my->snap_plugin = appbase::app().find_plugin<snapshot::snapshot_plugin>();
 
                 chain::plugin *chain = my->chain_plugin;
                 if (chain != nullptr && chain->get_state() != appbase::abstract_plugin::started) {

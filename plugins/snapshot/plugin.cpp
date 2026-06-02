@@ -4131,4 +4131,9 @@ bool snapshot_plugin::is_snapshot_in_progress() const {
     return my->snapshot_in_progress.load(std::memory_order_relaxed);
 }
 
+bool snapshot_plugin::is_snapshot_reloading() const {
+    if (!my) return false;
+    return my->_snapshot_reloading.load(std::memory_order_acquire);
+}
+
 } } } // graphene::plugins::snapshot
