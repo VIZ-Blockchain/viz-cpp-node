@@ -224,6 +224,7 @@ namespace graphene {
                 asio::io_service::work thread_pool_work;
 
                 plugins::json_rpc::plugin *api;
+                chain::plugin *chain_plugin = nullptr;
                 boost::signals2::connection chain_sync_con;
                 boost::signals2::connection applied_block_conn;
 
@@ -359,6 +360,12 @@ namespace graphene {
                 auto con = server->get_con_from_hdl(hdl);
                 thread_pool_ios.post([con, msg, this]() {
                     try {
+                        if (chain_plugin && chain_plugin->is_recovering()) {
+                            auto ec = con->send("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32003,\"message\":\"Node is recovering from shared memory corruption, please retry later\"},\"id\":null}");
+                            if (ec) throw websocketpp::exception(ec);
+                            return;
+                        }
+
                         if (msg->get_opcode() == websocketpp::frame::opcode::text) {
                             auto body = msg->get_payload();
 
@@ -433,6 +440,14 @@ namespace graphene {
                 }
 
                 thread_pool_ios.post([con, this]() {
+                    if (chain_plugin && chain_plugin->is_recovering()) {
+                        con->append_header("Access-Control-Allow-Origin", "*");
+                        con->set_body("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32003,\"message\":\"Node is recovering from shared memory corruption, please retry later\"},\"id\":null}");
+                        con->set_status(websocketpp::http::status_code::service_unavailable);
+                        try { con->send_http_response(); } catch (...) {}
+                        return;
+                    }
+
                     auto body = con->get_request_body();
 
                     if (body.empty()) {
@@ -608,7 +623,9 @@ namespace graphene {
                 my->api = appbase::app().find_plugin<plugins::json_rpc::plugin>();
                 FC_ASSERT(my->api != nullptr, "Could not find API Register Plugin");
 
-                chain::plugin *chain = appbase::app().find_plugin<chain::plugin>();
+                my->chain_plugin = appbase::app().find_plugin<chain::plugin>();
+
+                chain::plugin *chain = my->chain_plugin;
                 if (chain != nullptr && chain->get_state() != appbase::abstract_plugin::started) {
                     ilog("Waiting for chain plugin to start");
                     my->chain_sync_con = chain->on_sync.connect([this]() {

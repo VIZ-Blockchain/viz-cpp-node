@@ -65,6 +65,7 @@ namespace chain {
         bool sync_start_logged = false; // guard to log sync start only once
 
         std::atomic<bool> currently_syncing{false}; // true while processing P2P sync blocks
+        std::atomic<bool> recovery_in_progress{false}; // true while auto-recovery is running
 
         bool pending_snapshot_load = false; // set when snapshot args present but callback not yet registered
 
@@ -281,6 +282,10 @@ namespace chain {
 
     bool plugin::is_syncing() const {
         return my->currently_syncing.load(std::memory_order_acquire);
+    }
+
+    bool plugin::is_recovering() const {
+        return my->recovery_in_progress.load(std::memory_order_acquire);
     }
 
     void plugin::clear_syncing() {
@@ -885,14 +890,13 @@ namespace chain {
     }
 
     void plugin::attempt_auto_recovery() {
-        static std::atomic<bool> recovery_in_progress{false};
         static constexpr int MAX_CONSECUTIVE_RECOVERIES = 3;
         static constexpr int RECOVERY_COOLDOWN_SEC = 300; // 5 minutes
         static int consecutive_recoveries = 0;
         static fc::time_point last_recovery_time;
 
         bool expected = false;
-        if (!recovery_in_progress.compare_exchange_strong(expected, true)) {
+        if (!my->recovery_in_progress.compare_exchange_strong(expected, true)) {
             wlog("Auto-recovery already in progress, skipping duplicate attempt");
             return;
         }
@@ -913,7 +917,7 @@ namespace chain {
                  "The snapshot or block log may be corrupted — manual intervention required. "
                  "Try a fresh snapshot or delete the block log.",
                  ("n", consecutive_recoveries)("c", RECOVERY_COOLDOWN_SEC));
-            recovery_in_progress.store(false, std::memory_order_release);
+            my->recovery_in_progress.store(false, std::memory_order_release);
             appbase::app().quit();
             return;
         }
@@ -1006,10 +1010,9 @@ namespace chain {
             }
 
             // Allow future recovery attempts.  Without this reset the
-            // static atomic stays true forever and any subsequent
-            // corruption event is silently discarded, leaving the node
-            // permanently stuck.
-            recovery_in_progress.store(false, std::memory_order_release);
+            // atomic stays true forever and any subsequent corruption
+            // event is silently discarded, leaving the node permanently stuck.
+            my->recovery_in_progress.store(false, std::memory_order_release);
         } catch (const fc::exception& e) {
             elog("Auto-recovery FAILED during snapshot load: ${e}", ("e", e.to_detail_string()));
             appbase::app().quit();

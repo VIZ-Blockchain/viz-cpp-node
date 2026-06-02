@@ -96,6 +96,10 @@ namespace graphene {
                 /// until this returns false.
                 bool is_syncing() const;
 
+                /// Returns true while auto-recovery from shared memory corruption is running.
+                /// The webserver plugin uses this to return 503 instead of touching the database.
+                bool is_recovering() const;
+
                 /// Explicitly clear the syncing flag.  Called by the P2P
                 /// layer when sync completes (all peers report zero
                 /// unfetched items) so that the witness plugin can resume
