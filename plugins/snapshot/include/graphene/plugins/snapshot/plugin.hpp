@@ -92,6 +92,11 @@ namespace graphene { namespace plugins { namespace snapshot {
         /// snapshot serialization (avoids write-lock contention).
         bool is_snapshot_in_progress() const;
 
+        /// Returns true while a snapshot is being loaded (hot-reload during stalled sync detection).
+        /// During this phase the database holds a WRITE lock, so incoming RPC reads will time out.
+        /// The webserver plugin uses this to return 503 instead of attempting database reads.
+        bool is_snapshot_reloading() const;
+
     private:
         class plugin_impl;
         std::unique_ptr<plugin_impl> my;

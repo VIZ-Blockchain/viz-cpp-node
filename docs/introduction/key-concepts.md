@@ -45,6 +45,12 @@ An authority is a multi-sig structure: `{ weight_threshold, account_auths[], key
 - Created by staking VIZ; withdrawn back to VIZ over 28 intervals (≈28 days)
 - Not directly transferable; can be delegated to other accounts
 
+### Community Symbol: Ƶ
+
+The community has chosen **Ƶ** as the short symbol for VIZ. Most wallets, explorers, and applications display it instead of the full ticker.
+
+It is also common practice to show balances with **2 decimal places** regardless of the underlying token type. Even staked funds (SHARES) are often displayed as `Ƶ` with a note that they are staked in the account, rather than switching to the `SHARES` unit and its 6-decimal format.
+
 ---
 
 ## Energy System

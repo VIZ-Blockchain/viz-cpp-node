@@ -975,6 +975,18 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(account_authority_index, account_authority_object, "account_authority")
     EXPORT_INDEX(validator_index, validator_object, "validator")
     EXPORT_INDEX(validator_vote_index, validator_vote_object, "validator_vote")
+    // Sanity: if validators exist but votes are absent, the chainbase type enum
+    // likely shifted (types added/removed before validator_vote_object_type).
+    // This would silently corrupt the snapshot.
+    {
+        auto n_validators = state["validator"].get_array().size();
+        auto n_votes      = state["validator_vote"].get_array().size();
+        if (n_validators > 0 && n_votes == 0)
+            wlog("SNAPSHOT INTEGRITY: ${v} validators but 0 validator votes — "
+                 "validator_vote_index may be empty due to chainbase type-enum mismatch. "
+                 "Snapshot will be INCOMPLETE.",
+                 ("v", n_validators));
+    }
     EXPORT_INDEX(block_summary_index, block_summary_object, "block_summary")
     EXPORT_INDEX(content_index, content_object, "content")
     EXPORT_INDEX(content_vote_index, content_vote_object, "content_vote")
@@ -1560,6 +1572,14 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         if (state.contains("validator_vote")) {
             auto n = detail::import_validator_votes(db, state["validator_vote"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} validator votes" CLOG_RESET, ("n", n));
+            // Defensive fallback: validator_vote was present but empty; the snapshot may have
+            // been produced from a chainbase DB with a type-enum mismatch (see export warning).
+            // If an old witness_vote key also exists with data, use it to recover.
+            if (n == 0 && state.contains("witness_vote")) {
+                auto n2 = detail::import_validator_votes(db, state["witness_vote"].get_array());
+                if (n2 > 0)
+                    ilog(CLOG_ORANGE "Imported ${n} validator votes (recovered from witness_vote)" CLOG_RESET, ("n", n2));
+            }
         } else if (state.contains("witness_vote")) {
             // backward compat: old snapshots used "witness_vote" key
             auto n = detail::import_validator_votes(db, state["witness_vote"].get_array());
@@ -1953,26 +1973,38 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
     // deferred. We do NOT re-check is_validator_producing_soon() here to avoid an
     // infinite deferral loop where the validator is always scheduled soon.
     //
-    // Instead, we wait for the specific validator slot to be filled: the deferred
-    // snapshot only fires once head_block_time() >= pending_snapshot_safe_after_time,
-    // meaning the validator's block has been produced and applied (or the slot was
-    // missed and the chain moved past it). This prevents the snapshot from starting
-    // while the validator is about to produce.
+    // We wait for a block to be applied that is STRICTLY AFTER the validator slot
+    // we deferred for: head_block_time() > pending_snapshot_safe_after_time.
+    //
+    // Why strictly greater (not >=):
+    //   The applied_block signal is dispatched synchronously inside _push_block,
+    //   BEFORE generate_block() returns to the validator and BEFORE the validator
+    //   calls p2p().broadcast_block(). If we fired the snapshot on the same block
+    //   the local validator just produced, the snapshot read-lock could start
+    //   before the produced block has been broadcast to peers.
+    //
+    //   Requiring head_block_time > slot_time means we wait until a SUBSEQUENT
+    //   block is applied. That block is necessarily produced by another validator
+    //   on top of ours, which proves our block was successfully produced, applied
+    //   locally, and propagated through the network. Only then is it safe to
+    //   start the snapshot read pass.
+    //
+    //   Cost: ~one block interval of additional delay, but only when the local
+    //   validator was the deferral target. When we are not the producer, the
+    //   snapshot fires immediately at the originating block (no deferral path).
     if (snapshot_pending && !is_syncing) {
         // If safe_after_time is epoch (lookup failed), fire immediately as fallback.
-        // If head_block_time has reached/passed the validator slot time, the block
-        // at that slot has been applied (or the slot was skipped by a gap).
         bool safe_to_fire = (pending_snapshot_safe_after_time == fc::time_point_sec()) ||
-                            (db.head_block_time() >= pending_snapshot_safe_after_time);
+                            (db.head_block_time() > pending_snapshot_safe_after_time);
         if (safe_to_fire) {
             fc::path output(pending_snapshot_path);
             snapshot_pending = false;
             pending_snapshot_path.clear();
             pending_snapshot_safe_after_time = fc::time_point_sec();
-            ilog(CLOG_GREEN "Creating deferred snapshot now (validator slot passed): ${p}" CLOG_RESET, ("p", output.string()));
+            ilog(CLOG_GREEN "Creating deferred snapshot now (validator slot passed and block broadcast): ${p}" CLOG_RESET, ("p", output.string()));
             schedule_async_snapshot(output, "deferred");
         } else {
-            dlog("Deferred snapshot waiting for validator slot at ${t} (head_block_time=${h})",
+            dlog("Deferred snapshot waiting for block strictly after validator slot ${t} (head_block_time=${h})",
                  ("t", pending_snapshot_safe_after_time)("h", db.head_block_time()));
         }
     }
@@ -4097,6 +4129,11 @@ const std::vector<std::string>& snapshot_plugin::get_trusted_snapshot_peers() co
 bool snapshot_plugin::is_snapshot_in_progress() const {
     if (!my) return false;
     return my->snapshot_in_progress.load(std::memory_order_relaxed);
+}
+
+bool snapshot_plugin::is_snapshot_reloading() const {
+    if (!my) return false;
+    return my->_snapshot_reloading.load(std::memory_order_acquire);
 }
 
 } } } // graphene::plugins::snapshot

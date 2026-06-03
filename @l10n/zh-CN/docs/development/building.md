@@ -26,10 +26,8 @@ chmod +x build-linux.sh
 
 ```bash
 ./build-linux.sh              # Release 构建（默认）
-./build-linux.sh -l           # LOW_MEMORY_NODE（验证者节点）
 ./build-linux.sh -n           # Testnet 构建
 ./build-linux.sh -t Debug -j4 # Debug 构建，4 个并行任务
-./build-linux.sh --skip-deps  # 跳过依赖安装
 ./build-linux.sh --install    # 构建后安装到系统
 
 # 自定义依赖路径
@@ -54,7 +52,6 @@ chmod +x build-mac.sh
 **选项：**
 
 ```bash
-./build-mac.sh -l              # 低内存节点
 ./build-mac.sh -n              # Testnet
 ./build-mac.sh --skip-deps     # 跳过 Homebrew 安装
 ./build-mac.sh --boost-root /opt/boost_1_74_0
@@ -77,7 +74,6 @@ build-mingw.bat
 | 变量 | 默认值 | 描述 |
 |------|--------|------|
 | `VIZ_BUILD_TYPE` | Release | Release 或 Debug |
-| `VIZ_LOW_MEMORY` | OFF | 启用低内存节点 |
 | `VIZ_BUILD_TESTNET` | OFF | Testnet 构建 |
 | `VIZ_FULL_STATIC` | OFF | 完全静态二进制文件 |
 | `VIZ_CMAKE_EXTRA` | — | 附加 CMake 标志 |
@@ -100,7 +96,6 @@ build-msvc.bat
 |------|--------|------|
 | `VIZ_VS_VERSION` | "Visual Studio 17 2022" | Visual Studio 生成器 |
 | `VIZ_BUILD_TYPE` | Release | 构建类型 |
-| `VIZ_LOW_MEMORY` | OFF | 低内存节点 |
 | `VIZ_BUILD_TESTNET` | OFF | Testnet 构建 |
 
 **要求：** Visual Studio 2019+（带"Desktop development with C++"工作负载）、CMake 3.16+。
@@ -125,7 +120,6 @@ build-msvc.bat
 | 选项 | 默认值 | 描述 |
 |------|--------|------|
 | `BUILD_TESTNET` | OFF | 为 testnet 构建 |
-| `LOW_MEMORY_NODE` | OFF | 排除非共识数据（减少 RAM） |
 | `CHAINBASE_CHECK_LOCKING` | OFF | 启用锁检查（仅用于开发） |
 | `BUILD_SHARED_LIBRARIES` | OFF | 构建共享库 |
 | `USE_PCH` | OFF | 启用预编译头文件（加速重新构建） |
@@ -139,9 +133,6 @@ build-msvc.bat
 ```bash
 # Release 构建
 python3 programs/build_helpers/configure_build.py --release --src ../..
-
-# 带低内存的 Debug
-python3 programs/build_helpers/configure_build.py --debug --low-memory
 
 # 使用 MinGW 交叉编译 Windows 版本
 python3 programs/build_helpers/configure_build.py --win --release

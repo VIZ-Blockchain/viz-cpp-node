@@ -1,0 +1,1353 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "VIZ Blockchain JSON-RPC API Specification",
+  "description": "Complete specification of all JSON-RPC methods exposed by VIZ node plugins. Intended as a machine-readable spec for API explorer generation.",
+  "version": "1.0.0",
+  "plugins": [
+    {
+      "name": "validator_api",
+      "description": "Provides read-only access to validator (witness) data: schedules, votes, and validator registration info.",
+      "methods": [
+        {
+          "method": "get_active_validators",
+          "description": "Returns the list of currently active validator account names that are participating in block production.",
+          "aliases": ["get_active_witnesses"],
+          "params": [],
+          "returns": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Array of account names of currently active validators."
+          }
+        },
+        {
+          "method": "get_validator_schedule",
+          "description": "Returns the current validator schedule object, including the shuffled list of validators and their timeshares.",
+          "aliases": ["get_witness_schedule"],
+          "params": [],
+          "returns": {
+            "type": "object",
+            "description": "The validator_schedule_object containing current_shuffled_validators, timeshare, and related scheduling data."
+          }
+        },
+        {
+          "method": "get_validators",
+          "description": "Returns a list of validator objects by their database IDs. For each ID, returns either the validator_api_object or null if not found.",
+          "aliases": ["get_witnesses"],
+          "params": [
+            {
+              "name": "validator_ids",
+              "caption": "Validator IDs",
+              "description": "Array of validator object database IDs to look up.",
+              "type": "array",
+              "items": { "type": "integer" },
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of optional validator_api_object entries, one per requested ID."
+          }
+        },
+        {
+          "method": "get_validator_by_account",
+          "description": "Returns the validator object registered under a specific account name, or null if the account is not a validator.",
+          "aliases": ["get_witness_by_account"],
+          "params": [
+            {
+              "name": "account_name",
+              "caption": "Account Name",
+              "description": "The account name to look up as a validator.",
+              "type": "string",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "The validator_api_object for the account, or null if not a validator.",
+            "nullable": true
+          }
+        },
+        {
+          "method": "get_validators_by_vote",
+          "description": "Returns validators sorted by total votes (descending). Starts from a given account name. Only returns validators with votes > 0. Maximum 100 results.",
+          "aliases": ["get_witnesses_by_vote"],
+          "params": [
+            {
+              "name": "from",
+              "caption": "From Account",
+              "description": "The account name to start from. Use empty string to start from the top.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "limit",
+              "caption": "Limit",
+              "description": "Maximum number of results to return. Must not exceed 100.",
+              "type": "integer",
+              "required": true,
+              "maximum": 100
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of validator_api_object entries sorted by vote count."
+          }
+        },
+        {
+          "method": "get_validators_by_counted_vote",
+          "description": "Returns validators sorted by counted votes (descending). Starts from a given account name. Only returns validators with counted_votes > 0. Maximum 100 results.",
+          "aliases": ["get_witnesses_by_counted_vote"],
+          "params": [
+            {
+              "name": "from",
+              "caption": "From Account",
+              "description": "The account name to start from. Use empty string to start from the top.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "limit",
+              "caption": "Limit",
+              "description": "Maximum number of results to return. Must not exceed 100.",
+              "type": "integer",
+              "required": true,
+              "maximum": 100
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of validator_api_object entries sorted by counted vote."
+          }
+        },
+        {
+          "method": "get_validator_count",
+          "description": "Returns the total number of registered validators on the blockchain.",
+          "aliases": ["get_witness_count"],
+          "params": [],
+          "returns": {
+            "type": "integer",
+            "description": "Total count of registered validators."
+          }
+        },
+        {
+          "method": "lookup_validator_accounts",
+          "description": "Looks up validator account names starting from a lower bound. Returns up to 1000 results alphabetically.",
+          "aliases": ["lookup_witness_accounts"],
+          "params": [
+            {
+              "name": "lower_bound_name",
+              "caption": "Lower Bound Name",
+              "description": "The lower bound of the first account name to return. Use empty string to start from the beginning.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "limit",
+              "caption": "Limit",
+              "description": "Maximum number of results to return. Must not exceed 1000.",
+              "type": "integer",
+              "required": true,
+              "maximum": 1000
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Set of validator account names matching the query."
+          }
+        }
+      ]
+    },
+    {
+      "name": "account_history",
+      "description": "Tracks operations by account and provides per-account operation history queries.",
+      "methods": [
+        {
+          "method": "get_account_history",
+          "description": "Returns a map of operations for a given account in the sequence range [from-limit, from]. Each account operation has a sequence number starting from 0. Use from=-1 (4294967295) to get the most recent operations.",
+          "params": [
+            {
+              "name": "account",
+              "caption": "Account Name",
+              "description": "The account name whose operation history to retrieve.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "from",
+              "caption": "From Sequence",
+              "description": "The absolute sequence number. Use -1 (4294967295) for the most recent operation.",
+              "type": "integer",
+              "required": true
+            },
+            {
+              "name": "limit",
+              "caption": "Limit",
+              "description": "Maximum number of operations to return. Must be between 1 and 1000. Must be less than 'from' unless from is -1.",
+              "type": "integer",
+              "required": true,
+              "minimum": 1,
+              "maximum": 1000
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "Map of sequence number to applied_operation objects for the account."
+          }
+        }
+      ]
+    },
+    {
+      "name": "operation_history",
+      "description": "Tracks all blockchain operations and provides block-level and transaction-level operation queries.",
+      "methods": [
+        {
+          "method": "get_ops_in_block",
+          "description": "Returns the sequence of operations included or generated within a particular block. Virtual operations are generated by the blockchain (e.g. rewards) as opposed to user-submitted operations.",
+          "params": [
+            {
+              "name": "block_num",
+              "caption": "Block Number",
+              "description": "Height of the block whose operations should be returned.",
+              "type": "integer",
+              "required": true
+            },
+            {
+              "name": "only_virtual",
+              "caption": "Only Virtual",
+              "description": "Whether to only include virtual operations in the returned results.",
+              "type": "boolean",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of applied_operation objects from the specified block."
+          }
+        },
+        {
+          "method": "get_transaction",
+          "description": "Returns a transaction by its ID, including block number and transaction index within the block.",
+          "params": [
+            {
+              "name": "id",
+              "caption": "Transaction ID",
+              "description": "The hash (SHA-256 / ripemd160) of the transaction to retrieve.",
+              "type": "string",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "annotated_signed_transaction with block_num and transaction_num fields added."
+          }
+        }
+      ]
+    },
+    {
+      "name": "database_api",
+      "description": "The core read-only API for the blockchain database. Provides access to blocks, accounts, chain properties, authority validation, vesting delegations, and more.",
+      "methods": [
+        {
+          "method": "get_block_header",
+          "description": "Retrieves a block header by block number.",
+          "params": [
+            {
+              "name": "block_num",
+              "caption": "Block Number",
+              "description": "Height of the block whose header should be returned.",
+              "type": "integer",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "The block header, or null if no matching block was found.",
+            "nullable": true
+          }
+        },
+        {
+          "method": "get_block",
+          "description": "Retrieves a full, signed block by block number.",
+          "params": [
+            {
+              "name": "block_num",
+              "caption": "Block Number",
+              "description": "Height of the block to be returned.",
+              "type": "integer",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "The full signed block, or null if no matching block was found.",
+            "nullable": true
+          }
+        },
+        {
+          "method": "get_irreversible_block_header",
+          "description": "Retrieves a block header only if the block is irreversible. Returns null if the block has not yet been finalized.",
+          "params": [
+            {
+              "name": "block_num",
+              "caption": "Block Number",
+              "description": "Height of the block whose header should be returned.",
+              "type": "integer",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "The block header if the block is irreversible, or null.",
+            "nullable": true
+          }
+        },
+        {
+          "method": "get_irreversible_block",
+          "description": "Retrieves a full, signed block only if it is irreversible. Returns null if the block has not yet been finalized.",
+          "params": [
+            {
+              "name": "block_num",
+              "caption": "Block Number",
+              "description": "Height of the block to be returned.",
+              "type": "integer",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "The full signed block if irreversible, or null.",
+            "nullable": true
+          }
+        },
+        {
+          "method": "set_block_applied_callback",
+          "description": "Sets a callback function that is triggered on each newly generated block. Used for real-time block notifications via WebSocket.",
+          "params": [
+            {
+              "name": "callback",
+              "caption": "Callback",
+              "description": "Callback function to invoke when a new block is applied.",
+              "type": "function",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "null",
+            "description": "No return value (callback-based)."
+          }
+        },
+        {
+          "method": "get_config",
+          "description": "Retrieves compile-time constants and configuration values of the blockchain (e.g., chain ID, symbol, precision).",
+          "params": [],
+          "returns": {
+            "type": "object",
+            "description": "Object containing blockchain compile-time configuration constants."
+          }
+        },
+        {
+          "method": "get_dynamic_global_properties",
+          "description": "Retrieves the current dynamic global properties object, which contains real-time chain state such as head block number, total supply, and other dynamic metrics.",
+          "params": [],
+          "returns": {
+            "type": "object",
+            "description": "The dynamic_global_property_api_object with current chain state."
+          }
+        },
+        {
+          "method": "get_chain_properties",
+          "description": "Retrieves the chain properties as set by the median validator schedule (chain-wide constraints like account creation fee, maximum block size, etc.).",
+          "params": [],
+          "returns": {
+            "type": "object",
+            "description": "chain_api_properties object with median chain parameters."
+          }
+        },
+        {
+          "method": "get_hardfork_version",
+          "description": "Returns the current hardfork version of the blockchain.",
+          "params": [],
+          "returns": {
+            "type": "string",
+            "description": "The current hardfork version string (e.g. '0.23.0')."
+          }
+        },
+        {
+          "method": "get_next_scheduled_hardfork",
+          "description": "Returns the next scheduled hardfork version and the time it is planned to go live.",
+          "params": [],
+          "returns": {
+            "type": "object",
+            "description": "Object with hf_version (string) and live_time (ISO timestamp)."
+          }
+        },
+        {
+          "method": "get_accounts",
+          "description": "Returns full account objects for a list of account names. Includes balances, vesting, authority, and validator votes.",
+          "params": [
+            {
+              "name": "names",
+              "caption": "Account Names",
+              "description": "Array of account names to look up.",
+              "type": "array",
+              "items": { "type": "string" },
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of account_api_object entries. Only accounts that exist are returned."
+          }
+        },
+        {
+          "method": "lookup_account_names",
+          "description": "Looks up accounts by their names. Returns an optional account object for each name; null if the account does not exist.",
+          "params": [
+            {
+              "name": "account_names",
+              "caption": "Account Names",
+              "description": "Array of account names to look up.",
+              "type": "array",
+              "items": { "type": "string" },
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of optional account_api_object entries. Each element may be null."
+          }
+        },
+        {
+          "method": "lookup_accounts",
+          "description": "Looks up account names starting from a lower bound. Returns a set of account names in alphabetical order.",
+          "params": [
+            {
+              "name": "lower_bound_name",
+              "caption": "Lower Bound Name",
+              "description": "The lower bound of the first account name to return.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "limit",
+              "caption": "Limit",
+              "description": "Maximum number of results to return. Must not exceed 1000.",
+              "type": "integer",
+              "required": true,
+              "maximum": 1000
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Set of account names matching the query."
+          }
+        },
+        {
+          "method": "get_account_count",
+          "description": "Returns the total number of accounts registered on the blockchain.",
+          "params": [],
+          "returns": {
+            "type": "integer",
+            "description": "Total number of registered accounts."
+          }
+        },
+        {
+          "method": "get_master_history",
+          "description": "Returns the master authority change history for a given account, useful for account recovery audits.",
+          "params": [
+            {
+              "name": "account",
+              "caption": "Account Name",
+              "description": "The account name whose master authority history to retrieve.",
+              "type": "string",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of master_authority_history_api_object entries."
+          }
+        },
+        {
+          "method": "get_recovery_request",
+          "description": "Returns the current account recovery request for an account, if one exists.",
+          "params": [
+            {
+              "name": "account",
+              "caption": "Account Name",
+              "description": "The account name whose recovery request to check.",
+              "type": "string",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "The account_recovery_request_api_object, or null if no request exists.",
+            "nullable": true
+          }
+        },
+        {
+          "method": "get_escrow",
+          "description": "Returns the escrow object for a given sender and escrow ID.",
+          "params": [
+            {
+              "name": "from",
+              "caption": "From Account",
+              "description": "The account name of the escrow sender.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "escrow_id",
+              "caption": "Escrow ID",
+              "description": "The numeric escrow ID to look up.",
+              "type": "integer",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "The escrow_api_object, or null if not found.",
+            "nullable": true
+          }
+        },
+        {
+          "method": "get_withdraw_routes",
+          "description": "Returns vesting withdrawal routes for a given account. Can filter by direction (incoming, outgoing, or all).",
+          "params": [
+            {
+              "name": "account",
+              "caption": "Account Name",
+              "description": "The account name whose withdrawal routes to retrieve.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "type",
+              "caption": "Route Type",
+              "description": "Filter direction: 'incoming', 'outgoing', or 'all'.",
+              "type": "string",
+              "enum": ["incoming", "outgoing", "all"],
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of withdraw_route objects with from_account, to_account, percent, auto_vest."
+          }
+        },
+        {
+          "method": "get_vesting_delegations",
+          "description": "Returns vesting delegation objects for a given account. Supports pagination and filtering by delegated or received.",
+          "params": [
+            {
+              "name": "account",
+              "caption": "Account Name",
+              "description": "The delegator or delegatee account name.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "from",
+              "caption": "From",
+              "description": "The account name to start from for pagination.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "limit",
+              "caption": "Limit",
+              "description": "Maximum number of results. Defaults to 100. Must not exceed 1000.",
+              "type": "integer",
+              "required": false,
+              "default": 100,
+              "maximum": 1000
+            },
+            {
+              "name": "type",
+              "caption": "Delegation Type",
+              "description": "Filter type: 'delegated' (sent) or 'received'. Defaults to 'delegated'.",
+              "type": "string",
+              "enum": ["delegated", "received"],
+              "required": false,
+              "default": "delegated"
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of vesting_delegation_api_object entries."
+          }
+        },
+        {
+          "method": "get_expiring_vesting_delegations",
+          "description": "Returns expiring vesting delegation objects for a given account, starting from a given date.",
+          "params": [
+            {
+              "name": "account",
+              "caption": "Account Name",
+              "description": "The delegator account name.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "from",
+              "caption": "From Date",
+              "description": "Start date/time for expiration lookup (ISO timestamp).",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "limit",
+              "caption": "Limit",
+              "description": "Maximum number of results. Defaults to 100. Must not exceed 1000.",
+              "type": "integer",
+              "required": false,
+              "default": 100,
+              "maximum": 1000
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of vesting_delegation_expiration_api_object entries."
+          }
+        },
+        {
+          "method": "get_transaction_hex",
+          "description": "Returns a hexadecimal dump of the serialized binary form of a transaction.",
+          "params": [
+            {
+              "name": "trx",
+              "caption": "Transaction",
+              "description": "The signed transaction object to serialize.",
+              "type": "object",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "string",
+            "description": "Hex-encoded serialized transaction."
+          }
+        },
+        {
+          "method": "get_required_signatures",
+          "description": "Given a partially signed transaction and a set of available public keys, returns the minimal subset of public keys that should add signatures to authorize the transaction.",
+          "params": [
+            {
+              "name": "trx",
+              "caption": "Transaction",
+              "description": "The signed transaction to analyze.",
+              "type": "object",
+              "required": true
+            },
+            {
+              "name": "available_keys",
+              "caption": "Available Keys",
+              "description": "Array/set of public keys that the caller can sign with.",
+              "type": "array",
+              "items": { "type": "string" },
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Set of public keys that are required to sign the transaction."
+          }
+        },
+        {
+          "method": "get_potential_signatures",
+          "description": "Returns the set of all public keys that could possibly sign for a given transaction. Useful for wallets to filter their key set before calling get_required_signatures.",
+          "params": [
+            {
+              "name": "trx",
+              "caption": "Transaction",
+              "description": "The signed transaction to analyze.",
+              "type": "object",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Set of all public keys that could potentially authorize the transaction."
+          }
+        },
+        {
+          "method": "verify_authority",
+          "description": "Verifies that a transaction has all of the required signatures. Returns true if valid, otherwise throws an exception.",
+          "params": [
+            {
+              "name": "trx",
+              "caption": "Transaction",
+              "description": "The signed transaction to verify.",
+              "type": "object",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "boolean",
+            "description": "true if the transaction has all required signatures."
+          }
+        },
+        {
+          "method": "verify_account_authority",
+          "description": "Verifies that a set of public keys has sufficient authority to authorize actions on behalf of an account.",
+          "params": [
+            {
+              "name": "name_or_id",
+              "caption": "Account Name",
+              "description": "The account name to check authority for.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "signers",
+              "caption": "Signer Keys",
+              "description": "Array/set of public keys to verify against the account's authority.",
+              "type": "array",
+              "items": { "type": "string" },
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "boolean",
+            "description": "true if the signers have enough authority to authorize the account."
+          }
+        },
+        {
+          "method": "get_database_info",
+          "description": "Returns database shared memory usage information including total size, free size, reserved size, used size, and per-index record counts.",
+          "params": [],
+          "returns": {
+            "type": "object",
+            "description": "Object with total_size, free_size, reserved_size, used_size, and index_list (array of {name, record_count})."
+          }
+        },
+        {
+          "method": "get_proposed_transactions",
+          "description": "Returns proposed transactions (proposals) associated with a given account, both authored and requiring approval.",
+          "params": [
+            {
+              "name": "account",
+              "caption": "Account Name",
+              "description": "The account name whose proposals to retrieve.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "from",
+              "caption": "From Offset",
+              "description": "Offset for pagination (number of results to skip).",
+              "type": "integer",
+              "required": true
+            },
+            {
+              "name": "limit",
+              "caption": "Limit",
+              "description": "Maximum number of proposals to return. Must not exceed 100.",
+              "type": "integer",
+              "required": true,
+              "maximum": 100
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of proposal_api_object entries."
+          }
+        },
+        {
+          "method": "get_accounts_on_sale",
+          "description": "Returns a list of accounts currently on sale (direct sale, not auction). Only accounts whose sale start time has passed are included.",
+          "params": [
+            {
+              "name": "from",
+              "caption": "From Offset",
+              "description": "Number of results to skip for pagination.",
+              "type": "integer",
+              "required": true
+            },
+            {
+              "name": "limit",
+              "caption": "Limit",
+              "description": "Maximum number of results to return. Must not exceed 1000.",
+              "type": "integer",
+              "required": true,
+              "maximum": 1000
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of account_on_sale_api_object entries."
+          }
+        },
+        {
+          "method": "get_accounts_on_auction",
+          "description": "Returns a list of accounts currently on auction (no target buyer set). Only accounts whose sale start time has passed are included.",
+          "params": [
+            {
+              "name": "from",
+              "caption": "From Offset",
+              "description": "Number of results to skip for pagination.",
+              "type": "integer",
+              "required": true
+            },
+            {
+              "name": "limit",
+              "caption": "Limit",
+              "description": "Maximum number of results to return. Must not exceed 1000.",
+              "type": "integer",
+              "required": true,
+              "maximum": 1000
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of account_on_sale_api_object entries for auction listings."
+          }
+        },
+        {
+          "method": "get_subaccounts_on_sale",
+          "description": "Returns a list of subaccounts currently on sale.",
+          "params": [
+            {
+              "name": "from",
+              "caption": "From Offset",
+              "description": "Number of results to skip for pagination.",
+              "type": "integer",
+              "required": true
+            },
+            {
+              "name": "limit",
+              "caption": "Limit",
+              "description": "Maximum number of results to return. Must not exceed 1000.",
+              "type": "integer",
+              "required": true,
+              "maximum": 1000
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of subaccount_on_sale_api_object entries."
+          }
+        }
+      ]
+    },
+    {
+      "name": "account_by_key",
+      "description": "Provides a lookup from public keys to the accounts that reference those keys in their authority.",
+      "methods": [
+        {
+          "method": "get_key_references",
+          "description": "Returns all account names that reference the given public keys in their master, active, or regular authority.",
+          "params": [
+            {
+              "name": "keys",
+              "caption": "Public Keys",
+              "description": "Array of public keys to look up.",
+              "type": "array",
+              "items": { "type": "string" },
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of arrays of account names. Each inner array corresponds to one input key and contains all accounts referencing that key."
+          }
+        }
+      ]
+    },
+    {
+      "name": "network_broadcast_api",
+      "description": "Provides transaction and block broadcasting capabilities. This is the write API for submitting transactions to the network.",
+      "methods": [
+        {
+          "method": "broadcast_transaction",
+          "description": "Broadcasts a signed transaction to the network. The transaction is accepted into the pending pool and propagated to P2P peers. Optionally checks that the blockchain is not too far behind.",
+          "params": [
+            {
+              "name": "trx",
+              "caption": "Transaction",
+              "description": "The signed transaction to broadcast.",
+              "type": "object",
+              "required": true
+            },
+            {
+              "name": "max_block_age",
+              "caption": "Max Block Age",
+              "description": "Optional. Maximum allowed age of the head block in seconds. If the blockchain is behind by more than this, the call will fail. Use -1 to disable.",
+              "type": "integer",
+              "required": false
+            }
+          ],
+          "returns": {
+            "type": "null",
+            "description": "No return value on success."
+          }
+        },
+        {
+          "method": "broadcast_transaction_synchronous",
+          "description": "Broadcasts a signed transaction and waits for confirmation. Returns the transaction ID, block number, and transaction index once included in a block. The callback includes whether the transaction expired.",
+          "params": [
+            {
+              "name": "trx",
+              "caption": "Transaction",
+              "description": "The signed transaction to broadcast.",
+              "type": "object",
+              "required": true
+            },
+            {
+              "name": "max_block_age",
+              "caption": "Max Block Age",
+              "description": "Optional. Maximum allowed age of the head block in seconds. Use -1 to disable.",
+              "type": "integer",
+              "required": false
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "Object with id (transaction hash), block_num, trx_num, and expired fields."
+          }
+        },
+        {
+          "method": "broadcast_block",
+          "description": "Broadcasts a signed block to the network. Typically used by validators to propagate newly produced blocks.",
+          "params": [
+            {
+              "name": "block",
+              "caption": "Block",
+              "description": "The signed block to broadcast.",
+              "type": "object",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "null",
+            "description": "No return value on success."
+          }
+        },
+        {
+          "method": "broadcast_transaction_with_callback",
+          "description": "Broadcasts a signed transaction with a confirmation callback. The first argument is the callback, followed by the transaction. Similar to broadcast_transaction_synchronous but with custom callback handling.",
+          "params": [
+            {
+              "name": "callback",
+              "caption": "Callback",
+              "description": "Confirmation callback function.",
+              "type": "function",
+              "required": true
+            },
+            {
+              "name": "trx",
+              "caption": "Transaction",
+              "description": "The signed transaction to broadcast.",
+              "type": "object",
+              "required": true
+            },
+            {
+              "name": "max_block_age",
+              "caption": "Max Block Age",
+              "description": "Optional. Maximum allowed age of the head block in seconds. Use -1 to disable.",
+              "type": "integer",
+              "required": false
+            }
+          ],
+          "returns": {
+            "type": "null",
+            "description": "No direct return; result delivered via callback."
+          }
+        }
+      ]
+    },
+    {
+      "name": "committee_api",
+      "description": "Provides access to committee worker proposal requests and their voting state.",
+      "methods": [
+        {
+          "method": "get_committee_request",
+          "description": "Returns a committee request by its ID, optionally including votes.",
+          "params": [
+            {
+              "name": "request_id",
+              "caption": "Request ID",
+              "description": "The numeric ID of the committee request to retrieve.",
+              "type": "integer",
+              "required": true
+            },
+            {
+              "name": "votes_count",
+              "caption": "Votes Count",
+              "description": "Number of votes to include. Use 0 for no votes, -1 for all votes, or a positive number to limit.",
+              "type": "integer",
+              "required": false,
+              "default": 0
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "committee_api_object with optional embedded votes array."
+          }
+        },
+        {
+          "method": "get_committee_request_votes",
+          "description": "Returns all votes for a specific committee request.",
+          "params": [
+            {
+              "name": "request_id",
+              "caption": "Request ID",
+              "description": "The numeric ID of the committee request whose votes to retrieve.",
+              "type": "integer",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of committee_vote_state objects."
+          }
+        },
+        {
+          "method": "get_committee_requests_list",
+          "description": "Returns a list of committee request IDs filtered by status.",
+          "params": [
+            {
+              "name": "status",
+              "caption": "Status",
+              "description": "The status code to filter by (e.g. 0=pending, 1=approved, etc.).",
+              "type": "integer",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "description": "Array of committee request IDs matching the given status."
+          }
+        }
+      ]
+    },
+    {
+      "name": "invite_api",
+      "description": "Provides access to invite objects used for account registration via invite keys.",
+      "methods": [
+        {
+          "method": "get_invites_list",
+          "description": "Returns a list of invite IDs filtered by status.",
+          "params": [
+            {
+              "name": "status",
+              "caption": "Status",
+              "description": "The status code to filter invites by.",
+              "type": "integer",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "description": "Array of invite database IDs matching the given status."
+          }
+        },
+        {
+          "method": "get_invite_by_id",
+          "description": "Returns an invite object by its database ID.",
+          "params": [
+            {
+              "name": "id",
+              "caption": "Invite ID",
+              "description": "The database ID of the invite to retrieve.",
+              "type": "integer",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "invite_api_object with invite details (key, creator, balance, etc.)."
+          }
+        },
+        {
+          "method": "get_invite_by_key",
+          "description": "Returns an invite object by its public key.",
+          "params": [
+            {
+              "name": "key",
+              "caption": "Invite Key",
+              "description": "The public key associated with the invite.",
+              "type": "string",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "invite_api_object matching the given key."
+          }
+        }
+      ]
+    },
+    {
+      "name": "paid_subscription_api",
+      "description": "Provides access to paid subscription data: subscription options set by content creators, subscription status of subscribers, and active/inactive subscription lists.",
+      "methods": [
+        {
+          "method": "get_paid_subscription_options",
+          "description": "Returns the paid subscription settings for a given account (creator).",
+          "params": [
+            {
+              "name": "account",
+              "caption": "Account Name",
+              "description": "The account name of the subscription creator.",
+              "type": "string",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "paid_subscription_state with subscription details (price, period, etc.)."
+          }
+        },
+        {
+          "method": "get_paid_subscriptions",
+          "description": "Returns a paginated list of all paid subscription objects.",
+          "params": [
+            {
+              "name": "from",
+              "caption": "From Offset",
+              "description": "Number of results to skip for pagination.",
+              "type": "integer",
+              "required": true
+            },
+            {
+              "name": "limit",
+              "caption": "Limit",
+              "description": "Maximum number of results to return. Must not exceed 1000.",
+              "type": "integer",
+              "required": true,
+              "maximum": 1000
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of paid_subscription_object entries."
+          }
+        },
+        {
+          "method": "get_paid_subscription_status",
+          "description": "Returns the subscription status of a specific subscriber for a given creator account.",
+          "params": [
+            {
+              "name": "subscriber",
+              "caption": "Subscriber",
+              "description": "The account name of the subscriber.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "account",
+              "caption": "Creator Account",
+              "description": "The account name of the subscription creator.",
+              "type": "string",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "paid_subscribe_state with subscription status details."
+          }
+        },
+        {
+          "method": "get_active_paid_subscriptions",
+          "description": "Returns a list of creator account names that a given subscriber has active subscriptions to.",
+          "params": [
+            {
+              "name": "subscriber",
+              "caption": "Subscriber",
+              "description": "The account name of the subscriber.",
+              "type": "string",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Array of creator account names with active subscriptions."
+          }
+        },
+        {
+          "method": "get_inactive_paid_subscriptions",
+          "description": "Returns a list of creator account names that a given subscriber has inactive (expired) subscriptions to.",
+          "params": [
+            {
+              "name": "subscriber",
+              "caption": "Subscriber",
+              "description": "The account name of the subscriber.",
+              "type": "string",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Array of creator account names with inactive subscriptions."
+          }
+        }
+      ]
+    },
+    {
+      "name": "custom_protocol_api",
+      "description": "Provides access to account data enriched with custom protocol sequence information. Custom protocols allow third-party applications to track per-account custom operations.",
+      "methods": [
+        {
+          "method": "get_account",
+          "description": "Returns an account object enriched with custom protocol sequence data for a specific custom protocol ID. Populates custom_sequence and custom_sequence_block_num fields.",
+          "params": [
+            {
+              "name": "account",
+              "caption": "Account Name",
+              "description": "The account name to look up.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "custom_protocol_id",
+              "caption": "Custom Protocol ID",
+              "description": "The custom protocol ID string to retrieve the sequence for. Use empty string to skip custom protocol lookup.",
+              "type": "string",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "account_api_object with custom_sequence and custom_sequence_block_num populated for the given protocol."
+          }
+        }
+      ]
+    },
+    {
+      "name": "auth_util",
+      "description": "Provides utility methods for verifying account authority signatures against arbitrary data digests.",
+      "methods": [
+        {
+          "method": "check_authority_signature",
+          "description": "Verifies that the provided signatures are valid for the given account's authority at a specified level (master, active, or regular). Returns the public keys derived from the signatures.",
+          "params": [
+            {
+              "name": "account_name",
+              "caption": "Account Name",
+              "description": "The account name whose authority to check.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "level",
+              "caption": "Authority Level",
+              "description": "The authority level to verify against: 'master' (or 'm'), 'active' (or 'a'), 'regular' (or 'r'). Empty string defaults to 'active'.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "dig",
+              "caption": "Digest",
+              "description": "The SHA-256 hash of the data that was signed.",
+              "type": "string",
+              "required": true
+            },
+            {
+              "name": "sigs",
+              "caption": "Signatures",
+              "description": "Array of signatures to verify.",
+              "type": "array",
+              "items": { "type": "string" },
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Array of public keys recovered from the valid signatures."
+          }
+        }
+      ]
+    },
+    {
+      "name": "block_info",
+      "description": "Tracks block metadata (size, average block size, slot info) and provides queries to retrieve this information for ranges of blocks.",
+      "methods": [
+        {
+          "method": "get_block_info",
+          "description": "Returns block metadata (block_id, block_size, average_block_size, aslot, last_irreversible_block_num) for a range of blocks starting from start_block_num.",
+          "params": [
+            {
+              "name": "start_block_num",
+              "caption": "Start Block Number",
+              "description": "The first block number to return info for. Must be greater than 0.",
+              "type": "integer",
+              "required": true,
+              "minimum": 1
+            },
+            {
+              "name": "count",
+              "caption": "Count",
+              "description": "Number of blocks to return info for. Must not exceed 10000.",
+              "type": "integer",
+              "required": true,
+              "maximum": 10000
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of block_info objects. Entries may be empty if no info is stored (e.g. blocks before snapshot)."
+          }
+        },
+        {
+          "method": "get_blocks_with_info",
+          "description": "Returns full signed blocks with attached metadata for a range. Limits total response size to 8 MB. Stops early if no info is stored for a block.",
+          "params": [
+            {
+              "name": "start_block_num",
+              "caption": "Start Block Number",
+              "description": "The first block number to return. Must be greater than 0.",
+              "type": "integer",
+              "required": true,
+              "minimum": 1
+            },
+            {
+              "name": "count",
+              "caption": "Count",
+              "description": "Maximum number of blocks to return. Must not exceed 10000. Response is capped at 8 MB total.",
+              "type": "integer",
+              "required": true,
+              "maximum": 10000
+            }
+          ],
+          "returns": {
+            "type": "array",
+            "description": "Array of block_with_info objects, each containing a signed block and its block_info metadata."
+          }
+        }
+      ]
+    },
+    {
+      "name": "raw_block",
+      "description": "Provides access to raw (base64-encoded) serialized block data for low-level block inspection or re-import.",
+      "methods": [
+        {
+          "method": "get_raw_block",
+          "description": "Returns a raw block by block number, including the base64-encoded serialized binary, block ID, previous block ID, and timestamp.",
+          "params": [
+            {
+              "name": "block_num",
+              "caption": "Block Number",
+              "description": "Height of the block to retrieve in raw form.",
+              "type": "integer",
+              "required": true
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "Object with block_id, previous, timestamp, and raw_block (base64-encoded string) fields."
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -46,9 +46,6 @@ chmod +x build-linux.sh
 ### 常用构建标志
 
 ```bash
-# 低内存节点（验证者/种子节点 — 排除历史索引）
-./build-linux.sh -l
-
 # 测试网构建
 ./build-linux.sh -n
 
@@ -57,9 +54,6 @@ chmod +x build-linux.sh
 
 # 并行任务数
 ./build-linux.sh -j 8
-
-# 跳过依赖安装（已安装）
-./build-linux.sh --skip-deps
 
 # 自定义 Boost / OpenSSL 路径
 ./build-linux.sh --boost-root /opt/boost_1_74_0 --openssl-root /opt/openssl
@@ -99,7 +93,6 @@ build-mingw.bat
 | 变量 | 默认值 | 描述 |
 |------|-------|------|
 | `VIZ_BUILD_TYPE` | `Release` | `Release` 或 `Debug` |
-| `VIZ_LOW_MEMORY` | `OFF` | `ON` 构建低内存节点 |
 | `VIZ_BUILD_TESTNET` | `OFF` | `ON` 用于测试网构建 |
 | `VIZ_FULL_STATIC` | `OFF` | `ON` 构建完全静态二进制文件 |
 
@@ -124,7 +117,6 @@ build-msvc.bat
 | 选项 | 默认值 | 描述 |
 |------|-------|------|
 | `BUILD_TESTNET` | `OFF` | 启用测试网专用代码 |
-| `LOW_MEMORY_NODE` | `OFF` | 排除历史/索引插件 |
 | `CHAINBASE_CHECK_LOCKING` | `OFF` | 启用锁断言检查（debug） |
 | `BUILD_SHARED_LIBRARIES` | `OFF` | 构建共享库 |
 | `USE_PCH` | `OFF` | 启用预编译头文件（加快重新构建） |
@@ -134,7 +126,6 @@ build-msvc.bat
 ```bash
 mkdir build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release \
-      -DLOW_MEMORY_NODE=ON \
       -DCMAKE_INSTALL_PREFIX=/usr/local \
       ..
 make -j$(nproc)

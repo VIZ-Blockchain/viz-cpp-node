@@ -58,6 +58,7 @@ namespace graphene { namespace plugins { namespace custom_protocol_api {
         }
 
         uint8_t custom_protocol_store_size = 10;
+        boost::signals2::connection _post_op_conn;
 
     private:
         graphene::chain::database& database_;
@@ -70,6 +71,9 @@ namespace graphene { namespace plugins { namespace custom_protocol_api {
 
     void custom_protocol_api_plugin::plugin_shutdown() {
         wlog("custom_protocol_api plugin: plugin_shutdown()");
+        if (pimpl) {
+            pimpl->_post_op_conn.disconnect();
+        }
     }
 
     const std::string& custom_protocol_api_plugin::name() {
@@ -93,7 +97,7 @@ namespace graphene { namespace plugins { namespace custom_protocol_api {
     void custom_protocol_api_plugin::plugin_initialize(const boost::program_options::variables_map& options) {
         pimpl = std::make_unique<impl>();
         auto& db = pimpl->database();
-        db.post_apply_operation.connect([&](const operation_notification& note) {
+        pimpl->_post_op_conn = db.post_apply_operation.connect([&](const operation_notification& note) {
             pimpl->on_operation(note);
         });
         add_plugin_index<custom_protocol_api::custom_protocol_index>(db);

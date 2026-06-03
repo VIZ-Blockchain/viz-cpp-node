@@ -129,10 +129,10 @@ docker build \
 
 ### CMake flags per image
 
-| Image | `LOW_MEMORY_NODE` | `BUILD_TESTNET` |
-|-------|:-----------------:|:---------------:|
-| production | OFF | OFF |
-| testnet | OFF | ON |
+| Image | `BUILD_TESTNET` |
+|-------|:---------------:|
+| production | OFF |
+| testnet | ON |
 
 ---
 
@@ -167,6 +167,59 @@ shared-file-size = 4G
 
 ---
 
+## Log Rotation
+
+vizd writes all output to stdout/stderr. Docker's default `json-file` log driver has **no size limit** — a crash loop or assertion storm can fill the host disk in minutes (35 GB+ observed in production).
+
+Use the `local` driver instead. It uses a compact binary format and rotates automatically.
+
+**Global config (recommended — protects all containers on the host):**
+
+```json
+// /etc/docker/daemon.json
+{
+  "log-driver": "local",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "5"
+  }
+}
+```
+
+Apply with:
+
+```bash
+sudo systemctl restart docker
+```
+
+**Per-container (`docker run`):**
+
+```bash
+docker run -d \
+  --log-driver=local \
+  --log-opt max-size=100m \
+  --log-opt max-file=5 \
+  --name vizd \
+  vizblockchain/vizd:latest
+```
+
+**Per-container (docker-compose):**
+
+```yaml
+services:
+  vizd:
+    image: vizblockchain/vizd:latest
+    logging:
+      driver: local
+      options:
+        max-size: "100m"
+        max-file: "5"
+```
+
+> With `max-file: 5` and `max-size: 100m` Docker keeps at most 500 MB of logs per container and automatically deletes the oldest file when rotating.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -176,3 +229,4 @@ shared-file-size = 4G
 | No peers | Firewall blocking port 2001 | Open port 2001 TCP inbound |
 | Slow sync | No snapshot loaded | Provide snapshot in volume before first start |
 | `Permission denied` on `/var/lib/vizd` | Volume ownership mismatch | `chown -R 1000:1000 /data/vizd` |
+| Disk fills up with Docker logs | `json-file` driver has no size limit | Configure `local` driver with `max-size`/`max-file` — see [Log Rotation](#log-rotation) |

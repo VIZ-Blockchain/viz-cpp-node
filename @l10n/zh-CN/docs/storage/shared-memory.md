@@ -92,10 +92,21 @@ skip-virtual-ops = true
 
 当空闲空间降至 `min-free-shared-file-size` 以下时，数据库自动增长。每次调整大小时：
 
-1. 暂停所有操作（包括区块生产和 API 请求）。
-2. 销毁当前内存映射。
-3. 按 `inc-shared-file-size` 扩展文件。
-4. 重新映射文件并重建所有索引指针。
+1. 写入 `resize_in_progress` 崩溃标记文件。
+2. 将所有脏页刷新到磁盘（`flush()`）。
+3. 暂停所有操作（包括区块生产和 API 请求）。
+4. 销毁当前内存映射。
+5. 按 `inc-shared-file-size` 扩展文件。
+6. 重新映射文件并重建所有索引指针。
+7. 验证关键对象（如 `dynamic_global_property_object`）在重映射后完好无损。
+8. 删除崩溃标记。
+
+### 安全机制
+
+- **调整前刷新：** 在销毁映射之前将脏页写入磁盘，确保在增长过程中发生任何故障时磁盘上的文件保持一致。
+- **崩溃标记：** 在破坏性重映射之前写入 `resize_in_progress` 文件，成功后删除。如果进程在调整大小期间崩溃，标记会保留并在下次启动时触发自动恢复。
+- **调整后验证：** 重映射后，节点验证 `max_memory()` 是否与预期大小匹配，以及关键对象（如 `dynamic_global_property_object`）是否完好。损坏会被及早发现，而不是导致后续令人困惑的故障。
+- **bad_alloc 安全：** 如果在区块应用期间共享内存耗尽，撤销会话会被安全丢弃（而不是尝试注定失败的撤销，这将通过 `std::terminate` 导致进程崩溃）。延迟调整大小将安排在下一个区块进行。
 
 预先充裕地分配 `shared-file-size` 以最小化调整大小频率。每次调整大小都会导致延迟峰值。
 
@@ -121,11 +132,12 @@ VIZ 主网全节点的大致使用量：
 ```
 1. 打开 shared_memory.bin（若 shared-file-size 更大则扩展）
 2. 获取独占文件锁
-3. 初始化索引
-4. 若缺少 genesis → init_genesis()
-5. 打开 block_log 或 dlt_block_log
-6. undo_all() → 回滚到最后一个不可逆区块
-7. 验证头区块与区块日志匹配
+3. 检查 resize_in_progress 崩溃标记 → 若发现则触发恢复
+4. 初始化索引
+5. 若缺少 genesis → init_genesis()
+6. 打开 block_log 或 dlt_block_log
+7. undo_all() → 回滚到最后一个不可逆区块
+8. 验证头区块与区块日志匹配
 ```
 
 ---
@@ -137,6 +149,8 @@ VIZ 主网全节点的大致使用量：
 | `CRITICAL: validator X account object MISSING` | 损坏 — 使用 `--replay-from-snapshot --snapshot-auto-latest` |
 | `Could not modify object, uniqueness constraint violated` | 损坏 — 使用 `--replay-from-snapshot --snapshot-auto-latest` |
 | `Unable to acquire READ lock` | 锁竞争 — 增大 `read-wait-micro` / 启用 `single-write-thread` |
+| `Shared memory corrupted: previous resize() crashed` | 中断的调整大小 — 使用 `--replay-from-snapshot --snapshot-auto-latest` |
+| `dynamic_global_property_object missing after resize` | 调整后损坏 — 使用 `--replay-from-snapshot --snapshot-auto-latest` |
 | 节点启动时循环崩溃 | 文件损坏 — `--replay-from-snapshot --snapshot-auto-latest` |
 
 恢复选项：

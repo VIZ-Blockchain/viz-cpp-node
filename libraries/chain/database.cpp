@@ -253,9 +253,46 @@ namespace graphene { namespace chain {
                     }
 
                     _block_log.open(data_dir / "block_log");
+                    ilog("block_log opened, head=${h}", ("h", _block_log.head() ? std::to_string(_block_log.head()->block_num()) : std::string("none")));
                     _dlt_block_log.open(data_dir / "dlt_block_log");
+                    ilog("dlt_block_log opened, head=${h}", ("h", _dlt_block_log.head() ? std::to_string(_dlt_block_log.head_block_num()) : std::string("none")));
 
                     // Rewind all undo state. This should return us to the state at the last irreversible block.
+                    //
+                    // Crash guard: detect incomplete resize from a previous run.
+                    // resize() writes a marker before the destructive grow/remap
+                    // and removes it after success.  If the marker survived, the
+                    // shared memory file may be in an inconsistent state (file was
+                    // grown but the mapping was never rebuilt).  Treat this the
+                    // same as undo_all corruption and trigger recovery.
+                    auto resize_marker = shared_mem_dir / "resize_in_progress";
+                    if (boost::filesystem::exists(resize_marker)) {
+                        wlog("Detected incomplete resize from previous startup. "
+                             "Shared memory is likely corrupted. "
+                             "Throwing revision mismatch to trigger recovery.");
+                        FC_THROW_EXCEPTION(database_revision_exception,
+                            "Shared memory corrupted: previous resize() crashed (marker detected)");
+                    }
+
+                    // Crash guard: undo_all() walks shared-memory data structures that may
+                    // be corrupted after a hard crash (SIGSEGV). Since a segfault kills the
+                    // process instantly, no C++ exception handler can catch it.  We use a
+                    // marker file to detect that a previous run died inside undo_all() and
+                    // throw database_revision_exception to trigger the recovery path instead.
+                    auto undo_marker = shared_mem_dir / "undo_all_in_progress";
+                    if (boost::filesystem::exists(undo_marker)) {
+                        wlog("Detected incomplete undo_all from previous startup. "
+                             "Shared memory is likely corrupted. "
+                             "Throwing revision mismatch to trigger recovery.");
+                        FC_THROW_EXCEPTION(database_revision_exception,
+                            "Shared memory corrupted: previous undo_all() crashed (marker detected)");
+                    }
+
+                    // Write marker — will be removed after undo_all() succeeds.
+                    // If the process crashes inside undo_all(), the marker survives
+                    // and triggers recovery on the next startup.
+                    { std::ofstream f(undo_marker.string()); }
+                    ilog("Calling undo_all()...");
                     // Wrap in a try-catch for boost::interprocess::lock_exception:
                     // After a hard crash, the previous process may have died while holding
                     // shared-memory internal mutexes (e.g., inside managed_mapped_file allocator).
@@ -275,8 +312,14 @@ namespace graphene { namespace chain {
                             "Shared memory lock corrupted (previous crash): ${what}",
                             ("what", e.what()));
                     }
+                    // undo_all() completed successfully — remove the crash marker.
+                    boost::filesystem::remove(undo_marker);
+                    ilog("undo_all() completed, revision=${rev} head_block_num=${hbn}",
+                         ("rev", revision())("hbn", head_block_num()));
 
                     if (revision() != head_block_num()) {
+                        ilog("Revision mismatch: revision=${rev} != head_block_num=${hbn}, calling init_hardforks()",
+                             ("rev", revision())("hbn", head_block_num()));
                         with_strong_read_lock([&]() {
                             init_hardforks(); // Writes to local state, but reads from db
                         });
@@ -290,6 +333,7 @@ namespace graphene { namespace chain {
                     }
 
                     if (head_block_num()) {
+                        ilog("Validating block log consistency, head_block_num=${h}", ("h", head_block_num()));
                         // Validate DLT block log consistency before seeding fork_db.
                         // After a crash, the DLT block log index/data files can become
                         // truncated (e.g., only 1 block when database has thousands).
@@ -303,14 +347,16 @@ namespace graphene { namespace chain {
                             _dlt_block_log.reset();
                         }
 
+                        ilog("Reading head block #${n} from block_log", ("n", head_block_num()));
                         auto head_block = _block_log.read_block_by_num(head_block_num());
                         if (head_block.valid()) {
                             // Block_log has the head block
                             FC_ASSERT(head_block->id() == head_block_id(),
                                 "Chain state does not match block log. Please reindex blockchain.");
+                            ilog("Head block found in block_log, starting fork_db and seeding");
                             _fork_db.start_block(*head_block);
 
-                            // P22 fix: Seed fork_db with recent blocks (up to 100)
+                            // Seed fork_db with recent blocks (up to 100)
                             // so that incoming sync blocks from peers near our head
                             // can find their parent chain. After restart, fork_db only
                             // has the head block; if peers send blocks a few behind
@@ -343,9 +389,8 @@ namespace graphene { namespace chain {
                         } else {
                             // DLT mode: block_log is empty but chainbase has state (loaded from snapshot).
                             set_dlt_mode(true);
-                            wlog("DLT mode detected: block log is empty but database has state at block ${n}. "
-                                 "Skipping block log validation.",
-                                 ("n", head_block_num()));
+                            ilog("DLT mode: block_log empty, seeding fork_db from DLT log for head_block_num=${h}",
+                                 ("h", head_block_num()));
 
                             // Seed fork_db bottom-up from the oldest available DLT block
                             // within a seeding window so that all blocks from oldest to
@@ -424,11 +469,14 @@ namespace graphene { namespace chain {
                     wlog("Done opening block log, elapsed time ${t} sec", ("t", double((end - start).count()) / 1000000.0));
                 }
 
+                ilog("Block log open complete, calling init_hardforks()");
                 with_strong_read_lock([&]() {
                     init_hardforks(); // Writes to local state, but reads from db
                 });
+                ilog("init_hardforks() completed");
 
                 // === HARDFORK 12: EMERGENCY SCHEDULE RECOVERY ===
+                ilog("Checking validator schedule integrity at head_block_num=${h}", ("h", head_block_num()));
                 // If the node shut down (or crashed) during emergency mode while
                 // update_validator_schedule() had zeroed the schedule but before the
                 // hybrid override could fill it with committee, the schedule may
@@ -500,6 +548,15 @@ namespace graphene { namespace chain {
                 wlog("Opening database for snapshot import. Please wait...");
 
                 _dlt_mode = true;  // Set before init_genesis so all subsequent code sees DLT mode
+
+                // Clean up undo_all crash marker if present from a previous failed startup.
+                // chainbase::database::wipe() only removes shared_memory.bin, not other files
+                // in the directory, so we must do this explicitly.
+                auto undo_marker = shared_mem_dir / "undo_all_in_progress";
+                if (boost::filesystem::exists(undo_marker)) {
+                    wlog("Removing stale undo_all crash marker before snapshot import");
+                    boost::filesystem::remove(undo_marker);
+                }
 
                 // Always wipe shared memory before snapshot import to ensure clean state.
                 // This prevents conflicts if:
@@ -793,7 +850,29 @@ namespace graphene { namespace chain {
                 "\033[33mShared memory growing on block ${block}: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
                 ("block", current_block_num)("mem", new_max / (1024 * 1024))
                 ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem / (1024 * 1024)));
+            dlog("Shared memory resize: flushing segment and remapping ${cur}M -> ${new}M",
+                 ("cur", max_mem / (1024 * 1024))("new", new_max / (1024 * 1024)));
             resize(new_max);
+            dlog("Shared memory resize: remap complete, validating segment");
+
+            // Post-resize validation: verify key objects survived the remap.
+            // A silent grow failure (file unchanged but open succeeds with
+            // old size) or corrupted segment metadata would cause later
+            // operations to fail in confusing ways.  Catch it early here.
+            if (max_memory() < new_max) {
+                elog("CRITICAL: shared memory resize did not increase capacity! "
+                     "expected=${exp} actual=${act}. File may be corrupted.",
+                     ("exp", new_max)("act", max_memory()));
+                FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                    "Resize failed: capacity ${act} < expected ${exp}",
+                    ("act", max_memory())("exp", new_max));
+            }
+            if (!find<dynamic_global_property_object>()) {
+                elog("CRITICAL: dynamic_global_property_object MISSING after resize. "
+                     "Shared memory is corrupted.");
+                FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                    "dynamic_global_property_object missing after resize");
+            }
 
             uint64_t free_mem = free_memory();
             uint64_t reserved_mem = reserved_memory();
@@ -813,6 +892,17 @@ namespace graphene { namespace chain {
         void database::apply_pending_resize() {
             if (!_pending_resize) {
                 return;
+            }
+
+            // Serialize concurrent resize attempts: the P2P thread (push_block)
+            // and the validator thread (generate_block) both call this before
+            // acquiring their respective write locks.  Without this mutex both
+            // can see _pending_resize==true simultaneously, both pass
+            // begin_resize_barrier(), and both call resize() concurrently —
+            // corrupting the chainbase segment (double-resize race).
+            std::unique_lock<std::mutex> resize_entry_guard(_apply_resize_mutex);
+            if (!_pending_resize) {
+                return; // another thread completed the resize while we waited
             }
 
             // Use the resize barrier to pause ALL database operations.
@@ -836,7 +926,26 @@ namespace graphene { namespace chain {
                 ilog("\033[33mApplying deferred shared memory resize: actual data ${used_before}M / current ${max_before}M -> new ${mem}M\033[0m",
                      ("used_before", used_mem_before / (1024 * 1024))("max_before", max_mem_before / (1024 * 1024))
                      ("mem", target / (1024 * 1024)));
+                dlog("Shared memory resize: flushing segment and remapping ${cur}M -> ${new}M",
+                     ("cur", max_mem_before / (1024 * 1024))("new", target / (1024 * 1024)));
                 resize(target);
+                dlog("Shared memory resize: remap complete, validating segment");
+
+                // Post-resize validation: verify key objects survived the remap.
+                if (max_memory() < target) {
+                    elog("CRITICAL: deferred shared memory resize did not increase capacity! "
+                         "expected=${exp} actual=${act}. File may be corrupted.",
+                         ("exp", target)("act", max_memory()));
+                    FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                        "Deferred resize failed: capacity ${act} < expected ${exp}",
+                        ("act", max_memory())("exp", target));
+                }
+                if (!find<dynamic_global_property_object>()) {
+                    elog("CRITICAL: dynamic_global_property_object MISSING after deferred resize. "
+                         "Shared memory is corrupted.");
+                    FC_THROW_EXCEPTION(shared_memory_corruption_exception,
+                        "dynamic_global_property_object missing after resize");
+                }
 
                 uint64_t free_mem = free_memory();
                 uint64_t reserved_mem = reserved_memory();
@@ -897,6 +1006,16 @@ namespace graphene { namespace chain {
         void database::wipe(const fc::path &data_dir, const fc::path &shared_mem_dir, bool include_blocks) {
             close();
             chainbase::database::wipe(shared_mem_dir);
+            // Remove undo_all crash marker if present (chainbase::wipe only removes shared_memory.bin)
+            auto undo_marker = shared_mem_dir / "undo_all_in_progress";
+            if (boost::filesystem::exists(undo_marker)) {
+                boost::filesystem::remove(undo_marker);
+            }
+            // Remove resize crash marker if present
+            auto resize_marker = shared_mem_dir / "resize_in_progress";
+            if (boost::filesystem::exists(resize_marker)) {
+                boost::filesystem::remove(resize_marker);
+            }
             if (include_blocks) {
                 fc::remove_all(data_dir / "block_log");
                 fc::remove_all(data_dir / "block_log.index");
@@ -2042,9 +2161,37 @@ namespace graphene { namespace chain {
                 }
 
                 try {
-                    auto session = start_undo_session();
-                    apply_block(new_block, skip);
-                    session.push();
+                    // Heap-allocate the undo session so we can explicitly
+                    // destroy it before exception unwinding reaches it.
+                    // If bad_alloc fires inside apply_block(), the session
+                    // destructor would call undo() which writes to shared
+                    // memory.  With memory exhausted, undo() throws another
+                    // bad_alloc during stack unwinding -> double exception
+                    // -> std::terminate.  By resetting the unique_ptr in
+                    // our catch block, the session is destroyed cleanly
+                    // before the exception propagates further.
+                    auto session = std::unique_ptr<chainbase::database::session>(
+                        new chainbase::database::session(start_undo_session()));
+                    try {
+                        apply_block(new_block, skip);
+                    } catch (const fc::exception& e) {
+                        // fc::exception is the actual type thrown by apply_block()
+                        // (FC_CAPTURE_AND_RETHROW wraps std::exception into fc::exception).
+                        // Same bad_alloc guard as the std::exception handler below.
+                        try { session.reset(); } catch (...) {}
+                        throw;
+                    } catch (const std::exception& e) {
+                        // Attempt explicit undo before rethrowing.  If undo()
+                        // throws (shared memory exhausted), suppress it — the
+                        // chainbase session destructor's uncaught_exceptions()
+                        // guard will NOT fire here (we're in a catch block, not
+                        // in stack unwinding), so we must protect manually.
+                        // The original exception is preserved and rethrown.
+                        try { session.reset(); } catch (...) {}
+                        throw;
+                    }
+                    session->push();
+                    session.reset();
                 }
                 catch (const wrong_scheduled_validator_exception &e) {
                     // Schedule mismatch: keep the block in fork_db as a
@@ -2250,6 +2397,15 @@ namespace graphene { namespace chain {
             // while we hold raw pointers/references into the mapped segment.
             // The guard is scoped so it is released before with_strong_write_lock
             // (which acquires its own operation guard internally).
+            // Diagnostic fields saved from validator_obj for the locked re-check below.
+            // validator_obj is a shared-memory reference valid only inside the op_guard scope;
+            // copy before the scope ends so we can log them if the re-check confirms missing.
+            bool lockless_validator_account_missing = false;
+            public_key_type diag_signing_key;
+            uint32_t diag_total_missed = 0;
+            uint16_t diag_penalty = 0;
+            uint32_t diag_last_confirmed = 0;
+            size_t   diag_account_index_size = 0;
             {
                 auto op_guard = make_operation_guard();
 
@@ -2260,30 +2416,48 @@ namespace graphene { namespace chain {
 
                 const auto &validator_obj = get_validator(validator_owner);
 
-                // Pre-check: ensure the validator account exists before generating the block.
-                // If the account is missing from the database (shared memory corruption),
-                // the block will be produced but fail to apply internally (process_funds
-                // calls get_account which would throw "unknown key").
-                const auto* validator_acct = find_account(validator_owner);
-                if (!validator_acct) {
-                    auto& acc_idx = get_index<account_index>().indices().get<by_name>();
+                if (!(skip & skip_validator_signature))
+                    FC_ASSERT(validator_obj.signing_key ==
+                              block_signing_private_key.get_public_key());
+
+                // Lockless hint: does the validator account exist?
+                // op_guard coordinates with resize only — it does NOT exclude writers.
+                // A concurrent P2P writer rebalancing the by_name red-black tree can make
+                // this lookup transiently return null for an existing key. Save the hint
+                // and re-verify under a read lock AFTER this scope (op_guard released),
+                // to avoid a deadlock: with_strong_read_lock() nests its own op_guard, and
+                // if resize set _resize_in_progress between now and then, the nested
+                // enter_operation() would wait for resize while resize waits for us → deadlock.
+                if (!find_account(validator_owner)) {
+                    lockless_validator_account_missing = true;
+                    diag_signing_key    = validator_obj.signing_key;
+                    diag_total_missed   = validator_obj.total_missed;
+                    diag_penalty        = validator_obj.penalty_percent;
+                    diag_last_confirmed = validator_obj.last_confirmed_block_num;
+                    diag_account_index_size =
+                        get_index<account_index>().indices().get<by_name>().size();
+                }
+            } // op_guard released here
+
+            // Re-verify suspected missing account under a read lock, which blocks writers
+            // and yields a consistent index traversal. If still missing — real corruption.
+            if (lockless_validator_account_missing) {
+                with_strong_read_lock([&]() {
+                    if (find_account(validator_owner)) {
+                        return; // false alarm: lockless read raced a concurrent P2P writer
+                    }
                     elog("CRITICAL: Validator ${w} account object MISSING from database! "
                          "This is impossible state - shared memory may be corrupted. "
                          "signing_key=${k} total_missed=${m} penalty=${p} last_confirmed=${lc} "
                          "account_index_size=${idx_size}",
-                         ("w", validator_owner)("k", validator_obj.signing_key)
-                         ("m", validator_obj.total_missed)("p", validator_obj.penalty_percent)
-                         ("lc", validator_obj.last_confirmed_block_num)
-                         ("idx_size", acc_idx.size()));
+                         ("w", validator_owner)("k", diag_signing_key)
+                         ("m", diag_total_missed)("p", diag_penalty)
+                         ("lc", diag_last_confirmed)("idx_size", diag_account_index_size));
                     FC_THROW_EXCEPTION(shared_memory_corruption_exception,
                               "CRITICAL: Validator ${w} account not found in database! Shared memory corruption suspected.",
                               ("w", validator_owner));
-                }
-
-                if (!(skip & skip_validator_signature))
-                    FC_ASSERT(validator_obj.signing_key ==
-                              block_signing_private_key.get_public_key());
-            } // op_guard released here
+                });
+            }
 
             // Second operation guard covers all remaining lockless reads
             // in this function: get_dynamic_global_properties(), head_block_id(),
@@ -5500,7 +5674,7 @@ namespace graphene { namespace chain {
                                  ("w", validator_missed.owner)
                                  ("n", head_block_num() + i + 1)
                                  ("t", get_slot_time(i + 1))
-                                 ("next", b.validator));
+                                 ("next", get_scheduled_validator(i + 2)));
                         }
 
                         modify(validator_missed, [&](validator_object &w) {

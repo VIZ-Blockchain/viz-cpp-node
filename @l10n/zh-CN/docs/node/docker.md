@@ -129,10 +129,10 @@ docker build \
 
 ### 各镜像的 CMake 标志
 
-| 镜像 | `LOW_MEMORY_NODE` | `BUILD_TESTNET` |
-|------|:-----------------:|:---------------:|
-| production | OFF | OFF |
-| testnet | OFF | ON |
+| 镜像 | `BUILD_TESTNET` |
+|------|:---------------:|
+| production | OFF |
+| testnet | ON |
 
 ---
 
@@ -167,6 +167,59 @@ shared-file-size = 4G
 
 ---
 
+## 日志轮转
+
+vizd 将所有输出写入 stdout/stderr。Docker 默认的 `json-file` 日志驱动**没有大小限制**——崩溃循环或断言风暴可在数分钟内填满宿主机磁盘（生产环境中曾观察到 35 GB+）。
+
+建议改用 `local` 驱动。它以紧凑的二进制格式存储日志并自动轮转。
+
+**全局配置（推荐——保护宿主机上的所有容器）：**
+
+```json
+// /etc/docker/daemon.json
+{
+  "log-driver": "local",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "5"
+  }
+}
+```
+
+应用配置：
+
+```bash
+sudo systemctl restart docker
+```
+
+**单容器配置（`docker run`）：**
+
+```bash
+docker run -d \
+  --log-driver=local \
+  --log-opt max-size=100m \
+  --log-opt max-file=5 \
+  --name vizd \
+  vizblockchain/vizd:latest
+```
+
+**单容器配置（docker-compose）：**
+
+```yaml
+services:
+  vizd:
+    image: vizblockchain/vizd:latest
+    logging:
+      driver: local
+      options:
+        max-size: "100m"
+        max-file: "5"
+```
+
+> 设置 `max-file: 5` 和 `max-size: 100m` 后，Docker 每个容器最多保留 500 MB 日志，轮转时自动删除最旧的文件。
+
+---
+
 ## 故障排除
 
 | 症状 | 原因 | 解决方案 |
@@ -176,3 +229,4 @@ shared-file-size = 4G
 | 无对等节点 | 防火墙阻止端口 2001 | 开放 2001 TCP 入站 |
 | 同步缓慢 | 未加载快照 | 首次启动前在卷中提供快照 |
 | `/var/lib/vizd` 权限拒绝 | 卷所有权不匹配 | `chown -R 1000:1000 /data/vizd` |
+| Docker 日志填满磁盘 | `json-file` 驱动没有大小限制 | 配置带 `max-size`/`max-file` 的 `local` 驱动——参见[日志轮转](#日志轮转) |

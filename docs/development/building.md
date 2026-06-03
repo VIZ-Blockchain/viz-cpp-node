@@ -26,10 +26,8 @@ chmod +x build-linux.sh
 
 ```bash
 ./build-linux.sh              # Release build (default)
-./build-linux.sh -l           # LOW_MEMORY_NODE (validator nodes)
 ./build-linux.sh -n           # Testnet build
 ./build-linux.sh -t Debug -j4 # Debug build with 4 parallel jobs
-./build-linux.sh --skip-deps  # Skip dependency installation
 ./build-linux.sh --install    # Install to system after build
 
 # Custom dependency paths
@@ -54,7 +52,6 @@ Requires Xcode Command Line Tools and Homebrew. The script installs: `boost`, `c
 **Options:**
 
 ```bash
-./build-mac.sh -l              # Low-memory node
 ./build-mac.sh -n              # Testnet
 ./build-mac.sh --skip-deps     # Skip Homebrew installs
 ./build-mac.sh --boost-root /opt/boost_1_74_0
@@ -77,7 +74,6 @@ build-mingw.bat
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VIZ_BUILD_TYPE` | Release | Release or Debug |
-| `VIZ_LOW_MEMORY` | OFF | Enable low-memory node |
 | `VIZ_BUILD_TESTNET` | OFF | Testnet build |
 | `VIZ_FULL_STATIC` | OFF | Fully static binary |
 | `VIZ_CMAKE_EXTRA` | — | Additional CMake flags |
@@ -100,7 +96,6 @@ build-msvc.bat
 |----------|---------|-------------|
 | `VIZ_VS_VERSION` | "Visual Studio 17 2022" | Visual Studio generator |
 | `VIZ_BUILD_TYPE` | Release | Build type |
-| `VIZ_LOW_MEMORY` | OFF | Low-memory node |
 | `VIZ_BUILD_TESTNET` | OFF | Testnet build |
 
 **Requirements:** Visual Studio 2019+ with "Desktop development with C++" workload, CMake 3.16+.
@@ -125,7 +120,6 @@ All Dockerfiles use a two-stage build to minimize image size and use Boost 1.71 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `BUILD_TESTNET` | OFF | Build for testnet |
-| `LOW_MEMORY_NODE` | OFF | Exclude non-consensus data (reduces RAM) |
 | `CHAINBASE_CHECK_LOCKING` | OFF | Enable lock checking (development only) |
 | `BUILD_SHARED_LIBRARIES` | OFF | Build shared libraries |
 | `USE_PCH` | OFF | Enable precompiled headers (faster rebuilds) |
@@ -139,9 +133,6 @@ Wraps CMake with sensible defaults and cross-compilation support:
 ```bash
 # Release build
 python3 programs/build_helpers/configure_build.py --release --src ../..
-
-# Debug with low-memory
-python3 programs/build_helpers/configure_build.py --debug --low-memory
 
 # Cross-compile for Windows with MinGW
 python3 programs/build_helpers/configure_build.py --win --release

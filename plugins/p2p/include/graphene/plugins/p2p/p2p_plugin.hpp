@@ -136,6 +136,12 @@ namespace graphene {
                  */
                 void clear_catchup_flag();
 
+                /**
+                 * Clear all soft-bans after auto-recovery so peers that
+                 * carry the majority fork can reconnect immediately.
+                 */
+                void reset_peers_after_recovery();
+
             private:
                 std::unique_ptr<detail::p2p_plugin_impl> my;
             };

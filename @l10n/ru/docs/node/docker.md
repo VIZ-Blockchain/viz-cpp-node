@@ -129,10 +129,10 @@ docker build \
 
 ### CMake-флаги для каждого образа
 
-| Образ | `LOW_MEMORY_NODE` | `BUILD_TESTNET` |
-|-------|:-----------------:|:---------------:|
-| production | OFF | OFF |
-| testnet | OFF | ON |
+| Образ | `BUILD_TESTNET` |
+|-------|:---------------:|
+| production | OFF |
+| testnet | ON |
 
 ---
 
@@ -167,6 +167,59 @@ shared-file-size = 4G
 
 ---
 
+## Ротация логов
+
+vizd пишет весь вывод в stdout/stderr. Дефолтный драйвер `json-file` в Docker **не имеет ограничений по размеру** — цикл краша или буря ошибок может заполнить диск хоста за считанные минуты (в продакшне наблюдалось 35 ГБ+).
+
+Вместо этого используйте драйвер `local`. Он хранит логи в компактном бинарном формате и автоматически ротирует файлы.
+
+**Глобальная конфигурация (рекомендуется — защищает все контейнеры на хосте):**
+
+```json
+// /etc/docker/daemon.json
+{
+  "log-driver": "local",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "5"
+  }
+}
+```
+
+Применить:
+
+```bash
+sudo systemctl restart docker
+```
+
+**Для конкретного контейнера (`docker run`):**
+
+```bash
+docker run -d \
+  --log-driver=local \
+  --log-opt max-size=100m \
+  --log-opt max-file=5 \
+  --name vizd \
+  vizblockchain/vizd:latest
+```
+
+**Для конкретного контейнера (docker-compose):**
+
+```yaml
+services:
+  vizd:
+    image: vizblockchain/vizd:latest
+    logging:
+      driver: local
+      options:
+        max-size: "100m"
+        max-file: "5"
+```
+
+> При `max-file: 5` и `max-size: 100m` Docker хранит не более 500 МБ логов на контейнер и автоматически удаляет старейший файл при ротации.
+
+---
+
 ## Устранение неполадок
 
 | Симптом | Причина | Решение |
@@ -176,3 +229,4 @@ shared-file-size = 4G
 | Нет пиров | Файрвол блокирует порт 2001 | Откройте порт 2001 TCP входящий |
 | Медленная синхронизация | Снимок не загружен | Предоставьте снимок в томе перед первым запуском |
 | `Permission denied` на `/var/lib/vizd` | Несоответствие владельца тома | `chown -R 1000:1000 /data/vizd` |
+| Диск заполняется логами Docker | Драйвер `json-file` не имеет ограничения по размеру | Настройте драйвер `local` с `max-size`/`max-file` — см. [Ротация логов](#ротация-логов) |

@@ -171,7 +171,6 @@ Check `head_block_number` — it should increase every 3 seconds once synced.
 | Full node | `config.ini` | All plugins, public RPC endpoints |
 | Validator | `config_witness.ini` | Block production, RPC on localhost only |
 | Testnet | `config_testnet.ini` | Development and testing |
-| Low-memory | `config.ini` + `LOW_MEMORY_NODE` build flag | Consensus only, no history indexes |
 
 ---
 

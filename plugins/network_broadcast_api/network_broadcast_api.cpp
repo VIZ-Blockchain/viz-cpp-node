@@ -181,6 +181,7 @@ namespace graphene {
             }
 
             void network_broadcast_api_plugin::plugin_shutdown() {
+                on_applied_block_connection.disconnect();
             }
 
             void network_broadcast_api_plugin::on_applied_block(const signed_block &b) { try {
