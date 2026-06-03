@@ -47,7 +47,8 @@ push_block(new_block)
    - Pop old-fork blocks until common ancestor.
    - Apply new-fork blocks in order.
 5. `apply_block()` runs transaction evaluators, updates dynamic global properties, processes virtual operations.
-6. `update_last_irreversible_block()` — advances LIB if ≥14 validators have confirmed.
+6. `check_block_post_validation_chain()` — advances LIB if ≥14 validators have sent post-validation signatures for the next block above LIB (fast path, ~4 s finality). See [Block Post-Validation](#block-post-validation-fast-lib-finality) below.
+7. `update_last_irreversible_block()` — classic DPOS fallback: advances LIB based on blocks produced by ≥14 validators after the target (slow path, ~63 s).
 
 ---
 
@@ -230,6 +231,75 @@ This yields a 500ms safety margin against the lag threshold.
 | `|scheduled_time - now| ≤ 500ms` | `lag` |
 | No competing block at same height in fork_db | `fork_collision` |
 | Last 21 blocks NOT all from our validators | `minority_fork` |
+
+---
+
+## Block Post-Validation: Fast LIB Finality
+
+Classic Fair-DPOS advances LIB only after 2/3 of validators have **produced** blocks on top of the target — with 21 validators at 3 s each that takes ~63 seconds. Block post-validation replaces this with explicit out-of-band confirmation messages, reducing finality to ~4 seconds.
+
+### How it works
+
+```
+After apply_block(N):
+  create_block_post_validation(N, block_id, producer)
+    → stores validator_confirmation_object in chainbase
+    → prunes entries already below LIB
+    → caps the list at CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT (20)
+
+Validator plugin timer tick:
+  for each scheduled validator with a loaded private key:
+    confirmations = get_validator_confirmations(validator)
+    for each confirmation:
+      sig = sign(chain_id + block_id)   ← secp256k1 with validator signing key
+      p2p.broadcast_block_post_validation(block_id, validator, sig)
+                                         ← fire-and-forget, non-blocking
+
+Receiving peer (p2p_plugin handle_message, msg type 6009):
+  recover pubkey from sig
+  compare with validator.signing_key on-chain
+  if match → db.apply_block_post_validation(block_id, validator)
+    → mark validator as confirmed for that block
+    → call check_block_post_validation_chain()
+
+check_block_post_validation_chain():
+  walk validator_confirmation_index from (LIB + 1) forward
+  count unique scheduled validators that confirmed each block
+  if confirmed ≥ ⌈2/3 × num_scheduled_validators⌉ (≥ 14 of 21):
+    advance last_irreversible_block_num
+    commit undo sessions up to new LIB
+    repeat for next block
+```
+
+### Wire message
+
+`block_post_validation_message` (type **6009**, legacy graphene protocol):
+
+```cpp
+struct block_post_validation_message {
+    block_id_type  block_id;
+    std::string    witness_account;   // validator name
+    signature_type validator_signature; // sign(chain_id + block_id)
+};
+```
+
+### Timing
+
+| Phase | Duration |
+|-------|----------|
+| Block produced and propagated | 0 – 1 s |
+| Validators sign and broadcast confirmation | ~0 s (next plugin tick, 250 ms) |
+| Confirmations propagate to all peers | 1 – 2 s |
+| `check_block_post_validation_chain()` collects ≥14 sigs | 1 – 2 s |
+| **Total finality** | **~3 – 5 s** |
+
+Classic DPOS path (~63 s) remains active as a fallback if confirmation messages are lost or not yet received.
+
+### Constraints
+
+- Only validators in the **current shuffled schedule** count toward the 2/3 threshold; off-schedule validators are skipped.
+- During **emergency consensus** (`emergency_consensus_active = true`), `check_block_post_validation_chain()` returns immediately — LIB is advanced solely by the classic path to avoid deadlocking recovery.
+- The confirmation list is capped at **20 entries** (`CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT`). Entries below the current LIB are pruned after every block.
 
 ---
 

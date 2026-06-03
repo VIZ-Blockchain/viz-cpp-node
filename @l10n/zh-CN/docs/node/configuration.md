@@ -7,8 +7,6 @@ VIZ Ledger 节点通过 INI 文件进行配置。仓库在 `share/vizd/config/` 
 | `config.ini` | 带公共 RPC 的完整主网节点 |
 | `config_witness.ini` | 验证者节点（本地 RPC，区块生产） |
 | `config_testnet.ini` | 测试网/开发环境 |
-| `config_mongo.ini` | 带 MongoDB 历史后端的节点 |
-| `config_lowmem.ini` | 低内存共识/种子节点 |
 | `config_stock_exchange.ini` | 市场数据消费者（最少插件） |
 | `config_debug.ini` | 调试模式 |
 
@@ -24,8 +22,9 @@ p2p-endpoint = 0.0.0.0:2001
 p2p-max-connections = 200
 
 # 引导连接的种子节点（可重复）
-p2p-seed-node = seed1.viz.media:2001
-p2p-seed-node = seed2.viz.media:2001
+p2p-seed-node = seed1.viz.world:2001
+p2p-seed-node = seed2.viz.world:2001
+p2p-seed-node = seed3.viz.world:2001
 
 # 检查点：受信任的 (block_num, block_id) 对（可重复）
 # checkpoint = [12345,"0003039..." ]
@@ -108,11 +107,11 @@ block-num-check-free-size = 1000
 plugin = chain p2p webserver json_rpc database_api network_broadcast_api
 
 # 额外的索引插件（低内存节点上注释掉）：
-plugin = social_network tags follow account_history account_by_key
+plugin = account_history account_by_key
 plugin = committee_api invite_api paid_subscription_api custom_protocol_api
 
 # 仅用于验证者节点：
-plugin = validator witness_api
+plugin = validator validator_api
 ```
 
 ### 按节点类型划分的插件集
@@ -120,7 +119,7 @@ plugin = validator witness_api
 | 节点类型 | 插件 |
 |---------|------|
 | 全节点 | 以上所有 |
-| 验证者 | `chain p2p webserver json_rpc database_api network_broadcast_api validator witness_api` |
+| 验证者 | `chain p2p webserver json_rpc database_api network_broadcast_api validator validator_api` |
 | 低内存种子 | `chain p2p` |
 | 交易所 | `chain p2p webserver json_rpc database_api network_broadcast_api account_history` |
 
@@ -145,10 +144,7 @@ skip-virtual-ops = false
 # 从此区块号开始索引历史记录
 # history-start-block = 1000000
 
-# 每个账户的最大动态信息条目数（follow 插件）
-follow-max-feed-size = 500
-
-# 私信追踪范围（可选）
+# 私信追踪范围（可选，示例插件）
 # pm-account-range = ["alice","alice.zzz"]
 ```
 
@@ -198,17 +194,6 @@ logger.p2p.appenders = p2p
 
 ---
 
-## MongoDB（可选）
-
-仅当节点使用 `ENABLE_MONGO_PLUGIN=ON` 构建时有效：
-
-```ini
-plugin = mongo_db
-mongodb-uri = mongodb://localhost:27017/vizd
-```
-
----
-
 ## 完整参考
 
 按源文件列出的所有选项：
@@ -219,5 +204,3 @@ mongodb-uri = mongodb://localhost:27017/vizd
 | `plugins/p2p/p2p_plugin.hpp` | `p2p-endpoint`, `p2p-max-connections`, `p2p-seed-node`, `checkpoint` |
 | `plugins/webserver/webserver_plugin.hpp` | `webserver-http-endpoint`, `webserver-ws-endpoint`, `webserver-thread-pool-size` |
 | `plugins/validator/validator.hpp` | `enable-stale-production`, `required-participation`, `validator`, `private-key`, `emergency-private-key`, `fork-collision-timeout-blocks`, `ntp-server`, `ntp-request-interval`, `debug-block-production` |
-| `plugins/follow/` | `follow-max-feed-size` |
-| `plugins/private_message/` | `pm-account-range` |

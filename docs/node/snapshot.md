@@ -123,7 +123,7 @@ vizd \
   --snapshot /data/snapshots/viz-snapshot.json \
   --plugin snapshot \
   --plugin p2p \
-  --p2p-seed-node seed1.viz.media:2001
+  --p2p-seed-node seed1.viz.world:2001
 ```
 
 The node loads state in seconds and begins P2P sync from the snapshot's block height.
@@ -206,7 +206,7 @@ When the log exceeds this size, old blocks are pruned from the front. The implem
 
 ## Crash Recovery: `--replay-from-snapshot`
 
-Use this when `shared_memory.bin` is corrupted (unclean shutdown, disk full, hardware fault). Normal `--replay-blockchain` is not available in DLT mode because `block_log` is empty.
+Use this when `shared_memory.bin` is corrupted (unclean shutdown, disk full, hardware fault). In DLT mode the main `block_log` is empty, so snapshot-based recovery is the only option.
 
 ```bash
 # Specify snapshot path explicitly
@@ -286,8 +286,9 @@ snapshot-dir = /data/viz-snapshots
 
 ```ini
 plugin = snapshot
-trusted-snapshot-peer = seed1.viz.media:8092
-trusted-snapshot-peer = seed2.viz.media:8092
+trusted-snapshot-peer = seed1.viz.world:8092
+trusted-snapshot-peer = seed2.viz.world:8092
+trusted-snapshot-peer = seed3.viz.world:8092
 sync-snapshot-from-trusted-peer = true
 ```
 
@@ -350,7 +351,7 @@ dlt-block-log-max-blocks = 100000
 
 shared-file-size = 4G
 plugin = p2p
-p2p-seed-node = seed1.viz.media:2001
+p2p-seed-node = seed1.viz.world:2001
 ```
 
 ---

@@ -12,7 +12,7 @@ running tests, it is recommended to build as release.
 
 Builds vizd to be a consensus-only low memory node. Data and fields not
 needed for consensus are not stored in the object database.  This option is
-recommended for witnesses and seed-nodes.
+recommended for validators and seed-nodes.
 
 ## Building under Docker
 

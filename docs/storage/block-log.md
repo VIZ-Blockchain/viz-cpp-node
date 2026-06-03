@@ -77,7 +77,7 @@ block_header:
   [varint + vector: extensions]
 
 signed_block_header (appended):
-  [65 bytes: witness_signature (1 recovery byte + 32 r + 32 s)]
+  [65 bytes: validator_signature (1 recovery byte + 32 r + 32 s)]
 
 signed_block (appended):
   [varint + vector<signed_transaction>: transactions]

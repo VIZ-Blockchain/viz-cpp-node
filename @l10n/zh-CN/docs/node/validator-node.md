@@ -21,14 +21,14 @@
 ```ini
 # P2P — 允许公共入站连接以传播区块
 p2p-endpoint = 0.0.0.0:2001
-p2p-seed-node = seed1.viz.media:2001
+p2p-seed-node = seed1.viz.world:2001
 
 # RPC — 绑定到 localhost 以确保安全（验证者不需要公共 API）
 webserver-http-endpoint = 127.0.0.1:8090
 webserver-ws-endpoint   = 127.0.0.1:8091
 
 # 验证者所需插件
-plugin = chain p2p webserver json_rpc database_api network_broadcast_api validator witness_api
+plugin = chain p2p webserver json_rpc database_api network_broadcast_api validator validator_api
 
 # 跳过虚拟操作索引以节省内存
 skip-virtual-ops = true
@@ -88,10 +88,8 @@ docker run -d \
   -v /data/vizd:/var/lib/vizd \
   -e VIZD_WITNESS=myvalidator \
   -e VIZD_PRIVATE_KEY=5Jxxx... \
-  vizblockchain/vizd:lowmem
+  vizblockchain/vizd:latest
 ```
-
-验证者请使用 `lowmem` 镜像——它不含不必要的索引插件。
 
 ---
 
@@ -219,7 +217,7 @@ private-key = 5Jyyy...   # Alice.backup 的密钥
 emergency-private-key = 5Jzzz...   # 委员会紧急密钥
 ```
 
-设置后，节点自动将 `CHAIN_EMERGENCY_WITNESS_ACCOUNT` 添加到其验证者集合，并参与紧急区块生产。参见[紧急共识](../consensus/emergency-consensus.md)。
+设置后，节点自动将 `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` 添加到其验证者集合，并参与紧急区块生产。参见[紧急共识](../consensus/emergency-consensus.md)。
 
 ---
 

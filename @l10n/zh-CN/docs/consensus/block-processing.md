@@ -47,7 +47,8 @@ push_block(new_block)
    - 弹出旧 fork 区块直到共同祖先。
    - 按顺序应用新 fork 区块。
 5. `apply_block()` 运行交易评估器，更新动态全局属性，处理虚拟操作。
-6. `update_last_irreversible_block()` — 如果 ≥14 个验证者已确认，则推进 LIB。
+6. `check_block_post_validation_chain()` — 如果 ≥14 个验证者已为 LIB 上方的下一个区块发送区块后验证签名，则推进 LIB（快速路径，终结性约 4 秒）。参见下文[区块后验证：快速 LIB 终结性](#区块后验证快速-lib-终结性)。
+7. `update_last_irreversible_block()` — 经典 DPOS 回退：基于 ≥14 个验证者在目标区块之后生产的区块推进 LIB（慢速路径，约 63 秒）。
 
 ---
 
@@ -230,6 +231,75 @@ Postponed N transactions due to block size limit
 | `|scheduled_time - now| ≤ 500ms` | `lag` |
 | fork_db 中同高度无竞争区块 | `fork_collision` |
 | 最后 21 个区块不全来自我们的验证者 | `minority_fork` |
+
+---
+
+## 区块后验证：快速 LIB 终结性
+
+经典 Fair-DPOS 只有在 2/3 的验证者**生产**了目标区块之后的区块才推进 LIB——21 个验证者、每 3 秒一个区块，需要约 63 秒。区块后验证用显式的带外确认消息取代了这一机制，将终结时间缩短至约 4 秒。
+
+### 工作原理
+
+```
+apply_block(N) 完成后：
+  create_block_post_validation(N, block_id, producer)
+    → 在 chainbase 中存储 validator_confirmation_object
+    → 删除 LIB 以下的条目
+    → 将列表上限设为 CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT（20）条
+
+验证者插件定时器触发：
+  对每个持有已加载私钥的已调度验证者：
+    confirmations = get_validator_confirmations(validator)
+    对每条确认：
+      sig = sign(chain_id + block_id)   ← 使用验证者签名密钥的 secp256k1
+      p2p.broadcast_block_post_validation(block_id, validator, sig)
+                                         ← fire-and-forget，非阻塞
+
+接收对等节点（p2p_plugin handle_message，消息类型 6009）：
+  从 sig 恢复公钥
+  与 on-chain 的 validator.signing_key 比较
+  如果匹配 → db.apply_block_post_validation(block_id, validator)
+    → 标记该验证者已确认该区块
+    → 调用 check_block_post_validation_chain()
+
+check_block_post_validation_chain()：
+  从（LIB + 1）开始遍历 validator_confirmation_index
+  统计已确认每个区块的唯一已调度验证者数量
+  如果确认数 ≥ ⌈2/3 × num_scheduled_validators⌉（≥ 14/21）：
+    推进 last_irreversible_block_num
+    提交至新 LIB 的撤销会话
+    对下一个区块重复
+```
+
+### 线格消息
+
+`block_post_validation_message`（类型 **6009**，legacy graphene 协议）：
+
+```cpp
+struct block_post_validation_message {
+    block_id_type  block_id;
+    std::string    witness_account;   // 验证者名称
+    signature_type validator_signature; // sign(chain_id + block_id)
+};
+```
+
+### 时序
+
+| 阶段 | 耗时 |
+|------|------|
+| 区块生产并传播 | 0 – 1 秒 |
+| 验证者签名并广播确认 | 约 0 秒（下一个插件 tick，250 毫秒） |
+| 确认消息传播至所有对等节点 | 1 – 2 秒 |
+| `check_block_post_validation_chain()` 收集 ≥14 个签名 | 1 – 2 秒 |
+| **总终结时间** | **约 3 – 5 秒** |
+
+经典 DPOS 路径（约 63 秒）仍作为回退保持活跃，应对确认消息丢失或尚未收到的情况。
+
+### 约束条件
+
+- 只有**当前打乱排列的调度**中的验证者才计入 2/3 阈值；调度外的验证者被跳过。
+- 在**紧急共识**期间（`emergency_consensus_active = true`），`check_block_post_validation_chain()` 立即返回——LIB 仅通过经典路径推进，以避免恢复过程死锁。
+- 确认列表上限为 **20 条**（`CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT`）。低于当前 LIB 的条目在每个区块后删除。
 
 ---
 

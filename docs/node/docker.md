@@ -1,6 +1,6 @@
 # Docker Deployment
 
-VIZ Ledger ships four Docker images for different deployment profiles. All use a two-stage build: the builder stage compiles the binary; the runtime stage contains only the binary and configuration.
+VIZ Ledger ships Docker images for different deployment profiles. All use a two-stage build: the builder stage compiles the binary; the runtime stage contains only the binary and configuration.
 
 ---
 
@@ -9,8 +9,6 @@ VIZ Ledger ships four Docker images for different deployment profiles. All use a
 | Dockerfile | Tag | Description |
 |-----------|-----|-------------|
 | `Dockerfile-production` | `latest` | Full mainnet node (Release, all plugins) |
-| `Dockerfile-lowmem` | `lowmem` | Low-memory node (`LOW_MEMORY_NODE=ON`, no history indexes) |
-| `Dockerfile-mongo` | `mongo` | Full node with MongoDB history plugin |
 | `Dockerfile-testnet` | `testnet` | Testnet node (`BUILD_TESTNET=ON`) |
 
 ---
@@ -41,7 +39,7 @@ docker logs -f vizd
 | Container path | Purpose |
 |----------------|---------|
 | `/var/lib/vizd` | Blockchain data, shared memory, block log |
-| `/etc/vizd` | Configuration files and seed node list |
+| `/etc/vizd` | Configuration files |
 
 Always mount `/var/lib/vizd` to persist state across container restarts.
 
@@ -62,7 +60,6 @@ The entry script (`vizd.sh`) reads these environment variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `VIZD_SEED_NODES` | Space-delimited seed node list (overrides `/etc/vizd/seednodes`) | `seed1.viz.media:2001 seed2.viz.media:2001` |
 | `VIZD_RPC_ENDPOINT` | Override HTTP RPC endpoint | `0.0.0.0:8090` |
 | `VIZD_P2P_ENDPOINT` | Override P2P endpoint | `0.0.0.0:2001` |
 | `VIZD_WITNESS` | Validator account name (enables block production) | `alice` |
@@ -123,21 +120,19 @@ docker build \
   -t vizd:local \
   .
 
-# Low-memory
+# Testnet
 docker build \
-  -f share/vizd/docker/Dockerfile-lowmem \
-  -t vizd:lowmem \
+  -f share/vizd/docker/Dockerfile-testnet \
+  -t vizd:testnet \
   .
 ```
 
 ### CMake flags per image
 
-| Image | `LOW_MEMORY_NODE` | `ENABLE_MONGO_PLUGIN` | `BUILD_TESTNET` |
-|-------|:-----------------:|:---------------------:|:---------------:|
-| production | OFF | OFF | OFF |
-| lowmem | ON | OFF | OFF |
-| mongo | OFF | ON | OFF |
-| testnet | OFF | OFF | ON |
+| Image | `BUILD_TESTNET` |
+|-------|:---------------:|
+| production | OFF |
+| testnet | ON |
 
 ---
 
@@ -161,7 +156,7 @@ The repository ships `.github/workflows/docker-main.yml` which builds and pushes
 | Node type | RAM | Disk |
 |-----------|-----|------|
 | Full node (mainnet) | 8 GB+ | 50 GB+ |
-| Low-memory / validator | 4 GB | 20 GB |
+| Validator node | 4 GB | 20 GB |
 | Testnet | 4 GB | 10 GB |
 
 Start with a shared memory size that fits comfortably in RAM. In `config.ini`:
@@ -169,6 +164,59 @@ Start with a shared memory size that fits comfortably in RAM. In `config.ini`:
 ```ini
 shared-file-size = 4G
 ```
+
+---
+
+## Log Rotation
+
+vizd writes all output to stdout/stderr. Docker's default `json-file` log driver has **no size limit** — a crash loop or assertion storm can fill the host disk in minutes (35 GB+ observed in production).
+
+Use the `local` driver instead. It uses a compact binary format and rotates automatically.
+
+**Global config (recommended — protects all containers on the host):**
+
+```json
+// /etc/docker/daemon.json
+{
+  "log-driver": "local",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "5"
+  }
+}
+```
+
+Apply with:
+
+```bash
+sudo systemctl restart docker
+```
+
+**Per-container (`docker run`):**
+
+```bash
+docker run -d \
+  --log-driver=local \
+  --log-opt max-size=100m \
+  --log-opt max-file=5 \
+  --name vizd \
+  vizblockchain/vizd:latest
+```
+
+**Per-container (docker-compose):**
+
+```yaml
+services:
+  vizd:
+    image: vizblockchain/vizd:latest
+    logging:
+      driver: local
+      options:
+        max-size: "100m"
+        max-file: "5"
+```
+
+> With `max-file: 5` and `max-size: 100m` Docker keeps at most 500 MB of logs per container and automatically deletes the oldest file when rotating.
 
 ---
 
@@ -181,3 +229,4 @@ shared-file-size = 4G
 | No peers | Firewall blocking port 2001 | Open port 2001 TCP inbound |
 | Slow sync | No snapshot loaded | Provide snapshot in volume before first start |
 | `Permission denied` on `/var/lib/vizd` | Volume ownership mismatch | `chown -R 1000:1000 /data/vizd` |
+| Disk fills up with Docker logs | `json-file` driver has no size limit | Configure `local` driver with `max-size`/`max-file` — see [Log Rotation](#log-rotation) |

@@ -50,7 +50,6 @@ Every read-only JSON-RPC response is eligible for caching. The cache key is a SH
 | Namespace | Reason |
 |-----------|--------|
 | `network_broadcast_api.*` | State-changing (transaction/block broadcast) |
-| `debug_node.*` | State-changing debug operations |
 | Malformed / unparseable requests | No reliable key can be derived |
 
 Batch requests (JSON array) are treated as a single atomic cache entry keyed on the full array hash.
@@ -94,11 +93,30 @@ Subscriptions require a persistent WebSocket connection. They are not available 
 
 ---
 
+## CORS
+
+The webserver plugin handles browser cross-origin requests natively — no reverse proxy is required for local or development setups.
+
+**Preflight requests** (`OPTIONS`) are answered immediately with:
+
+| Response header | Value |
+|----------------|-------|
+| `Access-Control-Allow-Origin` | `*` |
+| `Access-Control-Allow-Methods` | `POST, GET, OPTIONS` |
+| `Access-Control-Allow-Headers` | `Content-Type, Authorization` |
+| `Access-Control-Max-Age` | `86400` |
+
+**All other HTTP responses** include `Access-Control-Allow-Origin: *`.
+
+This allows browser-based wallets and dApps to call the JSON-RPC endpoint directly. For production deployments behind nginx, CORS is handled at the proxy layer (see [Exposing the API via HTTPS](#exposing-the-api-via-https-nginx--certbot)) — both layers setting the header is harmless.
+
+---
+
 ## Security
 
 - **Bind to localhost** (`127.0.0.1`) and use a reverse proxy (nginx/Caddy) for public exposure. Binding to `0.0.0.0` exposes the RPC directly to the network.
 - The plugin has no built-in authentication or rate limiting. Apply those at the reverse proxy layer.
-- Mutating methods (`network_broadcast_api`, `debug_node`) are blocked from cache poisoning by design, but they remain callable from any connected client — restrict access at the network level if needed.
+- Mutating methods (`network_broadcast_api`) are blocked from cache poisoning by design, but they remain callable from any connected client — restrict access at the network level if needed.
 
 ---
 
@@ -111,6 +129,71 @@ Subscriptions require a persistent WebSocket connection. They are not available 
 | Slow responses under load | Increase `webserver-thread-pool-size`; check CPU saturation |
 | WebSocket subscriptions not firing | Subscriptions require a WebSocket connection, not HTTP |
 | Stale responses | If `webserver-cache-enabled = true`, responses are fresh within one block interval (~3 s); for real-time use disable the cache |
+
+---
+
+## Exposing the API via HTTPS (nginx + certbot)
+
+Bind the node to localhost, then front it with nginx. certbot patches the config automatically when you run `certbot --nginx`.
+
+### 1. Node config.ini
+
+```ini
+webserver-http-endpoint = 127.0.0.1:8090
+webserver-ws-endpoint   = 127.0.0.1:8091
+```
+
+### 2. /etc/nginx/sites-enabled/viz-node
+
+```nginx
+server {
+    listen 80;
+    server_name your.domain.com;  # ← replace with your domain
+
+    # ACME challenge for certbot
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8090;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
+    }
+}
+```
+
+### 3. Obtain the TLS certificate
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d your.domain.com
+```
+
+certbot adds the `listen 443 ssl` block, `ssl_certificate` directives, and an HTTP→HTTPS redirect automatically. After this your node is reachable at `https://your.domain.com`.
+
+### WebSocket via HTTPS
+
+WebSocket clients need the `Upgrade` header forwarded. Add a separate location (or a second server block on port 8091):
+
+```nginx
+location /ws {
+    proxy_pass http://127.0.0.1:8091;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade    $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host       $host;
+    proxy_read_timeout 3600s;
+}
+```
 
 ---
 

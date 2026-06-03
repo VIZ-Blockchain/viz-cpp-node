@@ -41,7 +41,7 @@
 
 ### 3. 应用
 
-结果 `median_props` 对象存储在 `witness_schedule_object` 中，并在所有区块处理中强制执行。
+结果 `median_props` 对象存储在 `validator_schedule_object` 中，并在所有区块处理中强制执行。
 
 ---
 
@@ -69,11 +69,11 @@
 
 | 属性 | 类型 | 默认值 | 描述 |
 |------|------|-------|------|
-| `inflation_witness_percent` | uint16（bp） | 2000（20%） | 验证者在区块通胀中的份额 |
+| `inflation_validator_percent` | uint16（bp） | 2000（20%） | 验证者在区块通胀中的份额 |
 | `inflation_ratio_committee_vs_reward_fund` | uint16（bp） | 5000（50%） | 剩余通胀的分配：委员会基金 vs 奖励基金 |
 | `inflation_recalc_period` | uint32（区块） | 806400（~28天） | 通胀重新计算的频率 |
 
-通胀流程：`block_reward × inflation_witness_percent` → 验证者。剩余分配：`inflation_ratio_committee_vs_reward_fund` → 委员会基金；其余 → 奖励基金。
+通胀流程：`block_reward × inflation_validator_percent` → 验证者。剩余分配：`inflation_ratio_committee_vs_reward_fund` → 委员会基金；其余 → 奖励基金。
 
 ### 奖励系统
 
@@ -88,8 +88,8 @@
 
 | 属性 | 类型 | 默认值 | 描述 |
 |------|------|-------|------|
-| `witness_miss_penalty_percent` | uint16（bp） | 100（1%） | 错过区块时的投票权重降低 |
-| `witness_miss_penalty_duration` | uint32（秒） | 86400（1天） | 错过惩罚的持续时间 |
+| `validator_miss_penalty_percent` | uint16（bp） | 100（1%） | 错过区块时的投票权重降低 |
+| `validator_miss_penalty_duration` | uint32（秒） | 86400（1天） | 错过惩罚的持续时间 |
 
 ### 费用
 
@@ -101,7 +101,7 @@
 | `create_paid_subscription_fee` | asset（VIZ） | 100.000 VIZ | 创建付费订阅的费用 |
 | `account_on_sale_fee` | asset（VIZ） | 10.000 VIZ | 将账户挂牌出售的费用 |
 | `subaccount_on_sale_fee` | asset（VIZ） | 100.000 VIZ | 将子账户创建权挂牌出售的费用 |
-| `witness_declaration_fee` | asset（VIZ） | 10.000 VIZ | 验证者注册的一次性费用 |
+| `validator_declaration_fee` | asset（VIZ） | 10.000 VIZ | 验证者注册的一次性费用 |
 | `create_invite_min_balance` | asset（VIZ） | 10.000 VIZ | 最低邀请余额 |
 
 ### 质押提取
@@ -119,9 +119,9 @@
 | 版本 | 索引 | 硬分叉 | 新增字段 |
 |------|------|-------|---------|
 | `chain_properties_init` | 0 | 创世 | account_creation_fee、maximum_block_size、委托参数、策展、带宽、标记成本、最低 rshares 投票、委员会阈值 |
-| `chain_properties_hf4` | 1 | HF4 | inflation_witness_percent、inflation_ratio_committee_vs_reward_fund、inflation_recalc_period |
-| `chain_properties_hf6` | 2 | HF6 | data_operations_cost_additional_bandwidth、witness_miss_penalty_percent、witness_miss_penalty_duration |
-| `chain_properties_hf9` | 3 | HF9 | create_invite_min_balance、committee_create_request_fee、create_paid_subscription_fee、account_on_sale_fee、subaccount_on_sale_fee、witness_declaration_fee、withdraw_intervals |
+| `chain_properties_hf4` | 1 | HF4 | inflation_validator_percent、inflation_ratio_committee_vs_reward_fund、inflation_recalc_period |
+| `chain_properties_hf6` | 2 | HF6 | data_operations_cost_additional_bandwidth、validator_miss_penalty_percent、validator_miss_penalty_duration |
+| `chain_properties_hf9` | 3 | HF9 | create_invite_min_balance、committee_create_request_fee、create_paid_subscription_fee、account_on_sale_fee、subaccount_on_sale_fee、validator_declaration_fee、withdraw_intervals |
 
 所有新的验证者属性提交请使用版本索引 3（`chain_properties_hf9`）。
 

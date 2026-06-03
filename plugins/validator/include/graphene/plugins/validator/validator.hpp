@@ -76,7 +76,7 @@ namespace graphene {
                 bool is_witness_scheduled_soon() const { return is_validator_scheduled_soon(); }
 
                 /// Returns true if this node is the emergency master: holds the
-                /// emergency-private-key (committee is in _witnesses) AND committee
+                /// emergency-private-key (committee is in _validators) AND committee
                 /// appears in the current witness schedule.  Only the master should
                 /// produce blocks solo during emergency consensus; all other nodes
                 /// are followers that must sync from the network.

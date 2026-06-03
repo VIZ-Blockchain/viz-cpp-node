@@ -41,7 +41,7 @@
 
 ### 3. Применение
 
-Результирующий объект `median_props` сохраняется в `witness_schedule_object` и применяется при обработке всех блоков.
+Результирующий объект `median_props` сохраняется в `validator_schedule_object` и применяется при обработке всех блоков.
 
 ---
 
@@ -69,11 +69,11 @@
 
 | Параметр | Тип | По умолчанию | Описание |
 |---------|-----|------------|---------|
-| `inflation_witness_percent` | uint16 (bp) | 2000 (20%) | Доля валидаторов от блочной инфляции |
+| `inflation_validator_percent` | uint16 (bp) | 2000 (20%) | Доля валидаторов от блочной инфляции |
 | `inflation_ratio_committee_vs_reward_fund` | uint16 (bp) | 5000 (50%) | Разделение оставшейся инфляции: фонд комитета vs фонд вознаграждений |
 | `inflation_recalc_period` | uint32 (блоки) | 806400 (~28д) | Как часто пересчитывается инфляция |
 
-Поток инфляции: `block_reward × inflation_witness_percent` → валидатор. Остаток делится: `inflation_ratio_committee_vs_reward_fund` → фонд комитета; остальное → фонд вознаграждений за награды.
+Поток инфляции: `block_reward × inflation_validator_percent` → валидатор. Остаток делится: `inflation_ratio_committee_vs_reward_fund` → фонд комитета; остальное → фонд вознаграждений за награды.
 
 ### Система вознаграждений
 
@@ -88,8 +88,8 @@
 
 | Параметр | Тип | По умолчанию | Описание |
 |---------|-----|------------|---------|
-| `witness_miss_penalty_percent` | uint16 (bp) | 100 (1%) | Снижение веса голосов при пропуске блока |
-| `witness_miss_penalty_duration` | uint32 (с) | 86400 (1д) | Продолжительность штрафа за пропуск |
+| `validator_miss_penalty_percent` | uint16 (bp) | 100 (1%) | Снижение веса голосов при пропуске блока |
+| `validator_miss_penalty_duration` | uint32 (с) | 86400 (1д) | Продолжительность штрафа за пропуск |
 
 ### Комиссии
 
@@ -101,7 +101,7 @@
 | `create_paid_subscription_fee` | asset (VIZ) | 100.000 VIZ | Комиссия за создание платной подписки |
 | `account_on_sale_fee` | asset (VIZ) | 10.000 VIZ | Комиссия за выставление аккаунта на продажу |
 | `subaccount_on_sale_fee` | asset (VIZ) | 100.000 VIZ | Комиссия за выставление прав создания субаккаунта на продажу |
-| `witness_declaration_fee` | asset (VIZ) | 10.000 VIZ | Единовременная комиссия за регистрацию валидатора |
+| `validator_declaration_fee` | asset (VIZ) | 10.000 VIZ | Единовременная комиссия за регистрацию валидатора |
 | `create_invite_min_balance` | asset (VIZ) | 10.000 VIZ | Минимальный баланс инвайта |
 
 ### Вывод из вестинга
@@ -119,9 +119,9 @@
 | Версия | Индекс | Хардфорк | Добавленные поля |
 |--------|--------|---------|----------------|
 | `chain_properties_init` | 0 | Генезис | account_creation_fee, maximum_block_size, параметры делегирования, курация, пропускная способность, стоимость флага, минимальные rshares, порог комитета |
-| `chain_properties_hf4` | 1 | HF4 | inflation_witness_percent, inflation_ratio_committee_vs_reward_fund, inflation_recalc_period |
-| `chain_properties_hf6` | 2 | HF6 | data_operations_cost_additional_bandwidth, witness_miss_penalty_percent, witness_miss_penalty_duration |
-| `chain_properties_hf9` | 3 | HF9 | create_invite_min_balance, committee_create_request_fee, create_paid_subscription_fee, account_on_sale_fee, subaccount_on_sale_fee, witness_declaration_fee, withdraw_intervals |
+| `chain_properties_hf4` | 1 | HF4 | inflation_validator_percent, inflation_ratio_committee_vs_reward_fund, inflation_recalc_period |
+| `chain_properties_hf6` | 2 | HF6 | data_operations_cost_additional_bandwidth, validator_miss_penalty_percent, validator_miss_penalty_duration |
+| `chain_properties_hf9` | 3 | HF9 | create_invite_min_balance, committee_create_request_fee, create_paid_subscription_fee, account_on_sale_fee, subaccount_on_sale_fee, validator_declaration_fee, withdraw_intervals |
 
 Для всех новых публикаций параметров валидатора используйте индекс версии 3 (`chain_properties_hf9`).
 

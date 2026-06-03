@@ -76,13 +76,6 @@ def parse_arguments(src_default):
     parser.add_argument("--openssl-dir", metavar="OPENSSL_ROOT",
                         type=convert_to_dir, default=argparse.SUPPRESS,
                         help="OpenSSL root directory (can alternatively specify with OPENSSL_ROOT_DIR environment variable)")
-    node_type = parser.add_mutually_exclusive_group()
-    node_type.add_argument("-f", "--full", dest="low_mem_node",
-                           action="store_false", default=argparse.SUPPRESS,
-                           help="build with LOW_MEMORY_NODE=OFF (default)")
-    node_type.add_argument("-w", "--witness", dest="low_mem_node",
-                           action="store_true", default=argparse.SUPPRESS,
-                           help="build with LOW_MEMORY_NODE=ON")
     build_type = parser.add_mutually_exclusive_group()
     build_type.add_argument("-r", "--release", dest="release",
                             action="store_true", default=argparse.SUPPRESS,
@@ -99,7 +92,7 @@ def parse_arguments(src_default):
     parser.add_argument("additional_args", metavar="CMAKEOPTS",
                         nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
 
-    parser.set_defaults(low_mem_node=False, release=True, windows=False,
+    parser.set_defaults(release=True, windows=False,
                         source_dir=src_default)
 
     parser.find_last_line_of_usage()
@@ -178,8 +171,6 @@ def main(args):
         command.append("-DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY")
 
     # Add Chain flags
-    command.append(
-        "-DLOW_MEMORY_NODE=" + ("ON" if args.low_mem_node else "OFF"))
     command.append(
         "-DCMAKE_BUILD_TYPE=" + ("RELEASE" if args.release else "DEBUG"))
 

@@ -1,64 +1,6 @@
 # Debugging
 
-VIZ Ledger node provides several debugging tools: the `debug_node` plugin for state manipulation and replay, transaction signing utilities for cryptographic diagnosis, and P2P plugin logging with ANSI color codes for network analysis.
-
----
-
-## Debug Node Plugin
-
-The `debug_node` plugin exposes a JSON-RPC API for:
-- Replaying blocks from a block log or JSON array
-- Generating blocks locally with a configurable signing key
-- Popping blocks to roll back state
-- Inspecting validator schedule and hardfork state
-- Applying database edits at specific block heights
-
-**Enable with restricted RPC (localhost only):**
-
-```ini
-plugin = debug_node
-webserver-http-endpoint = 127.0.0.1:8090
-```
-
-### API Reference
-
-| Method | Description |
-|--------|-------------|
-| `debug_push_blocks(src, count)` | Load blocks from a block log directory |
-| `debug_push_json_blocks(file, count, skip)` | Load blocks from a JSON array file |
-| `debug_generate_blocks(key, count, skip, miss, edit)` | Produce blocks with the given signing key |
-| `debug_generate_blocks_until(key, time, sparse, skip)` | Advance chain to a target time |
-| `debug_pop_block()` | Remove the head block, returning it |
-| `debug_get_witness_schedule()` | Retrieve the current validator schedule object |
-| `debug_set_hardfork(id)` | Set hardfork state programmatically |
-| `debug_has_hardfork(id)` | Check whether a hardfork has been applied |
-
-### Usage Patterns
-
-```json
-// Replay 100 blocks from a block log
-{"method":"debug_node.debug_push_blocks","params":["/data/blockchain",100]}
-
-// Generate 10 blocks with a signing key (skip validation)
-{"method":"debug_node.debug_generate_blocks","params":["5K...",10,2,0,{}]}
-
-// Inspect validator schedule
-{"method":"debug_node.debug_get_witness_schedule","params":[]}
-
-// Activate hardfork 9 for testing
-{"method":"debug_node.debug_set_hardfork","params":[9]}
-```
-
-**Block generation** temporarily modifies the active validator's signing key to accept self-signed blocks, then restores the original key.
-
-**Database update hooks** allow injecting state changes at specific block heights:
-
-```cpp
-// From plugin code
-debug_plugin.debug_update([&](database& db) {
-    // Modify db state here
-}, skip_flags);
-```
+VIZ Ledger node provides several debugging tools: transaction signing utilities for cryptographic diagnosis, P2P plugin logging with ANSI color codes for network analysis, and a debug configuration template.
 
 ---
 
@@ -155,13 +97,13 @@ chainbase-check-locking = 0
 1. Run `sign_transaction` on the failing transaction JSON.
 2. Compare the computed `sig_digest` against the wallet-produced value.
 3. Verify the WIF key corresponds to the account's authority.
-4. Replay blocks containing the transaction with `debug_push_blocks` and observe logs.
+4. Check block logs for validation exceptions.
 
 ### Consensus stall
 
-1. Use `debug_generate_blocks` to advance the chain deterministically.
-2. Inspect the validator schedule with `debug_get_witness_schedule`.
-3. If needed, set hardfork state with `debug_set_hardfork` to test activation logic.
+1. Check **white logs** for block ingestion gaps.
+2. Inspect the validator schedule via `database_api.get_validator_schedule`.
+3. Check **orange/red logs** for peer disconnections affecting sync.
 
 ### Network connectivity problems
 
@@ -171,15 +113,13 @@ chainbase-check-locking = 0
 4. Check **orange/red logs** for termination events and peer bans.
 5. Correlate block push exceptions with specific block numbers in the logs.
 
-### Integration test acceleration
+### Block replay
 
-Replay blocks from a JSON log with skip flags to bypass expensive validation:
+Replay blocks from a snapshot to reproduce issues:
 
-```json
-{"method":"debug_node.debug_push_json_blocks","params":["/tmp/blocks.json",100,2]}
+```bash
+./vizd --replay-from-snapshot --snapshot-auto-latest --plugin snapshot --data-dir /data/vizd
 ```
-
-Skip flags: `1` = skip undo session, `2` = skip witness signature, `4` = skip merkle check.
 
 ---
 

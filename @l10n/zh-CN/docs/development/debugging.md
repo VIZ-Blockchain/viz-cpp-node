@@ -1,64 +1,6 @@
 # 调试
 
-VIZ Ledger 节点提供多种调试工具：用于状态操作和重放的 `debug_node` 插件、用于密码学诊断的交易签名工具，以及带有 ANSI 颜色代码用于网络分析的 P2P 插件日志。
-
----
-
-## Debug Node 插件
-
-`debug_node` 插件提供 JSON-RPC API，用于：
-- 从区块日志或 JSON 数组重放区块
-- 使用可配置的签名密钥在本地生成区块
-- 弹出（pop）区块以回滚状态
-- 检查验证者调度和硬分叉状态
-- 在特定区块高度应用数据库编辑
-
-**使用受限 RPC 启用（仅限 localhost）：**
-
-```ini
-plugin = debug_node
-webserver-http-endpoint = 127.0.0.1:8090
-```
-
-### API 参考
-
-| 方法 | 描述 |
-|------|------|
-| `debug_push_blocks(src, count)` | 从区块日志目录加载区块 |
-| `debug_push_json_blocks(file, count, skip)` | 从 JSON 数组文件加载区块 |
-| `debug_generate_blocks(key, count, skip, miss, edit)` | 使用给定签名密钥生成区块 |
-| `debug_generate_blocks_until(key, time, sparse, skip)` | 将链推进到目标时间 |
-| `debug_pop_block()` | 移除头区块并返回它 |
-| `debug_get_witness_schedule()` | 获取当前验证者调度对象 |
-| `debug_set_hardfork(id)` | 以编程方式设置硬分叉状态 |
-| `debug_has_hardfork(id)` | 检查某个硬分叉是否已应用 |
-
-### 使用模式
-
-```json
-// 从区块日志重放 100 个区块
-{"method":"debug_node.debug_push_blocks","params":["/data/blockchain",100]}
-
-// 使用签名密钥生成 10 个区块（跳过验证）
-{"method":"debug_node.debug_generate_blocks","params":["5K...",10,2,0,{}]}
-
-// 检查验证者调度
-{"method":"debug_node.debug_get_witness_schedule","params":[]}
-
-// 激活硬分叉 9 进行测试
-{"method":"debug_node.debug_set_hardfork","params":[9]}
-```
-
-**区块生成**临时修改活跃验证者的签名密钥以接受自签名区块，然后恢复原始密钥。
-
-**数据库更新钩子**允许在特定区块高度注入状态变更：
-
-```cpp
-// 从插件代码中
-debug_plugin.debug_update([&](database& db) {
-    // 在此修改 db 状态
-}, skip_flags);
-```
+VIZ Ledger 节点提供多种调试工具：交易签名工具用于加密诊断，P2P 插件使用 ANSI 颜色代码进行网络分析，以及调试配置模板。
 
 ---
 
@@ -155,13 +97,13 @@ chainbase-check-locking = 0
 1. 对失败的交易 JSON 运行 `sign_transaction`。
 2. 将计算得出的 `sig_digest` 与钱包生成的值进行比较。
 3. 验证 WIF 密钥对应于账户的权限。
-4. 使用 `debug_push_blocks` 重放包含该交易的区块并观察日志。
+4. 检查区块日志中的验证异常。
 
 ### 共识停滞
 
-1. 使用 `debug_generate_blocks` 确定性地推进链。
-2. 使用 `debug_get_witness_schedule` 检查验证者调度。
-3. 如有需要，使用 `debug_set_hardfork` 设置硬分叉状态以测试激活逻辑。
+1. 检查**白色日志**了解区块摄取空缺。
+2. 通过 `database_api.get_validator_schedule` 检查验证者调度。
+3. 检查**橙色/红色日志**了解影响同步的对等节点断连。
 
 ### 网络连接问题
 
@@ -171,15 +113,13 @@ chainbase-check-locking = 0
 4. 检查**橙色/红色日志**了解终止事件和对等节点封禁。
 5. 将区块推送异常与日志中的特定区块号关联。
 
-### 集成测试加速
+### 区块重放
 
-使用跳过标志从 JSON 日志重放区块，绕过昂贵的验证：
+从快照重放区块以重现问题：
 
-```json
-{"method":"debug_node.debug_push_json_blocks","params":["/tmp/blocks.json",100,2]}
+```bash
+./vizd --replay-from-snapshot --snapshot-auto-latest --plugin snapshot --data-dir /data/vizd
 ```
-
-跳过标志：`1` = 跳过撤销会话，`2` = 跳过验证者签名，`4` = 跳过 merkle 检查。
 
 ---
 

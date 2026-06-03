@@ -128,8 +128,6 @@ CI 矩阵为多种变体构建 Docker 镜像：
 | 变体 | Dockerfile |
 |------|-----------|
 | 标准 | `Dockerfile-production` |
-| 低内存 | `Dockerfile-lowmem` |
-| MongoDB | `Dockerfile-mongo` |
 | Testnet | `Dockerfile-testnet` |
 
 按分支和标签触发构建，配置凭据后发布构建产物。

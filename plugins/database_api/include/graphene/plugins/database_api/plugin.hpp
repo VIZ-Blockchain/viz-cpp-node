@@ -196,7 +196,7 @@ public:
 
     void plugin_startup() override;
 
-    void plugin_shutdown() override{}
+    void plugin_shutdown() override;
 
     plugin();
 

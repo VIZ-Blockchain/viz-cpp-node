@@ -55,8 +55,7 @@ You should see peer connections and block sync progress within a few minutes.
 ### Environment variables (Docker)
 
 | Variable | Purpose | Example |
-|----------|---------|---------|
-| `VIZD_SEED_NODES` | Override default seed nodes | `node1.viz.media:2001` |
+|----------|---------|----------|
 | `VIZD_WITNESS` | Validator name (if validator node) | `alice` |
 | `VIZD_PRIVATE_KEY` | Validator signing key (WIF) | `5J...` |
 
@@ -120,8 +119,9 @@ Minimum edits for a public node:
 ```ini
 # P2P
 p2p-endpoint = 0.0.0.0:2001
-p2p-seed-node = seed1.viz.media:2001
-p2p-seed-node = seed2.viz.media:2001
+p2p-seed-node = seed1.viz.world:2001
+p2p-seed-node = seed2.viz.world:2001
+p2p-seed-node = seed3.viz.world:2001
 
 # RPC
 webserver-http-endpoint = 0.0.0.0:8090
@@ -132,7 +132,7 @@ shared-file-size = 4G
 
 # Plugins (full node)
 plugin = chain p2p webserver json_rpc database_api network_broadcast_api
-plugin = social_network tags follow account_history
+plugin = account_history
 ```
 
 For a validator node, see [Validator Node](./validator-node.md).
@@ -171,8 +171,6 @@ Check `head_block_number` — it should increase every 3 seconds once synced.
 | Full node | `config.ini` | All plugins, public RPC endpoints |
 | Validator | `config_witness.ini` | Block production, RPC on localhost only |
 | Testnet | `config_testnet.ini` | Development and testing |
-| Low-memory | `config.ini` + `LOW_MEMORY_NODE` build flag | Consensus only, no history indexes |
-| MongoDB | `config_mongo.ini` | Full history in MongoDB |
 
 ---
 

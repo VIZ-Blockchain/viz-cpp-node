@@ -13,7 +13,6 @@ VIZ Ledger использует фреймворк плагинов **AppBase**.
 | **API** | Предоставляют JSON-RPC эндпоинты для клиентов |
 | **Индексирование** | Индексируют данные цепочки в chainbase для быстрых запросов |
 | **Производство** | Подписание и производство блоков |
-| **Внешние** | Интеграция с внешними системами (MongoDB) |
 | **Отладка/Тестирование** | Только для разработки; не для продакшна |
 
 ---
@@ -34,7 +33,7 @@ VIZ Ledger использует фреймворк плагинов **AppBase**.
 | `webserver` | Нужен для API | `json_rpc` | — |
 | `p2p` | Нужен для сети | `chain` | — |
 | `snapshot` | Рекомендуется | `chain` | — |
-| `witness_guard` | Рекомендуется для валидаторов | `chain`, `p2p` | — |
+| `validator_guard` | Рекомендуется для валидаторов | `chain`, `p2p` | — |
 
 ### API
 
@@ -42,7 +41,7 @@ VIZ Ledger использует фреймворк плагинов **AppBase**.
 |--------|--------|------------|---------|
 | `database_api` | Активен | `json_rpc`, `chain` | Да |
 | `network_broadcast_api` | Активен | `json_rpc`, `chain`, `p2p` | Да |
-| `witness_api` | Активен | `json_rpc`, `chain` | Да |
+| `validator_api` | Активен | `json_rpc`, `chain` | Да |
 | `account_by_key` | Активен | `json_rpc`, `chain` | Да |
 | `account_history` | Активен | `json_rpc`, `chain`, `operation_history` | Да |
 | `operation_history` | Активен | `json_rpc`, `chain` | Да |
@@ -53,10 +52,6 @@ VIZ Ledger использует фреймворк плагинов **AppBase**.
 | `auth_util` | Активен | `json_rpc`, `chain` | Да |
 | `block_info` | Активен | `json_rpc`, `chain` | Да |
 | `raw_block` | Активен | `json_rpc`, `chain` | Да |
-| `follow` | Устарел | `json_rpc`, `chain` | Да |
-| `tags` | Устарел | `json_rpc`, `chain`, `follow` | Да |
-| `social_network` | Устарел | `json_rpc`, `chain` | Да |
-| `private_message` | Устарел | `json_rpc`, `chain` | Да |
 
 ### Производство
 
@@ -64,17 +59,10 @@ VIZ Ledger использует фреймворк плагинов **AppBase**.
 |--------|--------|------------|---------|
 | `validator` | Активен | `chain`, `p2p` | — |
 
-### Внешние
-
-| Плагин | Статус | Зависимости | JSON-RPC |
-|--------|--------|------------|---------|
-| `mongo_db` | Активен | `chain` | — |
-
 ### Отладка / Тестирование
 
 | Плагин | Статус | Зависимости | JSON-RPC |
-|--------|--------|------------|---------|
-| `debug_node` | Только для разработки | `chain` | Да |
+|--------|--------|------------|----------|
 | `test_api` | Только для тестов | `json_rpc` | — |
 
 ---
@@ -100,10 +88,9 @@ VIZ Ledger использует фреймворк плагинов **AppBase**.
 **Ключевые флаги CLI:**
 
 | Флаг | Описание |
-|------|---------|
-| `--replay-blockchain` | Очистить chainbase и повторить из лога блоков |
-| `--force-replay-blockchain` | То же, но игнорирует проверку корruptor |
+|------|----------|
 | `--replay-from-snapshot` | Импортировать снапшот, затем повторить DLT-лог блоков (восстановление после сбоя) |
+| `--snapshot-auto-latest` | Автоматически обнаружить последний снимок в `snapshot-dir` |
 | `--auto-recover-from-snapshot` | Автоматическое восстановление при повреждении разделяемой памяти |
 | `--resync-blockchain` | Очистить chainbase и лог блоков; начать с генезиса или снапшота |
 
@@ -141,7 +128,7 @@ HTTP и WebSocket сервер, перенаправляющий запросы 
 | `webserver-cache-enabled` | `true` | Включить кэширование ответов |
 | `webserver-cache-size` | `10000` | Максимальное количество кэшированных записей |
 
-Ключи кэша формируются из `method + params` (не `id`), предотвращая обход путём ротации `id` запроса. Мутирующие методы (`network_broadcast_api.*`, `debug_node.*`) никогда не кэшируются. Кэш очищается при каждом новом применённом блоке.
+Ключи кэша формируются из `method + params` (не `id`), предотвращая обход путём ротации `id` запроса. Мутирующие методы (`network_broadcast_api.*`) никогда не кэшируются. Кэш очищается при каждом новом применённом блоке.
 
 Подробности — в разделе [Веб-сервер](./webserver.md).
 
@@ -196,20 +183,20 @@ DLT P2P-сетевое взаимодействие — распростране
 
 ---
 
-### `witness_api`
+### `validator_api`
 
 Запросы состояния валидаторов: активный набор, расписание, отдельные валидаторы, рейтинги голосов.
 
 | Метод | Описание |
 |-------|---------|
-| `get_active_witnesses` | Текущий активный набор из 21 валидатора |
-| `get_witness_schedule` | Полный объект расписания |
-| `get_witnesses` | Валидаторы по ID в базе данных |
-| `get_witness_by_account` | Один валидатор по имени аккаунта |
-| `get_witnesses_by_vote` | Валидаторы, отсортированные по суммарному весу голосов |
-| `get_witnesses_by_counted_vote` | Валидаторы по числу голосов |
-| `get_witness_count` | Общее количество зарегистрированных валидаторов |
-| `lookup_witness_accounts` | Список имён аккаунтов валидаторов по префиксу |
+| `get_active_validators` | Текущий активный набор из 21 валидатора |
+| `get_validator_schedule` | Полный объект расписания |
+| `get_validators` | Валидаторы по ID в базе данных |
+| `get_validator_by_account` | Один валидатор по имени аккаунта |
+| `get_validators_by_vote` | Валидаторы, отсортированные по суммарному весу голосов |
+| `get_validators_by_counted_vote` | Валидаторы по числу голосов |
+| `get_validator_count` | Общее количество зарегистрированных валидаторов |
+| `lookup_validator_accounts` | Список имён аккаунтов валидаторов по префиксу |
 
 ---
 
@@ -234,6 +221,24 @@ DLT P2P-сетевое взаимодействие — распростране
 **Параметры конфигурации:**
 - `track-account-range` — диапазон имён аккаунтов для индексирования (по умолчанию: все аккаунты)
 - `history-count-blocks` — сохранять историю за N блоков
+
+> **Зависимость:** `account_history` **требует** `operation_history` как родительский плагин
+> (`APPBASE_PLUGIN_REQUIRES`). Нода не запустится при отсутствии `operation_history`.
+> `account_history` хранит ссылки `operation_id_type` (внешние ключи) на строки `operation_object`,
+> которыми управляет `operation_history`; при запросе `get_account_history` разрешает их через
+> `database.get(itr->op)`.
+>
+> **Всегда включать оба плагина вместе:**
+> ```ini
+> plugin = operation_history
+> plugin = account_history
+> ```
+>
+> **Координация очистки:** Оба плагина читают один и тот же ключ `history-count-blocks` из
+> `config.ini` — разделения по плагинам нет. Одно значение применяется к обоим одновременно.
+> Внутри `account_history` дополнительно вызывает `operation_history::get_min_keep_block()`
+> при каждом блоке как защитную проверку, гарантируя, что его записи никогда не будут ссылаться
+> на уже удалённый `operation_object`.
 
 ---
 
@@ -291,17 +296,6 @@ DLT P2P-сетевое взаимодействие — распростране
 
 ---
 
-### Устаревшие API-плагины
-
-| Плагин | Методы | Примечание |
-|--------|--------|----------|
-| `follow` | Подписчики/подписки, ленты, блоги, репосты | Работает, но не рекомендуется для новых интеграций |
-| `tags` | Трендовый/горячий/новый контент по тегу | Работает, но не рекомендуется для новых интеграций |
-| `social_network` | Контент, голоса, ответы | Обёртка над запросами комитета/инвайтов; работает |
-| `private_message` | Входящие/исходящие для зашифрованных сообщений | На основе `custom_operation`; работает |
-
----
-
 ## Плагин производства
 
 ### `validator`
@@ -347,7 +341,7 @@ plugin = webserver
 plugin = p2p
 plugin = database_api
 plugin = network_broadcast_api
-plugin = witness_api
+plugin = validator_api
 plugin = account_by_key
 plugin = account_history
 plugin = operation_history
@@ -366,7 +360,7 @@ plugin = json_rpc
 plugin = webserver
 plugin = database_api
 plugin = network_broadcast_api
-plugin = witness_api
+plugin = validator_api
 plugin = snapshot
 
 snapshot-every-n-blocks = 28800

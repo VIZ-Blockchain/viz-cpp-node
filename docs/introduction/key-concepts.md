@@ -45,6 +45,12 @@ An authority is a multi-sig structure: `{ weight_threshold, account_auths[], key
 - Created by staking VIZ; withdrawn back to VIZ over 28 intervals (≈28 days)
 - Not directly transferable; can be delegated to other accounts
 
+### Community Symbol: Ƶ
+
+The community has chosen **Ƶ** as the short symbol for VIZ. Most wallets, explorers, and applications display it instead of the full ticker.
+
+It is also common practice to show balances with **2 decimal places** regardless of the underlying token type. Even staked funds (SHARES) are often displayed as `Ƶ` with a note that they are staked in the account, rather than switching to the `SHARES` unit and its 6-decimal format.
+
 ---
 
 ## Energy System
@@ -76,7 +82,7 @@ When an account performs an award with `energy = 500` (5%), that fraction of the
 Unlike standard DPOS, VIZ Ledger penalizes inactivity:
 - Each validator has a **participation score** based on recent block production.
 - If network-wide participation drops below `required-participation` (default 33%), block production pauses.
-- Validators that miss too many blocks receive a vote penalty applied for `witness_miss_penalty_duration` seconds.
+- Validators that miss too many blocks receive a vote penalty applied for `validator_miss_penalty_duration` seconds.
 
 ---
 
@@ -89,7 +95,7 @@ A signed bundle of transactions produced by a validator at its scheduled slot. C
 - `timestamp`: the exact slot time
 - `witness`: name of the producing validator
 - `transactions[]`: list of signed transactions
-- `witness_signature`: validator's signature
+- `validator_signature`: validator's signature
 
 ### Transaction
 
@@ -112,7 +118,7 @@ Inflation is continuously added to the reward pool. Validators and content creat
 
 | Recipient | Source |
 |-----------|--------|
-| Validators | `inflation_witness_percent` of block reward |
+| Validators | `inflation_validator_percent` of block reward |
 | Committee | `inflation_ratio_committee_vs_reward_fund` fraction |
 | Reward fund | Remainder — distributed via awards and content votes |
 
@@ -146,8 +152,8 @@ On-chain consensus parameters are controlled by validators via `versioned_chain_
 Key parameters include:
 - `account_creation_fee` — cost to create a new account
 - `maximum_block_size` — max bytes per block
-- `inflation_witness_percent` — validator share of block reward
-- `witness_miss_penalty_percent` / `witness_miss_penalty_duration` — miss penalty
+- `inflation_validator_percent` — validator share of block reward
+- `validator_miss_penalty_percent` / `validator_miss_penalty_duration` — miss penalty
 - `withdraw_intervals` — number of vesting withdrawal intervals
 
 See [Chain Properties Governance](../governance/chain-properties.md) for the full parameter list.

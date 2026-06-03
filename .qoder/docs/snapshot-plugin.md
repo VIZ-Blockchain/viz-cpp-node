@@ -626,6 +626,7 @@ With `config.ini`:
 ```ini
 trusted-snapshot-peer = seed1.viz.world:8092
 trusted-snapshot-peer = seed2.viz.world:8092
+trusted-snapshot-peer = seed3.viz.world:8092
 ```
 
 Since `sync-snapshot-from-trusted-peer` defaults to `false`, you must explicitly enable it in `config.ini` along with `trusted-snapshot-peer`:
@@ -633,6 +634,7 @@ Since `sync-snapshot-from-trusted-peer` defaults to `false`, you must explicitly
 ```ini
 trusted-snapshot-peer = seed1.viz.world:8092
 trusted-snapshot-peer = seed2.viz.world:8092
+trusted-snapshot-peer = seed3.viz.world:8092
 sync-snapshot-from-trusted-peer = true
 ```
 

@@ -56,7 +56,7 @@ docker logs -f vizd
 
 | 变量 | 用途 | 示例 |
 |------|------|------|
-| `VIZD_SEED_NODES` | 覆盖默认种子节点 | `node1.viz.media:2001` |
+| `VIZD_SEED_NODES` | 覆盖默认种子节点 | `node1.viz.world:2001` |
 | `VIZD_WITNESS` | 验证者名称（验证者节点时使用） | `alice` |
 | `VIZD_PRIVATE_KEY` | 验证者签名密钥（WIF 格式） | `5J...` |
 
@@ -120,8 +120,9 @@ cp share/vizd/config/config.ini /data/vizd/config.ini
 ```ini
 # P2P
 p2p-endpoint = 0.0.0.0:2001
-p2p-seed-node = seed1.viz.media:2001
-p2p-seed-node = seed2.viz.media:2001
+p2p-seed-node = seed1.viz.world:2001
+p2p-seed-node = seed2.viz.world:2001
+p2p-seed-node = seed3.viz.world:2001
 
 # RPC
 webserver-http-endpoint = 0.0.0.0:8090
@@ -132,7 +133,7 @@ shared-file-size = 4G
 
 # 插件（全节点）
 plugin = chain p2p webserver json_rpc database_api network_broadcast_api
-plugin = social_network tags follow account_history
+plugin = account_history
 ```
 
 验证者节点配置参见[验证者节点](./validator-node.md)。
@@ -171,8 +172,6 @@ curl -s -X POST http://localhost:8090 \
 | 全节点 | `config.ini` | 所有插件，公共 RPC 端点 |
 | 验证者 | `config_witness.ini` | 区块生产，RPC 仅限本地 |
 | 测试网 | `config_testnet.ini` | 开发和测试 |
-| 低内存 | `config.ini` + `LOW_MEMORY_NODE` 构建标志 | 仅共识，无历史索引 |
-| MongoDB | `config_mongo.ini` | MongoDB 中的完整历史 |
 
 ---
 

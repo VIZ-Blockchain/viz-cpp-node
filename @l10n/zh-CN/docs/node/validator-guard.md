@@ -1,6 +1,6 @@
 # 验证者守护（Validator Guard）
 
-`witness_guard` 插件为验证者账户自动化签名密钥恢复。当验证者的签名密钥被重置为 null（禁用区块生产）时，插件检测到此变化并广播 `witness_update_operation` 以恢复密钥——无需手动干预。
+`validator_guard` 插件为验证者账户自动化签名密钥恢复。当验证者的签名密钥被重置为 null（禁用区块生产）时，插件检测到此变化并广播 `validator_update_operation` 以恢复密钥——无需手动干预。
 
 ---
 
@@ -15,7 +15,7 @@
 ## 启用插件
 
 ```ini
-plugin = witness_guard
+plugin = validator_guard
 ```
 
 ---
@@ -34,7 +34,7 @@ plugin = witness_guard
 ### 示例
 
 ```ini
-plugin = witness_guard
+plugin = validator_guard
 
 # 监控一个验证者
 validator-guard-validator = ["alice", "5K_SIGNING_WIF", "5K_ACTIVE_WIF"]
@@ -63,7 +63,7 @@ validator-guard-interval = 10
 
 每个区块时：
 
-1. **连续区块自动禁用**：如果被监控的验证者连续生产了 `validator-guard-disable` 个区块，广播带 null 密钥的 `witness_update_operation` 以禁用它，并将该验证者标记为自动禁用。*其他*验证者的任何区块都会重置所有连续计数器。
+1. **连续区块自动禁用**：如果被监控的验证者连续生产了 `validator-guard-disable` 个区块，广播带 null 密钥的 `validator_update_operation` 以禁用它，并将该验证者标记为自动禁用。*其他*验证者的任何区块都会重置所有连续计数器。
 2. **交易确认**：扫描区块中待处理的恢复交易 ID。匹配时，将恢复标记为已确认并清除跟踪状态。
 3. **前瞻调度**：如果任何被监控的验证者在接下来的 3 个槽位内有安排，触发立即检查，以便在槽位到来前恢复密钥。
 4. **周期性检查**：否则，每 `validator-guard-interval` 个区块运行核心检查。节点启动后仍在追赶时，每 10 个区块检查一次。
@@ -83,7 +83,7 @@ validator-guard-interval = 10
 
 ### 恢复交易
 
-1. 构建 `witness_update_operation`，保留当前链上 URL，并将签名密钥设置为配置的公钥。
+1. 构建 `validator_update_operation`，保留当前链上 URL，并将签名密钥设置为配置的公钥。
 2. 包装为 `signed_transaction`，30 秒到期时间，引用当前头块。
 3. 使用配置的活跃私钥签名。
 4. 通过 P2P 广播。
@@ -113,12 +113,12 @@ validator-guard-interval = 10
 | `enable-stale-production detected — auto-restore is DISABLED` | 过时生产模式激活；恢复被抑制 |
 | `network is healthy (XX%), auto-clearing stale production override` | 过时生产防护已解除 |
 | `'alice' has null signing key on-chain — initiating restore` | 检测到 null 密钥，即将广播 |
-| `broadcasting witness_update [ID: ...] for 'alice' — restoring key to VIZ...` | 恢复交易已发送 |
+| `broadcasting validator_update [ID: ...] for 'alice' — restoring key to VIZ...` | 恢复交易已发送 |
 | `CONFIRMED restoration for 'alice' in block #N` | 恢复已在链上确认 |
 | `POTENTIAL LONG FORK DETECTED! LIB #N is Xs old. Skipping restoration.` | 由于 LIB 过期而跳过恢复 |
 | `validator 'alice' produced N consecutive blocks — auto-disabling` | 连续区块阈值已达到 |
 | `'alice' was auto-disabled (consecutive block limit), skipping auto-restore` | 自动禁用后抑制自动恢复 |
-| `witness_update FAILED for 'alice': [error]` | 广播失败 |
+| `validator_update FAILED for 'alice': [error]` | 广播失败 |
 
 ---
 

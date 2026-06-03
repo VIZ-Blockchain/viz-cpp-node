@@ -99,7 +99,6 @@ RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
     cmake \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_SHARED_LIBRARIES=FALSE \
-        -DLOW_MEMORY_NODE=FALSE \
         -DCHAINBASE_CHECK_LOCKING=FALSE \
         .. \
     && \
@@ -132,6 +131,25 @@ COPY share/vizd/vizd.sh /etc/service/vizd/run
 COPY share/vizd/snapshot.json /var/lib/vizd
 COPY share/vizd/config/config.ini /etc/vizd/config.ini
 
+# Log rotation — IMPORTANT for production deployments.
+#
+# vizd writes all output to stdout/stderr. Docker's default json-file log driver
+# has no size limit, so a log flood (crash loop, assertion storm, etc.) can fill
+# the host disk in minutes. Use the `local` driver, which is more space-efficient
+# and supports automatic rotation.
+#
+# Recommended: set globally on the Docker host so every container is protected:
+#
+#   /etc/docker/daemon.json:
+#   {
+#     "log-driver": "local",
+#     "log-opts": { "max-size": "100m", "max-file": "5" }
+#   }
+#   then: systemctl restart docker
+#
+# Per-container override (docker run):
+#   --log-driver=local --log-opt max-size=100m --log-opt max-file=5
+#
 # rpc services:
 # http
 EXPOSE 8090

@@ -71,6 +71,9 @@ namespace graphene {
                     account_by_key_plugin &_self;
 
                     graphene::chain::database &_db;
+
+                    boost::signals2::connection _pre_op_conn;
+                    boost::signals2::connection _post_op_conn;
                 };
 
                 std::unique_ptr<account_by_key_plugin_impl> my;

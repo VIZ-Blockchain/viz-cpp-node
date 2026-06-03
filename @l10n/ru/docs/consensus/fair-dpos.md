@@ -89,6 +89,26 @@ irreversibility_threshold = ceil(num_scheduled_validators * 2 / 3)
 
 Продвижение LIB **приостанавливается в режиме экстренного консенсуса** (см. [Экстренный консенсус](./emergency-consensus.md)).
 
+### Быстрое продвижение LIB через пост-валидацию блоков
+
+Классический путь LIB требует, чтобы 14 валидаторов **произвели** блоки поверх целевого — при 3 с на слот это занимает ~63 секунды. Пост-валидация блоков обеспечивает быстрый путь, заменяя неявное подтверждение производством блоков на явные подписные сообщения, сокращая время финальности до **~4 секунд**.
+
+**Поток данных:**
+
+1. После `apply_block(N)` цепочка сохраняет `validator_confirmation_object` для блока N.
+2. Каждый запланированный валидатор с загруженным подписывающим ключом подписывает `chain_id + block_id` и транслирует `block_post_validation_message` (P2P-сообщение типа **6009**).
+3. Принимающие пиры проверяют подпись по ончейн `validator.signing_key`, затем помечают валидатора как подтвердившего этот блок.
+4. `check_block_post_validation_chain()` проходит от LIB+1 вперёд — если ≥14 из 21 запланированных валидаторов подтвердили блок, LIB продвигается к этому блоку, и процесс повторяется.
+
+Классический путь DPOS (~63 с) остаётся активным как **резервный** на случай потери подтверждающих сообщений.
+
+**Ограничения:**
+- Только валидаторы в **текущем перемешанном расписании** учитываются в пороге 2/3.
+- Пост-валидация LIB **отключена во время экстренного консенсуса** во избежание блокировки восстановления.
+- Список подтверждений ограничен 20 записями (`CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT`).
+
+Полные технические детали, включая формат сообщения и разбивку по времени — в разделе [Обработка блоков → Пост-валидация блоков](./block-processing.md#block-post-validation-fast-lib-finality).
+
 ---
 
 ## Голосование по хардфоркам
@@ -116,8 +136,8 @@ irreversibility_threshold = ceil(num_scheduled_validators * 2 / 3)
 
 Если в течение `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` (по умолчанию 1 час) не было произведено ни одного блока, цепочка переходит в **режим чрезвычайной ситуации**:
 
-- Все 21 слот валидаторов назначаются `CHAIN_EMERGENCY_WITNESS_ACCOUNT` («committee»).
-- Экстренный валидатор подписывает блоки с использованием `CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY`.
+- Все 21 слот валидаторов назначаются `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` («committee»).
+- Экстренный валидатор подписывает блоки с использованием `CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY`.
 - Все штрафы валидаторов сбрасываются; отключённые валидаторы повторно включаются.
 - Продвижение LIB приостанавливается в период чрезвычайной ситуации.
 - Режим чрезвычайной ситуации завершается после того, как `CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS` (21) последовательных обычных блоков продвигают LIB выше начального блока чрезвычайной ситуации.
@@ -146,7 +166,7 @@ irreversibility_threshold = ceil(num_scheduled_validators * 2 / 3)
 | `required-participation` | `33` (33%) | Минимальное участие для производства блоков |
 | `enable-stale-production` | `false` | Обход проверки участия (только для тестовой сети) |
 | `emergency-private-key` | — | Опциональный ключ подписи для экстренного консенсуса |
-| Активные валидаторы | 21 | Задано в `CHAIN_MAX_WITNESSES` |
+| Активные валидаторы | 21 | Задано в `CHAIN_MAX_VALIDATORS` |
 | Интервал блока | 3 с | `CHAIN_BLOCK_INTERVAL` |
 | Порог LIB | ⌈21 × 2/3⌉ = 14 | Блоки, подтверждающие необратимость |
 | Таймаут чрезвычайной ситуации | 3600 с | `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` |
@@ -159,7 +179,10 @@ irreversibility_threshold = ceil(num_scheduled_validators * 2 / 3)
 |----------|------|
 | Построение расписания валидаторов | `libraries/chain/database.cpp` — `update_witness_schedule()` |
 | Обновление битовой маски участия | `libraries/chain/database.cpp` — `update_global_dynamic_data()` |
-| Продвижение LIB | `libraries/chain/database.cpp` — `update_last_irreversible_block()` |
+| Продвижение LIB (классическое) | `libraries/chain/database.cpp` — `update_last_irreversible_block()` |
+| Продвижение LIB (быстрое) | `libraries/chain/database.cpp` — `check_block_post_validation_chain()`, `apply_block_post_validation()` |
+| Создание пост-валидации | `libraries/chain/database.cpp` — `create_block_post_validation()` |
+| Трансляция пост-валидации | `plugins/validator/validator.cpp` — тик таймера пост-валидации |
 | Голосование по хардфоркам | `libraries/chain/database.cpp` — `process_hardforks()` |
 | Цикл производства | `plugins/validator/validator.cpp` — `maybe_produce_block()` |
 | Активация режима чрезвычайной ситуации | `libraries/chain/database.cpp` — `check_emergency_consensus()` |

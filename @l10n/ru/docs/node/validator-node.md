@@ -21,14 +21,14 @@
 ```ini
 # P2P — разрешить публичные входящие соединения для распространения блоков
 p2p-endpoint = 0.0.0.0:2001
-p2p-seed-node = seed1.viz.media:2001
+p2p-seed-node = seed1.viz.world:2001
 
 # RPC — привязать к localhost для безопасности (валидаторам публичный API не нужен)
 webserver-http-endpoint = 127.0.0.1:8090
 webserver-ws-endpoint   = 127.0.0.1:8091
 
 # Обязательные плагины для валидатора
-plugin = chain p2p webserver json_rpc database_api network_broadcast_api validator witness_api
+plugin = chain p2p webserver json_rpc database_api network_broadcast_api validator validator_api
 
 # Пропустить индексирование виртуальных операций для экономии памяти
 skip-virtual-ops = true
@@ -88,10 +88,8 @@ docker run -d \
   -v /data/vizd:/var/lib/vizd \
   -e VIZD_WITNESS=myvalidator \
   -e VIZD_PRIVATE_KEY=5Jxxx... \
-  vizblockchain/vizd:lowmem
+  vizblockchain/vizd:latest
 ```
-
-Для валидаторов используйте образ `lowmem` — он не включает ненужные плагины индексирования.
 
 ---
 
@@ -219,7 +217,7 @@ private-key = 5Jyyy...   # Ключ Alice.backup
 emergency-private-key = 5Jzzz...   # Ключ экстренного комитета
 ```
 
-При его наличии узел автоматически добавляет `CHAIN_EMERGENCY_WITNESS_ACCOUNT` в свой набор валидаторов и участвует в производстве экстренных блоков. См. [Экстренный консенсус](../consensus/emergency-consensus.md).
+При его наличии узел автоматически добавляет `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` в свой набор валидаторов и участвует в производстве экстренных блоков. См. [Экстренный консенсус](../consensus/emergency-consensus.md).
 
 ---
 

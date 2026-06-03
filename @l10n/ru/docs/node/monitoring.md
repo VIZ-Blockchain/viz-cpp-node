@@ -301,7 +301,7 @@ vizd --replay-from-snapshot --snapshot-auto-latest --plugin snapshot
 **Узел завис / разделяемая память повреждена:**
 1. Если `--auto-recover-from-snapshot` включён (по умолчанию) и снимки существуют, узел восстанавливается автоматически — проверьте логи.
 2. Ручное восстановление: `vizd --replay-from-snapshot --snapshot-auto-latest --plugin snapshot`.
-3. Если снимков нет: `vizd --replay-blockchain` (требует полный block log; недоступно в DLT-режиме).
+3. Если снимков нет: получите свежий снимок от доверенного пира или другого узла, затем используйте `--snapshot <path>`.
 
 **RPC недоступен:**
 1. Проверьте привязку `webserver-http-endpoint` — валидаторы по умолчанию используют `127.0.0.1:8090`.

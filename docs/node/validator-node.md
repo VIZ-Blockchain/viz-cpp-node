@@ -21,14 +21,14 @@ Key settings:
 ```ini
 # P2P — allow public inbound connections for block propagation
 p2p-endpoint = 0.0.0.0:2001
-p2p-seed-node = seed1.viz.media:2001
+p2p-seed-node = seed1.viz.world:2001
 
 # RPC — bind to localhost for security (validators don't need public API)
 webserver-http-endpoint = 127.0.0.1:8090
 webserver-ws-endpoint   = 127.0.0.1:8091
 
 # Required plugins for a validator
-plugin = chain p2p webserver json_rpc database_api network_broadcast_api validator witness_api
+plugin = chain p2p webserver json_rpc database_api network_broadcast_api validator validator_api
 
 # Skip virtual-op indexing to save memory (validators don't need it)
 skip-virtual-ops = true
@@ -88,10 +88,8 @@ docker run -d \
   -v /data/vizd:/var/lib/vizd \
   -e VIZD_WITNESS=myvalidator \
   -e VIZD_PRIVATE_KEY=5Jxxx... \
-  vizblockchain/vizd:lowmem
+  vizblockchain/vizd:latest
 ```
-
-Use the `lowmem` image for validators — it excludes unnecessary indexing plugins.
 
 ---
 
@@ -219,7 +217,7 @@ For nodes involved in emergency consensus recovery:
 emergency-private-key = 5Jzzz...   # Committee emergency key
 ```
 
-When set, the node automatically adds `CHAIN_EMERGENCY_WITNESS_ACCOUNT` to its validator set and participates in emergency block production. See [Emergency Consensus](../consensus/emergency-consensus.md).
+When set, the node automatically adds `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` to its validator set and participates in emergency block production. See [Emergency Consensus](../consensus/emergency-consensus.md).
 
 ---
 

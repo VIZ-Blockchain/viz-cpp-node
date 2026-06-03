@@ -26,10 +26,8 @@ chmod +x build-linux.sh
 
 ```bash
 ./build-linux.sh              # Release-сборка (по умолчанию)
-./build-linux.sh -l           # LOW_MEMORY_NODE (узлы-валидаторы)
 ./build-linux.sh -n           # Testnet-сборка
 ./build-linux.sh -t Debug -j4 # Debug-сборка с 4 параллельными задачами
-./build-linux.sh --skip-deps  # Пропустить установку зависимостей
 ./build-linux.sh --install    # Установить в систему после сборки
 
 # Пользовательские пути к зависимостям
@@ -54,7 +52,6 @@ chmod +x build-mac.sh
 **Параметры:**
 
 ```bash
-./build-mac.sh -l              # Low-memory узел
 ./build-mac.sh -n              # Testnet
 ./build-mac.sh --skip-deps     # Пропустить установки Homebrew
 ./build-mac.sh --boost-root /opt/boost_1_74_0
@@ -77,7 +74,6 @@ build-mingw.bat
 | Переменная | По умолчанию | Описание |
 |-----------|-------------|---------|
 | `VIZ_BUILD_TYPE` | Release | Release или Debug |
-| `VIZ_LOW_MEMORY` | OFF | Включить low-memory узел |
 | `VIZ_BUILD_TESTNET` | OFF | Testnet-сборка |
 | `VIZ_FULL_STATIC` | OFF | Полностью статический бинарник |
 | `VIZ_CMAKE_EXTRA` | — | Дополнительные флаги CMake |
@@ -100,7 +96,6 @@ build-msvc.bat
 |-----------|-------------|---------|
 | `VIZ_VS_VERSION` | "Visual Studio 17 2022" | Генератор Visual Studio |
 | `VIZ_BUILD_TYPE` | Release | Тип сборки |
-| `VIZ_LOW_MEMORY` | OFF | Low-memory узел |
 | `VIZ_BUILD_TESTNET` | OFF | Testnet-сборка |
 
 **Требования:** Visual Studio 2019+ с нагрузкой "Desktop development with C++", CMake 3.16+.
@@ -113,9 +108,7 @@ build-msvc.bat
 
 | Dockerfile | Описание |
 |-----------|---------|
-| `Dockerfile-production` | Полный узел, Release, без MongoDB |
-| `Dockerfile-lowmem` | То же, но с `LOW_MEMORY_NODE=ON` |
-| `Dockerfile-mongo` | Включён плагин MongoDB |
+| `Dockerfile-production` | Полный узел мейннета (Release) |
 | `Dockerfile-testnet` | Testnet (`BUILD_TESTNET=ON`) |
 
 Все Dockerfile используют двухэтапную сборку для минимизации размера образа и пакеты Boost 1.71 (`libboost-coroutine-dev`, `libboost-context-dev`).
@@ -127,9 +120,7 @@ build-msvc.bat
 | Параметр | По умолчанию | Описание |
 |---------|-------------|---------|
 | `BUILD_TESTNET` | OFF | Сборка для testnet |
-| `LOW_MEMORY_NODE` | OFF | Исключить неконсенсусные данные (уменьшает RAM) |
 | `CHAINBASE_CHECK_LOCKING` | OFF | Включить проверку блокировок (только для разработки) |
-| `ENABLE_MONGO_PLUGIN` | OFF | Включить плагин MongoDB |
 | `BUILD_SHARED_LIBRARIES` | OFF | Собирать разделяемые библиотеки |
 | `USE_PCH` | OFF | Включить предкомпилированные заголовки (ускоряет пересборку) |
 
@@ -142,9 +133,6 @@ build-msvc.bat
 ```bash
 # Release-сборка
 python3 programs/build_helpers/configure_build.py --release --src ../..
-
-# Debug с low-memory
-python3 programs/build_helpers/configure_build.py --debug --low-memory
 
 # Кросс-компиляция для Windows с MinGW
 python3 programs/build_helpers/configure_build.py --win --release

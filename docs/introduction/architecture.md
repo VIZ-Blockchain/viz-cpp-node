@@ -13,7 +13,7 @@ VIZ Ledger is implemented as a modular C++ daemon (`vizd`) composed of layered l
 ├─────────────────────────────────────────────────────────────────┤
 │  Plugins                                                        │
 │  chain │ validator │ p2p │ webserver │ json_rpc │ database_api  │
-│  social_network │ snapshot │ committee_api │ invite_api │ ...   │
+│  account_history │ snapshot │ committee_api │ invite_api │ ...   │
 ├─────────────────────────────────────────────────────────────────┤
 │  Core Libraries                                                 │
 │  libraries/chain     — blockchain state machine, fork db        │
@@ -48,17 +48,8 @@ Plugins are registered with the `AppBase` framework at startup and implement lif
 | `webserver` | HTTP and WebSocket server for API access |
 | `json_rpc` | Routes JSON-RPC requests to registered API plugins |
 | `database_api` | Read queries: accounts, blocks, transactions, globals |
-| `social_network` | Indexes and queries content, votes, replies |
-| `snapshot` | Creates and restores state snapshots |
-| `committee_api` | Committee worker request queries |
-| `invite_api` | Invite object queries |
-| `paid_subscription_api` | Paid subscription queries |
-| `account_history` | Per-account operation history index |
 | `account_by_key` | Lookup accounts by public key |
-| `follow` | Follow/ignore relationship index |
-| `tags` | Tag-based content indexing |
-| `witness_api` | Validator schedule and signing key queries |
-| `debug_node` | Test utilities: inject blocks, set time |
+| `validator_api` | Validator schedule and signing key queries |
 
 ---
 
@@ -107,7 +98,7 @@ main() ──► register_plugin<chain>()
 |-------|-----------|---------------|
 | Data | `libraries/chain/database` | State persistence, validation, signals |
 | Control | Plugins (`chain`, `validator`, `p2p`) | Lifecycle, block/tx acceptance, coordination |
-| View | API plugins (`database_api`, `social_network`, …) | Read-only query endpoints |
+| View | API plugins (`database_api`, `account_history`, …) | Read-only query endpoints |
 
 ---
 
@@ -132,7 +123,7 @@ Peer (P2P) ──► p2p_plugin::handle_block()
 Client (HTTP/WS) ──► webserver_plugin
                   ──► json_rpc_plugin::call()
                       ──► registry.find_api_method(api, method)
-                          ──► database_api / social_network / ...
+                          ──► database_api / account_history / ...
                               ──► database::get_*(...)
                                   ──► return JSON result
 ```

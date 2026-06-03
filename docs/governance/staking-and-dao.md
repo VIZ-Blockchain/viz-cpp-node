@@ -75,10 +75,10 @@ SHARES are the universal governance token. Every meaningful action is weighted b
 Vote weight is **divided equally** among all validators the account votes for:
 
 ```
-fair_weight = effective_vesting_shares / witnesses_voted_for
+fair_weight = effective_vesting_shares / validators_voted_for
 ```
 
-This prevents concentration — voting for 10 validators gives each 1/10 of your weight. Accounts may also set a proxy (`account_witness_proxy_operation`) to delegate all validator voting to another account.
+This prevents concentration — voting for 10 validators gives each 1/10 of your weight. Accounts may also set a proxy (`account_validator_proxy_operation`) to delegate all validator voting to another account.
 
 ### 2. Committee DAO Voting
 
@@ -159,7 +159,7 @@ Stake VIZ → Get SHARES → Governance Power
 | `CHAIN_MAX_WITHDRAW_ROUTES` | 10 | Max withdrawal routes per account |
 | `CHAIN_ENERGY_REGENERATION_SECONDS` | 432000 (5d) | Full energy regeneration |
 | `CHAIN_100_PERCENT` | 10000 | Basis points denominator |
-| `CHAIN_MAX_ACCOUNT_WITNESS_VOTES` | 100 | Max validators per account |
+| `CHAIN_MAX_ACCOUNT_VALIDATOR_VOTES` | 100 | Max validators per account |
 
 ---
 

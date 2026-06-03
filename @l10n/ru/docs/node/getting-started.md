@@ -56,7 +56,7 @@ docker logs -f vizd
 
 | Переменная | Назначение | Пример |
 |-----------|-----------|--------|
-| `VIZD_SEED_NODES` | Переопределить начальные узлы | `node1.viz.media:2001` |
+| `VIZD_SEED_NODES` | Переопределить начальные узлы | `node1.viz.world:2001` |
 | `VIZD_WITNESS` | Имя валидатора (для узла-валидатора) | `alice` |
 | `VIZD_PRIVATE_KEY` | Ключ подписи валидатора (WIF) | `5J...` |
 
@@ -120,8 +120,9 @@ cp share/vizd/config/config.ini /data/vizd/config.ini
 ```ini
 # P2P
 p2p-endpoint = 0.0.0.0:2001
-p2p-seed-node = seed1.viz.media:2001
-p2p-seed-node = seed2.viz.media:2001
+p2p-seed-node = seed1.viz.world:2001
+p2p-seed-node = seed2.viz.world:2001
+p2p-seed-node = seed3.viz.world:2001
 
 # RPC
 webserver-http-endpoint = 0.0.0.0:8090
@@ -132,7 +133,7 @@ shared-file-size = 4G
 
 # Плагины (полный узел)
 plugin = chain p2p webserver json_rpc database_api network_broadcast_api
-plugin = social_network tags follow account_history
+plugin = account_history
 ```
 
 Для узла-валидатора см. [Узел-валидатор](./validator-node.md).
@@ -171,8 +172,6 @@ curl -s -X POST http://localhost:8090 \
 | Полный узел | `config.ini` | Все плагины, публичные RPC-эндпоинты |
 | Валидатор | `config_witness.ini` | Производство блоков, RPC только на localhost |
 | Тестовая сеть | `config_testnet.ini` | Разработка и тестирование |
-| Малая память | `config.ini` + флаг сборки `LOW_MEMORY_NODE` | Только консенсус, без индексов истории |
-| MongoDB | `config_mongo.ini` | Полная история в MongoDB |
 
 ---
 
