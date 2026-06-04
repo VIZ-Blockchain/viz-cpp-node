@@ -32,20 +32,62 @@ jobs:
           submodules: recursive
 
       # ──────────────────────────────────────────────────────────────
-      # Boost — cached prebuilt binaries from Chocolatey
-      # boost-msvc-14.3 ships static libs compiled with /MT for VS 2022.
-      # Caching the install directory avoids the ~5 min download on hits.
+      # Boost — built from source (avoids flaky Chocolatey/JFrog binaries)
+      # Builds only the libraries vizd/cli_wallet need with static linking
+      # and shared MSVC runtime (/MD), matching the project's expectations.
+      # The install directory is cached across CI runs; a cache hit skips
+      # the entire ~10 min build.
       # ──────────────────────────────────────────────────────────────
       - name: Cache Boost
         id: cache-boost
         uses: actions/cache@v4
         with:
           path: ${{ env.BOOST_ROOT }}
-          key: boost-${{ env.BOOST_VERSION }}-msvc14.3-x64
+          key: boost-src-${{ env.BOOST_VERSION }}-msvc14.3-x64-v1
 
-      - name: Install Boost via Chocolatey
+      - name: Build Boost from source
         if: steps.cache-boost.outputs.cache-hit != 'true'
-        run: choco install boost-msvc-14.3 --version=${{ env.BOOST_VERSION }} --no-progress -y
+        shell: pwsh
+        run: |
+          $version = $env:BOOST_VERSION
+          $underscore = $version -replace '\.', '_'
+          $tarball = "boost_${underscore}.tar.gz"
+          $url = "https://github.com/boostorg/boost/releases/download/boost-$version/$tarball"
+          $srcDir = "${{ runner.temp }}\boost-src"
+          $installDir = $env:BOOST_ROOT
+
+          Write-Host "Downloading Boost $version from GitHub..."
+          Invoke-WebRequest -Uri $url -OutFile "${{ runner.temp }}\$tarball"
+
+          Write-Host "Extracting..."
+          New-Item -ItemType Directory -Path $srcDir -Force | Out-Null
+          tar -xzf "${{ runner.temp }}\$tarball" -C $srcDir
+          $boostDir = Get-ChildItem -Directory "$srcDir\boost_*" | Select-Object -First 1
+
+          Write-Host "Bootstrapping b2..."
+          Push-Location $boostDir.FullName
+          cmd /c "bootstrap.bat"
+
+          Write-Host "Building Boost libraries..."
+          .\b2 install `
+            --prefix=$installDir `
+            --with-thread --with-date_time --with-system --with-filesystem `
+            --with-program_options --with-serialization --with-chrono `
+            --with-unit_test_framework --with-context --with-locale --with-coroutine `
+            toolset=msvc-14.3 `
+            variant=release `
+            link=static `
+            threading=multi `
+            runtime-link=shared `
+            address-model=64 `
+            -j$env:NUMBER_OF_PROCESSORS
+          Pop-Location
+
+          if (-not (Test-Path "$installDir\include\boost\version.hpp")) {
+            Write-Error "Boost build failed — version.hpp not found in $installDir"
+            exit 1
+          }
+          Write-Host "Boost installed to $installDir"
 
       # ──────────────────────────────────────────────────────────────
       # OpenSSL — cached installation from Chocolatey
