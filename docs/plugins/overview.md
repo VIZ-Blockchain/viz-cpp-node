@@ -13,7 +13,6 @@ VIZ Ledger uses the **AppBase** plugin framework. Each plugin has a lifecycle (`
 | **API** | Expose JSON-RPC endpoints for clients |
 | **Index** | Index chain data into chainbase for fast queries |
 | **Producer** | Block signing and production |
-| **External** | Integration with external systems (MongoDB) |
 | **Debug/Test** | Development only; not for production |
 
 ---
@@ -34,7 +33,7 @@ VIZ Ledger uses the **AppBase** plugin framework. Each plugin has a lifecycle (`
 | `webserver` | Required for API | `json_rpc` | — |
 | `p2p` | Required for network | `chain` | — |
 | `snapshot` | Recommended | `chain` | — |
-| `witness_guard` | Recommended for validators | `chain`, `p2p` | — |
+| `validator_guard` | Recommended for validators | `chain`, `p2p` | — |
 
 ### API
 
@@ -42,7 +41,7 @@ VIZ Ledger uses the **AppBase** plugin framework. Each plugin has a lifecycle (`
 |--------|--------|------|---------|
 | `database_api` | Active | `json_rpc`, `chain` | Yes |
 | `network_broadcast_api` | Active | `json_rpc`, `chain`, `p2p` | Yes |
-| `witness_api` | Active | `json_rpc`, `chain` | Yes |
+| `validator_api` | Active | `json_rpc`, `chain` | Yes |
 | `account_by_key` | Active | `json_rpc`, `chain` | Yes |
 | `account_history` | Active | `json_rpc`, `chain`, `operation_history` | Yes |
 | `operation_history` | Active | `json_rpc`, `chain` | Yes |
@@ -53,10 +52,6 @@ VIZ Ledger uses the **AppBase** plugin framework. Each plugin has a lifecycle (`
 | `auth_util` | Active | `json_rpc`, `chain` | Yes |
 | `block_info` | Active | `json_rpc`, `chain` | Yes |
 | `raw_block` | Active | `json_rpc`, `chain` | Yes |
-| `follow` | Deprecated | `json_rpc`, `chain` | Yes |
-| `tags` | Deprecated | `json_rpc`, `chain`, `follow` | Yes |
-| `social_network` | Deprecated | `json_rpc`, `chain` | Yes |
-| `private_message` | Deprecated | `json_rpc`, `chain` | Yes |
 
 ### Producer
 
@@ -64,17 +59,10 @@ VIZ Ledger uses the **AppBase** plugin framework. Each plugin has a lifecycle (`
 |--------|--------|------|---------|
 | `validator` | Active | `chain`, `p2p` | — |
 
-### External
-
-| Plugin | Status | Deps | JSON-RPC |
-|--------|--------|------|---------|
-| `mongo_db` | Active | `chain` | — |
-
 ### Debug / Test
 
 | Plugin | Status | Deps | JSON-RPC |
-|--------|--------|------|---------|
-| `debug_node` | Dev only | `chain` | Yes |
+|--------|--------|------|----------|
 | `test_api` | Test only | `json_rpc` | — |
 
 ---
@@ -101,9 +89,8 @@ Manages the chainbase database, applies blocks and transactions, and emits signa
 
 | Flag | Description |
 |------|-------------|
-| `--replay-blockchain` | Wipe chainbase and replay from block log |
-| `--force-replay-blockchain` | Same as above, ignores corruption check |
 | `--replay-from-snapshot` | Import snapshot then replay DLT block log (crash recovery) |
+| `--snapshot-auto-latest` | Auto-discover latest snapshot in `snapshot-dir` |
 | `--auto-recover-from-snapshot` | Enable automatic recovery from shared memory corruption |
 | `--resync-blockchain` | Wipe chainbase and block log; start from genesis or snapshot |
 
@@ -141,7 +128,7 @@ HTTP and WebSocket server that forwards requests to `json_rpc`. Includes a read-
 | `webserver-cache-enabled` | `true` | Enable response caching |
 | `webserver-cache-size` | `10000` | Maximum cached entries |
 
-Cache keys are derived from `method + params` (not `id`), preventing bypass by rotating the request `id`. Mutating methods (`network_broadcast_api.*`, `debug_node.*`) are never cached. The cache clears on each new applied block.
+Cache keys are derived from `method + params` (not `id`), preventing bypass by rotating the request `id`. Mutating methods (`network_broadcast_api.*`) are never cached. The cache clears on each new applied block.
 
 See [Webserver](./webserver.md) for full details.
 
@@ -196,20 +183,20 @@ Submit and broadcast signed transactions and blocks.
 
 ---
 
-### `witness_api`
+### `validator_api`
 
 Query validator state: active set, schedule, individual validators, vote rankings.
 
 | Method | Description |
 |--------|-------------|
-| `get_active_witnesses` | Current 21-validator active set |
-| `get_witness_schedule` | Full schedule object |
-| `get_witnesses` | Validators by database IDs |
-| `get_witness_by_account` | Single validator by account name |
-| `get_witnesses_by_vote` | Validators sorted by total vote weight |
-| `get_witnesses_by_counted_vote` | Validators sorted by counted vote weight |
-| `get_witness_count` | Total number of registered validators |
-| `lookup_witness_accounts` | List validator account names by prefix |
+| `get_active_validators` | Current 21-validator active set |
+| `get_validator_schedule` | Full schedule object |
+| `get_validators` | Validators by database IDs |
+| `get_validator_by_account` | Single validator by account name |
+| `get_validators_by_vote` | Validators sorted by total vote weight |
+| `get_validators_by_counted_vote` | Validators sorted by counted vote weight |
+| `get_validator_count` | Total number of registered validators |
+| `lookup_validator_accounts` | List validator account names by prefix |
 
 ---
 
@@ -220,20 +207,6 @@ Reverse-lookup accounts by public key.
 | Method | Description |
 |--------|-------------|
 | `get_key_references` | Get account names that use given public keys |
-
----
-
-### `account_history`
-
-Per-account operation history, paginated.
-
-| Method | Description |
-|--------|-------------|
-| `get_account_history(account, from, limit)` | Get operations; `from=-1` returns newest; max 1000 per call |
-
-**Config options:**
-- `track-account-range` — account name range to index (default: all accounts)
-- `history-count-blocks` — retain N blocks of history
 
 ---
 
@@ -250,6 +223,37 @@ All-operations index for block-level and transaction queries.
 - `history-whitelist-ops` / `history-blacklist-ops` — filter which op types are stored
 - `history-start-block` — start indexing from this block number
 - `history-count-blocks` — retain N blocks of history
+
+---
+
+### `account_history`
+
+Per-account operation history, paginated.
+
+| Method | Description |
+|--------|-------------|
+| `get_account_history(account, from, limit)` | Get operations; `from=-1` returns newest; max 1000 per call |
+
+**Config options:**
+- `track-account-range` — account name range to index (default: all accounts)
+- `history-count-blocks` — retain N blocks of history
+
+> **Dependency:** `account_history` **requires** `operation_history` as a parent plugin
+> (`APPBASE_PLUGIN_REQUIRES`). The node will not start if `operation_history` is absent.
+> `account_history` stores `operation_id_type` references (foreign keys) to `operation_object` rows
+> managed by `operation_history`; at query time `get_account_history` resolves them via
+> `database.get(itr->op)`.
+>
+> **Always enable both plugins together:**
+> ```ini
+> plugin = operation_history
+> plugin = account_history
+> ```
+>
+> **Purge coordination:** Both plugins read the same `history-count-blocks` key from `config.ini` —
+> there is no per-plugin separation. Setting it once applies to both simultaneously. Internally,
+> `account_history` also calls `operation_history::get_min_keep_block()` on every block as a safety
+> check, ensuring its entries never reference a purged `operation_object`.
 
 ---
 
@@ -288,17 +292,6 @@ Query subscription offerings and subscriber status.
 | `get_paid_subscription_status(subscriber, account)` | Status of a specific subscription |
 | `get_active_paid_subscriptions(subscriber)` | Active subscriptions for a subscriber |
 | `get_inactive_paid_subscriptions(subscriber)` | Expired subscriptions |
-
----
-
-### Deprecated API Plugins
-
-| Plugin | Methods | Notes |
-|--------|---------|-------|
-| `follow` | Followers/following, feeds, blog, reblogs | Still functional; not recommended for new integrations |
-| `tags` | Trending/hot/new content by tag | Still functional; not recommended for new integrations |
-| `social_network` | Content, votes, replies | Wraps committee/invite queries; still functional |
-| `private_message` | Inbox/outbox for encrypted messages | `custom_operation`-based; still functional |
 
 ---
 
@@ -347,10 +340,10 @@ plugin = webserver
 plugin = p2p
 plugin = database_api
 plugin = network_broadcast_api
-plugin = witness_api
+plugin = validator_api
 plugin = account_by_key
-plugin = account_history
 plugin = operation_history
+plugin = account_history
 plugin = committee_api
 plugin = invite_api
 plugin = paid_subscription_api
@@ -366,7 +359,7 @@ plugin = json_rpc
 plugin = webserver
 plugin = database_api
 plugin = network_broadcast_api
-plugin = witness_api
+plugin = validator_api
 plugin = snapshot
 
 snapshot-every-n-blocks = 28800

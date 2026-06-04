@@ -12,7 +12,9 @@
 
 #include <fc/log/logger.hpp>
 
+#include <atomic>
 #include <map>
+#include <mutex>
 
 namespace graphene { namespace chain {
 
@@ -100,7 +102,7 @@ namespace graphene { namespace chain {
             enum validation_steps {
                 skip_nothing = 0,
                 skip_validator_signature = 1 << 0,  ///< used while reindexing
-                skip_transaction_signatures = 1 << 1,  ///< used by non-witness nodes
+                skip_transaction_signatures = 1 << 1,  ///< used by non-validator nodes
                 skip_transaction_dupe_check = 1 << 2,  ///< used while reindexing
                 skip_fork_db = 1 << 3,  ///< used while reindexing
                 skip_block_size_check = 1 << 4,  ///< used when applying locally generated transactions
@@ -108,7 +110,7 @@ namespace graphene { namespace chain {
                 skip_authority_check = 1 << 6,  ///< used while reindexing -- disables any checking of authority on transactions
                 skip_merkle_check = 1 << 7,  ///< used while reindexing
                 skip_undo_history_check = 1 << 8,  ///< used while reindexing
-                skip_witness_schedule_check = 1 << 9,  ///< used while reindexing
+                skip_validator_schedule_check = 1 << 9,  ///< used while reindexing
                 skip_validate_operations = 1 << 10, ///< used prior to checkpoint, skips validate() call on transaction
                 skip_undo_block = 1 << 11, ///< used to skip undo db on reindex
                 skip_block_log = 1 << 12,  ///< used to skip block logging on reindex
@@ -155,7 +157,7 @@ namespace graphene { namespace chain {
              * replaying blockchain history. When this method exits successfully, the database will be open.
              */
             void reindex(const fc::path &data_dir, const fc::path &shared_mem_dir, uint32_t from_block_num, uint64_t shared_file_size = (
-                    1024l * 1024l * 1024l * 8l));
+                    1024l * 1024l * 1024l * 8Ull));
 
             /**
              * @brief Rebuild object graph from dlt_block_log after snapshot import
@@ -221,9 +223,9 @@ namespace graphene { namespace chain {
             chain_id_type get_chain_id() const;
 
 
-            const validator_object &get_witness(const account_name_type &name) const;
+            const validator_object &get_validator(const account_name_type &name) const;
 
-            const validator_object *find_witness(const account_name_type &name) const;
+            const validator_object *find_validator(const account_name_type &name) const;
 
             const account_object &get_account(const account_name_type &name) const;
 
@@ -269,7 +271,7 @@ namespace graphene { namespace chain {
              *  Calculate the percent of block production slots that were missed in the
              *  past 128 blocks, not including the current block.
              */
-            uint32_t witness_participation_rate() const;
+            uint32_t validator_participation_rate() const;
 
             void add_checkpoints(const flat_map<uint32_t, block_id_type> &checkpts);
 
@@ -301,14 +303,14 @@ namespace graphene { namespace chain {
 
             signed_block generate_block(
                     const fc::time_point_sec when,
-                    const account_name_type &witness_owner,
+                    const account_name_type &validator_owner,
                     const fc::ecc::private_key &block_signing_private_key,
                     uint32_t skip
             );
 
             signed_block _generate_block(
                     const fc::time_point_sec when,
-                    const account_name_type &witness_owner,
+                    const account_name_type &validator_owner,
                     const fc::ecc::private_key &block_signing_private_key,
                     uint32_t skip
             );
@@ -381,15 +383,15 @@ namespace graphene { namespace chain {
              */
             //fc::signal<void(const vector<const object*>&)>  removed_objects;
 
-            //////////////////// db_witness_schedule.cpp ////////////////////
+            //////////////////// db_validator_schedule.cpp ////////////////////
 
             /**
-             * @brief Get the witness scheduled for block production in a slot.
+             * @brief Get the validator scheduled for block production in a slot.
              *
              * slot_num always corresponds to a time in the future.
              *
-             * If slot_num == 1, returns the next scheduled witness.
-             * If slot_num == 2, returns the next scheduled witness after
+             * If slot_num == 1, returns the next scheduled validator.
+             * If slot_num == 2, returns the next scheduled validator after
              * 1 block gap.
              *
              * Use the get_slot_time() and get_slot_at_time() functions
@@ -427,7 +429,7 @@ namespace graphene { namespace chain {
 
             void update_bandwidth_reserve_candidates();
 
-            void update_witness_schedule();
+            void update_validator_schedule();
 
             void adjust_balance(const account_object &a, const asset &delta);
 
@@ -443,23 +445,23 @@ namespace graphene { namespace chain {
                 return get_balance(get_account(aname), symbol);
             }
 
-            /** this updates the votes for witnesses as a result of account voting proxy changing */
+            /** this updates the votes for validators as a result of account voting proxy changing */
             void adjust_proxied_validator_votes(const account_object &a,
                     const std::array<share_type,
                             CHAIN_MAX_PROXY_RECURSION_DEPTH + 1> &delta,
                     int depth = 0);
 
-            /** this updates the votes for all witnesses as a result of account SHARES changing */
+            /** this updates the votes for all validators as a result of account SHARES changing */
             void adjust_proxied_validator_votes(const account_object &a, share_type delta, int depth = 0);
 
             /** this is called by `adjust_proxied_validator_votes` when account proxy to self */
             void adjust_validator_votes(const account_object &a, share_type delta);
 
-            /** this updates the vote of a single witness as a result of a vote being added or removed*/
+            /** this updates the vote of a single validator as a result of a vote being added or removed*/
             void adjust_validator_vote(const validator_object &obj, share_type delta);
 
             /** clears all vote records for a particular account but does not update the
-             * witness vote totals.  Vote totals should be updated first via a call to
+             * validator vote totals.  Vote totals should be updated first via a call to
              * adjust_proxied_validator_votes( a, -a.validator_vote_weight() )
              */
             void clear_validator_votes(const account_object &a);
@@ -560,22 +562,22 @@ namespace graphene { namespace chain {
                 return _fork_db;
             }
 
-            public_key_type get_witness_key(const account_name_type &name);
+            public_key_type get_validator_key(const account_name_type &name);
 
-            void create_block_post_validation(uint32_t block_num, block_id_type block_id, const account_name_type &witness_account);
+            void create_block_post_validation(uint32_t block_num, block_id_type block_id, const account_name_type &validator_account);
 
-            std::array<validator_confirmation_object, CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT> get_validator_confirmations(const account_name_type &witness_account);
+            std::array<validator_confirmation_object, CHAIN_MAX_BLOCK_POST_VALIDATION_COUNT> get_validator_confirmations(const account_name_type &validator_account);
 
-            void apply_block_post_validation(block_id_type block_id, const account_name_type &witness_account);
+            void apply_block_post_validation(block_id_type block_id, const account_name_type &validator_account);
 
             void check_block_post_validation_chain();
 
             /**
              * Compare two fork branches by vote weight (HF12 logic).
-             * Sums wit_obj.votes (on-chain stake) for all unique witnesses in each branch,
+             * Sums wit_obj.votes (on-chain stake) for all unique validators in each branch,
              * from the tip back to the common ancestor.
              * The longer chain gets a +10% bonus on its total weight (reflects that more
-             * witnesses kept producing on it by consensus rules without deferring).
+             * validators kept producing on it by consensus rules without deferring).
              * @return >0 if branch_a is heavier, <0 if branch_b is heavier, 0 if tied
              * @return 0 if either tip is not in fork_db (cannot compare)
              */
@@ -611,7 +613,7 @@ namespace graphene { namespace chain {
 
             void create_block_summary(const signed_block &next_block);
 
-            void update_median_witness_props();
+            void update_median_validator_props();
 
             void clear_null_account_balance();
 
@@ -621,7 +623,7 @@ namespace graphene { namespace chain {
 
             void update_global_dynamic_data(const signed_block &b, uint32_t skip);
 
-            void update_signing_witness(const validator_object &signing_witness, const signed_block &new_block);
+            void update_signing_validator(const validator_object &signing_validator, const signed_block &new_block);
 
             void update_last_irreversible_block(uint32_t skip);
 
@@ -677,8 +679,14 @@ namespace graphene { namespace chain {
 
             uint32_t _block_num_check_free_memory = 1000;
 
-            bool _pending_resize = false;
-            size_t _pending_resize_target = 0;
+            std::atomic<bool> _pending_resize{false};
+            std::atomic<size_t> _pending_resize_target{0};
+            // Serializes concurrent apply_pending_resize() calls from the
+            // validator thread and the P2P thread.  Both call it before their
+            // respective write locks, so without this mutex both threads can
+            // see _pending_resize==true simultaneously and double-resize,
+            // corrupting the chainbase segment.
+            std::mutex _apply_resize_mutex;
 
             bool _skip_virtual_ops = false;
             bool _enable_plugins_on_push_transaction = false;

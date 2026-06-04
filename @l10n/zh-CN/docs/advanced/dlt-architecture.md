@@ -124,7 +124,7 @@ CONNECTING → HANDSHAKING → SYNCING → ACTIVE → DISCONNECTED → BANNED
 
 分叉解决子系统跟踪竞争链的顶端：
 
-- **阈值：** 42 个区块的分歧触发 `resolve_fork()`（= `CHAIN_MAX_WITNESSES × 2`，一个完整的调度轮次）。
+- **阈值：** 42 个区块的分歧触发 `resolve_fork()`（= `CHAIN_MAX_VALIDATORS × 2`，一个完整的调度轮次）。
 - **选择：** 按投票权重最重的分支。
 - **迟滞：** 切换前需要连续 6 个区块作为赢家（`CONFIRMATION_BLOCKS`）。
 - **状态：** `_fork_status` 通过 `is_on_majority_fork()` 暴露，供验证者插件在生产区块前检查。

@@ -50,7 +50,6 @@ Every read-only JSON-RPC response is eligible for caching. The cache key is a SH
 | Namespace | Reason |
 |-----------|--------|
 | `network_broadcast_api.*` | State-changing (transaction/block broadcast) |
-| `debug_node.*` | State-changing debug operations |
 | Malformed / unparseable requests | No reliable key can be derived |
 
 Batch requests (JSON array) are treated as a single atomic cache entry keyed on the full array hash.
@@ -94,11 +93,30 @@ Subscriptions require a persistent WebSocket connection. They are not available 
 
 ---
 
+## CORS
+
+The webserver plugin handles browser cross-origin requests natively — no reverse proxy is required for local or development setups.
+
+**Preflight requests** (`OPTIONS`) are answered immediately with:
+
+| Response header | Value |
+|----------------|-------|
+| `Access-Control-Allow-Origin` | `*` |
+| `Access-Control-Allow-Methods` | `POST, GET, OPTIONS` |
+| `Access-Control-Allow-Headers` | `Content-Type, Authorization` |
+| `Access-Control-Max-Age` | `86400` |
+
+**All other HTTP responses** include `Access-Control-Allow-Origin: *`.
+
+This allows browser-based wallets and dApps to call the JSON-RPC endpoint directly. For production deployments behind nginx, CORS is handled at the proxy layer (see [Exposing the API via HTTPS](#exposing-the-api-via-https-nginx--certbot)) — both layers setting the header is harmless.
+
+---
+
 ## Security
 
 - **Bind to localhost** (`127.0.0.1`) and use a reverse proxy (nginx/Caddy) for public exposure. Binding to `0.0.0.0` exposes the RPC directly to the network.
 - The plugin has no built-in authentication or rate limiting. Apply those at the reverse proxy layer.
-- Mutating methods (`network_broadcast_api`, `debug_node`) are blocked from cache poisoning by design, but they remain callable from any connected client — restrict access at the network level if needed.
+- Mutating methods (`network_broadcast_api`) are blocked from cache poisoning by design, but they remain callable from any connected client — restrict access at the network level if needed.
 
 ---
 
@@ -138,22 +156,6 @@ server {
     }
 
     location / {
-        # CORS — allow any origin (public API)
-        add_header 'Access-Control-Allow-Origin'   '*'                                                                                         always;
-        add_header 'Access-Control-Allow-Methods'  'GET, POST, PUT, DELETE, PATCH, OPTIONS'                                                    always;
-        add_header 'Access-Control-Allow-Headers'  'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization' always;
-        add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range'                                                              always;
-
-        if ($request_method = 'OPTIONS') {
-            add_header 'Access-Control-Allow-Origin'  '*'                                                                                         always;
-            add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, PATCH, OPTIONS'                                                    always;
-            add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization' always;
-            add_header 'Access-Control-Max-Age'       1728000;
-            add_header 'Content-Type'                 'text/plain charset=UTF-8';
-            add_header 'Content-Length'               0;
-            return 204;
-        }
-
         proxy_pass http://127.0.0.1:8090;
         proxy_http_version 1.1;
 

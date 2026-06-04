@@ -95,7 +95,7 @@ Returns live chain state: current head block number and ID, time, head validator
 { "method": "database_api.get_dynamic_global_properties", "params": [] }
 ```
 
-Key fields: `head_block_number`, `head_block_id`, `time`, `current_witness`, `total_vesting_shares`, `total_vesting_fund_viz`, `committee_fund`, `last_irreversible_block_num`, `participation_count`.
+Key fields: `head_block_number`, `head_block_id`, `time`, `current_validator`, `total_vesting_shares`, `total_vesting_fund_viz`, `committee_fund`, `last_irreversible_block_num`, `participation_count`.
 
 ---
 
@@ -405,4 +405,4 @@ Returns account namespace registrations available for sale (subaccount creation 
 
 ---
 
-See also: [Plugin Overview](./overview.md), [witness_api methods](./overview.md#witness_api), [JSON-RPC API](../api/json-rpc.md).
+See also: [Plugin Overview](./overview.md), [validator_api methods](./overview.md#validator_api), [JSON-RPC API](../api/json-rpc.md).

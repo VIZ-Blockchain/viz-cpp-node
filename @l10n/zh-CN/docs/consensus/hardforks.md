@@ -44,7 +44,7 @@ HF13（版本 3.2.0）引入了：
 
 **验证者奖励共享**：每个区块的部分验证者奖励按比例重新分配给投票支持该验证者的账户（按其 SHARES 投票权重）。
 
-- `witness_object` 上的新字段：`reward_percent` — 与投票者共享的区块奖励比例（0–10000 基点）。
+- `validator_object` 上的新字段：`reward_percent` — 与投票者共享的区块奖励比例（0–10000 基点）。
 - 新虚拟操作：`validator_reward_virtual_operation` — 每次奖励分配触发一次。
 - 通过 `validator_update_operation` 设置。
 
@@ -121,7 +121,7 @@ case CHAIN_HARDFORK_N: {
 | 插件 | 需要更新的内容 |
 |------|-------------|
 | `account_history` | 为任何新虚拟操作添加影响提取器 |
-| `witness_api` | 将 `witness_object` 中的新字段添加到 `witness_api_object` |
+| `validator_api` | 将 `validator_object` 中的新字段添加到 `validator_api_object` |
 | `snapshot` | 将新 chainbase 对象添加到 `serialize_state` / `load_snapshot` |
 
 ---
@@ -163,7 +163,7 @@ case CHAIN_HARDFORK_N: {
 - [ ] 所有新字段有零值默认值；`apply_hardfork` 注释解释为何不需要迁移
 - [ ] 新评估器在 `initialize_evaluators()` 中注册
 - [ ] 新虚拟操作在 `account_history` 插件中注册
-- [ ] 如果 `witness_object` 发生变化，`witness_api_object` 已更新
+- [ ] 如果 `validator_object` 发生变化，`validator_api_object` 已更新
 - [ ] 如果添加了新 chainbase 对象，快照插件已更新
 
 ---

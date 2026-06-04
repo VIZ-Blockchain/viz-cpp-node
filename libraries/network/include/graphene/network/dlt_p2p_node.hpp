@@ -84,7 +84,7 @@ public:
     // currently_syncing flag is cleared.  P2P sets currently_syncing=true
     // via call_accept_block(sync_mode=true) during bulk sync; without this
     // call the flag stays true after sync ends until the next FORWARD-mode
-    // block arrives.  If our witnesses are the only remaining producers and
+    // block arrives.  If our validators are the only remaining producers and
     // are themselves blocked by is_syncing()→not_synced, that arrival never
     // happens — causing indefinite silent production deadlock (p72: 570 s gap).
     virtual void           clear_syncing() = 0;
@@ -143,6 +143,7 @@ public:
     void        reconnect_seeds();
     void        pause_block_processing();
     void        resume_block_processing();
+    void        reset_peers_after_recovery();
 
     // ── Our node state ───────────────────────────────────────────
     dlt_node_status get_node_status() const { return _node_status; }
@@ -286,7 +287,7 @@ private:
     bool is_same_subnet(const fc::ip::address& a, const fc::ip::address& b) const;
 
     // ── Per-IP dedup ─────────────────────────────────────────────
-    peer_id find_active_peer_by_ip(const fc::ip::address& addr) const;
+    peer_id find_active_peer_by_node_id(const node_id_t& nid) const;
 
 private:
     dlt_p2p_delegate*               _delegate = nullptr;
@@ -346,6 +347,7 @@ private:
     fc::thread*                     _thread = nullptr;
     bool                            _running = false;
     std::map<peer_id, fc::future<void>> _read_fibers;
+    std::vector<fc::future<void>> _dead_fibers;
     fc::future<void>                _accept_fiber;
     fc::future<void>                _periodic_fiber;
 
@@ -386,6 +388,13 @@ private:
     static constexpr uint32_t       GAP_FILL_COOLDOWN_SEC = 5;  ///< Min seconds between gap fill attempts
     static constexpr uint32_t       GAP_FILL_TIMEOUT_SEC = 15;  ///< Max seconds to wait for gap fill reply
     uint32_t                        _highest_seen_block_num = 0; ///< Highest block num seen from any source
+
+    // When "our fork is losing" is detected in gap fill reply, this is set to
+    // our LIB so the next request_gap_fill() starts from LIB instead of
+    // our_head.  Blocks from LIB onward include the divergence point, giving
+    // fork_db the majority chain blocks it needs to trigger a fork switch.
+    // Reset to 0 after use (one-shot).
+    uint32_t                        _gap_fill_fork_override_start = 0;
 
     // ── Gap fill rejection tracking ──────────────────────────────
     uint32_t                        _gap_rejected_block_num = 0;  ///< Last block num rejected by gap fill
@@ -446,6 +455,9 @@ private:
     static constexpr uint32_t           BLOCKED_IP_DURATION_SEC = 3600; // 1 hour
     void                                block_incoming_ip(uint32_t ip, const std::string& reason);
     bool                                is_ip_blocked(uint32_t ip);
+      // Last time a peer exchange request was sent — used by periodic_peer_exchange()
+    // to dynamically throttle based on the number of active peers (see impl).
+    fc::time_point                      _last_peer_exchange_time;
 
     // ── Diagnostics ───────────────────────────────────────────────
     fc::time_point                  _node_start_time;

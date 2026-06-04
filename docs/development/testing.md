@@ -128,8 +128,6 @@ The CI matrix builds Docker images for multiple variants:
 | Variant | Dockerfile |
 |---------|-----------|
 | Standard | `Dockerfile-production` |
-| Low-memory | `Dockerfile-lowmem` |
-| MongoDB | `Dockerfile-mongo` |
 | Testnet | `Dockerfile-testnet` |
 
 Builds trigger per branch and tag, with artifact publishing when credentials are configured.

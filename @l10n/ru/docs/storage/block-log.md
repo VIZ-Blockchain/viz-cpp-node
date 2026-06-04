@@ -77,7 +77,7 @@ block_header:
   [varint + vector: extensions]
 
 signed_block_header (добавляется):
-  [65 байт: witness_signature (1 байт восстановления + 32 r + 32 s)]
+  [65 байт: validator_signature (1 байт восстановления + 32 r + 32 s)]
 
 signed_block (добавляется):
   [varint + vector<signed_transaction>: транзакции]

@@ -9,8 +9,6 @@ VIZ Ledger поставляется с четырьмя Docker-образами 
 | Dockerfile | Тег | Описание |
 |-----------|-----|----------|
 | `Dockerfile-production` | `latest` | Полный узел мейннета (Release, все плагины) |
-| `Dockerfile-lowmem` | `lowmem` | Низкопамятный узел (`LOW_MEMORY_NODE=ON`, без индексов истории) |
-| `Dockerfile-mongo` | `mongo` | Полный узел с плагином истории MongoDB |
 | `Dockerfile-testnet` | `testnet` | Узел тестнета (`BUILD_TESTNET=ON`) |
 
 ---
@@ -41,7 +39,7 @@ docker logs -f vizd
 | Путь в контейнере | Назначение |
 |-------------------|-----------|
 | `/var/lib/vizd` | Данные блокчейна, разделяемая память, block log |
-| `/etc/vizd` | Файлы конфигурации и список сид-узлов |
+| `/etc/vizd` | Файлы конфигурации |
 
 Всегда монтируйте `/var/lib/vizd` для сохранения состояния между перезапусками контейнера.
 
@@ -62,7 +60,6 @@ docker run -d \
 
 | Переменная | Описание | Пример |
 |------------|----------|--------|
-| `VIZD_SEED_NODES` | Список сид-узлов через пробел (переопределяет `/etc/vizd/seednodes`) | `seed1.viz.world:2001 seed2.viz.world:2001` |
 | `VIZD_RPC_ENDPOINT` | Переопределить HTTP RPC endpoint | `0.0.0.0:8090` |
 | `VIZD_P2P_ENDPOINT` | Переопределить P2P endpoint | `0.0.0.0:2001` |
 | `VIZD_WITNESS` | Имя аккаунта валидатора (включает производство блоков) | `alice` |
@@ -123,21 +120,19 @@ docker build \
   -t vizd:local \
   .
 
-# Low-memory
+# Testnet
 docker build \
-  -f share/vizd/docker/Dockerfile-lowmem \
-  -t vizd:lowmem \
+  -f share/vizd/docker/Dockerfile-testnet \
+  -t vizd:testnet \
   .
 ```
 
 ### CMake-флаги для каждого образа
 
-| Образ | `LOW_MEMORY_NODE` | `ENABLE_MONGO_PLUGIN` | `BUILD_TESTNET` |
-|-------|:-----------------:|:---------------------:|:---------------:|
-| production | OFF | OFF | OFF |
-| lowmem | ON | OFF | OFF |
-| mongo | OFF | ON | OFF |
-| testnet | OFF | OFF | ON |
+| Образ | `BUILD_TESTNET` |
+|-------|:---------------:|
+| production | OFF |
+| testnet | ON |
 
 ---
 
@@ -161,7 +156,7 @@ docker build \
 | Тип узла | RAM | Диск |
 |----------|-----|------|
 | Полный узел (мейннет) | 8 ГБ+ | 50 ГБ+ |
-| Низкопамятный / валидатор | 4 ГБ | 20 ГБ |
+| Узел-валидатор | 4 ГБ | 20 ГБ |
 | Тестнет | 4 ГБ | 10 ГБ |
 
 Начинайте с размера разделяемой памяти, удобно помещающегося в RAM. В `config.ini`:
@@ -169,6 +164,59 @@ docker build \
 ```ini
 shared-file-size = 4G
 ```
+
+---
+
+## Ротация логов
+
+vizd пишет весь вывод в stdout/stderr. Дефолтный драйвер `json-file` в Docker **не имеет ограничений по размеру** — цикл краша или буря ошибок может заполнить диск хоста за считанные минуты (в продакшне наблюдалось 35 ГБ+).
+
+Вместо этого используйте драйвер `local`. Он хранит логи в компактном бинарном формате и автоматически ротирует файлы.
+
+**Глобальная конфигурация (рекомендуется — защищает все контейнеры на хосте):**
+
+```json
+// /etc/docker/daemon.json
+{
+  "log-driver": "local",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "5"
+  }
+}
+```
+
+Применить:
+
+```bash
+sudo systemctl restart docker
+```
+
+**Для конкретного контейнера (`docker run`):**
+
+```bash
+docker run -d \
+  --log-driver=local \
+  --log-opt max-size=100m \
+  --log-opt max-file=5 \
+  --name vizd \
+  vizblockchain/vizd:latest
+```
+
+**Для конкретного контейнера (docker-compose):**
+
+```yaml
+services:
+  vizd:
+    image: vizblockchain/vizd:latest
+    logging:
+      driver: local
+      options:
+        max-size: "100m"
+        max-file: "5"
+```
+
+> При `max-file: 5` и `max-size: 100m` Docker хранит не более 500 МБ логов на контейнер и автоматически удаляет старейший файл при ротации.
 
 ---
 
@@ -181,3 +229,4 @@ shared-file-size = 4G
 | Нет пиров | Файрвол блокирует порт 2001 | Откройте порт 2001 TCP входящий |
 | Медленная синхронизация | Снимок не загружен | Предоставьте снимок в томе перед первым запуском |
 | `Permission denied` на `/var/lib/vizd` | Несоответствие владельца тома | `chown -R 1000:1000 /data/vizd` |
+| Диск заполняется логами Docker | Драйвер `json-file` не имеет ограничения по размеру | Настройте драйвер `local` с `max-size`/`max-file` — см. [Ротация логов](#ротация-логов) |

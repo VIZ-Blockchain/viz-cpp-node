@@ -81,6 +81,10 @@ struct dlt_hello_message {
     bool          has_emergency_key = false;
     uint8_t       fork_status = DLT_FORK_STATUS_NORMAL;
     uint8_t       node_status = DLT_NODE_STATUS_SYNC;
+    // Persistent node identity key — used to deduplicate connections from nodes
+    // sharing the same NAT IP (different ports).  Each node generates a random
+    // keypair at startup.  Zero-value means "unknown" (old protocol peer).
+    node_id_t     node_id;
 };
 
 // ── DLT Hello Reply ─────────────────────────────────────────────────
@@ -269,7 +273,7 @@ FC_REFLECT_ENUM(graphene::network::dlt_peer_lifecycle_state,
 FC_REFLECT((graphene::network::dlt_hello_message),
     (protocol_version)(head_block_id)(head_block_num)(lib_block_id)(lib_block_num)
     (dlt_earliest_block)(dlt_latest_block)(emergency_active)(has_emergency_key)
-    (fork_status)(node_status))
+    (fork_status)(node_status)(node_id))
 
 FC_REFLECT((graphene::network::dlt_hello_reply_message),
     (exchange_enabled)(fork_alignment)(initiator_head_seen)(initiator_lib_seen)

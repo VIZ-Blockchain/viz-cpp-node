@@ -12,7 +12,7 @@ running tests, it is recommended to build as release.
 
 Builds vizd to be a consensus-only low memory node. Data and fields not
 needed for consensus are not stored in the object database.  This option is
-recommended for witnesses and seed-nodes.
+recommended for validators and seed-nodes.
 
 ## Building under Docker
 
@@ -243,7 +243,6 @@ Run `./build-linux.sh -h` for full usage information.
 
     # Optional packages (not required, but will make a nicer experience)
     sudo apt-get install -y \
-        doxygen \
         libncurses5-dev \
         libreadline-dev \
         perl
@@ -359,7 +358,6 @@ Run `./build-mac.sh -h` for full usage information.
 Also, some useful build targets for `make` are:
 
     vizd
-    chain_test
     cli_wallet
 
 e.g.:

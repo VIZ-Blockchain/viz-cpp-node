@@ -1,0 +1,185 @@
+name: Windows Release
+
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - 'documentation/**'
+      - '**.md'
+
+permissions:
+  contents: write  # required for creating GitHub Releases
+
+jobs:
+  build-windows:
+    name: Build & Release (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 240  # 4h circuit breaker; cold build ~60-90 min, cached ~15-30 min
+
+    env:
+      BOOST_VERSION: "1.86.0"
+      BOOST_ROOT: "C:\\local\\boost_1_86_0"
+      OPENSSL_ROOT_DIR: "C:\\Program Files\\OpenSSL-Win64"
+
+    steps:
+      # ──────────────────────────────────────────────────────────────
+      # Checkout
+      # ──────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # ──────────────────────────────────────────────────────────────
+      # Boost — cached prebuilt binaries from Chocolatey
+      # boost-msvc-14.3 ships static libs compiled with /MT for VS 2022.
+      # Caching the install directory avoids the ~5 min download on hits.
+      # ──────────────────────────────────────────────────────────────
+      - name: Cache Boost
+        id: cache-boost
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BOOST_ROOT }}
+          key: boost-${{ env.BOOST_VERSION }}-msvc14.3-x64
+
+      - name: Install Boost via Chocolatey
+        if: steps.cache-boost.outputs.cache-hit != 'true'
+        run: choco install boost-msvc-14.3 --version=${{ env.BOOST_VERSION }} --no-progress -y
+
+      # ──────────────────────────────────────────────────────────────
+      # OpenSSL — cached installation from Chocolatey
+      # ──────────────────────────────────────────────────────────────
+      - name: Cache OpenSSL
+        id: cache-openssl
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OPENSSL_ROOT_DIR }}
+          key: openssl-choco-win64-v1
+
+      - name: Install OpenSSL via Chocolatey
+        if: steps.cache-openssl.outputs.cache-hit != 'true'
+        run: choco install openssl --no-progress -y
+
+      # ──────────────────────────────────────────────────────────────
+      # sccache — shared compilation cache across runs
+      # Analogous to ccache in the Docker workflow. Caches compiled
+      # object files so unchanged translation units are not recompiled.
+      # ──────────────────────────────────────────────────────────────
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache sccache storage
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\.sccache
+          key: sccache-win-${{ hashFiles('**/CMakeLists.txt', 'libraries/**', 'plugins/**', 'programs/**', 'thirdparty/**') }}
+          restore-keys: |
+            sccache-win-
+
+      - name: Configure sccache environment
+        shell: pwsh
+        run: |
+          "SCCACHE_DIR=${{ github.workspace }}\.sccache" >> $env:GITHUB_ENV
+          "SCCACHE_IDLE_TIMEOUT=0" >> $env:GITHUB_ENV
+          # Tell CMake to route compilations through sccache
+          "CMAKE_C_COMPILER_LAUNCHER=sccache" >> $env:GITHUB_ENV
+          "CMAKE_CXX_COMPILER_LAUNCHER=sccache" >> $env:GITHUB_ENV
+
+      # ──────────────────────────────────────────────────────────────
+      # Pre-build patches
+      # ──────────────────────────────────────────────────────────────
+      # Remove fc tests subdirectory — same patch as the Dockerfile.
+      # The fc test suite pulls in test frameworks we do not ship and
+      # may fail to configure on MSVC without additional dependencies.
+      - name: Patch thirdparty/fc CMakeLists.txt
+        shell: pwsh
+        run: |
+          $fc = "thirdparty/fc/CMakeLists.txt"
+          $content = Get-Content $fc -Raw
+          $patched = $content -replace '(?m)^add_subdirectory\(tests\)', '# add_subdirectory(tests) # disabled in CI'
+          Set-Content $fc $patched -NoNewline
+          Write-Host "Patched $fc — removed add_subdirectory(tests)"
+
+      # ──────────────────────────────────────────────────────────────
+      # CMake Configure
+      # ──────────────────────────────────────────────────────────────
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          cmake -S . -B build `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBOOST_ROOT="$env:BOOST_ROOT" `
+            -DOPENSSL_ROOT_DIR="$env:OPENSSL_ROOT_DIR" `
+            -DBUILD_SHARED_LIBRARIES=OFF `
+            -DBUILD_TESTNET=OFF `
+            -DCHAINBASE_CHECK_LOCKING=OFF `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      # ──────────────────────────────────────────────────────────────
+      # CMake Build — target only vizd and cli_wallet (skip util, tests)
+      # ──────────────────────────────────────────────────────────────
+      - name: Build vizd and cli_wallet
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target vizd cli_wallet --parallel
+
+      - name: Print sccache stats
+        if: always()
+        run: sccache --show-stats
+
+      # ──────────────────────────────────────────────────────────────
+      # Verify build output
+      # ──────────────────────────────────────────────────────────────
+      - name: Verify executables exist
+        shell: pwsh
+        run: |
+          $vizd = "build\programs\vizd\Release\vizd.exe"
+          $wallet = "build\programs\cli_wallet\Release\cli_wallet.exe"
+          $missing = $false
+          if (Test-Path $vizd) {
+            Write-Host "OK: $vizd ($('{0:N0}' -f (Get-Item $vizd).Length) bytes)"
+          } else {
+            Write-Host "MISSING: $vizd"
+            $missing = $true
+          }
+          if (Test-Path $wallet) {
+            Write-Host "OK: $wallet ($('{0:N0}' -f (Get-Item $wallet).Length) bytes)"
+          } else {
+            Write-Host "MISSING: $wallet"
+            $missing = $true
+          }
+          if ($missing) { exit 1 }
+
+      # ──────────────────────────────────────────────────────────────
+      # GitHub Release
+      # Tag: win-<short-sha>  e.g. win-a1b2c3d
+      # The "win-" prefix distinguishes these from any future version
+      # or Docker-related tags.
+      # ──────────────────────────────────────────────────────────────
+      - name: Derive release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $shortSha = "${{ github.sha }}".Substring(0, 7)
+          $tag = "win-$shortSha"
+          $date = (Get-Date -Format "yyyy-MM-dd")
+          $name = "Windows Build $date ($shortSha)"
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "name=$name" >> $env:GITHUB_OUTPUT
+          Write-Host "Release tag: $tag"
+          Write-Host "Release name: $name"
+
+      - name: Create GitHub Release and upload artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          generate_release_notes: true
+          files: |
+            build/programs/vizd/Release/vizd.exe
+            build/programs/cli_wallet/Release/cli_wallet.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

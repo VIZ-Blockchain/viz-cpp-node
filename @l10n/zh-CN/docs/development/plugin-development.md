@@ -223,15 +223,9 @@ AppBase 自动解析初始化顺序。
 
 ## 测试插件
 
-使用 `debug_node` 插件模拟链条件：
-
-```json
-{"method":"debug_node.debug_generate_blocks","params":["5K...",10,0,0,{}]}
-```
-
 使用 Boost.Test 和现有测试框架编写单元测试。将测试添加到适当的类别套件（`operation_tests`、`block_tests` 等）。
 
-对于集成测试，将插件与链一起加载，并使用 `debug_push_blocks` 重放已知的区块序列。
+对于集成测试，将插件与链一起加载，并使用 `--replay-from-snapshot --snapshot-auto-latest` 重放已知的区块序列。
 
 ---
 

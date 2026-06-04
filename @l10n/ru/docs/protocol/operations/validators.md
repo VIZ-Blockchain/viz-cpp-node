@@ -2,7 +2,7 @@
 
 ---
 
-## `witness_update_operation` (ID 6)
+## `validator_update_operation` (ID 6)
 
 **Авторизация:** `active` `owner`
 
@@ -23,7 +23,7 @@
 ```
 
 - **Нулевой ключ** (деактивация): `"VIZ1111111111111111111111111111111114T1Anm"` — удаляет из производства блоков без удаления записи валидатора.
-- Трансляция этой операции требует `witness_declaration_fee` (выплачивается в фонд комитета).
+- Трансляция этой операции требует `validator_declaration_fee` (выплачивается в фонд комитета).
 
 ---
 
@@ -91,18 +91,18 @@
     "flag_energy_additional_cost": 1000,
     "vote_accounting_min_rshares": 0,
     "committee_request_approve_min_percent": 1000,
-    "inflation_witness_percent": 2000,
+    "inflation_validator_percent": 2000,
     "inflation_ratio_committee_vs_reward_fund": 1000,
     "inflation_recalc_period": 28800,
     "data_operations_cost_additional_bandwidth": 0,
-    "witness_miss_penalty_percent": 100,
-    "witness_miss_penalty_duration": 86400,
+    "validator_miss_penalty_percent": 100,
+    "validator_miss_penalty_duration": 86400,
     "create_invite_min_balance": "1.000 VIZ",
     "committee_create_request_fee": "1.000 VIZ",
     "create_paid_subscription_fee": "1.000 VIZ",
     "account_on_sale_fee": "10.000 VIZ",
     "subaccount_on_sale_fee": "1.000 VIZ",
-    "witness_declaration_fee": "1.000 VIZ",
+    "validator_declaration_fee": "1.000 VIZ",
     "withdraw_intervals": 28
   }]
 }]
@@ -113,7 +113,7 @@
 
 ---
 
-## `account_witness_vote_operation` (ID 7)
+## `account_validator_vote_operation` (ID 7)
 
 **Авторизация:** `active` `account`
 
@@ -138,7 +138,7 @@
 
 ---
 
-## `account_witness_proxy_operation` (ID 8)
+## `account_validator_proxy_operation` (ID 8)
 
 **Авторизация:** `active` `account`
 

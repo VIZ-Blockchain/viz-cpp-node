@@ -24,9 +24,7 @@ These are one-time recovery or maintenance operations; they cause the node to pe
 
 | Flag | Description |
 |------|-------------|
-| `--replay-blockchain` | Wipe chainbase shared memory and replay the full block log from block 1. |
-| `--force-replay-blockchain` | Same as `--replay-blockchain` but skips the corruption check. Use when the block log is intact but chainbase is unreadable. |
-| `--replay-from-snapshot <path>` | Crash recovery for DLT nodes: wipe shared memory, import a snapshot, then replay the DLT rolling block log. See [Snapshot Plugin](./snapshot.md). |
+| `--replay-from-snapshot <path>` | Crash recovery: wipe shared memory, import a snapshot, then replay the DLT rolling block log. See [Snapshot Plugin](./snapshot.md). |
 | `--snapshot-auto-latest` | With `--replay-from-snapshot`: auto-discover the latest snapshot in `snapshot-dir` instead of specifying the path manually. |
 | `--auto-recover-from-snapshot` | Default `true`. Automatically recover at runtime when shared memory corruption is detected during block processing or generation, without a restart. Disable with `--no-auto-recover-from-snapshot`. |
 | `--resync-blockchain` | Wipe both shared memory and the block log; start from genesis or from a snapshot. Destructive — use only when recovering from complete data loss. |
@@ -73,7 +71,6 @@ These are one-time recovery or maintenance operations; they cause the node to pe
 plugin_initialize()    ← parse CLI and config options; validate snapshot path
 plugin_startup()       ← open or create database
   ├─ --resync          → wipe shared memory + block log; init genesis
-  ├─ --replay          → wipe shared memory; replay from block log
   ├─ --snapshot        → import snapshot; start DLT mode
   ├─ --replay-from-snapshot → import snapshot; replay dlt_block_log
   └─ normal restart    → open existing shared memory; replay if revision mismatch
@@ -105,7 +102,7 @@ The chainbase database lives in a single memory-mapped file (`shared_memory.bin`
 - Start with `shared-file-size = 4G` for a node loading from a recent snapshot.
 - The database auto-grows by `inc-shared-file-size` when free space drops below `min-free-shared-file-size`.
 - After a clean shutdown, the file shrinks back to actual used size.
-- After a crash, run with `--replay-blockchain` or `--replay-from-snapshot` to rebuild consistent state.
+- After a crash, run with `--replay-from-snapshot --snapshot-auto-latest` to rebuild consistent state.
 
 ---
 
@@ -113,8 +110,8 @@ The chainbase database lives in a single memory-mapped file (`shared_memory.bin`
 
 | Symptom | Action |
 |---------|--------|
-| `FC_ASSERT` or `database_revision_exception` on startup | Revision mismatch — run `--replay-blockchain` |
-| Chainbase open fails with corruption error | Run `--replay-from-snapshot --snapshot-auto-latest` (DLT nodes) or `--replay-blockchain` (full nodes) |
+| `FC_ASSERT` or `database_revision_exception` on startup | Revision mismatch — run `--replay-from-snapshot --snapshot-auto-latest` |
+| Chainbase open fails with corruption error | Run `--replay-from-snapshot --snapshot-auto-latest` |
 | Node stuck at genesis after `--resync-blockchain` | Block log was also wiped; provide `--snapshot` to load state from a snapshot |
 | Shared memory grows unbounded | Check `inc-shared-file-size` and `min-free-shared-file-size` settings; verify chain is applying blocks normally |
 | `write lock timeout` errors | Another process holds the write lock; check for stale `vizd` processes |

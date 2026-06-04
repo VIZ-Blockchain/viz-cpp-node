@@ -1,7 +1,7 @@
 [submodule "thirdparty/fc"]
 	path = thirdparty/fc
 	url = https://github.com/VIZ-Blockchain/fc.git
-	branch = update
+	branch = master
 [submodule "thirdparty/chainbase"]
 	path = thirdparty/chainbase
 	url = https://github.com/VIZ-Blockchain/chainbase.git

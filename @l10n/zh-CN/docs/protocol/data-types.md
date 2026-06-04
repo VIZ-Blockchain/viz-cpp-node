@@ -159,9 +159,9 @@ VIZ Ledger 协议操作和虚拟操作中使用的所有共享数据类型。
 | 3 | `transfer_to_vesting_operation` |
 | 4 | `withdraw_vesting_operation` |
 | 5 | `account_update_operation` |
-| 6 | `witness_update_operation` |
-| 7 | `account_witness_vote_operation` |
-| 8 | `account_witness_proxy_operation` |
+| 6 | `validator_update_operation` |
+| 7 | `account_validator_vote_operation` |
+| 8 | `account_validator_proxy_operation` |
 | 9 | `delete_content_operation` *（已弃用）* |
 | 10 | `custom_operation` |
 | 11 | `set_withdraw_vesting_route_operation` |
@@ -204,7 +204,7 @@ VIZ Ledger 协议操作和虚拟操作中使用的所有共享数据类型。
 | 27 | `curation_reward_operation` |
 | 28 | `content_reward_operation` |
 | 29 | `fill_vesting_withdraw_operation` |
-| 30 | `shutdown_witness_operation` |
+| 30 | `shutdown_validator_operation` |
 | 31 | `hardfork_operation` |
 | 32 | `content_payout_update_operation` |
 | 33 | `content_benefactor_reward_operation` |
@@ -213,7 +213,7 @@ VIZ Ledger 协议操作和虚拟操作中使用的所有共享数据类型。
 | 39 | `committee_approve_request_operation` |
 | 40 | `committee_payout_request_operation` |
 | 41 | `committee_pay_request_operation` |
-| 42 | `witness_reward_operation` |
+| 42 | `validator_reward_operation` |
 | 48 | `receive_award_operation` |
 | 49 | `benefactor_award_operation` |
 | 52 | `paid_subscription_action_operation` |

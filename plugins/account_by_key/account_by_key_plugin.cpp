@@ -200,8 +200,8 @@ namespace graphene { namespace plugins { namespace account_by_key {
                     my.reset(new account_by_key_plugin_impl(*this));
                     graphene::chain::database &db = appbase::app().get_plugin<graphene::plugins::chain::plugin>().db();
 
-                    db.pre_apply_operation.connect([&](operation_notification &o) { my->pre_operation(o); });
-                    db.post_apply_operation.connect([&](const operation_notification &o) { my->post_operation(o); });
+                    my->_pre_op_conn  = db.pre_apply_operation.connect([&](operation_notification &o) { my->pre_operation(o); });
+                    my->_post_op_conn = db.post_apply_operation.connect([&](const operation_notification &o) { my->post_operation(o); });
 
                     add_plugin_index<key_lookup_index>(db);
                     JSON_RPC_REGISTER_API ( name() ) ;
@@ -217,7 +217,8 @@ namespace graphene { namespace plugins { namespace account_by_key {
 
             void account_by_key_plugin::plugin_shutdown() {
                 ilog("account_by_key plugin: plugin_shutdown() begin");
-
+                my->_pre_op_conn.disconnect();
+                my->_post_op_conn.disconnect();
                 ilog("account_by_key plugin: plugin_shutdown() end");
             }
 

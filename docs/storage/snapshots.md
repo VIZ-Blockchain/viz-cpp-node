@@ -208,6 +208,7 @@ snapshot-dir = /data/viz-snapshots
 ```ini
 trusted-snapshot-peer = seed1.viz.world:8092
 trusted-snapshot-peer = seed2.viz.world:8092
+trusted-snapshot-peer = seed3.viz.world:8092
 sync-snapshot-from-trusted-peer = true
 ```
 

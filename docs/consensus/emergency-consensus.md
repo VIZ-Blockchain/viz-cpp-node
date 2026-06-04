@@ -9,11 +9,11 @@ Emergency consensus mode (introduced in HF12) activates automatically when the n
 | Constant | Value | Meaning |
 |----------|-------|---------|
 | `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` | 3600 s | Inactivity time before activation |
-| `CHAIN_EMERGENCY_WITNESS_ACCOUNT` | `"committee"` | Emergency block producer account |
-| `CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY` | `VIZ75CR...` | Deterministic emergency signing key |
+| `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` | `"committee"` | Emergency block producer account |
+| `CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY` | `VIZ75CR...` | Deterministic emergency signing key |
 | `CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS` | 21 | Consecutive real-validator blocks for exit |
 | `CHAIN_IRREVERSIBLE_THRESHOLD` | 75% | Fraction of schedule slots required to exit |
-| `CHAIN_MAX_WITNESSES` | 21 | Maximum validator slots |
+| `CHAIN_MAX_VALIDATORS` | 21 | Maximum validator slots |
 
 ### State fields in `dynamic_global_property_object`
 
@@ -41,12 +41,12 @@ When the timeout threshold is crossed:
 
 1. Set `dgp.emergency_consensus_active = true` and `dgp.emergency_consensus_start_block = block_num`.
 2. Create or update the "committee" validator object:
-   - `signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY`
+   - `signing_key = CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY`
    - `props = current_median_props`
    - Hardfork votes set to the currently applied version (neutral voter).
 3. Disable ALL real validators: set `signing_key = zero`, reset `penalty_percent = 0`, `current_run = 0`.
 4. Remove all `witness_penalty_expire` objects.
-5. Override the validator schedule: all `CHAIN_MAX_WITNESSES` slots → "committee".
+5. Override the validator schedule: all `CHAIN_MAX_VALIDATORS` slots → "committee".
 6. Notify fork DB: `_fork_db.set_emergency_mode(true)` (enables deterministic hash tie-breaking).
 7. Log: `"EMERGENCY CONSENSUS MODE activated at block #N. No blocks for X seconds since LIB Y."`
 
@@ -60,7 +60,7 @@ Nodes with `emergency-private-key` configured in `config.ini` are **emergency ma
 
 ```ini
 # Emergency master node only
-emergency-private-key = 5Jzzz...   # CHAIN_EMERGENCY_WITNESS_ACCOUNT private key
+emergency-private-key = 5Jzzz...   # CHAIN_EMERGENCY_VALIDATOR_ACCOUNT private key
 ```
 
 | Role | DLT sync check | Minority fork check | Production |
@@ -105,7 +105,7 @@ Committee is excluded from hardfork version tallying and median chain property c
 Every schedule rebuild checks the exit condition:
 
 ```
-real_witness_slots >= CHAIN_MAX_WITNESSES × 75%
+real_witness_slots >= CHAIN_MAX_VALIDATORS × 75%
 ```
 
 With 21 validators: `21 × 0.75 = 15.75 → 15` real validator slots required.
@@ -133,7 +133,7 @@ This ensures the schedule is always consistent after an unclean shutdown during 
 
 ## Validator Guard Integration
 
-The `witness_guard` plugin continues to operate during emergency and is in fact more critical:
+The `validator_guard` plugin continues to operate during emergency and is in fact more critical:
 
 - Real validators are disabled (signing key set to null) during activation.
 - The validator guard automatically broadcasts `validator_update_operation` to restore each validator's signing key once the null key is detected on-chain.
@@ -199,7 +199,7 @@ Snapshots created during an active emergency preserve the state correctly; snaps
 | 9 | `stale_sync_check_task` | Skip if master's head advancing; allow if follower stuck |
 | 10 | `handle_block` | Near-caught-up blocks treated as normal in DLT emergency |
 | 11 | `database::open` | Startup schedule repair |
-| 12 | `witness_guard` | Do not suppress key restoration during emergency |
+| 12 | `validator_guard` | Do not suppress key restoration during emergency |
 | 13 | `snapshot import` | Forward-compatible field handling |
 | 14 | `update_witness_schedule` | Exclude committee from hardfork version tallying |
 | 15 | `update_median_witness_props` | Exclude committee from median computation |

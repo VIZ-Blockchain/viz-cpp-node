@@ -225,7 +225,7 @@ DLT Status | FORWARD | head=#79881136 lib=#79881130 | dlt_range=79000000-7988113
 | `GAP_FILL_TIMEOUT_SEC` | 15 | 间隙填补进行中标志超时 |
 | `FORWARD_STAGNATION_SEC` | 30 | FORWARD 模式下 head 不前进阈值 |
 | `SYNC_STAGNATION_SEC` | 30 | SYNC 模式下未收到区块阈值 |
-| `FORK_RESOLUTION_BLOCK_THRESHOLD` | 42 | 触发 fork 解决前的区块数（2 × CHAIN_MAX_WITNESSES） |
+| `FORK_RESOLUTION_BLOCK_THRESHOLD` | 42 | 触发 fork 解决前的区块数（2 × CHAIN_MAX_VALIDATORS） |
 | `FORK_RESOLUTION_CONFIRMATION_BLOCKS` | 6 | 确认 fork 解决的连续区块数 |
 
 ---

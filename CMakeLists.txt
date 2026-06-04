@@ -1,12 +1,15 @@
 # Defines VIZ library target.
 project(VIZ)
+# Note: bcrypt (needed by boost::uuid / random on MinGW) is linked per-target
+# in the if(WIN32) block below to avoid polluting secp256k1 and other sub-targets.
 cmake_minimum_required(VERSION 3.16)
 
 set(CHAIN_NAME "VIZ")
 
-set(GUI_CLIENT_EXECUTABLE_NAME VIZ)
-set(CUSTOM_URL_SCHEME "gcs")
-set(INSTALLER_APP_ID "68ad7005-8eee-49c9-95ce-9eed97e5b347")
+
+set(GUI_CLIENT_EXECUTABLE_NAME vizd)
+set(CUSTOM_URL_SCHEME "vizd")
+set(INSTALLER_APP_ID "e8af6bdb-23c8-4e55-beda-2cd257393b04")
 
 # http://stackoverflow.com/a/18369825
 if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
@@ -22,13 +25,6 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS "ON")
-
-#set (ENABLE_INSTALLER 1)
-#set (USE_PCH 1)
-
-if(USE_PCH)
-    include(cotire)
-endif(USE_PCH)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/fc/CMakeModules")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/fc/GitVersionGen")
@@ -62,15 +58,7 @@ if(BUILD_TESTNET)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DBUILD_TESTNET")
 endif()
 
-option(LOW_MEMORY_NODE "Build source for low memory node (ON OR OFF)" FALSE)
-message(STATUS "LOW_MEMORY_NODE: ${LOW_MEMORY_NODE}")
-if(LOW_MEMORY_NODE)
-    message(STATUS "     ")
-    message(STATUS "             CONFIGURING FOR LOW MEMORY NODE      ")
-    message(STATUS "     ")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DIS_LOW_MEM")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DIS_LOW_MEM")
-endif()
+
 
 option(CHAINBASE_CHECK_LOCKING "Check locks in chainbase (ON or OFF)" TRUE)
 message(STATUS "CHAINBASE_CHECK_LOCKING: ${CHAINBASE_CHECK_LOCKING}")
@@ -106,13 +94,17 @@ if(WIN32)
     set(DB_VERSION 60)
     set(BDB_STATIC_LIBS 1)
 
+    # Minimum Windows 7 / Vista (0x0601).  XP (0x0501) is too old for
+    # boost::asio extended Winsock2 APIs and modern async I/O.
+    add_compile_definitions(_WIN32_WINNT=0x0601 WINVER=0x0601)
+
     set(ZLIB_LIBRARIES "")
     set(DEFAULT_EXECUTABLE_INSTALL_DIR bin/)
 
     set(CRYPTO_LIB)
 
     if(MSVC)
-        add_compile_options(/wd4503 /wd4267 /wd4244 /EHsc)
+        add_compile_options(/wd4503 /wd4267 /wd4244 /EHa)
         #looks like this flag can have different default on some machines.
         set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /SAFESEH:NO")
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /SAFESEH:NO")
@@ -144,6 +136,8 @@ if(WIN32)
         if(FULL_STATIC_BUILD)
             set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
         endif(FULL_STATIC_BUILD)
+        # bcrypt: needed by boost::random/uuid on MinGW (provides BCryptGenRandom)
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lbcrypt")
     endif(MSVC)
 
 else(WIN32) # Apple AND Linux
@@ -261,10 +255,4 @@ if(BUILD_TESTNET)
     message(STATUS "\n\n             CONFIGURED FOR TEST NETWORK             \n\n")
 else()
     message(STATUS "\n\n             CONFIGURED FOR VIZ NETWORK             \n\n")
-endif()
-
-if(LOW_MEMORY_NODE)
-    message(STATUS "\n\n             CONFIGURED FOR LOW MEMORY NODE          \n\n")
-else()
-    message(STATUS "\n\n             CONFIGURED FOR FULL NODE                \n\n")
 endif()

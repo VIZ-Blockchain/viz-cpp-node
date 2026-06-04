@@ -76,7 +76,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # Explicitly copy needed files to avoid re-building when changing other files
 COPY .git $APPDIR/.git
-COPY .gitignore .gitmodules CMakeLists.txt Doxyfile $APPDIR/
+COPY .gitignore .gitmodules CMakeLists.txt $APPDIR/
 COPY programs $APPDIR/programs
 COPY thirdparty $APPDIR/thirdparty
 COPY plugins $APPDIR/plugins
@@ -99,11 +99,13 @@ RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
     cmake \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_SHARED_LIBRARIES=FALSE \
-        -DLOW_MEMORY_NODE=FALSE \
         -DCHAINBASE_CHECK_LOCKING=FALSE \
         .. \
     && \
-    make -j$(nproc) vizd cli_wallet && \
+    # Reserve up to 20 cores for ccache I/O and BuildKit overhead on large
+    # machines, but fall back to all cores on small runners (GHA has 4 cores)
+    # to avoid a negative -j argument, which make rejects.
+    make -j$( N=$(nproc); R=$((N-20)); if [ $R -lt 2 ]; then echo $N; else echo $R; fi ) vizd cli_wallet && \
     ccache -s
 
 # `make install` would re-trigger the `all` target through CMake's install-depends-on-all
@@ -132,6 +134,25 @@ COPY share/vizd/vizd.sh /etc/service/vizd/run
 COPY share/vizd/snapshot.json /var/lib/vizd
 COPY share/vizd/config/config.ini /etc/vizd/config.ini
 
+# Log rotation — IMPORTANT for production deployments.
+#
+# vizd writes all output to stdout/stderr. Docker's default json-file log driver
+# has no size limit, so a log flood (crash loop, assertion storm, etc.) can fill
+# the host disk in minutes. Use the `local` driver, which is more space-efficient
+# and supports automatic rotation.
+#
+# Recommended: set globally on the Docker host so every container is protected:
+#
+#   /etc/docker/daemon.json:
+#   {
+#     "log-driver": "local",
+#     "log-opts": { "max-size": "100m", "max-file": "5" }
+#   }
+#   then: systemctl restart docker
+#
+# Per-container override (docker run):
+#   --log-driver=local --log-opt max-size=100m --log-opt max-file=5
+#
 # rpc services:
 # http
 EXPOSE 8090

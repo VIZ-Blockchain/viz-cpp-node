@@ -145,7 +145,7 @@ Peer-to-peer networking for block and transaction propagation.
 **Config options:**
 ```ini
 p2p-endpoint = 0.0.0.0:2001
-p2p-seed-node = seed.viz.world:2001
+p2p-seed-node = seed1.viz.world:2001
 p2p-max-connections = 200
 p2p-stats-enabled = true
 p2p-stats-interval = 300

@@ -9,11 +9,11 @@
 | Константа | Значение | Значение |
 |-----------|---------|---------|
 | `CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC` | 3600 с | Время простоя до активации |
-| `CHAIN_EMERGENCY_WITNESS_ACCOUNT` | `"committee"` | Аккаунт экстренного производителя блоков |
-| `CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY` | `VIZ75CR...` | Детерминированный ключ подписи для экстренного режима |
+| `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` | `"committee"` | Аккаунт экстренного производителя блоков |
+| `CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY` | `VIZ75CR...` | Детерминированный ключ подписи для экстренного режима |
 | `CHAIN_EMERGENCY_EXIT_NORMAL_BLOCKS` | 21 | Последовательные блоки реальных валидаторов для выхода |
 | `CHAIN_IRREVERSIBLE_THRESHOLD` | 75% | Доля слотов расписания для выхода |
-| `CHAIN_MAX_WITNESSES` | 21 | Максимальное количество слотов валидаторов |
+| `CHAIN_MAX_VALIDATORS` | 21 | Максимальное количество слотов валидаторов |
 
 ### Поля состояния в `dynamic_global_property_object`
 
@@ -41,12 +41,12 @@
 
 1. Установить `dgp.emergency_consensus_active = true` и `dgp.emergency_consensus_start_block = block_num`.
 2. Создать или обновить объект валидатора "committee":
-   - `signing_key = CHAIN_EMERGENCY_WITNESS_PUBLIC_KEY`
+   - `signing_key = CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY`
    - `props = current_median_props`
    - Голоса за харфорки установлены на текущую применённую версию (нейтральный голосователь).
 3. Отключить ВСЕХ реальных валидаторов: установить `signing_key = zero`, сбросить `penalty_percent = 0`, `current_run = 0`.
 4. Удалить все объекты `witness_penalty_expire`.
-5. Переопределить расписание валидаторов: все `CHAIN_MAX_WITNESSES` слотов → "committee".
+5. Переопределить расписание валидаторов: все `CHAIN_MAX_VALIDATORS` слотов → "committee".
 6. Уведомить fork DB: `_fork_db.set_emergency_mode(true)` (включает детерминированное разрешение хэш-ничьих).
 7. Лог: `"EMERGENCY CONSENSUS MODE activated at block #N. No blocks for X seconds since LIB Y."`
 
@@ -60,7 +60,7 @@
 
 ```ini
 # Только для экстренного мастер-узла
-emergency-private-key = 5Jzzz...   # приватный ключ CHAIN_EMERGENCY_WITNESS_ACCOUNT
+emergency-private-key = 5Jzzz...   # приватный ключ CHAIN_EMERGENCY_VALIDATOR_ACCOUNT
 ```
 
 | Роль | Проверка DLT-синхронизации | Проверка minority fork | Производство |
@@ -105,7 +105,7 @@ Committee исключается из подсчёта версий харфор
 Каждое перестроение расписания проверяет условие выхода:
 
 ```
-real_witness_slots >= CHAIN_MAX_WITNESSES × 75%
+real_witness_slots >= CHAIN_MAX_VALIDATORS × 75%
 ```
 
 При 21 валидаторе: `21 × 0.75 = 15.75 → 15` слотов реальных валидаторов требуется.
@@ -133,7 +133,7 @@ real_witness_slots >= CHAIN_MAX_WITNESSES × 75%
 
 ## Интеграция с Validator Guard
 
-Плагин `witness_guard` продолжает работу во время экстренного режима и фактически становится более критичным:
+Плагин `validator_guard` продолжает работу во время экстренного режима и фактически становится более критичным:
 
 - Реальные валидаторы отключаются (ключ подписи обнуляется) при активации.
 - Защита валидатора автоматически транслирует `validator_update_operation` для восстановления ключа подписи каждого валидатора, как только на цепочке обнаруживается нулевой ключ.
@@ -199,7 +199,7 @@ real_witness_slots >= CHAIN_MAX_WITNESSES × 75%
 | 9 | `stale_sync_check_task` | Пропустить если голова мастера продвигается; разрешить если последователь застрял |
 | 10 | `handle_block` | Почти догнавшие блоки обрабатываются как нормальные в DLT-экстренном режиме |
 | 11 | `database::open` | Исправление расписания при запуске |
-| 12 | `witness_guard` | Не подавлять восстановление ключей в экстренном режиме |
+| 12 | `validator_guard` | Не подавлять восстановление ключей в экстренном режиме |
 | 13 | `snapshot import` | Совместимая обработка полей |
 | 14 | `update_witness_schedule` | Исключать committee из подсчёта версий харфорков |
 | 15 | `update_median_witness_props` | Исключать committee из вычисления медианы |

@@ -115,7 +115,7 @@
 
 ## 验证者操作
 
-### `shutdown_witness_operation`（ID 30）
+### `shutdown_validator_operation`（ID 30）
 
 **触发条件：** 验证者因票权不足被停用
 
@@ -125,7 +125,7 @@
 
 ---
 
-### `witness_reward_operation`（ID 42）
+### `validator_reward_operation`（ID 42）
 
 **触发条件：** 生产区块 — 验证者获得区块奖励
 

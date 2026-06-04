@@ -14,7 +14,7 @@
 #
 #  Options:
 #    -t, --type TYPE         Build type: Release or Debug (default: Release)
-#    -l, --lowmem            Build low memory node (LOW_MEMORY_NODE=ON)
+
 #    -n, --testnet           Build for testnet (BUILD_TESTNET=ON)
 #    -s, --static            Build shared libraries OFF (static linking)
 #    --no-lock-check         Disable chainbase lock checking
@@ -30,7 +30,7 @@ set -euo pipefail
 
 # --- Defaults ---
 BUILD_TYPE="Release"
-LOW_MEMORY="OFF"
+
 BUILD_TESTNET="OFF"
 SHARED_LIBS="ON"
 CHAINBASE_LOCK="ON"
@@ -60,8 +60,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -t|--type)
             BUILD_TYPE="$2"; shift 2 ;;
-        -l|--lowmem)
-            LOW_MEMORY="ON"; shift ;;
+
         -n|--testnet)
             BUILD_TESTNET="ON"; shift ;;
         -s|--static)
@@ -188,7 +187,7 @@ echo "============================================"
 echo " VIZ macOS Build"
 echo "============================================"
 echo " Build Type:       $BUILD_TYPE"
-echo " Low Memory Node:  $LOW_MEMORY"
+
 echo " Build Testnet:    $BUILD_TESTNET"
 echo " Shared Libs:      $SHARED_LIBS"
 echo " Chainbase Locks:  $CHAINBASE_LOCK"
@@ -211,7 +210,7 @@ info "[1/3] Configuring with CMake..."
 cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
     -DBUILD_SHARED_LIBRARIES="$SHARED_LIBS" \
-    -DLOW_MEMORY_NODE="$LOW_MEMORY" \
+
     -DBUILD_TESTNET="$BUILD_TESTNET" \
     -DCHAINBASE_CHECK_LOCKING="$CHAINBASE_LOCK" \
     $BOOST_ROOT_ARG \

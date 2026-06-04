@@ -130,6 +130,8 @@ public:
     block_applied_callback_info::cont active_block_applied_callback;
     block_applied_callback_info::cont free_block_applied_callback;
 
+    boost::signals2::connection _applied_block_conn;
+
 private:
 
     graphene::chain::database &_db;
@@ -376,7 +378,7 @@ DEFINE_API(plugin, get_accounts) {
 
 std::vector<account_api_object> plugin::api_impl::get_accounts(std::vector<std::string> names) const {
     const auto &idx = _db.get_index<account_index>().indices().get<by_name>();
-    const auto &vidx = _db.get_index<witness_vote_index>().indices().get<by_account_witness>();
+    const auto &vidx = _db.get_index<validator_vote_index>().indices().get<by_account_validator>();
     std::vector<account_api_object> results;
 
     for (auto name: names) {
@@ -385,7 +387,7 @@ std::vector<account_api_object> plugin::api_impl::get_accounts(std::vector<std::
             results.push_back(account_api_object(*itr, _db));
             auto vitr = vidx.lower_bound(boost::make_tuple(itr->id, validator_id_type()));
             while (vitr != vidx.end() && vitr->account == itr->id) {
-                results.back().validator_votes.insert(_db.get(vitr->witness).owner);
+                results.back().validator_votes.insert(_db.get(vitr->validator).owner);
                 ++vitr;
             }
         }
@@ -912,7 +914,7 @@ void plugin::plugin_initialize(const boost::program_options::variables_map &opti
     ilog("database_api plugin: plugin_initialize() begin");
     my = std::make_unique<api_impl>();
     JSON_RPC_REGISTER_API(plugin_name)
-    my->database().applied_block.connect([this](const protocol::signed_block &) {
+    my->_applied_block_conn = my->database().applied_block.connect([this](const protocol::signed_block &) {
         this->clear_block_applied_callback();
     });
     ilog("database_api plugin: plugin_initialize() end");
@@ -920,6 +922,12 @@ void plugin::plugin_initialize(const boost::program_options::variables_map &opti
 
 void plugin::plugin_startup() {
     my->startup();
+}
+
+void plugin::plugin_shutdown() {
+    if (my) {
+        my->_applied_block_conn.disconnect();
+    }
 }
 
 } } } // graphene::plugins::database_api

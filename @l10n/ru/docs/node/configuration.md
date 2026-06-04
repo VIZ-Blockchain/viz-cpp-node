@@ -7,8 +7,6 @@
 | `config.ini` | Полный узел основной сети с публичным RPC |
 | `config_witness.ini` | Узел-валидатор (RPC на localhost, производство блоков) |
 | `config_testnet.ini` | Тестовая сеть / разработка |
-| `config_mongo.ini` | Узел с бэкендом истории MongoDB |
-| `config_lowmem.ini` | Маломощный консенсусный/сид-узел |
 | `config_stock_exchange.ini` | Потребитель рыночных данных (минимум плагинов) |
 | `config_debug.ini` | Режим отладки |
 
@@ -26,6 +24,7 @@ p2p-max-connections = 200
 # Начальные узлы для установки соединений (повторяемый параметр)
 p2p-seed-node = seed1.viz.world:2001
 p2p-seed-node = seed2.viz.world:2001
+p2p-seed-node = seed3.viz.world:2001
 
 # Контрольные точки: доверенные пары (block_num, block_id) (повторяемый параметр)
 # checkpoint = [12345,"0003039..." ]
@@ -108,11 +107,11 @@ block-num-check-free-size = 1000
 plugin = chain p2p webserver json_rpc database_api network_broadcast_api
 
 # Дополнительные плагины индексирования (отключить на маломощных узлах):
-plugin = social_network tags follow account_history account_by_key
+plugin = account_history account_by_key
 plugin = committee_api invite_api paid_subscription_api custom_protocol_api
 
 # Только для узлов-валидаторов:
-plugin = validator witness_api
+plugin = validator validator_api
 ```
 
 ### Наборы плагинов по типу узла
@@ -120,7 +119,7 @@ plugin = validator witness_api
 | Тип узла | Плагины |
 |---------|--------|
 | Полный узел | Все перечисленные выше |
-| Валидатор | `chain p2p webserver json_rpc database_api network_broadcast_api validator witness_api` |
+| Валидатор | `chain p2p webserver json_rpc database_api network_broadcast_api validator validator_api` |
 | Маломощный сид | `chain p2p` |
 | Биржа | `chain p2p webserver json_rpc database_api network_broadcast_api account_history` |
 
@@ -145,10 +144,7 @@ skip-virtual-ops = false
 # Начать индексирование истории с данного номера блока
 # history-start-block = 1000000
 
-# Максимальное количество записей в ленте аккаунта (плагин follow)
-follow-max-feed-size = 500
-
-# Диапазон отслеживания личных сообщений (опционально)
+# Диапазон отслеживания личных сообщений (опционально, пример плагина)
 # pm-account-range = ["alice","alice.zzz"]
 ```
 
@@ -198,17 +194,6 @@ logger.p2p.appenders = p2p
 
 ---
 
-## MongoDB (опционально)
-
-Применимо только при сборке с `ENABLE_MONGO_PLUGIN=ON`:
-
-```ini
-plugin = mongo_db
-mongodb-uri = mongodb://localhost:27017/vizd
-```
-
----
-
 ## Полный справочник
 
 Все параметры по исходным файлам:
@@ -219,5 +204,3 @@ mongodb-uri = mongodb://localhost:27017/vizd
 | `plugins/p2p/p2p_plugin.hpp` | `p2p-endpoint`, `p2p-max-connections`, `p2p-seed-node`, `checkpoint` |
 | `plugins/webserver/webserver_plugin.hpp` | `webserver-http-endpoint`, `webserver-ws-endpoint`, `webserver-thread-pool-size` |
 | `plugins/validator/validator.hpp` | `enable-stale-production`, `required-participation`, `validator`, `private-key`, `emergency-private-key`, `fork-collision-timeout-blocks`, `ntp-server`, `ntp-request-interval`, `debug-block-production` |
-| `plugins/follow/` | `follow-max-feed-size` |
-| `plugins/private_message/` | `pm-account-range` |

@@ -428,7 +428,7 @@ maybe_produce_block()
   │
   ├─ [HF12+] Is emergency_consensus_active?
   │   └─ Yes: Three-state safety handles production/sync checks:
-  │       ├─ IS emergency master? (emergency key in _witnesses)
+  │       ├─ IS emergency master? (emergency key in _validators)
   │       │   └─ Yes: _production_enabled = true (bypass sync/stale/participation)
   │       └─ NOT emergency master (slave):
   │           ├─ _production_enabled already? → continue

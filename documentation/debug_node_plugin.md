@@ -109,7 +109,7 @@ The important information in the above is:
     ... "signing_key":"STM6MRyAjQq8ud7hVNYcfnVPJqcVpscN5So8BhtHuGYqET5GDW5CV" ...
     ... "head_block_number":1505 ...
 
-which demonstrates the witness keys have been reset and the head block number has been advanced with new blocks.  The blocks are signed by the above private key, and the database is edited to set the block signing key of the scheduled witnesses accordingly so the node accepts the simulated signatures as valid.
+which demonstrates the validator keys have been reset and the head block number has been advanced with new blocks.  The blocks are signed by the above private key, and the database is edited to set the block signing key of the scheduled validators accordingly so the node accepts the simulated signatures as valid.
 
 If we want to take control of an account we can do so by editing its key with `debug_update_object` command like this:
 

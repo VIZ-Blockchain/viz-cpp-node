@@ -28,6 +28,7 @@ target_link_libraries(
         graphene::json_rpc
         graphene_chain
         graphene::chain_plugin
+        graphene_snapshot
         appbase
         fc)
 target_include_directories(graphene_${CURRENT_TARGET}

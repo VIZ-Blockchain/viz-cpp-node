@@ -206,7 +206,7 @@ dlt-block-log-max-blocks = 100000   # 保留最近约 3.5 天的区块
 
 ## 崩溃恢复：`--replay-from-snapshot`
 
-当 `shared_memory.bin` 损坏（不干净关机、磁盘满、硬件故障）时使用此模式。DLT 模式下普通的 `--replay-blockchain` 不可用，因为 `block_log` 为空。
+当 `shared_memory.bin` 损坏（不干净关机、磁盘满、硬件故障）时使用此模式。在 DLT 模式下，主 `block_log` 为空，因此基于快照的恢复是唯一选项。
 
 ```bash
 # 明确指定快照路径
@@ -288,6 +288,7 @@ snapshot-dir = /data/viz-snapshots
 plugin = snapshot
 trusted-snapshot-peer = seed1.viz.world:8092
 trusted-snapshot-peer = seed2.viz.world:8092
+trusted-snapshot-peer = seed3.viz.world:8092
 sync-snapshot-from-trusted-peer = true
 ```
 

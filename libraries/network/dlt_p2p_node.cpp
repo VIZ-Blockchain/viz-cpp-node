@@ -82,6 +82,25 @@ void dlt_p2p_node::set_witness_diag_provider(std::function<std::string()> fn) {
 }
 
 void dlt_p2p_node::block_incoming_ip(uint32_t ip, const std::string& reason) {
+    // NAT safety: if multiple active peers share this IP (nodes behind the same NAT),
+    // blocking the IP would kill all of them.  Only block when a single peer is using
+    // this IP — that's the typical single-machine attacker scenario.
+    uint32_t peers_with_ip = 0;
+    for (const auto& item : _peer_states) {
+        const auto& s = item.second;
+        if ((uint32_t)s.endpoint.get_address() == ip &&
+            (s.lifecycle_state == DLT_PEER_LIFECYCLE_CONNECTING  ||
+             s.lifecycle_state == DLT_PEER_LIFECYCLE_HANDSHAKING ||
+             s.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING     ||
+             s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE)) {
+            ++peers_with_ip;
+        }
+    }
+    if (peers_with_ip > 1) {
+        wlog(DLT_LOG_ORANGE "NAT: NOT blocking IP ${ip} (${n} active peers share this IP) — reason was: ${r}" DLT_LOG_RESET,
+             ("ip", std::string(fc::ip::address(ip)))("n", peers_with_ip)("r", reason));
+        return;  // Don't punish NAT peers for one misbehaving connection
+    }
     fc::time_point unblock_at = fc::time_point::now() + fc::seconds(BLOCKED_IP_DURATION_SEC);
     _blocked_ips[ip] = unblock_at;
     wlog(DLT_LOG_ORANGE "Blocking IP ${ip} for ${d}s: ${r}" DLT_LOG_RESET,
@@ -143,13 +162,30 @@ void dlt_p2p_node::start() {
     // Start periodic task fiber
     if (_thread) {
         _periodic_fiber = _thread->async([this]() {
+            uint32_t consecutive_errors = 0;
+            fc::time_point last_error_log;
             while (_running) {
                 try {
                     fc::usleep(fc::seconds(5));
                     if (!_running) break;
                     periodic_task();
+                    consecutive_errors = 0;
                 } catch (const fc::exception& e) {
-                    elog("Error in DLT P2P periodic task: ${e}", ("e", e.to_detail_string()));
+                    consecutive_errors++;
+                    auto now = fc::time_point::now();
+                    if (consecutive_errors == 1 || (now - last_error_log).count() > 60 * 1000000LL) {
+                        elog("Error in DLT P2P periodic task (#${n}): ${e}",
+                             ("n", consecutive_errors)("e", e.to_detail_string()));
+                        last_error_log = now;
+                    }
+                } catch (const std::exception& e) {
+                    consecutive_errors++;
+                    auto now = fc::time_point::now();
+                    if (consecutive_errors == 1 || (now - last_error_log).count() > 60 * 1000000LL) {
+                        elog("Error in DLT P2P periodic task (#${n}): ${e}",
+                             ("n", consecutive_errors)("e", std::string(e.what())));
+                        last_error_log = now;
+                    }
                 }
             }
         }, "dlt periodic_task");
@@ -194,11 +230,53 @@ void dlt_p2p_node::close() {
 
 // ── Connection management ────────────────────────────────────────────
 
-// ── Per-IP dedup: find any existing active connection from the same IP ─
-dlt_p2p_node::peer_id dlt_p2p_node::find_active_peer_by_ip(const fc::ip::address& addr) const {
+// ── Backward-compatible hello deserializer ───────────────────────────────────
+// FC_REFLECT-based deserialization (msg.as<dlt_hello_message>()) expects ALL
+// fields to be present in the byte stream.  Old nodes (protocol_version=1,
+// 62-byte payload) do NOT include the node_id field (added in v2, 33 bytes).
+// Calling msg.as<>() on such a message throws out_of_range_exception ("over by 1"
+// — the first byte of the missing node_id cannot be read).
+//
+// This helper deserializes field-by-field and treats node_id as OPTIONAL:
+// it is read only when the stream still has >= sizeof(node_id_t) bytes left.
+// Unknown trailing bytes (future fields) are silently ignored.
+static dlt_hello_message unpack_hello_compat(const message& msg) {
+    FC_ASSERT(msg.msg_type == dlt_hello_message_type);
+    dlt_hello_message hello;
+    if (msg.data.empty()) return hello;
+    fc::datastream<const char*> ds(msg.data.data(), msg.data.size());
+    fc::raw::unpack(ds, hello.protocol_version);
+    fc::raw::unpack(ds, hello.head_block_id);
+    fc::raw::unpack(ds, hello.head_block_num);
+    fc::raw::unpack(ds, hello.lib_block_id);
+    fc::raw::unpack(ds, hello.lib_block_num);
+    fc::raw::unpack(ds, hello.dlt_earliest_block);
+    fc::raw::unpack(ds, hello.dlt_latest_block);
+    fc::raw::unpack(ds, hello.emergency_active);
+    fc::raw::unpack(ds, hello.has_emergency_key);
+    fc::raw::unpack(ds, hello.fork_status);
+    fc::raw::unpack(ds, hello.node_status);
+    // node_id (sizeof = 33 bytes for compressed secp256k1 key) is optional:
+    //   - absent   → old protocol (v1 peer, 62-byte hello) — treat as zero_id
+    //   - present  → new protocol (v2+ peer, 95-byte hello) — use for NAT dedup
+    if (ds.remaining() >= sizeof(node_id_t)) {
+        fc::raw::unpack(ds, hello.node_id);
+    }
+    // Any remaining bytes are future protocol fields — ignored for forward compat.
+    return hello;
+}
+
+// ── Per-node-id dedup: find any existing active connection to the same node ─
+// We identify nodes by the node_id they advertise in their hello message.
+// This correctly handles multiple nodes behind the same NAT (same IP, different
+// ports) — each node has a unique keypair, so only true duplicates are rejected.
+// Returns INVALID_PEER_ID for zero node_id (old peer that didn't send one).
+dlt_p2p_node::peer_id dlt_p2p_node::find_active_peer_by_node_id(const node_id_t& nid) const {
+    static const node_id_t zero_id;
+    if (nid == zero_id) return INVALID_PEER_ID;
     for (const auto& item : _peer_states) {
         const auto& state = item.second;
-        if (state.endpoint.get_address() == addr &&
+        if (state.node_id == nid &&
             (state.lifecycle_state == DLT_PEER_LIFECYCLE_CONNECTING ||
              state.lifecycle_state == DLT_PEER_LIFECYCLE_HANDSHAKING ||
              state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING ||
@@ -234,7 +312,7 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
     // which causes broadcast amplification.
     // EXCEPTION: Allow reconnect if the target peer itself is DISCONNECTED,
     // even if another connection to the same IP exists (different port).
-    if (!found_existing) {
+   /* if (!found_existing) {
         fc::ip::address target_ip = ep.get_address();
         peer_id existing_ip_conn = find_active_peer_by_ip(target_ip);
         if (existing_ip_conn != INVALID_PEER_ID) {
@@ -242,7 +320,11 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
                  ("ep", ep)("pid", existing_ip_conn));
             return;
         }
-    }
+    }*/
+   // NOTE: We no longer skip outbound connections based on IP address alone.
+    // Multiple nodes behind the same NAT share the same public IP but have
+    // different P2P ports and unique node_ids.  Deduplication happens post-hello
+    // in on_dlt_hello() where we compare node_id values.
 
     if (!found_existing) {
         pid = _next_peer_id++;
@@ -285,7 +367,7 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
 
                 // Send hello
                 send_message(pid, message(build_hello_message()));
-                ilog(DLT_LOG_GREEN "Connected to peer ${ep}, sent DLT hello" DLT_LOG_RESET, ("ep", ep));
+                dlog(DLT_LOG_GREEN "Connected to peer ${ep}, sent DLT hello" DLT_LOG_RESET, ("ep", ep));
 
                 // Start read loop as a fiber on the p2p thread
                 start_read_loop(pid);
@@ -298,11 +380,17 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
                 std::string detail = e.to_detail_string();
                 bool is_expected = (detail.find("Connection refused") != std::string::npos)
                                || (detail.find("connection refused") != std::string::npos)
+                               || (detail.find("actively refused") != std::string::npos)       // Windows WSA 10061
                                || (detail.find("Connection timed out") != std::string::npos)
+                               || (detail.find("timed out") != std::string::npos)
                                || (detail.find("Host unreachable") != std::string::npos)
+                               || (detail.find("host unreachable") != std::string::npos)       // Windows WSA 10065
                                || (detail.find("No route to host") != std::string::npos)
+                               || (detail.find("network is unreachable") != std::string::npos) // Windows WSA 10051
                                || (detail.find("End of file") != std::string::npos)
-                               || (detail.find("Operation aborted") != std::string::npos);
+                               || (detail.find("end of file") != std::string::npos)
+                               || (detail.find("Operation aborted") != std::string::npos)
+                               || (detail.find("operation aborted") != std::string::npos);     // Windows WSA 10004
                 if (is_expected)
                     dlog(DLT_LOG_DGRAY "Connect to ${ep} failed: ${w}" DLT_LOG_RESET, ("ep", ep)("w", e.what()));
                 else
@@ -342,21 +430,27 @@ void dlt_p2p_node::handle_disconnect(peer_id peer, const std::string& reason, bo
         }
     }
 
-    // Cancel read fiber — cancel_and_wait yields, allowing drain_send_queue
-    // to resume on this thread.  The reentrancy guard above ensures that
-    // reentrant handle_disconnect call returns immediately without touching
-    // _peer_states, so state/it remain valid when we resume here.
-    auto fiber_it = _read_fibers.find(peer);
-    if (fiber_it != _read_fibers.end()) {
-        try { if (fiber_it->second.valid()) fiber_it->second.cancel_and_wait(__FUNCTION__); } catch (...) {}
-        _read_fibers.erase(fiber_it);
-    }
-
-    // Close connection
+    // Close the socket FIRST — this immediately unblocks any pending readsome/writesome
+    // in the read fiber and drain_send_queue fiber, causing them to throw and exit.
+    // drain_send_queue holds sock by owning shared_ptr copy, so erasing _connections
+    // here does not leave it with a dangling reference.
+    // If we closed AFTER cancel_and_wait, the fiber would be stuck waiting for network
+    // I/O that can never arrive on a dead peer — causing a multi-second hang per peer,
+    // and a full deadlock when N peers disconnect simultaneously (p82: silent reboot).
     auto conn_it = _connections.find(peer);
     if (conn_it != _connections.end()) {
         try { if (conn_it->second) conn_it->second->close(); } catch (...) {}
         _connections.erase(conn_it);
+    }
+
+    // Cancel read fiber — cancel_and_wait yields, but the fiber exits immediately
+    // because its socket I/O is already unblocked by the close() above.
+    // The reentrancy guard above ensures that reentrant handle_disconnect calls
+    // return immediately without touching _peer_states, so state/it remain valid.
+    auto fiber_it = _read_fibers.find(peer);
+    if (fiber_it != _read_fibers.end()) {
+        try { if (fiber_it->second.valid()) fiber_it->second.cancel_and_wait(__FUNCTION__); } catch (...) {}
+        _read_fibers.erase(fiber_it);
     }
 
     // Clear send guard and drain any queued messages
@@ -514,6 +608,10 @@ void dlt_p2p_node::send_message(peer_id peer, const message& msg) {
                 ++state.send_queue_total;
             } else {
                 // Queue is at max depth — peer can't consume data fast enough.
+                // Skip if disconnect is already in progress: handle_disconnect yields
+                // at cancel_and_wait, allowing other fibers to call send_message for
+                // the same peer, which would re-enter this branch and spam the log.
+                if (_disconnect_in_progress.count(peer)) return;
                 // Capture info before handle_disconnect potentially erases the state.
                 std::string ep = std::string(state.endpoint);
                 uint32_t dropped = state.send_queue_dropped;
@@ -538,7 +636,7 @@ void dlt_p2p_node::drain_send_queue(peer_id peer, std::vector<char> buf) {
         _peer_sending.erase(peer);
         return;
     }
-    auto& sock = conn_it->second;
+    auto sock = conn_it->second; // owning copy — handle_disconnect may erase _connections while we yield in writesome
 
     // Cache endpoint before entering the try block — handle_disconnect may
     // remove the peer from _peer_states before the catch block runs, making
@@ -586,7 +684,14 @@ void dlt_p2p_node::drain_send_queue(peer_id peer, std::vector<char> buf) {
 void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclude, const block_id_type& block_id) {
     // Per-IP dedup: send to each unique IP only once, even if multiple
     // peer entries exist for the same IP (belt-and-suspenders safety net).
-    std::set<fc::ip::address> sent_to_ips;
+     // Dedup by node_id: send to each unique node only once, even if multiple
+    // peer entries exist for the same node (e.g. duplicate connections still
+    // being cleaned up).  We do NOT dedup by IP address — multiple distinct
+    // nodes can share the same NAT IP and each deserves its own copy.
+    // Falls back to endpoint dedup for peers without a node_id (old protocol).
+    std::set<node_id_t>        sent_to_node_ids;
+    std::set<fc::ip::endpoint> sent_to_endpoints;
+    static const node_id_t zero_id;
 
     // Diagnostic: count eligible vs skipped peers
     uint32_t eligible = 0, skipped_not_exchange = 0, skipped_not_active = 0, skipped_echo = 0, skipped_peer_syncing = 0;
@@ -626,9 +731,16 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
             skipped_echo++;
             continue;
         }
-        fc::ip::address ip = state.endpoint.get_address();
-        if (sent_to_ips.count(ip)) continue;  // already sent to this IP
-        sent_to_ips.insert(ip);
+        // Dedup: skip if we already queued a send to the same node.
+        // Use node_id when available (correctly handles NAT), fall back to
+        // full endpoint (IP:port) for old peers without a node_id.
+        if (state.node_id != zero_id) {
+            if (sent_to_node_ids.count(state.node_id)) continue;
+            sent_to_node_ids.insert(state.node_id);
+        } else {
+            if (sent_to_endpoints.count(state.endpoint)) continue;
+            sent_to_endpoints.insert(state.endpoint);
+        }
         targets.push_back(id);
         eligible++;
     }
@@ -716,7 +828,9 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
     try {
         switch (msg.msg_type) {
             case dlt_hello_message_type:
-                on_dlt_hello(peer, msg.as<dlt_hello_message>());
+                // unpack_hello_compat handles both v1 (no node_id, 62 bytes) and
+                // v2+ (with node_id, 95 bytes) — avoids out_of_range_exception.
+                on_dlt_hello(peer, unpack_hello_compat(msg));
                 break;
             case dlt_hello_reply_message_type:
                 on_dlt_hello_reply(peer, msg.as<dlt_hello_reply_message>());
@@ -818,7 +932,7 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
 
 dlt_hello_message dlt_p2p_node::build_hello_message() const {
     dlt_hello_message hello;
-    hello.protocol_version = 1;
+    hello.protocol_version = 1;  // keep at 1 for backward compat — node_id is read optionally by unpack_hello_compat
     hello.head_block_id = _delegate->get_head_block_id();
     hello.head_block_num = _delegate->get_head_block_num();
     hello.lib_block_id = _delegate->get_lib_block_id();
@@ -829,6 +943,7 @@ dlt_hello_message dlt_p2p_node::build_hello_message() const {
     hello.has_emergency_key = _delegate->has_emergency_private_key();
     hello.fork_status = _fork_status;
     hello.node_status = _node_status;
+    hello.node_id = _node_id;  // identify ourselves so NAT peers can dedup by node, not IP
     return hello;
 }
 
@@ -897,12 +1012,40 @@ void dlt_p2p_node::on_dlt_hello(peer_id peer, const dlt_hello_message& hello) {
     if (it == _peer_states.end()) return;
     auto& state = it->second;
 
-    // Protocol version check
-    uint16_t our_major = 1; // current protocol version
+    // Protocol version check.
+    // We stay at v1 for wire compatibility — old nodes reject mismatched versions.
+    // node_id (added in this codebase) is parsed optionally by unpack_hello_compat,
+    // so the version number does not need to change.
+    // Log unknown future versions but don't disconnect — be forward-compatible.
+    uint16_t our_major = 1;
     uint16_t their_major = hello.protocol_version;
     if (their_major != our_major) {
-        wlog("Peer ${ep} has different protocol version (${theirs} vs ${ours}), disabling exchange",
+        wlog("Peer ${ep} has unexpected protocol version ${theirs} (ours=${ours}) — continuing anyway",
              ("ep", state.endpoint)("theirs", their_major)("ours", our_major));
+    }
+
+    // Persist node_id — used for dedup and peer-exchange identity.
+    state.node_id = hello.node_id;
+
+    // ── Post-hello node_id dedup ────────────────────────────────────────────
+    // Now that we know the remote node's identity, check if we already have an
+    // active connection to the exact same node.  This correctly handles:
+    //   • A node reconnecting before the old connection was cleaned up
+    //   • Simultaneous inbound + outbound to the same node
+    // It does NOT fire for two different nodes sharing the same NAT IP, because
+    // each node generates a unique keypair (node_id).
+    static const node_id_t zero_id;
+    if (hello.node_id != zero_id) {
+        peer_id dup = find_active_peer_by_node_id(hello.node_id);
+        if (dup != INVALID_PEER_ID && dup != peer) {
+            auto dup_it = _peer_states.find(dup);
+            auto dup_ep = (dup_it != _peer_states.end()) ? dup_it->second.endpoint : fc::ip::endpoint();
+            dlog(DLT_LOG_DGRAY "Closing duplicate connection from ${ep} "
+                 "(same node_id already active as peer ${dup} at ${dep})" DLT_LOG_RESET,
+                 ("ep", state.endpoint)("dup", dup)("dep", dup_ep));
+            handle_disconnect(peer, "duplicate node_id");
+            return;
+        }
     }
 
     // Store peer's chain state
@@ -1045,7 +1188,7 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
     }
 
     // P49 fix: Start from our_head (not our_head+1) so the peer's version
-    // of our head block is fetched. If two witnesses signed different blocks
+    // of our head block is fetched. If two validators signed different blocks
     // at the same height, the peer may have the competing version. Without
     // this, the sync range skips the divergence point and blocks from the
     // competing fork accumulate as unlinkable in fork_db forever.
@@ -1054,7 +1197,7 @@ void dlt_p2p_node::request_blocks_from_peer(peer_id peer) {
     //
     // LIB fallback: When significantly behind a peer (gap > threshold),
     // start from LIB instead of head. If our head diverged from the
-    // network (e.g. our witness produced blocks the network rejected),
+    // network (e.g. our validator produced blocks the network rejected),
     // requesting from head only gets ALREADY_KNOWN for head, then all
     // subsequent blocks go to fork_db as unlinkable. LIB is guaranteed
     // on the majority fork, giving the chain a chance to switch forks.
@@ -1770,7 +1913,7 @@ void dlt_p2p_node::on_dlt_peer_exchange_reply(peer_id peer, const dlt_peer_excha
 void dlt_p2p_node::on_dlt_peer_exchange_rate_limited(peer_id peer, const dlt_peer_exchange_rate_limited& msg) {
     auto it = _peer_states.find(peer);
     auto ep = (it != _peer_states.end()) ? std::string(it->second.endpoint) : std::to_string(peer);
-    ilog(DLT_LOG_DGRAY "Peer ${ep} rate-limited our exchange request, wait ${w}s" DLT_LOG_RESET,
+    dlog(DLT_LOG_DGRAY "Peer ${ep} rate-limited our exchange request, wait ${w}s" DLT_LOG_RESET,
          ("ep", ep)("w", msg.wait_seconds));
 
     // Record the rate-limit locally so periodic_peer_exchange() stops
@@ -1949,9 +2092,18 @@ void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply&
             uint32_t our_head_now   = _delegate->get_head_block_num();
             uint32_t peer_latest    = std::max(it->second.peer_dlt_latest, it->second.peer_head_num);
             if (peer_latest > our_head_now) {
+                uint32_t our_lib = _delegate->get_lib_block_num();
                 wlog(DLT_LOG_ORANGE "Gap fill: dead-fork block #${n} from peer ${ep} (peer=#${p} > our head #${h})"
-                     " — our fork is losing, re-syncing from LIB instead of banning" DLT_LOG_RESET,
-                     ("n", block.block_num())("ep", it->second.endpoint)("p", peer_latest)("h", our_head_now));
+                     " — our fork is losing, next gap fill will start from LIB #${lib}" DLT_LOG_RESET,
+                     ("n", block.block_num())("ep", it->second.endpoint)("p", peer_latest)
+                     ("h", our_head_now)("lib", our_lib));
+                // Set override so request_gap_fill() starts from LIB on the
+                // next call: blocks from LIB include the divergence point and
+                // land in fork_db as FORK_DB_ONLY, allowing a fork switch once
+                // the majority chain reaches sufficient length.
+                if (our_lib > 0 && our_lib < our_head_now) {
+                    _gap_fill_fork_override_start = our_lib;
+                }
                 transition_to_sync();
                 request_blocks_from_peer(peer);
             } else {
@@ -2027,6 +2179,19 @@ void dlt_p2p_node::request_gap_fill() {
 
     uint32_t our_head = _delegate->get_head_block_num();
     if (our_head == 0) return;
+
+    // Fork-losing override: when on_dlt_gap_fill_repl detected that our fork
+    // is losing (dead-fork block, peer is ahead), it sets this to our LIB.
+    // Starting from LIB instead of our_head ensures the request covers the
+    // divergence point; the majority-chain blocks land in fork_db as
+    // FORK_DB_ONLY and eventually trigger a fork switch.  One-shot: cleared
+    // after use so normal gap fill resumes from our_head on subsequent calls.
+    if (_gap_fill_fork_override_start > 0 && _gap_fill_fork_override_start < our_head) {
+        ilog(DLT_LOG_ORANGE "Gap fill fork override: starting from LIB #${lib} instead of head #${h} to find majority chain divergence" DLT_LOG_RESET,
+             ("lib", _gap_fill_fork_override_start)("h", our_head));
+        our_head = _gap_fill_fork_override_start;
+    }
+    _gap_fill_fork_override_start = 0;
 
     // Gap fill works in both FORWARD and SYNC modes.
     // In SYNC mode, when request_blocks_from_peer() can't bridge a gap
@@ -2121,21 +2286,16 @@ void dlt_p2p_node::request_gap_fill() {
              ("ep", peer_state.endpoint)("ph", peer_state.peer_head_num)("ex", peer_state.exchange_enabled));
         send_message(any_active_peer, message(req));
     } else {
-        // P39 fix: No peer at all with a higher head — gap fill
-        // can't help.  Transition to SYNC immediately instead of
-        // waiting for stagnation detection.
-        wlog("Gap fill: no peer available — transitioning to SYNC");
+        // No peer with a higher head is available for gap fill.
+        // Do NOT transition to SYNC — without a peer ahead of us,
+        // request_blocks_from_peer() would immediately see all peers
+        // as "caught up" and call transition_to_forward(), producing
+        // rapid SYNC→FORWARD oscillation.  Instead, just log and let
+        // the periodic task retry when new peers connect or existing
+        // peers advance their head.
+        wlog("Gap fill: no peer available with higher head — waiting for peers");
         _gap_fill_in_progress = false;
         _gap_fill_start_time = fc::time_point();
-        transition_to_sync();
-        // Request blocks from all active peers
-        for (const auto& _pi : _peer_states) {
-            const auto& state = _pi.second;
-            if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
-                state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) {
-                request_blocks_from_peer(_pi.first);
-            }
-        }
     }
 }
 
@@ -2386,6 +2546,14 @@ void dlt_p2p_node::resume_block_processing() {
     run_resume_on_p2p_thread();
 }
 
+void dlt_p2p_node::reset_peers_after_recovery() {
+    // Called from the P2P thread after auto-recovery completes.
+    // Clears all soft-bans so peers that were banned before the
+    // corruption (and may carry the majority fork) can reconnect
+    // and serve blocks immediately.
+    emergency_peer_reset();
+}
+
 bool dlt_p2p_node::is_on_majority_fork() const {
     return _fork_status != DLT_FORK_STATUS_MINORITY;
 }
@@ -2406,7 +2574,7 @@ void dlt_p2p_node::transition_to_forward() {
     // Clear chain's currently_syncing flag so the witness plugin can produce.
     // call_accept_block(sync_mode=true) during SYNC sets currently_syncing=true;
     // it only self-clears when the next accept_block(sync_mode=false) runs.
-    // If our witnesses are the only producers and they're blocked by
+    // If our validators are the only producers and they're blocked by
     // is_syncing()→not_synced, no FORWARD block ever arrives to clear it —
     // indefinite deadlock.  Must clear here on every SYNC→FORWARD transition.
     if (_delegate) _delegate->clear_syncing();
@@ -3299,7 +3467,11 @@ void dlt_p2p_node::periodic_peer_exchange() {
     if (_isolated_peers) return;
     if (_node_status != DLT_NODE_STATUS_FORWARD) return;
 
-    // Pick a random active peer to request exchange from
+    // Pick a random active peer to request exchange from.
+    // When only one exchange-enabled peer exists (common for nodes behind NAT
+    // or freshly started nodes), all requests go to that single peer and hit
+    // the 3/300s rate-limit quickly.  Back off to one request per 90s in that
+    // case so we never exceed the limit (3 requests / 300s = 1 per 100s max).
     std::vector<peer_id> candidates;
     for (auto& _peer_item : _peer_states) {
             auto& id = _peer_item.first;
@@ -3312,6 +3484,35 @@ void dlt_p2p_node::periodic_peer_exchange() {
     }
 
     if (candidates.empty()) return;
+
+    // Dynamic throttle: ensure no single peer is asked more than 3 times per 300s.
+    //
+    // With N exchange-enabled peers and a random pick each loop (5s interval):
+    //   requests per peer per 300s ≈ 300s / 5s / N = 60 / N
+    //   rate-limit threshold        = 3 requests / 300s
+    //   safe minimum loop interval  = 300s / (3 × N) = 100s / N
+    //
+    // Examples:
+    //   N=1  → min interval 100s  (was hardcoded 90s, now exact)
+    //   N=2  → min interval  50s
+    //   N=5  → min interval  20s
+    //   N=20 → min interval   5s  (≥ loop tick, no extra throttle needed)
+    //
+    // We track _last_peer_exchange globally; the random peer pick spreads
+    // load evenly across candidates so this global gate is sufficient.
+    {
+        size_t n = candidates.size();
+        int64_t min_interval_us = (n >= 20)
+            ? 0LL
+            : static_cast<int64_t>(100'000'000LL / static_cast<int64_t>(n)); // 100s / N in microseconds
+        if (min_interval_us > 0) {
+            auto now = fc::time_point::now();
+            if ((now - _last_peer_exchange_time).count() < min_interval_us) return;
+            _last_peer_exchange_time = now;
+        }
+    }
+
+
 
     thread_local std::mt19937 peer_rng(std::hash<std::thread::id>{}(std::this_thread::get_id()) ^ uint32_t(fc::time_point::now().sec_since_epoch()));
     size_t idx = peer_rng() % candidates.size();
@@ -3357,11 +3558,32 @@ void dlt_p2p_node::block_validation_timeout() {
 // ── Periodic task ────────────────────────────────────────────────────
 
 void dlt_p2p_node::periodic_task() {
+    if (!_dead_fibers.empty()) {
+    std::vector<fc::future<void>> to_clean;
+    to_clean.swap(_dead_fibers);
+    for (auto& f : to_clean) {
+        try {
+            // Nu apela ready() — poate crapa dacă promise e distrus
+            // cancel_and_wait are acum garda valid() după fix-ul din future.hpp
+            f.cancel_and_wait(__FUNCTION__);
+        } catch (...) {}
+        // Eliberează explicit promise-ul imediat după
+        f = fc::future<void>();
+    }
+}
     // Non-DB-access housekeeping always runs.
-    periodic_reconnect_check();
-    periodic_lifecycle_timeout_check();
-    block_validation_timeout();
-    periodic_mempool_cleanup();
+    try { periodic_reconnect_check(); }
+        catch (const fc::exception& e) { wlog("periodic_reconnect_check: ${e}", ("e", e.to_detail_string())); }
+        catch (const std::exception& e) { wlog("periodic_reconnect_check: ${e}", ("e", std::string(e.what()))); }
+    try { periodic_lifecycle_timeout_check(); }
+        catch (const fc::exception& e) { wlog("periodic_lifecycle_timeout_check: ${e}", ("e", e.to_detail_string())); }
+        catch (const std::exception& e) { wlog("periodic_lifecycle_timeout_check: ${e}", ("e", std::string(e.what()))); }
+    try { block_validation_timeout(); }
+        catch (const fc::exception& e) { wlog("block_validation_timeout: ${e}", ("e", e.to_detail_string())); }
+        catch (const std::exception& e) { wlog("block_validation_timeout: ${e}", ("e", std::string(e.what()))); }
+    try { periodic_mempool_cleanup(); }
+        catch (const fc::exception& e) { wlog("periodic_mempool_cleanup: ${e}", ("e", e.to_detail_string())); }
+        catch (const std::exception& e) { wlog("periodic_mempool_cleanup: ${e}", ("e", std::string(e.what()))); }
 
     // When block processing is paused (snapshot creation in progress),
     // skip periodic operations that need database read locks.  The snapshot
@@ -3369,6 +3591,95 @@ void dlt_p2p_node::periodic_task() {
     // lock from this fiber would time out and cascade into peer disconnections.
     if (_block_processing_paused) {
         // Still check banned peers for unban -- no DB access needed.
+        try {
+            for (auto& _peer_item : _peer_states) {
+                    auto& state = _peer_item.second;
+                if (state.lifecycle_state == DLT_PEER_LIFECYCLE_BANNED) {
+                    auto ban_dur = (state.ban_duration_sec > 0) ? state.ban_duration_sec : BAN_DURATION_SEC;
+                    auto elapsed = fc::time_point::now() - state.state_entered_time;
+                    if (elapsed.count() > ban_dur * 1000000) {
+                        state.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
+                        state.disconnected_since = fc::time_point::now();
+                        state.next_reconnect_attempt = fc::time_point::now() + fc::seconds(30);
+                        ilog("Unbanning peer ${ep}", ("ep", state.endpoint));
+                    }
+                }
+            }
+        } catch (const fc::exception& e) { wlog("unban_check(paused): ${e}", ("e", e.to_detail_string())); }
+          catch (const std::exception& e) { wlog("unban_check(paused): ${e}", ("e", std::string(e.what()))); }
+        return;
+    }
+
+    // Normal path: all periodic operations run.
+    try { sync_stagnation_check(); }
+        catch (const fc::exception& e) { wlog("sync_stagnation_check: ${e}", ("e", e.to_detail_string())); }
+        catch (const std::exception& e) { wlog("sync_stagnation_check: ${e}", ("e", std::string(e.what()))); }
+    try { check_sync_catchup(); }   // P26 fix: periodic catch-up detection
+        catch (const fc::exception& e) { wlog("check_sync_catchup: ${e}", ("e", e.to_detail_string())); }
+        catch (const std::exception& e) { wlog("check_sync_catchup: ${e}", ("e", std::string(e.what()))); }
+    try { check_forward_behind(); } // P27 fix: detect falling behind in FORWARD mode
+        catch (const fc::exception& e) { wlog("check_forward_behind: ${e}", ("e", e.to_detail_string())); }
+        catch (const std::exception& e) { wlog("check_forward_behind: ${e}", ("e", std::string(e.what()))); }
+    try { check_forward_stagnation(); } // P37 fix: detect head stuck in FORWARD mode
+        catch (const fc::exception& e) { wlog("check_forward_stagnation: ${e}", ("e", e.to_detail_string())); }
+        catch (const std::exception& e) { wlog("check_forward_stagnation: ${e}", ("e", std::string(e.what()))); }
+    try { request_gap_fill(); }     // P36 fix: fill gaps via exchange-enabled peers
+        catch (const fc::exception& e) { wlog("request_gap_fill: ${e}", ("e", e.to_detail_string())); }
+        catch (const std::exception& e) { wlog("request_gap_fill: ${e}", ("e", std::string(e.what()))); }
+    try { periodic_peer_exchange(); }
+        catch (const fc::exception& e) { wlog("periodic_peer_exchange: ${e}", ("e", e.to_detail_string())); }
+        catch (const std::exception& e) { wlog("periodic_peer_exchange: ${e}", ("e", std::string(e.what()))); }
+
+    // Post-pause catchup: drain queued blocks and/or clear the flag
+    // when caught up.
+    if (_catchup_after_pause && _delegate) {
+        try {
+            // If there are still queued blocks, drain them first
+            if (!_paused_block_queue.empty()) {
+                drain_paused_block_queue();
+            }
+
+            // After drain (or if queue was empty), check if we're still behind
+            uint32_t our_head = _delegate->get_head_block_num();
+            bool any_ahead = false;
+            for (const auto& _pi : _peer_states) {
+                const auto& s = _pi.second;
+                if ((s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
+                     s.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) &&
+                    s.peer_head_num > our_head) {
+                    any_ahead = true;
+                    break;
+                }
+            }
+            if (!any_ahead) {
+                _catchup_after_pause = false;
+                ilog(DLT_LOG_GREEN "Post-pause catchup complete, no gap remaining (head=#${h})" DLT_LOG_RESET,
+                     ("h", our_head));
+            }
+        } catch (const fc::exception& e) { wlog("catchup_after_pause: ${e}", ("e", e.to_detail_string())); }
+          catch (const std::exception& e) { wlog("catchup_after_pause: ${e}", ("e", std::string(e.what()))); }
+    }
+
+    // Log node status every 1 minute (12 cycles at 5s)
+    _status_log_counter++;
+    if (_status_log_counter >= 12) {
+        _status_log_counter = 0;
+        try { log_node_status(); }
+            catch (const fc::exception& e) { wlog("log_node_status: ${e}", ("e", e.to_detail_string())); }
+            catch (const std::exception& e) { wlog("log_node_status: ${e}", ("e", std::string(e.what()))); }
+    }
+
+    // Log peer stats at configured interval (counter tracks seconds, ticks are 5s)
+    _stats_log_counter += 5;
+    if (_stats_log_counter >= _stats_log_interval_sec) {
+        _stats_log_counter = 0;
+        try { log_peer_stats(); }
+            catch (const fc::exception& e) { wlog("log_peer_stats: ${e}", ("e", e.to_detail_string())); }
+            catch (const std::exception& e) { wlog("log_peer_stats: ${e}", ("e", std::string(e.what()))); }
+    }
+
+    // Check banned peers for unban
+    try {
         for (auto& _peer_item : _peer_states) {
                 auto& state = _peer_item.second;
             if (state.lifecycle_state == DLT_PEER_LIFECYCLE_BANNED) {
@@ -3382,72 +3693,8 @@ void dlt_p2p_node::periodic_task() {
                 }
             }
         }
-        return;
-    }
-
-    // Normal path: all periodic operations run.
-    sync_stagnation_check();
-    check_sync_catchup();   // P26 fix: periodic catch-up detection
-    check_forward_behind(); // P27 fix: detect falling behind in FORWARD mode
-    check_forward_stagnation(); // P37 fix: detect head stuck in FORWARD mode
-    request_gap_fill();     // P36 fix: fill gaps via exchange-enabled peers
-    periodic_peer_exchange();
-
-    // Post-pause catchup: drain queued blocks and/or clear the flag
-    // when caught up.
-    if (_catchup_after_pause && _delegate) {
-        // If there are still queued blocks, drain them first
-        if (!_paused_block_queue.empty()) {
-            drain_paused_block_queue();
-        }
-
-        // After drain (or if queue was empty), check if we're still behind
-        uint32_t our_head = _delegate->get_head_block_num();
-        bool any_ahead = false;
-        for (const auto& _pi : _peer_states) {
-            const auto& s = _pi.second;
-            if ((s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE ||
-                 s.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING) &&
-                s.peer_head_num > our_head) {
-                any_ahead = true;
-                break;
-            }
-        }
-        if (!any_ahead) {
-            _catchup_after_pause = false;
-            ilog(DLT_LOG_GREEN "Post-pause catchup complete, no gap remaining (head=#${h})" DLT_LOG_RESET,
-                 ("h", our_head));
-        }
-    }
-
-    // Log node status every 1 minute (12 cycles at 5s)
-    _status_log_counter++;
-    if (_status_log_counter >= 12) {
-        _status_log_counter = 0;
-        log_node_status();
-    }
-
-    // Log peer stats at configured interval (counter tracks seconds, ticks are 5s)
-    _stats_log_counter += 5;
-    if (_stats_log_counter >= _stats_log_interval_sec) {
-        _stats_log_counter = 0;
-        log_peer_stats();
-    }
-
-    // Check banned peers for unban
-    for (auto& _peer_item : _peer_states) {
-            auto& state = _peer_item.second;
-        if (state.lifecycle_state == DLT_PEER_LIFECYCLE_BANNED) {
-            auto ban_dur = (state.ban_duration_sec > 0) ? state.ban_duration_sec : BAN_DURATION_SEC;
-            auto elapsed = fc::time_point::now() - state.state_entered_time;
-            if (elapsed.count() > ban_dur * 1000000) {
-                state.lifecycle_state = DLT_PEER_LIFECYCLE_DISCONNECTED;
-                state.disconnected_since = fc::time_point::now();
-                state.next_reconnect_attempt = fc::time_point::now() + fc::seconds(30);
-                ilog("Unbanning peer ${ep}", ("ep", state.endpoint));
-            }
-        }
-    }
+    } catch (const fc::exception& e) { wlog("unban_check: ${e}", ("e", e.to_detail_string())); }
+      catch (const std::exception& e) { wlog("unban_check: ${e}", ("e", std::string(e.what()))); }
 }
 
 // ── Accept loop ─────────────────────────────────────────────────
@@ -3499,7 +3746,7 @@ void dlt_p2p_node::accept_loop() {
                 continue;
             }
 
-            peer_id existing = find_active_peer_by_ip(incoming_ip);
+           /* peer_id existing = find_active_peer_by_ip(incoming_ip);
             if (existing != INVALID_PEER_ID) {
                 auto ex_it = _peer_states.find(existing);
                 auto ex_ep = (ex_it != _peer_states.end()) ? ex_it->second.endpoint : fc::ip::endpoint();
@@ -3510,7 +3757,12 @@ void dlt_p2p_node::accept_loop() {
                 _connections.erase(pid);
                 sock->close();
                 continue;
-            }
+            }*/
+             // NOTE: We do NOT reject here based on IP address alone.
+            // Multiple nodes behind the same NAT share the same public IP but
+            // have different P2P ports and unique node_ids.  Deduplication of
+            // truly-duplicate connections (same node reconnecting) is done
+            // post-hello in on_dlt_hello() by comparing node_id values.
 
             // Isolated-peers: only accept inbound from configured seed IPs.
             if (_isolated_peers) {
@@ -3647,16 +3899,26 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
             const auto& detail = e.to_detail_string();
             bool is_transient =
                 detail.find("Connection reset by peer") != std::string::npos ||
+                detail.find("forcibly closed") != std::string::npos ||           // Windows WSA 10054
                 detail.find("Connection refused") != std::string::npos ||
+                detail.find("actively refused") != std::string::npos ||          // Windows WSA 10061
                 detail.find("Broken pipe") != std::string::npos ||
+                detail.find("connection was aborted") != std::string::npos ||    // Windows WSA 10053
                 detail.find("end of stream") != std::string::npos ||
+                detail.find("End of file") != std::string::npos ||
                 detail.find("Operation aborted") != std::string::npos ||
+                detail.find("operation aborted") != std::string::npos ||         // Windows WSA 10004
                 detail.find("Network is unreachable") != std::string::npos ||
+                detail.find("network is unreachable") != std::string::npos ||    // Windows WSA 10051
                 detail.find("No route to host") != std::string::npos ||
                 detail.find("Connection timed out") != std::string::npos ||
-                detail.find("Host is unreachable") != std::string::npos;
+                detail.find("timed out") != std::string::npos ||
+                detail.find("Host is unreachable") != std::string::npos ||
+                detail.find("host unreachable") != std::string::npos;            // Windows WSA 10065
             bool is_benign_close =
-                detail.find("Bad file descriptor") != std::string::npos;
+                detail.find("Bad file descriptor") != std::string::npos ||
+                detail.find("bad file descriptor") != std::string::npos ||
+                detail.find("invalid argument") != std::string::npos;            // Windows: closed socket reuse
 
             if (is_benign_close) {
                 dlog(DLT_LOG_DGRAY "Peer ${ep} read canceled (socket already closed)" DLT_LOG_RESET,

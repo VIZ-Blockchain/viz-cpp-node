@@ -226,7 +226,7 @@ After expiry the entry reverts to DISCONNECTED and normal backoff reconnection r
 | `FORWARD_STAGNATION_SEC` | 30 | Head-not-advancing threshold in FORWARD mode |
 | `FORWARD_BEHIND_GRACE_SEC` | 15 | Grace period after SYNC→FORWARD before `check_forward_behind()` acts |
 | `SYNC_STAGNATION_SEC` | 30 | No-block-received threshold in SYNC mode |
-| `FORK_RESOLUTION_BLOCK_THRESHOLD` | 42 | Blocks before fork resolution triggers (2 × CHAIN_MAX_WITNESSES) |
+| `FORK_RESOLUTION_BLOCK_THRESHOLD` | 42 | Blocks before fork resolution triggers (2 × CHAIN_MAX_VALIDATORS) |
 | `FORK_RESOLUTION_CONFIRMATION_BLOCKS` | 6 | Consecutive blocks to confirm fork resolution |
 
 ---

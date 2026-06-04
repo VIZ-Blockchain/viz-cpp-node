@@ -46,9 +46,6 @@ Output binary: `build/programs/vizd/vizd`
 ### Common build flags
 
 ```bash
-# Low-memory node (validators/seed nodes — excludes history indexing)
-./build-linux.sh -l
-
 # Testnet build
 ./build-linux.sh -n
 
@@ -57,9 +54,6 @@ Output binary: `build/programs/vizd/vizd`
 
 # Parallel jobs
 ./build-linux.sh -j 8
-
-# Skip dependency installation (already installed)
-./build-linux.sh --skip-deps
 
 # Custom Boost / OpenSSL paths
 ./build-linux.sh --boost-root /opt/boost_1_74_0 --openssl-root /opt/openssl
@@ -99,7 +93,6 @@ Optional environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VIZ_BUILD_TYPE` | `Release` | `Release` or `Debug` |
-| `VIZ_LOW_MEMORY` | `OFF` | `ON` to build low-memory node |
 | `VIZ_BUILD_TESTNET` | `OFF` | `ON` for testnet build |
 | `VIZ_FULL_STATIC` | `OFF` | `ON` for fully static binary |
 
@@ -124,9 +117,7 @@ For direct CMake usage (advanced):
 | Option | Default | Description |
 |--------|---------|-------------|
 | `BUILD_TESTNET` | `OFF` | Enable testnet-specific code |
-| `LOW_MEMORY_NODE` | `OFF` | Exclude history/indexing plugins |
 | `CHAINBASE_CHECK_LOCKING` | `OFF` | Enable lock assertion checks (debug) |
-| `ENABLE_MONGO_PLUGIN` | `OFF` | Build MongoDB plugin |
 | `BUILD_SHARED_LIBRARIES` | `OFF` | Build shared libraries |
 | `USE_PCH` | `OFF` | Enable precompiled headers (faster rebuilds) |
 
@@ -135,7 +126,6 @@ Example:
 ```bash
 mkdir build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release \
-      -DLOW_MEMORY_NODE=ON \
       -DCMAKE_INSTALL_PREFIX=/usr/local \
       ..
 make -j$(nproc)
@@ -165,8 +155,6 @@ The repository ships four Dockerfiles:
 | File | Purpose |
 |------|---------|
 | `Dockerfile-production` | Full mainnet node (Release) |
-| `Dockerfile-lowmem` | Low-memory node (`LOW_MEMORY_NODE=ON`) |
-| `Dockerfile-mongo` | Node with MongoDB plugin |
 | `Dockerfile-testnet` | Testnet node (`BUILD_TESTNET=ON`) |
 
 Build example:

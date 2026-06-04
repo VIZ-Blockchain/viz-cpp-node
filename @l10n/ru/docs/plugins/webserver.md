@@ -50,7 +50,6 @@ webserver-ws-endpoint   = 0.0.0.0:8091
 | Пространство имён | Причина |
 |------------------|---------|
 | `network_broadcast_api.*` | Изменяющий состояние (трансляция транзакций/блоков) |
-| `debug_node.*` | Изменяющие состояние операции отладки |
 | Некорректные/нераспознаваемые запросы | Невозможно надёжно вычислить ключ |
 
 Пакетные запросы (JSON-массив) обрабатываются как единственная атомарная запись кеша с ключом на основе хеша полного массива.
@@ -98,7 +97,7 @@ WebSocket-клиенты могут регистрировать колбеки:
 
 - **Привяжите к localhost** (`127.0.0.1`) и используйте обратный прокси (nginx/Caddy) для публичного доступа. Привязка к `0.0.0.0` открывает RPC напрямую в сеть.
 - Плагин не имеет встроенной аутентификации или ограничения скорости. Применяйте их на уровне обратного прокси.
-- Мутирующие методы (`network_broadcast_api`, `debug_node`) защищены от отравления кеша по замыслу, но они остаются доступными для вызова с любого подключённого клиента — при необходимости ограничьте доступ на сетевом уровне.
+- Мутирующие методы (`network_broadcast_api`) защищены от отравления кеша по замыслу, но они остаются доступными для вызова с любого подключённого клиента — при необходимости ограничьте доступ на сетевом уровне.
 
 ---
 
@@ -138,22 +137,6 @@ server {
     }
 
     location / {
-        # CORS — разрешить любой источник (публичный API)
-        add_header 'Access-Control-Allow-Origin'   '*'                                                                                         always;
-        add_header 'Access-Control-Allow-Methods'  'GET, POST, PUT, DELETE, PATCH, OPTIONS'                                                    always;
-        add_header 'Access-Control-Allow-Headers'  'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization' always;
-        add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range'                                                              always;
-
-        if ($request_method = 'OPTIONS') {
-            add_header 'Access-Control-Allow-Origin'  '*'                                                                                         always;
-            add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, PATCH, OPTIONS'                                                    always;
-            add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization' always;
-            add_header 'Access-Control-Max-Age'       1728000;
-            add_header 'Content-Type'                 'text/plain charset=UTF-8';
-            add_header 'Content-Length'               0;
-            return 204;
-        }
-
         proxy_pass http://127.0.0.1:8090;
         proxy_http_version 1.1;
 
