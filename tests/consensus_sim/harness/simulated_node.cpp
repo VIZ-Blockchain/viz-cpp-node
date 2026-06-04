@@ -1,0 +1,146 @@
+#include "simulated_node.hpp"
+
+#include <graphene/chain/database_exceptions.hpp>
+#include <fc/exception/exception.hpp>
+
+#include <chainbase/chainbase.hpp>
+
+#include <boost/filesystem.hpp>
+
+#include <stdexcept>
+
+namespace consensus_sim {
+
+namespace bfs = boost::filesystem;
+
+static fc::path make_temp_dir(const std::string& prefix) {
+    auto p = bfs::temp_directory_path() /
+             bfs::unique_path("consensus_sim-" + prefix + "-%%%%%%%%");
+    bfs::create_directories(p);
+    return fc::path(p.string());
+}
+
+simulated_node::simulated_node(std::string label,
+                               const genesis_params& params,
+                               virtual_clock& clk)
+    : label_(std::move(label)),
+      data_dir_(make_temp_dir(label_ + "-data")),
+      shared_mem_dir_(make_temp_dir(label_ + "-shm")),
+      db_(std::make_unique<graphene::chain::database>()),
+      clk_(clk) {
+    db_->open(data_dir_, shared_mem_dir_,
+              params.initial_supply,
+              /*shared_file_size=*/64ull * 1024 * 1024,
+              /*chainbase_flags=*/chainbase::database::read_write);
+    register_witness_keys_(params);
+}
+
+simulated_node::~simulated_node() {
+    try { if (db_) db_->close(); } catch (...) {}
+    try { bfs::remove_all(data_dir_.string()); } catch (...) {}
+    try { bfs::remove_all(shared_mem_dir_.string()); } catch (...) {}
+}
+
+void simulated_node::register_witness_keys_(const genesis_params& params) {
+    // Milestone 1: no-op. VIZ's init_genesis creates a single witness
+    // (CHAIN_INITIATOR_NAME, signed by CHAIN_INITIATOR_PUBLIC_KEY_STR).
+    // The smoke test produces blocks as that witness using genesis_params'
+    // initiator_key, so no rotation is needed.
+    //
+    // Milestone 3+ (equivocation tests) will need distinct witness identities;
+    // at that point this method will push witness_update operations to rotate
+    // each genesis witness to params.witness_keys[i].
+    (void)params;
+}
+
+graphene::protocol::signed_block simulated_node::produce_block(
+    const graphene::protocol::account_name_type& witness,
+    const fc::ecc::private_key& key,
+    fc::time_point_sec when) {
+    try {
+        return db_->generate_block(when, witness, key,
+                                   graphene::chain::database::skip_nothing);
+    } catch (const fc::exception& e) {
+        throw std::runtime_error(
+            "simulated_node::produce_block failed: " + e.to_detail_string());
+    }
+}
+
+block_outcome simulated_node::receive_block(
+    const graphene::protocol::signed_block& block) noexcept {
+    try {
+        bool accepted = db_->push_block(block, graphene::chain::database::skip_nothing);
+        if (accepted) {
+            return (db_->head_block_id() == block.id())
+                ? block_outcome::accepted_extends_head
+                : block_outcome::accepted_into_fork_db;
+        }
+        return block_outcome::rejected_duplicate;
+    } catch (const fc::exception& e) {
+        const std::string msg = e.to_detail_string();
+        if (msg.find("signature") != std::string::npos)
+            return block_outcome::rejected_invalid_signature;
+        if (msg.find("witness") != std::string::npos)
+            return block_outcome::rejected_witness_not_scheduled;
+        if (msg.find("duplicate") != std::string::npos)
+            return block_outcome::rejected_duplicate;
+        if (msg.find("invalid") != std::string::npos ||
+            msg.find("merkle") != std::string::npos ||
+            msg.find("balance") != std::string::npos)
+            return block_outcome::rejected_invalid_state;
+        return block_outcome::unexpected_exception;
+    } catch (...) {
+        return block_outcome::unexpected_exception;
+    }
+}
+
+uint32_t simulated_node::head_block_num() const { return db_->head_block_num(); }
+graphene::protocol::block_id_type simulated_node::head_block_id() const { return db_->head_block_id(); }
+fc::time_point_sec simulated_node::head_block_time() const { return db_->head_block_time(); }
+uint32_t simulated_node::last_irreversible_block_num() const {
+    return db_->last_non_undoable_block_num();
+}
+
+std::vector<chain_block_info> simulated_node::recent_blocks(uint32_t count) const {
+    std::vector<chain_block_info> out;
+    auto cur = db_->head_block_id();
+    for (uint32_t i = 0; i < count; ++i) {
+        if (cur == graphene::protocol::block_id_type()) break;
+        auto b = db_->fetch_block_by_id(cur);
+        if (!b) break;
+        out.push_back({b->block_num(), cur, b->witness, b->timestamp});
+        cur = b->previous;
+    }
+    return out;
+}
+
+std::vector<graphene::protocol::signed_block> simulated_node::canonical_blocks_from(
+    uint32_t from_height) const {
+    std::vector<graphene::protocol::signed_block> out;
+    const uint32_t head = db_->head_block_num();
+    if (from_height == 0 || from_height > head) return out;
+    out.reserve(head - from_height + 1);
+    for (uint32_t n = from_height; n <= head; ++n) {
+        auto b = db_->fetch_block_by_number(n);
+        if (!b) break;
+        out.push_back(std::move(*b));
+    }
+    return out;
+}
+
+void simulated_node::push_pending_transaction(
+    const graphene::protocol::signed_transaction& tx) {
+    try {
+        db_->push_transaction(tx, graphene::chain::database::skip_nothing);
+    } catch (const fc::exception& e) {
+        throw std::runtime_error(
+            "simulated_node::push_pending_transaction failed: " +
+            e.to_detail_string());
+    }
+}
+
+graphene::protocol::chain_id_type simulated_node::chain_id() const {
+    return db_->get_chain_id();
+}
+
+} // namespace consensus_sim
