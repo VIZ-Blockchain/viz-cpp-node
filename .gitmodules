@@ -1,7 +1,7 @@
 [submodule "thirdparty/fc"]
 	path = thirdparty/fc
-	url = https://github.com/m0ssa99/fc.git
-	branch = windows_suport_fc
+	url = https://github.com/VIZ-Blockchain/fc.git
+	branch = master
 [submodule "thirdparty/chainbase"]
 	path = thirdparty/chainbase
 	url = https://github.com/VIZ-Blockchain/chainbase.git
@@ -10,4 +10,3 @@
 	path = thirdparty/appbase
 	url = https://github.com/VIZ-Blockchain/appbase.git
 	branch = lib-boost-1.71
-	
