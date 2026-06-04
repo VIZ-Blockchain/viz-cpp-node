@@ -20,7 +20,6 @@ jobs:
     env:
       BOOST_VERSION: "1.86.0"
       BOOST_ROOT: "C:\\local\\boost_1_86_0"
-      OPENSSL_ROOT_DIR: "C:\\Program Files\\OpenSSL-Win64"
 
     steps:
       # ──────────────────────────────────────────────────────────────
@@ -99,49 +98,76 @@ jobs:
           Write-Host "Boost installed to $installDir"
 
       # ──────────────────────────────────────────────────────────────
-      # OpenSSL — cached installation
-      # Uses the slproweb.com Win64 OpenSSL Light installer which
-      # places libs in lib/ and include/ where CMake expects them.
-      # Chocolatey's openssl package uses a non-standard layout that
-      # FindOpenSSL cannot resolve.
+      # OpenSSL — installed via Chocolatey, path auto-detected
+      # Chocolatey's openssl package may install to a different
+      # directory than expected, so we dynamically find the actual
+      # install path and export it for subsequent steps.
       # ──────────────────────────────────────────────────────────────
-      - name: Cache OpenSSL
-        id: cache-openssl
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.OPENSSL_ROOT_DIR }}
-          key: openssl-light-3-x64-v2
-
       - name: Install OpenSSL
-        if: steps.cache-openssl.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $root = $env:OPENSSL_ROOT_DIR
-          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          # Install (Chocolatey handles already-installed gracefully)
           choco install openssl --no-progress -y
 
-          # Diagnostic: show what Chocolatey installed
-          Write-Host "`n=== OpenSSL directory structure ==="
-          Get-ChildItem -Path $root -Recurse -Depth 3 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
-
-          # Find crypto lib wherever it is
-          $crypto = Get-ChildItem -Path $root -Recurse -Filter "libcrypto*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($crypto) {
-            Write-Host "`nFound: $($crypto.FullName)"
-            "OPENSSL_CRYPTO_LIBRARY=$($crypto.FullName)" >> $env:GITHUB_ENV
-          } else {
-            # Search broader locations
-            $crypto = Get-ChildItem -Path "C:\Program Files" -Recurse -Filter "libcrypto*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($crypto) {
-              Write-Host "`nFound outside OPENSSL_ROOT_DIR: $($crypto.FullName)"
-              "OPENSSL_CRYPTO_LIBRARY=$($crypto.FullName)" >> $env:GITHUB_ENV
-              "OPENSSL_SSL_LIBRARY=$($crypto.DirectoryName)\libssl.lib" >> $env:GITHUB_ENV
-              "OPENSSL_INCLUDE_DIR=$root\include" >> $env:GITHUB_ENV
-            } else {
-              Write-Error "Could not find libcrypto anywhere"
-              exit 1
+          # Find the actual install directory containing libcrypto.lib
+          Write-Host "`nSearching for OpenSSL crypto library..."
+          $crypto = $null
+          $searchPaths = @(
+            "C:\Program Files\OpenSSL-Win64",
+            "C:\Program Files\OpenSSL",
+            "C:\ProgramData\chocolatey\lib\openssl",
+            "C:\ProgramData\chocolatey\lib\openssl\tools"
+          )
+          foreach ($p in $searchPaths) {
+            if (Test-Path $p) {
+              Write-Host "Checking: $p"
+              $crypto = Get-ChildItem -Path $p -Recurse -Filter "libcrypto*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($crypto) {
+                # Find the root: go up from lib\ until we find include\openssl
+                $dir = $crypto.Directory
+                while ($dir -and -not (Test-Path "$($dir.FullName)\include\openssl\opensslv.h")) {
+                  $dir = $dir.Parent
+                }
+                if ($dir) {
+                  $root = $dir.FullName
+                  Write-Host "Found OpenSSL root: $root"
+                  Write-Host "  crypto: $($crypto.FullName)"
+                  "OPENSSL_ROOT_DIR=$root" >> $env:GITHUB_ENV
+                  break
+                }
+              }
             }
           }
+
+          if (-not $crypto) {
+            # Last resort: search entire C:\Program Files
+            Write-Host "Searching C:\Program Files recursively..."
+            $crypto = Get-ChildItem -Path "C:\Program Files" -Recurse -Filter "libcrypto*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($crypto) {
+              $dir = $crypto.Directory
+              while ($dir -and -not (Test-Path "$($dir.FullName)\include\openssl\opensslv.h")) {
+                $dir = $dir.Parent
+              }
+              $root = $dir.FullName
+              Write-Host "Found OpenSSL root: $root"
+              "OPENSSL_ROOT_DIR=$root" >> $env:GITHUB_ENV
+            }
+          }
+
+          if (-not $crypto) {
+            Write-Host "`n=== Diagnostic: Chocolatey lib directory ==="
+            Get-ChildItem -Path "C:\ProgramData\chocolatey\lib\openssl" -Recurse -Depth 4 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+            Write-Host "`n=== Diagnostic: Program Files OpenSSL ==="
+            Get-ChildItem -Path "C:\Program Files\OpenSSL-Win64" -Recurse -Depth 4 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+            Write-Error "Could not find OpenSSL libcrypto.lib anywhere"
+            exit 1
+          }
+
+          $ssl = Get-ChildItem -Path $root -Recurse -Filter "libssl*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+          Write-Host "  ssl: $($ssl.FullName)"
+          "OPENSSL_CRYPTO_LIBRARY=$($crypto.FullName)" >> $env:GITHUB_ENV
+          "OPENSSL_SSL_LIBRARY=$($ssl.FullName)" >> $env:GITHUB_ENV
+          "OPENSSL_INCLUDE_DIR=$root\include" >> $env:GITHUB_ENV
 
       # ──────────────────────────────────────────────────────────────
       # sccache — shared compilation cache across runs
@@ -189,11 +215,18 @@ jobs:
       - name: Configure CMake
         shell: pwsh
         run: |
+          Write-Host "OPENSSL_ROOT_DIR = $env:OPENSSL_ROOT_DIR"
+          Write-Host "OPENSSL_CRYPTO_LIBRARY = $env:OPENSSL_CRYPTO_LIBRARY"
+          Write-Host "OPENSSL_SSL_LIBRARY = $env:OPENSSL_SSL_LIBRARY"
+          Write-Host "OPENSSL_INCLUDE_DIR = $env:OPENSSL_INCLUDE_DIR"
           cmake -S . -B build `
             -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
             -DBOOST_ROOT="$env:BOOST_ROOT" `
             -DOPENSSL_ROOT_DIR="$env:OPENSSL_ROOT_DIR" `
+            -DOPENSSL_CRYPTO_LIBRARY="$env:OPENSSL_CRYPTO_LIBRARY" `
+            -DOPENSSL_SSL_LIBRARY="$env:OPENSSL_SSL_LIBRARY" `
+            -DOPENSSL_INCLUDE_DIR="$env:OPENSSL_INCLUDE_DIR" `
             -DOPENSSL_USE_STATIC_LIBS=TRUE `
             -DBUILD_SHARED_LIBRARIES=OFF `
             -DBUILD_TESTNET=OFF `
