@@ -67,7 +67,8 @@ jobs:
           Push-Location $boostDir.FullName
           cmd /c "bootstrap.bat"
 
-          Write-Host "Building Boost libraries..."
+          $jobs = [Environment]::ProcessorCount
+          Write-Host "Building Boost libraries (jobs=$jobs)..."
           .\b2 install `
             --prefix=$installDir `
             --with-thread --with-date_time --with-system --with-filesystem `
@@ -79,7 +80,7 @@ jobs:
             threading=multi `
             runtime-link=shared `
             address-model=64 `
-            -j$env:NUMBER_OF_PROCESSORS
+            "-j$jobs"
           Pop-Location
 
           if (-not (Test-Path "$installDir\include\boost\version.hpp")) {
