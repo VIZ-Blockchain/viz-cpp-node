@@ -73,7 +73,7 @@ jobs:
             --prefix=$installDir `
             --with-thread --with-date_time --with-system --with-filesystem `
             --with-program_options --with-serialization --with-chrono `
-            --with-unit_test_framework --with-context --with-locale --with-coroutine `
+            --with-test --with-context --with-locale --with-coroutine `
             toolset=msvc-14.3 `
             variant=release `
             link=static `
