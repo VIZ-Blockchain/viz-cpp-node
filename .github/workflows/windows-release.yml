@@ -228,7 +228,7 @@ jobs:
               '#include <string>',
               'namespace boost { namespace asio { namespace ssl {',
               'bool rfc2818_verification::operator()(bool,verify_context&) const { return true; }',
-              'std::string rfc2818_verification::match_pattern(const char*,const char*) { return std::string(); }',
+              'bool rfc2818_verification::match_pattern(const char*,std::size_t,const char*) { return true; }',
               '}}}'
             )
             $lines | Set-Content $ipp
