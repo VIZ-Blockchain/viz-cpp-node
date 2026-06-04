@@ -43,7 +43,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.BOOST_ROOT }}
-          key: boost-src-${{ env.BOOST_VERSION }}-msvc14.3-x64-v2
+          key: boost-src-${{ env.BOOST_VERSION }}-msvc14.3-x64-v3
 
       - name: Build Boost from source
         if: steps.cache-boost.outputs.cache-hit != 'true'
@@ -74,7 +74,6 @@ jobs:
             --with-thread --with-date_time --with-system --with-filesystem `
             --with-program_options --with-serialization --with-chrono `
             --with-test --with-context --with-locale --with-coroutine `
-            --with-headers `
             toolset=msvc-14.3 `
             variant=release `
             link=static `
@@ -82,6 +81,14 @@ jobs:
             runtime-link=shared `
             address-model=64 `
             "-j$jobs"
+
+          # b2 install does not reliably copy core headers (version.hpp, config.hpp,
+          # etc.) for scoped --with-* builds. Manually copy the full boost/ header
+          # tree from the source to guarantee all headers are available.
+          Write-Host "Installing core Boost headers..."
+          $includeDir = Join-Path $installDir "include"
+          New-Item -ItemType Directory -Path $includeDir -Force | Out-Null
+          Copy-Item -Path "$($boostDir.FullName)\boost" -Destination "$includeDir\boost" -Recurse -Force
           Pop-Location
 
           if (-not (Test-Path "$installDir\include\boost\version.hpp")) {
