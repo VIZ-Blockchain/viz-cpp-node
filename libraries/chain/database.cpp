@@ -4204,7 +4204,7 @@ namespace graphene { namespace chain {
                     }
                 }
 
-                if (total_weighted == 0) {
+                if (!total_weighted) {
                     // No stakeholders — entire pool returns to validator.
                     auto dust_shares = create_vesting(*validator_account, asset(total_token, TOKEN_SYMBOL));
                     push_virtual_operation(validator_reward_operation(wit.owner, dust_shares));
