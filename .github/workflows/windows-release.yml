@@ -50,8 +50,7 @@ jobs:
         shell: pwsh
         run: |
           $version = $env:BOOST_VERSION
-          $underscore = $version -replace '\.', '_'
-          $tarball = "boost_${underscore}.tar.gz"
+          $tarball = "boost-$version.tar.gz"
           $url = "https://github.com/boostorg/boost/releases/download/boost-$version/$tarball"
           $srcDir = "${{ runner.temp }}\boost-src"
           $installDir = $env:BOOST_ROOT
@@ -62,7 +61,7 @@ jobs:
           Write-Host "Extracting..."
           New-Item -ItemType Directory -Path $srcDir -Force | Out-Null
           tar -xzf "${{ runner.temp }}\$tarball" -C $srcDir
-          $boostDir = Get-ChildItem -Directory "$srcDir\boost_*" | Select-Object -First 1
+          $boostDir = Get-ChildItem -Directory "$srcDir\boost*" | Select-Object -First 1
 
           Write-Host "Bootstrapping b2..."
           Push-Location $boostDir.FullName
