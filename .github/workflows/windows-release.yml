@@ -99,18 +99,49 @@ jobs:
           Write-Host "Boost installed to $installDir"
 
       # ──────────────────────────────────────────────────────────────
-      # OpenSSL — cached installation from Chocolatey
+      # OpenSSL — cached installation
+      # Uses the slproweb.com Win64 OpenSSL Light installer which
+      # places libs in lib/ and include/ where CMake expects them.
+      # Chocolatey's openssl package uses a non-standard layout that
+      # FindOpenSSL cannot resolve.
       # ──────────────────────────────────────────────────────────────
       - name: Cache OpenSSL
         id: cache-openssl
         uses: actions/cache@v4
         with:
           path: ${{ env.OPENSSL_ROOT_DIR }}
-          key: openssl-choco-win64-v1
+          key: openssl-light-3-x64-v2
 
-      - name: Install OpenSSL via Chocolatey
+      - name: Install OpenSSL
         if: steps.cache-openssl.outputs.cache-hit != 'true'
-        run: choco install openssl --no-progress -y
+        shell: pwsh
+        run: |
+          $root = $env:OPENSSL_ROOT_DIR
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          choco install openssl --no-progress -y
+
+          # Diagnostic: show what Chocolatey installed
+          Write-Host "`n=== OpenSSL directory structure ==="
+          Get-ChildItem -Path $root -Recurse -Depth 3 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+
+          # Find crypto lib wherever it is
+          $crypto = Get-ChildItem -Path $root -Recurse -Filter "libcrypto*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($crypto) {
+            Write-Host "`nFound: $($crypto.FullName)"
+            "OPENSSL_CRYPTO_LIBRARY=$($crypto.FullName)" >> $env:GITHUB_ENV
+          } else {
+            # Search broader locations
+            $crypto = Get-ChildItem -Path "C:\Program Files" -Recurse -Filter "libcrypto*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($crypto) {
+              Write-Host "`nFound outside OPENSSL_ROOT_DIR: $($crypto.FullName)"
+              "OPENSSL_CRYPTO_LIBRARY=$($crypto.FullName)" >> $env:GITHUB_ENV
+              "OPENSSL_SSL_LIBRARY=$($crypto.DirectoryName)\libssl.lib" >> $env:GITHUB_ENV
+              "OPENSSL_INCLUDE_DIR=$root\include" >> $env:GITHUB_ENV
+            } else {
+              Write-Error "Could not find libcrypto anywhere"
+              exit 1
+            }
+          }
 
       # ──────────────────────────────────────────────────────────────
       # sccache — shared compilation cache across runs
@@ -163,6 +194,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release `
             -DBOOST_ROOT="$env:BOOST_ROOT" `
             -DOPENSSL_ROOT_DIR="$env:OPENSSL_ROOT_DIR" `
+            -DOPENSSL_USE_STATIC_LIBS=TRUE `
             -DBUILD_SHARED_LIBRARIES=OFF `
             -DBUILD_TESTNET=OFF `
             -DCHAINBASE_CHECK_LOCKING=OFF `
