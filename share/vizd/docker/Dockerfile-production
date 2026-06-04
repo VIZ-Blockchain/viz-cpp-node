@@ -102,7 +102,10 @@ RUN --mount=type=cache,target=/root/.ccache,id=viz-ccache,sharing=locked \
         -DCHAINBASE_CHECK_LOCKING=FALSE \
         .. \
     && \
-    make -j$(($(nproc)-20)) vizd cli_wallet && \
+    # Reserve up to 20 cores for ccache I/O and BuildKit overhead on large
+    # machines, but fall back to all cores on small runners (GHA has 4 cores)
+    # to avoid a negative -j argument, which make rejects.
+    make -j$( N=$(nproc); R=$((N-20)); if [ $R -lt 2 ]; then echo $N; else echo $R; fi ) vizd cli_wallet && \
     ccache -s
 
 # `make install` would re-trigger the `all` target through CMake's install-depends-on-all
