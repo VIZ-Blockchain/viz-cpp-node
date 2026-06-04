@@ -1,0 +1,19 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d3f276f..4af4e76 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -18,6 +18,14 @@ include(GetGitRevisionDescription)
+ 
+ get_git_head_revision(GIT_REFSPEC FC_GIT_REVISION_SHA)
+ get_git_unix_timestamp(FC_GIT_REVISION_UNIX_TIMESTAMP)
++# Fallbacks when git lookup fails (e.g. building inside a container that can't
++# resolve a worktree gitfile pointing to a host path).
++if(NOT FC_GIT_REVISION_UNIX_TIMESTAMP MATCHES "^[0-9]+$")
++    set(FC_GIT_REVISION_UNIX_TIMESTAMP 0)
++endif()
++if(NOT FC_GIT_REVISION_SHA MATCHES "^[a-f0-9]+$")
++    set(FC_GIT_REVISION_SHA "")
++endif()
+ 
+ set(DEFAULT_HEADER_INSTALL_DIR include/\${target})
+ set(DEFAULT_LIBRARY_INSTALL_DIR lib/)

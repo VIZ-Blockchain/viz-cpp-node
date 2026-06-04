@@ -1,0 +1,72 @@
+# Dockerfile-dev — developer toolchain image for VIZ blockchain
+#
+# PURPOSE: Provides a fully-equipped Linux build environment that mirrors the
+# CI builder stage (same base image and apt packages as Dockerfile-production)
+# WITHOUT baking any source code in. The host worktree is mounted at /workspace
+# so you can iterate on the source without rebuilding this image.
+#
+# BUILD:
+#   docker build -f share/vizd/docker/Dockerfile-dev -t viz-dev .
+#
+# ENTER A SHELL:
+#   docker run --rm -it -v $(pwd):/workspace viz-dev
+#
+# ONE-SHOT COMMAND:
+#   docker run --rm -v $(pwd):/workspace viz-dev bash -c "cd /workspace/build && make -j$(nproc) vizd"
+#
+# ccache is stored in /workspace/.ccache (mounted from the host worktree) so it
+# persists across container runs. Set CCACHE_DIR=/workspace/.ccache inside the
+# container or rely on the ENV below.
+
+FROM phusion/baseimage:noble-1.0.3
+
+ENV LANG=en_US.UTF-8
+
+# ccache configuration — cache directory is mounted from the host worktree so
+# it survives container restarts without polluting the image layers.
+ENV CCACHE_DIR=/workspace/.ccache
+ENV CCACHE_MAXSIZE=2G
+ENV CCACHE_COMPRESS=1
+
+# Install build dependencies (mirrors Dockerfile-production builder stage exactly,
+# plus gcovr for coverage reports and gdb for debugging failing scenarios).
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
+        autotools-dev \
+        binutils \
+        bsdmainutils \
+        build-essential \
+        cmake \
+        git \
+        ccache \
+        gdb \
+        gcovr \
+        libboost-chrono-dev \
+        libboost-context-dev \
+        libboost-coroutine-dev \
+        libboost-date-time-dev \
+        libboost-filesystem-dev \
+        libboost-iostreams-dev \
+        libboost-locale-dev \
+        libboost-program-options-dev \
+        libboost-serialization-dev \
+        libboost-system-dev \
+        libboost-test-dev \
+        libboost-thread-dev \
+        libbz2-dev \
+        liblzma-dev \
+        libzstd-dev \
+        libreadline-dev \
+        libssl-dev \
+        libtool \
+        ncurses-dev \
+        pbzip2 \
+        pkg-config \
+        zlib1g-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+CMD ["/bin/bash"]
