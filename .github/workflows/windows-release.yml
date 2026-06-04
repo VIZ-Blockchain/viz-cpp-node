@@ -221,50 +221,21 @@ jobs:
         run: |
           $ipp = "$env:BOOST_ROOT\include\boost-1_86\boost\asio\ssl\impl\rfc2818_verification.ipp"
           if (Test-Path $ipp) {
-            # Boost 1.86's deprecated rfc2818_verification accesses
-            # asn1_string_st directly, which OpenSSL 4.0 made opaque.
-            # Replace the file with a stub. The VIZ node does not use
-            # WSS client certificate verification.
-            $stub = @'
-// Patched for OpenSSL 4.0 compatibility - stub implementation
-#include <boost/asio/ssl/detail/openssl_types.hpp>
-#include <boost/asio/ssl/rfc2818_verification.hpp>
-#include <string>
-
-namespace boost {
-namespace asio {
-namespace ssl {
-
-rfc2818_verification::rfc2818_verification(const std::string& host)
-{
-  (void)host;
-}
-
-bool rfc2818_verification::operator()(
-    bool preverified, verify_context& ctx) const
-{
-  (void)preverified;
-  (void)ctx;
-  return true;
-}
-
-std::string rfc2818_verification::match_pattern(const char* host,
-    std::size_t host_length, const char* pattern,
-    std::size_t pattern_length)
-{
-  (void)host; (void)host_length;
-  (void)pattern; (void)pattern_length;
-  return std::string();
-}
-
-} // namespace ssl
-} // namespace asio
-} // namespace boost
-'@
-            Set-Content $ipp $stub -NoNewline
+            $lines = @(
+              '// Patched for OpenSSL 4.0 compat',
+              '#include <boost/asio/ssl/detail/openssl_types.hpp>',
+              '#include <boost/asio/ssl/rfc2818_verification.hpp>',
+              '#include <string>',
+              'namespace boost { namespace asio { namespace ssl {',
+              'rfc2818_verification::rfc2818_verification(const std::string& h) { (void)h; }',
+              'bool rfc2818_verification::operator()(bool,verify_context&) const { return true; }',
+              'std::string rfc2818_verification::match_pattern(const char*,std::size_t,const char*,std::size_t) { return std::string(); }',
+              '}}}'
+            )
+            $lines | Set-Content $ipp
             Write-Host "Replaced $ipp with OpenSSL 4.0 stub"
           } else {
-            Write-Host "WARNING: $ipp not found — skipping patch"
+            Write-Host "WARNING: $ipp not found"
           }
 
       # ──────────────────────────────────────────────────────────────
