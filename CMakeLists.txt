@@ -1,8 +1,15 @@
 # Defines VIZ library target.
 project(VIZ)
+# Note: bcrypt (needed by boost::uuid / random on MinGW) is linked per-target
+# in the if(WIN32) block below to avoid polluting secp256k1 and other sub-targets.
 cmake_minimum_required(VERSION 3.16)
 
 set(CHAIN_NAME "VIZ")
+
+
+set(GUI_CLIENT_EXECUTABLE_NAME vizd)
+set(CUSTOM_URL_SCHEME "vizd")
+set(INSTALLER_APP_ID "e8af6bdb-23c8-4e55-beda-2cd257393b04")
 
 # http://stackoverflow.com/a/18369825
 if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
@@ -84,13 +91,17 @@ if(WIN32)
     set(DB_VERSION 60)
     set(BDB_STATIC_LIBS 1)
 
+    # Minimum Windows 7 / Vista (0x0601).  XP (0x0501) is too old for
+    # boost::asio extended Winsock2 APIs and modern async I/O.
+    add_compile_definitions(_WIN32_WINNT=0x0601 WINVER=0x0601)
+
     set(ZLIB_LIBRARIES "")
     set(DEFAULT_EXECUTABLE_INSTALL_DIR bin/)
 
     set(CRYPTO_LIB)
 
     if(MSVC)
-        add_compile_options(/wd4503 /wd4267 /wd4244 /EHsc)
+        add_compile_options(/wd4503 /wd4267 /wd4244 /EHa)
         #looks like this flag can have different default on some machines.
         set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /SAFESEH:NO")
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /SAFESEH:NO")
@@ -122,6 +133,8 @@ if(WIN32)
         if(FULL_STATIC_BUILD)
             set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
         endif(FULL_STATIC_BUILD)
+        # bcrypt: needed by boost::random/uuid on MinGW (provides BCryptGenRandom)
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lbcrypt")
     endif(MSVC)
 
 else(WIN32) # Apple AND Linux
@@ -186,5 +199,3 @@ if(BUILD_TESTNET)
 else()
     message(STATUS "\n\n             CONFIGURED FOR VIZ NETWORK             \n\n")
 endif()
-
-

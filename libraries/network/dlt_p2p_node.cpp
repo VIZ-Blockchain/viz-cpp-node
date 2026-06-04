@@ -82,6 +82,25 @@ void dlt_p2p_node::set_witness_diag_provider(std::function<std::string()> fn) {
 }
 
 void dlt_p2p_node::block_incoming_ip(uint32_t ip, const std::string& reason) {
+    // NAT safety: if multiple active peers share this IP (nodes behind the same NAT),
+    // blocking the IP would kill all of them.  Only block when a single peer is using
+    // this IP — that's the typical single-machine attacker scenario.
+    uint32_t peers_with_ip = 0;
+    for (const auto& item : _peer_states) {
+        const auto& s = item.second;
+        if ((uint32_t)s.endpoint.get_address() == ip &&
+            (s.lifecycle_state == DLT_PEER_LIFECYCLE_CONNECTING  ||
+             s.lifecycle_state == DLT_PEER_LIFECYCLE_HANDSHAKING ||
+             s.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING     ||
+             s.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE)) {
+            ++peers_with_ip;
+        }
+    }
+    if (peers_with_ip > 1) {
+        wlog(DLT_LOG_ORANGE "NAT: NOT blocking IP ${ip} (${n} active peers share this IP) — reason was: ${r}" DLT_LOG_RESET,
+             ("ip", std::string(fc::ip::address(ip)))("n", peers_with_ip)("r", reason));
+        return;  // Don't punish NAT peers for one misbehaving connection
+    }
     fc::time_point unblock_at = fc::time_point::now() + fc::seconds(BLOCKED_IP_DURATION_SEC);
     _blocked_ips[ip] = unblock_at;
     wlog(DLT_LOG_ORANGE "Blocking IP ${ip} for ${d}s: ${r}" DLT_LOG_RESET,
@@ -211,11 +230,53 @@ void dlt_p2p_node::close() {
 
 // ── Connection management ────────────────────────────────────────────
 
-// ── Per-IP dedup: find any existing active connection from the same IP ─
-dlt_p2p_node::peer_id dlt_p2p_node::find_active_peer_by_ip(const fc::ip::address& addr) const {
+// ── Backward-compatible hello deserializer ───────────────────────────────────
+// FC_REFLECT-based deserialization (msg.as<dlt_hello_message>()) expects ALL
+// fields to be present in the byte stream.  Old nodes (protocol_version=1,
+// 62-byte payload) do NOT include the node_id field (added in v2, 33 bytes).
+// Calling msg.as<>() on such a message throws out_of_range_exception ("over by 1"
+// — the first byte of the missing node_id cannot be read).
+//
+// This helper deserializes field-by-field and treats node_id as OPTIONAL:
+// it is read only when the stream still has >= sizeof(node_id_t) bytes left.
+// Unknown trailing bytes (future fields) are silently ignored.
+static dlt_hello_message unpack_hello_compat(const message& msg) {
+    FC_ASSERT(msg.msg_type == dlt_hello_message_type);
+    dlt_hello_message hello;
+    if (msg.data.empty()) return hello;
+    fc::datastream<const char*> ds(msg.data.data(), msg.data.size());
+    fc::raw::unpack(ds, hello.protocol_version);
+    fc::raw::unpack(ds, hello.head_block_id);
+    fc::raw::unpack(ds, hello.head_block_num);
+    fc::raw::unpack(ds, hello.lib_block_id);
+    fc::raw::unpack(ds, hello.lib_block_num);
+    fc::raw::unpack(ds, hello.dlt_earliest_block);
+    fc::raw::unpack(ds, hello.dlt_latest_block);
+    fc::raw::unpack(ds, hello.emergency_active);
+    fc::raw::unpack(ds, hello.has_emergency_key);
+    fc::raw::unpack(ds, hello.fork_status);
+    fc::raw::unpack(ds, hello.node_status);
+    // node_id (sizeof = 33 bytes for compressed secp256k1 key) is optional:
+    //   - absent   → old protocol (v1 peer, 62-byte hello) — treat as zero_id
+    //   - present  → new protocol (v2+ peer, 95-byte hello) — use for NAT dedup
+    if (ds.remaining() >= sizeof(node_id_t)) {
+        fc::raw::unpack(ds, hello.node_id);
+    }
+    // Any remaining bytes are future protocol fields — ignored for forward compat.
+    return hello;
+}
+
+// ── Per-node-id dedup: find any existing active connection to the same node ─
+// We identify nodes by the node_id they advertise in their hello message.
+// This correctly handles multiple nodes behind the same NAT (same IP, different
+// ports) — each node has a unique keypair, so only true duplicates are rejected.
+// Returns INVALID_PEER_ID for zero node_id (old peer that didn't send one).
+dlt_p2p_node::peer_id dlt_p2p_node::find_active_peer_by_node_id(const node_id_t& nid) const {
+    static const node_id_t zero_id;
+    if (nid == zero_id) return INVALID_PEER_ID;
     for (const auto& item : _peer_states) {
         const auto& state = item.second;
-        if (state.endpoint.get_address() == addr &&
+        if (state.node_id == nid &&
             (state.lifecycle_state == DLT_PEER_LIFECYCLE_CONNECTING ||
              state.lifecycle_state == DLT_PEER_LIFECYCLE_HANDSHAKING ||
              state.lifecycle_state == DLT_PEER_LIFECYCLE_SYNCING ||
@@ -251,7 +312,7 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
     // which causes broadcast amplification.
     // EXCEPTION: Allow reconnect if the target peer itself is DISCONNECTED,
     // even if another connection to the same IP exists (different port).
-    if (!found_existing) {
+   /* if (!found_existing) {
         fc::ip::address target_ip = ep.get_address();
         peer_id existing_ip_conn = find_active_peer_by_ip(target_ip);
         if (existing_ip_conn != INVALID_PEER_ID) {
@@ -259,7 +320,11 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
                  ("ep", ep)("pid", existing_ip_conn));
             return;
         }
-    }
+    }*/
+   // NOTE: We no longer skip outbound connections based on IP address alone.
+    // Multiple nodes behind the same NAT share the same public IP but have
+    // different P2P ports and unique node_ids.  Deduplication happens post-hello
+    // in on_dlt_hello() where we compare node_id values.
 
     if (!found_existing) {
         pid = _next_peer_id++;
@@ -315,11 +380,17 @@ void dlt_p2p_node::connect_to_peer(const fc::ip::endpoint& ep) {
                 std::string detail = e.to_detail_string();
                 bool is_expected = (detail.find("Connection refused") != std::string::npos)
                                || (detail.find("connection refused") != std::string::npos)
+                               || (detail.find("actively refused") != std::string::npos)       // Windows WSA 10061
                                || (detail.find("Connection timed out") != std::string::npos)
+                               || (detail.find("timed out") != std::string::npos)
                                || (detail.find("Host unreachable") != std::string::npos)
+                               || (detail.find("host unreachable") != std::string::npos)       // Windows WSA 10065
                                || (detail.find("No route to host") != std::string::npos)
+                               || (detail.find("network is unreachable") != std::string::npos) // Windows WSA 10051
                                || (detail.find("End of file") != std::string::npos)
-                               || (detail.find("Operation aborted") != std::string::npos);
+                               || (detail.find("end of file") != std::string::npos)
+                               || (detail.find("Operation aborted") != std::string::npos)
+                               || (detail.find("operation aborted") != std::string::npos);     // Windows WSA 10004
                 if (is_expected)
                     dlog(DLT_LOG_DGRAY "Connect to ${ep} failed: ${w}" DLT_LOG_RESET, ("ep", ep)("w", e.what()));
                 else
@@ -613,7 +684,14 @@ void dlt_p2p_node::drain_send_queue(peer_id peer, std::vector<char> buf) {
 void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclude, const block_id_type& block_id) {
     // Per-IP dedup: send to each unique IP only once, even if multiple
     // peer entries exist for the same IP (belt-and-suspenders safety net).
-    std::set<fc::ip::address> sent_to_ips;
+     // Dedup by node_id: send to each unique node only once, even if multiple
+    // peer entries exist for the same node (e.g. duplicate connections still
+    // being cleaned up).  We do NOT dedup by IP address — multiple distinct
+    // nodes can share the same NAT IP and each deserves its own copy.
+    // Falls back to endpoint dedup for peers without a node_id (old protocol).
+    std::set<node_id_t>        sent_to_node_ids;
+    std::set<fc::ip::endpoint> sent_to_endpoints;
+    static const node_id_t zero_id;
 
     // Diagnostic: count eligible vs skipped peers
     uint32_t eligible = 0, skipped_not_exchange = 0, skipped_not_active = 0, skipped_echo = 0, skipped_peer_syncing = 0;
@@ -653,9 +731,16 @@ void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclud
             skipped_echo++;
             continue;
         }
-        fc::ip::address ip = state.endpoint.get_address();
-        if (sent_to_ips.count(ip)) continue;  // already sent to this IP
-        sent_to_ips.insert(ip);
+        // Dedup: skip if we already queued a send to the same node.
+        // Use node_id when available (correctly handles NAT), fall back to
+        // full endpoint (IP:port) for old peers without a node_id.
+        if (state.node_id != zero_id) {
+            if (sent_to_node_ids.count(state.node_id)) continue;
+            sent_to_node_ids.insert(state.node_id);
+        } else {
+            if (sent_to_endpoints.count(state.endpoint)) continue;
+            sent_to_endpoints.insert(state.endpoint);
+        }
         targets.push_back(id);
         eligible++;
     }
@@ -743,7 +828,9 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
     try {
         switch (msg.msg_type) {
             case dlt_hello_message_type:
-                on_dlt_hello(peer, msg.as<dlt_hello_message>());
+                // unpack_hello_compat handles both v1 (no node_id, 62 bytes) and
+                // v2+ (with node_id, 95 bytes) — avoids out_of_range_exception.
+                on_dlt_hello(peer, unpack_hello_compat(msg));
                 break;
             case dlt_hello_reply_message_type:
                 on_dlt_hello_reply(peer, msg.as<dlt_hello_reply_message>());
@@ -845,7 +932,7 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
 
 dlt_hello_message dlt_p2p_node::build_hello_message() const {
     dlt_hello_message hello;
-    hello.protocol_version = 1;
+    hello.protocol_version = 1;  // keep at 1 for backward compat — node_id is read optionally by unpack_hello_compat
     hello.head_block_id = _delegate->get_head_block_id();
     hello.head_block_num = _delegate->get_head_block_num();
     hello.lib_block_id = _delegate->get_lib_block_id();
@@ -856,6 +943,7 @@ dlt_hello_message dlt_p2p_node::build_hello_message() const {
     hello.has_emergency_key = _delegate->has_emergency_private_key();
     hello.fork_status = _fork_status;
     hello.node_status = _node_status;
+    hello.node_id = _node_id;  // identify ourselves so NAT peers can dedup by node, not IP
     return hello;
 }
 
@@ -924,12 +1012,40 @@ void dlt_p2p_node::on_dlt_hello(peer_id peer, const dlt_hello_message& hello) {
     if (it == _peer_states.end()) return;
     auto& state = it->second;
 
-    // Protocol version check
-    uint16_t our_major = 1; // current protocol version
+    // Protocol version check.
+    // We stay at v1 for wire compatibility — old nodes reject mismatched versions.
+    // node_id (added in this codebase) is parsed optionally by unpack_hello_compat,
+    // so the version number does not need to change.
+    // Log unknown future versions but don't disconnect — be forward-compatible.
+    uint16_t our_major = 1;
     uint16_t their_major = hello.protocol_version;
     if (their_major != our_major) {
-        wlog("Peer ${ep} has different protocol version (${theirs} vs ${ours}), disabling exchange",
+        wlog("Peer ${ep} has unexpected protocol version ${theirs} (ours=${ours}) — continuing anyway",
              ("ep", state.endpoint)("theirs", their_major)("ours", our_major));
+    }
+
+    // Persist node_id — used for dedup and peer-exchange identity.
+    state.node_id = hello.node_id;
+
+    // ── Post-hello node_id dedup ────────────────────────────────────────────
+    // Now that we know the remote node's identity, check if we already have an
+    // active connection to the exact same node.  This correctly handles:
+    //   • A node reconnecting before the old connection was cleaned up
+    //   • Simultaneous inbound + outbound to the same node
+    // It does NOT fire for two different nodes sharing the same NAT IP, because
+    // each node generates a unique keypair (node_id).
+    static const node_id_t zero_id;
+    if (hello.node_id != zero_id) {
+        peer_id dup = find_active_peer_by_node_id(hello.node_id);
+        if (dup != INVALID_PEER_ID && dup != peer) {
+            auto dup_it = _peer_states.find(dup);
+            auto dup_ep = (dup_it != _peer_states.end()) ? dup_it->second.endpoint : fc::ip::endpoint();
+            dlog(DLT_LOG_DGRAY "Closing duplicate connection from ${ep} "
+                 "(same node_id already active as peer ${dup} at ${dep})" DLT_LOG_RESET,
+                 ("ep", state.endpoint)("dup", dup)("dep", dup_ep));
+            handle_disconnect(peer, "duplicate node_id");
+            return;
+        }
     }
 
     // Store peer's chain state
@@ -3351,7 +3467,11 @@ void dlt_p2p_node::periodic_peer_exchange() {
     if (_isolated_peers) return;
     if (_node_status != DLT_NODE_STATUS_FORWARD) return;
 
-    // Pick a random active peer to request exchange from
+    // Pick a random active peer to request exchange from.
+    // When only one exchange-enabled peer exists (common for nodes behind NAT
+    // or freshly started nodes), all requests go to that single peer and hit
+    // the 3/300s rate-limit quickly.  Back off to one request per 90s in that
+    // case so we never exceed the limit (3 requests / 300s = 1 per 100s max).
     std::vector<peer_id> candidates;
     for (auto& _peer_item : _peer_states) {
             auto& id = _peer_item.first;
@@ -3364,6 +3484,35 @@ void dlt_p2p_node::periodic_peer_exchange() {
     }
 
     if (candidates.empty()) return;
+
+    // Dynamic throttle: ensure no single peer is asked more than 3 times per 300s.
+    //
+    // With N exchange-enabled peers and a random pick each loop (5s interval):
+    //   requests per peer per 300s ≈ 300s / 5s / N = 60 / N
+    //   rate-limit threshold        = 3 requests / 300s
+    //   safe minimum loop interval  = 300s / (3 × N) = 100s / N
+    //
+    // Examples:
+    //   N=1  → min interval 100s  (was hardcoded 90s, now exact)
+    //   N=2  → min interval  50s
+    //   N=5  → min interval  20s
+    //   N=20 → min interval   5s  (≥ loop tick, no extra throttle needed)
+    //
+    // We track _last_peer_exchange globally; the random peer pick spreads
+    // load evenly across candidates so this global gate is sufficient.
+    {
+        size_t n = candidates.size();
+        int64_t min_interval_us = (n >= 20)
+            ? 0LL
+            : static_cast<int64_t>(100'000'000LL / static_cast<int64_t>(n)); // 100s / N in microseconds
+        if (min_interval_us > 0) {
+            auto now = fc::time_point::now();
+            if ((now - _last_peer_exchange_time).count() < min_interval_us) return;
+            _last_peer_exchange_time = now;
+        }
+    }
+
+
 
     thread_local std::mt19937 peer_rng(std::hash<std::thread::id>{}(std::this_thread::get_id()) ^ uint32_t(fc::time_point::now().sec_since_epoch()));
     size_t idx = peer_rng() % candidates.size();
@@ -3409,6 +3558,19 @@ void dlt_p2p_node::block_validation_timeout() {
 // ── Periodic task ────────────────────────────────────────────────────
 
 void dlt_p2p_node::periodic_task() {
+    if (!_dead_fibers.empty()) {
+    std::vector<fc::future<void>> to_clean;
+    to_clean.swap(_dead_fibers);
+    for (auto& f : to_clean) {
+        try {
+            // Nu apela ready() — poate crapa dacă promise e distrus
+            // cancel_and_wait are acum garda valid() după fix-ul din future.hpp
+            f.cancel_and_wait(__FUNCTION__);
+        } catch (...) {}
+        // Eliberează explicit promise-ul imediat după
+        f = fc::future<void>();
+    }
+}
     // Non-DB-access housekeeping always runs.
     try { periodic_reconnect_check(); }
         catch (const fc::exception& e) { wlog("periodic_reconnect_check: ${e}", ("e", e.to_detail_string())); }
@@ -3584,7 +3746,7 @@ void dlt_p2p_node::accept_loop() {
                 continue;
             }
 
-            peer_id existing = find_active_peer_by_ip(incoming_ip);
+           /* peer_id existing = find_active_peer_by_ip(incoming_ip);
             if (existing != INVALID_PEER_ID) {
                 auto ex_it = _peer_states.find(existing);
                 auto ex_ep = (ex_it != _peer_states.end()) ? ex_it->second.endpoint : fc::ip::endpoint();
@@ -3595,7 +3757,12 @@ void dlt_p2p_node::accept_loop() {
                 _connections.erase(pid);
                 sock->close();
                 continue;
-            }
+            }*/
+             // NOTE: We do NOT reject here based on IP address alone.
+            // Multiple nodes behind the same NAT share the same public IP but
+            // have different P2P ports and unique node_ids.  Deduplication of
+            // truly-duplicate connections (same node reconnecting) is done
+            // post-hello in on_dlt_hello() by comparing node_id values.
 
             // Isolated-peers: only accept inbound from configured seed IPs.
             if (_isolated_peers) {
@@ -3732,16 +3899,26 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
             const auto& detail = e.to_detail_string();
             bool is_transient =
                 detail.find("Connection reset by peer") != std::string::npos ||
+                detail.find("forcibly closed") != std::string::npos ||           // Windows WSA 10054
                 detail.find("Connection refused") != std::string::npos ||
+                detail.find("actively refused") != std::string::npos ||          // Windows WSA 10061
                 detail.find("Broken pipe") != std::string::npos ||
+                detail.find("connection was aborted") != std::string::npos ||    // Windows WSA 10053
                 detail.find("end of stream") != std::string::npos ||
+                detail.find("End of file") != std::string::npos ||
                 detail.find("Operation aborted") != std::string::npos ||
+                detail.find("operation aborted") != std::string::npos ||         // Windows WSA 10004
                 detail.find("Network is unreachable") != std::string::npos ||
+                detail.find("network is unreachable") != std::string::npos ||    // Windows WSA 10051
                 detail.find("No route to host") != std::string::npos ||
                 detail.find("Connection timed out") != std::string::npos ||
-                detail.find("Host is unreachable") != std::string::npos;
+                detail.find("timed out") != std::string::npos ||
+                detail.find("Host is unreachable") != std::string::npos ||
+                detail.find("host unreachable") != std::string::npos;            // Windows WSA 10065
             bool is_benign_close =
-                detail.find("Bad file descriptor") != std::string::npos;
+                detail.find("Bad file descriptor") != std::string::npos ||
+                detail.find("bad file descriptor") != std::string::npos ||
+                detail.find("invalid argument") != std::string::npos;            // Windows: closed socket reuse
 
             if (is_benign_close) {
                 dlog(DLT_LOG_DGRAY "Peer ${ep} read canceled (socket already closed)" DLT_LOG_RESET,
