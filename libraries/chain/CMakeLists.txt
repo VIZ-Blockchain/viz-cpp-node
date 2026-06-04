@@ -1,12 +1,43 @@
-if(MSVC)
-    set(hardfork_hpp_file "${CMAKE_CURRENT_SOURCE_DIR}/include/graphene/chain/hardfork.hpp")
-    add_custom_target(build_hardfork_hpp COMMAND cat-parts "${CMAKE_CURRENT_SOURCE_DIR}/hardfork.d" ${hardfork_hpp_file})
-    add_dependencies(build_hardfork_hpp cat-parts)
-else(MSVC)
-    set(hardfork_hpp_file "${CMAKE_CURRENT_BINARY_DIR}/include/graphene/chain/hardfork.hpp")
-    add_custom_target(build_hardfork_hpp
-            COMMAND "${CMAKE_SOURCE_DIR}/programs/build_helpers/cat_parts.py" "${CMAKE_CURRENT_SOURCE_DIR}/hardfork.d" ${hardfork_hpp_file})
-endif(MSVC)
+set(GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include/graphene/chain")
+set(hardfork_hpp_out "${GENERATED_INCLUDE_DIR}/hardfork.hpp")
+file(MAKE_DIRECTORY "${GENERATED_INCLUDE_DIR}")
+
+if(MSVC OR MINGW)
+set(hardfork_d_dir "${CMAKE_CURRENT_SOURCE_DIR}/hardfork.d")
+    add_custom_command(
+  OUTPUT "${hardfork_hpp_out}"
+  COMMAND ${CMAKE_COMMAND} -E echo "Generating ${hardfork_hpp_out} via cat-parts"
+  COMMAND $<TARGET_FILE:cat-parts> "${hardfork_d_dir}" "${hardfork_hpp_out}"
+  DEPENDS "${hardfork_d_dir}" cat-parts
+  BYPRODUCTS "${hardfork_hpp_out}"
+  COMMENT "Generating ${hardfork_hpp_out} via cat-parts"
+  VERBATIM
+
+    )
+else()
+    find_package(Python COMPONENTS Interpreter REQUIRED)
+    add_custom_command(
+      OUTPUT "${hardfork_hpp_out}"
+      COMMAND ${Python_EXECUTABLE} "${CMAKE_SOURCE_DIR}/programs/build_helpers/cat_parts.py"
+              "${CMAKE_CURRENT_SOURCE_DIR}/hardfork.d" "${hardfork_hpp_out}"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/hardfork.d" "${CMAKE_SOURCE_DIR}/programs/build_helpers/cat_parts.py"
+      BYPRODUCTS "${hardfork_hpp_out}"
+      COMMENT "Generating ${hardfork_hpp_out} via Python"
+      VERBATIM
+    )
+endif()
+
+# Target comun care depinde de fișierul generat
+add_custom_target(build_hardfork_hpp DEPENDS "${hardfork_hpp_out}")
+
+# Marchează fișierul ca generat
+set_source_files_properties("${hardfork_hpp_out}" PROPERTIES GENERATED TRUE)
+
+# Include dir-ul binar
+include_directories("${CMAKE_CURRENT_BINARY_DIR}/include")
+
+# Variabila folosită mai jos în add_library
+set(hardfork_hpp_file "${hardfork_hpp_out}")
 
 
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/include/graphene/chain/hardfork.hpp" PROPERTIES GENERATED TRUE)
