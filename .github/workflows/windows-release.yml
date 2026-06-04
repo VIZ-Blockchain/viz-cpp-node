@@ -42,7 +42,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.BOOST_ROOT }}
-          key: boost-src-${{ env.BOOST_VERSION }}-msvc14.3-x64-v4
+          key: boost-src-${{ env.BOOST_VERSION }}-msvc14.3-x64-v5
 
       - name: Build Boost from source
         if: steps.cache-boost.outputs.cache-hit != 'true'
@@ -73,7 +73,7 @@ jobs:
             --with-thread --with-date_time --with-system --with-filesystem `
             --with-program_options --with-serialization --with-chrono `
             --with-test --with-context --with-locale --with-coroutine `
-            --with-iostreams `
+            --with-iostreams --with-regex `
             toolset=msvc-14.3 `
             variant=release `
             link=static `
