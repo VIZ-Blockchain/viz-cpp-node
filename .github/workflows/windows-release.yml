@@ -50,7 +50,7 @@ jobs:
         shell: pwsh
         run: |
           $version = $env:BOOST_VERSION
-          $tarball = "boost-$version.tar.gz"
+          $tarball = "boost-$version-b2-nodocs.tar.gz"
           $url = "https://github.com/boostorg/boost/releases/download/boost-$version/$tarball"
           $srcDir = "${{ runner.temp }}\boost-src"
           $installDir = $env:BOOST_ROOT
