@@ -31,6 +31,7 @@
 #include <fc/thread/future.hpp>
 
 #include <boost/filesystem.hpp>
+#include <boost/asio.hpp>
 #include <fstream>
 #include <cstdio>
 #include <set>
@@ -39,6 +40,8 @@
 #include <atomic>
 #include <tuple>
 #include <functional>
+#include <thread>
+#include <chrono>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -2523,6 +2526,173 @@ std::tuple<bool, uint32_t, std::vector<char>> read_message_with_timeout(
     return {true, msg_type, std::move(payload)};
 }
 
+// ============================================================================
+// Native (non-fiber) TCP client for snapshot download
+//
+// download_snapshot_from_peers() runs on a dedicated std::thread — a real OS
+// thread with a guard-page-backed stack — rather than on an fc fiber. fc's
+// fibers (boost.context) use plain heap stacks without a guard page; under MSVC
+// the prologue stack-probe and table-based SEH unwinding of large, exception-
+// heavy frames fault on such stacks, which made the fiber-based download abort
+// before it even entered the function. A real OS stack avoids that entirely.
+//
+// fc::tcp_socket requires the fc fiber scheduler, so the download path uses this
+// thin synchronous boost::asio wrapper instead. It mirrors the small slice of
+// the fc::tcp_socket interface the wire-protocol helpers rely on, with per-call
+// timeouts driven by io_context::run_for().
+// ============================================================================
+class asio_tcp_socket {
+public:
+    asio_tcp_socket() : sock_(io_) {}
+
+    /// Resolve "host:port" and connect with an overall timeout.
+    /// Returns true on success, false on timeout or error.
+    bool connect_to_endpoint(const std::string& host_port, const fc::microseconds& timeout) {
+        auto colon = host_port.rfind(':');
+        if (colon == std::string::npos) return false;
+        const std::string host = host_port.substr(0, colon);
+        const std::string port = host_port.substr(colon + 1);
+
+        boost::system::error_code ec;
+        boost::asio::ip::tcp::resolver resolver(io_);
+        auto results = resolver.resolve(host, port, ec);
+        if (ec) return false;
+
+        boost::system::error_code connect_ec = boost::asio::error::would_block;
+        boost::asio::async_connect(sock_, results,
+            [&connect_ec](const boost::system::error_code& e,
+                          const boost::asio::ip::tcp::endpoint&) { connect_ec = e; });
+        pump(timeout);
+        if (connect_ec == boost::asio::error::would_block) { cancel_close(); return false; }
+        if (connect_ec) { cancel_close(); return false; }
+        return true;
+    }
+
+    /// Read up to `len` bytes. Returns bytes read; 0 on timeout, error, or a
+    /// closed connection (callers treat all three as failure, matching the
+    /// fc::tcp_socket helpers).
+    size_t readsome(char* buf, size_t len, const fc::microseconds& timeout) {
+        boost::system::error_code read_ec = boost::asio::error::would_block;
+        size_t got = 0;
+        sock_.async_read_some(boost::asio::buffer(buf, len),
+            [&read_ec, &got](const boost::system::error_code& e, size_t n) { read_ec = e; got = n; });
+        pump(timeout);
+        if (read_ec == boost::asio::error::would_block) { cancel_close(); return 0; }
+        if (read_ec) return 0;
+        return got;
+    }
+
+    /// Write up to `len` bytes. Returns bytes written; 0 on timeout or error.
+    size_t writesome(const char* buf, size_t len, const fc::microseconds& timeout) {
+        boost::system::error_code write_ec = boost::asio::error::would_block;
+        size_t put = 0;
+        sock_.async_write_some(boost::asio::buffer(buf, len),
+            [&write_ec, &put](const boost::system::error_code& e, size_t n) { write_ec = e; put = n; });
+        pump(timeout);
+        if (write_ec == boost::asio::error::would_block) { cancel_close(); return 0; }
+        if (write_ec) return 0;
+        return put;
+    }
+
+    void flush() {}  // async_write_some already pushed the bytes to the socket
+
+    void close() {
+        boost::system::error_code ec;
+        sock_.close(ec);
+    }
+
+    bool is_open() const { return sock_.is_open(); }
+
+private:
+    /// Run the io_context until the single outstanding async op completes or the
+    /// timeout elapses. The caller's error_code sentinel (initialized to
+    /// would_block) tells the two apart.
+    void pump(const fc::microseconds& timeout) {
+        io_.restart();
+        io_.run_for(std::chrono::microseconds(timeout.count()));
+    }
+    void cancel_close() {
+        boost::system::error_code ec;
+        sock_.cancel(ec);
+        sock_.close(ec);
+        // Flush the just-cancelled handler now, while the caller's completion
+        // refs are still in scope. Otherwise it would linger in the io_context
+        // and fire during a later pump(), writing to dangling stack references.
+        io_.restart();
+        io_.run();
+    }
+
+    boost::asio::io_context io_;
+    boost::asio::ip::tcp::socket sock_;
+};
+
+/// Read exactly `len` bytes with an overall timeout. See fc::tcp_socket overload.
+bool read_exact_with_timeout(asio_tcp_socket& sock, char* buf, size_t len, const fc::microseconds& timeout) {
+    size_t total = 0;
+    auto deadline = fc::time_point::now() + timeout;
+    while (total < len) {
+        auto remaining = deadline - fc::time_point::now();
+        if (remaining <= fc::microseconds(0)) return false;
+        size_t n = sock.readsome(buf + total, len - total, remaining);
+        if (n == 0) return false;  // timeout or connection closed
+        total += n;
+    }
+    return true;
+}
+
+void write_exact(asio_tcp_socket& sock, const char* buf, size_t len) {
+    size_t total = 0;
+    while (total < len) {
+        size_t n = sock.writesome(buf + total, len - total, SNAPSHOT_PEER_TIMEOUT);
+        FC_ASSERT(n > 0, "Connection closed while writing");
+        total += n;
+    }
+}
+
+void send_message(asio_tcp_socket& sock, uint32_t msg_type, const std::vector<char>& payload) {
+    uint32_t payload_size = static_cast<uint32_t>(payload.size());
+    write_exact(sock, reinterpret_cast<const char*>(&payload_size), 4);
+    write_exact(sock, reinterpret_cast<const char*>(&msg_type), 4);
+    if (!payload.empty()) {
+        write_exact(sock, payload.data(), payload.size());
+    }
+    sock.flush();
+}
+
+void send_message_empty(asio_tcp_socket& sock, uint32_t msg_type) {
+    std::vector<char> empty;
+    send_message(sock, msg_type, empty);
+}
+
+std::tuple<bool, uint32_t, std::vector<char>> read_message_with_timeout(
+    asio_tcp_socket& sock,
+    uint32_t max_payload_size,
+    const fc::microseconds& timeout) {
+
+    uint32_t payload_size = 0;
+    uint32_t msg_type = 0;
+
+    if (!read_exact_with_timeout(sock, reinterpret_cast<char*>(&payload_size), 4, timeout)) {
+        return {false, 0, std::vector<char>()};
+    }
+    if (!read_exact_with_timeout(sock, reinterpret_cast<char*>(&msg_type), 4, timeout)) {
+        return {false, 0, std::vector<char>()};
+    }
+
+    if (payload_size > max_payload_size) {
+        FC_THROW("Message too large: ${s} bytes (limit ${l})",
+            ("s", payload_size)("l", max_payload_size));
+    }
+
+    std::vector<char> payload(payload_size);
+    if (payload_size > 0) {
+        if (!read_exact_with_timeout(sock, payload.data(), payload_size, timeout)) {
+            return {false, 0, std::vector<char>()};
+        }
+    }
+    return {true, msg_type, std::move(payload)};
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -3111,8 +3281,6 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
 // ============================================================================
 
 std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
-    fprintf(stderr, "   [snap-dl] entered, peers=%u\n", (unsigned)trusted_snapshot_peers.size());
-    fflush(stderr);
     FC_ASSERT(!trusted_snapshot_peers.empty(), "No trusted snapshot peers configured");
 
     std::cerr << "   Querying " << trusted_snapshot_peers.size() << " trusted peer(s) for snapshot info...\n";
@@ -3128,24 +3296,12 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 
     for (const auto& peer_str : trusted_snapshot_peers) {
         try {
-            fprintf(stderr, "   [snap-dl] connecting to peer %s\n", peer_str.c_str());
-            fflush(stderr);
             std::cerr << "   Connecting to peer " << peer_str << "...\n";
             ilog(CLOG_YELLOW "Querying snapshot info from peer ${p}..." CLOG_RESET, ("p", peer_str));
-            fc::tcp_socket sock;
-            auto ep = fc::ip::endpoint::from_string(peer_str);
-            fprintf(stderr, "   [snap-dl] endpoint resolved, calling fc::async\n");
-            fflush(stderr);
+            asio_tcp_socket sock;
 
             // Connect with timeout
-            auto connect_future = fc::async([&sock, &ep]() {
-                sock.connect_to(ep);
-            });
-            fprintf(stderr, "   [snap-dl] fc::async posted, waiting...\n");
-            fflush(stderr);
-            try {
-                connect_future.wait(SNAPSHOT_PEER_TIMEOUT);
-            } catch (const fc::timeout_exception&) {
+            if (!sock.connect_to_endpoint(peer_str, SNAPSHOT_PEER_TIMEOUT)) {
                 std::cerr << "   Peer " << peer_str << ": connection timeout\n";
                 wlog("Connection timeout to peer ${p}", ("p", peer_str));
                 sock.close();
@@ -3253,35 +3409,27 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
                   << ", " << (best->compressed_size / 1048576) << " MB)\n";
 
         // Brief delay to allow server-side cleanup of Phase 1 session.
-        fc::usleep(fc::seconds(2));
+        std::this_thread::sleep_for(std::chrono::seconds(2));
 
         std::cerr << "   Downloading snapshot...\n";
 
         try {
-            fc::tcp_socket sock;
-            auto ep = fc::ip::endpoint::from_string(best->endpoint_str);
+            asio_tcp_socket sock;
 
             // Connect with retry — the server may briefly reject if Phase 1 session
             // cleanup hasn't completed yet (anti-spam duplicate session check).
             const int max_connect_retries = 3;
             for (int retry = 0; retry < max_connect_retries; ++retry) {
-                bool connected = false;
-                try {
-                    auto connect_future = fc::async([&sock, &ep]() {
-                        sock.connect_to(ep);
-                    });
-                    connect_future.wait(SNAPSHOT_PEER_TIMEOUT);
-                    connected = true;
-                } catch (...) {
-                    if (retry + 1 >= max_connect_retries) throw;
+                if (sock.connect_to_endpoint(best->endpoint_str, SNAPSHOT_PEER_TIMEOUT)) break;
+                if (retry + 1 >= max_connect_retries) {
+                    FC_THROW("Failed to connect to peer ${p} after ${m} attempts",
+                        ("p", best->endpoint_str)("m", max_connect_retries));
                 }
-                if (connected) break;
                 wlog("Phase 2 connect to ${p} failed (attempt ${a}/${m}), retrying...",
                      ("p", best->endpoint_str)("a", retry + 1)("m", max_connect_retries));
                 std::cerr << "   Connect retry " << (retry + 1) << "/" << max_connect_retries << "...\n";
-                try { sock.close(); } catch (...) {}
-                sock.open();
-                fc::usleep(fc::seconds(2));
+                sock.close();
+                std::this_thread::sleep_for(std::chrono::seconds(2));
             }
 
             // Request info again to establish session
@@ -3880,90 +4028,90 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
         ilog("P2P snapshot sync enabled: will download from trusted peers on empty state");
         auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
         chain_plug.snapshot_p2p_sync_callback = [this, &chain_plug]() {
-            // CRITICAL: download_snapshot_from_peers() uses fc::async() for TCP
-            // connections and fc::usleep() for retry waits. These require the fc
-            // fiber scheduler to be actively running on the current thread.
-            // This callback runs on the MAIN thread during chain plugin_startup(),
-            // where the fc fiber scheduler is never pumped (the main thread runs
-            // the appbase io_service, not the fc scheduler). fc::async() fibers
-            // posted here would be queued but never execute.
-            //
-            // Fix: run the entire download+retry logic on a dedicated fc::thread
-            // (same pattern as server_thread, snapshot_thread, stalled_sync_thread).
-            auto download_thread = std::make_unique<fc::thread>("snapshot_download");
+            // download_snapshot_from_peers() and the load/retry loop run on a
+            // dedicated native std::thread — a real OS thread with a guard-page-
+            // backed stack — NOT on an fc fiber. The network client uses
+            // synchronous boost::asio (see asio_tcp_socket) rather than
+            // fc::tcp_socket/fc::async, so it needs no fc fiber scheduler. This
+            // avoids the MSVC stack-probe / table-based-SEH unwinding faults that
+            // abort large, exception-heavy frames when they run on fc's guard-
+            // page-less boost.context fiber stacks. The callback runs on the MAIN
+            // thread during chain plugin_startup() and blocks on join() until the
+            // download+load completes, matching the previous blocking behavior.
             const uint32_t retry_interval_sec = my->stalled_sync_timeout_minutes * 60;
             const uint32_t max_attempts = 3;
 
             try {
-                std::function<void()> download_fn = [this, &chain_plug, max_attempts, retry_interval_sec]() {
-                    fprintf(stderr, "   [snap-dl] LAMBDA ENTERED\n"); fflush(stderr);
-                    uint32_t attempt = 0;
-                    while (attempt < max_attempts) {
-                        ++attempt;
-                        auto start = fc::time_point::now();
-                        std::cerr << "   === P2P Snapshot Sync (attempt " << attempt << ") ===" << std::endl;
-                        ilog("Requesting snapshot from trusted peers (attempt ${a})...", ("a", attempt));
+                std::thread download_thread([this, &chain_plug, max_attempts, retry_interval_sec]() {
+                    try {
+                        uint32_t attempt = 0;
+                        while (attempt < max_attempts) {
+                            ++attempt;
+                            auto start = fc::time_point::now();
+                            std::cerr << "   === P2P Snapshot Sync (attempt " << attempt << ") ===" << std::endl;
+                            ilog("Requesting snapshot from trusted peers (attempt ${a})...", ("a", attempt));
 
-                        std::string snapshot_path;
-                        try {
-                            fprintf(stderr, "   [snap-dl] about to call download_snapshot_from_peers()\n"); fflush(stderr);
-                            snapshot_path = my->download_snapshot_from_peers();
-                            fprintf(stderr, "   [snap-dl] download_snapshot_from_peers() returned, path=%s\n", snapshot_path.c_str()); fflush(stderr);
-                        } catch (const fc::exception& e) {
-                            fprintf(stderr, "   [snap-dl] fc::exception: %s\n", e.to_string().c_str()); fflush(stderr);
-                            elog("Snapshot download failed: ${e}", ("e", e.to_detail_string()));
-                        } catch (const std::exception& e) {
-                            fprintf(stderr, "   [snap-dl] std::exception: %s\n", e.what()); fflush(stderr);
-                            elog("Snapshot download failed: ${e}", ("e", e.what()));
-                        } catch (...) {
-                            fprintf(stderr, "   [snap-dl] UNKNOWN exception\n"); fflush(stderr);
-                            elog("Snapshot download failed: unknown exception");
-                        }
-
-                        if (!snapshot_path.empty()) {
-                            std::cerr << "   Clearing state and importing snapshot...\n";
-                            ilog("Download complete, loading snapshot...");
+                            std::string snapshot_path;
                             try {
-                                my->load_snapshot(fc::path(snapshot_path));
-                                my->db.set_dlt_mode(true);  // Mark DLT mode — block_log stays empty
-                                my->db.initialize_hardforks();
+                                snapshot_path = my->download_snapshot_from_peers();
+                            } catch (const fc::exception& e) {
+                                elog("Snapshot download failed: ${e}", ("e", e.to_detail_string()));
+                            } catch (const std::exception& e) {
+                                elog("Snapshot download failed: ${e}", ("e", e.what()));
                             } catch (...) {
-                                elog("P2P snapshot import failed — wiping corrupted shared memory before restart");
-                                try {
-                                    chain_plug.wipe_state();
-                                } catch (const std::exception& wipe_err) {
-                                    elog("Failed to wipe shared memory: ${e}", ("e", wipe_err.what()));
-                                }
-                                throw;
+                                elog("Snapshot download failed: unknown exception");
                             }
-                            auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
-                            std::cerr << "   === P2P Snapshot Sync complete (block "
-                                      << my->db.head_block_num() << ", " << elapsed << " sec) ===\n";
-                            ilog("P2P snapshot sync complete at block ${n}, elapsed ${t} sec",
-                                ("n", my->db.head_block_num())("t", elapsed));
-                            return;
+
+                            if (!snapshot_path.empty()) {
+                                std::cerr << "   Clearing state and importing snapshot...\n";
+                                ilog("Download complete, loading snapshot...");
+                                try {
+                                    my->load_snapshot(fc::path(snapshot_path));
+                                    my->db.set_dlt_mode(true);  // Mark DLT mode — block_log stays empty
+                                    my->db.initialize_hardforks();
+                                } catch (...) {
+                                    elog("P2P snapshot import failed — wiping corrupted shared memory before restart");
+                                    try {
+                                        chain_plug.wipe_state();
+                                    } catch (const std::exception& wipe_err) {
+                                        elog("Failed to wipe shared memory: ${e}", ("e", wipe_err.what()));
+                                    }
+                                    throw;
+                                }
+                                auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
+                                std::cerr << "   === P2P Snapshot Sync complete (block "
+                                          << my->db.head_block_num() << ", " << elapsed << " sec) ===\n";
+                                ilog("P2P snapshot sync complete at block ${n}, elapsed ${t} sec",
+                                    ("n", my->db.head_block_num())("t", elapsed));
+                                return;
+                            }
+
+                            // No snapshot available — wait and retry
+                            if (attempt < max_attempts) {
+                                std::cerr << "   No snapshot available from trusted peers.\n"
+                                          << "   Will retry in " << retry_interval_sec << " seconds...\n";
+                                wlog("No snapshot available from trusted peers. Retrying in ${s} sec (attempt ${a})",
+                                     ("s", retry_interval_sec)("a", attempt));
+                                std::this_thread::sleep_for(std::chrono::seconds(retry_interval_sec));
+                            }
                         }
 
-                        // No snapshot available — wait and retry
-                        if (attempt < max_attempts) {
-                            std::cerr << "   No snapshot available from trusted peers.\n"
-                                      << "   Will retry in " << retry_interval_sec << " seconds...\n";
-                            wlog("No snapshot available from trusted peers. Retrying in ${s} sec (attempt ${a})",
-                                 ("s", retry_interval_sec)("a", attempt));
-                            fc::usleep(fc::seconds(retry_interval_sec));
-                        }
+                        // All attempts exhausted — fall back to normal P2P genesis sync
+                        std::cerr << "   P2P snapshot sync failed after " << max_attempts
+                                  << " attempts. Falling back to P2P genesis sync.\n";
+                        wlog("P2P snapshot sync exhausted after ${n} attempts. "
+                             "Node will sync from genesis via P2P.", ("n", max_attempts));
+                    } catch (...) {
+                        // Never let an exception escape the thread function — that
+                        // would call std::terminate. After wipe_state() the node
+                        // continues with empty state and falls back to P2P genesis
+                        // sync, so logging here preserves the previous behavior.
+                        elog("P2P snapshot download thread failed");
                     }
-
-                    // All attempts exhausted — fall back to normal P2P genesis sync
-                    std::cerr << "   P2P snapshot sync failed after " << max_attempts
-                              << " attempts. Falling back to P2P genesis sync.\n";
-                    wlog("P2P snapshot sync exhausted after ${n} attempts. "
-                         "Node will sync from genesis via P2P.", ("n", max_attempts));
-                };
-                auto download_future = download_thread->async(download_fn, "snapshot_download");
-                download_future.wait();
+                });
+                download_thread.join();
             } catch (...) {
-                elog("P2P snapshot download thread failed");
+                elog("P2P snapshot download thread failed to start");
             }
         };
     } else if (!my->trusted_snapshot_peers.empty()) {
