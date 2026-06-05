@@ -24,6 +24,12 @@ endif()
 
 add_library(graphene::${CURRENT_TARGET} ALIAS graphene_${CURRENT_TARGET})
 
+# Including <boost/asio.hpp> for the native snapshot download client pushes this
+# translation unit past the MSVC COFF section limit (error C1128). /bigobj lifts it.
+if(MSVC)
+    target_compile_options(graphene_${CURRENT_TARGET} PRIVATE /bigobj)
+endif()
+
 target_link_libraries (
     graphene_${CURRENT_TARGET}
     graphene_chain
