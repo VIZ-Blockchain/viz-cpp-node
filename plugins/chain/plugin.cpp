@@ -714,30 +714,31 @@ namespace chain {
         if (my->db.head_block_num() == 0 && snapshot_p2p_sync_callback) {
             std::cerr << "   Node has no state (0 blocks). Requesting snapshot from trusted peers...\n";
             ilog("Node has no state. Triggering P2P snapshot sync from trusted peers...");
+            bool sync_failed = false;
             try {
                 snapshot_p2p_sync_callback();
             } catch (const fc::exception& e) {
-                elog("FATAL: P2P snapshot sync failed: ${e}", ("e", e.to_detail_string()));
-                std::cerr << "   FATAL: P2P snapshot sync failed: " << e.what() << "\n";
-                my->wipe_db(data_dir, false);
-                appbase::app().quit();
-                return;
+                elog("P2P snapshot sync failed: ${e}", ("e", e.to_detail_string()));
+                std::cerr << "   P2P snapshot sync failed: " << e.what() << "\n";
+                sync_failed = true;
             } catch (const std::exception& e) {
-                elog("FATAL: P2P snapshot sync failed: ${e}", ("e", e.what()));
-                std::cerr << "   FATAL: P2P snapshot sync failed: " << e.what() << "\n";
-                my->wipe_db(data_dir, false);
-                appbase::app().quit();
-                return;
+                elog("P2P snapshot sync failed: ${e}", ("e", e.what()));
+                std::cerr << "   P2P snapshot sync failed: " << e.what() << "\n";
+                sync_failed = true;
             } catch (...) {
-                elog("FATAL: P2P snapshot sync failed: unknown exception");
-                std::cerr << "   FATAL: P2P snapshot sync failed: unknown exception\n";
-                my->wipe_db(data_dir, false);
-                appbase::app().quit();
-                return;
+                elog("P2P snapshot sync failed: unknown exception");
+                std::cerr << "   P2P snapshot sync failed: unknown exception\n";
+                sync_failed = true;
             }
-            std::cerr << "   P2P snapshot sync complete. Started on blockchain with "
-                      << my->db.head_block_num() << " blocks\n";
-            ilog("Started on blockchain with ${n} blocks (from P2P snapshot sync)", ("n", my->db.head_block_num()));
+            if (sync_failed || my->db.head_block_num() == 0) {
+                wlog("P2P snapshot sync did not produce state. Will sync from genesis via P2P.");
+                std::cerr << "   WARNING: P2P snapshot sync did not load state.\n";
+                std::cerr << "   Falling back to P2P genesis sync (this will be very slow for mature chains).\n";
+            } else {
+                std::cerr << "   P2P snapshot sync complete. Started on blockchain with "
+                          << my->db.head_block_num() << " blocks\n";
+                ilog("Started on blockchain with ${n} blocks (from P2P snapshot sync)", ("n", my->db.head_block_num()));
+            }
         } else if (my->db.head_block_num() == 0 && !snapshot_p2p_sync_callback) {
             wlog("Node has no state (0 blocks) and no P2P snapshot sync configured.");
             wlog("Will sync from genesis via P2P (this will be very slow for mature chains).");

@@ -3869,9 +3869,10 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
         auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
         chain_plug.snapshot_p2p_sync_callback = [this, &chain_plug]() {
             const uint32_t retry_interval_sec = my->stalled_sync_timeout_minutes * 60;
+            const uint32_t max_attempts = 3;
             uint32_t attempt = 0;
 
-            while (true) {
+            while (attempt < max_attempts) {
                 ++attempt;
                 auto start = fc::time_point::now();
                 std::cerr << "   === P2P Snapshot Sync (attempt " << attempt << ") ===\n";
@@ -3884,6 +3885,8 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
                     elog("Snapshot download failed: ${e}", ("e", e.to_detail_string()));
                 } catch (const std::exception& e) {
                     elog("Snapshot download failed: ${e}", ("e", e.what()));
+                } catch (...) {
+                    elog("Snapshot download failed: unknown exception (possibly network/TCP error)");
                 }
 
                 if (!snapshot_path.empty()) {
@@ -3917,6 +3920,12 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
                      ("s", retry_interval_sec)("a", attempt));
                 fc::usleep(fc::seconds(retry_interval_sec));
             }
+
+            // All attempts exhausted — fall back to normal P2P genesis sync
+            std::cerr << "   P2P snapshot sync failed after " << max_attempts
+                      << " attempts. Falling back to P2P genesis sync.\n";
+            wlog("P2P snapshot sync exhausted after ${n} attempts. "
+                 "Node will sync from genesis via P2P.", ("n", max_attempts));
         };
     } else if (!my->trusted_snapshot_peers.empty()) {
         ilog("P2P snapshot sync disabled (sync-snapshot-from-trusted-peer = false)");
