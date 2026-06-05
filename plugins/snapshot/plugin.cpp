@@ -3896,6 +3896,7 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
 
             try {
                 std::function<void()> download_fn = [this, &chain_plug, max_attempts, retry_interval_sec]() {
+                    fprintf(stderr, "   [snap-dl] LAMBDA ENTERED\n"); fflush(stderr);
                     uint32_t attempt = 0;
                     while (attempt < max_attempts) {
                         ++attempt;
@@ -3905,18 +3906,17 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
 
                         std::string snapshot_path;
                         try {
+                            fprintf(stderr, "   [snap-dl] about to call download_snapshot_from_peers()\n"); fflush(stderr);
                             snapshot_path = my->download_snapshot_from_peers();
+                            fprintf(stderr, "   [snap-dl] download_snapshot_from_peers() returned, path=%s\n", snapshot_path.c_str()); fflush(stderr);
                         } catch (const fc::exception& e) {
-                            fprintf(stderr, "   [snap-dl] fc::exception: %s\n", e.to_string().c_str());
-                            fflush(stderr);
+                            fprintf(stderr, "   [snap-dl] fc::exception: %s\n", e.to_string().c_str()); fflush(stderr);
                             elog("Snapshot download failed: ${e}", ("e", e.to_detail_string()));
                         } catch (const std::exception& e) {
-                            fprintf(stderr, "   [snap-dl] std::exception: %s\n", e.what());
-                            fflush(stderr);
+                            fprintf(stderr, "   [snap-dl] std::exception: %s\n", e.what()); fflush(stderr);
                             elog("Snapshot download failed: ${e}", ("e", e.what()));
                         } catch (...) {
-                            fprintf(stderr, "   [snap-dl] UNKNOWN exception\n");
-                            fflush(stderr);
+                            fprintf(stderr, "   [snap-dl] UNKNOWN exception\n"); fflush(stderr);
                             elog("Snapshot download failed: unknown exception");
                         }
 
