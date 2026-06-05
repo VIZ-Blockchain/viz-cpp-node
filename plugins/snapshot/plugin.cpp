@@ -3204,11 +3204,14 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 
             sock.close();
         } catch (const fc::exception& e) {
-            std::cerr << "   Peer " << peer_str << ": connection failed\n";
+            std::cerr << "   Peer " << peer_str << ": connection failed (" << e.to_string() << ")\n";
             wlog("Failed to query peer ${p}: ${e}", ("p", peer_str)("e", e.to_detail_string()));
         } catch (const std::exception& e) {
-            std::cerr << "   Peer " << peer_str << ": connection failed\n";
+            std::cerr << "   Peer " << peer_str << ": connection failed (" << e.what() << ")\n";
             wlog("Failed to query peer ${p}: ${e}", ("p", peer_str)("e", e.what()));
+        } catch (...) {
+            std::cerr << "   Peer " << peer_str << ": connection failed (unknown exception)\n";
+            wlog("Failed to query peer ${p}: unknown exception", ("p", peer_str));
         }
     }
 
@@ -3868,64 +3871,85 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
         ilog("P2P snapshot sync enabled: will download from trusted peers on empty state");
         auto& chain_plug = appbase::app().get_plugin<chain::plugin>();
         chain_plug.snapshot_p2p_sync_callback = [this, &chain_plug]() {
+            // CRITICAL: download_snapshot_from_peers() uses fc::async() for TCP
+            // connections and fc::usleep() for retry waits. These require the fc
+            // fiber scheduler to be actively running on the current thread.
+            // This callback runs on the MAIN thread during chain plugin_startup(),
+            // where the fc fiber scheduler is never pumped (the main thread runs
+            // the appbase io_service, not the fc scheduler). fc::async() fibers
+            // posted here would be queued but never execute.
+            //
+            // Fix: run the entire download+retry logic on a dedicated fc::thread
+            // (same pattern as server_thread, snapshot_thread, stalled_sync_thread).
+            auto download_thread = std::make_unique<fc::thread>("snapshot_download");
             const uint32_t retry_interval_sec = my->stalled_sync_timeout_minutes * 60;
             const uint32_t max_attempts = 3;
-            uint32_t attempt = 0;
 
-            while (attempt < max_attempts) {
-                ++attempt;
-                auto start = fc::time_point::now();
-                std::cerr << "   === P2P Snapshot Sync (attempt " << attempt << ") ===\n";
-                ilog("Requesting snapshot from trusted peers (attempt ${a})...", ("a", attempt));
+            try {
+                std::function<void()> download_fn = [this, &chain_plug, max_attempts, retry_interval_sec]() {
+                    uint32_t attempt = 0;
+                    while (attempt < max_attempts) {
+                        ++attempt;
+                        auto start = fc::time_point::now();
+                        std::cerr << "   === P2P Snapshot Sync (attempt " << attempt << ") ===" << std::endl;
+                        ilog("Requesting snapshot from trusted peers (attempt ${a})...", ("a", attempt));
 
-                std::string snapshot_path;
-                try {
-                    snapshot_path = my->download_snapshot_from_peers();
-                } catch (const fc::exception& e) {
-                    elog("Snapshot download failed: ${e}", ("e", e.to_detail_string()));
-                } catch (const std::exception& e) {
-                    elog("Snapshot download failed: ${e}", ("e", e.what()));
-                } catch (...) {
-                    elog("Snapshot download failed: unknown exception (possibly network/TCP error)");
-                }
-
-                if (!snapshot_path.empty()) {
-                    std::cerr << "   Clearing state and importing snapshot...\n";
-                    ilog("Download complete, loading snapshot...");
-                    try {
-                        my->load_snapshot(fc::path(snapshot_path));
-                        my->db.set_dlt_mode(true);  // Mark DLT mode — block_log stays empty
-                        my->db.initialize_hardforks();
-                    } catch (...) {
-                        elog("P2P snapshot import failed — wiping corrupted shared memory before restart");
+                        std::string snapshot_path;
                         try {
-                            chain_plug.wipe_state();
-                        } catch (const std::exception& wipe_err) {
-                            elog("Failed to wipe shared memory: ${e}", ("e", wipe_err.what()));
+                            snapshot_path = my->download_snapshot_from_peers();
+                        } catch (const fc::exception& e) {
+                            elog("Snapshot download failed: ${e}", ("e", e.to_detail_string()));
+                        } catch (const std::exception& e) {
+                            elog("Snapshot download failed: ${e}", ("e", e.what()));
+                        } catch (...) {
+                            elog("Snapshot download failed: unknown exception");
                         }
-                        throw;
+
+                        if (!snapshot_path.empty()) {
+                            std::cerr << "   Clearing state and importing snapshot...\n";
+                            ilog("Download complete, loading snapshot...");
+                            try {
+                                my->load_snapshot(fc::path(snapshot_path));
+                                my->db.set_dlt_mode(true);  // Mark DLT mode — block_log stays empty
+                                my->db.initialize_hardforks();
+                            } catch (...) {
+                                elog("P2P snapshot import failed — wiping corrupted shared memory before restart");
+                                try {
+                                    chain_plug.wipe_state();
+                                } catch (const std::exception& wipe_err) {
+                                    elog("Failed to wipe shared memory: ${e}", ("e", wipe_err.what()));
+                                }
+                                throw;
+                            }
+                            auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
+                            std::cerr << "   === P2P Snapshot Sync complete (block "
+                                      << my->db.head_block_num() << ", " << elapsed << " sec) ===\n";
+                            ilog("P2P snapshot sync complete at block ${n}, elapsed ${t} sec",
+                                ("n", my->db.head_block_num())("t", elapsed));
+                            return;
+                        }
+
+                        // No snapshot available — wait and retry
+                        if (attempt < max_attempts) {
+                            std::cerr << "   No snapshot available from trusted peers.\n"
+                                      << "   Will retry in " << retry_interval_sec << " seconds...\n";
+                            wlog("No snapshot available from trusted peers. Retrying in ${s} sec (attempt ${a})",
+                                 ("s", retry_interval_sec)("a", attempt));
+                            fc::usleep(fc::seconds(retry_interval_sec));
+                        }
                     }
-                    auto elapsed = (fc::time_point::now() - start).count() / 1000000.0;
-                    std::cerr << "   === P2P Snapshot Sync complete (block "
-                              << my->db.head_block_num() << ", " << elapsed << " sec) ===\n";
-                    ilog("P2P snapshot sync complete at block ${n}, elapsed ${t} sec",
-                        ("n", my->db.head_block_num())("t", elapsed));
-                    return;
-                }
 
-                // No snapshot available — wait and retry
-                std::cerr << "   No snapshot available from trusted peers.\n"
-                          << "   Will retry in " << retry_interval_sec << " seconds...\n";
-                wlog("No snapshot available from trusted peers. Retrying in ${s} sec (attempt ${a})",
-                     ("s", retry_interval_sec)("a", attempt));
-                fc::usleep(fc::seconds(retry_interval_sec));
+                    // All attempts exhausted — fall back to normal P2P genesis sync
+                    std::cerr << "   P2P snapshot sync failed after " << max_attempts
+                              << " attempts. Falling back to P2P genesis sync.\n";
+                    wlog("P2P snapshot sync exhausted after ${n} attempts. "
+                         "Node will sync from genesis via P2P.", ("n", max_attempts));
+                };
+                auto download_future = download_thread->async(download_fn, "snapshot_download");
+                download_future.wait();
+            } catch (...) {
+                elog("P2P snapshot download thread failed");
             }
-
-            // All attempts exhausted — fall back to normal P2P genesis sync
-            std::cerr << "   P2P snapshot sync failed after " << max_attempts
-                      << " attempts. Falling back to P2P genesis sync.\n";
-            wlog("P2P snapshot sync exhausted after ${n} attempts. "
-                 "Node will sync from genesis via P2P.", ("n", max_attempts));
         };
     } else if (!my->trusted_snapshot_peers.empty()) {
         ilog("P2P snapshot sync disabled (sync-snapshot-from-trusted-peer = false)");
