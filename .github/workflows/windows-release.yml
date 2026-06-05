@@ -13,17 +13,23 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build & Release (Windows)
+    name: Build & Release (Windows / MinGW UCRT64)
     runs-on: windows-latest
     timeout-minutes: 240  # 4h circuit breaker; cold build ~60-90 min, cached ~15-30 min
 
+    # Every `run:` step executes inside the MSYS2 UCRT64 login shell so the
+    # ucrt64 gcc/g++ toolchain is on PATH and find_package() resolves the
+    # MSYS2-provided OpenSSL/zlib without any path juggling.
+    defaults:
+      run:
+        shell: msys2 {0}
+
     env:
-      BOOST_VERSION: "1.86.0"
-      BOOST_ROOT: "C:\\local\\boost_1_86_0"
+      BOOST_VERSION: "1.84.0"
 
     steps:
       # ──────────────────────────────────────────────────────────────
-      # Checkout
+      # Checkout (uses: action — not affected by the default msys2 shell)
       # ──────────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,277 +37,149 @@ jobs:
           submodules: recursive
 
       # ──────────────────────────────────────────────────────────────
-      # Boost — built from source (avoids flaky Chocolatey/JFrog binaries)
-      # Builds only the libraries vizd/cli_wallet need with static linking
-      # and shared MSVC runtime (/MD), matching the project's expectations.
-      # The install directory is cached across CI runs; a cache hit skips
-      # the entire ~10 min build.
+      # MSYS2 / UCRT64 toolchain
+      #
+      # We deliberately build on MinGW (gcc) rather than MSVC: gcc's libgcc
+      # unwinder tolerates fc's boost.context fiber stacks, whereas MSVC's
+      # /EHa + table-based SEH faults on them. The project's CMake already has
+      # a dedicated MINGW branch (flags, -Wa,-mbig-obj, static runtime).
+      # ──────────────────────────────────────────────────────────────
+      - name: Setup MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            base-devel
+            git
+            zip
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-ccache
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-zlib
+
+      # ──────────────────────────────────────────────────────────────
+      # Boost 1.84.0 — built from source with the ucrt64 gcc.
+      #
+      # Pinned to 1.84.0: it still ships Boost.Coroutine v1, whose
+      # stack_allocator fc's thread/context layer depends on. Newer Boost
+      # may drop it. The install dir is cached across runs.
       # ──────────────────────────────────────────────────────────────
       - name: Cache Boost
         id: cache-boost
         uses: actions/cache@v4
         with:
-          path: ${{ env.BOOST_ROOT }}
-          key: boost-src-${{ env.BOOST_VERSION }}-msvc14.3-x64-v5
+          path: boost-install
+          key: boost-mingw-ucrt64-${{ env.BOOST_VERSION }}-v1
 
       - name: Build Boost from source
         if: steps.cache-boost.outputs.cache-hit != 'true'
-        shell: pwsh
         run: |
-          $version = $env:BOOST_VERSION
-          $tarball = "boost-$version-b2-nodocs.tar.gz"
-          $url = "https://github.com/boostorg/boost/releases/download/boost-$version/$tarball"
-          $srcDir = "${{ runner.temp }}\boost-src"
-          $installDir = $env:BOOST_ROOT
+          set -euo pipefail
+          ver="${BOOST_VERSION}"
+          tarball="boost-${ver}-b2-nodocs.tar.gz"
+          url="https://github.com/boostorg/boost/releases/download/boost-${ver}/${tarball}"
 
-          Write-Host "Downloading Boost $version from GitHub..."
-          Invoke-WebRequest -Uri $url -OutFile "${{ runner.temp }}\$tarball"
+          echo "Downloading Boost ${ver}..."
+          curl -L --retry 3 -o "${tarball}" "${url}"
+          tar -xzf "${tarball}"
+          cd "boost-${ver}"
 
-          Write-Host "Extracting..."
-          New-Item -ItemType Directory -Path $srcDir -Force | Out-Null
-          tar -xzf "${{ runner.temp }}\$tarball" -C $srcDir
-          $boostDir = Get-ChildItem -Directory "$srcDir\boost*" | Select-Object -First 1
+          echo "Bootstrapping b2 (gcc)..."
+          ./bootstrap.sh --with-toolset=gcc
 
-          Write-Host "Bootstrapping b2..."
-          Push-Location $boostDir.FullName
-          cmd /c "bootstrap.bat"
-
-          $jobs = [Environment]::ProcessorCount
-          Write-Host "Building Boost libraries (jobs=$jobs)..."
-          .\b2 install `
-            --prefix=$installDir `
-            --with-thread --with-date_time --with-system --with-filesystem `
-            --with-program_options --with-serialization --with-chrono `
-            --with-test --with-context --with-locale --with-coroutine `
-            --with-iostreams --with-regex `
-            toolset=msvc-14.3 `
-            variant=release `
-            link=static `
-            threading=multi `
-            runtime-link=shared `
-            address-model=64 `
-            "-j$jobs"
-
-          # b2 install does not reliably copy core headers (version.hpp, config.hpp,
-          # etc.) for scoped --with-* builds. Manually copy the full boost/ header
-          # tree from the source to guarantee all headers are available.
-          Write-Host "Installing core Boost headers..."
-          $includeDir = Join-Path $installDir "include"
-          New-Item -ItemType Directory -Path $includeDir -Force | Out-Null
-          Copy-Item -Path "$($boostDir.FullName)\boost" -Destination "$includeDir\boost" -Recurse -Force
-          Pop-Location
-
-          if (-not (Test-Path "$installDir\include\boost\version.hpp")) {
-            Write-Error "Boost build failed — version.hpp not found in $installDir"
-            exit 1
-          }
-          Write-Host "Boost installed to $installDir"
+          echo "Building Boost (jobs=$(nproc))..."
+          ./b2 install \
+            --prefix="$(pwd)/../boost-install" \
+            --with-thread --with-date_time --with-system --with-filesystem \
+            --with-program_options --with-serialization --with-chrono \
+            --with-test --with-context --with-locale --with-coroutine \
+            --with-iostreams --with-regex \
+            toolset=gcc \
+            variant=release \
+            link=static \
+            threading=multi \
+            address-model=64 \
+            "-j$(nproc)"
 
       # ──────────────────────────────────────────────────────────────
-      # OpenSSL — installed via Chocolatey, path auto-detected
-      # Chocolatey's openssl package may install to a different
-      # directory than expected, so we dynamically find the actual
-      # install path and export it for subsequent steps.
+      # ccache — object cache across runs. CMake auto-detects ccache and
+      # routes compiles through it (find_program(CCACHE_FOUND ccache)).
       # ──────────────────────────────────────────────────────────────
-      - name: Install OpenSSL
-        shell: pwsh
-        run: |
-          # Install (Chocolatey handles already-installed gracefully)
-          choco install openssl --no-progress -y
-
-          # Find the actual install directory containing libcrypto.lib
-          Write-Host "`nSearching for OpenSSL crypto library..."
-          $crypto = $null
-          $searchPaths = @(
-            "C:\Program Files\OpenSSL-Win64",
-            "C:\Program Files\OpenSSL",
-            "C:\ProgramData\chocolatey\lib\openssl",
-            "C:\ProgramData\chocolatey\lib\openssl\tools"
-          )
-          foreach ($p in $searchPaths) {
-            if (Test-Path $p) {
-              Write-Host "Checking: $p"
-              $crypto = Get-ChildItem -Path $p -Recurse -Filter "libcrypto*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($crypto) {
-                # Find the root: go up from lib\ until we find include\openssl
-                $dir = $crypto.Directory
-                while ($dir -and -not (Test-Path "$($dir.FullName)\include\openssl\opensslv.h")) {
-                  $dir = $dir.Parent
-                }
-                if ($dir) {
-                  $root = $dir.FullName
-                  Write-Host "Found OpenSSL root: $root"
-                  Write-Host "  crypto: $($crypto.FullName)"
-                  "OPENSSL_ROOT_DIR=$root" >> $env:GITHUB_ENV
-                  break
-                }
-              }
-            }
-          }
-
-          if (-not $crypto) {
-            # Last resort: search entire C:\Program Files
-            Write-Host "Searching C:\Program Files recursively..."
-            $crypto = Get-ChildItem -Path "C:\Program Files" -Recurse -Filter "libcrypto*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($crypto) {
-              $dir = $crypto.Directory
-              while ($dir -and -not (Test-Path "$($dir.FullName)\include\openssl\opensslv.h")) {
-                $dir = $dir.Parent
-              }
-              $root = $dir.FullName
-              Write-Host "Found OpenSSL root: $root"
-              "OPENSSL_ROOT_DIR=$root" >> $env:GITHUB_ENV
-            }
-          }
-
-          if (-not $crypto) {
-            Write-Host "`n=== Diagnostic: Chocolatey lib directory ==="
-            Get-ChildItem -Path "C:\ProgramData\chocolatey\lib\openssl" -Recurse -Depth 4 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
-            Write-Host "`n=== Diagnostic: Program Files OpenSSL ==="
-            Get-ChildItem -Path "C:\Program Files\OpenSSL-Win64" -Recurse -Depth 4 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
-            Write-Error "Could not find OpenSSL libcrypto.lib anywhere"
-            exit 1
-          }
-
-          $ssl = Get-ChildItem -Path $root -Recurse -Filter "libssl*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
-          Write-Host "  ssl: $($ssl.FullName)"
-          "OPENSSL_CRYPTO_LIBRARY=$($crypto.FullName)" >> $env:GITHUB_ENV
-          "OPENSSL_SSL_LIBRARY=$($ssl.FullName)" >> $env:GITHUB_ENV
-          "OPENSSL_INCLUDE_DIR=$root\include" >> $env:GITHUB_ENV
-
-      # ──────────────────────────────────────────────────────────────
-      # sccache — shared compilation cache across runs
-      # Analogous to ccache in the Docker workflow. Caches compiled
-      # object files so unchanged translation units are not recompiled.
-      # ──────────────────────────────────────────────────────────────
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Cache sccache storage
+      - name: Cache ccache storage
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}\.sccache
-          key: sccache-win-${{ hashFiles('**/CMakeLists.txt', 'libraries/**', 'plugins/**', 'programs/**', 'thirdparty/**') }}
+          path: .ccache
+          key: ccache-mingw-ucrt64-${{ hashFiles('**/CMakeLists.txt', 'libraries/**', 'plugins/**', 'programs/**', 'thirdparty/**') }}
           restore-keys: |
-            sccache-win-
-
-      - name: Configure sccache environment
-        shell: pwsh
-        run: |
-          "SCCACHE_DIR=${{ github.workspace }}\.sccache" >> $env:GITHUB_ENV
-          "SCCACHE_IDLE_TIMEOUT=0" >> $env:GITHUB_ENV
-          # Tell CMake to route compilations through sccache
-          "CMAKE_C_COMPILER_LAUNCHER=sccache" >> $env:GITHUB_ENV
-          "CMAKE_CXX_COMPILER_LAUNCHER=sccache" >> $env:GITHUB_ENV
+            ccache-mingw-ucrt64-
 
       # ──────────────────────────────────────────────────────────────
-      # Pre-build patches
-      # ──────────────────────────────────────────────────────────────
-      # Remove fc tests subdirectory — same patch as the Dockerfile.
-      # The fc test suite pulls in test frameworks we do not ship and
-      # may fail to configure on MSVC without additional dependencies.
-      - name: Patch thirdparty/fc CMakeLists.txt
-        shell: pwsh
-        run: |
-          $fc = "thirdparty/fc/CMakeLists.txt"
-          $content = Get-Content $fc -Raw
-          $patched = $content -replace '(?m)^add_subdirectory\(tests\)', '# add_subdirectory(tests) # disabled in CI'
-          Set-Content $fc $patched -NoNewline
-          Write-Host "Patched $fc — removed add_subdirectory(tests)"
-
-      # ──────────────────────────────────────────────────────────────
-      # Patch Boost rfc2818_verification for OpenSSL 4.0 compat
-      # Boost 1.86's deprecated rfc2818_verification accesses
-      # asn1_string_st directly, which OpenSSL 4.0 made opaque.
-      # The VIZ node does not use WSS client certificate verification,
-      # so we can safely stub out the implementation.
-      # ──────────────────────────────────────────────────────────────
-      - name: Patch Boost rfc2818_verification for OpenSSL 4.0
-        shell: pwsh
-        run: |
-          $ipp = "$env:BOOST_ROOT\include\boost-1_86\boost\asio\ssl\impl\rfc2818_verification.ipp"
-          if (Test-Path $ipp) {
-            $lines = @(
-              '// Patched for OpenSSL 4.0 compat',
-              '#include <boost/asio/ssl/detail/openssl_types.hpp>',
-              '#include <boost/asio/ssl/rfc2818_verification.hpp>',
-              '#include <string>',
-              'namespace boost { namespace asio { namespace ssl {',
-              'bool rfc2818_verification::operator()(bool,verify_context&) const { return true; }',
-              'bool rfc2818_verification::match_pattern(const char*,std::size_t,const char*) { return true; }',
-              '}}}'
-            )
-            $lines | Set-Content $ipp
-            Write-Host "Replaced $ipp with OpenSSL 4.0 stub"
-          } else {
-            Write-Host "WARNING: $ipp not found"
-          }
-
-      # ──────────────────────────────────────────────────────────────
-      # CMake Configure
+      # Configure
       # ──────────────────────────────────────────────────────────────
       - name: Configure CMake
-        shell: pwsh
         run: |
-          Write-Host "OPENSSL_ROOT_DIR = $env:OPENSSL_ROOT_DIR"
-          Write-Host "OPENSSL_CRYPTO_LIBRARY = $env:OPENSSL_CRYPTO_LIBRARY"
-          Write-Host "OPENSSL_SSL_LIBRARY = $env:OPENSSL_SSL_LIBRARY"
-          Write-Host "OPENSSL_INCLUDE_DIR = $env:OPENSSL_INCLUDE_DIR"
-          cmake -S . -B build `
-            -G "Visual Studio 17 2022" -A x64 `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DBOOST_ROOT="$env:BOOST_ROOT" `
-            -DOPENSSL_ROOT_DIR="$env:OPENSSL_ROOT_DIR" `
-            -DOPENSSL_CRYPTO_LIBRARY="$env:OPENSSL_CRYPTO_LIBRARY" `
-            -DOPENSSL_SSL_LIBRARY="$env:OPENSSL_SSL_LIBRARY" `
-            -DOPENSSL_INCLUDE_DIR="$env:OPENSSL_INCLUDE_DIR" `
-            -DOPENSSL_USE_STATIC_LIBS=TRUE `
-            -DBUILD_SHARED_LIBRARIES=OFF `
-            -DBUILD_TESTNET=OFF `
-            -DCHAINBASE_CHECK_LOCKING=OFF `
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          set -euo pipefail
+          export CCACHE_DIR="$(cygpath -m "$(pwd)/.ccache")"
+          export BOOST_ROOT="$(pwd)/boost-install"
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBOOST_ROOT="$(cygpath -m "${BOOST_ROOT}")" \
+            -DBoost_NO_SYSTEM_PATHS=ON \
+            -DBoost_USE_STATIC_LIBS=ON \
+            -DBUILD_SHARED_LIBRARIES=OFF \
+            -DBUILD_TESTNET=OFF \
+            -DCHAINBASE_CHECK_LOCKING=OFF \
+            -DFULL_STATIC_BUILD=ON
 
       # ──────────────────────────────────────────────────────────────
-      # CMake Build — target only vizd and cli_wallet (skip util, tests)
+      # Build — only vizd and cli_wallet
       # ──────────────────────────────────────────────────────────────
       - name: Build vizd and cli_wallet
-        shell: pwsh
         run: |
-          cmake --build build --config Release --target vizd cli_wallet --parallel
+          set -euo pipefail
+          export CCACHE_DIR="$(cygpath -m "$(pwd)/.ccache")"
+          cmake --build build --target vizd cli_wallet "-j$(nproc)"
 
-      - name: Print sccache stats
+      - name: Print ccache stats
         if: always()
-        run: sccache --show-stats
+        run: ccache --show-stats || true
 
       # ──────────────────────────────────────────────────────────────
-      # Verify build output
+      # Bundle executables with their non-system DLL dependencies.
+      # FULL_STATIC_BUILD statically links libstdc++/libgcc; the remaining
+      # ucrt64 DLLs (winpthread, OpenSSL, zlib) are copied next to the exe.
       # ──────────────────────────────────────────────────────────────
-      - name: Verify executables exist
-        shell: pwsh
+      - name: Bundle release artifacts
         run: |
-          $vizd = "build\programs\vizd\Release\vizd.exe"
-          $wallet = "build\programs\cli_wallet\Release\cli_wallet.exe"
-          $missing = $false
-          if (Test-Path $vizd) {
-            Write-Host "OK: $vizd ($('{0:N0}' -f (Get-Item $vizd).Length) bytes)"
-          } else {
-            Write-Host "MISSING: $vizd"
-            $missing = $true
-          }
-          if (Test-Path $wallet) {
-            Write-Host "OK: $wallet ($('{0:N0}' -f (Get-Item $wallet).Length) bytes)"
-          } else {
-            Write-Host "MISSING: $wallet"
-            $missing = $true
-          }
-          if ($missing) { exit 1 }
+          set -euo pipefail
+          mkdir -p dist
+          cp build/programs/vizd/vizd.exe dist/
+          cp build/programs/cli_wallet/cli_wallet.exe dist/
+          for exe in dist/*.exe; do
+            ldd "$exe" | grep -iE '/ucrt64/bin/' | awk '{print $3}' | sort -u | while read -r dll; do
+              [ -f "$dll" ] && cp -u "$dll" dist/ || true
+            done
+          done
+          echo "=== dist contents ==="
+          ls -la dist/
+          zip -j vizd-windows-ucrt64.zip dist/*
+
+      - name: Verify executables exist
+        run: |
+          set -euo pipefail
+          for f in dist/vizd.exe dist/cli_wallet.exe; do
+            if [ -f "$f" ]; then
+              echo "OK: $f ($(stat -c %s "$f") bytes)"
+            else
+              echo "MISSING: $f"; exit 1
+            fi
+          done
 
       # ──────────────────────────────────────────────────────────────
-      # GitHub Release
-      # Tag: win-<short-sha>  e.g. win-a1b2c3d
-      # The "win-" prefix distinguishes these from any future version
-      # or Docker-related tags.
+      # GitHub Release — tag: win-<short-sha>
       # ──────────────────────────────────────────────────────────────
       - name: Derive release metadata
         id: meta
@@ -323,7 +201,6 @@ jobs:
           name: ${{ steps.meta.outputs.name }}
           generate_release_notes: true
           files: |
-            build/programs/vizd/Release/vizd.exe
-            build/programs/cli_wallet/Release/cli_wallet.exe
+            vizd-windows-ucrt64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
