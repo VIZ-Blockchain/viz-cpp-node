@@ -32,6 +32,7 @@
 
 #include <boost/filesystem.hpp>
 #include <fstream>
+#include <cstdio>
 #include <set>
 #include <map>
 #include <algorithm>
@@ -3110,6 +3111,8 @@ void snapshot_plugin::plugin_impl::handle_connection(fc::tcp_socket& sock, fc::t
 // ============================================================================
 
 std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
+    fprintf(stderr, "   [snap-dl] entered, peers=%u\n", (unsigned)trusted_snapshot_peers.size());
+    fflush(stderr);
     FC_ASSERT(!trusted_snapshot_peers.empty(), "No trusted snapshot peers configured");
 
     std::cerr << "   Querying " << trusted_snapshot_peers.size() << " trusted peer(s) for snapshot info...\n";
@@ -3125,15 +3128,21 @@ std::string snapshot_plugin::plugin_impl::download_snapshot_from_peers() {
 
     for (const auto& peer_str : trusted_snapshot_peers) {
         try {
+            fprintf(stderr, "   [snap-dl] connecting to peer %s\n", peer_str.c_str());
+            fflush(stderr);
             std::cerr << "   Connecting to peer " << peer_str << "...\n";
             ilog(CLOG_YELLOW "Querying snapshot info from peer ${p}..." CLOG_RESET, ("p", peer_str));
             fc::tcp_socket sock;
             auto ep = fc::ip::endpoint::from_string(peer_str);
+            fprintf(stderr, "   [snap-dl] endpoint resolved, calling fc::async\n");
+            fflush(stderr);
 
             // Connect with timeout
             auto connect_future = fc::async([&sock, &ep]() {
                 sock.connect_to(ep);
             });
+            fprintf(stderr, "   [snap-dl] fc::async posted, waiting...\n");
+            fflush(stderr);
             try {
                 connect_future.wait(SNAPSHOT_PEER_TIMEOUT);
             } catch (const fc::timeout_exception&) {
@@ -3898,10 +3907,16 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
                         try {
                             snapshot_path = my->download_snapshot_from_peers();
                         } catch (const fc::exception& e) {
+                            fprintf(stderr, "   [snap-dl] fc::exception: %s\n", e.to_string().c_str());
+                            fflush(stderr);
                             elog("Snapshot download failed: ${e}", ("e", e.to_detail_string()));
                         } catch (const std::exception& e) {
+                            fprintf(stderr, "   [snap-dl] std::exception: %s\n", e.what());
+                            fflush(stderr);
                             elog("Snapshot download failed: ${e}", ("e", e.what()));
                         } catch (...) {
+                            fprintf(stderr, "   [snap-dl] UNKNOWN exception\n");
+                            fflush(stderr);
                             elog("Snapshot download failed: unknown exception");
                         }
 
