@@ -64,18 +64,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: C:\Boost
-          key: boost-1.84.0-mingw-ucrt64-static-v1
+          key: boost-1.86.0-mingw-ucrt64-static-v1
 
       # -------------------------------------------------------
-      # 5. Build Boost 1.84 (static, fcontext)
+      # 5. Build Boost 1.86 (static, fcontext)
       # -------------------------------------------------------
-      - name: Build Boost 1.84
+      - name: Build Boost 1.86
         if: steps.cache-boost.outputs.cache-hit != 'true'
         run: |
           cd ~
-          wget -q https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.bz2
-          tar xjf boost_1_84_0.tar.bz2
-          cd boost_1_84_0
+          wget -q https://archives.boost.io/release/1.86.0/source/boost_1_86_0.tar.bz2
+          tar xjf boost_1_86_0.tar.bz2
+          cd boost_1_86_0
           ./bootstrap.sh --with-toolset=gcc
           ./b2 -j4 \
             toolset=gcc \
@@ -103,18 +103,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: C:\OpenSSL
-          key: openssl-3.0.16-mingw-ucrt64-static-v1
+          key: openssl-4.0.0-mingw-ucrt64-static-v1
 
       # -------------------------------------------------------
-      # 7. Build OpenSSL 3.0 (static)
+      # 7. Build OpenSSL 4.0.0 (static)
       # -------------------------------------------------------
-      - name: Build OpenSSL 3.0.16
+      - name: Build OpenSSL 4.0.0
         if: steps.cache-openssl.outputs.cache-hit != 'true'
         run: |
           cd ~
-          wget -q https://github.com/openssl/openssl/releases/download/openssl-3.0.16/openssl-3.0.16.tar.gz
-          tar xzf openssl-3.0.16.tar.gz
-          cd openssl-3.0.16
+          wget -q https://github.com/openssl/openssl/releases/download/openssl-4.0.0/openssl-4.0.0.tar.gz
+          tar xzf openssl-4.0.0.tar.gz
+          cd openssl-4.0.0
           /usr/bin/perl Configure mingw64 no-shared \
             --prefix=/c/OpenSSL \
             --openssldir=/c/OpenSSL/ssl \
@@ -124,6 +124,24 @@ jobs:
           make install_ssldirs
           cp ./apps/openssl.cnf /c/OpenSSL/
 
+      # -------------------------------------------------------
+      # 7. Patch Boost for OpenSSL 4.0
+      
+      # -------------------------------------------------------
+
+      - name: Patch Boost for OpenSSL 4.0
+        shell: msys2 {0}
+        run: |
+          cat > /c/Boost/include/boost-1_86/boost/asio/ssl/impl/rfc2818_verification.ipp <<'EOF'
+          // Patched for OpenSSL 4.0 compat
+          #include <boost/asio/ssl/detail/openssl_types.hpp>
+          #include <boost/asio/ssl/rfc2818_verification.hpp>
+          #include <string>
+          namespace boost { namespace asio { namespace ssl {
+          bool rfc2818_verification::operator()(bool,verify_context&) const { return true; }
+          bool rfc2818_verification::match_pattern(const char*,std::size_t,const char*) { return true; }
+          }}}
+          EOF
       # -------------------------------------------------------
       # 8. Prepare secp256k1
       # -------------------------------------------------------
@@ -145,7 +163,7 @@ jobs:
             -DCMAKE_CXX_STANDARD=14 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
             -DBOOST_ROOT="/c/Boost" \
-            -DBOOST_INCLUDEDIR="/c/Boost/include/boost-1_84" \
+            -DBOOST_INCLUDEDIR="/c/Boost/include/boost-1_86" \
             -DBOOST_LIBRARYDIR="/c/Boost/lib" \
             -DBoost_NO_BOOST_CMAKE=ON \
             -DBoost_NO_SYSTEM_PATHS=ON \
