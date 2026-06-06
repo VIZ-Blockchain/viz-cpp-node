@@ -79,13 +79,14 @@ jobs:
         run: |
           set -euo pipefail
           ver="${BOOST_VERSION}"
-          tarball="boost-${ver}-b2-nodocs.tar.gz"
-          url="https://github.com/boostorg/boost/releases/download/boost-${ver}/${tarball}"
+          ver_us="${ver//./_}"        # 1.84.0 -> 1_84_0
+          tarball="boost_${ver_us}.tar.gz"
+          url="https://archives.boost.io/release/${ver}/source/${tarball}"
 
-          echo "Downloading Boost ${ver}..."
-          curl -L --retry 3 -o "${tarball}" "${url}"
+          echo "Downloading Boost ${ver} from ${url} ..."
+          curl -fL --retry 3 -o "${tarball}" "${url}"
           tar -xzf "${tarball}"
-          cd "boost-${ver}"
+          cd "boost_${ver_us}"
 
           echo "Bootstrapping b2 (gcc)..."
           ./bootstrap.sh --with-toolset=gcc
