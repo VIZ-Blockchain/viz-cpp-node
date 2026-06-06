@@ -583,6 +583,238 @@ header for available options like `VIZ_BUILD_TYPE`, `VIZ_LOW_MEMORY`,
 - **MinGW requires**: `-Wa,-mbig-obj` flag for large object file support.
 - **FULL_STATIC_BUILD**: Set this CMake option to produce fully static
   executables (links static libstdc++ and libgcc with MinGW).
+## Building on Windows with MinGW UCRT64 (fully static, runs on Win7+)
+
+This method produces a fully static `vizd.exe` with no external DLL
+dependencies beyond what Windows itself provides (kernel32, ntdll, ws2_32,
+bcrypt). The binary runs on Windows 7 SP1 x64 and later without installing
+any runtime redistributables.
+
+**Why UCRT64 and not MINGW64?** UCRT (Universal C Runtime) is the modern
+replacement for MSVCRT. It is available on Win7/8/8.1 via Windows Update
+(KB2999226) and built-in from Win10 onward. The UCRT64 toolchain can link
+UCRT statically, producing a binary that is self-contained and
+behaviorally close to a Linux build.
+
+**Why `fcontext` matters for Boost.Context/fibers?** VIZ uses
+Boost.Coroutine2 which relies on Boost.Context for fiber/coroutine
+switching. On Win64 MinGW there are three possible backends:
+
+| Backend | Problem |
+|---|---|
+| `winfibers` | Requires explicit thread conversion via Win32 API; crashes if a thread was not converted |
+| `ucontext` | Does not save XMM6–XMM15 registers (non-volatile in the Win64 ABI) — guaranteed crash with SSE2/AVX code |
+| `fcontext` | Pure ASM, saves TIB pointers and all non-volatile XMM registers, 16-byte stack alignment — stable |
+
+Boost must be compiled with `context-impl=fcontext` explicitly.
+
+### Prerequisites
+
+- Windows 7 SP1 x64 or later (build machine: Windows 10/11 recommended)
+- MSYS2 installed to `C:\msys64` — https://www.msys2.org/
+- CMake 3.16 or later (the MSYS2 package is used below)
+- ~5 GB free disk space for dependencies and build artifacts
+
+All commands below are run inside the **MSYS2 UCRT64** terminal
+(not MINGW64, not the plain MSYS terminal).
+
+### ⚠️ NTP Note
+To avoid issues related to time synchronization and NTP offsets, **do not use `w32tm`** (the default Windows time utility).  
+Instead, it is recommended to install and run **Meinberg NTP for Windows**, available here:  
+[https://www.meinbergglobal.com/english/sw/ntp.htm#ntp_stable](https://www.meinbergglobal.com/english/sw/ntp.htm#ntp_stable)
+
+Meinberg provides a full NTP service implementation compatible with Unix systems, ensuring more accurate and stable local clock synchronization — which is critical for running the blockchain node correctly.
+
+### Step 1 — Install toolchain packages
+
+```bash
+pacman -Syu
+# Restart the terminal if pacman asks, then run again:
+pacman -Syu
+
+pacman -S \
+  mingw-w64-ucrt-x86_64-gcc \
+  mingw-w64-ucrt-x86_64-make \
+  mingw-w64-ucrt-x86_64-cmake \
+  mingw-w64-ucrt-x86_64-perl \
+  mingw-w64-ucrt-x86_64-nasm \
+  autoconf \
+  automake \
+  libtool \
+  make \
+  git \
+  wget
+```
+
+Create a `make` alias so autoconf test scripts can find it:
+
+```bash
+ln -s /ucrt64/bin/mingw32-make.exe /usr/bin/make
+```
+
+### Step 2 — Build Boost 1.84 (static, fcontext)
+
+```bash
+cd ~
+wget https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.bz2
+tar xjf boost_1_84_0.tar.bz2
+cd boost_1_84_0
+
+./bootstrap.sh --with-toolset=gcc
+
+./b2 -j4 \
+    toolset=gcc \
+    address-model=64 \
+    variant=release \
+    link=static \
+    threading=multi \
+    runtime-link=static \
+    context-impl=fcontext \
+    define=_WIN32_WINNT=0x0601 \
+    define=WINVER=0x0601 \
+    --with-atomic \
+    --with-chrono \
+    --with-context \
+    --with-coroutine \
+    --with-date_time \
+    --with-filesystem \
+    --with-iostreams \
+    --with-locale \
+    --with-program_options \
+    --with-regex \
+    --with-serialization \
+    --with-system \
+    --with-test \
+    --with-thread \
+    install --prefix=/c/Boost
+```
+
+### Step 3 — Build OpenSSL 3.0 (static, mingw64 target)
+
+```bash
+cd ~
+wget https://github.com/openssl/openssl/releases/download/openssl-3.0.16/openssl-3.0.16.tar.gz
+tar xzf openssl-3.0.16.tar.gz
+cd openssl-3.0.16
+
+# Use MSYS2's Perl — NOT Strawberry/ActivePerl from Windows PATH
+/usr/bin/perl Configure mingw64 no-shared \
+    --prefix=/c/OpenSSL \
+    --openssldir=/c/OpenSSL/ssl \
+    -D_WIN32_WINNT=0x0601
+
+make -j4
+make install_sw
+make install_ssldirs
+```
+
+> If you have Strawberry Perl or ActivePerl installed on Windows, make sure
+> `/usr/bin/perl` is used, not the Windows one. You can verify with:
+> `perl -e 'print $^O'` — it must print `msys`, not `MSWin32`.
+
+Note: In some cases, OpenSSL searches for openssl.cnf directly in the root installation directory rather than in the ssl subdirectory. To prevent build or runtime issues, it is safer to copy the configuration file immediately after installation:
+
+```bash
+cp ./apps/openssl.cnf /c/OpenSSL/
+```
+
+### Step 4 — Clone the repository
+
+```bash
+cd ~
+git clone --recursive https://github.com/m0ssa99/viz-cpp-node.git -b windows_suport
+cd viz-cpp-node
+```
+
+If you already cloned without `--recursive`:
+
+```bash
+git submodule update --init --recursive
+```
+
+Pre-generate the secp256k1 configure script (required on Windows because
+the autoconf step runs outside of CMake):
+
+```bash
+cd thirdparty/fc/vendor/secp256k1-zkp
+autoreconf -fi
+cd ~/viz-cpp-node
+```
+
+### Step 5 — Configure and build
+
+```bash
+mkdir build && cd build
+
+cmake -G "MinGW Makefiles" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DCMAKE_CXX_STANDARD=14 \
+    -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+    -DBOOST_ROOT="/c/Boost" \
+    -DBOOST_INCLUDEDIR="/c/Boost/include/boost-1_84" \
+    -DBOOST_LIBRARYDIR="/c/Boost/lib" \
+    -DBoost_NO_BOOST_CMAKE=ON \
+    -DBoost_NO_SYSTEM_PATHS=ON \
+    -DBoost_USE_STATIC_LIBS=ON \
+    -DBoost_USE_STATIC_RUNTIME=ON \
+    -DBoost_USE_MULTITHREADED=ON \
+    -DBoost_ARCHITECTURE="-x64" \
+    -DBoost_COMPILER="-mgw16" \
+    -DOPENSSL_ROOT_DIR="/c/OpenSSL" \
+    -DOPENSSL_USE_STATIC_LIBS=ON \
+    -DFULL_STATIC_BUILD=ON \
+    -DCMAKE_C_FLAGS="-DWINVER=0x0601 -DSECP256K1_STATIC" \
+    -DCMAKE_CXX_FLAGS="-DWINVER=0x0601 -DSECP256K1_STATIC -Wa,-mbig-obj" \
+    -DCMAKE_EXE_LINKER_FLAGS="-static" \
+    ..
+
+mingw32-make -j4 vizd
+mingw32-make -j4 cli_wallet
+```
+
+The binaries will be in `build/programs/vizd/vizd.exe` and
+`build/programs/cli_wallet/cli_wallet.exe`.
+
+### Step 6 — Verify no unexpected DLL dependencies
+
+```bash
+objdump -p programs/vizd/vizd.exe | grep "DLL Name"
+```
+
+Expected output — only Windows system DLLs, all present on Win7+:
+
+```
+DLL Name: KERNEL32.dll
+DLL Name: ntdll.dll
+DLL Name: WS2_32.dll
+DLL Name: IPHLPAPI.dll
+DLL Name: bcrypt.dll
+```
+
+If you see any `libstdc++`, `libgcc`, `libwinpthread`, or `msvcrt` entries,
+`FULL_STATIC_BUILD` was not applied correctly — recheck the cmake flags.
+
+### Notes
+
+- **`Boost_COMPILER=-mgw16`**: the GCC 16 toolchain in MSYS2 UCRT64 tags
+  its libraries with `-mgw16-`. If you use a different GCC version the
+  suffix will differ (e.g. `-mgw14-` for GCC 14). Check with
+  `ls /c/Boost/lib/ | head -5` and adjust accordingly.
+- **`SECP256K1_STATIC`**: without this define, the secp256k1 headers emit
+  `__declspec(dllimport)` on all symbols, causing link errors with
+  `__imp_` prefixed undefined references even though you have a static
+  library.
+- **`bcrypt.dll`**: present on all Windows versions from Vista onward.
+  Boost.Filesystem uses BCrypt for `unique_path()`. It is a system DLL —
+  no redistribution needed.
+- **`-Wa,-mbig-obj`**: MinGW on Win64 generates large `.o` files due to
+  C++ template instantiations. Without this flag you get "File too big"
+  assembler errors.
+- **`autoreconf -fi`** on secp256k1: the submodule ships only
+  `configure.ac`, not the generated `configure` script. On Linux/macOS,
+  the CMake ExternalProject autogen step handles this automatically. On
+  Windows it must be run once manually before the first build.
 
 ## Building on Other Platforms
 
