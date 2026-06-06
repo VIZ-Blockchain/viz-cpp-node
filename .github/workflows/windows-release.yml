@@ -3,11 +3,15 @@ name: Windows Release
 on:
   push:
 <<<<<<< HEAD
+<<<<<<< HEAD
     branches: [ windows_build, master ]
 =======
     branches:
       - [ windows_build, master ]
 >>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
+=======
+    branches: [ win-build, master ]
+>>>>>>> 787ffab6 (build: update Windows CI workflow to use correct branch name and comment out cli_wallet build steps)
     paths-ignore:
       - 'documentation/**'
       - '**.md'
@@ -253,6 +257,7 @@ jobs:
 <<<<<<< HEAD
 =======
 
+<<<<<<< HEAD
 >>>>>>> 2c801318 (build: fix Windows CI workflow branch name and update cli_wallet build steps)
 =======
 
@@ -264,6 +269,12 @@ jobs:
 <<<<<<< HEAD
 <<<<<<< HEAD
 =======
+=======
+      #- name: Build cli_wallet
+      #  run: |
+      #    cd $GITHUB_WORKSPACE/build
+      #    mingw32-make -j$(nproc) cli_wallet
+>>>>>>> 787ffab6 (build: update Windows CI workflow to use correct branch name and comment out cli_wallet build steps)
 
 >>>>>>> 2c801318 (build: fix Windows CI workflow branch name and update cli_wallet build steps)
 =======
@@ -275,10 +286,14 @@ jobs:
       - name: Verify binaries
         run: |
           ls -lh $GITHUB_WORKSPACE/build/programs/vizd/vizd.exe
+<<<<<<< HEAD
           ls -lh $GITHUB_WORKSPACE/build/programs/cli_wallet/cli_wallet.exe
 <<<<<<< HEAD
 <<<<<<< HEAD
 =======
+=======
+        #  ls -lh $GITHUB_WORKSPACE/build/programs/cli_wallet/cli_wallet.exe
+>>>>>>> 787ffab6 (build: update Windows CI workflow to use correct branch name and comment out cli_wallet build steps)
 
 >>>>>>> 2c801318 (build: fix Windows CI workflow branch name and update cli_wallet build steps)
 =======
@@ -317,6 +332,6 @@ jobs:
           generate_release_notes: true
           files: |
             build/programs/vizd/vizd.exe
-            build/programs/cli_wallet/cli_wallet.exe
+         #   build/programs/cli_wallet/cli_wallet.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
