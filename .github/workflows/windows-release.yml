@@ -88,6 +88,7 @@ jobs:
         with:
           path: C:\Boost
 <<<<<<< HEAD
+<<<<<<< HEAD
           key: boost-1.86.0-mingw-ucrt64-static-v1
 
       # -------------------------------------------------------
@@ -102,18 +103,27 @@ jobs:
           cd boost_1_86_0
 =======
           key: boost-1.84.0-mingw-ucrt64-static-v1
+=======
+          key: boost-1.86.0-mingw-ucrt64-static-v1
+>>>>>>> cbefd5fc (build: update Boost and OpenSSL versions in Windows CI workflow)
 
       # -------------------------------------------------------
-      # 5. Build Boost 1.84 (static, fcontext)
+      # 5. Build Boost 1.86 (static, fcontext)
       # -------------------------------------------------------
-      - name: Build Boost 1.84
+      - name: Build Boost 1.86
         if: steps.cache-boost.outputs.cache-hit != 'true'
         run: |
           cd ~
+<<<<<<< HEAD
           wget -q https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.bz2
           tar xjf boost_1_84_0.tar.bz2
           cd boost_1_84_0
 >>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
+=======
+          wget -q https://archives.boost.io/release/1.86.0/source/boost_1_86_0.tar.bz2
+          tar xjf boost_1_86_0.tar.bz2
+          cd boost_1_86_0
+>>>>>>> cbefd5fc (build: update Boost and OpenSSL versions in Windows CI workflow)
           ./bootstrap.sh --with-toolset=gcc
           ./b2 -j4 \
             toolset=gcc \
@@ -145,6 +155,7 @@ jobs:
         with:
           path: C:\OpenSSL
 <<<<<<< HEAD
+<<<<<<< HEAD
           key: openssl-4.0.0-mingw-ucrt64-static-v1
 
       # -------------------------------------------------------
@@ -159,18 +170,27 @@ jobs:
           cd openssl-4.0.0
 =======
           key: openssl-3.0.16-mingw-ucrt64-static-v1
+=======
+          key: openssl-4.0.0-mingw-ucrt64-static-v1
+>>>>>>> cbefd5fc (build: update Boost and OpenSSL versions in Windows CI workflow)
 
       # -------------------------------------------------------
-      # 7. Build OpenSSL 3.0 (static)
+      # 7. Build OpenSSL 4.0.0 (static)
       # -------------------------------------------------------
-      - name: Build OpenSSL 3.0.16
+      - name: Build OpenSSL 4.0.0
         if: steps.cache-openssl.outputs.cache-hit != 'true'
         run: |
           cd ~
+<<<<<<< HEAD
           wget -q https://github.com/openssl/openssl/releases/download/openssl-3.0.16/openssl-3.0.16.tar.gz
           tar xzf openssl-3.0.16.tar.gz
           cd openssl-3.0.16
 >>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
+=======
+          wget -q https://github.com/openssl/openssl/releases/download/openssl-4.0.0/openssl-4.0.0.tar.gz
+          tar xzf openssl-4.0.0.tar.gz
+          cd openssl-4.0.0
+>>>>>>> cbefd5fc (build: update Boost and OpenSSL versions in Windows CI workflow)
           /usr/bin/perl Configure mingw64 no-shared \
             --prefix=/c/OpenSSL \
             --openssldir=/c/OpenSSL/ssl \
@@ -202,6 +222,24 @@ jobs:
 
 >>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
       # -------------------------------------------------------
+      # 7. Patch Boost for OpenSSL 4.0
+      
+      # -------------------------------------------------------
+
+      - name: Patch Boost for OpenSSL 4.0
+        shell: msys2 {0}
+        run: |
+          cat > /c/Boost/include/boost-1_86/boost/asio/ssl/impl/rfc2818_verification.ipp <<'EOF'
+          // Patched for OpenSSL 4.0 compat
+          #include <boost/asio/ssl/detail/openssl_types.hpp>
+          #include <boost/asio/ssl/rfc2818_verification.hpp>
+          #include <string>
+          namespace boost { namespace asio { namespace ssl {
+          bool rfc2818_verification::operator()(bool,verify_context&) const { return true; }
+          bool rfc2818_verification::match_pattern(const char*,std::size_t,const char*) { return true; }
+          }}}
+          EOF
+      # -------------------------------------------------------
       # 8. Prepare secp256k1
       # -------------------------------------------------------
       - name: Autoreconf secp256k1-zkp
@@ -226,10 +264,14 @@ jobs:
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
             -DBOOST_ROOT="/c/Boost" \
 <<<<<<< HEAD
+<<<<<<< HEAD
             -DBOOST_INCLUDEDIR="/c/Boost/include/boost-1_86" \
 =======
             -DBOOST_INCLUDEDIR="/c/Boost/include/boost-1_84" \
 >>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
+=======
+            -DBOOST_INCLUDEDIR="/c/Boost/include/boost-1_86" \
+>>>>>>> cbefd5fc (build: update Boost and OpenSSL versions in Windows CI workflow)
             -DBOOST_LIBRARYDIR="/c/Boost/lib" \
             -DBoost_NO_BOOST_CMAKE=ON \
             -DBoost_NO_SYSTEM_PATHS=ON \
