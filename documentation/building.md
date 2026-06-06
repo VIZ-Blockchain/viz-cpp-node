@@ -664,6 +664,9 @@ cd boost_1_84_0
 
 ./b2 -j4 \
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 0a4c5070 (build: add build_mingw.sh script for automated MinGW UCRT64 setup and compilation)
   toolset=gcc \
   address-model=64 \
   variant=release \
@@ -691,6 +694,7 @@ cd boost_1_84_0
   --with-thread \
   install --prefix=/c/Boost
 
+<<<<<<< HEAD
 =======
     toolset=gcc \
     address-model=64 \
@@ -717,6 +721,8 @@ cd boost_1_84_0
     --with-thread \
     install --prefix=/c/Boost
 >>>>>>> 8086b055 (build: update CMake configuration for MinGW UCRT64 and add Windows CI workflow)
+=======
+>>>>>>> 0a4c5070 (build: add build_mingw.sh script for automated MinGW UCRT64 setup and compilation)
 ```
 
 ### Step 3 — Build OpenSSL 3.0 (static, mingw64 target)
@@ -797,10 +803,14 @@ cmake -G "MinGW Makefiles" \
     -DCMAKE_C_FLAGS="-DWINVER=0x0601 -DSECP256K1_STATIC" \
     -DCMAKE_CXX_FLAGS="-DWINVER=0x0601 -DSECP256K1_STATIC -Wa,-mbig-obj" \
 <<<<<<< HEAD
+<<<<<<< HEAD
     -DCMAKE_EXE_LINKER_FLAGS="-static -Wl,--start-group -lbcrypt -Wl,--end-group" \
 =======
     -DCMAKE_EXE_LINKER_FLAGS="-static" \
 >>>>>>> 8086b055 (build: update CMake configuration for MinGW UCRT64 and add Windows CI workflow)
+=======
+    -DCMAKE_EXE_LINKER_FLAGS="-static -Wl,--start-group -lbcrypt -Wl,--end-group" \
+>>>>>>> 0a4c5070 (build: add build_mingw.sh script for automated MinGW UCRT64 setup and compilation)
     ..
 
 mingw32-make -j4 vizd
@@ -886,6 +896,40 @@ For convenience, you can automate the build process using the `build_mingw.sh` h
 This script reproduces the entire build process with a single command, producing fully static binaries without manual step execution.
 =======
 >>>>>>> 8086b055 (build: update CMake configuration for MinGW UCRT64 and add Windows CI workflow)
+
+### Quick Build Automation with `build_mingw.sh`
+
+For convenience, you can automate the build process using the `build_mingw.sh` helper script located in the repository root. This script handles the entire toolchain setup, dependency compilation (Boost, OpenSSL), and the node build itself.
+
+**Prerequisites:**
+
+1. Download and install **MSYS2/MinGW** from https://www.msys2.org/.
+2. Launch the **MinGW UCRT64** terminal and update the package system:
+   ```bash
+   pacman -Syu
+   ```
+   (Confirm any terminal restart requests and run the command again if necessary.)
+
+**Instructions:**
+
+1. **Copy the helper script:**
+   Copy `build_mingw.sh` from the VIZ repository root into your MSYS2 home directory (usually `C:\msys64\home\<username>`).
+
+   ```bash
+   # From your MSYS2 home directory:
+   cp /path/to/viz-cpp-node/build_mingw.sh .
+   ```
+
+2. **Run the automation:**
+   Open the **MinGW UCRT64** terminal and execute:
+
+   ```bash
+   cd ~
+   chmod +x build_mingw.sh
+   ./build_mingw.sh
+   ```
+
+This script reproduces the entire build process with a single command, producing fully static binaries without manual step execution.
 
 ## Building on Other Platforms
 
