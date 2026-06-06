@@ -2,7 +2,12 @@ name: Windows Release
 
 on:
   push:
+<<<<<<< HEAD
     branches: [ windows_build, master ]
+=======
+    branches:
+      - [ windows_build, master ]
+>>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
     paths-ignore:
       - 'documentation/**'
       - '**.md'
@@ -49,6 +54,7 @@ jobs:
             make
             git
             wget
+<<<<<<< HEAD
       # -------------------------------------------------------
       # 3. Fix make alias
       # -------------------------------------------------------
@@ -56,6 +62,16 @@ jobs:
         run: ln -sf /ucrt64/bin/mingw32-make.exe /usr/bin/make
 
       # -------------------------------------------------------
+=======
+
+      # -------------------------------------------------------
+      # 3. Fix make alias
+      # -------------------------------------------------------
+      - name: Fix make alias
+        run: ln -sf /ucrt64/bin/mingw32-make.exe /usr/bin/make
+
+      # -------------------------------------------------------
+>>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
       # 4. Cache Boost
       # -------------------------------------------------------
       - name: Cache Boost
@@ -63,6 +79,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: C:\Boost
+<<<<<<< HEAD
           key: boost-1.86.0-mingw-ucrt64-static-v1
 
       # -------------------------------------------------------
@@ -75,6 +92,20 @@ jobs:
           wget -q https://archives.boost.io/release/1.86.0/source/boost_1_86_0.tar.bz2
           tar xjf boost_1_86_0.tar.bz2
           cd boost_1_86_0
+=======
+          key: boost-1.84.0-mingw-ucrt64-static-v1
+
+      # -------------------------------------------------------
+      # 5. Build Boost 1.84 (static, fcontext)
+      # -------------------------------------------------------
+      - name: Build Boost 1.84
+        if: steps.cache-boost.outputs.cache-hit != 'true'
+        run: |
+          cd ~
+          wget -q https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.bz2
+          tar xjf boost_1_84_0.tar.bz2
+          cd boost_1_84_0
+>>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
           ./bootstrap.sh --with-toolset=gcc
           ./b2 -j4 \
             toolset=gcc \
@@ -93,6 +124,10 @@ jobs:
             --with-program_options --with-regex --with-serialization \
             --with-system --with-test --with-thread \
             install --prefix=/c/Boost
+<<<<<<< HEAD
+=======
+
+>>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
       # -------------------------------------------------------
       # 6. Cache OpenSSL
       # -------------------------------------------------------
@@ -101,6 +136,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: C:\OpenSSL
+<<<<<<< HEAD
           key: openssl-4.0.0-mingw-ucrt64-static-v1
 
       # -------------------------------------------------------
@@ -113,6 +149,20 @@ jobs:
           wget -q https://github.com/openssl/openssl/releases/download/openssl-4.0.0/openssl-4.0.0.tar.gz
           tar xzf openssl-4.0.0.tar.gz
           cd openssl-4.0.0
+=======
+          key: openssl-3.0.16-mingw-ucrt64-static-v1
+
+      # -------------------------------------------------------
+      # 7. Build OpenSSL 3.0 (static)
+      # -------------------------------------------------------
+      - name: Build OpenSSL 3.0.16
+        if: steps.cache-openssl.outputs.cache-hit != 'true'
+        run: |
+          cd ~
+          wget -q https://github.com/openssl/openssl/releases/download/openssl-3.0.16/openssl-3.0.16.tar.gz
+          tar xzf openssl-3.0.16.tar.gz
+          cd openssl-3.0.16
+>>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
           /usr/bin/perl Configure mingw64 no-shared \
             --prefix=/c/OpenSSL \
             --openssldir=/c/OpenSSL/ssl \
@@ -121,6 +171,7 @@ jobs:
           make install_sw
           make install_ssldirs
           cp ./apps/openssl.cnf /c/OpenSSL/
+<<<<<<< HEAD
       # -------------------------------------------------------
       # 7. Patch Boost for OpenSSL 4.0
       
@@ -139,6 +190,9 @@ jobs:
           bool rfc2818_verification::match_pattern(const char*,std::size_t,const char*) { return true; }
           }}}
           EOF
+=======
+
+>>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
       # -------------------------------------------------------
       # 8. Prepare secp256k1
       # -------------------------------------------------------
@@ -146,6 +200,10 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/thirdparty/fc/vendor/secp256k1-zkp
           autoreconf -fi
+<<<<<<< HEAD
+=======
+
+>>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
       # -------------------------------------------------------
       # 9. Configure CMake
       # -------------------------------------------------------
@@ -159,7 +217,11 @@ jobs:
             -DCMAKE_CXX_STANDARD=14 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
             -DBOOST_ROOT="/c/Boost" \
+<<<<<<< HEAD
             -DBOOST_INCLUDEDIR="/c/Boost/include/boost-1_86" \
+=======
+            -DBOOST_INCLUDEDIR="/c/Boost/include/boost-1_84" \
+>>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
             -DBOOST_LIBRARYDIR="/c/Boost/lib" \
             -DBoost_NO_BOOST_CMAKE=ON \
             -DBoost_NO_SYSTEM_PATHS=ON \
@@ -175,6 +237,10 @@ jobs:
             -DCMAKE_CXX_FLAGS="-DWINVER=0x0601 -DSECP256K1_STATIC -Wa,-mbig-obj" \
             -DCMAKE_EXE_LINKER_FLAGS="-static -Wl,--start-group -lbcrypt -Wl,--end-group" \
             -S . -B build
+<<<<<<< HEAD
+=======
+
+>>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
       # -------------------------------------------------------
       # 10. Build vizd și cli_wallet (separat pentru a evita
       #     conflicte la compilarea paralelă a dependențelor)
@@ -184,17 +250,25 @@ jobs:
           cd $GITHUB_WORKSPACE/build
           mingw32-make -j$(nproc) vizd
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 
 >>>>>>> 2c801318 (build: fix Windows CI workflow branch name and update cli_wallet build steps)
+=======
+
+>>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
       - name: Build cli_wallet
         run: |
           cd $GITHUB_WORKSPACE/build
           mingw32-make -j$(nproc) cli_wallet
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 
 >>>>>>> 2c801318 (build: fix Windows CI workflow branch name and update cli_wallet build steps)
+=======
+
+>>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
       # -------------------------------------------------------
       # 11. Verify binaries
       # -------------------------------------------------------
@@ -203,9 +277,13 @@ jobs:
           ls -lh $GITHUB_WORKSPACE/build/programs/vizd/vizd.exe
           ls -lh $GITHUB_WORKSPACE/build/programs/cli_wallet/cli_wallet.exe
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 
 >>>>>>> 2c801318 (build: fix Windows CI workflow branch name and update cli_wallet build steps)
+=======
+
+>>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
       # -------------------------------------------------------
       # 12. Derive release metadata
       #     Tag: win-<short-sha>  e.g. win-a1b2c3d
@@ -224,6 +302,10 @@ jobs:
           "name=$name" >> $env:GITHUB_OUTPUT
           Write-Host "Release tag: $tag"
           Write-Host "Release name: $name"
+<<<<<<< HEAD
+=======
+
+>>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
       # -------------------------------------------------------
       # 13. Create GitHub Release and upload artifacts
       # -------------------------------------------------------
