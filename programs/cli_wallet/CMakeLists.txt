@@ -35,7 +35,7 @@ if(MINGW)
     target_link_libraries(cli_wallet PRIVATE
         -Wl,--push-state,--start-group
         bcrypt
-        -Wl,--pop-state,--end-group
+        -Wl,--pop-state
     )
 endif()
 
