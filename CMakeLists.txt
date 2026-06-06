@@ -2,6 +2,12 @@
 project(VIZ)
 # Note: bcrypt (needed by boost::uuid / random on MinGW) is linked per-target
 # in the if(WIN32) block below to avoid polluting secp256k1 and other sub-targets.
+
+if(MINGW)
+  link_libraries(bcrypt)
+  list(APPEND PLATFORM_SPECIFIC_LIBS bcrypt)
+endif()
+
 cmake_minimum_required(VERSION 3.16)
 
 set(CHAIN_NAME "VIZ")
@@ -91,6 +97,7 @@ endif(CCACHE_FOUND)
 if(WIN32)
 
     message(STATUS "Configuring VIZ on WIN32")
+    set(PLATFORM_SPECIFIC_LIBS) # Păstrăm inițializarea pentru alte biblioteci
     set(DB_VERSION 60)
     set(BDB_STATIC_LIBS 1)
 
@@ -129,15 +136,15 @@ if(WIN32)
 
     elseif(MINGW)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -fpermissive -msse4.2 -Wa,-mbig-obj")
-        set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
-        # Optimization flag apparently needed to get rid of "File too big" assembler errors when compiling in Debug mode
-        # See: https://stackoverflow.com/questions/14125007/gcc-string-table-overflow-error-during-compilation/14601779#29479701
-        set(CMAKE_CXX_FLAGS_DEBUG "-O2")
-        if(FULL_STATIC_BUILD)
-            set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
-        endif(FULL_STATIC_BUILD)
-        # bcrypt: needed by boost::random/uuid on MinGW (provides BCryptGenRandom)
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lbcrypt")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+    set(CMAKE_CXX_FLAGS_DEBUG "-O2")
+    if(FULL_STATIC_BUILD)
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
+    endif(FULL_STATIC_BUILD)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
+    # bcrypt trebuie sa fie dupa toate librariile Boost statice
+    list(APPEND PLATFORM_SPECIFIC_LIBS bcrypt)
+        # Eliminăm adăugarea explicită a bcrypt la PLATFORM_SPECIFIC_LIBS, deoarece este acum link-at global
     endif(MSVC)
 
 else(WIN32) # Apple AND Linux
