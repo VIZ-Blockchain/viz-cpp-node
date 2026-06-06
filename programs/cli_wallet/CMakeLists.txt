@@ -36,10 +36,14 @@ if(MINGW)
         -Wl,--push-state,--start-group
         bcrypt
 <<<<<<< HEAD
+<<<<<<< HEAD
         -Wl,--pop-state
 =======
         -Wl,--pop-state,--end-group
 >>>>>>> 8086b055 (build: update CMake configuration for MinGW UCRT64 and add Windows CI workflow)
+=======
+        -Wl,--pop-state
+>>>>>>> 281f9a1f (build: fix Windows CI workflow branch name and update cli_wallet build steps)
     )
 endif()
 

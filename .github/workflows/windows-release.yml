@@ -4,6 +4,7 @@ on:
   push:
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
     branches: [ windows_build, master ]
 =======
     branches:
@@ -12,6 +13,9 @@ on:
 =======
     branches: [ win-build, master ]
 >>>>>>> 787ffab6 (build: update Windows CI workflow to use correct branch name and comment out cli_wallet build steps)
+=======
+    branches: [ windows_build, master ]
+>>>>>>> 281f9a1f (build: fix Windows CI workflow branch name and update cli_wallet build steps)
     paths-ignore:
       - 'documentation/**'
       - '**.md'
@@ -258,14 +262,18 @@ jobs:
 =======
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 >>>>>>> 2c801318 (build: fix Windows CI workflow branch name and update cli_wallet build steps)
 =======
 
 >>>>>>> dd9a0382 (build: update Windows CI workflow to enhance MinGW UCRT64 build process)
+=======
+>>>>>>> 281f9a1f (build: fix Windows CI workflow branch name and update cli_wallet build steps)
       - name: Build cli_wallet
         run: |
           cd $GITHUB_WORKSPACE/build
           mingw32-make -j$(nproc) cli_wallet
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
 =======
@@ -275,6 +283,8 @@ jobs:
       #    cd $GITHUB_WORKSPACE/build
       #    mingw32-make -j$(nproc) cli_wallet
 >>>>>>> 787ffab6 (build: update Windows CI workflow to use correct branch name and comment out cli_wallet build steps)
+=======
+>>>>>>> 281f9a1f (build: fix Windows CI workflow branch name and update cli_wallet build steps)
 
 >>>>>>> 2c801318 (build: fix Windows CI workflow branch name and update cli_wallet build steps)
 =======
@@ -287,6 +297,7 @@ jobs:
         run: |
           ls -lh $GITHUB_WORKSPACE/build/programs/vizd/vizd.exe
 <<<<<<< HEAD
+<<<<<<< HEAD
           ls -lh $GITHUB_WORKSPACE/build/programs/cli_wallet/cli_wallet.exe
 <<<<<<< HEAD
 <<<<<<< HEAD
@@ -294,6 +305,9 @@ jobs:
 =======
         #  ls -lh $GITHUB_WORKSPACE/build/programs/cli_wallet/cli_wallet.exe
 >>>>>>> 787ffab6 (build: update Windows CI workflow to use correct branch name and comment out cli_wallet build steps)
+=======
+          ls -lh $GITHUB_WORKSPACE/build/programs/cli_wallet/cli_wallet.exe
+>>>>>>> 281f9a1f (build: fix Windows CI workflow branch name and update cli_wallet build steps)
 
 >>>>>>> 2c801318 (build: fix Windows CI workflow branch name and update cli_wallet build steps)
 =======
@@ -332,6 +346,6 @@ jobs:
           generate_release_notes: true
           files: |
             build/programs/vizd/vizd.exe
-         #   build/programs/cli_wallet/cli_wallet.exe
+            build/programs/cli_wallet/cli_wallet.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
