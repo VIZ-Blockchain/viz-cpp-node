@@ -127,6 +127,7 @@ jobs:
           export BOOST_ROOT="$(pwd)/boost-install"
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DBOOST_ROOT="$(cygpath -m "${BOOST_ROOT}")" \
             -DBoost_NO_SYSTEM_PATHS=ON \
             -DBoost_USE_STATIC_LIBS=ON \
