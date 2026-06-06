@@ -161,7 +161,8 @@ jobs:
           cp build/programs/vizd/vizd.exe dist/
           cp build/programs/cli_wallet/cli_wallet.exe dist/
           for exe in dist/*.exe; do
-            ldd "$exe" | grep -iE '/ucrt64/bin/' | awk '{print $3}' | sort -u | while read -r dll; do
+            deps=$(ldd "$exe" | grep -iE '/ucrt64/bin/' | awk '{print $3}' | sort -u || true)
+            for dll in $deps; do
               [ -f "$dll" ] && cp -u "$dll" dist/ || true
             done
           done
