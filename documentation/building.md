@@ -663,30 +663,33 @@ cd boost_1_84_0
 ./bootstrap.sh --with-toolset=gcc
 
 ./b2 -j4 \
-    toolset=gcc \
-    address-model=64 \
-    variant=release \
-    link=static \
-    threading=multi \
-    runtime-link=static \
-    context-impl=fcontext \
-    define=_WIN32_WINNT=0x0601 \
-    define=WINVER=0x0601 \
-    --with-atomic \
-    --with-chrono \
-    --with-context \
-    --with-coroutine \
-    --with-date_time \
-    --with-filesystem \
-    --with-iostreams \
-    --with-locale \
-    --with-program_options \
-    --with-regex \
-    --with-serialization \
-    --with-system \
-    --with-test \
-    --with-thread \
-    install --prefix=/c/Boost
+  toolset=gcc \
+  address-model=64 \
+  variant=release \
+  link=static \
+  threading=multi \
+  runtime-link=static \
+  context-impl=fcontext \
+  define=_WIN32_WINNT=0x0601 \
+  define=WINVER=0x0601 \
+  cxxflags="-march=x86-64 -mtune=generic" \
+  cflags="-march=x86-64 -mtune=generic" \
+  --with-atomic \
+  --with-chrono \
+  --with-context \
+  --with-coroutine \
+  --with-date_time \
+  --with-filesystem \
+  --with-iostreams \
+  --with-locale \
+  --with-program_options \
+  --with-regex \
+  --with-serialization \
+  --with-system \
+  --with-test \
+  --with-thread \
+  install --prefix=/c/Boost
+
 ```
 
 ### Step 3 — Build OpenSSL 3.0 (static, mingw64 target)
@@ -766,7 +769,7 @@ cmake -G "MinGW Makefiles" \
     -DFULL_STATIC_BUILD=ON \
     -DCMAKE_C_FLAGS="-DWINVER=0x0601 -DSECP256K1_STATIC" \
     -DCMAKE_CXX_FLAGS="-DWINVER=0x0601 -DSECP256K1_STATIC -Wa,-mbig-obj" \
-    -DCMAKE_EXE_LINKER_FLAGS="-static" \
+    -DCMAKE_EXE_LINKER_FLAGS="-static -Wl,--start-group -lbcrypt -Wl,--end-group" \
     ..
 
 mingw32-make -j4 vizd
@@ -815,6 +818,40 @@ If you see any `libstdc++`, `libgcc`, `libwinpthread`, or `msvcrt` entries,
   `configure.ac`, not the generated `configure` script. On Linux/macOS,
   the CMake ExternalProject autogen step handles this automatically. On
   Windows it must be run once manually before the first build.
+
+### Quick Build Automation with `build_mingw.sh`
+
+For convenience, you can automate the build process using the `build_mingw.sh` helper script located in the repository root. This script handles the entire toolchain setup, dependency compilation (Boost, OpenSSL), and the node build itself.
+
+**Prerequisites:**
+
+1. Download and install **MSYS2/MinGW** from https://www.msys2.org/.
+2. Launch the **MinGW UCRT64** terminal and update the package system:
+   ```bash
+   pacman -Syu
+   ```
+   (Confirm any terminal restart requests and run the command again if necessary.)
+
+**Instructions:**
+
+1. **Copy the helper script:**
+   Copy `build_mingw.sh` from the VIZ repository root into your MSYS2 home directory (usually `C:\msys64\home\<username>`).
+
+   ```bash
+   # From your MSYS2 home directory:
+   cp /path/to/viz-cpp-node/build_mingw.sh .
+   ```
+
+2. **Run the automation:**
+   Open the **MinGW UCRT64** terminal and execute:
+
+   ```bash
+   cd ~
+   chmod +x build_mingw.sh
+   ./build_mingw.sh
+   ```
+
+This script reproduces the entire build process with a single command, producing fully static binaries without manual step execution.
 
 ## Building on Other Platforms
 
