@@ -663,6 +663,7 @@ cd boost_1_84_0
 ./bootstrap.sh --with-toolset=gcc
 
 ./b2 -j4 \
+<<<<<<< HEAD
   toolset=gcc \
   address-model=64 \
   variant=release \
@@ -690,6 +691,32 @@ cd boost_1_84_0
   --with-thread \
   install --prefix=/c/Boost
 
+=======
+    toolset=gcc \
+    address-model=64 \
+    variant=release \
+    link=static \
+    threading=multi \
+    runtime-link=static \
+    context-impl=fcontext \
+    define=_WIN32_WINNT=0x0601 \
+    define=WINVER=0x0601 \
+    --with-atomic \
+    --with-chrono \
+    --with-context \
+    --with-coroutine \
+    --with-date_time \
+    --with-filesystem \
+    --with-iostreams \
+    --with-locale \
+    --with-program_options \
+    --with-regex \
+    --with-serialization \
+    --with-system \
+    --with-test \
+    --with-thread \
+    install --prefix=/c/Boost
+>>>>>>> 8086b055 (build: update CMake configuration for MinGW UCRT64 and add Windows CI workflow)
 ```
 
 ### Step 3 — Build OpenSSL 3.0 (static, mingw64 target)
@@ -769,7 +796,11 @@ cmake -G "MinGW Makefiles" \
     -DFULL_STATIC_BUILD=ON \
     -DCMAKE_C_FLAGS="-DWINVER=0x0601 -DSECP256K1_STATIC" \
     -DCMAKE_CXX_FLAGS="-DWINVER=0x0601 -DSECP256K1_STATIC -Wa,-mbig-obj" \
+<<<<<<< HEAD
     -DCMAKE_EXE_LINKER_FLAGS="-static -Wl,--start-group -lbcrypt -Wl,--end-group" \
+=======
+    -DCMAKE_EXE_LINKER_FLAGS="-static" \
+>>>>>>> 8086b055 (build: update CMake configuration for MinGW UCRT64 and add Windows CI workflow)
     ..
 
 mingw32-make -j4 vizd
@@ -818,6 +849,7 @@ If you see any `libstdc++`, `libgcc`, `libwinpthread`, or `msvcrt` entries,
   `configure.ac`, not the generated `configure` script. On Linux/macOS,
   the CMake ExternalProject autogen step handles this automatically. On
   Windows it must be run once manually before the first build.
+<<<<<<< HEAD
 
 ### Quick Build Automation with `build_mingw.sh`
 
@@ -852,6 +884,8 @@ For convenience, you can automate the build process using the `build_mingw.sh` h
    ```
 
 This script reproduces the entire build process with a single command, producing fully static binaries without manual step execution.
+=======
+>>>>>>> 8086b055 (build: update CMake configuration for MinGW UCRT64 and add Windows CI workflow)
 
 ## Building on Other Platforms
 
