@@ -1907,9 +1907,10 @@ void snapshot_plugin::plugin_impl::on_applied_block(const graphene::protocol::si
             wlog("Snapshot already in progress, skipping ${label} snapshot at ${p}", ("label", label)("p", output.string()));
             return;
         }
-        if (!snapshot_thread) {
-            snapshot_thread = std::make_unique<fc::thread>("async_snapshot");
-        }
+        // snapshot_thread is pre-created in plugin_startup(); constructing
+        // an fc::thread here (inside with_weak_read_lock) would call p->wait()
+        // and yield the fiber, causing a deadlock on Windows.
+        FC_ASSERT(snapshot_thread, "snapshot_thread must be pre-created in plugin_startup()");
 
         // Pause P2P block processing SYNCHRONOUSLY before launching the async
         // task.  This lambda runs inside on_applied_block →
@@ -4220,6 +4221,17 @@ void snapshot_plugin::plugin_startup() {
         }
     }
 
+    // Pre-create the async snapshot thread so schedule_async_snapshot never
+    // constructs an fc::thread (which calls p->wait(), yielding the calling
+    // fiber) inside the on_applied_block → with_weak_read_lock callback.
+    // On Windows this caused a multi-minute freeze / deadlock because the
+    // fiber yield from within the read-lock callback prevented the P2P
+    // thread from making progress.
+    if (my->snapshot_at_block > 0 || my->snapshot_every_n_blocks > 0 || my->needs_fresh_snapshot ||
+        (my->db._dlt_mode && !my->snapshot_dir.empty())) {
+        my->snapshot_thread = std::make_unique<fc::thread>("async_snapshot");
+    }
+
     // Start stalled sync detection if enabled (for DLT mode)
     if (my->enable_stalled_sync_detection && !my->trusted_snapshot_peers.empty()) {
         my->start_stalled_sync_detection();
@@ -4260,9 +4272,8 @@ void snapshot_plugin::plugin_startup() {
                 wlog("Snapshot already in progress, skipping post-reset snapshot");
                 return;
             }
-            if (!my->snapshot_thread) {
-                my->snapshot_thread = std::make_unique<fc::thread>("async_snapshot");
-            }
+            // snapshot_thread is pre-created in plugin_startup()
+            FC_ASSERT(my->snapshot_thread, "snapshot_thread must be pre-created in plugin_startup()");
             my->snapshot_future = my->snapshot_thread->async([this, output]() {
                 struct flag_guard {
                     std::atomic<bool>& flag;
@@ -4291,7 +4302,11 @@ void snapshot_plugin::plugin_shutdown() {
     my->stop_stalled_sync_detection();
     my->stop_server();
 
-    // Wait for in-progress async snapshot to finish, then tear down the thread
+    // Wait for the in-progress async snapshot to finish, then tear down the
+    // thread.  The snapshot only reads the DB (Phase 1, under a read lock) and
+    // then compresses + writes the file (Phase 2, holding no DB lock), so the
+    // snapshot thread always makes progress and this wait completes promptly —
+    // we simply let it finish writing before exiting.
     if (my->snapshot_thread) {
         try {
             if (my->snapshot_future.valid())
