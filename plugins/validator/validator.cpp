@@ -1700,26 +1700,32 @@ namespace graphene {
                             }
                         }
                     }
-                    // NTP drift check: warn if local clock is >250ms behind NTP time.
-                    // A slow local clock causes get_slot_at_time() to return slot=0 even
-                    // when the network is expecting our block, making us miss slots silently.
+                    // NTP drift check: informational only. The measured offset is the
+                    // software correction graphene::time::now() ALREADY applies, and slot
+                    // math above runs on that corrected time — so this drift does not by
+                    // itself cause missed slots. It merely signals that the host system
+                    // clock is poorly disciplined (common on Windows / W32Time); the
+                    // operator should fix it at the OS level for robustness.
                     {
                         int64_t ntp_us = 0;
                         try { ntp_us = graphene::time::ntp_error().count(); } catch (...) {}
 
                         #if defined(_WIN32)
-                        constexpr int64_t NTP_WARN_THRESHOLD_US = 250000; // 250ms Winbdows
+                        // Windows (W32Time) syncs rarely and loosely, so a larger standing
+                        // offset is normal there — raise the notice threshold accordingly.
+                        constexpr int64_t NTP_WARN_THRESHOLD_US = 500000; // 500ms Windows
                         #else
                         constexpr int64_t NTP_WARN_THRESHOLD_US = 250000;  // 250ms Linux/macOS
                         #endif
 
-                        if (ntp_us > NTP_WARN_THRESHOLD_US) { // local clock >250ms behind NTP
+                        if (ntp_us > NTP_WARN_THRESHOLD_US) {
                             static fc::time_point _last_ntp_drift_log;
                             auto _now_nd = fc::time_point::now();
-                            if ((_now_nd - _last_ntp_drift_log).count() > 10000000) {
+                            if ((_now_nd - _last_ntp_drift_log).count() > 600000000) { // at most once per 10 min
                                 _last_ntp_drift_log = _now_nd;
                                 auto next_slot_time = db.get_slot_time(1);
-                                wlog("NTP DRIFT: local clock is ${n}ms behind NTP — may miss slots! "
+                                ilog("NTP offset: host clock is ${n}ms off NTP (corrected in software; "
+                                     "consider disciplining the system clock). "
                                      "(now=${now} next_slot=${ns} head=#${h})",
                                      ("n", ntp_us / 1000)("now", now_fine)
                                      ("ns", next_slot_time)("h", db.head_block_num()));
