@@ -10,6 +10,8 @@
 #include <fc/string.hpp>
 #include <fc/io/json.hpp>
 #include <sstream>
+#include <thread>
+#include <chrono>
 
 #include <boost/signals2/connection.hpp>
 #include <appbase/application.hpp>
@@ -37,6 +39,8 @@ struct validator_guard_plugin::impl {
     bool                        _enabled        = true;
     uint32_t                    _check_interval = 20;   // blocks between periodic checks
     uint32_t                    _disable_threshold = 5; // consecutive blocks by same validator before auto-disable
+    bool                        _disable_on_shutdown = true; // on graceful shutdown, null the signing key of enabled validators
+    uint32_t                    _shutdown_grace_sec = 10;    // seconds to keep re-broadcasting disable txs so peers receive them
     bool                        _initial_check_done = false; // true once the node is confirmed in sync at startup
     bool                        _stale_production_config = false; // mirrors enable-stale-production from validator config
     boost::signals2::connection _applied_block_connection;   // applied_block signal connection
@@ -72,6 +76,11 @@ struct validator_guard_plugin::impl {
     void send_validator_disable(const std::string& validator_name,
                               const graphene::chain::validator_object& obj,
                               const validator_info& config);
+
+    // Graceful-shutdown handler: nulls the signing key of every configured
+    // validator that is still enabled on-chain and keeps re-broadcasting the
+    // transactions until peers have had a chance to receive them.
+    void disable_on_shutdown();
 
     graphene::plugins::chain::plugin&   chain_;
     graphene::plugins::p2p::p2p_plugin& p2p_;
@@ -293,6 +302,122 @@ void validator_guard_plugin::impl::send_validator_disable(
     }
 }
 
+// ─── disable_on_shutdown ───────────────────────────────────────────────────────
+// Called once during plugin_shutdown(). For every configured validator that is
+// still ENABLED on-chain (non-null signing key) we broadcast a validator_update
+// that nulls the signing key, so the network stops scheduling this node while it
+// is offline (avoiding missed blocks). We cannot get a peer-level ACK, so we make
+// a best effort to guarantee delivery: broadcast_transaction() blocks until the
+// bytes are written into every peer socket, and we keep re-broadcasting for a
+// short grace window so the txs survive a transient relay miss and have time to
+// spread before this node disappears.
+void validator_guard_plugin::impl::disable_on_shutdown() {
+    if (!_enabled || _validator_configs.empty()) return;
+    if (!_disable_on_shutdown) {
+        ilog("validator_guard: disable-on-shutdown is OFF, skipping");
+        return;
+    }
+
+    static const graphene::protocol::public_key_type null_key;
+
+    // Build and sign every disable transaction under a single read lock, then
+    // release the lock BEFORE broadcasting. broadcast_transaction() dispatches to
+    // the P2P thread and waits, and that thread may need the write lock to apply
+    // an incoming block — holding a read lock across the broadcast could deadlock.
+    std::vector<std::pair<std::string, graphene::chain::signed_transaction>> txs;
+    try {
+        db().with_weak_read_lock([&]() {
+            const auto& idx = db()
+                .get_index<graphene::chain::validator_index>()
+                .indices()
+                .get<graphene::chain::by_name>();
+
+            // Expiration must outlive the whole grace window plus a margin so the
+            // tx stays valid while peers relay and include it after we are gone.
+            fc::time_point_sec expiration(
+                graphene::time::now() + fc::seconds(_shutdown_grace_sec + 120));
+
+            for (const auto& entry : _validator_configs) {
+                const std::string& name   = entry.first;
+                const validator_info& cfg  = entry.second;
+
+                auto itr = idx.find(name);
+                if (itr == idx.end()) continue;
+                if (itr->signing_key == null_key) continue;   // already disabled
+
+                graphene::protocol::validator_update_operation op;
+                op.owner             = name;
+                op.url               = std::string(itr->url.begin(), itr->url.end());
+                op.block_signing_key = null_key;
+
+                graphene::chain::signed_transaction tx;
+                tx.operations.push_back(op);
+                tx.set_expiration(expiration);
+                tx.set_reference_block(db().head_block_id());
+                tx.sign(cfg.active_key, db().get_chain_id());
+
+                txs.emplace_back(name, std::move(tx));
+            }
+        });
+    } catch (const fc::exception& e) {
+        elog("validator_guard: failed to build shutdown disable transactions: ${e}",
+             ("e", e.to_detail_string()));
+        return;
+    }
+
+    if (txs.empty()) {
+        ilog("validator_guard: no enabled validators to disable on shutdown");
+        return;
+    }
+
+    const uint32_t peers = p2p_.get_connections_count();
+    if (peers == 0) {
+        wlog("validator_guard: shutting down with NO connected peers — disable "
+             "transactions for ${n} validator(s) cannot be propagated", ("n", txs.size()));
+        return;
+    }
+
+    ilog("validator_guard: graceful shutdown — disabling ${n} enabled validator(s) "
+         "across ${p} peer(s)", ("n", txs.size())("p", peers));
+
+    // Initial broadcast. Each call blocks until the tx bytes are written into
+    // every active peer's socket.
+    for (const auto& nt : txs) {
+        try {
+            ilog("validator_guard: broadcasting shutdown disable for '${w}' [ID: ${id}]",
+                 ("w", nt.first)("id", nt.second.id()));
+            p2p_.broadcast_transaction(nt.second);
+        } catch (const fc::exception& e) {
+            elog("validator_guard: shutdown disable broadcast FAILED for '${w}': ${e}",
+                 ("w", nt.first)("e", e.to_detail_string()));
+        }
+    }
+
+    // Grace window: keep the disable txs alive in the network by re-broadcasting
+    // them periodically. Stop early if every peer goes away (nothing left to send
+    // to). Re-broadcast every 3 seconds — the txs are idempotent (same id), so the
+    // peer mempools simply ignore duplicates.
+    for (uint32_t elapsed = 0; elapsed < _shutdown_grace_sec; ++elapsed) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+
+        if (p2p_.get_connections_count() == 0) {
+            wlog("validator_guard: lost all peers ${e}s into shutdown grace, "
+                 "stopping re-broadcast", ("e", elapsed + 1));
+            return;
+        }
+
+        if ((elapsed + 1) % 3 == 0) {
+            for (const auto& nt : txs) {
+                try { p2p_.broadcast_transaction(nt.second); }
+                catch (const fc::exception&) { /* peer churn during shutdown — ignore */ }
+            }
+        }
+    }
+
+    ilog("validator_guard: shutdown disable complete for ${n} validator(s)",
+         ("n", txs.size()));
+}
+
 // ─── plugin lifecycle ────────────────────────────────────────────────────────
 
 validator_guard_plugin::validator_guard_plugin()  = default;
@@ -334,6 +459,18 @@ void validator_guard_plugin::set_program_options(
         ("witness-guard-disable",  // DEPRECATED alias
          bpo::value<uint32_t>(),
          "[DEPRECATED] Use validator-guard-disable.")
+
+        ("validator-guard-disable-on-shutdown",
+         bpo::value<bool>()->default_value(true),
+         "On graceful shutdown, broadcast a validator_update that nulls the signing key "
+         "of every configured validator still enabled on-chain, so the network stops "
+         "scheduling this node while it is offline. (default: true)")
+
+        ("validator-guard-shutdown-grace",
+         bpo::value<uint32_t>()->default_value(10),
+         "Seconds to keep re-broadcasting the shutdown disable transactions so peers "
+         "have time to receive and relay them. Keep below the container/process kill "
+         "timeout. (default: 10)")
         ;
 
     cli.add(cfg);
@@ -391,6 +528,18 @@ void validator_guard_plugin::plugin_initialize(
                  ("n", pimpl->_disable_threshold));
         } else {
             ilog("validator_guard: auto-disable feature is OFF (validator-guard-disable = 0)");
+        }
+
+        // graceful-shutdown disable + propagation grace window
+        if (options.count("validator-guard-disable-on-shutdown")) {
+            pimpl->_disable_on_shutdown = options["validator-guard-disable-on-shutdown"].as<bool>();
+        }
+        if (options.count("validator-guard-shutdown-grace")) {
+            pimpl->_shutdown_grace_sec = options["validator-guard-shutdown-grace"].as<uint32_t>();
+        }
+        if (pimpl->_disable_on_shutdown) {
+            ilog("validator_guard: disable-on-shutdown enabled — will null signing keys "
+                 "on shutdown and re-broadcast for ${s}s", ("s", pimpl->_shutdown_grace_sec));
         }
 
         // validator configs — each entry is a JSON triplet: ["name", "signing_wif", "active_wif"]
@@ -587,9 +736,24 @@ void validator_guard_plugin::plugin_startup() {
 }
 
 void validator_guard_plugin::plugin_shutdown() {
+    // Disconnect from applied_block first so the consecutive-block guard does not
+    // fire (and double-broadcast) while we run the graceful-shutdown disable below.
     if (pimpl && pimpl->_applied_block_connection.connected()) {
         pimpl->_applied_block_connection.disconnect();
     }
+
+    // Gracefully disable our validators and make a best effort to ensure the
+    // disable transactions reach peers before we exit.
+    if (pimpl) {
+        try {
+            pimpl->disable_on_shutdown();
+        } catch (const fc::exception& e) {
+            elog("validator_guard: disable_on_shutdown failed: ${e}", ("e", e.to_detail_string()));
+        } catch (...) {
+            elog("validator_guard: disable_on_shutdown failed with an unknown exception");
+        }
+    }
+
     ilog("validator_guard: plugin_shutdown()");
 }
 

@@ -132,6 +132,23 @@ COPY share/vizd/vizd.sh /etc/service/vizd/run
 COPY share/vizd/snapshot-testnet.json /var/lib/vizd/snapshot.json
 COPY share/vizd/config/config_testnet.ini /etc/vizd/config.ini
 
+# Graceful shutdown window.
+#
+# On SIGTERM, phusion's PID 1 (my_init) stops the runit `vizd` service and waits
+# KILL_PROCESS_TIMEOUT seconds for vizd to exit before sending SIGKILL
+# (KILL_ALL_PROCESSES_TIMEOUT covers any stragglers). The default is 5s, which is
+# not enough: vizd needs time to flush the database and let the validator_guard /
+# snapshot plugins finish (validator_guard broadcasts the validator-disable txs and
+# waits for peers to receive them). Allow up to 30s.
+#
+# IMPORTANT: Docker's own stop grace period (default 10s) SIGKILLs the whole
+# container regardless of this setting, so operators MUST give vizd the same
+# window when stopping it:
+#   docker stop -t 30 vizd
+#   # or in compose:  stop_grace_period: 30s
+ENV KILL_PROCESS_TIMEOUT=30
+ENV KILL_ALL_PROCESSES_TIMEOUT=30
+
 # Log rotation — IMPORTANT for production deployments.
 #
 # vizd writes all output to stdout/stderr. Docker's default json-file log driver

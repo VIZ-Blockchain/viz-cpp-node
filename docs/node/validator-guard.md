@@ -28,6 +28,8 @@ plugin = validator_guard
 | `validator-guard-interval` | `20` | Check interval in blocks (~60 s at 3 s/block). |
 | `validator-guard-validator` | — | JSON triplet `[name, signing_wif, active_wif]`. Repeatable. |
 | `validator-guard-disable` | `5` | Consecutive blocks produced by a single validator before auto-disabling it. `0` = disabled. |
+| `validator-guard-disable-on-shutdown` | `true` | On graceful shutdown, null the signing key of every configured validator still enabled on-chain so the network stops scheduling this node while it is offline. |
+| `validator-guard-shutdown-grace` | `10` | Seconds to keep re-broadcasting the shutdown disable transactions so peers have time to receive and relay them. Keep below the container/process kill timeout. |
 
 The plugin also reads `enable-stale-production` from the validator plugin config.
 
@@ -89,6 +91,20 @@ Each check (in order):
 4. Broadcasts via P2P.
 5. Tracks the transaction ID in `_pending_confirmations` to prevent duplicate sends.
 
+### Graceful Shutdown
+
+When the node shuts down, the plugin disables every configured validator that is still **enabled** on-chain (non-null signing key), so the network stops scheduling this node while it is offline and no blocks are missed. This is the inverse of the startup restore: a clean shutdown nulls the keys, and the next startup restores them automatically via the periodic check.
+
+On `plugin_shutdown` (controlled by `validator-guard-disable-on-shutdown`, default on):
+
+1. Disconnects from the per-block handler first so the consecutive-block guard cannot fire in parallel.
+2. Under a read lock, builds and signs a `validator_update_operation` with a null key for each enabled validator (expiration = `validator-guard-shutdown-grace + 120` s so the transaction outlives propagation). The lock is released **before** broadcasting to avoid a deadlock with the P2P thread.
+3. If there are **no connected peers**, logs a warning and stops — there is nobody to propagate to.
+4. Broadcasts each transaction. `broadcast_transaction` blocks until the bytes are written into every active peer's socket.
+5. For up to `validator-guard-shutdown-grace` seconds, re-broadcasts the (idempotent) transactions every 3 seconds so they survive a transient relay miss and have time to spread. Stops early if all peers disconnect.
+
+> **Operator note:** the grace window only helps if the process is actually given that long to exit. In Docker the container is SIGKILLed after its stop timeout (default 10 s), so stop the node with a matching window — `docker stop -t 30 vizd` (or `stop_grace_period: 30s` in compose). The shipped images set `KILL_PROCESS_TIMEOUT` / `KILL_ALL_PROCESSES_TIMEOUT` to 30 s for the runit service.
+
 ---
 
 ## Safety Guards
@@ -101,6 +117,7 @@ Each check (in order):
 | **Long fork detection** | Skips if LIB is older than 200 seconds. |
 | **Authority validation** | Active keys verified against on-chain authority at startup. |
 | **Consecutive-block auto-disable** | Automatically nulls the signing key after N consecutive blocks from the same validator. Auto-restore suppressed until the operator manually fixes the key. |
+| **Graceful-shutdown disable** | On shutdown, nulls the signing key of enabled validators and re-broadcasts the transactions during a grace window so peers receive them before the node goes offline. Skipped when there are no connected peers. |
 | **Duplicate prevention** | In-flight restores tracked with expiration; no duplicate transactions sent. |
 
 ---
@@ -118,6 +135,9 @@ Each check (in order):
 | `POTENTIAL LONG FORK DETECTED! LIB #N is Xs old. Skipping restoration.` | Restoration skipped due to stale LIB |
 | `validator 'alice' produced N consecutive blocks — auto-disabling` | Consecutive-block threshold reached |
 | `'alice' was auto-disabled (consecutive block limit), skipping auto-restore` | Auto-restore suppressed after auto-disable |
+| `graceful shutdown — disabling N enabled validator(s) across P peer(s)` | Shutdown disable started |
+| `broadcasting shutdown disable for 'alice' [ID: ...]` | Shutdown disable transaction sent |
+| `shutting down with NO connected peers — disable transactions ... cannot be propagated` | No peers at shutdown; disable skipped |
 | `validator_update FAILED for 'alice': [error]` | Broadcast failed |
 
 ---
