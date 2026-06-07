@@ -35,19 +35,7 @@ if(MINGW)
     target_link_libraries(cli_wallet PRIVATE
         -Wl,--push-state,--start-group
         bcrypt
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
         -Wl,--pop-state
-=======
-        -Wl,--pop-state,--end-group
->>>>>>> 8086b055 (build: update CMake configuration for MinGW UCRT64 and add Windows CI workflow)
-=======
-        -Wl,--pop-state
->>>>>>> 281f9a1f (build: fix Windows CI workflow branch name and update cli_wallet build steps)
-=======
-        -Wl,--pop-state
->>>>>>> 09eb8f13b00e6685bb818b2233f2eef8900925db
     )
 endif()
 
