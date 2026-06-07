@@ -3915,6 +3915,26 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
                 detail.find("timed out") != std::string::npos ||
                 detail.find("Host is unreachable") != std::string::npos ||
                 detail.find("host unreachable") != std::string::npos;            // Windows WSA 10065
+            // Backup: match on numeric Windows error codes in case the message
+            // text was garbled by locale encoding before the asio.cpp UTF-8 fix.
+            if (!is_transient) {
+                static const std::string kSysTag = "[system:";
+                auto pos = detail.find(kSysTag);
+                if (pos != std::string::npos) {
+                    auto end = detail.find(']', pos);
+                    if (end != std::string::npos) {
+                        int sys_code = std::stoi(detail.substr(pos + kSysTag.size(), end - pos - kSysTag.size()));
+                        if (sys_code == 10054 ||  // WSAECONNRESET  — connection reset by peer
+                            sys_code == 10061 ||  // WSAECONNREFUSED — connection refused
+                            sys_code == 10053 ||  // WSAECONNABORTED — connection aborted
+                            sys_code == 10065 ||  // WSAEHOSTUNREACH — host unreachable
+                            sys_code == 10051 ||  // WSAENETUNREACH  — network unreachable
+                            sys_code == 10004 ||  // WSAEINTR        — operation aborted
+                            sys_code == 121)      // ERROR_SEM_TIMEOUT — semaphore timeout
+                            is_transient = true;
+                    }
+                }
+            }
             bool is_benign_close =
                 detail.find("Bad file descriptor") != std::string::npos ||
                 detail.find("bad file descriptor") != std::string::npos ||
