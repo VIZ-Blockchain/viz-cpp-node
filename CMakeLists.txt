@@ -103,7 +103,7 @@ if(WIN32)
 
     # Minimum Windows 7 / Vista (0x0601).  XP (0x0501) is too old for
     # boost::asio extended Winsock2 APIs and modern async I/O.
-    add_compile_definitions(_WIN32_WINNT=0x0601 WINVER=0x0601)
+    add_compile_definitions(_WIN32_WINNT=0x0A00 WINVER=0x0A00)
 
     set(ZLIB_LIBRARIES "")
     set(DEFAULT_EXECUTABLE_INSTALL_DIR bin/)
