@@ -95,7 +95,9 @@ json_rpc::plugin, chain::plugin
 { "method": "database_api.get_dynamic_global_properties", "params": [] }
 ```
 
-关键字段：`head_block_number`、`head_block_id`、`time`、`current_validator`、`total_vesting_shares`、`total_vesting_fund_viz`、`committee_fund`、`last_irreversible_block_num`、`participation_count`。
+关键字段：`head_block_number`、`head_block_id`、`time`、`current_validator`、`total_vesting_shares`、`total_vesting_fund_viz`、`committee_fund`、`last_irreversible_block_num`、`participation_count`、`earliest_available_block_num`。
+
+`earliest_available_block_num` 是节点本地字段（非共识）：该特定 API 节点能够提供完整数据的最早区块。在快照导入后或使用滚动 DLT 区块日志时，较早的历史会被裁剪，因此客户端应从该区块开始解析，而不是请求更早的区块而遇到缺失数据。
 
 ---
 

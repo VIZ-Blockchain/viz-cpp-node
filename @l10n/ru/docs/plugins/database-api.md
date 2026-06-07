@@ -95,7 +95,9 @@ json_rpc::plugin, chain::plugin
 { "method": "database_api.get_dynamic_global_properties", "params": [] }
 ```
 
-Ключевые поля: `head_block_number`, `head_block_id`, `time`, `current_validator`, `total_vesting_shares`, `total_vesting_fund_viz`, `committee_fund`, `last_irreversible_block_num`, `participation_count`.
+Ключевые поля: `head_block_number`, `head_block_id`, `time`, `current_validator`, `total_vesting_shares`, `total_vesting_fund_viz`, `committee_fund`, `last_irreversible_block_num`, `participation_count`, `earliest_available_block_num`.
+
+`earliest_available_block_num` — нодо-локальное поле (не консенсусное): самый ранний блок, для которого эта конкретная API-нода может отдать полные данные. После импорта снапшота или при использовании rolling DLT block log более старая история обрезается, поэтому клиентам следует начинать парсинг с этого блока, а не запрашивать более ранние блоки, упираясь в отсутствие данных.
 
 ---
 
