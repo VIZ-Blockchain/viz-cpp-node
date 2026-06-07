@@ -344,7 +344,13 @@ DEFINE_API(plugin, get_chain_properties) {
 }
 
 dynamic_global_property_api_object plugin::api_impl::get_dynamic_global_properties() const {
-    return database().get(dynamic_global_property_object::id_type());
+    dynamic_global_property_api_object result(
+        database().get(dynamic_global_property_object::id_type()));
+    // Lowest block this node can serve full data for (history below it is
+    // pruned after snapshot import / rolling DLT log).  Lets clients start
+    // parsing from here instead of requesting an unavailable gap.
+    result.earliest_available_block_num = database().earliest_available_block_num();
+    return result;
 }
 
 DEFINE_API(plugin, get_hardfork_version) {
