@@ -28,6 +28,8 @@ plugin = validator_guard
 | `validator-guard-interval` | `20` | 检查间隔，以区块为单位（按 3 秒/区块计约 60 秒）。 |
 | `validator-guard-validator` | — | JSON 三元组 `[name, signing_wif, active_wif]`。可重复。 |
 | `validator-guard-disable` | `5` | 同一验证者连续生产的区块数，超过后自动禁用。`0` = 禁用。 |
+| `validator-guard-disable-on-shutdown` | `true` | 优雅关闭时，将每个仍在链上启用的已配置验证者的签名密钥清空，使网络在本节点离线期间停止调度它。 |
+| `validator-guard-shutdown-grace` | `10` | 持续重新广播关闭禁用交易的秒数，以便对等节点有时间接收并转发它们。请保持低于容器/进程的终止超时。 |
 
 插件还从验证者插件配置中读取 `enable-stale-production`。
 
@@ -89,6 +91,20 @@ validator-guard-interval = 10
 4. 通过 P2P 广播。
 5. 在 `_pending_confirmations` 中跟踪交易 ID 以防止重复发送。
 
+### 优雅关闭
+
+节点关闭时，插件会禁用每个仍在链上**启用**（签名密钥非 null）的已配置验证者，使网络在本节点离线期间停止调度它，从而不漏出区块。这是启动恢复的逆操作：干净关闭会清空密钥，而下次启动通过周期性检查自动恢复它们。
+
+在 `plugin_shutdown` 时（由 `validator-guard-disable-on-shutdown` 控制，默认开启）：
+
+1. 首先断开每区块处理程序，使连续区块防护不会并行触发。
+2. 在读锁下，为每个已启用的验证者构建并签名一个带 null 密钥的 `validator_update_operation`（到期时间 = `validator-guard-shutdown-grace + 120` 秒，使交易在传播期间保持有效）。在广播**之前**释放锁，以避免与 P2P 线程死锁。
+3. 如果**没有已连接的对等节点**，记录警告并停止——没有可传播的对象。
+4. 广播每笔交易。`broadcast_transaction` 会阻塞，直到字节写入每个活跃对等节点的套接字。
+5. 在最多 `validator-guard-shutdown-grace` 秒内，每 3 秒重新广播这些（幂等）交易，使它们在转发偶发丢失时仍能存活并有时间传播。若所有对等节点断开则提前停止。
+
+> **运维提示：** grace 窗口只有在进程确实获得了那么长的退出时间时才有用。在 Docker 中，容器会在其停止超时（默认 10 秒）后被 SIGKILL，因此请用匹配的窗口停止节点——`docker stop -t 30 vizd`（或 compose 中的 `stop_grace_period: 30s`）。发布的镜像将 runit 服务的 `KILL_PROCESS_TIMEOUT` / `KILL_ALL_PROCESSES_TIMEOUT` 设置为 30 秒。
+
 ---
 
 ## 安全机制
@@ -101,6 +117,7 @@ validator-guard-interval = 10
 | **长 fork 检测** | 如果 LIB 超过 200 秒则跳过。 |
 | **权限验证** | 启动时针对链上权限验证活跃密钥。 |
 | **连续区块自动禁用** | 同一验证者连续生产 N 个区块后自动清空签名密钥。操作员手动修复密钥前，自动恢复被抑制。 |
+| **优雅关闭禁用** | 关闭时清空已启用验证者的签名密钥，并在 grace 窗口内重新广播交易，使对等节点在节点离线前收到它们。无已连接对等节点时跳过。 |
 | **重复防护** | 进行中的恢复以过期方式跟踪；不发送重复交易。 |
 
 ---
@@ -118,6 +135,9 @@ validator-guard-interval = 10
 | `POTENTIAL LONG FORK DETECTED! LIB #N is Xs old. Skipping restoration.` | 由于 LIB 过期而跳过恢复 |
 | `validator 'alice' produced N consecutive blocks — auto-disabling` | 连续区块阈值已达到 |
 | `'alice' was auto-disabled (consecutive block limit), skipping auto-restore` | 自动禁用后抑制自动恢复 |
+| `graceful shutdown — disabling N enabled validator(s) across P peer(s)` | 关闭禁用已开始 |
+| `broadcasting shutdown disable for 'alice' [ID: ...]` | 关闭禁用交易已发送 |
+| `shutting down with NO connected peers — disable transactions ... cannot be propagated` | 关闭时无对等节点；禁用已跳过 |
 | `validator_update FAILED for 'alice': [error]` | 广播失败 |
 
 ---
