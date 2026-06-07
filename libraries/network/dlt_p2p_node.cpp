@@ -576,6 +576,27 @@ void dlt_p2p_node::periodic_lifecycle_timeout_check() {
 
 // ── Message send/receive ─────────────────────────────────────────────
 
+namespace {
+// Read the msg_type field out of an already-serialized wire frame.
+// Frame layout matches message_header: [uint32 size][uint32 msg_type][payload].
+inline uint32_t frame_msg_type(const std::vector<char>& frame) {
+    uint32_t t = 0;
+    if (frame.size() >= sizeof(message_header))
+        std::memcpy(&t, frame.data() + sizeof(uint32_t), sizeof(uint32_t));
+    return t;
+}
+
+// Messages safe to drop (rather than disconnect) when the send queue is full.
+// fork_status carries only the latest head/lib/fork snapshot, so a missed one
+// is superseded by the next; transactions are gossiped redundantly by peers.
+// Blocks and request/reply messages are NOT droppable — losing them would
+// stall a peer's sync or leave a request unanswered.
+inline bool is_droppable_when_full(uint32_t msg_type) {
+    return msg_type == dlt_fork_status_message_type
+        || msg_type == dlt_transaction_message_type;
+}
+} // anonymous namespace
+
 void dlt_p2p_node::send_message(peer_id peer, const message& msg) {
     auto it = _connections.find(peer);
     if (it == _connections.end() || !it->second) return;
@@ -603,11 +624,34 @@ void dlt_p2p_node::send_message(peer_id peer, const message& msg) {
         auto state_it = _peer_states.find(peer);
         if (state_it != _peer_states.end()) {
             auto& state = state_it->second;
+
+            // (A) Coalesce superseded status snapshots: a fork_status frame
+            // only carries the latest head/lib/fork state, so a queued one is
+            // obsolete the moment a newer is produced.  Replace the pending
+            // frame of the same type in place instead of growing the queue —
+            // this is the main source of queue bloat during a catch-up burst.
+            if (msg.msg_type == dlt_fork_status_message_type) {
+                for (auto& frame : state.send_queue) {
+                    if (frame_msg_type(frame) == dlt_fork_status_message_type) {
+                        frame = std::move(buf);
+                        return;
+                    }
+                }
+            }
+
             if (state.send_queue.size() < dlt_peer_state::SEND_QUEUE_MAX_DEPTH) {
                 state.send_queue.push_back(std::move(buf));
                 ++state.send_queue_total;
+            } else if (is_droppable_when_full(msg.msg_type)) {
+                // (B) Queue full but this message is recoverable (status snapshot
+                // or gossiped transaction).  Drop it and keep the peer instead of
+                // tearing down a healthy connection over a transient local stall.
+                // Drops surface in the periodic status line (qd=) for visibility.
+                ++state.send_queue_dropped;
+                return;
             } else {
-                // Queue is at max depth — peer can't consume data fast enough.
+                // Queue at max depth with a message we cannot safely drop
+                // (block / request reply) — the peer genuinely can't keep up.
                 // Skip if disconnect is already in progress: handle_disconnect yields
                 // at cancel_and_wait, allowing other fibers to call send_message for
                 // the same peer, which would re-enter this branch and spam the log.

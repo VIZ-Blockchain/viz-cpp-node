@@ -95,7 +95,9 @@ Returns live chain state: current head block number and ID, time, head validator
 { "method": "database_api.get_dynamic_global_properties", "params": [] }
 ```
 
-Key fields: `head_block_number`, `head_block_id`, `time`, `current_validator`, `total_vesting_shares`, `total_vesting_fund_viz`, `committee_fund`, `last_irreversible_block_num`, `participation_count`.
+Key fields: `head_block_number`, `head_block_id`, `time`, `current_validator`, `total_vesting_shares`, `total_vesting_fund_viz`, `committee_fund`, `last_irreversible_block_num`, `participation_count`, `earliest_available_block_num`.
+
+`earliest_available_block_num` is node-local (not consensus): the lowest block this particular API node can serve full data for. After a snapshot import or with a rolling DLT block log, older history is pruned, so clients should start parsing from this block instead of requesting earlier blocks that would hit missing data.
 
 ---
 

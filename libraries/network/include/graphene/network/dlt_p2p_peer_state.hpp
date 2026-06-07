@@ -97,7 +97,7 @@ struct dlt_peer_state {
     // appended here.  The active writer drains the queue after each
     // successful write.
     std::deque<std::vector<char>>  send_queue;
-    static constexpr size_t        SEND_QUEUE_MAX_DEPTH = 100;
+    static constexpr size_t        SEND_QUEUE_MAX_DEPTH = 150;
     uint32_t                       send_queue_total = 0;   // lifetime queued (stats)
     uint32_t                       send_queue_dropped = 0; // lifetime dropped (stats)
 
