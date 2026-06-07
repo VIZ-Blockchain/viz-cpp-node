@@ -1064,14 +1064,19 @@ namespace graphene {
                 if (_ever_produced) {
                     // Check if production should be active by querying actual state
                     bool should_be_producing = false;
+                    // Whether emergency consensus is actually active on-chain right now.
+                    // Holding the committee (emergency) key alone does NOT make us an
+                    // emergency master — committee only produces while emergency mode is on.
+                    bool emergency_active = false;
                     try {
                         const auto& dgp_watch = database().get_dynamic_global_properties();
+                        emergency_active = dgp_watch.emergency_consensus_active;
                         // Production should be active if:
                         // - Not in minority fork recovery
                         // - Validators are configured
                         // - Either emergency master OR network is healthy (participation >= 33%)
                         if (!_minority_fork_recovering && !_validators.empty()) {
-                            if (dgp_watch.emergency_consensus_active) {
+                            if (emergency_active) {
                                 // Emergency mode: should produce if we have emergency key
                                 should_be_producing = (_validators.count(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) > 0);
                             } else {
@@ -1084,7 +1089,11 @@ namespace graphene {
 
                     if (should_be_producing) {
                         auto silent_for = fc::time_point::now() - _last_production_time;
-                        bool is_emrg_master = _validators.count(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) > 0;
+                        // Only treat ourselves as the emergency master (tight 60s threshold)
+                        // when emergency consensus is actually active. In normal mode a
+                        // single-slot validator's natural production gap (~round length)
+                        // can exceed 60s and would otherwise trip the watchdog falsely.
+                        bool is_emrg_master = emergency_active && _validators.count(CHAIN_EMERGENCY_VALIDATOR_ACCOUNT) > 0;
                         int64_t threshold_us = is_emrg_master ? 60000000 : 180000000;
                         if (silent_for.count() > threshold_us) {
                             // === AUTO-ENABLE DEBUG LOGGING ON FIRST WATCHDOG FIRE ===
