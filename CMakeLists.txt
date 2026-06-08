@@ -101,9 +101,11 @@ if(WIN32)
     set(DB_VERSION 60)
     set(BDB_STATIC_LIBS 1)
 
-    # Minimum Windows 7 / Vista (0x0601).  XP (0x0501) is too old for
+    # Target Windows 10 (0x0A00). XP (0x0501) is too old for
     # boost::asio extended Winsock2 APIs and modern async I/O.
-    add_compile_definitions(_WIN32_WINNT=0x0A00 WINVER=0x0A00)
+    # Set these directly in CMAKE_C_FLAGS and CMAKE_CXX_FLAGS to ensure they are
+    # applied globally and consistently across all compilation units.
+    add_compile_definitions(_WIN32_WINNT=0x0601  WINVER=0x0601 )
 
     set(ZLIB_LIBRARIES "")
     set(DEFAULT_EXECUTABLE_INSTALL_DIR bin/)
@@ -135,7 +137,7 @@ if(WIN32)
         set(TCL_LIBRARY ${TCL_LIBS})
 
     elseif(MINGW)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -fpermissive -msse4.2 -Wa,-mbig-obj")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -fpermissive -Wa,-mbig-obj")
     set(CMAKE_CXX_FLAGS_RELEASE "-O3")
     set(CMAKE_CXX_FLAGS_DEBUG "-O2")
     if(FULL_STATIC_BUILD)

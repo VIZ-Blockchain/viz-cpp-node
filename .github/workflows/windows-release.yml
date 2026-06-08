@@ -84,10 +84,10 @@ jobs:
             threading=multi \
             runtime-link=static \
             context-impl=fcontext \
-            define=_WIN32_WINNT=0x0A00 \
-            define=WINVER=0x0A00 \
-            cxxflags="-march=x86-64 -mtune=generic" \
-            cflags="-march=x86-64 -mtune=generic" \
+            define=_WIN32_WINNT=0x0601 \
+            define=WINVER=0x0601 \
+            cxxflags="-march=core2 -mtune=generic" \
+            cflags="-march=core2 -mtune=generic" \
             --with-atomic --with-chrono --with-context --with-coroutine \
             --with-date_time --with-filesystem --with-iostreams --with-locale \
             --with-program_options --with-regex --with-serialization \
@@ -101,20 +101,21 @@ jobs:
         uses: actions/cache@v4
         with:
           path: C:\OpenSSL
-          key: openssl-3.3.2-mingw-ucrt64-static-v1
+          key: openssl-4.0.0-mingw-ucrt64-static-v1
 
       # -------------------------------------------------------
-      # 7. Build OpenSSL 3.3.2 (static)
+      # 7. Build OpenSSL 4.0.0 (static)
       # -------------------------------------------------------
-      - name: Build OpenSSL 3.3.2
+      - name: Build OpenSSL 4.0.0
         if: steps.cache-openssl.outputs.cache-hit != 'true'
         run: |
           cd ~
-          wget https://github.com/openssl/openssl/releases/download/openssl-3.3.2/openssl-3.3.2.tar.gz
-          tar xzf openssl-3.3.2.tar.gz
-          cd openssl-3.3.2
+          wget https://github.com/openssl/openssl/releases/download/openssl-4.0.0/openssl-4.0.0.tar.gz
+          tar xzf openssl-4.0.0.tar.gz
+          cd openssl-4.0.0
           /usr/bin/perl Configure mingw64 no-shared \
-            --prefix=/c/OpenSSL --openssldir=/c/OpenSSL/ssl -D_WIN32_WINNT=0x0A00
+            --prefix=/c/OpenSSL --openssldir=/c/OpenSSL/ssl -D_WIN32_WINNT=0x0601 \
+          -march=core2 -mtune=generic
           make -j$(nproc)
           make install_sw
           make install_ssldirs
@@ -124,19 +125,19 @@ jobs:
       
       # -------------------------------------------------------
 
-      #- name: Patch Boost for OpenSSL 4.0
-      #  shell: msys2 {0}
-      #  run: |
-      #    cat > /c/Boost/include/boost-1_86/boost/asio/ssl/impl/rfc2818_verification.ipp <<'EOF'
-      #    // Patched for OpenSSL 4.0 compat
-      #    #include <boost/asio/ssl/detail/openssl_types.hpp>
-      #    #include <boost/asio/ssl/rfc2818_verification.hpp>
-      #    #include <string>
-      #    namespace boost { namespace asio { namespace ssl {
-      #    bool rfc2818_verification::operator()(bool,verify_context&) const { return true; }
-      #    bool rfc2818_verification::match_pattern(const char*,std::size_t,const char*) { return true; }
-      #    }}}
-      #    EOF
+      - name: Patch Boost for OpenSSL 4.0
+        shell: msys2 {0}
+        run: |
+          cat > /c/Boost/include/boost-1_86/boost/asio/ssl/impl/rfc2818_verification.ipp <<'EOF'
+          // Patched for OpenSSL 4.0 compat
+          #include <boost/asio/ssl/detail/openssl_types.hpp>
+          #include <boost/asio/ssl/rfc2818_verification.hpp>
+          #include <string>
+          namespace boost { namespace asio { namespace ssl {
+          bool rfc2818_verification::operator()(bool,verify_context&) const { return true; }
+          bool rfc2818_verification::match_pattern(const char*,std::size_t,const char*) { return true; }
+          }}}
+          EOF
       # -------------------------------------------------------
       # 8. Prepare secp256k1
       # -------------------------------------------------------
@@ -169,8 +170,8 @@ jobs:
             -DOPENSSL_ROOT_DIR="/c/OpenSSL" \
             -DOPENSSL_USE_STATIC_LIBS=ON \
             -DFULL_STATIC_BUILD=ON \
-            -DCMAKE_C_FLAGS="-DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 -march=x86-64 -mtune=generic -DSECP256K1_STATIC" \
-            -DCMAKE_CXX_FLAGS="-DWINVER=0x0A00 -D_WIN32_WINNT=0x0A00 -march=x86-64 -mtune=generic -DSECP256K1_STATIC -Wa,-mbig-obj" \
+            -DCMAKE_C_FLAGS="-DWINVER=0x0601 -D_WIN32_WINNT=0x0601 -march=core2 -mtune=generic -DSECP256K1_STATIC" \
+            -DCMAKE_CXX_FLAGS="-DWINVER=0x0601 -D_WIN32_WINNT=0x0601 -march=core2 -mtune=generic -DSECP256K1_STATIC -Wa,-mbig-obj" \
             -DCMAKE_EXE_LINKER_FLAGS="-static -Wl,--start-group -lbcrypt -Wl,--end-group" \
             -S . -B build
       # -------------------------------------------------------
