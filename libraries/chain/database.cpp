@@ -564,6 +564,15 @@ namespace graphene { namespace chain {
                 //  - The node previously ran in normal mode and has existing state
                 wlog("Wiping shared memory for clean snapshot import...");
                 chainbase::database::wipe(shared_mem_dir);
+                
+                // chainbase::database::wipe() removes shared_memory.bin but not other files in the directory, so we must do this explicitly to ensure all state is cleared.
+                // Note: we must call chainbase::database::close() after wipe() to fully reset internal state (e.g., _shared_file_size) before calling open() again.
+                // If we don't call close() here, the subsequent open() call will detect that shared_memory.bin already exists (because wipe() only removes the file but not the directory) and will throw an exception instead of creating a new shared memory file.
+                // This is a bit inelegant, but it works and avoids the complexity of adding a "force wipe" option to chainbase::database::wipe() that would allow it to remove the entire directory (which could be dangerous if used incorrectly).
+                 
+                // On Windows (MinGW), _index_map and _index_list are not automatically reset
+                // between wipe() and open() calls on the same object. close() clears them explicitly.
+                chainbase::database::close(); // Ensure internal state is fully reset after wipe
 
                 init_schema();
                 chainbase::database::open(shared_mem_dir, chainbase_flags, shared_file_size);
