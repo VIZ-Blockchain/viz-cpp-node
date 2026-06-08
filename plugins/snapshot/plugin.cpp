@@ -1427,17 +1427,6 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
     std::cerr << "   Importing state into database...\n";
     db.with_strong_write_lock([&]() {
         try {
-        // Clear the undo stack FIRST, before any import operations.
-        // During hot-reload (stalled sync detection), the database has
-        // active undo sessions from normal block processing.
-        // If we import objects first and then undo_all(), it reverts
-        // both the old block processing AND our import changes,
-        // leaving the database in the old LIB state instead of the
-        // snapshot state.  By clearing the stack first, all subsequent
-        // import operations are permanent (no undo tracking).
-        // On initial load (fresh DB), the stack is empty and this is a no-op.
-        db.undo_all();
-
         // Clear ALL existing multi-instance objects before importing.
         // This is critical for the hot-reload path (stalled sync detection)
         // where load_snapshot() is called on an already-populated database.
@@ -1538,6 +1527,12 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
 
             ilog(CLOG_ORANGE "Existing objects cleared" CLOG_RESET);
         }
+
+        // After all removes, undo sessions are empty (objects are gone).
+        // undo_all() here is now a true no-op on all platforms — nothing
+        // remains in the undo log to revert.
+        db.undo_all();
+
         // CRITICAL - singleton objects (modify existing)
         if (state.contains("dynamic_global_property")) {
             detail::import_dynamic_global_properties(db, state["dynamic_global_property"].get_array());
