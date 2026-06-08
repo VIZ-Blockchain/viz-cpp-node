@@ -146,7 +146,7 @@ if(WIN32)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
     # bcrypt trebuie sa fie dupa toate librariile Boost statice
     list(APPEND PLATFORM_SPECIFIC_LIBS bcrypt)
-        # Eliminăm adăugarea explicită a bcrypt la PLATFORM_SPECIFIC_LIBS, deoarece este acum link-at global
+        # We remove the explicit addition of bcrypt to PLATFORM_SPECIFIC_LIBS, as it is now linked globally
     endif(MSVC)
 
 else(WIN32) # Apple AND Linux
