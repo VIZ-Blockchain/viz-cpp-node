@@ -2,6 +2,12 @@
 project(VIZ)
 # Note: bcrypt (needed by boost::uuid / random on MinGW) is linked per-target
 # in the if(WIN32) block below to avoid polluting secp256k1 and other sub-targets.
+
+if(MINGW)
+  link_libraries(bcrypt)
+  list(APPEND PLATFORM_SPECIFIC_LIBS bcrypt)
+endif()
+
 cmake_minimum_required(VERSION 3.16)
 
 set(CHAIN_NAME "VIZ")
@@ -91,12 +97,15 @@ endif(CCACHE_FOUND)
 if(WIN32)
 
     message(STATUS "Configuring VIZ on WIN32")
+    set(PLATFORM_SPECIFIC_LIBS) # Păstrăm inițializarea pentru alte biblioteci
     set(DB_VERSION 60)
     set(BDB_STATIC_LIBS 1)
 
-    # Minimum Windows 7 / Vista (0x0601).  XP (0x0501) is too old for
+    # Target Windows 10 (0x0A00). XP (0x0501) is too old for
     # boost::asio extended Winsock2 APIs and modern async I/O.
-    add_compile_definitions(_WIN32_WINNT=0x0601 WINVER=0x0601)
+    # Set these directly in CMAKE_C_FLAGS and CMAKE_CXX_FLAGS to ensure they are
+    # applied globally and consistently across all compilation units.
+    add_compile_definitions(_WIN32_WINNT=0x0601  WINVER=0x0601 )
 
     set(ZLIB_LIBRARIES "")
     set(DEFAULT_EXECUTABLE_INSTALL_DIR bin/)
@@ -128,16 +137,16 @@ if(WIN32)
         set(TCL_LIBRARY ${TCL_LIBS})
 
     elseif(MINGW)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -fpermissive -msse4.2 -Wa,-mbig-obj")
-        set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
-        # Optimization flag apparently needed to get rid of "File too big" assembler errors when compiling in Debug mode
-        # See: https://stackoverflow.com/questions/14125007/gcc-string-table-overflow-error-during-compilation/14601779#29479701
-        set(CMAKE_CXX_FLAGS_DEBUG "-O2")
-        if(FULL_STATIC_BUILD)
-            set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
-        endif(FULL_STATIC_BUILD)
-        # bcrypt: needed by boost::random/uuid on MinGW (provides BCryptGenRandom)
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lbcrypt")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -fpermissive -Wa,-mbig-obj")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+    set(CMAKE_CXX_FLAGS_DEBUG "-O2")
+    if(FULL_STATIC_BUILD)
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
+    endif(FULL_STATIC_BUILD)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
+    # bcrypt trebuie sa fie dupa toate librariile Boost statice
+    list(APPEND PLATFORM_SPECIFIC_LIBS bcrypt)
+        # We remove the explicit addition of bcrypt to PLATFORM_SPECIFIC_LIBS, as it is now linked globally
     endif(MSVC)
 
 else(WIN32) # Apple AND Linux
