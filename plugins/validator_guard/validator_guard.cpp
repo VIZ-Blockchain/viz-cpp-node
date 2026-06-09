@@ -44,6 +44,11 @@ struct validator_guard_plugin::impl {
     bool                        _initial_check_done = false; // true once the node is confirmed in sync at startup
     bool                        _stale_production_config = false; // mirrors enable-stale-production from validator config
     boost::signals2::connection _applied_block_connection;   // applied_block signal connection
+    
+    std::map<std::string, uint32_t> _auto_disable_count; // Number of times each validator was auto-disabled (due to consecutive blocks)
+    uint32_t _auto_disable_max = 3; // Limit after which we stop performing auto-restore entirely
+    
+    
 
     // Per-validator consecutive block counter: validator_name -> count of consecutive blocks produced
     std::map<std::string, uint32_t> _consecutive_blocks;
@@ -174,15 +179,24 @@ bool validator_guard_plugin::impl::check_and_restore_internal() {
             // If this validator was auto-disabled and the key is now present on-chain,
             // clear the auto-disabled flag (operator must have manually restored)
             _auto_disabled_validators.erase(name);
+            _auto_disable_count.erase(name); 
             continue;
         }
 
         // If this validator was auto-disabled by the consecutive-block guard,
         // do NOT auto-restore it — the operator must investigate and restart
         if (_auto_disabled_validators.count(name)) {
-            dlog("validator_guard: '${w}' was auto-disabled (consecutive block limit), "
-                 "skipping auto-restore", ("w", name));
-            continue;
+            uint32_t count = _auto_disable_count.count(name) ? _auto_disable_count.at(name) : 0;
+            if (_auto_disable_max > 0 && count >= _auto_disable_max) {
+                dlog("validator_guard: '${w}' reached max auto-disable limit (${c}/${m}), "
+                     "blocking auto-restore", ("w", name)("c", count)("m", _auto_disable_max));
+                continue;
+            }
+            // Allow auto-restore because count is below limit. 
+            // We clear the flag so the logic below proceeds with restoration.
+            _auto_disabled_validators.erase(name); 
+            _consecutive_blocks[name] = 0; // reset consecutive block count on auto-restore
+            ilog("validator_guard: '${w}' was auto-disabled, attempting automatic restore (${c}/${m})", ("w", name)("c", count)("m", _auto_disable_max));
         }
 
         // A restore transaction is already in flight; wait for it to land or expire
@@ -293,7 +307,17 @@ void validator_guard_plugin::impl::send_validator_disable(
 
         // Mark this validator as auto-disabled so we don't auto-restore it
         _auto_disabled_validators.insert(validator_name);
+        _auto_disable_count[validator_name]++;
 
+        const uint32_t cnt = _auto_disable_count[validator_name];
+        if (_auto_disable_max > 0 && cnt >= _auto_disable_max) {
+            wlog("validator_guard: '${w}' was auto-disabled ${c} times — "
+                "auto-restore PERMANENTLY BLOCKED until node restart",
+                ("w", validator_name)("c", cnt));
+        } else {
+            ilog("validator_guard: '${w}' disabled (count=${c}/${m})",
+                ("w", validator_name)("c", cnt)("m", _auto_disable_max));
+        }
         ilog("validator_guard: validator_disable for '${w}' sent successfully", ("w", validator_name));
 
     } catch (const fc::exception& e) {
@@ -471,6 +495,11 @@ void validator_guard_plugin::set_program_options(
          "Seconds to keep re-broadcasting the shutdown disable transactions so peers "
          "have time to receive and relay them. Keep below the container/process kill "
          "timeout. (default: 10)")
+
+         ("validator-guard-disable-max",
+         bpo::value<uint32_t>()->default_value(3),
+         "Number of times a validator can be auto-disabled before auto-restore is "
+         "permanently suppressed until node restart. Set to 0 to disable this limit. (default: 3)")
         ;
 
     cli.add(cfg);
@@ -541,7 +570,10 @@ void validator_guard_plugin::plugin_initialize(
             ilog("validator_guard: disable-on-shutdown enabled — will null signing keys "
                  "on shutdown and re-broadcast for ${s}s", ("s", pimpl->_shutdown_grace_sec));
         }
-
+        if (options.count("validator-guard-disable-max")) {
+            pimpl->_auto_disable_max = options["validator-guard-disable-max"].as<uint32_t>();
+        }
+        ilog("validator_guard: auto-disable-max = ${n}", ("n", pimpl->_auto_disable_max));
         // validator configs — each entry is a JSON triplet: ["name", "signing_wif", "active_wif"]
         // Accept both validator-guard-validator (new) and witness-guard-witness (deprecated).
         std::vector<std::string> guard_entries;
@@ -655,7 +687,7 @@ void validator_guard_plugin::plugin_startup() {
             if (count >= pimpl->_disable_threshold) {
                 // Already auto-disabled? Skip repeated broadcasts
                 if (!pimpl->_auto_disabled_validators.count(producer)) {
-                    wlog("validator_guard: validator '${w}' produced ${c} consecutive blocks — "
+                    wlog("validator_guard: validator '${w}' produced ${c} consecutive blocks (potential local fork) — "
                          "auto-disabling (threshold=${t})",
                          ("w", producer)("c", count)("t", pimpl->_disable_threshold));
 
