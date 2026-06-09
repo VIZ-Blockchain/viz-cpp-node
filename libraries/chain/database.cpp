@@ -40,6 +40,10 @@
 #include <csignal>
 #include <cerrno>
 #include <cstring>
+#include <cstdlib>
+#include <thread>
+#include <atomic>
+#include <chrono>
 
 #ifdef _WIN32
 #include <signal.h>
@@ -293,6 +297,51 @@ namespace graphene { namespace chain {
                     // and triggers recovery on the next startup.
                     { std::ofstream f(undo_marker.string()); }
                     ilog("Calling undo_all()...");
+
+                    // Stall watchdog: a corrupted segment can make undo() spin
+                    // forever (infinite loop over broken multi_index links). That
+                    // froze a node for tens of minutes until it was killed by hand.
+                    // We cannot safely interrupt a thread mutating shared memory, and
+                    // undo_all() cannot run off the main thread (the recovery path
+                    // needs the same process-local write mutex — moving it would just
+                    // re-deadlock there).  So undo_all() stays here and a watchdog
+                    // thread force-exits the process if undo_all_progress() stops
+                    // advancing.  The undo_all_in_progress marker written just above
+                    // stays on disk, so the supervised restart hits the marker guard
+                    // (a few lines up) and recovers from snapshot cleanly instead of
+                    // hanging again.  The counter is monotonic and only frozen by a
+                    // genuine stall, so a slow-but-progressing unwind never trips it.
+                    constexpr int UNDO_ALL_STALL_TIMEOUT_SEC = 60;
+                    std::atomic<bool> undo_done{false};
+                    std::thread undo_watchdog([&]() {
+                        uint64_t last_progress_val = undo_all_progress();
+                        auto last_change = std::chrono::steady_clock::now();
+                        while (!undo_done.load(std::memory_order_acquire)) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                            if (undo_done.load(std::memory_order_acquire)) break;
+                            uint64_t cur = undo_all_progress();
+                            if (cur != last_progress_val) {
+                                last_progress_val = cur;
+                                last_change = std::chrono::steady_clock::now();
+                            } else if (std::chrono::steady_clock::now() - last_change
+                                       > std::chrono::seconds(UNDO_ALL_STALL_TIMEOUT_SEC)) {
+                                std::cerr << "FATAL: undo_all() made no progress for "
+                                          << UNDO_ALL_STALL_TIMEOUT_SEC
+                                          << "s. Shared memory is corrupted. Exiting so the "
+                                          << "restart recovers from snapshot via the "
+                                          << "undo_all_in_progress marker." << std::endl;
+                                std::_Exit(1);
+                            }
+                        }
+                    });
+                    // Always stop+join the watchdog before leaving this block, on any
+                    // path — so the post-undo stable counter cannot trip a false exit,
+                    // and an unexpected throw cannot leave the thread running.
+                    auto stop_undo_watchdog = [&]() {
+                        undo_done.store(true, std::memory_order_release);
+                        if (undo_watchdog.joinable()) undo_watchdog.join();
+                    };
+
                     // Wrap in a try-catch for boost::interprocess::lock_exception:
                     // After a hard crash, the previous process may have died while holding
                     // shared-memory internal mutexes (e.g., inside managed_mapped_file allocator).
@@ -304,6 +353,7 @@ namespace graphene { namespace chain {
                             undo_all();
                         });
                     } catch (const boost::interprocess::lock_exception& e) {
+                        stop_undo_watchdog();
                         wlog("Shared memory lock exception during undo_all(): ${e}. "
                              "The previous process may have crashed while holding a lock. "
                              "Throwing revision mismatch to trigger recovery path.",
@@ -311,7 +361,11 @@ namespace graphene { namespace chain {
                         FC_THROW_EXCEPTION(database_revision_exception,
                             "Shared memory lock corrupted (previous crash): ${what}",
                             ("what", e.what()));
+                    } catch (...) {
+                        stop_undo_watchdog();
+                        throw;
                     }
+                    stop_undo_watchdog();
                     // undo_all() completed successfully — remove the crash marker.
                     boost::filesystem::remove(undo_marker);
                     ilog("undo_all() completed, revision=${rev} head_block_num=${hbn}",
@@ -1026,12 +1080,31 @@ namespace graphene { namespace chain {
 
         void database::close(bool rewind) {
             try {
-                // Since pop_block() will move tx's in the popped blocks into pending,
-                // we have to clear_pending() after we're done popping to get a clean
-                // DB state (issue #336).
-                clear_pending();
+                if (rewind) {
+                    // Normal shutdown: persist a clean, consistent segment.
+                    // Since pop_block() will move tx's in the popped blocks into
+                    // pending, we have to clear_pending() after we're done popping
+                    // to get a clean DB state (issue #336).
+                    clear_pending();
+                    chainbase::database::flush();
+                } else {
+                    // Corruption-recovery close (rewind == false): the shared-memory
+                    // segment is known to be inconsistent.  Do NOT clear_pending() —
+                    // it resets the pending undo session, whose destructor undo()s
+                    // over the corrupted indices and throws "Could not modify object"
+                    // from a noexcept destructor (this is the std::terminate seen on
+                    // auto-recovery).  Abandon the pending session WITHOUT replaying
+                    // its undo: session::push() drops the revert work and clears the
+                    // index sessions without touching the segment.  Skip flush() too,
+                    // so the corruption is not written back to disk.  The caller wipes
+                    // and rebuilds the segment from a snapshot (open_from_snapshot())
+                    // right after this returns.
+                    if (_pending_tx_session.valid()) {
+                        _pending_tx_session->push();
+                        _pending_tx_session.reset();
+                    }
+                }
 
-                chainbase::database::flush();
                 chainbase::database::close();
 
                 _block_log.close();
