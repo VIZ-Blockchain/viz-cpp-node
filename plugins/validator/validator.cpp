@@ -776,6 +776,26 @@ namespace graphene {
                     elog("Got exception while generating block:\n${e}", ("e", e.to_detail_string()));
                     result = block_validation_condition::exception_validating_block;
                 }
+                catch (const std::exception &e) {
+                    // Non-fc exception (e.g. boost::wrapexcept<std::runtime_error>
+                    // thrown by chainbase when read-lock acquisition times out
+                    // under heavy write-lock contention).  Treat it like any
+                    // other transient validation failure: log and reschedule.
+                    // Without this handler the exception would escape the asio
+                    // timer callback and call std::terminate (Windows DLT-sync
+                    // crash near the emergency-mode boundary, where
+                    // update_global_dynamic_data emits many per-slot
+                    // "Missed block" logs while holding the write lock).
+                    elog("Got std::exception while generating block: ${e}",
+                         ("e", std::string(e.what())));
+                    result = block_validation_condition::exception_validating_block;
+                }
+                catch (...) {
+                    // Final guard: never let an unknown exception type escape
+                    // into the asio callback chain.
+                    elog("Got unknown exception while generating block");
+                    result = block_validation_condition::exception_validating_block;
+                }
 
                 if (database()._debug_block_production) ilog("DEBUG_CRASH: maybe_validate_block returned ${r}", ("r", (int)result));
                 if (result != block_validation_condition::not_time_yet) {
