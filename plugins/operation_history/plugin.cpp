@@ -109,15 +109,28 @@ namespace graphene { namespace plugins { namespace operation_history {
             if (need_block == 0) {
                 return;
             }
-            //ilog("operation_history: purge_old_history need_block ${n}", ("n", need_block));
+
+            // Batch ceiling: process at most purge_interval blocks per cycle.
+            // Prevents unbounded lock-hold if history-count-blocks is reduced after
+            // running with unlimited retention — remaining purging deferred to next cycle.
             const auto& idx = database.get_index<operation_index>().indices().get<by_block>();
             auto it = idx.begin();
-            while (it != idx.end() && it->block <= need_block) {
+            if (it == idx.end()) return;
+
+            uint32_t batch_ceiling = it->block + purge_interval;
+            uint32_t ceiling = (need_block < batch_ceiling) ? need_block : batch_ceiling;
+
+            while (it != idx.end() && it->block <= ceiling) {
                 auto next_it = it;
                 ++next_it;
-                //ilog("operation_history: REMOVE block ${c} id ${i}", ("c",it->block)("i",it->id));
                 database.remove(*it);
                 it = next_it;
+            }
+
+            if (ceiling < need_block) {
+                ilog("operation_history: purge batch ceiling reached at block ${c}, "
+                     "target ${t} — remaining deferred to next cycle",
+                     ("c", ceiling)("t", need_block));
             }
         }
 
@@ -163,6 +176,8 @@ namespace graphene { namespace plugins { namespace operation_history {
         bool filter_content = false;
         uint32_t start_block = 0;
         uint32_t history_count_blocks = UINT32_MAX;
+        uint32_t purge_interval = 4800;   // purge every N blocks (default ~4 hours at 3s/block)
+        uint32_t last_purge_block = 0;    // block number of last purge cycle
         bool blacklist = false;
         fc::flat_set<std::string> ops_list;
         graphene::chain::database& database;
@@ -209,6 +224,12 @@ namespace graphene { namespace plugins { namespace operation_history {
             "history-count-blocks",
             boost::program_options::value<uint32_t>(),
             "Defines depth of history for recording stats."
+        ) (
+            "history-purge-interval",
+            boost::program_options::value<uint32_t>()->default_value(4800),
+            "Purge old history every N blocks instead of every block. "
+            "Reduces shared-memory fragmentation and write-lock contention. "
+            "Default: 4800 (~4 hours at 3s/block)."
         );
         cfg.add(cli);
     }
@@ -263,20 +284,35 @@ namespace graphene { namespace plugins { namespace operation_history {
         if (options.count("history-count-blocks")) {
             uint32_t history_count_blocks = options.at("history-count-blocks").as<uint32_t>();
             pimpl->history_count_blocks = history_count_blocks;
+
+            pimpl->purge_interval = options.at("history-purge-interval").as<uint32_t>();
+            if (pimpl->purge_interval == 0) pimpl->purge_interval = 1;
+            pimpl->last_purge_block = 0;
+
             pimpl->applied_block_connection = pimpl->database.applied_block.connect([&](const signed_block& block){
+                uint32_t head = block.block_num();
+                // Only purge when enough blocks have accumulated since last purge
+                if (head - pimpl->last_purge_block < pimpl->purge_interval) {
+                    return;
+                }
+                pimpl->last_purge_block = head;
+
                 auto cb_start = fc::time_point::now();
                 pimpl->purge_old_history();
                 auto cb_ms = (fc::time_point::now() - cb_start).count() / 1000;
                 if (cb_ms > 100) {
-                    wlog("operation_history purge_old_history took ${ms}ms (block #${n}) — "
+                    wlog("operation_history purge_old_history took ${ms}ms (block #${n}, interval ${i}) — "
                          "write lock held, blocking P2P/RPC",
-                         ("ms", cb_ms)("n", block.block_num()));
+                         ("ms", cb_ms)("n", head)("i", pimpl->purge_interval));
                 }
             });
         } else {
             pimpl->history_count_blocks = UINT32_MAX;
         }
         ilog("operation_history: history-count-blocks ${s}", ("s", pimpl->history_count_blocks));
+        if (pimpl->history_count_blocks != UINT32_MAX) {
+            ilog("operation_history: history-purge-interval ${i} blocks", ("i", pimpl->purge_interval));
+        }
 
 
         JSON_RPC_REGISTER_API(name());

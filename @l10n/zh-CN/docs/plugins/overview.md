@@ -234,10 +234,11 @@ DLT P2P 网络——区块和交易传播、节点管理、少数派 fork 恢复
 > plugin = account_history
 > ```
 >
-> **清理协调：** 两个插件从 `config.ini` 读取同一个 `history-count-blocks` 键——
-> 不存在按插件分别设置的机制。设置一次即同时作用于两个插件。
-> 内部实现上，`account_history` 还在每个区块调用 `operation_history::get_min_keep_block()`
-> 作为安全检查，确保其条目永远不会引用已被删除的 `operation_object`。
+> **清理协调：** 两个插件从 `config.ini` 读取相同的 `history-count-blocks` 和
+> `history-purge-interval` 键——不存在按插件分别设置的机制。设置一次即同时作用于两个插件。
+> 两个插件以相同间隔执行清理，`account_history` 还会调用
+> `operation_history::get_min_keep_block()` 作为安全检查，确保其条目永远不会引用
+> 已被删除的 `operation_object`。
 
 ---
 
@@ -254,6 +255,7 @@ DLT P2P 网络——区块和交易传播、节点管理、少数派 fork 恢复
 - `history-whitelist-ops` / `history-blacklist-ops` — 过滤存储的操作类型
 - `history-start-block` — 从此区块号开始索引
 - `history-count-blocks` — 保留 N 个区块的历史
+- `history-purge-interval` — 每 N 个区块清理旧条目，而非每个区块（默认：4800 ≈ 3 秒/区块时约 4 小时）。减少 shared-memory 碎片化和 write-lock 争用。每个清理周期最多处理 `history-purge-interval` 个区块的条目；若积压更大，剩余部分推迟到下一周期。
 
 ---
 

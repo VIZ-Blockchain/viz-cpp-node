@@ -223,6 +223,7 @@ All-operations index for block-level and transaction queries.
 - `history-whitelist-ops` / `history-blacklist-ops` — filter which op types are stored
 - `history-start-block` — start indexing from this block number
 - `history-count-blocks` — retain N blocks of history
+- `history-purge-interval` — purge old entries every N blocks instead of every block (default: 4800 ≈ 4 hours at 3 s/block). Reduces shared-memory fragmentation and write-lock contention. Each purge cycle processes at most `history-purge-interval` blocks worth of entries; if the backlog is larger, remaining purging is deferred to the next cycle.
 
 ---
 
@@ -250,10 +251,11 @@ Per-account operation history, paginated.
 > plugin = account_history
 > ```
 >
-> **Purge coordination:** Both plugins read the same `history-count-blocks` key from `config.ini` —
-> there is no per-plugin separation. Setting it once applies to both simultaneously. Internally,
-> `account_history` also calls `operation_history::get_min_keep_block()` on every block as a safety
-> check, ensuring its entries never reference a purged `operation_object`.
+> **Purge coordination:** Both plugins read the same `history-count-blocks` and
+> `history-purge-interval` keys from `config.ini` — there is no per-plugin separation.
+> Setting them once applies to both simultaneously. Both purge on the same interval,
+> and `account_history` additionally calls `operation_history::get_min_keep_block()` as
+> a safety check, ensuring its entries never reference a purged `operation_object`.
 
 ---
 

@@ -117,14 +117,20 @@ if( options.count(name) ) { \
                 return;
             }
 
-            //ilog("account_history: purge_old_history need_block ${n}", ("n", need_block));
             const auto& idx = database.get_index<account_history_index>().indices().get<by_block>();
             auto it = idx.begin();
+            if (it == idx.end()) return;
+
+            // Batch ceiling: process at most purge_interval blocks per cycle.
+            // Prevents unbounded lock-hold if history-count-blocks is reduced after
+            // running with unlimited retention — remaining purging deferred to next cycle.
+            uint32_t batch_ceiling = it->block + purge_interval;
+            uint32_t ceiling = (need_block < batch_ceiling) ? need_block : batch_ceiling;
 
             // Collect accounts that need range updates
             std::map<account_name_type, uint32_t> accounts_max_purged_seq;
 
-            while (it != idx.end() && it->block <= need_block) {
+            while (it != idx.end() && it->block <= ceiling) {
                 // Track the maximum purged sequence per account
                 auto acc_it = accounts_max_purged_seq.find(it->account);
                 if (acc_it == accounts_max_purged_seq.end()) {
@@ -137,9 +143,14 @@ if( options.count(name) ) { \
 
                 auto next_it = it;
                 ++next_it;
-                //ilog("account_history: REMOVE account ${a} seq ${s} block ${b}", ("a",it->account)("s",it->sequence)("b",it->block));
                 database.remove(*it);
                 it = next_it;
+            }
+
+            if (ceiling < need_block) {
+                ilog("account_history: purge batch ceiling reached at block ${c}, "
+                     "target ${t} — remaining deferred to next cycle",
+                     ("c", ceiling)("t", need_block));
             }
 
             // Update account range objects
@@ -244,6 +255,8 @@ if( options.count(name) ) { \
         fc::flat_map<std::string, std::string> tracked_accounts;
         graphene::chain::database& database;
         uint32_t history_count_blocks = UINT32_MAX;
+        uint32_t purge_interval = 4800;   // purge every N blocks (default ~4 hours at 3s/block)
+        uint32_t last_purge_block = 0;    // block number of last purge cycle
 
         // Signal connections for cleanup
         boost::signals2::connection applied_block_connection;
@@ -554,19 +567,32 @@ if( options.count(name) ) { \
             pimpl->history_count_blocks = UINT32_MAX;
         }
 
-        // Always connect to applied_block for purging - coordinates with operation_history
+        // Read shared purge interval (registered by operation_history with default_value, always present)
+        pimpl->purge_interval = options.at("history-purge-interval").as<uint32_t>();
+        if (pimpl->purge_interval == 0) pimpl->purge_interval = 1;
+        pimpl->last_purge_block = 0;
+
+        // Connect to applied_block for batched purging — coordinates with operation_history
         pimpl->applied_block_connection = pimpl->database.applied_block.connect([&](const signed_block& block){
+            uint32_t head = block.block_num();
+            // Only purge when enough blocks have accumulated since last purge
+            if (head - pimpl->last_purge_block < pimpl->purge_interval) {
+                return;
+            }
+            pimpl->last_purge_block = head;
+
             auto cb_start = fc::time_point::now();
             pimpl->purge_old_history();
             auto cb_ms = (fc::time_point::now() - cb_start).count() / 1000;
             if (cb_ms > 100) {
-                wlog("account_history purge_old_history took ${ms}ms (block #${n}) — "
+                wlog("account_history purge_old_history took ${ms}ms (block #${n}, interval ${i}) — "
                      "write lock held, blocking P2P/RPC",
-                     ("ms", cb_ms)("n", block.block_num()));
+                     ("ms", cb_ms)("n", head)("i", pimpl->purge_interval));
             }
         });
 
         ilog("account_history: history-count-blocks ${s}", ("s", pimpl->history_count_blocks));
+        ilog("account_history: history-purge-interval ${i} blocks", ("i", pimpl->purge_interval));
 
         // this is worked, because the appbase initialize required plugins at first
         pimpl->pre_apply_operation_connection = pimpl->database.pre_apply_operation.connect([&](graphene::chain::operation_notification& note){
