@@ -229,6 +229,7 @@ namespace graphene { namespace chain {
         }
 
         database::~database() {
+            stop_push_block_monitor();
             clear_pending();
         }
 
@@ -1087,7 +1088,76 @@ namespace graphene { namespace chain {
             }
         }
 
+        int64_t database::push_block_lock_held_ms() const {
+            const int64_t since = _push_block_lock_since_us.load(std::memory_order_acquire);
+            if (since == 0) return 0;
+            const int64_t held_us = fc::time_point::now().time_since_epoch().count() - since;
+            return held_us > 0 ? held_us / 1000 : 0;
+        }
+
+        void database::start_push_block_monitor() {
+            bool expected = false;
+            if (!_push_block_monitor_run.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+                return; // already running
+            _push_block_monitor = std::thread([this]() { push_block_monitor_loop(); });
+        }
+
+        void database::stop_push_block_monitor() {
+            if (_push_block_monitor_run.exchange(false, std::memory_order_acq_rel)) {
+                if (_push_block_monitor.joinable())
+                    _push_block_monitor.join();
+            }
+        }
+
+        void database::push_block_monitor_loop() {
+            // Observability backstop for the global chainbase write lock. Runs on its
+            // own thread so it stays responsive while the main thread is wedged. When a
+            // single push_block() has held the write lock past PUSH_BLOCK_STALL_WARN_SEC
+            // with no operation applied in that window, it emits a loud, throttled
+            // diagnostic (stderr, so the monitor itself can never block on node locks).
+            // LOG-ONLY: it never calls std::_Exit and never mutates state — a false
+            // positive can only produce an extra log line. Auto-restart, if wanted, is
+            // an external decision driven by push_block_lock_held_ms().
+            const int64_t warn_us  = (int64_t)PUSH_BLOCK_STALL_WARN_SEC  * 1000000;
+            const int64_t relog_us = (int64_t)PUSH_BLOCK_STALL_RELOG_SEC * 1000000;
+            uint64_t last_progress    = _apply_progress.load(std::memory_order_acquire);
+            int64_t  last_progress_us = fc::time_point::now().time_since_epoch().count();
+            bool     warned     = false;
+            int64_t  last_log_us = 0;
+            while (_push_block_monitor_run.load(std::memory_order_acquire)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                if (!_push_block_monitor_run.load(std::memory_order_acquire)) break;
+                const int64_t now_us = fc::time_point::now().time_since_epoch().count();
+                const uint64_t cur = _apply_progress.load(std::memory_order_acquire);
+                if (cur != last_progress) { last_progress = cur; last_progress_us = now_us; }
+                const int64_t since = _push_block_lock_since_us.load(std::memory_order_acquire);
+                if (since == 0) {
+                    if (warned) {
+                        std::cerr << "[push_block-monitor] write lock released; the node has recovered from the stall."
+                                  << std::endl;
+                        warned = false;
+                    }
+                    continue;
+                }
+                const int64_t held_us   = now_us - since;
+                const int64_t frozen_us = now_us - last_progress_us;
+                if (held_us > warn_us && frozen_us > warn_us) {
+                    if (!warned || (now_us - last_log_us) > relog_us) {
+                        const uint32_t num = _push_block_watch_num.load(std::memory_order_acquire);
+                        std::cerr << "[push_block-monitor] WARNING: push_block() has held the chainbase write lock for "
+                                  << (held_us / 1000000) << "s with no operation applied, processing block #" << num
+                                  << ". The node is likely wedged under the write lock (reads and block production are "
+                                     "blocked). This is a diagnostic only -- no automatic action is taken; restart the "
+                                     "node if this persists." << std::endl;
+                        warned = true;
+                        last_log_us = now_us;
+                    }
+                }
+            }
+        }
+
         void database::close(bool rewind) {
+            stop_push_block_monitor();
             try {
                 if (rewind) {
                     // Normal shutdown: persist a clean, consistent segment.
@@ -1568,6 +1638,7 @@ namespace graphene { namespace chain {
         */
         bool database::push_block(const signed_block &new_block, uint32_t skip) {
             //fc::time_point begin_time = fc::time_point::now();
+            start_push_block_monitor();
 
             // Apply any deferred resize BEFORE acquiring the main write lock.
             // apply_pending_resize() uses the resize barrier to pause ALL operations
@@ -1584,6 +1655,9 @@ namespace graphene { namespace chain {
             bool result = false;
             try {
                 with_strong_write_lock([&]() {
+                    // Mark write-lock hold start for the stall monitor (observability only).
+                    _push_block_watch_num.store(new_block.block_num(), std::memory_order_release);
+                    _push_block_lock_since_us.store(fc::time_point::now().time_since_epoch().count(), std::memory_order_release);
                     detail::without_pending_transactions(*this, skip, std::move(_pending_tx), [&]() {
                         try {
                             result = _push_block(new_block, skip);
@@ -1609,9 +1683,11 @@ namespace graphene { namespace chain {
                         }
                     });
                 });
+                _push_block_lock_since_us.store(0, std::memory_order_release); // write lock released
             } catch (...) {
                 // Exception during push_block: discard pending notifications
                 // (they are for blocks that were rolled back by the undo stack).
+                _push_block_lock_since_us.store(0, std::memory_order_release); // write lock released
                 _defer_block_notifications = false;
                 _pending_block_notifications.clear();
                 throw;
@@ -5676,6 +5752,7 @@ namespace graphene { namespace chain {
         }
 
         void database::apply_operation(const operation &op, bool is_virtual /* false */) {
+            _apply_progress.fetch_add(1, std::memory_order_relaxed); // push_block stall monitor progress signal
             operation_notification note(op);
             if (is_virtual) {
                 ++_current_virtual_op;
