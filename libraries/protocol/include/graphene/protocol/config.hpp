@@ -110,7 +110,7 @@
 
 /// Emergency consensus mode: activates when no block has been produced for
 /// this many seconds since the last irreversible block.
-#define CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC    3600  // 1 hour
+#define CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC    1200  // 20 minutes
 
 /// The witness account name that produces blocks during emergency mode
 #define CHAIN_EMERGENCY_VALIDATOR_ACCOUNT          CHAIN_COMMITTEE_ACCOUNT  // "committee"
