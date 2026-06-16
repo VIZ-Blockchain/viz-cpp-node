@@ -2068,7 +2068,23 @@ namespace graphene { namespace chain {
                                          ("h", head_block_num())
                                          ("t", branches.second.back()->data.previous)
                                          ("b", branches.second.back()->data.block_num()));
+                                    block_id_type _pop_prev_id = head_block_id();
                                     pop_block();
+                                    if (head_block_id() == _pop_prev_id) {
+                                        // pop_block() made no progress: undo() had nothing to revert
+                                        // (committed/empty undo session) while head is still above LIB, so
+                                        // head_block_id() never changes and head_block_num() never reaches the
+                                        // LIB guard above. Without this check the loop spins forever holding
+                                        // the global chainbase write lock, wedging every reader and block
+                                        // production (observed: writer_held_ms climbing for hours during a
+                                        // minority-fork reorg). Abort the fork switch to release the lock.
+                                        wlog("Fork switch: pop_block() made no progress at head #${h} "
+                                             "(committed/empty undo session). Aborting fork switch to release the write lock.",
+                                             ("h", head_block_num()));
+                                        _fork_db.remove(new_head->data.id());
+                                        FC_THROW_EXCEPTION(unlinkable_block_exception,
+                                            "fork switch aborted: pop_block() made no progress (undo no-op above LIB)");
+                                    }
                                 }
                             }
 
@@ -2135,7 +2151,16 @@ namespace graphene { namespace chain {
                                             }
                                             ilog("FORK-RECOVER-POP: popping head #${h} (restoring to common ancestor)",
                                                  ("h", head_block_num()));
+                                            block_id_type _pop_prev_id = head_block_id();
                                             pop_block();
+                                            if (head_block_id() == _pop_prev_id) {
+                                                // pop_block() made no progress (committed/empty undo session while
+                                                // head is above LIB). Stop instead of spinning forever under the
+                                                // global write lock.
+                                                wlog("Fork recovery: pop_block() made no progress at head #${h}. Stopping.",
+                                                     ("h", head_block_num()));
+                                                break;
+                                            }
                                         }
                                         _fork_db.set_head(branches.second.back());
                                         wlog("Linear extension failed. Restored head to #${h}.",
@@ -2153,7 +2178,16 @@ namespace graphene { namespace chain {
                                             }
                                             ilog("FORK-RECOVER-POP: popping head #${h} (target=${t})",
                                                  ("h", head_block_num())("t", branches.second.back()->data.previous));
+                                            block_id_type _pop_prev_id = head_block_id();
                                             pop_block();
+                                            if (head_block_id() == _pop_prev_id) {
+                                                // pop_block() made no progress (committed/empty undo session while
+                                                // head is above LIB). Stop instead of spinning forever under the
+                                                // global write lock.
+                                                wlog("Fork recovery: pop_block() made no progress at head #${h}. Stopping.",
+                                                     ("h", head_block_num()));
+                                                break;
+                                            }
                                         }
 
                                         for (auto ritr2 = branches.second.rbegin();
