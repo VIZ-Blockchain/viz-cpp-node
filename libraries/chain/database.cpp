@@ -2422,7 +2422,21 @@ namespace graphene { namespace chain {
                                    head_block_num() > lib_num) {
                                 ilog("P39 cascade recovery: popping head #${h} (restoring to #${t})",
                                      ("h", head_block_num())("t", original_head));
+                                block_id_type _pop_prev_id = head_block_id();
                                 pop_block();
+                                if (head_block_id() == _pop_prev_id) {
+                                    // pop_block() made no progress (committed/empty undo session
+                                    // while head is above LIB): undo() reverts nothing, so
+                                    // head_block_num() never decreases and neither loop condition
+                                    // can become false. Without this check the loop spins forever
+                                    // holding the global chainbase write lock — the same wedge
+                                    // fixed for the fork-switch loops in #117, here in the P39
+                                    // cascade-recovery path. Stop; the _fork_db.reset() below
+                                    // restores fork_db to the database head.
+                                    wlog("P39 cascade recovery: pop_block() made no progress at head #${h}. Stopping.",
+                                         ("h", head_block_num()));
+                                    break;
+                                }
                             }
                             _fork_db.reset();
                             if (head_blk) {
