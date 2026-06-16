@@ -15,6 +15,7 @@
 #include <atomic>
 #include <map>
 #include <mutex>
+#include <thread>
 
 namespace graphene { namespace chain {
 
@@ -498,6 +499,13 @@ namespace graphene { namespace chain {
 
             block_id_type head_block_id() const;
 
+            /// Milliseconds the current push_block() has held the chainbase write
+            /// lock, or 0 if push_block is not currently holding it. Lock-free and
+            /// safe to call from any thread (e.g. a healthcheck/RPC). A value that
+            /// stays high (tens of seconds) means the node is wedged under the write
+            /// lock — see the push_block stall monitor.
+            int64_t push_block_lock_held_ms() const;
+
             uint32_t last_non_undoable_block_num() const;
             //////////////////// db_init.cpp ////////////////////
 
@@ -687,6 +695,27 @@ namespace graphene { namespace chain {
             // see _pending_resize==true simultaneously and double-resize,
             // corrupting the chainbase segment.
             std::mutex _apply_resize_mutex;
+
+            // ── push_block write-lock stall monitor (observability only) ────────
+            // A wedged push_block() holding the global chainbase write lock takes the
+            // whole node down (every reader + block production block on it). A monitor
+            // thread watches the hold time and, when a single push_block holds the lock
+            // past PUSH_BLOCK_STALL_WARN_SEC with no operation applied, emits a loud,
+            // throttled diagnostic and exposes the held time via push_block_lock_held_ms().
+            // It is LOG-ONLY: it never terminates the process or mutates state, so a
+            // false positive can only add a log line. Restart decisions are left to the
+            // operator / orchestrator / healthcheck — deliberately NOT std::_Exit, which
+            // on a deterministic heavy block would self-destruct the whole network at once.
+            static constexpr uint32_t PUSH_BLOCK_STALL_WARN_SEC  = 60;
+            static constexpr uint32_t PUSH_BLOCK_STALL_RELOG_SEC = 30;
+            std::atomic<uint64_t> _apply_progress{0};
+            std::atomic<int64_t>  _push_block_lock_since_us{0};
+            std::atomic<uint32_t> _push_block_watch_num{0};
+            std::atomic<bool>     _push_block_monitor_run{false};
+            std::thread           _push_block_monitor;
+            void start_push_block_monitor();
+            void stop_push_block_monitor();
+            void push_block_monitor_loop();
 
             bool _skip_virtual_ops = false;
             bool _enable_plugins_on_push_transaction = false;
