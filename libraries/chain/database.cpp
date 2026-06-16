@@ -1095,6 +1095,14 @@ namespace graphene { namespace chain {
             return held_us > 0 ? held_us / 1000 : 0;
         }
 
+        bool database::push_block_appears_stalled() const {
+            // Progress-aware verdict maintained by the monitor thread (held long AND
+            // no operation applied in that window). Use THIS, not raw hold time, to
+            // drive any external restart — a heavy deterministic block holds the lock
+            // long but keeps making progress, and is identical network-wide.
+            return _push_block_stalled.load(std::memory_order_acquire);
+        }
+
         void database::start_push_block_monitor() {
             bool expected = false;
             if (!_push_block_monitor_run.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
@@ -1117,7 +1125,14 @@ namespace graphene { namespace chain {
             // diagnostic (stderr, so the monitor itself can never block on node locks).
             // LOG-ONLY: it never calls std::_Exit and never mutates state — a false
             // positive can only produce an extra log line. Auto-restart, if wanted, is
-            // an external decision driven by push_block_lock_held_ms().
+            // an external decision driven by push_block_appears_stalled() (the same
+            // held-AND-frozen verdict this loop publishes), never raw hold time.
+            // NB: a future hardfork block whose migration runs long in pure C++
+            // without calling apply_operation could trip the WARNING (and the stalled
+            // verdict) on every node at that height. It is log-only, so the cost is
+            // synchronized log noise, not a synchronized restart — provided external
+            // consumers gate on a SUSTAINED stalled verdict rather than acting on the
+            // first true reading.
             const int64_t warn_us  = (int64_t)PUSH_BLOCK_STALL_WARN_SEC  * 1000000;
             const int64_t relog_us = (int64_t)PUSH_BLOCK_STALL_RELOG_SEC * 1000000;
             uint64_t last_progress    = _apply_progress.load(std::memory_order_acquire);
@@ -1132,6 +1147,7 @@ namespace graphene { namespace chain {
                 if (cur != last_progress) { last_progress = cur; last_progress_us = now_us; }
                 const int64_t since = _push_block_lock_since_us.load(std::memory_order_acquire);
                 if (since == 0) {
+                    _push_block_stalled.store(false, std::memory_order_release);
                     if (warned) {
                         std::cerr << "[push_block-monitor] write lock released; the node has recovered from the stall."
                                   << std::endl;
@@ -1142,6 +1158,9 @@ namespace graphene { namespace chain {
                 const int64_t held_us   = now_us - since;
                 const int64_t frozen_us = now_us - last_progress_us;
                 if (held_us > warn_us && frozen_us > warn_us) {
+                    // Held long AND no progress in that window: publish the wedged
+                    // verdict for push_block_appears_stalled() and log (throttled).
+                    _push_block_stalled.store(true, std::memory_order_release);
                     if (!warned || (now_us - last_log_us) > relog_us) {
                         const uint32_t num = _push_block_watch_num.load(std::memory_order_acquire);
                         std::cerr << "[push_block-monitor] WARNING: push_block() has held the chainbase write lock for "
@@ -1152,6 +1171,10 @@ namespace graphene { namespace chain {
                         warned = true;
                         last_log_us = now_us;
                     }
+                } else {
+                    // Holding the lock but still under threshold, or progress is
+                    // recent (heavy-but-healthy block): not wedged.
+                    _push_block_stalled.store(false, std::memory_order_release);
                 }
             }
         }

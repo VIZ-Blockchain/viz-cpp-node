@@ -501,10 +501,26 @@ namespace graphene { namespace chain {
 
             /// Milliseconds the current push_block() has held the chainbase write
             /// lock, or 0 if push_block is not currently holding it. Lock-free and
-            /// safe to call from any thread (e.g. a healthcheck/RPC). A value that
-            /// stays high (tens of seconds) means the node is wedged under the write
-            /// lock — see the push_block stall monitor.
+            /// safe to call from any thread (e.g. a healthcheck/RPC).
+            ///
+            /// NOTE: a high value alone is NOT a wedge signal — a legitimately heavy
+            /// block (a hardfork batch, a large reorg) can hold the lock for a long
+            /// time while making real progress. Such blocks are DETERMINISTIC at the
+            /// same height on every node, so restarting purely on hold time would
+            /// restart the whole network at once. Drive restart decisions off
+            /// push_block_appears_stalled() (held long AND no progress), never off
+            /// this raw timer.
             int64_t push_block_lock_held_ms() const;
+
+            /// True only when push_block() has held the write lock past
+            /// PUSH_BLOCK_STALL_WARN_SEC AND no operation has been applied in that
+            /// window — i.e. the node is wedged, not just doing heavy work. This is
+            /// the progress-aware signal an external healthcheck/orchestrator should
+            /// use to decide whether to restart; it cannot false-positive on a heavy
+            /// deterministic block the way raw hold time can. Lock-free; safe from any
+            /// thread. Updated by the stall monitor, so it lags reality by up to its
+            /// ~1s poll interval (irrelevant at the 60s threshold).
+            bool push_block_appears_stalled() const;
 
             uint32_t last_non_undoable_block_num() const;
             //////////////////// db_init.cpp ////////////////////
@@ -712,7 +728,18 @@ namespace graphene { namespace chain {
             std::atomic<int64_t>  _push_block_lock_since_us{0};
             std::atomic<uint32_t> _push_block_watch_num{0};
             std::atomic<bool>     _push_block_monitor_run{false};
+            // Progress-aware "wedged" verdict published by the monitor each poll:
+            // true only while (held > WARN_SEC AND no operation applied in that
+            // window). Backs push_block_appears_stalled() for external consumers so
+            // they never key a restart off raw hold time. (Maintained solely by the
+            // monitor thread; read lock-free elsewhere.)
+            std::atomic<bool>     _push_block_stalled{false};
             std::thread           _push_block_monitor;
+            // start/stop are expected to be called only from the single block-apply
+            // path (start, on each push_block) and shutdown (stop, in close()/dtor),
+            // which are never concurrent. The lazy start CAS + thread assignment is
+            // not hardened against a concurrent stop; keep that single-caller
+            // assumption if this is ever reused.
             void start_push_block_monitor();
             void stop_push_block_monitor();
             void push_block_monitor_loop();
