@@ -1107,6 +1107,11 @@ namespace graphene { namespace chain {
             bool expected = false;
             if (!_push_block_monitor_run.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
                 return; // already running
+            // Clear any stale verdict before the new monitor's first poll. Without
+            // this, after a close()->open() recovery cycle push_block_appears_stalled()
+            // could return a stale `true` for ~1s (the poll interval) until the loop
+            // re-evaluates.
+            _push_block_stalled.store(false, std::memory_order_release);
             _push_block_monitor = std::thread([this]() { push_block_monitor_loop(); });
         }
 
@@ -1115,6 +1120,9 @@ namespace graphene { namespace chain {
                 if (_push_block_monitor.joinable())
                     _push_block_monitor.join();
             }
+            // A stopped monitor reports not-stalled: clear the verdict so a reader
+            // between stop and the next lazy start never sees a stale `true`.
+            _push_block_stalled.store(false, std::memory_order_release);
         }
 
         void database::push_block_monitor_loop() {
