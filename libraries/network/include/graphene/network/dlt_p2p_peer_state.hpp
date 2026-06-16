@@ -59,8 +59,14 @@ struct dlt_peer_state {
     uint32_t                     ban_duration_sec = 0;    // actual ban duration (may differ from BAN_DURATION_SEC for remote bans)
 
     // Peer exchange rate-limiting (sliding window)
+    // peer_exchange_request_count counts requests RECEIVED FROM this peer
+    // (used by on_dlt_peer_exchange_request to throttle replies).
     uint32_t                     peer_exchange_request_count = 0;
     fc::time_point               peer_exchange_window_start;
+    // peer_exchange_sent_count counts requests SENT TO this peer
+    // (used by periodic_peer_exchange to avoid spamming a single peer).
+    uint32_t                     peer_exchange_sent_count = 0;
+    fc::time_point               peer_exchange_sent_window_start;
     static constexpr uint32_t    PEER_EXCHANGE_MAX_REQUESTS = 3;
     static constexpr uint32_t    PEER_EXCHANGE_WINDOW_SEC = 300; // 5 min
 
@@ -151,6 +157,28 @@ struct dlt_peer_state {
         auto elapsed = static_cast<uint32_t>(
             (fc::time_point::now() - peer_exchange_window_start).count() / 1000000);
         return (elapsed < PEER_EXCHANGE_WINDOW_SEC) ? (PEER_EXCHANGE_WINDOW_SEC - elapsed) : 0;
+    }
+
+    // Have WE sent too many exchange requests TO this peer?
+    // Mirrors the receive-side limit so the requester self-throttles before
+    // hitting the remote rate-limit (which would waste a round-trip).
+    bool is_peer_exchange_send_rate_limited() const {
+        if (peer_exchange_sent_window_start == fc::time_point()) return false;
+        auto elapsed = (fc::time_point::now() - peer_exchange_sent_window_start).count();
+        if (elapsed >= PEER_EXCHANGE_WINDOW_SEC * 1000000) return false;
+        return peer_exchange_sent_count >= PEER_EXCHANGE_MAX_REQUESTS;
+    }
+
+    // Record an outbound peer exchange request (sliding window counter).
+    void record_peer_exchange_request_sent() {
+        auto now = fc::time_point::now();
+        if (peer_exchange_sent_window_start == fc::time_point() ||
+            (now - peer_exchange_sent_window_start).count() >= PEER_EXCHANGE_WINDOW_SEC * 1000000) {
+            peer_exchange_sent_count = 1;
+            peer_exchange_sent_window_start = now;
+        } else {
+            peer_exchange_sent_count++;
+        }
     }
 
     // ── Helper: check if pending block batch has timed out ───────

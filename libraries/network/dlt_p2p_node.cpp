@@ -1900,27 +1900,48 @@ void dlt_p2p_node::on_dlt_peer_exchange_request(peer_id peer, const dlt_peer_exc
 
     state.record_peer_exchange_request();
 
-    // Collect "our fork" peers (exchange_enabled, active, min uptime)
-    dlt_peer_exchange_reply reply;
+    // Step 1: collect all eligible candidates (no subnet filter here — the
+    // pre-existing check counted same-subnet peers in our entire connection
+    // set, which silently excluded whole datacenter clusters from sharing.
+    // Subnet diversity is enforced WITHIN the reply below).
+    std::vector<peer_id> candidates;
+    candidates.reserve(_peer_states.size());
     auto now = fc::time_point::now();
     for (auto& _peer_item : _peer_states) {
-            auto& id = _peer_item.first;
-            auto& s = _peer_item.second;
+        auto& id = _peer_item.first;
+        auto& s  = _peer_item.second;
         if (id == peer) continue;
         if (!s.exchange_enabled) continue;
         if (s.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;
-        if (s.is_incoming) continue;  // Don't share ephemeral ports from incoming connections
+        if (s.is_incoming) continue;  // ephemeral source ports are not reconnectable
         if (s.connected_since == fc::time_point()) continue;
         auto uptime = (now - s.connected_since).count() / 1000000;
         if (uptime < _peer_exchange_min_uptime_sec) continue;
+        candidates.push_back(id);
+    }
 
-        // Subnet diversity check
-        if (count_peers_in_subnet(s.endpoint.get_address()) > _peer_exchange_max_per_subnet) continue;
+    // Step 2: shuffle so every eligible peer has a chance to propagate.
+    // Without this, std::map iteration order (peer_id, monotonically
+    // increasing) means the same N oldest peers are shared to every
+    // requester forever and newer peers are starved of discovery.
+    thread_local std::mt19937 share_rng(
+        std::hash<std::thread::id>{}(std::this_thread::get_id())
+        ^ uint32_t(fc::time_point::now().sec_since_epoch()));
+    std::shuffle(candidates.begin(), candidates.end(), share_rng);
+
+    // Step 3: build the reply, capping per-/24 within the reply itself.
+    dlt_peer_exchange_reply reply;
+    std::map<uint32_t /*subnet_24*/, uint32_t> per_subnet_in_reply;
+    for (auto id : candidates) {
+        auto& s = _peer_states[id];
+        uint32_t subnet24 = static_cast<uint32_t>(s.endpoint.get_address()) >> 8;
+        if (per_subnet_in_reply[subnet24] >= _peer_exchange_max_per_subnet) continue;
 
         dlt_peer_endpoint_info info;
         info.endpoint = s.endpoint;
-        info.node_id = s.node_id;
+        info.node_id  = s.node_id;
         reply.peers.push_back(info);
+        ++per_subnet_in_reply[subnet24];
 
         if (reply.peers.size() >= _peer_exchange_max_per_reply) break;
     }
@@ -3525,16 +3546,16 @@ void dlt_p2p_node::periodic_peer_exchange() {
     if (_node_status != DLT_NODE_STATUS_FORWARD) return;
 
     // Pick a random active peer to request exchange from.
-    // When only one exchange-enabled peer exists (common for nodes behind NAT
-    // or freshly started nodes), all requests go to that single peer and hit
-    // the 3/300s rate-limit quickly.  Back off to one request per 90s in that
-    // case so we never exceed the limit (3 requests / 300s = 1 per 100s max).
+    // Candidate filter uses the SEND-side counter (requests we have sent
+    // TO this peer) so we self-throttle before hitting the remote 3/300s
+    // limit; the receive-side counter tracks how often this peer asked us
+    // and is irrelevant for choosing whom to ask next.
     std::vector<peer_id> candidates;
     for (auto& _peer_item : _peer_states) {
             auto& id = _peer_item.first;
             auto& state = _peer_item.second;
         if (state.lifecycle_state == DLT_PEER_LIFECYCLE_ACTIVE && state.exchange_enabled) {
-            if (!state.is_peer_exchange_rate_limited()) {
+            if (!state.is_peer_exchange_send_rate_limited()) {
                 candidates.push_back(id);
             }
         }
@@ -3573,7 +3594,16 @@ void dlt_p2p_node::periodic_peer_exchange() {
 
     thread_local std::mt19937 peer_rng(std::hash<std::thread::id>{}(std::this_thread::get_id()) ^ uint32_t(fc::time_point::now().sec_since_epoch()));
     size_t idx = peer_rng() % candidates.size();
-    send_message(candidates[idx], message(dlt_peer_exchange_request()));
+    peer_id chosen = candidates[idx];
+
+    // Account for this outbound request so future calls of this function
+    // can see we've already asked `chosen` and pick another candidate.
+    auto cs_it = _peer_states.find(chosen);
+    if (cs_it != _peer_states.end()) {
+        cs_it->second.record_peer_exchange_request_sent();
+    }
+
+    send_message(chosen, message(dlt_peer_exchange_request()));
 }
 
 // ── Subnet diversity ─────────────────────────────────────────────────
