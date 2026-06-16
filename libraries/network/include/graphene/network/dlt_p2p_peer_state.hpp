@@ -162,17 +162,25 @@ struct dlt_peer_state {
 };
 
 // ── Known peer entry (persistent across reconnects) ─────────────────
+// Identity is the endpoint only.  node_id is kept as best-effort metadata
+// (last seen identity) but MUST NOT participate in set membership: with
+// random per-session node_ids (NAT support), keying on (endpoint, node_id)
+// causes stale entries to accumulate after every peer restart and silently
+// suppresses re-discovery via peer-exchange replies.  last_seen is used by
+// periodic_known_peers_cleanup() to evict long-unreferenced entries.
+// node_id and last_seen are mutable so they can be refreshed on the existing
+// std::set entry without re-keying.
 struct dlt_known_peer {
-    fc::ip::endpoint  endpoint;
-    node_id_t         node_id;
+    fc::ip::endpoint   endpoint;
+    mutable node_id_t  node_id;
+    mutable fc::time_point last_seen;
 
     bool operator<(const dlt_known_peer& other) const {
-        if (endpoint != other.endpoint) return endpoint < other.endpoint;
-        return node_id < other.node_id;
+        return endpoint < other.endpoint;
     }
 
     bool operator==(const dlt_known_peer& other) const {
-        return endpoint == other.endpoint && node_id == other.node_id;
+        return endpoint == other.endpoint;
     }
 };
 

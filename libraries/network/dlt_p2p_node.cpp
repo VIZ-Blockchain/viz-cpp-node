@@ -139,6 +139,7 @@ void dlt_p2p_node::start() {
         dlt_known_peer kp;
         kp.endpoint = ep;
         kp.node_id = node_id_t();
+        kp.last_seen = fc::time_point::now();
         _known_peers.insert(kp);
 
         // Register as DISCONNECTED with immediate reconnect so periodic_reconnect_check()
@@ -522,10 +523,9 @@ void dlt_p2p_node::periodic_reconnect_check() {
     for (auto it = _peer_states.begin(); it != _peer_states.end(); ) {
         if (it->second.lifecycle_state == DLT_PEER_LIFECYCLE_DISCONNECTED) {
             if (it->second.disconnected_since < expire_threshold) {
-                // Remove from known peers too
+                // Remove from known peers too (keyed on endpoint only)
                 dlt_known_peer kp;
                 kp.endpoint = it->second.endpoint;
-                kp.node_id = it->second.node_id;
                 _known_peers.erase(kp);
                 it = _peer_states.erase(it);
                 continue;
@@ -1931,18 +1931,31 @@ void dlt_p2p_node::on_dlt_peer_exchange_request(peer_id peer, const dlt_peer_exc
 
 void dlt_p2p_node::on_dlt_peer_exchange_reply(peer_id peer, const dlt_peer_exchange_reply& reply) {
     if (_isolated_peers) return;
+    auto now = fc::time_point::now();
     for (auto& info : reply.peers) {
-        // Filter out self
+        // Filter out self by node_id (NAT-aware: same public IP, different node)
         if (info.node_id == _node_id) continue;
 
-        // Filter out already connected/known
+        // _known_peers is keyed on endpoint only.  If we already have this
+        // endpoint, just refresh metadata (last_seen + best-effort node_id)
+        // and skip starting a new connection — connect_to_peer() handles
+        // reconnection of DISCONNECTED entries via periodic_reconnect_check.
         dlt_known_peer kp;
         kp.endpoint = info.endpoint;
         kp.node_id = info.node_id;
+        kp.last_seen = now;
 
-        if (_known_peers.count(kp)) continue;
+        auto it = _known_peers.find(kp);
+        if (it != _known_peers.end()) {
+            // Refresh mutable metadata in place — endpoint (the key) is unchanged.
+            it->last_seen = now;
+            if (info.node_id != node_id_t()) {
+                it->node_id = info.node_id;
+            }
+            continue;
+        }
 
-        // Subnet diversity check
+        // New endpoint — apply subnet diversity check before adopting.
         if (count_peers_in_subnet(info.endpoint.get_address()) >= _peer_exchange_max_per_subnet) continue;
 
         _known_peers.insert(kp);
@@ -3601,6 +3614,60 @@ void dlt_p2p_node::block_validation_timeout() {
 
 // ── Periodic task ────────────────────────────────────────────────────
 
+void dlt_p2p_node::periodic_known_peers_cleanup() {
+    // Evict entries that have not been re-advertised in a peer-exchange reply
+    // for KNOWN_PEER_STALE_HOURS, except those still tracked in _peer_states
+    // (which manages their own lifecycle / reconnect schedule) or matching a
+    // configured seed.
+    auto now = fc::time_point::now();
+    auto stale_threshold = now - fc::hours(KNOWN_PEER_STALE_HOURS);
+
+    size_t removed = 0;
+    for (auto it = _known_peers.begin(); it != _known_peers.end(); ) {
+        // Entries created before last_seen existed carry a default time;
+        // treat that as "unknown" and refresh once instead of evicting.
+        if (it->last_seen == fc::time_point()) {
+            it->last_seen = now;
+            ++it;
+            continue;
+        }
+        if (it->last_seen >= stale_threshold) {
+            ++it;
+            continue;
+        }
+
+        // Skip seeds (always retry-worthy)
+        bool is_seed = false;
+        for (const auto& sep : _seed_nodes) {
+            if (sep == it->endpoint) { is_seed = true; break; }
+        }
+        if (is_seed) {
+            it->last_seen = now;
+            ++it;
+            continue;
+        }
+
+        // Skip entries still actively tracked in _peer_states
+        bool tracked = false;
+        for (const auto& ps : _peer_states) {
+            if (ps.second.endpoint == it->endpoint) { tracked = true; break; }
+        }
+        if (tracked) {
+            it->last_seen = now;
+            ++it;
+            continue;
+        }
+
+        it = _known_peers.erase(it);
+        ++removed;
+    }
+
+    if (removed > 0) {
+        dlog(DLT_LOG_DGRAY "Evicted ${n} stale known-peer entries (>${h}h, total now=${t})" DLT_LOG_RESET,
+             ("n", removed)("h", KNOWN_PEER_STALE_HOURS)("t", _known_peers.size()));
+    }
+}
+
 void dlt_p2p_node::periodic_task() {
     if (!_dead_fibers.empty()) {
     std::vector<fc::future<void>> to_clean;
@@ -3673,6 +3740,18 @@ void dlt_p2p_node::periodic_task() {
     try { periodic_peer_exchange(); }
         catch (const fc::exception& e) { wlog("periodic_peer_exchange: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("periodic_peer_exchange: ${e}", ("e", std::string(e.what()))); }
+
+    // Hourly: prune stale _known_peers entries (older than KNOWN_PEER_STALE_HOURS).
+    {
+        auto now = fc::time_point::now();
+        if (_last_known_peers_cleanup == fc::time_point() ||
+            (now - _last_known_peers_cleanup).count() >= 3600LL * 1000000LL) {
+            _last_known_peers_cleanup = now;
+            try { periodic_known_peers_cleanup(); }
+                catch (const fc::exception& e) { wlog("periodic_known_peers_cleanup: ${e}", ("e", e.to_detail_string())); }
+                catch (const std::exception& e) { wlog("periodic_known_peers_cleanup: ${e}", ("e", std::string(e.what()))); }
+        }
+    }
 
     // Post-pause catchup: drain queued blocks and/or clear the flag
     // when caught up.

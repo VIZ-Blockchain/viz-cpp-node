@@ -373,6 +373,14 @@ private:
     uint32_t                        _peer_exchange_min_uptime_sec = 600;
     bool                            _isolated_peers = false;
 
+    // ── Known-peer cache GC ──────────────────────────
+    // _known_peers is keyed on endpoint only; entries that have not been
+    // re-advertised in a peer-exchange reply for KNOWN_PEER_STALE_HOURS and
+    // are not currently tracked in _peer_states are evicted to bound memory.
+    static constexpr uint32_t       KNOWN_PEER_STALE_HOURS = 24;
+    fc::time_point                  _last_known_peers_cleanup;
+    void                            periodic_known_peers_cleanup();
+
     // ── Anti-spam ────────────────────────────────────────────────
     static constexpr uint32_t       SPAM_STRIKE_THRESHOLD = 10;
     static constexpr uint32_t       BAN_DURATION_SEC = 3600;
