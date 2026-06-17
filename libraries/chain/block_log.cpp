@@ -7,9 +7,6 @@
 #include <boost/thread/locks.hpp>
 
 namespace graphene { namespace chain {
-
-    using namespace graphene::protocol;
-
     namespace detail {
         using read_write_mutex = boost::shared_mutex;
         using read_lock = boost::shared_lock<read_write_mutex>;
