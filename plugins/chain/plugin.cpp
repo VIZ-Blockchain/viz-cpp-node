@@ -669,7 +669,7 @@ namespace chain {
                 }
             } else {
                 wlog("Error opening database, quiting. If should replay, set replay-if-corrupted in config.ini to true.");
-                std::exit(0); // TODO Migrate to appbase::app().quit()
+                appbase::app().quit();
                 return;
             }
         } catch (...) {
@@ -695,7 +695,7 @@ namespace chain {
                 }
             } else {
                 wlog("Error opening database, quiting. If should replay, set replay-if-corrupted in config.ini to true.");
-                std::exit(0); // TODO Migrate to appbase::app().quit()
+                appbase::app().quit();
                 return;
             }
         }
