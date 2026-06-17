@@ -7,7 +7,8 @@
 namespace graphene {
     namespace chain {
 
-        using namespace graphene::protocol;
+        using graphene::protocol::signed_block;
+        using fc::optional;
 
         namespace detail { class dlt_block_log_impl; }
 
