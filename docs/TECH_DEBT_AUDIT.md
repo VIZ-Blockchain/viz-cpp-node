@@ -3,6 +3,34 @@ Generated: 2026-05-01
 Branch audited: `chore/dead-code-tier-a`
 Scope: source under `libraries/`, `plugins/`, `programs/`, root `CMakeLists.txt`, `documentation/`, `share/vizd/`. Excludes `thirdparty/` (vendored submodules: fc, chainbase, appbase).
 
+> ## Refresh — 2026-06-17 (verified against working tree)
+>
+> The May findings below are kept as a historical log. The current state of each verified item:
+>
+> **Fixed since May:**
+> - **F008** — `CHAIN_INTERNAL_PLUGINS` lines removed from `plugins/CMakeLists.txt`.
+> - **F009** — `test_api_plugin` no longer registered in `programs/vizd/main.cpp`.
+> - **F017 / F029** — `chain_test` reference removed from `documentation/building.md`.
+> - **F046 / F047 / F048** — `documentation/plugin.md` no longer references the phantom dirs, `newplugin.py`, or the `CHAIN_INTERNAL_PLUGINS` claim.
+> - **F051** — `cat_parts.py` now uses `return False` / `return True`.
+>
+> **Partially addressed:**
+> - **F002** — `libraries/network/node.cpp` was split; the file is gone, replaced by `dlt_p2p_node.cpp` (4,113 LOC) + `dlt_p2p_messages.cpp` (26 LOC). The message extraction was trivial — the 4,113-LOC `dlt_p2p_node.cpp` is still a god file. F039's line refs (`node.cpp:4192-4395`) now point into `dlt_p2p_node.cpp`.
+> - **F019** — `remote_node_api.hpp` reduced from 10 `using namespace plugins::*` to 5. Still present.
+>
+> **Still open (line/LOC drift):**
+> - **F001** — `database.cpp` grew to **7,975 LOC** (+1,470, much of it stall-monitor work). Still #1 split priority. F036/F037 TODO line refs have shifted.
+> - **F003** — `plugins/snapshot/plugin.cpp` grew to **4,345 LOC** (+1,068). Not split. (Note: path is `plugins/snapshot/`, not `libraries/chain/snapshot/`.)
+> - **F004** wallet.cpp 2,796 · **F005** chain_evaluator.cpp 2,350 · **F006** wallet.hpp 1,554 — roughly unchanged.
+> - **F019** — `remote_node_api.hpp` reduced to 5 `using namespace plugins::*`. **Deferred:** narrowing them needs a local compiler — dozens of bare types resolve through those usings (incl. bare `set<>` with no `using std::set`), so a blind edit would break the build across consumers.
+>
+> **Fixed in working tree (pending CI build):**
+> - **F018** — `using namespace std;` in `wallet.hpp` → targeted `using std::{string,vector,map,pair};`.
+> - **F041** — `std::exit(0)` ×2 at `plugins/chain/plugin.cpp:672,698` → `appbase::app().quit()`. (Fixes the bypassed-shutdown bug; quit() likely still exits 0, so not an exit-code change.)
+>
+> **⚠️ Obsolete / now backwards — DO NOT ACT ON:**
+> - **F012** — The original `std::cerr` targets (`database.cpp:398,509`, reindex progress) are gone. The 5 remaining `std::cerr` calls (lines 329, 701, 828, 1160, 1174) are the **deliberate stall-watchdog** stderr — written to `cerr` precisely *so the monitor can never block on node locks*. Converting them to `ilog`/`wlog` would defeat the watchdog. **This recommendation is now wrong; leave the watchdog stderr as-is.** F011/F038/F045 snapshot `cerr` line refs have also drifted (file is now 4,345 LOC).
+
 ## Executive summary
 
 - **God-file concentration is the single biggest structural problem.** Five files (`libraries/chain/database.cpp` 6,505 LOC; `libraries/network/node.cpp` 5,759 LOC; `plugins/snapshot/plugin.cpp` 3,277 LOC; `libraries/wallet/wallet.cpp` 2,886 LOC; `libraries/chain/chain_evaluator.cpp` 2,347 LOC) hold ~20.8k LOC, roughly 40% of the real code surface. Three of these five are also the highest-churn files in the last 6 months (snapshot 55, database 38, node 25 commits). Size × churn = where bugs concentrate.
@@ -163,17 +191,17 @@ Three findings with the same root cause: `documentation/plugin.md` describes a s
 
 Low-effort × Medium-or-higher severity. Each takes <30 min and has near-zero risk.
 
-- [ ] **F008** — Delete `set(ENV{CHAIN_INTERNAL_PLUGINS}…)` lines in `plugins/CMakeLists.txt:2,8`. Confirmed dead.
-- [ ] **F009** — Wrap `test_api_plugin` registration in `#ifdef BUILD_TESTNET` or remove (`programs/vizd/main.cpp:72`).
-- [ ] **F012** — Replace `std::cerr` with `ilog`/`wlog` at `libraries/chain/database.cpp:398,509`.
-- [ ] **F017** — Remove `chain_test` reference from `documentation/building.md:374`.
-- [ ] **F018** — Delete `using namespace std;` at `libraries/wallet/include/graphene/wallet/wallet.hpp:16`. Then fix compile breaks (probably 5-15 sites).
-- [ ] **F029** — Same as F017.
-- [ ] **F041** — Replace `std::exit(0)` at `plugins/chain/plugin.cpp:506,520` with `appbase::app().quit()` per the existing TODO.
-- [ ] **F046** — Rewrite `documentation/plugin.md` opening section to match real layout.
-- [ ] **F047** — Remove the `programs/util/newplugin.py` reference at `documentation/plugin.md:24`.
-- [ ] **F048** — Remove the `CHAIN_INTERNAL_PLUGINS` claim from `documentation/plugin.md:5`.
-- [ ] **F051** — Fix `false` → `False`, `true` → `True` at `programs/build_helpers/cat_parts.py:14,16`.
+- [x] **F008** — ~~Delete `set(ENV{CHAIN_INTERNAL_PLUGINS}…)` lines in `plugins/CMakeLists.txt:2,8`.~~ Done (2026-06-17).
+- [x] **F009** — ~~Wrap `test_api_plugin` registration in `#ifdef BUILD_TESTNET` or remove (`programs/vizd/main.cpp:72`).~~ Done — no longer registered (2026-06-17).
+- [ ] ~~**F012** — Replace `std::cerr` with `ilog`/`wlog` at `libraries/chain/database.cpp:398,509`.~~ **OBSOLETE — do not act.** Target lines gone; remaining `cerr` is the intentional stall-watchdog (see 2026-06-17 refresh banner).
+- [x] **F017** — ~~Remove `chain_test` reference from `documentation/building.md:374`.~~ Done (2026-06-17).
+- [x] **F018** — ~~Delete `using namespace std;` at `wallet.hpp:15`.~~ Done (2026-06-17): replaced with `using std::{string,vector,map,pair};`. *(Pending CI build verification.)*
+- [x] **F029** — ~~Same as F017.~~ Done (2026-06-17).
+- [x] **F041** — ~~Replace `std::exit(0)` at `plugins/chain/plugin.cpp:672,698` with `appbase::app().quit()`.~~ Done (2026-06-17). *(Pending CI build verification.)*
+- [x] **F046** — ~~Rewrite `documentation/plugin.md` opening section to match real layout.~~ Done (2026-06-17).
+- [x] **F047** — ~~Remove the `programs/util/newplugin.py` reference at `documentation/plugin.md:24`.~~ Done (2026-06-17).
+- [x] **F048** — ~~Remove the `CHAIN_INTERNAL_PLUGINS` claim from `documentation/plugin.md:5`.~~ Done (2026-06-17).
+- [x] **F051** — ~~Fix `false` → `False`, `true` → `True` at `programs/build_helpers/cat_parts.py:14,16`.~~ Done (2026-06-17).
 
 ## Things that look bad but are actually fine
 

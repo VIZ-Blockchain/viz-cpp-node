@@ -12,7 +12,10 @@
 
 namespace graphene { namespace wallet {
 
-        using namespace std;
+        using std::string;
+        using std::vector;
+        using std::map;
+        using std::pair;
 
         using namespace graphene::utilities;
         using namespace graphene::protocol;
