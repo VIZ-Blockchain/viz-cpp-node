@@ -60,7 +60,15 @@ if(BUILD_SHARED_LIBRARIES)
             committee_evaluator.cpp
             invite_evaluator.cpp
             paid_subscription_evaluator.cpp
+            pm/lmsr_q96.cpp
+            pm/parimutuel.cpp
+            pm/leverage.cpp
+            pm_evaluator.cpp
 
+            include/graphene/chain/pm/lmsr_q96.hpp
+            include/graphene/chain/pm/parimutuel.hpp
+            include/graphene/chain/pm/leverage.hpp
+            include/graphene/chain/pm_evaluator.hpp
             include/graphene/chain/account_object.hpp
             include/graphene/chain/block_log.hpp
             include/graphene/chain/dlt_block_log.hpp
@@ -90,6 +98,7 @@ if(BUILD_SHARED_LIBRARIES)
             include/graphene/chain/validator_objects.hpp
             include/graphene/chain/committee_objects.hpp
             include/graphene/chain/paid_subscription_objects.hpp
+            include/graphene/chain/pm_objects.hpp
 
             ${hardfork_hpp_file}
             )
@@ -114,7 +123,15 @@ else()
             committee_evaluator.cpp
             invite_evaluator.cpp
             paid_subscription_evaluator.cpp
+            pm/lmsr_q96.cpp
+            pm/parimutuel.cpp
+            pm/leverage.cpp
+            pm_evaluator.cpp
 
+            include/graphene/chain/pm/lmsr_q96.hpp
+            include/graphene/chain/pm/parimutuel.hpp
+            include/graphene/chain/pm/leverage.hpp
+            include/graphene/chain/pm_evaluator.hpp
             include/graphene/chain/account_object.hpp
             include/graphene/chain/block_log.hpp
             include/graphene/chain/dlt_block_log.hpp
@@ -145,6 +162,7 @@ else()
             include/graphene/chain/committee_objects.hpp
             include/graphene/chain/invite_objects.hpp
             include/graphene/chain/paid_subscription_objects.hpp
+            include/graphene/chain/pm_objects.hpp
 
             ${hardfork_hpp_file}
             )
@@ -152,7 +170,7 @@ endif()
 
 add_dependencies(graphene_chain graphene_protocol graphene_utilities build_hardfork_hpp)
 target_link_libraries(graphene_chain graphene_protocol graphene_utilities fc chainbase appbase ${PATCH_MERGE_LIB})
-target_include_directories(graphene_chain PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_BINARY_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/../../")
+target_include_directories(graphene_chain PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/../../")
 
 if(WITH_COVERAGE)
     target_compile_options(graphene_chain PRIVATE --coverage)
@@ -161,6 +179,10 @@ endif()
 
 if(MSVC)
     set_source_files_properties(database.cpp PROPERTIES COMPILE_FLAGS "/bigobj")
+    # HF14 LMSR is pure integer math, but forbid contraction/fast-math defensively (consensus determinism).
+    set_source_files_properties(pm/lmsr_q96.cpp PROPERTIES COMPILE_FLAGS "/fp:precise")
+else()
+    set_source_files_properties(pm/lmsr_q96.cpp PROPERTIES COMPILE_FLAGS "-fno-fast-math -ffp-contract=off")
 endif(MSVC)
 
 install(TARGETS

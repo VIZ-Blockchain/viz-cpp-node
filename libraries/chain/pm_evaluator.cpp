@@ -1,0 +1,2316 @@
+#include <graphene/chain/pm_evaluator.hpp>
+#include <graphene/chain/database.hpp>
+#include <graphene/chain/chain_objects.hpp>
+#include <graphene/chain/pm_objects.hpp>
+#include <graphene/chain/pm/lmsr_q96.hpp>
+#include <graphene/chain/pm/parimutuel.hpp>
+#include <graphene/chain/pm/leverage.hpp>
+#include <graphene/protocol/pm_operations.hpp>
+#include <graphene/protocol/pm_virtual_operations.hpp>
+#include <graphene/protocol/config.hpp>
+
+#include <fc/crypto/sha256.hpp>
+
+namespace graphene { namespace chain {
+
+using namespace graphene::protocol;
+
+// ─── Internal helpers ────────────────────────────────────────────────────────
+
+namespace {
+
+    const chain_properties_pm& median(const database& db) {
+        return db.get_validator_schedule_object().median_props;
+    }
+
+    // Return a lazy-pool LP position's capital to the pool: principal to free_balance,
+    // yield (its share of the LP bonus) into the MasterChef accumulator (reward_per_share
+    // ×1e9) so depositors can claim it. Mirrors the lazy deposit/withdraw accounting.
+    void route_pool_lp_return(database& db, int64_t principal, int64_t yield) {
+        const auto* pool = db.find<pm_lazy_pool_object>(pm_lazy_pool_id_type(0));
+        if (!pool) return;
+        db.modify(*pool, [&](pm_lazy_pool_object& p) {
+            // Principal leaves allocation; principal AND yield both land in free_balance so the
+            // yield is spendable on withdrawal (spec lazy-pool Transition 4: free += return).
+            p.free_balance      += share_type(principal + yield);
+            p.allocated_balance -= share_type(principal);
+            if (yield > 0) {
+                p.earned_balance += share_type(yield);
+                if (p.total_shares.value > 0)
+                    p.reward_per_share += fc::uint128_t((uint64_t)yield)
+                                        * fc::uint128_t((uint64_t)1000000000)
+                                        / fc::uint128_t((uint64_t)p.total_shares.value);
+            }
+        });
+    }
+
+    // Close the market's lazy allocation (recall-tracking object) once its LP position
+    // has been settled/returned, so the recall cron skips it.
+    void mark_alloc_settled(database& db, pm_market_id_type market) {
+        const auto& aidx = db.get_index<pm_lazy_allocation_index>().indices().get<by_market>();
+        auto it = aidx.find(market);
+        if (it != aidx.end() && it->status == 0)
+            db.modify(*it, [&](pm_lazy_allocation_object& a) {
+                a.returned_amount += a.amount; a.amount = 0; a.status = 1;
+            });
+    }
+
+    // ── Leverage liquidation (spec §5/§6) ────────────────────────────────────────
+    // Liquidate one position at CURRENT reserves: sell its tokens back, the pool recovers
+    // min(cancel_value, obligation), the bettor gets any remainder. Zero-sum: the C+L that
+    // entered the curve at open returns as cancel_value (split pool/bettor); the price-impact
+    // difference accrues to the rest of the market. reason: 0 opposing-bet, 1 cancel-bet, 2 expiry.
+    void liquidate_position(database& db, const pm_leverage_position_object& pos, uint8_t reason) {
+        const auto& mkt = db.get<pm_market_object, by_id>(pos.market);
+        int64_t cv = pm::leverage::cancel_value(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
+                                            pos.tokens.value, (int)pos.outcome_index);
+        int64_t obligation      = pos.liquidation_threshold.value;
+        int64_t pool_received   = cv < obligation ? cv : obligation;
+        int64_t bettor_received = cv - pool_received; // ≥ 0
+        int64_t pool_profit     = pool_received - pos.loan.value;
+
+        db.modify(mkt, [&](pm_market_object& m) { // unwind tokens (k preserved)
+            if (pos.outcome_index == 0) {
+                int64_t new_rb = m.reserve_b.value + pos.tokens.value;
+                m.reserve_b = share_type(new_rb);
+                m.reserve_a = share_type((int64_t)(m.k / fc::uint128_t((uint64_t)new_rb)).lo);
+            } else {
+                int64_t new_ra = m.reserve_a.value + pos.tokens.value;
+                m.reserve_a = share_type(new_ra);
+                m.reserve_b = share_type((int64_t)(m.k / fc::uint128_t((uint64_t)new_ra)).lo);
+            }
+        });
+        db.modify(db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0)), [&](pm_lazy_pool_object& p) {
+            p.free_balance       += share_type(pool_received);
+            p.leverage_fund_used -= pos.loan;
+            if (pool_profit > 0) {
+                p.earned_balance += share_type(pool_profit);
+                if (p.total_shares.value > 0)
+                    p.reward_per_share += fc::uint128_t((uint64_t)pool_profit)
+                                        * fc::uint128_t((uint64_t)1000000000) / fc::uint128_t((uint64_t)p.total_shares.value);
+            }
+        });
+        if (bettor_received > 0)
+            db.adjust_balance(db.get_account(pos.account), asset(share_type(bettor_received), TOKEN_SYMBOL));
+
+        // reason 2 = the market is resolving/voiding → this is a SETTLEMENT (pm_leverage_resolve),
+        // not a mid-market liquidation (pm_leverage_liquidate). `won` = the position was solvent.
+        const bool settle = (reason == 2);
+        const bool won    = (cv >= obligation);
+        db.modify(pos, [&](pm_leverage_position_object& p) {
+            p.status = settle ? (won ? (uint8_t)2 : (uint8_t)3) : (uint8_t)1;
+            p.cancel_value_at_liquidation = share_type(cv);
+            p.pool_received   = share_type(pool_received);
+            p.bettor_received = share_type(bettor_received);
+            p.last_update     = db.head_block_time();
+        });
+        if (settle) {
+            uint16_t lev = pos.collateral.value > 0
+                         ? (uint16_t)(pos.total_bet.value / pos.collateral.value) : (uint16_t)0;
+            db.push_virtual_operation(pm_leverage_resolve_operation(
+                pos.account, pos.id._id, pos.market._id, won,
+                asset(share_type(pool_received), TOKEN_SYMBOL),
+                asset(share_type(bettor_received), TOKEN_SYMBOL),
+                pos.outcome_index, lev));
+        } else {
+            db.push_virtual_operation(pm_leverage_liquidate_operation(
+                pos.account, pos.id._id, pos.market._id,
+                asset(share_type(cv), TOKEN_SYMBOL), asset(share_type(pool_received), TOKEN_SYMBOL),
+                asset(share_type(bettor_received), TOKEN_SYMBOL), reason));
+        }
+    }
+
+    // Cascade: liquidate EVERY active position on `market` (restricted to `side`, -1 = any)
+    // whose cancel_value ≤ threshold, re-evaluating after each liquidation (reserves change).
+    // No iteration cap — the pool must never be left exposed by a partial cascade. Termination
+    // is guaranteed: each liquidation flips a position to status 1 (excluded from the scan),
+    // so the loop runs at most once per position. One-directional (only same-side worsen).
+    void cascade_liquidate(database& db, pm_market_id_type market, int16_t side, uint8_t reason) {
+        for (;;) {
+            const auto& mkt = db.get<pm_market_object, by_id>(market);
+            const auto& idx = db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>();
+            auto it = idx.lower_bound(boost::make_tuple(market, (uint8_t)0, pm_leverage_position_id_type()));
+            const pm_leverage_position_object* victim = nullptr;
+            for (; it != idx.end() && it->market == market && it->status == 0; ++it) {
+                if (side >= 0 && it->outcome_index != side) continue;
+                int64_t cv = pm::leverage::cancel_value(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
+                                                    it->tokens.value, (int)it->outcome_index);
+                if (cv <= it->liquidation_threshold.value) { victim = &*it; break; }
+            }
+            if (!victim) break;
+            liquidate_position(db, *victim, reason);
+        }
+    }
+
+    // Force-close ALL active positions on a market (terminal: market resolving/voided).
+    // Unbounded by design — every position must be closed; terminates because each
+    // liquidation flips status 0→1 (excluded from the next lower_bound).
+    void force_close_positions(database& db, pm_market_id_type market) {
+        for (;;) {
+            const auto& idx = db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>();
+            auto it = idx.lower_bound(boost::make_tuple(market, (uint8_t)0, pm_leverage_position_id_type()));
+            if (it == idx.end() || it->market != market || it->status != 0) break;
+            liquidate_position(db, *it, 2);
+        }
+    }
+
+    // Graduated recall: withdraw `amount` of the lazy pool's LP position from an idle
+    // market and return it to free_balance. Mirrors pm_withdraw_liquidity — shrink
+    // liquidity_sum, reduce LMSR b proportionally (binary reserves are the pricing engine
+    // and stay, as on every LP withdraw/settle). Returns the amount actually recalled.
+    share_type recall_pool_liquidity(database& db, const pm_market_object& mkt, share_type amount) {
+        if (amount.value <= 0) return share_type(0);
+        const auto& lidx = db.get_index<pm_liquidity_index>().indices().get<by_market>();
+        const pm_liquidity_object* poollp = nullptr;
+        for (auto it = lidx.lower_bound(boost::make_tuple(mkt.id, pm_liquidity_id_type()));
+             it != lidx.end() && it->market == mkt.id; ++it) {
+            if (it->status == 0 && it->provider.size() == 0) { poollp = &*it; break; }
+        }
+        if (!poollp) return share_type(0);
+
+        share_type w = amount;
+        if (w.value > poollp->amount.value) w = poollp->amount;
+        share_type b_remove = 0;
+        if (mkt.market_type == 1 && poollp->b_share.value > 0 && poollp->amount.value > 0) {
+            b_remove = (w == poollp->amount) ? poollp->b_share :
+                share_type((int64_t)(fc::uint128_t((uint64_t)poollp->b_share.value)
+                          * fc::uint128_t((uint64_t)w.value) / fc::uint128_t((uint64_t)poollp->amount.value)).lo);
+        }
+        db.modify(mkt, [&](pm_market_object& m) {
+            m.liquidity_sum -= w;
+            if (m.market_type == 1) m.lmsr_b -= b_remove;
+        });
+        if (w == poollp->amount)
+            db.modify(*poollp, [](pm_liquidity_object& l) { l.status = 3; });
+        else
+            db.modify(*poollp, [&](pm_liquidity_object& l) { l.amount -= w; l.b_share -= b_remove; });
+        route_pool_lp_return(db, w.value, 0); // principal back to pool, no yield
+        return w;
+    }
+
+    // ── Liquidity settlement ────────────────────────────────────────────────────
+    // Returns every active LP's principal UNCONDITIONALLY and distributes `bonus`
+    // (liquidity fee + time-penalty pool + undistributed winners' pool) weighted by
+    // principal × time-in-market (pure, unit-tested distribute_lp; last entry absorbs
+    // rounding). The lazy pool is a real LP (pm_liquidity_object with empty provider);
+    // its principal + yield route back into the pool instead of to an account.
+    void settle_liquidity(database& db, const pm_market_object& mkt, share_type bonus) {
+        const auto& lidx = db.get_index<pm_liquidity_index>().indices().get<by_market>();
+        auto first = lidx.lower_bound(boost::make_tuple(mkt.id, pm_liquidity_id_type()));
+
+        const fc::time_point_sec now = db.head_block_time();
+
+        std::vector<const pm_liquidity_object*> active;
+        std::vector<pm::lp_in> lps;
+        for (auto it = first; it != lidx.end() && it->market == mkt.id; ++it) {
+            if (it->status != 0) continue;
+            active.push_back(&*it);
+            int64_t sec = (int64_t)now.sec_since_epoch() - (int64_t)it->deposit_time.sec_since_epoch();
+            lps.push_back(pm::lp_in{ it->amount.value, sec });
+        }
+        if (active.empty()) return;
+
+        const std::vector<int64_t> shares = pm::distribute_lp(lps, bonus.value);
+
+        for (size_t i = 0; i < active.size(); ++i) {
+            const pm_liquidity_object& lp = *active[i];
+            share_type share(shares[i]);
+            if (lp.provider.size() > 0) {
+                share_type ret = share_type(lp.amount.value + share.value);
+                if (ret.value > 0)
+                    db.adjust_balance(db.get_account(lp.provider), asset(ret, TOKEN_SYMBOL));
+            } else {
+                route_pool_lp_return(db, lp.amount.value, share.value); // lazy pool LP
+            }
+            db.modify(lp, [&](pm_liquidity_object& l) { l.earned_fee += share; l.status = 3; });
+        }
+
+        mark_alloc_settled(db, mkt.id);
+    }
+
+    // ── Market settlement (unified parimutuel, spec parimutuel-settlement.md §2) ──
+    // Winners are paid by curve WEIGHT out of the losers' stakes:
+    //   losers_sum   = Σ amount of losing bets
+    //   winners_pool = losers_sum − oracle_fee − creator_fee − liq_fee − oracle_fixed + forfeit_pool
+    //   payout_i     = bet_amount_i + floor(winners_pool × weight_i / Σweight) − time_penalty(profit)
+    // LP principal is returned unconditionally; liq_fee + time-penalty pool + any
+    // undistributed winners_pool form the LP bonus. Money is conserved exactly:
+    //   Σ outputs == Σ all bet amounts + LP principal + forfeit_pool.
+    // oracle_fixed_fee is funded FROM the pool (capped), never minted.
+    void settle_market(database& db, const pm_market_object& mkt) {
+        const bool binary = (mkt.market_type == 0);
+        const int16_t win = mkt.resolved_outcome;
+
+        // Any leveraged positions still open at settlement are force-closed first
+        // (normally the expiration buffer prevents this; this is the terminal safety net).
+        force_close_positions(db, mkt.id);
+
+        // Zero-volume resolution → fault stamp on the oracle (§4.10 lazy-pool defense:
+        // discourages spam markets that lock pool capital with no betting volume).
+        if (win >= 0 && mkt.bets_sum.value == 0) {
+            const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+            auto oit = oidx.find(mkt.oracle);
+            if (oit != oidx.end())
+                db.modify(*oit, [&](pm_oracle_object& o) {
+                    o.penalty_stamps++;
+                    o.last_penalty_stamp_time = db.head_block_time();
+                });
+        }
+
+        const auto& bidx = db.get_index<pm_bet_index>().indices().get<by_market>();
+        auto first = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type()));
+
+        // Void / no-contest finalization: refund every active bet, return LP, and slash the
+        // no-contest penalty (pm_no_contest_penalty_percent of the dispute fee) from the oracle,
+        // distributed pro-rata to the refunded bettors as compensation (spec §3.9). Only the
+        // no-contest path reaches settle with win<0 (missed/auto-close refund in their own crons).
+        if (win < 0) {
+            const auto& mp = median(db);
+            std::vector<std::pair<account_name_type, int64_t>> participants;
+            int64_t total_bets = 0;
+            for (auto it = first; it != bidx.end() && it->market == mkt.id; ++it)
+                if (it->status == 0) { participants.emplace_back(it->account, it->amount.value); total_bets += it->amount.value; }
+
+            for (auto it = first; it != bidx.end() && it->market == mkt.id; ) {
+                const auto& bet = *it; ++it;
+                if (bet.status != 0) continue;
+                db.adjust_balance(db.get_account(bet.account), asset(bet.amount, TOKEN_SYMBOL));
+                db.modify(bet, [](pm_bet_object& b) { b.status = 2; });
+            }
+            settle_liquidity(db, mkt, 0);
+
+            share_type penalty(0);
+            if (total_bets > 0) {
+                const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+                auto oit = oidx.find(mkt.oracle);
+                if (oit != oidx.end()) {
+                    int64_t want = (int64_t)(fc::uint128_t((uint64_t)mp.pm_dispute_fee.amount.value)
+                        * fc::uint128_t((uint64_t)mp.pm_no_contest_penalty_percent) / fc::uint128_t(10000)).lo;
+                    penalty = share_type(want > oit->insurance.value ? oit->insurance.value : want);
+                    if (penalty.value > 0)
+                        db.modify(*oit, [&](pm_oracle_object& o) {
+                            o.insurance               -= penalty;
+                            o.total_insurance_slashed += penalty;
+                        });
+                }
+            }
+            if (penalty.value > 0) {
+                int64_t paid = 0;
+                for (size_t i = 0; i < participants.size(); ++i) {
+                    int64_t share = (i + 1 == participants.size())
+                        ? penalty.value - paid
+                        : (int64_t)(fc::uint128_t((uint64_t)penalty.value)
+                            * fc::uint128_t((uint64_t)participants[i].second) / fc::uint128_t((uint64_t)total_bets)).lo;
+                    if (share > 0) {
+                        db.adjust_balance(db.get_account(participants[i].first), asset(share_type(share), TOKEN_SYMBOL));
+                        paid += share;
+                    }
+                }
+            }
+            db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
+            return;
+        }
+
+        auto is_winner = [&](const pm_bet_object& b) {
+            return binary ? (b.side == win) : (b.outcome_index == win);
+        };
+
+        // Pass 1: collect winners (curve weight = claim) and losing stakes, then
+        // delegate the money split to the pure, unit-tested parimutuel math.
+        pm::settle_params sp;
+        sp.oracle_fee_percent    = mkt.oracle_fee_percent;
+        sp.creator_fee_percent   = mkt.creator_fee_percent;
+        sp.liquidity_fee_percent = mkt.liquidity_fee_percent;
+        sp.forfeit_pool           = mkt.forfeit_pool.value;
+        sp.oracle_fixed_fee       = mkt.oracle_fixed_fee.value;
+
+        std::vector<pm::winner_in> winners;
+        std::vector<const pm_bet_object*> winner_bets;
+        std::vector<const pm_bet_object*> loser_bets;
+        int64_t losers_sum = 0;
+        for (auto it = first; it != bidx.end() && it->market == mkt.id; ++it) {
+            if (it->status != 0) continue;
+            if (is_winner(*it)) {
+                winners.push_back(pm::winner_in{it->amount.value, it->weight.value, it->time_penalty});
+                winner_bets.push_back(&*it);
+            } else {
+                losers_sum += it->amount.value;
+                loser_bets.push_back(&*it);
+            }
+        }
+        sp.losers_sum = losers_sum;
+
+        const pm::settle_result res = pm::compute_settlement(sp, winners);
+
+        if (res.oracle_take > 0)
+            db.adjust_balance(db.get_account(mkt.oracle),  asset(share_type(res.oracle_take),  TOKEN_SYMBOL));
+        if (res.creator_take > 0)
+            db.adjust_balance(db.get_account(mkt.creator), asset(share_type(res.creator_take), TOKEN_SYMBOL));
+
+        // Per-bettor settlement record (winners + losers) so history parsers see each result.
+        for (const auto* lb : loser_bets) {
+            db.modify(*lb, [](pm_bet_object& b) { b.status = 3; b.resolved_amount = 0; });
+            db.push_virtual_operation(pm_payout_operation(
+                lb->account, mkt.id._id, lb->id._id, lb->side, lb->outcome_index,
+                asset(lb->amount, TOKEN_SYMBOL), asset(share_type(0), TOKEN_SYMBOL)));
+        }
+
+        for (size_t i = 0; i < winner_bets.size(); ++i) {
+            share_type payout(res.winner_payout[i]);
+            if (payout.value > 0)
+                db.adjust_balance(db.get_account(winner_bets[i]->account), asset(payout, TOKEN_SYMBOL));
+            db.modify(*winner_bets[i], [&](pm_bet_object& b) { b.status = 3; b.resolved_amount = payout; });
+            db.push_virtual_operation(pm_payout_operation(
+                winner_bets[i]->account, mkt.id._id, winner_bets[i]->id._id,
+                winner_bets[i]->side, winner_bets[i]->outcome_index,
+                asset(winner_bets[i]->amount, TOKEN_SYMBOL), asset(payout, TOKEN_SYMBOL)));
+        }
+
+        settle_liquidity(db, mkt, share_type(res.lp_bonus));
+        db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
+    }
+
+    void refund_all_bets(database& db, const pm_market_object& mkt) {
+        const auto& bidx = db.get_index<pm_bet_index>().indices().get<by_market>();
+        auto it = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type()));
+        while (it != bidx.end() && it->market == mkt.id) {
+            if (it->status == 0) {
+                db.adjust_balance(db.get_account(it->account), asset(it->amount, TOKEN_SYMBOL));
+                db.modify(*it, [](pm_bet_object& b) { b.status = 2; });
+            }
+            ++it;
+        }
+    }
+
+    void return_liquidity(database& db, const pm_market_object& mkt) {
+        // Void/refund terminal: force-close any open leveraged positions first.
+        force_close_positions(db, mkt.id);
+        const auto& lidx = db.get_index<pm_liquidity_index>().indices().get<by_market>();
+        auto it = lidx.lower_bound(boost::make_tuple(mkt.id, pm_liquidity_id_type()));
+        while (it != lidx.end() && it->market == mkt.id) {
+            if (it->status == 0) {
+                if (it->provider.size() > 0)
+                    db.adjust_balance(db.get_account(it->provider), asset(it->amount, TOKEN_SYMBOL));
+                else
+                    route_pool_lp_return(db, it->amount.value, 0); // lazy pool LP, no yield on refund
+                db.modify(*it, [](pm_liquidity_object& l) { l.status = 3; });
+            }
+            ++it;
+        }
+        // Void/refund paths (no_contest, missed, auto-close) bypass settle_liquidity, so
+        // close the lazy allocation's recall-tracking object here.
+        mark_alloc_settled(db, mkt.id);
+    }
+
+    // Allocate a slice of idle lazy-pool capital to a newly-active market as a REAL LP
+    // position (enters CPMM reserves / LMSR b, provider = pool) — spec lazy-pool-properties
+    // Transition 2. Triggered at activation (status 0→1, before bets). One allocation per
+    // market, bounded by pm_lazy_alloc_percent of free_balance and pm_lazy_max_total_alloc_percent
+    // of total pool capital, minus the §4.10 per-oracle exposure penalties.
+    void maybe_allocate_lazy(database& db, const pm_market_object& mkt) {
+        const auto& mp = median(db);
+        if (!mp.pm_lazy_pool_enabled) return;
+        const auto* pool = db.find<pm_lazy_pool_object>(pm_lazy_pool_id_type(0));
+        if (!pool || pool->free_balance.value <= 0) return;
+
+        const auto& aidx = db.get_index<pm_lazy_allocation_index>().indices().get<by_market>();
+        if (aidx.find(mkt.id) != aidx.end()) return; // already allocated
+
+        int64_t total_capital = pool->free_balance.value + pool->allocated_balance.value;
+        int64_t max_total = (int64_t)(fc::uint128_t((uint64_t)total_capital)
+                            * fc::uint128_t(mp.pm_lazy_max_total_alloc_percent) / fc::uint128_t(10000)).lo;
+        int64_t headroom = max_total - pool->allocated_balance.value;
+        if (headroom <= 0) return;
+
+        int64_t alloc = (int64_t)(fc::uint128_t((uint64_t)pool->free_balance.value)
+                       * fc::uint128_t(mp.pm_lazy_alloc_percent) / fc::uint128_t(10000)).lo;
+        if (alloc > pool->free_balance.value) alloc = pool->free_balance.value;
+        if (alloc > headroom) alloc = headroom;
+        if (alloc <= 0) return;
+
+        const auto now = db.head_block_time();
+
+        // Per-oracle exposure penalties (security-threat-model §4.10) — limit how much
+        // pool capital a single oracle can attract into idle/abusive markets.
+        const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+        auto oit = oidx.find(mkt.oracle);
+        {
+            // (a) Active-market penalty: 5% recursive reduction per OTHER active market
+            //     of this oracle (bounded scan; cap 20 markets).
+            const auto& midx = db.get_index<pm_market_index>().indices().get<by_oracle>();
+            uint32_t active_cnt = 0, scanned = 0;
+            for (auto mit = midx.lower_bound(mkt.oracle);
+                 mit != midx.end() && mit->oracle == mkt.oracle && scanned < 128 && active_cnt < 20;
+                 ++mit, ++scanned) {
+                if (mit->status == 1 && mit->id != mkt.id) ++active_cnt;
+            }
+            for (uint32_t i = 0; i < active_cnt; ++i) alloc = alloc * 95 / 100;
+
+            // (b) Fault penalty stamps: zero-volume resolutions stamp the oracle; each
+            //     non-expired stamp halves the allocation (cap 4). Stamps expire 10 days
+            //     after the most recent one (coarse, deterministic decay).
+            if (oit != oidx.end() && oit->penalty_stamps > 0 &&
+                now < oit->last_penalty_stamp_time + fc::seconds(864000)) {
+                uint32_t st = oit->penalty_stamps > 4 ? 4 : oit->penalty_stamps;
+                for (uint32_t i = 0; i < st; ++i) alloc /= 2;
+            }
+        }
+        if (alloc <= 0) return;
+
+        // Deploy the allocation into the curve as a REAL LP position (provider = pool),
+        // exactly like pm_add_liquidity. This happens at activation (status 0→1, before
+        // any bets) — the genesis of the active curve, not a mid-life edit.
+        share_type b_share = 0;
+        if (mkt.market_type == 1 && mkt.liquidity_sum.value > 0) {
+            b_share = share_type((int64_t)(fc::uint128_t((uint64_t)mkt.lmsr_b.value)
+                      * fc::uint128_t((uint64_t)alloc) / fc::uint128_t((uint64_t)mkt.liquidity_sum.value)).lo);
+        }
+        db.modify(mkt, [&](pm_market_object& m) {
+            m.liquidity_sum += share_type(alloc);
+            if (m.market_type == 1) {
+                m.lmsr_b       += b_share;
+                m.lmsr_subsidy += share_type(alloc);
+            } else {
+                share_type half = share_type(alloc / 2);
+                m.reserve_a += half;
+                m.reserve_b += share_type(alloc - half.value);
+                m.k = fc::uint128_t((uint64_t)m.reserve_a.value) * fc::uint128_t((uint64_t)m.reserve_b.value);
+            }
+        });
+        db.create<pm_liquidity_object>([&](pm_liquidity_object& lp) {
+            lp.market       = mkt.id;
+            lp.provider     = account_name_type(); // empty = lazy pool
+            lp.amount       = share_type(alloc);
+            lp.deposit_time = now;
+            lp.status       = 0;
+            lp.b_share      = b_share;
+        });
+        db.create<pm_lazy_allocation_object>([&](pm_lazy_allocation_object& a) {
+            a.market            = mkt.id;
+            a.amount            = share_type(alloc);
+            a.original_amount   = share_type(alloc);
+            a.bets_sum_at_check = mkt.bets_sum;
+            a.last_check_time   = now;
+            a.check_step        = 0;
+            a.status            = 0;
+        });
+        db.modify(*pool, [&](pm_lazy_pool_object& p) {
+            p.free_balance      -= share_type(alloc);
+            p.allocated_balance += share_type(alloc);
+        });
+    }
+
+    bool verify_commit(const pm_commit_object& commit,
+                       int8_t side, int16_t outcome_index,
+                       share_type amount, share_type min_tokens, const std::string& salt) {
+        fc::sha256::encoder enc;
+        int64_t mid = commit.market._id;
+        enc.write(reinterpret_cast<const char*>(&mid),          (uint32_t)sizeof(mid));
+        enc.write(reinterpret_cast<const char*>(&commit.account.data), (uint32_t)sizeof(commit.account.data));
+        enc.write(reinterpret_cast<const char*>(&side),         (uint32_t)sizeof(side));
+        enc.write(reinterpret_cast<const char*>(&outcome_index),(uint32_t)sizeof(outcome_index));
+        int64_t amt = amount.value;
+        enc.write(reinterpret_cast<const char*>(&amt),          (uint32_t)sizeof(amt));
+        int64_t mnt = min_tokens.value;
+        enc.write(reinterpret_cast<const char*>(&mnt),          (uint32_t)sizeof(mnt));
+        enc.write(salt.data(),                                   (uint32_t)salt.size());
+        return enc.result() == commit.commitment;
+    }
+
+    // Get pm_market_object by raw int64 id
+    const pm_market_object& get_market(const database& db, int64_t market_id) {
+        return db.get<pm_market_object, by_id>(pm_market_id_type(market_id));
+    }
+
+} // anonymous namespace
+
+// ─── 1. pm_oracle_register ───────────────────────────────────────────────────
+
+void pm_oracle_register_evaluator::do_apply(const pm_oracle_register_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto& mp = median(db);
+
+    const auto& owner = db.get_account(o.owner);
+    FC_ASSERT(o.insurance.symbol == TOKEN_SYMBOL, "Insurance must be VIZ");
+    FC_ASSERT(o.insurance.amount >= mp.pm_min_oracle_insurance.amount, "Insurance below minimum");
+    FC_ASSERT(o.fee_percent <= mp.pm_max_oracle_fee_percent, "fee_percent exceeds maximum");
+    FC_ASSERT(o.fixed_fee.symbol == TOKEN_SYMBOL, "fixed_fee must be VIZ");
+    FC_ASSERT(o.fixed_fee.amount >= 0, "fixed_fee cannot be negative");
+    FC_ASSERT(o.rules_url.size() <= MAX_PM_PROFILE_URL_LEN, "rules_url too long");
+
+    const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+    FC_ASSERT(oidx.find(o.owner) == oidx.end(), "Oracle already registered");
+
+    if (mp.pm_oracle_registration_fee.amount > 0) {
+        FC_ASSERT(owner.balance >= mp.pm_oracle_registration_fee, "Insufficient balance for registration fee");
+        db.adjust_balance(owner, -mp.pm_oracle_registration_fee);
+        db.modify(db.get_dynamic_global_properties(), [&](dynamic_global_property_object& dgp) {
+            dgp.committee_fund += mp.pm_oracle_registration_fee; // protocol fee → DAO fund
+        });
+    }
+
+    FC_ASSERT(owner.balance >= o.insurance, "Insufficient balance for insurance");
+    db.adjust_balance(owner, -o.insurance);
+
+    db.create<pm_oracle_object>([&](pm_oracle_object& oracle) {
+        oracle.owner          = o.owner;
+        oracle.insurance      = o.insurance.amount;
+        oracle.fee_percent   = o.fee_percent;
+        oracle.fixed_fee      = o.fixed_fee.amount;
+        from_string(oracle.rules_url, o.rules_url);
+        oracle.active_since   = db.head_block_time();
+        oracle.last_active_time = db.head_block_time();
+        oracle.auto_accept_creator  = o.auto_accept_creator;
+        oracle.auto_accept_resolver = o.auto_accept_resolver;
+        oracle.auto_accept          = o.auto_accept;
+    });
+}
+
+// ─── 2. pm_oracle_update ─────────────────────────────────────────────────────
+
+void pm_oracle_update_evaluator::do_apply(const pm_oracle_update_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto& mp = median(db);
+
+    const auto& owner = db.get_account(o.owner);
+    const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+    auto it = oidx.find(o.owner);
+    FC_ASSERT(it != oidx.end(), "Oracle not found");
+    const auto& oracle = *it;
+
+    if (o.fee_percent.valid())
+        FC_ASSERT(*o.fee_percent <= mp.pm_max_oracle_fee_percent, "fee_percent exceeds maximum");
+    if (o.fixed_fee.valid()) {
+        FC_ASSERT(o.fixed_fee->symbol == TOKEN_SYMBOL, "fixed_fee must be VIZ");
+        FC_ASSERT(o.fixed_fee->amount >= 0, "fixed_fee cannot be negative");
+    }
+    if (o.rules_url.valid())
+        FC_ASSERT(o.rules_url->size() <= MAX_PM_PROFILE_URL_LEN, "rules_url too long");
+
+    if (o.insurance_delta.valid()) {
+        const asset& delta = *o.insurance_delta;
+        FC_ASSERT(delta.symbol == TOKEN_SYMBOL, "insurance_delta must be VIZ");
+        if (delta.amount > 0) {
+            FC_ASSERT(owner.balance >= delta, "Insufficient balance for insurance top-up");
+            db.adjust_balance(owner, -delta);
+        } else if (delta.amount < 0) {
+            share_type withdraw = share_type(-delta.amount);
+            FC_ASSERT(oracle.insurance.value - withdraw.value >= mp.pm_min_oracle_insurance.amount.value,
+                      "Withdrawal would push insurance below minimum");
+            db.adjust_balance(owner, asset(withdraw, TOKEN_SYMBOL));
+        }
+    }
+
+    db.modify(oracle, [&](pm_oracle_object& ora) {
+        if (o.insurance_delta.valid()) {
+            ora.insurance += o.insurance_delta->amount;
+        }
+        if (o.fee_percent.valid()) ora.fee_percent = *o.fee_percent;
+        if (o.fixed_fee.valid())    ora.fixed_fee    = o.fixed_fee->amount;
+        if (o.rules_url.valid())    from_string(ora.rules_url, *o.rules_url);
+        if (o.auto_accept_creator.valid())  ora.auto_accept_creator  = *o.auto_accept_creator;
+        if (o.auto_accept_resolver.valid()) ora.auto_accept_resolver = *o.auto_accept_resolver;
+        if (o.auto_accept.valid())          ora.auto_accept          = *o.auto_accept;
+        ora.last_active_time = db.head_block_time();
+    });
+}
+
+// ─── 3. pm_create_market ─────────────────────────────────────────────────────
+
+void pm_create_market_evaluator::do_apply(const pm_create_market_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto& mp = median(db);
+    const auto now = db.head_block_time();
+
+    FC_ASSERT(o.liquidity.symbol == TOKEN_SYMBOL, "Liquidity must be VIZ");
+    FC_ASSERT(o.liquidity.amount >= mp.pm_min_liquidity.amount, "Liquidity below minimum");
+    FC_ASSERT(o.url.size() <= MAX_PM_MARKET_TITLE_LEN, "Market url too long");
+    FC_ASSERT(o.betting_expiration > now, "betting_expiration must be in the future");
+    FC_ASSERT(o.result_expiration > o.betting_expiration, "result_expiration must be after betting_expiration");
+    FC_ASSERT(o.result_expiration <= now + fc::seconds(mp.pm_max_market_duration),
+              "Market duration exceeds maximum");
+
+    // Fee solvency (sum of bp fees <= 100%) is enforced statically in validate(). The oracle terms
+    // in this op are only the creator's OFFER CEILING; the governed cap (pm_max_oracle_fee_percent)
+    // is checked against the oracle's actual quote at accept (or, for a self-oracle, just below).
+
+    if (o.market_type == 0) {
+        FC_ASSERT(o.outcomes.size() == 2, "Binary market must have exactly 2 outcomes");
+    } else {
+        FC_ASSERT(o.market_type == 1, "Invalid market_type");
+        FC_ASSERT(o.outcomes.size() >= 3 && (int)o.outcomes.size() <= mp.pm_max_outcomes,
+                  "Multi-outcome count out of range");
+    }
+    for (const auto& label : o.outcomes)
+        FC_ASSERT(label.size() <= MAX_PM_OUTCOME_LABEL_LEN, "Outcome label too long");
+
+    if (o.dispute_mode == 1) {
+        FC_ASSERT(o.dispute_resolver.size() > 0, "dispute_resolver required");
+        FC_ASSERT(o.dispute_resolver != o.oracle, "dispute_resolver must differ from oracle");
+        FC_ASSERT(o.dispute_resolver != o.creator, "dispute_resolver must differ from creator");
+        db.get_account(o.dispute_resolver);
+    }
+
+    const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+    auto oracle_it = oidx.find(o.oracle);
+    bool self_oracle = (o.oracle == o.creator);
+    if (!self_oracle) {
+        FC_ASSERT(oracle_it != oidx.end(), "Oracle not registered");
+        FC_ASSERT(oracle_it->banned_until < now, "Oracle is banned");
+        // The oracle's actual fee is quoted (<= this offer) at accept; nothing to bind here.
+    }
+
+    const auto& creator = db.get_account(o.creator);
+
+    // Creator ban (scenario #14): an account-mode dispute resolver may bar a creator from
+    // opening new markets for a period (or permanently). Honour an unexpired ban here.
+    {
+        const auto& cbidx = db.get_index<pm_creator_ban_index>().indices().get<by_ban_account>();
+        auto cb = cbidx.find(o.creator);
+        FC_ASSERT(cb == cbidx.end() || cb->banned_until < now, "Creator is banned from creating markets");
+    }
+
+    share_type market_fee = mp.pm_market_creation_fee.amount;
+    share_type total_need = share_type(market_fee.value + o.liquidity.amount.value);
+    FC_ASSERT(creator.balance.amount >= total_need, "Insufficient balance");
+
+    if (market_fee.value > 0) {
+        db.adjust_balance(creator, -mp.pm_market_creation_fee);
+        db.modify(db.get_dynamic_global_properties(), [&](dynamic_global_property_object& dgp) {
+            dgp.committee_fund += mp.pm_market_creation_fee; // protocol fee → DAO fund
+        });
+    }
+    db.adjust_balance(creator, -o.liquidity);
+
+    share_type lmsr_b_val = 0;
+    if (o.market_type == 1) {
+        int64_t expected_b = lmsr::lmsr_b_from_liquidity(o.liquidity.amount.value, (int)o.outcomes.size());
+        FC_ASSERT(o.lmsr_b == expected_b, "lmsr_b mismatch");
+        lmsr_b_val = expected_b;
+    }
+
+    bool is_self = self_oracle || (oracle_it == oidx.end());
+    // Self-oracle auto-accepts at creation, so its oracle fee is final now and must satisfy the
+    // governed cap immediately. (External markets defer this check to accept.)
+    if (is_self)
+        FC_ASSERT(o.oracle_fee_percent <= mp.pm_max_oracle_fee_percent, "oracle_fee_percent exceeds cap");
+
+    // Auto-accept (anti-collusion): an external oracle that opted into auto-accept takes the market
+    // live at creation ONLY if it matches the oracle's pre-set policy — allowed creator + allowed
+    // resolver (empty resolver ⇒ committee-mode only), and the oracle's own profile fee terms within
+    // the creator's offered ceiling + the governed cap. Otherwise the market stays pending (status 0)
+    // for the oracle to review manually. This stops a creator from slipping in a sham resolver.
+    bool auto_accept = false;
+    uint16_t aa_fee = 0; share_type aa_fixed = 0;
+    if (!is_self && oracle_it != oidx.end()) {
+        const auto& ora = *oracle_it;
+        const bool creator_ok  = (ora.auto_accept_creator == account_name_type())
+                                 || (ora.auto_accept_creator == o.creator);
+        const bool resolver_ok = (ora.auto_accept_resolver == account_name_type())
+                                     ? (o.dispute_mode == 0)
+                                     : (o.dispute_mode == 1 && o.dispute_resolver == ora.auto_accept_resolver);
+        const bool terms_ok    = (ora.fee_percent <= o.oracle_fee_percent)
+                                 && (ora.fixed_fee <= o.oracle_fixed_fee.amount)
+                                 && (ora.fee_percent <= mp.pm_max_oracle_fee_percent);
+        const bool eligible    = (ora.insurance >= mp.pm_min_oracle_insurance.amount)
+                                 && (ora.banned_until < now);
+        auto_accept = ora.auto_accept && creator_ok && resolver_ok && terms_ok && eligible;
+        aa_fee = ora.fee_percent; aa_fixed = ora.fixed_fee;
+    }
+    const bool active_at_create = is_self || auto_accept;
+
+    const auto& mkt = db.create<pm_market_object>([&](pm_market_object& m) {
+        m.creator               = o.creator;
+        m.oracle                = o.oracle;
+        m.market_type           = o.market_type;
+        m.outcome_count         = (uint8_t)o.outcomes.size();
+        from_string(m.url, o.url);
+        from_string(m.metadata, o.metadata);
+        m.status                = active_at_create ? 1 : 0;
+        m.created_time          = now;
+        m.betting_expiration    = o.betting_expiration;
+        m.result_expiration     = o.result_expiration;
+        m.resolved_outcome      = -1;
+        m.lmsr_b                = lmsr_b_val;
+        m.lmsr_subsidy          = o.liquidity.amount;
+        m.liquidity_sum         = o.liquidity.amount;
+        // Oracle terms = creator's offer ceiling (final immediately for a self-oracle; an external
+        // oracle narrows these down at accept). creator/liquidity fees are final at creation.
+        m.oracle_fee_percent    = auto_accept ? aa_fee   : o.oracle_fee_percent;
+        m.oracle_fixed_fee      = auto_accept ? aa_fixed : o.oracle_fixed_fee.amount;
+        m.creator_fee_percent   = o.creator_fee_percent;
+        m.liquidity_fee_percent = o.liquidity_fee_percent;
+        m.time_penalty_type     = o.time_penalty_type;
+        m.time_penalty_value    = o.time_penalty_value;
+        m.penalty_curve_type    = o.penalty_curve_type;
+        m.allow_early_resolution = o.allow_early_resolution;
+        m.allow_cancellation    = o.allow_cancellation;
+        m.allow_batch           = o.allow_batch && mp.pm_commit_reveal_enabled;
+        m.allow_instant_bet     = (o.market_type == 1) ? true : o.allow_instant_bet;
+        m.endogeneity_tier      = o.endogeneity_tier;
+        m.dispute_mode          = o.dispute_mode;
+        m.dispute_resolver      = o.dispute_resolver;
+        m.dispute_penalty_percent = o.dispute_penalty_percent;
+
+        if (o.market_type == 0) {
+            m.reserve_a = share_type(o.liquidity.amount.value / 2);
+            m.reserve_b = share_type(o.liquidity.amount.value - m.reserve_a.value);
+            m.k = fc::uint128_t((uint64_t)m.reserve_a.value) * fc::uint128_t((uint64_t)m.reserve_b.value);
+        }
+    });
+
+    for (uint8_t i = 0; i < (uint8_t)o.outcomes.size(); ++i) {
+        db.create<pm_outcome_object>([&](pm_outcome_object& out) {
+            out.market        = mkt.id;
+            out.outcome_index = i;
+            from_string(out.label, o.outcomes[i]);
+        });
+    }
+
+    db.create<pm_liquidity_object>([&](pm_liquidity_object& lp) {
+        lp.market       = mkt.id;
+        lp.provider     = o.creator;
+        lp.amount       = o.liquidity.amount;
+        lp.deposit_time = now;
+        lp.status       = 0;
+        if (o.market_type == 1) lp.b_share = lmsr_b_val;
+    });
+
+    if (!is_self && !auto_accept && oracle_it != oidx.end()) {
+        db.modify(*oracle_it, [&](pm_oracle_object& ora) { ora.last_active_time = now; });
+    }
+
+    if (is_self) {
+        maybe_allocate_lazy(db, mkt); // self-oracle markets are active at creation
+        // Auto-accepted: announce the launch + frozen terms so history parsers see it go live.
+        db.push_virtual_operation(pm_market_accepted_operation(
+            o.oracle, o.creator, mkt.id._id,
+            o.oracle_fee_percent, asset(o.oracle_fixed_fee.amount, TOKEN_SYMBOL), true));
+    } else if (auto_accept && oracle_it != oidx.end()) {
+        // External oracle auto-accepted the market at creation under its policy. Same effect as a manual
+        // accept: count it, allocate lazy-pool subsidy, and emit pm_market_accepted with the frozen quote.
+        db.modify(*oracle_it, [&](pm_oracle_object& ora) {
+            ora.markets_accepted++;
+            ora.last_active_time = now;
+        });
+        maybe_allocate_lazy(db, mkt);
+        db.push_virtual_operation(pm_market_accepted_operation(
+            o.oracle, o.creator, mkt.id._id,
+            aa_fee, asset(aa_fixed, TOKEN_SYMBOL), false));
+    }
+}
+
+// ─── 4. pm_oracle_accept_market ──────────────────────────────────────────────
+
+void pm_oracle_accept_market_evaluator::do_apply(const pm_oracle_accept_market_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+
+    const auto& mp = median(db);
+    const auto& mkt = get_market(db, o.market_id);
+    FC_ASSERT(mkt.oracle == o.oracle, "Not the market oracle");
+    FC_ASSERT(mkt.status == 0, "Market not pending acceptance");
+
+    if (o.accept) {
+        // The oracle quotes its actual terms now. They must not exceed the creator's offer ceiling
+        // (the values currently on the market) nor the governed cap; the quote is then frozen and
+        // the market goes live. The worst-case solvency was already validated at creation, and the
+        // quote only lowers the oracle fee, so the sum stays <= 100%.
+        FC_ASSERT(o.oracle_fee_percent <= mkt.oracle_fee_percent,
+                  "oracle_fee_percent exceeds the creator's offer");
+        FC_ASSERT(o.oracle_fixed_fee.amount <= mkt.oracle_fixed_fee,
+                  "oracle_fixed_fee exceeds the creator's offer");
+        FC_ASSERT(o.oracle_fee_percent <= mp.pm_max_oracle_fee_percent, "oracle_fee_percent exceeds cap");
+
+        db.modify(mkt, [&](pm_market_object& m) {
+            m.status           = 1;
+            m.oracle_fee_percent = o.oracle_fee_percent;     // freeze the agreed terms
+            m.oracle_fixed_fee   = o.oracle_fixed_fee.amount;
+        });
+        const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+        auto it = oidx.find(o.oracle);
+        if (it != oidx.end())
+            db.modify(*it, [&](pm_oracle_object& ora) {
+                ora.markets_accepted++;
+                ora.last_active_time = db.head_block_time();
+            });
+        maybe_allocate_lazy(db, mkt); // pool subsidy on activation
+        db.push_virtual_operation(pm_market_accepted_operation(
+            o.oracle, mkt.creator, mkt.id._id,
+            o.oracle_fee_percent, o.oracle_fixed_fee, false));
+    } else {
+        // Refund the creator's seed exactly once: return_liquidity already credits the seed
+        // LP object (provider == creator, created in pm_create_market). A pending market
+        // cannot have received pm_add_liquidity (that requires status==1), so liquidity_sum
+        // equals that single LP amount — crediting liquidity_sum here too would emit tokens.
+        return_liquidity(db, mkt);
+        db.modify(mkt, [](pm_market_object& m) { m.status = -1; });
+    }
+}
+
+// ─── 5. pm_place_bet ─────────────────────────────────────────────────────────
+
+void pm_place_bet_evaluator::do_apply(const pm_place_bet_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto now = db.head_block_time();
+
+    const auto& mkt = get_market(db, o.market_id);
+    FC_ASSERT(mkt.status == 1, "Market not active");
+    FC_ASSERT(now < mkt.betting_expiration, "Betting period ended");
+
+    // Betting-mode gate (scenario #55): a market may disable instant bets (allow_instant_bet=false)
+    // to force the front-run-resistant batch / commit-reveal flow. mode 0 = instant, mode 1 = batch.
+    if (o.mode == 0) FC_ASSERT(mkt.allow_instant_bet, "Instant betting is disabled for this market");
+    else             FC_ASSERT(mkt.allow_batch,       "Batch betting is not enabled for this market");
+
+    FC_ASSERT(o.amount.symbol == TOKEN_SYMBOL, "Amount must be VIZ");
+    FC_ASSERT(o.amount.amount > 0, "Amount must be positive");
+
+    const auto& acct = db.get_account(o.account);
+    FC_ASSERT(acct.balance >= o.amount, "Insufficient balance");
+
+    if (mkt.market_type == 0) {
+        FC_ASSERT(o.side == 0 || o.side == 1, "Binary market requires side 0 or 1");
+        FC_ASSERT(o.outcome_index == -1, "Binary market does not use outcome_index");
+
+        // Case A (spec §5): an opposing bet moves price against leveraged positions on the
+        // OTHER side — cascade-liquidate them at PRE-bet reserves so the pool stays whole.
+        // NOT gated by pm_leverage_enabled: that flag only blocks NEW opens (pm_leverage_open).
+        // Once a loan is out, governance toggling leverage off must never strip the pool's
+        // liquidation protection. No-op (cheap index probe) when the market has no positions.
+        cascade_liquidate(db, mkt.id, (int16_t)(1 - o.side), 0);
+
+        share_type delta = o.amount.amount;
+        share_type reserve_in  = (o.side == 0) ? mkt.reserve_a : mkt.reserve_b;
+        share_type reserve_out = (o.side == 0) ? mkt.reserve_b : mkt.reserve_a;
+
+        fc::uint128_t denom = fc::uint128_t((uint64_t)(reserve_in.value + delta.value));
+        FC_ASSERT(denom.lo > 0 || denom.hi > 0, "CPMM overflow");
+        fc::uint128_t new_out_u128 = mkt.k / denom;
+        share_type new_reserve_out = share_type((int64_t)new_out_u128.lo);
+        share_type tokens_out = share_type(reserve_out.value - new_reserve_out.value);
+        FC_ASSERT(tokens_out.value > 0, "Zero tokens out");
+        FC_ASSERT(tokens_out.value >= o.min_tokens, "Slippage: tokens below min_tokens");
+
+        db.adjust_balance(acct, -o.amount);
+        db.modify(mkt, [&](pm_market_object& m) {
+            if (o.side == 0) {
+                m.reserve_a += delta;  m.reserve_b = new_reserve_out;  m.a_bets_sum += delta;
+            } else {
+                m.reserve_b += delta;  m.reserve_a = new_reserve_out;  m.b_bets_sum += delta;
+            }
+            m.bets_sum += delta;
+        });
+
+        db.create<pm_bet_object>([&](pm_bet_object& bet) {
+            bet.market       = mkt.id;
+            bet.account      = o.account;
+            bet.side         = o.side;
+            bet.outcome_index = -1;
+            bet.amount       = delta;
+            bet.weight       = tokens_out;
+            bet.mode         = o.mode;
+            bet.status       = 0;
+            bet.created_time = now;
+        });
+
+    } else {
+        FC_ASSERT(o.side == -1, "Multi market does not use side");
+        FC_ASSERT(o.outcome_index >= 0 && o.outcome_index < (int16_t)mkt.outcome_count,
+                  "outcome_index out of range");
+
+        const auto& oidx_out = db.get_index<pm_outcome_index>().indices().get<by_market_outcome>();
+        std::vector<int64_t> q;
+        q.reserve(mkt.outcome_count);
+        for (uint8_t i = 0; i < mkt.outcome_count; ++i) {
+            auto it = oidx_out.lower_bound(boost::make_tuple(mkt.id, i));
+            FC_ASSERT(it != oidx_out.end() && it->market == mkt.id && it->outcome_index == i, "Outcome missing");
+            q.push_back(it->q.value);
+        }
+
+        int64_t tokens = lmsr::lmsr_tokens_for_amount(q, mkt.lmsr_b.value, (int)o.outcome_index, o.amount.amount.value);
+        FC_ASSERT(tokens > 0, "Zero LMSR tokens");
+        FC_ASSERT(tokens >= o.min_tokens, "Slippage: LMSR tokens below min_tokens");
+
+        db.adjust_balance(acct, -o.amount);
+        db.modify(mkt, [&](pm_market_object& m) { m.bets_sum += o.amount.amount; });
+
+        auto it = oidx_out.lower_bound(boost::make_tuple(mkt.id, (uint8_t)o.outcome_index));
+        db.modify(*it, [&](pm_outcome_object& out) {
+            out.q        += tokens;
+            out.bets_sum += o.amount.amount;
+            out.bets_count++;
+        });
+
+        db.create<pm_bet_object>([&](pm_bet_object& bet) {
+            bet.market        = mkt.id;
+            bet.account       = o.account;
+            bet.side          = -1;
+            bet.outcome_index = o.outcome_index;
+            bet.amount        = o.amount.amount;
+            bet.weight        = tokens;
+            bet.mode          = o.mode;
+            bet.status        = 0;
+            bet.created_time  = now;
+        });
+    }
+}
+
+// ─── 6. pm_commit_bet ────────────────────────────────────────────────────────
+
+void pm_commit_bet_evaluator::do_apply(const pm_commit_bet_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto& mp = median(db);
+    FC_ASSERT(mp.pm_commit_reveal_enabled, "Commit-reveal not enabled");
+    const auto now = db.head_block_time();
+
+    const auto& mkt = get_market(db, o.market_id);
+    FC_ASSERT(mkt.status == 1, "Market not active");
+    FC_ASSERT(mkt.allow_batch, "Batch mode not enabled");
+    FC_ASSERT(now < mkt.betting_expiration, "Betting period ended");
+
+    FC_ASSERT(o.escrow_amount.symbol == TOKEN_SYMBOL, "Escrow must be VIZ");
+    FC_ASSERT(o.escrow_amount.amount >= mp.pm_min_batch_bet.amount, "Escrow below minimum batch bet");
+    FC_ASSERT(o.no_reveal_fee_percent == mp.pm_commit_no_reveal_penalty_percent,
+              "no_reveal_fee_percent must equal current consensus value");
+
+    const auto& acct = db.get_account(o.account);
+    FC_ASSERT(acct.balance >= o.escrow_amount, "Insufficient balance for escrow");
+    db.adjust_balance(acct, -o.escrow_amount);
+
+    uint32_t epoch_blocks  = mp.pm_batch_epoch_blocks;
+    uint32_t reveal_window = mp.pm_reveal_window_blocks;
+    uint32_t cur_block     = db.head_block_num();
+    uint32_t epoch_end     = ((cur_block / epoch_blocks) + 1) * epoch_blocks;
+    time_point_sec reveal_dl = now + fc::seconds((int64_t)(epoch_end - cur_block + reveal_window) * CHAIN_BLOCK_INTERVAL);
+
+    db.create<pm_commit_object>([&](pm_commit_object& c) {
+        c.market                = mkt.id;
+        c.account               = o.account;
+        c.commitment            = o.commitment;
+        c.escrow_amount         = o.escrow_amount.amount;
+        c.no_reveal_fee_percent = o.no_reveal_fee_percent;
+        c.commit_time           = now;
+        c.reveal_deadline       = reveal_dl;
+        c.status                = 0;
+    });
+}
+
+// ─── 7. pm_reveal_bet ────────────────────────────────────────────────────────
+
+void pm_reveal_bet_evaluator::do_apply(const pm_reveal_bet_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto now = db.head_block_time();
+
+    const auto& commit = db.get<pm_commit_object, by_id>(pm_commit_id_type(o.commit_id));
+    FC_ASSERT(commit.account == o.account, "Not your commitment");
+    FC_ASSERT(commit.status == 0, "Already revealed or forfeited");
+    FC_ASSERT(now <= commit.reveal_deadline, "Reveal window passed");
+
+    FC_ASSERT(o.amount.symbol == TOKEN_SYMBOL, "Amount must be VIZ");
+    FC_ASSERT(o.amount.amount > 0 && o.amount.amount <= commit.escrow_amount, "Invalid reveal amount");
+
+    FC_ASSERT(verify_commit(commit, o.side, o.outcome_index, o.amount.amount, o.min_tokens, o.salt),
+              "Commitment hash mismatch");
+
+    const auto& mkt = get_market(db, commit.market._id);
+    FC_ASSERT(mkt.status == 1, "Market not active");
+    FC_ASSERT(now < mkt.betting_expiration, "Betting period ended");
+
+    share_type surplus = share_type(commit.escrow_amount.value - o.amount.amount.value);
+    if (surplus.value > 0)
+        db.adjust_balance(db.get_account(o.account), asset(surplus, TOKEN_SYMBOL));
+
+    db.modify(commit, [](pm_commit_object& c) { c.status = 1; });
+
+    db.create<pm_bet_object>([&](pm_bet_object& bet) {
+        bet.market        = commit.market;
+        bet.account       = o.account;
+        bet.side          = o.side;
+        bet.outcome_index = o.outcome_index;
+        bet.amount        = o.amount.amount;
+        bet.weight        = 0;
+        bet.min_tokens    = o.min_tokens;
+        bet.mode          = 1;
+        bet.epoch         = mkt.current_epoch;
+        bet.status        = 5; // queued
+        bet.created_time  = now;
+    });
+}
+
+// ─── 8. pm_cancel_bet ────────────────────────────────────────────────────────
+
+void pm_cancel_bet_evaluator::do_apply(const pm_cancel_bet_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+
+    const auto& bet = db.get<pm_bet_object, by_id>(pm_bet_id_type(o.bet_id));
+    FC_ASSERT(bet.account == o.account, "Not your bet");
+    FC_ASSERT(bet.status == 0, "Bet not active");
+
+    const auto& mkt = db.get<pm_market_object, by_id>(bet.market);
+    FC_ASSERT(mkt.allow_cancellation, "Cancellation not allowed");
+    FC_ASSERT(mkt.status == 1, "Market not active");
+
+    share_type refund = bet.amount;
+    FC_ASSERT(refund.value >= o.min_return, "Refund below min_return");
+
+    if (mkt.market_type == 0) {
+        db.modify(mkt, [&](pm_market_object& m) {
+            if (bet.side == 0) {
+                m.reserve_a -= bet.amount;
+                m.reserve_b += bet.weight;
+                m.a_bets_sum -= bet.amount;
+            } else {
+                m.reserve_b -= bet.amount;
+                m.reserve_a += bet.weight;
+                m.b_bets_sum -= bet.amount;
+            }
+            m.bets_sum -= bet.amount;
+            m.k = fc::uint128_t((uint64_t)m.reserve_a.value) * fc::uint128_t((uint64_t)m.reserve_b.value);
+        });
+    } else {
+        const auto& oidx_out = db.get_index<pm_outcome_index>().indices().get<by_market_outcome>();
+        auto it = oidx_out.lower_bound(boost::make_tuple(mkt.id, (uint8_t)bet.outcome_index));
+        if (it != oidx_out.end() && it->market == mkt.id && it->outcome_index == (uint8_t)bet.outcome_index) {
+            db.modify(*it, [&](pm_outcome_object& out) {
+                out.q        -= bet.weight;
+                out.bets_sum -= bet.amount;
+                if (out.bets_count > 0) out.bets_count--;
+            });
+        }
+        db.modify(mkt, [&](pm_market_object& m) { m.bets_sum -= bet.amount; });
+    }
+
+    db.adjust_balance(db.get_account(o.account), asset(refund, TOKEN_SYMBOL));
+    db.modify(bet, [](pm_bet_object& b) { b.status = 1; });
+
+    // Case B (spec §5): the cancel-bettor was paid first at current reserves; now cascade-
+    // liquidate same-side leveraged positions the cancel pushed below threshold (bad debt,
+    // if any, is borne by the pool — the initiator is never penalized). NOT gated by
+    // pm_leverage_enabled — existing positions stay protected even if new leverage was disabled.
+    if (mkt.market_type == 0 && bet.side >= 0)
+        cascade_liquidate(db, mkt.id, (int16_t)bet.side, 1);
+}
+
+// ─── 9. pm_add_liquidity ─────────────────────────────────────────────────────
+
+void pm_add_liquidity_evaluator::do_apply(const pm_add_liquidity_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto now = db.head_block_time();
+
+    const auto& mkt = get_market(db, o.market_id);
+    FC_ASSERT(mkt.status == 1, "Market not active");
+    FC_ASSERT(now < mkt.betting_expiration, "Cannot add liquidity after betting ends");
+    FC_ASSERT(o.amount.symbol == TOKEN_SYMBOL, "Amount must be VIZ");
+    FC_ASSERT(o.amount.amount > 0, "Amount must be positive");
+
+    const auto& provider = db.get_account(o.provider);
+    FC_ASSERT(provider.balance >= o.amount, "Insufficient balance");
+    db.adjust_balance(provider, -o.amount);
+
+    share_type b_share = 0;
+    if (mkt.market_type == 1 && mkt.liquidity_sum.value > 0) {
+        b_share = share_type((int64_t)(fc::uint128_t((uint64_t)mkt.lmsr_b.value) *
+                  fc::uint128_t((uint64_t)o.amount.amount.value) /
+                  fc::uint128_t((uint64_t)mkt.liquidity_sum.value)).lo);
+    }
+
+    db.modify(mkt, [&](pm_market_object& m) {
+        m.liquidity_sum += o.amount.amount;
+        if (m.market_type == 1) {
+            m.lmsr_b       += b_share;
+            m.lmsr_subsidy += o.amount.amount;
+        } else {
+            share_type half = share_type(o.amount.amount.value / 2);
+            m.reserve_a += half;
+            m.reserve_b += share_type(o.amount.amount.value - half.value);
+            m.k = fc::uint128_t((uint64_t)m.reserve_a.value) * fc::uint128_t((uint64_t)m.reserve_b.value);
+        }
+    });
+
+    db.create<pm_liquidity_object>([&](pm_liquidity_object& lp) {
+        lp.market       = mkt.id;
+        lp.provider     = o.provider;
+        lp.amount       = o.amount.amount;
+        lp.deposit_time = now;
+        lp.status       = 0;
+        lp.b_share      = b_share;
+    });
+}
+
+// ─── 10. pm_withdraw_liquidity ───────────────────────────────────────────────
+
+void pm_withdraw_liquidity_evaluator::do_apply(const pm_withdraw_liquidity_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto now = db.head_block_time();
+
+    const auto& lp = db.get<pm_liquidity_object, by_id>(pm_liquidity_id_type(o.liquidity_id));
+    FC_ASSERT(lp.provider == o.provider, "Not your liquidity position");
+    FC_ASSERT(lp.status == 0, "Position already closed");
+
+    const auto& mkt = db.get<pm_market_object, by_id>(lp.market);
+    FC_ASSERT(now < mkt.betting_expiration || mkt.status >= 2,
+              "Cannot withdraw active liquidity during betting period");
+
+    share_type withdraw = (o.amount.amount == 0) ? lp.amount : o.amount.amount;
+    FC_ASSERT(withdraw.value > 0 && withdraw.value <= lp.amount.value, "Invalid withdrawal amount");
+
+    share_type total = share_type(withdraw.value + lp.earned_fee.value);
+    db.adjust_balance(db.get_account(o.provider), asset(total, TOKEN_SYMBOL));
+
+    db.modify(mkt, [&](pm_market_object& m) {
+        m.liquidity_sum -= withdraw;
+        if (m.market_type == 1 && lp.b_share.value > 0 && lp.amount.value > 0) {
+            share_type b_remove = (withdraw == lp.amount) ? lp.b_share :
+                share_type((int64_t)(fc::uint128_t((uint64_t)lp.b_share.value) *
+                            fc::uint128_t((uint64_t)withdraw.value) /
+                            fc::uint128_t((uint64_t)lp.amount.value)).lo);
+            m.lmsr_b -= b_remove;
+        }
+    });
+
+    if (withdraw == lp.amount) {
+        db.modify(lp, [](pm_liquidity_object& l) { l.status = 3; l.earned_fee = 0; });
+    } else {
+        db.modify(lp, [&](pm_liquidity_object& l) { l.amount -= withdraw; l.earned_fee = 0; });
+    }
+}
+
+// ─── 11. pm_resolve_market ───────────────────────────────────────────────────
+
+void pm_resolve_market_evaluator::do_apply(const pm_resolve_market_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto now = db.head_block_time();
+
+    const auto& mkt = get_market(db, o.market_id);
+    FC_ASSERT(mkt.oracle == o.oracle, "Not the market oracle");
+    FC_ASSERT(mkt.status == 1, "Market not active");
+    FC_ASSERT(o.winning_outcome >= 0 && o.winning_outcome < (int16_t)mkt.outcome_count,
+              "Invalid winning_outcome");
+    FC_ASSERT(o.decision_url.size() <= MAX_PM_DECISION_URL_LEN, "decision_url too long");
+
+    bool can_resolve_early = mkt.allow_early_resolution && now >= mkt.betting_expiration;
+    FC_ASSERT(can_resolve_early || now >= mkt.result_expiration, "Cannot resolve yet");
+
+    db.modify(mkt, [&](pm_market_object& m) {
+        m.status           = 3;
+        m.payout_status    = 1;
+        m.resolved_outcome = o.winning_outcome;
+    });
+
+    const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+    auto it = oidx.find(o.oracle);
+    if (it != oidx.end())
+        db.modify(*it, [&](pm_oracle_object& ora) {
+            ora.markets_resolved++;
+            ora.total_volume_resolved += mkt.bets_sum;
+            ora.last_active_time = now;
+        });
+}
+
+// ─── 12. pm_no_contest ───────────────────────────────────────────────────────
+
+void pm_no_contest_evaluator::do_apply(const pm_no_contest_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto now = db.head_block_time();
+
+    const auto& mkt = get_market(db, o.market_id);
+    FC_ASSERT(mkt.oracle == o.oracle, "Not the market oracle");
+    FC_ASSERT(mkt.status == 1, "Market not active");
+    FC_ASSERT(o.reason.size() <= MAX_PM_DISPUTE_REASON_LEN, "Reason too long");
+
+    // Declaring no-contest does NOT settle immediately: it records an unresolved (-1) outcome and
+    // opens the normal dispute window (spec §3.9 "Disputable", 3-outcome A/B/no-contest). Refund +
+    // penalty are applied at settlement (settle_market, win<0) once the grace elapses — unless a
+    // dispute overrides the no-contest to a real outcome first.
+    const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+    auto it = oidx.find(o.oracle);
+    if (it != oidx.end())
+        db.modify(*it, [&](pm_oracle_object& ora) { ora.no_contest_count++; ora.last_active_time = now; });
+    db.modify(mkt, [&](pm_market_object& m) {
+        m.status            = 3;
+        m.payout_status     = 1;
+        m.resolved_outcome  = -1;
+        m.result_expiration = now;  // start the dispute/settle grace from here
+    });
+}
+
+// ─── 13. pm_dispute_create ───────────────────────────────────────────────────
+
+void pm_dispute_create_evaluator::do_apply(const pm_dispute_create_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto& mp = median(db);
+    const auto now = db.head_block_time();
+
+    const auto& mkt = get_market(db, o.market_id);
+    FC_ASSERT(mkt.status == 3, "Market not resolved");
+    FC_ASSERT(mkt.payout_status == 1, "Payout not in pending state");
+    FC_ASSERT(o.reason.size() <= MAX_PM_DISPUTE_REASON_LEN, "Reason too long");
+    FC_ASSERT(o.proposed_outcome >= -1 && o.proposed_outcome < (int16_t)mkt.outcome_count,
+              "proposed_outcome out of range");
+    FC_ASSERT(now <= mkt.result_expiration + fc::seconds(mp.pm_dispute_grace_sec), "Grace period passed");
+
+    const auto& didx = db.get_index<pm_dispute_index>().indices().get<by_market>();
+    FC_ASSERT(didx.find(mkt.id) == didx.end(), "Dispute already filed");
+
+    const auto& disputer = db.get_account(o.disputer);
+    FC_ASSERT(disputer.balance >= mp.pm_dispute_fee, "Insufficient balance for dispute fee");
+    db.adjust_balance(disputer, -mp.pm_dispute_fee);
+
+    time_point_sec oracle_dl  = now + fc::seconds(mp.pm_oracle_dispute_response_sec);
+    time_point_sec voting_end = oracle_dl + fc::seconds(mp.pm_dispute_vote_period_sec);
+    time_point_sec auto_close = now + fc::seconds(mp.pm_dispute_auto_close_sec);
+
+    db.create<pm_dispute_object>([&](pm_dispute_object& d) {
+        d.market                   = mkt.id;
+        d.disputer                 = o.disputer;
+        d.dispute_fee              = mp.pm_dispute_fee.amount;
+        from_string(d.reason, o.reason);
+        d.filed_time               = now;
+        d.oracle_response_deadline = oracle_dl;
+        d.dispute_mode             = mkt.dispute_mode;
+        d.voting_end_time          = voting_end;
+        d.auto_close_time          = auto_close;
+        d.proposed_outcome         = o.proposed_outcome;
+        d.status                   = 0;
+    });
+
+    db.modify(mkt, [](pm_market_object& m) { m.payout_status = 2; });
+
+    const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+    auto it = oidx.find(mkt.oracle);
+    if (it != oidx.end())
+        db.modify(*it, [](pm_oracle_object& ora) { ora.disputes_received++; });
+}
+
+// ─── 14. pm_dispute_vote ─────────────────────────────────────────────────────
+
+void pm_dispute_vote_evaluator::do_apply(const pm_dispute_vote_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto now = db.head_block_time();
+
+    const auto& mkt = get_market(db, o.market_id);
+    FC_ASSERT(mkt.dispute_mode == 0, "Vote only for committee-mode disputes");
+
+    const auto& didx = db.get_index<pm_dispute_index>().indices().get<by_market>();
+    auto dit = didx.find(mkt.id);
+    FC_ASSERT(dit != didx.end(), "No active dispute");
+    FC_ASSERT(dit->status == 0, "Dispute already resolved");
+    FC_ASSERT(now <= dit->voting_end_time, "Voting period ended");
+    FC_ASSERT(o.vote_outcome >= -1 && o.vote_outcome < (int16_t)mkt.outcome_count,
+              "vote_outcome out of range");
+    FC_ASSERT(o.vote_percent >= -10000 && o.vote_percent <= 10000, "vote_percent out of range");
+
+    // A committee dispute is a PUBLIC hearing (no commit-reveal — by design, see pm spec
+    // §dispute-transparency): the running tally is visible so the DAO resolves it as truthfully
+    // as possible. Consequently a voter may REVISE their ballot at any time while voting is open,
+    // in case new evidence or arguments surface before voting_end_time. A repeat vote overwrites
+    // the previous one (latest ballot wins) rather than being rejected.
+    const auto& vidx = db.get_index<pm_dispute_vote_index>().indices().get<by_market_voter>();
+    auto vit = vidx.find(boost::make_tuple(mkt.id, o.voter));
+    if (vit != vidx.end()) {
+        db.modify(*vit, [&](pm_dispute_vote_object& v) {
+            v.vote_outcome = o.vote_outcome;
+            v.vote_percent = o.vote_percent;
+            v.time         = now;
+        });
+    } else {
+        db.create<pm_dispute_vote_object>([&](pm_dispute_vote_object& v) {
+            v.market       = mkt.id;
+            v.voter        = o.voter;
+            v.vote_outcome = o.vote_outcome;
+            v.vote_percent = o.vote_percent;
+            v.time         = now;
+        });
+    }
+}
+
+// ─── 15. pm_dispute_resolve ──────────────────────────────────────────────────
+
+void pm_dispute_resolve_evaluator::do_apply(const pm_dispute_resolve_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto& mp = median(db);
+    const auto now = db.head_block_time();
+
+    const auto& mkt = get_market(db, o.market_id);
+    FC_ASSERT(mkt.dispute_mode == 1, "resolve only for account-mode disputes");
+    FC_ASSERT(mkt.dispute_resolver == o.resolver, "Not the market dispute resolver");
+    FC_ASSERT(o.correct_outcome >= -1 && o.correct_outcome < (int16_t)mkt.outcome_count,
+              "correct_outcome out of range");
+    FC_ASSERT(o.penalty_amount.symbol == TOKEN_SYMBOL, "penalty_amount must be VIZ");
+
+    const auto& didx = db.get_index<pm_dispute_index>().indices().get<by_market>();
+    auto dit = didx.find(mkt.id);
+    FC_ASSERT(dit != didx.end() && dit->status == 0, "No open dispute");
+    FC_ASSERT(now <= dit->oracle_response_deadline + fc::seconds(mp.pm_dispute_vote_period_sec),
+              "Resolution window passed");
+
+    // Same post-verdict canon as committee mode (spec §3.9 "both modes converge"); only the
+    // penalty size differs — here it is the resolver-specified penalty_amount (no vote to scale).
+    if (o.correct_outcome != mkt.resolved_outcome) {
+        const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+        auto it = oidx.find(mkt.oracle);
+        share_type slash(0);
+        if (it != oidx.end()) {
+            slash = share_type(std::min(o.penalty_amount.amount.value, it->insurance.value));
+            db.modify(*it, [&](pm_oracle_object& ora) {
+                if (slash.value > 0) { ora.insurance -= slash; ora.total_insurance_slashed += slash; }
+                ora.disputes_lost++;
+                if (o.ban_oracle) ora.banned_until = o.ban_oracle_until;
+            });
+        }
+        // Disputer was right: refund fee + reward carve-out from the slash; remainder → winners.
+        int64_t fee = dit->dispute_fee.value > 0 ? dit->dispute_fee.value : 0;
+        int64_t reward_target = (int64_t)(fc::uint128_t((uint64_t)fee)
+            * fc::uint128_t((uint64_t)mp.pm_dispute_reward_multiplier) / fc::uint128_t(10000)).lo;
+        int64_t bonus = reward_target - fee;
+        if (bonus < 0) bonus = 0;
+        if (bonus > slash.value) bonus = slash.value;
+        if (fee + bonus > 0)
+            db.adjust_balance(db.get_account(dit->disputer), asset(share_type(fee + bonus), TOKEN_SYMBOL));
+        db.modify(mkt, [&](pm_market_object& m) {
+            m.forfeit_pool    += share_type(slash.value - bonus);
+            m.resolved_outcome = o.correct_outcome;
+            m.status           = 3;
+            m.payout_status    = 1;
+        });
+        db.modify(*dit, [](pm_dispute_object& d) { d.status = 1; }); // oracle wrong
+    } else {
+        // Uphold: the dispute fee compensates the oracle.
+        const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+        auto it = oidx.find(mkt.oracle);
+        if (it != oidx.end())
+            db.modify(*it, [](pm_oracle_object& ora) { ora.disputes_won++; });
+        if (dit->dispute_fee.value > 0)
+            db.adjust_balance(db.get_account(mkt.oracle), asset(dit->dispute_fee, TOKEN_SYMBOL));
+        db.modify(mkt, [&](pm_market_object& m) { m.payout_status = 1; });
+        db.modify(*dit, [](pm_dispute_object& d) { d.status = 2; }); // oracle right
+    }
+
+    // Creator ban (scenario #14): an independent resolver sanction, applied regardless of the
+    // verdict on the outcome. Upsert a pm_creator_ban row (one per creator) with the resolver's
+    // ban_until; create_market consults it and rejects new markets while the ban is in force.
+    if (o.ban_creator) {
+        const auto& cbidx = db.get_index<pm_creator_ban_index>().indices().get<by_ban_account>();
+        auto cb = cbidx.find(mkt.creator);
+        if (cb == cbidx.end()) {
+            db.create<pm_creator_ban_object>([&](pm_creator_ban_object& b) {
+                b.creator = mkt.creator; b.banned_until = o.ban_creator_until; b.ban_count = 1;
+            });
+        } else {
+            db.modify(*cb, [&](pm_creator_ban_object& b) {
+                if (o.ban_creator_until > b.banned_until) b.banned_until = o.ban_creator_until;
+                b.ban_count++;
+            });
+        }
+    }
+}
+
+// ─── 16. pm_transfer_position ────────────────────────────────────────────────
+
+void pm_transfer_position_evaluator::do_apply(const pm_transfer_position_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+
+    const auto& bet = db.get<pm_bet_object, by_id>(pm_bet_id_type(o.bet_id));
+    FC_ASSERT(bet.account == o.from, "Not your bet");
+    FC_ASSERT(bet.status == 0, "Bet not active");
+    db.get_account(o.to);
+
+    share_type transfer_weight = (o.amount == 0) ? bet.weight : share_type(o.amount);
+    FC_ASSERT(transfer_weight.value > 0 && transfer_weight.value <= bet.weight.value, "Invalid transfer amount");
+
+    const auto& mkt = db.get<pm_market_object, by_id>(bet.market);
+    FC_ASSERT(mkt.status == 1, "Market not active");
+
+    if (transfer_weight == bet.weight) {
+        db.modify(bet, [&](pm_bet_object& b) { b.account = o.to; });
+    } else {
+        share_type transferred_amount = share_type((int64_t)(
+            fc::uint128_t((uint64_t)bet.amount.value) *
+            fc::uint128_t((uint64_t)transfer_weight.value) /
+            fc::uint128_t((uint64_t)bet.weight.value)).lo);
+
+        db.modify(bet, [&](pm_bet_object& b) {
+            b.weight -= transfer_weight;
+            b.amount -= transferred_amount;
+        });
+
+        db.create<pm_bet_object>([&](pm_bet_object& nb) {
+            nb.market        = bet.market;
+            nb.account       = o.to;
+            nb.side          = bet.side;
+            nb.outcome_index = bet.outcome_index;
+            nb.amount        = transferred_amount;
+            nb.weight        = transfer_weight;
+            nb.mode          = bet.mode;
+            nb.epoch         = bet.epoch;
+            nb.status        = 0;
+            nb.created_time  = bet.created_time;
+        });
+    }
+}
+
+// ─── 17. pm_lazy_deposit ─────────────────────────────────────────────────────
+
+void pm_lazy_deposit_evaluator::do_apply(const pm_lazy_deposit_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto& mp = median(db);
+    FC_ASSERT(mp.pm_lazy_pool_enabled, "Lazy pool not enabled");
+    const auto now = db.head_block_time();
+
+    FC_ASSERT(o.amount.symbol == TOKEN_SYMBOL, "Amount must be VIZ");
+    FC_ASSERT(o.amount.amount > 0, "Amount must be positive");
+
+    const auto& acct = db.get_account(o.account);
+    FC_ASSERT(acct.balance >= o.amount, "Insufficient balance");
+    db.adjust_balance(acct, -o.amount);
+
+    const auto& pool = db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0));
+
+    share_type new_shares;
+    if (pool.total_shares.value == 0 || pool.free_balance.value == 0) {
+        new_shares = o.amount.amount;
+    } else {
+        new_shares = share_type((int64_t)(
+            fc::uint128_t((uint64_t)o.amount.amount.value) *
+            fc::uint128_t((uint64_t)pool.total_shares.value) /
+            fc::uint128_t((uint64_t)pool.free_balance.value)).lo);
+    }
+    FC_ASSERT(new_shares.value > 0, "Zero shares minted");
+
+    fc::uint128_t rps = pool.reward_per_share;
+
+    db.modify(pool, [&](pm_lazy_pool_object& p) {
+        p.total_shares += new_shares;
+        p.free_balance += o.amount.amount;
+    });
+
+    const auto& didx = db.get_index<pm_lazy_deposit_index>().indices().get<by_deposit_account>();
+    auto it = didx.find(o.account);
+    if (it != didx.end()) {
+        fc::uint128_t pend = (rps - it->reward_snapshot) *
+                              fc::uint128_t((uint64_t)it->shares.value) /
+                              fc::uint128_t((uint64_t)1000000000ULL);
+        db.modify(*it, [&](pm_lazy_deposit_object& d) {
+            d.pending_rewards += share_type((int64_t)pend.lo);
+            d.shares          += new_shares;
+            d.principal       += o.amount.amount;
+            d.reward_snapshot  = rps;
+        });
+    } else {
+        db.create<pm_lazy_deposit_object>([&](pm_lazy_deposit_object& d) {
+            d.account         = o.account;
+            d.shares          = new_shares;
+            d.principal       = o.amount.amount;
+            d.reward_snapshot = rps;
+            d.unlock_time     = now + fc::seconds(mp.pm_lazy_lock_sec);
+        });
+    }
+}
+
+// ─── 18. pm_lazy_withdraw ────────────────────────────────────────────────────
+
+void pm_lazy_withdraw_evaluator::do_apply(const pm_lazy_withdraw_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto& mp = median(db);
+    FC_ASSERT(mp.pm_lazy_pool_enabled, "Lazy pool not enabled");
+    const auto now = db.head_block_time();
+
+    const auto& didx = db.get_index<pm_lazy_deposit_index>().indices().get<by_deposit_account>();
+    auto it = didx.find(o.account);
+    FC_ASSERT(it != didx.end(), "No lazy deposit found");
+    const auto& dep = *it;
+
+    const auto& pool = db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0));
+    FC_ASSERT(pool.total_shares.value > 0, "Pool empty");
+
+    // Settle the depositor's full accrued rewards (MasterChef: rps delta × shares + carried).
+    fc::uint128_t pend_u = (pool.reward_per_share - dep.reward_snapshot) *
+                            fc::uint128_t((uint64_t)dep.shares.value) /
+                            fc::uint128_t((uint64_t)1000000000ULL);
+    share_type pending = share_type((int64_t)pend_u.lo + dep.pending_rewards.value);
+
+    if (o.emergency) {
+        // Full exit. Before unlock the profit is penalised; the penalty stays in the pool and is
+        // redistributed to the remaining LPs via reward_per_share (spec lazy-pool Transition 11).
+        share_type principal_out = dep.principal;
+        share_type penalty(0);
+        if (now < dep.unlock_time)
+            penalty = share_type(pending.value * mp.pm_lazy_emergency_penalty_percent / 10000);
+        share_type total_out = share_type(principal_out.value + pending.value - penalty.value);
+        db.adjust_balance(db.get_account(o.account), asset(total_out, TOKEN_SYMBOL));
+
+        const share_type remaining = share_type(pool.total_shares.value - dep.shares.value);
+        db.modify(pool, [&](pm_lazy_pool_object& p) {
+            p.total_shares -= dep.shares;
+            p.free_balance -= total_out;          // penalty (if any) stays in free_balance
+            if (penalty.value > 0 && remaining.value > 0)
+                p.reward_per_share += fc::uint128_t((uint64_t)penalty.value)
+                                    * fc::uint128_t((uint64_t)1000000000ULL)
+                                    / fc::uint128_t((uint64_t)remaining.value);
+        });
+        db.remove(dep);
+        return;
+    }
+
+    // Planned withdrawal: only after the deposit lock has elapsed; partial allowed.
+    FC_ASSERT(now >= dep.unlock_time, "Deposit is locked; use emergency withdrawal or wait for unlock");
+    share_type burn_shares = (o.shares == 0) ? dep.shares : share_type(o.shares);
+    FC_ASSERT(burn_shares.value > 0 && burn_shares.value <= dep.shares.value, "Invalid shares amount");
+
+    share_type principal_out = share_type((int64_t)(
+        fc::uint128_t((uint64_t)dep.principal.value) *
+        fc::uint128_t((uint64_t)burn_shares.value) /
+        fc::uint128_t((uint64_t)dep.shares.value)).lo);
+    share_type pending_out = share_type((int64_t)(
+        fc::uint128_t((uint64_t)pending.value) *
+        fc::uint128_t((uint64_t)burn_shares.value) /
+        fc::uint128_t((uint64_t)dep.shares.value)).lo);
+    share_type total_out = share_type(principal_out.value + pending_out.value);
+    db.adjust_balance(db.get_account(o.account), asset(total_out, TOKEN_SYMBOL));
+
+    db.modify(pool, [&](pm_lazy_pool_object& p) {
+        p.total_shares -= burn_shares;
+        p.free_balance -= total_out;              // principal AND rewards both leave free_balance
+    });
+
+    if (burn_shares == dep.shares) {
+        db.remove(dep);
+    } else {
+        db.modify(dep, [&](pm_lazy_deposit_object& d) {
+            d.shares          -= burn_shares;
+            d.principal       -= principal_out;
+            d.pending_rewards  = share_type(pending.value - pending_out.value);
+            d.reward_snapshot  = pool.reward_per_share;
+        });
+    }
+}
+
+// ─── 19. pm_leverage_open (margin position via lazy-pool loan) ───────────────
+
+void pm_leverage_open_evaluator::do_apply(const pm_leverage_open_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto& mp = median(db);
+    FC_ASSERT(mp.pm_leverage_enabled, "Leverage not enabled");
+    const auto now = db.head_block_time();
+
+    const auto& mkt = get_market(db, o.market_id);
+    FC_ASSERT(mkt.status == 1, "Market not active");
+    FC_ASSERT(mkt.market_type == 0, "Leverage is CPMM-binary only");
+    FC_ASSERT(o.outcome_index == 0 || o.outcome_index == 1, "outcome_index must be 0/1");
+    FC_ASSERT(now < mkt.betting_expiration - fc::seconds(mp.pm_leverage_expiration_buffer_sec),
+              "Too close to betting expiration for leverage");
+    FC_ASSERT(mkt.liquidity_sum >= mp.pm_leverage_min_market_liquidity.amount,
+              "Market liquidity below leverage minimum");
+    FC_ASSERT(o.collateral.symbol == TOKEN_SYMBOL && o.loan.symbol == TOKEN_SYMBOL, "Must be VIZ");
+
+    const auto& acct = db.get_account(o.account);
+    FC_ASSERT(acct.balance >= o.collateral, "Insufficient balance for collateral");
+
+    const auto& pool = db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0));
+    const int64_t loan       = o.loan.amount.value;
+    const int64_t collateral = o.collateral.amount.value;
+
+    // Constraint 1: leverage-fund availability + per-position cap.
+    int64_t free_amount = pool.free_balance.value - pool.leverage_fund_used.value;
+    FC_ASSERT(loan <= free_amount, "Loan exceeds pool free capital");
+    int64_t fund_total = (int64_t)(fc::uint128_t((uint64_t)pool.free_balance.value)
+                         * fc::uint128_t(mp.pm_leverage_fund_percent) / fc::uint128_t(100u)).lo;
+    int64_t fund_available = fund_total - pool.leverage_fund_used.value;
+    FC_ASSERT(fund_available > 0, "Leverage fund exhausted");
+    int64_t per_pos_cap = (int64_t)(fc::uint128_t((uint64_t)fund_available)
+                          * fc::uint128_t(mp.pm_leverage_max_per_position_bp) / fc::uint128_t(10000u)).lo;
+    FC_ASSERT(loan <= per_pos_cap, "Loan exceeds per-position cap");
+
+    // Constraint 3: max position size relative to market.
+    const int64_t total_bet = collateral + loan;
+    int64_t pos_cap = (int64_t)(fc::uint128_t((uint64_t)mkt.liquidity_sum.value)
+                      * fc::uint128_t(mp.pm_leverage_max_position_ratio_percent) / fc::uint128_t(100u)).lo;
+    FC_ASSERT(total_bet <= pos_cap, "Position exceeds market size limit");
+
+    // Place (C+L) into the CPMM (k preserved).
+    pm::leverage::cpmm_fill fill = pm::leverage::cpmm_buy(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
+                                                  total_bet, (int)o.outcome_index);
+    FC_ASSERT(fill.tokens > 0, "Zero tokens");
+    FC_ASSERT(fill.tokens >= o.min_tokens.value, "Slippage: tokens below min_tokens");
+
+    // Constraint 2 / Rule 8: worst-case solvency guarantee for the pool.
+    int64_t m = pm::leverage::worst_opposing_bet(fill.new_reserve_a, fill.new_reserve_b,
+                    mp.pm_leverage_max_slippage_percent, mp.pm_leverage_m_factor_percent);
+    int64_t cvw = pm::leverage::cancel_value_after_opposing(fill.new_reserve_a, fill.new_reserve_b, mkt.k,
+                    fill.tokens, (int)o.outcome_index, m);
+    int64_t threshold = pm::leverage::liquidation_threshold(loan, mp.pm_leverage_pool_profit_percent);
+    int64_t threshold_safe = (int64_t)(fc::uint128_t((uint64_t)threshold)
+                    * fc::uint128_t(100u + mp.pm_leverage_safety_margin_percent) / fc::uint128_t(100u)).lo;
+    FC_ASSERT(cvw >= threshold_safe, "Position fails worst-case safety check");
+
+    // Apply: bettor pays collateral, pool fronts the loan, capital enters the curve.
+    db.adjust_balance(acct, -o.collateral);
+    db.modify(pool, [&](pm_lazy_pool_object& p) {
+        p.free_balance       -= share_type(loan);
+        p.leverage_fund_used += share_type(loan);
+    });
+    db.modify(mkt, [&](pm_market_object& mm) {
+        mm.reserve_a = share_type(fill.new_reserve_a);
+        mm.reserve_b = share_type(fill.new_reserve_b);
+    });
+    db.create<pm_leverage_position_object>([&](pm_leverage_position_object& pos) {
+        pos.market                = mkt.id;
+        pos.account               = o.account;
+        pos.outcome_index         = o.outcome_index;
+        pos.collateral            = share_type(collateral);
+        pos.loan                  = share_type(loan);
+        pos.total_bet             = share_type(total_bet);
+        pos.tokens                = share_type(fill.tokens);
+        pos.pool_profit           = share_type(threshold - loan);
+        pos.liquidation_threshold = share_type(threshold);
+        pos.status                = 0;
+        pos.created_time          = now;
+        pos.last_update           = now;
+    });
+}
+
+// ─── 20. pm_leverage_close (voluntary, only when cancel_value >= threshold) ────
+
+void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto now = db.head_block_time();
+
+    const auto& pos = db.get<pm_leverage_position_object, by_id>(pm_leverage_position_id_type(o.position_id));
+    FC_ASSERT(pos.account == o.account, "Not your position");
+    FC_ASSERT(pos.status == 0, "Position not active");
+    const auto& mkt = db.get<pm_market_object, by_id>(pos.market);
+
+    int64_t cv = pm::leverage::cancel_value(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
+                                        pos.tokens.value, (int)pos.outcome_index);
+    const int64_t obligation = pos.liquidation_threshold.value;
+    FC_ASSERT(cv >= obligation, "Position underwater: cannot voluntarily close");
+    int64_t bettor_received = cv - obligation;
+    FC_ASSERT(bettor_received >= o.min_return, "Return below min_return");
+
+    // Unwind the tokens from the curve (k preserved).
+    db.modify(mkt, [&](pm_market_object& m) {
+        if (pos.outcome_index == 0) {
+            int64_t new_rb = m.reserve_b.value + pos.tokens.value;
+            m.reserve_b = share_type(new_rb);
+            m.reserve_a = share_type((int64_t)(m.k / fc::uint128_t((uint64_t)new_rb)).lo);
+        } else {
+            int64_t new_ra = m.reserve_a.value + pos.tokens.value;
+            m.reserve_a = share_type(new_ra);
+            m.reserve_b = share_type((int64_t)(m.k / fc::uint128_t((uint64_t)new_ra)).lo);
+        }
+    });
+    db.modify(db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0)), [&](pm_lazy_pool_object& p) {
+        p.free_balance       += share_type(obligation);
+        p.leverage_fund_used -= pos.loan;
+        p.earned_balance     += pos.pool_profit;
+        if (p.total_shares.value > 0)
+            p.reward_per_share += fc::uint128_t((uint64_t)pos.pool_profit.value)
+                                * fc::uint128_t((uint64_t)1000000000) / fc::uint128_t((uint64_t)p.total_shares.value);
+    });
+    if (bettor_received > 0)
+        db.adjust_balance(db.get_account(o.account), asset(share_type(bettor_received), TOKEN_SYMBOL));
+    db.modify(pos, [&](pm_leverage_position_object& p) {
+        p.status = 4; p.pool_received = share_type(obligation);
+        p.bettor_received = share_type(bettor_received); p.last_update = now;
+    });
+}
+
+// ─── 21. pm_leverage_convert (pay off loan, keep position as a normal bet) ─────
+
+void pm_leverage_convert_evaluator::do_apply(const pm_leverage_convert_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto& mp = median(db);
+    FC_ASSERT(o.conversion_profit_cost == mp.pm_conversion_profit_cost_percent,
+              "conversion_profit_cost must equal current consensus value");
+    const auto now = db.head_block_time();
+
+    const auto& pos = db.get<pm_leverage_position_object, by_id>(pm_leverage_position_id_type(o.position_id));
+    FC_ASSERT(pos.account == o.account, "Not your position");
+    FC_ASSERT(pos.status == 0, "Position not active");
+    const auto& mkt = db.get<pm_market_object, by_id>(pos.market);
+
+    int64_t cv = pm::leverage::cancel_value(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
+                                        pos.tokens.value, (int)pos.outcome_index);
+    const int64_t obligation = pos.liquidation_threshold.value;
+    FC_ASSERT(cv >= obligation, "Position underwater");
+    int64_t current_profit = cv - obligation;
+    FC_ASSERT(current_profit > 0, "No profit to convert");
+    int64_t conversion_fee = (int64_t)(fc::uint128_t((uint64_t)current_profit)
+                             * fc::uint128_t(o.conversion_profit_cost) / fc::uint128_t(100u)).lo;
+    const int64_t total_payment = obligation + conversion_fee;
+
+    const auto& acct = db.get_account(o.account);
+    FC_ASSERT(acct.balance.amount >= total_payment, "Insufficient balance for conversion");
+    db.adjust_balance(acct, -asset(share_type(total_payment), TOKEN_SYMBOL));
+
+    int64_t pool_profit_total = pos.pool_profit.value + conversion_fee;
+    db.modify(db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0)), [&](pm_lazy_pool_object& p) {
+        p.free_balance       += share_type(total_payment);
+        p.leverage_fund_used -= pos.loan;
+        p.earned_balance     += share_type(pool_profit_total);
+        if (p.total_shares.value > 0)
+            p.reward_per_share += fc::uint128_t((uint64_t)pool_profit_total)
+                                * fc::uint128_t((uint64_t)1000000000) / fc::uint128_t((uint64_t)p.total_shares.value);
+    });
+
+    // Position becomes a normal parimutuel bet, 100% bettor-owned (reserves unchanged).
+    db.create<pm_bet_object>([&](pm_bet_object& b) {
+        b.market        = mkt.id;
+        b.account       = o.account;
+        b.side          = (int8_t)pos.outcome_index;
+        b.outcome_index = -1;
+        b.amount        = pos.total_bet;
+        b.weight        = pos.tokens;
+        b.status        = 0;
+        b.created_time  = now;
+    });
+    db.modify(mkt, [&](pm_market_object& m) {
+        if (pos.outcome_index == 0) m.a_bets_sum += pos.total_bet;
+        else                        m.b_bets_sum += pos.total_bet;
+        m.bets_sum += pos.total_bet;
+    });
+    db.modify(pos, [&](pm_leverage_position_object& p) { p.status = 5; p.last_update = now; });
+}
+
+// ─── Cron: process_pm_markets (called once per block) ───────────────────────
+//
+// Processes PM state-machine transitions bounded by pm_processing_cap_per_block.
+// Uses the anonymous-namespace helpers (settle_market, refund_all_bets,
+// return_liquidity) that are visible within this translation unit.
+
+void database::process_pm_markets() {
+    if (!has_hardfork(CHAIN_HARDFORK_14)) return;
+
+    const auto  now = head_block_time();
+    const auto& mp  = get_validator_schedule_object().median_props;
+    uint32_t cap  = (mp.pm_processing_cap_per_block > 0) ? (uint32_t)mp.pm_processing_cap_per_block : 20u;
+    uint32_t done = 0;
+
+    // ── 1. Commit forfeits ────────────────────────────────────────────────────
+    // Commitments that were never revealed within the reveal window.
+    {
+        const auto& idx = get_index<pm_commit_index>().indices().get<by_reveal_deadline>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (uint8_t)0, time_point_sec(0), pm_commit_id_type()));
+        while (it != idx.end() && it->status == 0 && it->reveal_deadline <= now && done < cap) {
+            const auto& commit = *it; ++it;
+
+            share_type penalty = share_type(commit.escrow_amount.value *
+                                            commit.no_reveal_fee_percent / 10000);
+            share_type refund  = share_type(commit.escrow_amount.value - penalty.value);
+
+            if (refund.value > 0)
+                adjust_balance(get_account(commit.account), asset(refund, TOKEN_SYMBOL));
+
+            if (penalty.value > 0) {
+                const auto* mkt_ptr = find<pm_market_object>(commit.market);
+                if (mkt_ptr)
+                    modify(*mkt_ptr, [&](pm_market_object& m) { m.forfeit_pool += penalty; });
+            }
+
+            push_virtual_operation(pm_commit_forfeit_operation(
+                commit.account, commit.id._id, commit.market._id,
+                asset(penalty, TOKEN_SYMBOL), asset(refund, TOKEN_SYMBOL)));
+
+            modify(commit, [](pm_commit_object& c) { c.status = 2; }); // forfeited
+            ++done;
+        }
+    }
+
+    // ── 2. Oracle missed resolution deadline ──────────────────────────────────
+    // Active markets whose result_expiration passed with no oracle report.
+    {
+        const auto& idx = get_index<pm_market_index>().indices().get<by_result_expiration>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (int8_t)1, time_point_sec(0), pm_market_id_type()));
+        while (it != idx.end() && it->status == 1 && it->result_expiration <= now && done < cap) {
+            const auto& mkt = *it; ++it;
+
+            share_type slashed(0);
+            const auto& oidx = get_index<pm_oracle_index>().indices().get<by_owner>();
+            auto oit = oidx.find(mkt.oracle);
+            if (oit != oidx.end() && oit->insurance.value > 0) {
+                slashed = share_type(oit->insurance.value * mp.pm_oracle_penalty_percent / 10000);
+                if (slashed.value > 0) {
+                    modify(*oit, [&](pm_oracle_object& o) {
+                        o.insurance -= slashed;
+                        o.missed_count++;
+                        o.total_insurance_slashed += slashed;
+                    });
+                    adjust_balance(get_account(CHAIN_COMMITTEE_ACCOUNT),
+                                   asset(slashed, TOKEN_SYMBOL));
+                }
+            }
+
+            refund_all_bets(*this, mkt);
+            return_liquidity(*this, mkt);
+
+            modify(mkt, [](pm_market_object& m) {
+                m.status           = 3;
+                m.payout_status    = 3; // closed — no payout
+                m.resolved_outcome = -1;
+            });
+
+            push_virtual_operation(pm_oracle_missed_penalty_operation(
+                mkt.oracle, mkt.id._id, asset(slashed, TOKEN_SYMBOL)));
+            ++done;
+        }
+    }
+
+    // ── 3. Dispute auto-close (priority over voting finalize) ─────────────────
+    {
+        const auto& idx = get_index<pm_dispute_index>().indices().get<by_auto_close>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (uint8_t)0, time_point_sec(0), pm_dispute_id_type()));
+        while (it != idx.end() && it->status == 0 && it->auto_close_time <= now && done < cap) {
+            const auto& disp = *it; ++it;
+            const auto& mkt  = get<pm_market_object>(disp.market);
+
+            share_type slashed(0);
+            const auto& oidx = get_index<pm_oracle_index>().indices().get<by_owner>();
+            auto oit = oidx.find(mkt.oracle);
+            if (oit != oidx.end() && oit->insurance.value > 0) {
+                slashed = share_type(oit->insurance.value * mp.pm_oracle_penalty_percent / 10000);
+                if (slashed.value > 0) {
+                    modify(*oit, [&](pm_oracle_object& o) {
+                        o.insurance -= slashed;
+                        o.dispute_responses_missed++;
+                        o.disputes_auto_closed++;
+                        o.total_insurance_slashed += slashed;
+                    });
+                    adjust_balance(get_account(CHAIN_COMMITTEE_ACCOUNT),
+                                   asset(slashed, TOKEN_SYMBOL));
+                }
+            }
+
+            refund_all_bets(*this, mkt);
+            return_liquidity(*this, mkt);
+
+            // Anti-freeze: the dispute stalled through no fault of the disputer → return the
+            // escrowed dispute fee (spec §4 pm_dispute_auto_close — "disputer fee return").
+            if (disp.dispute_fee.value > 0)
+                adjust_balance(get_account(disp.disputer),
+                               asset(disp.dispute_fee, TOKEN_SYMBOL));
+
+            modify(mkt, [](pm_market_object& m) {
+                m.status           = 3;
+                m.payout_status    = 3;
+                m.resolved_outcome = -1;
+            });
+            modify(disp, [](pm_dispute_object& d) { d.status = 3; }); // auto-closed
+
+            push_virtual_operation(pm_dispute_auto_close_operation(
+                mkt.id._id, asset(slashed, TOKEN_SYMBOL)));
+            ++done;
+        }
+    }
+
+    // ── 4. Dispute voting finalize ────────────────────────────────────────────
+    {
+        // HF14 governance bridge: VIZ parked in the lazy pool would otherwise lose its committee-vote
+        // weight (only vested SHARES count). A depositor's claim on the pool — its net asset value
+        // (free + allocated + loans-out) times their share of total pool shares — is converted to
+        // vesting-SHARES with the SAME token↔shares price as create_vesting (drifts with dust), and
+        // added to their dispute-vote weight. The pool's whole NAV is likewise folded into the
+        // participation-threshold denominator so the quorum scales with the full electorate.
+        const auto& gpo = get_dynamic_global_properties();
+        const auto vprice = gpo.get_vesting_share_price();
+        const pm_lazy_pool_object* lpool = find<pm_lazy_pool_object>(pm_lazy_pool_id_type(0));
+        const int64_t pool_nav = (lpool && lpool->total_shares.value > 0)
+            ? lpool->free_balance.value + lpool->allocated_balance.value + lpool->leverage_fund_used.value : 0;
+        const int64_t pool_total_shares = (lpool ? lpool->total_shares.value : 0);
+        const int64_t pool_nav_shares = (pool_nav > 0)
+            ? (asset(share_type(pool_nav), TOKEN_SYMBOL) * vprice).amount.value : 0;
+        auto lazy_vote_weight = [&](const account_name_type& acct) -> int64_t {
+            if (pool_nav <= 0 || pool_total_shares <= 0) return 0;
+            const auto& ldidx = get_index<pm_lazy_deposit_index>().indices().get<by_deposit_account>();
+            auto d = ldidx.find(acct);
+            if (d == ldidx.end() || d->shares.value <= 0) return 0;
+            int64_t viz = (int64_t)(fc::uint128_t((uint64_t)pool_nav)
+                          * fc::uint128_t((uint64_t)d->shares.value)
+                          / fc::uint128_t((uint64_t)pool_total_shares)).lo;
+            if (viz <= 0) return 0;
+            return (asset(share_type(viz), TOKEN_SYMBOL) * vprice).amount.value;
+        };
+
+        const auto& idx = get_index<pm_dispute_index>().indices().get<by_voting_end>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (uint8_t)0, time_point_sec(0), pm_dispute_id_type()));
+        while (it != idx.end() && it->status == 0 && it->voting_end_time <= now && done < cap) {
+            const auto& disp = *it; ++it;
+            const auto& mkt  = get<pm_market_object>(disp.market);
+
+            // Step 1 — stake-weighted tally (mirrors committee-request finalize). Weight is the
+            // voter's vesting shares. vote_percent>0 on a real outcome supports that change;
+            // anything else (negative conviction, or vote_outcome<0) defends the oracle.
+            // committee-dao-and-prediction-markets.md §Resolution.
+            share_type max_rshares(0), oracle_defense(0), total_change(0);
+            std::vector<share_type> outcome_rshares(mkt.outcome_count, share_type(0));
+            {
+                const auto& vidx =
+                    get_index<pm_dispute_vote_index>().indices().get<by_market_voter>();
+                auto vit = vidx.lower_bound(boost::make_tuple(disp.market, account_name_type()));
+                for (; vit != vidx.end() && vit->market == disp.market; ++vit) {
+                    int64_t w = get_account(vit->voter).effective_vesting_shares().amount.value
+                              + lazy_vote_weight(vit->voter); // + lazy-pool stake as vesting-shares
+                    max_rshares += w;
+                    int32_t pct = (int32_t)vit->vote_percent;
+                    if (pct > 0 && vit->vote_outcome >= 0 &&
+                        vit->vote_outcome < (int16_t)mkt.outcome_count) {
+                        share_type r = share_type(w * pct / CHAIN_100_PERCENT);
+                        outcome_rshares[vit->vote_outcome] += r;
+                        total_change += r;
+                    } else {
+                        int32_t a = pct < 0 ? -pct : pct;
+                        oracle_defense += share_type(w * a / CHAIN_100_PERCENT);
+                    }
+                }
+            }
+
+            // Step 2 — participation threshold; Step 3 — oracle defense vs change votes.
+            share_type approve_min = share_type((int64_t)(
+                fc::uint128_t((uint64_t)(gpo.total_vesting_shares.amount.value + pool_nav_shares))
+                * mp.pm_dispute_approve_min_percent / fc::uint128_t(CHAIN_100_PERCENT)).lo);
+            bool uphold = (max_rshares < approve_min) ||
+                          (total_change.value <= 0) ||
+                          (oracle_defense >= total_change);
+
+            // Step 4 — winning outcome among change votes; Step 5 — consensus strength.
+            int16_t winning_outcome = mkt.resolved_outcome;
+            share_type winning_rshares(0);
+            if (!uphold) {
+                int best = 0;
+                for (uint8_t i = 1; i < mkt.outcome_count; ++i)
+                    if (outcome_rshares[i] > outcome_rshares[best]) best = (int)i;
+                winning_outcome = (int16_t)best;
+                winning_rshares = outcome_rshares[best];
+            }
+
+            asset oracle_penalty(0, TOKEN_SYMBOL);
+            if (uphold) {
+                // Oracle upheld: original outcome stands; the escrowed dispute fee compensates
+                // the oracle (committee-dao §Resolution step 3 — "fee goes to oracle").
+                const auto& oidx = get_index<pm_oracle_index>().indices().get<by_owner>();
+                auto oit = oidx.find(mkt.oracle);
+                if (oit != oidx.end())
+                    modify(*oit, [](pm_oracle_object& o) { o.disputes_won++; });
+                if (disp.dispute_fee.value > 0)
+                    adjust_balance(get_account(mkt.oracle), asset(disp.dispute_fee, TOKEN_SYMBOL));
+                modify(mkt, [&](pm_market_object& m) {
+                    m.payout_status     = 1;
+                    m.result_expiration = time_point_sec(1);
+                });
+                modify(disp, [](pm_dispute_object& d) { d.status = 2; }); // oracle right
+            } else {
+                // Override. The oracle penalty policy is per-market (dispute_penalty_percent),
+                // scaled by consensus strength (winning / total participation):
+                //   >0 → slash that % of insurance; fund the disputer reward + winners' forfeit;
+                //   <0 → good-faith oracle: no slash, oracle keeps a carve-out of the fee;
+                //    0 → outcome corrected, nobody penalized (disputer just refunded).
+                fc::uint128_t cs = max_rshares.value > 0
+                    ? fc::uint128_t((uint64_t)winning_rshares.value) * fc::uint128_t(CHAIN_100_PERCENT)
+                          / fc::uint128_t((uint64_t)max_rshares.value)
+                    : fc::uint128_t(0);
+                int32_t pp  = (int32_t)mkt.dispute_penalty_percent;
+                int64_t fee = disp.dispute_fee.value > 0 ? disp.dispute_fee.value : 0;
+
+                const auto& oidx = get_index<pm_oracle_index>().indices().get<by_owner>();
+                auto oit = oidx.find(mkt.oracle);
+
+                if (pp < 0) {
+                    // Good-faith oracle: keep a slice of the dispute fee; refund the rest to the
+                    // disputer. Insurance untouched.
+                    int64_t oracle_bonus = (int64_t)(fc::uint128_t((uint64_t)fee)
+                        * fc::uint128_t((uint64_t)(-(int64_t)pp)) / fc::uint128_t(10000)).lo;
+                    if (oracle_bonus > fee) oracle_bonus = fee;
+                    if (oracle_bonus > 0)
+                        adjust_balance(get_account(mkt.oracle), asset(share_type(oracle_bonus), TOKEN_SYMBOL));
+                    if (fee - oracle_bonus > 0)
+                        adjust_balance(get_account(disp.disputer),
+                                       asset(share_type(fee - oracle_bonus), TOKEN_SYMBOL));
+                    if (oit != oidx.end())
+                        modify(*oit, [](pm_oracle_object& o) { o.disputes_lost++; });
+                } else {
+                    share_type slash(0);
+                    if (pp > 0 && oit != oidx.end() && oit->insurance.value > 0) {
+                        int64_t base = (int64_t)(fc::uint128_t((uint64_t)oit->insurance.value)
+                            * fc::uint128_t((uint64_t)pp) / fc::uint128_t(10000)).lo;
+                        slash = share_type((int64_t)(fc::uint128_t((uint64_t)base) * cs
+                            / fc::uint128_t(CHAIN_100_PERCENT)).lo);
+                        if (slash.value > oit->insurance.value) slash = oit->insurance;
+                        if (slash.value > 0) {
+                            modify(*oit, [&](pm_oracle_object& o) {
+                                o.insurance               -= slash;
+                                o.disputes_lost++;
+                                o.total_insurance_slashed += slash;
+                            });
+                            oracle_penalty = asset(slash, TOKEN_SYMBOL);
+                        }
+                    } else if (oit != oidx.end()) {
+                        modify(*oit, [](pm_oracle_object& o) { o.disputes_lost++; });
+                    }
+
+                    // Disputer: refund the escrowed fee + a reward carve-out
+                    // (pm_dispute_reward_multiplier ‰ — total target fee×mult/1000) drawn from the
+                    // slash; the remainder of the slash boosts the winners via forfeit_pool.
+                    int64_t reward_target = (int64_t)(fc::uint128_t((uint64_t)fee)
+                        * fc::uint128_t((uint64_t)mp.pm_dispute_reward_multiplier) / fc::uint128_t(10000)).lo;
+                    int64_t bonus = reward_target - fee;
+                    if (bonus < 0) bonus = 0;
+                    if (bonus > slash.value) bonus = slash.value;
+                    if (fee + bonus > 0)
+                        adjust_balance(get_account(disp.disputer),
+                                       asset(share_type(fee + bonus), TOKEN_SYMBOL));
+                    modify(mkt, [&](pm_market_object& m) {
+                        m.forfeit_pool += share_type(slash.value - bonus);
+                    });
+                }
+
+                modify(mkt, [&](pm_market_object& m) {
+                    m.resolved_outcome  = winning_outcome;
+                    m.payout_status     = 1;
+                    m.result_expiration = time_point_sec(1);
+                });
+                modify(disp, [](pm_dispute_object& d) { d.status = 1; }); // oracle wrong
+            }
+
+            push_virtual_operation(pm_dispute_finalize_operation(
+                mkt.id._id, mkt.resolved_outcome, oracle_penalty));
+            ++done;
+        }
+    }
+
+    // ── 5. Auto-payouts (dispute grace elapsed) ───────────────────────────────
+    // Cutoff = now - pm_dispute_grace_sec; markets with result_expiration <= cutoff
+    // and payout_status==1 have their dispute window closed and are ready to settle.
+    {
+        const time_point_sec cutoff(
+            (now.sec_since_epoch() > mp.pm_dispute_grace_sec)
+                ? (now.sec_since_epoch() - mp.pm_dispute_grace_sec)
+                : 0u);
+
+        const auto& idx = get_index<pm_market_index>().indices().get<by_result_expiration>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (int8_t)3, time_point_sec(0), pm_market_id_type()));
+        while (it != idx.end() && it->status == 3 && it->result_expiration <= cutoff && done < cap) {
+            const auto& mkt = *it; ++it;
+
+            if (mkt.payout_status != 1) continue;
+
+            settle_market(*this, mkt);
+            modify(mkt, [](pm_market_object& m) { m.payout_status = 3; });
+
+            push_virtual_operation(pm_auto_payout_operation(
+                mkt.oracle, mkt.id._id, -1LL, asset(mkt.bets_sum, TOKEN_SYMBOL)));
+            ++done;
+        }
+    }
+
+    // ── 6. Batch epoch settle ─────────────────────────────────────────────────
+    // At global epoch boundary execute all queued (status=5) bets for batch markets.
+    if (mp.pm_commit_reveal_enabled && mp.pm_batch_epoch_blocks > 0 &&
+        (head_block_num() % (uint32_t)mp.pm_batch_epoch_blocks == 0)) {
+
+        const auto& midx = get_index<pm_market_index>().indices().get<by_status>();
+        auto mit = midx.lower_bound((int8_t)1);
+
+        while (mit != midx.end() && mit->status == 1 && done < cap) {
+            const auto& mkt = *mit; ++mit;
+            if (!mkt.allow_batch) continue;
+
+            // Snapshot LMSR q-vector
+            std::vector<int64_t> q_vec;
+            if (mkt.market_type == 1) {
+                const auto& oidx = get_index<pm_outcome_index>().indices().get<by_market_outcome>();
+                for (uint8_t i = 0; i < mkt.outcome_count; i++) {
+                    auto oit = oidx.find(boost::make_tuple(mkt.id, i));
+                    q_vec.push_back(oit != oidx.end() ? oit->q.value : 0LL);
+                }
+            }
+
+            const auto& bidx = get_index<pm_bet_index>().indices().get<by_epoch>();
+            auto bit = bidx.lower_bound(boost::make_tuple(
+                mkt.id, (uint32_t)mkt.current_epoch, pm_bet_id_type()));
+            uint32_t settled = 0;
+
+            while (bit != bidx.end() &&
+                   bit->market == mkt.id &&
+                   bit->epoch  == (uint32_t)mkt.current_epoch) {
+                const auto& bet = *bit; ++bit;
+                if (bet.status != 5) continue;
+
+                share_type tokens(0);
+
+                if (mkt.market_type == 0) { // CPMM
+                    share_type ra = mkt.reserve_a, rb = mkt.reserve_b;
+                    if (ra.value > 0 && rb.value > 0) {
+                        fc::uint128_t k128 = fc::uint128_t((uint64_t)ra.value) *
+                                             fc::uint128_t((uint64_t)rb.value);
+                        // Side convention MUST match pm_place_bet: side 0 adds VIZ to reserve_a
+                        // (tokens = reserve_b drop); side 1 adds to reserve_b (tokens = reserve_a
+                        // drop). Otherwise batch and instant bets on the same side move the curve
+                        // in opposite directions and their weights become incomparable at settle.
+                        if (bet.side == 0) {
+                            share_type new_ra = share_type(ra.value + bet.amount.value);
+                            share_type new_rb = share_type((int64_t)
+                                (k128 / fc::uint128_t((uint64_t)new_ra.value)).lo);
+                            tokens = share_type(rb.value - new_rb.value);
+                        } else {
+                            share_type new_rb = share_type(rb.value + bet.amount.value);
+                            share_type new_ra = share_type((int64_t)
+                                (k128 / fc::uint128_t((uint64_t)new_rb.value)).lo);
+                            tokens = share_type(ra.value - new_ra.value);
+                        }
+                    }
+                } else { // LMSR
+                    if ((size_t)bet.outcome_index < q_vec.size()) {
+                        int64_t t = lmsr::lmsr_tokens_for_amount(
+                            q_vec, mkt.lmsr_b.value, (int)bet.outcome_index, bet.amount.value);
+                        if (t > 0) {
+                            tokens = share_type(t);
+                            q_vec[(size_t)bet.outcome_index] += t; // update in-memory
+                        }
+                    }
+                }
+
+                if (tokens.value > 0 && tokens.value >= bet.min_tokens.value) {
+                    // Execute
+                    if (mkt.market_type == 0) {
+                        modify(mkt, [&](pm_market_object& m) {
+                            if (bet.side == 0) {
+                                m.reserve_a += bet.amount; m.reserve_b -= tokens;
+                                m.a_bets_sum += bet.amount;
+                            } else {
+                                m.reserve_b += bet.amount; m.reserve_a -= tokens;
+                                m.b_bets_sum += bet.amount;
+                            }
+                            m.bets_sum += bet.amount;
+                            m.k = fc::uint128_t((uint64_t)m.reserve_a.value) *
+                                  fc::uint128_t((uint64_t)m.reserve_b.value);
+                        });
+                    } else {
+                        const auto& oidx = get_index<pm_outcome_index>().indices().get<by_market_outcome>();
+                        auto oit = oidx.find(boost::make_tuple(mkt.id, (uint8_t)bet.outcome_index));
+                        if (oit != oidx.end())
+                            modify(*oit, [&](pm_outcome_object& out) {
+                                out.q        = share_type(q_vec[(size_t)bet.outcome_index]);
+                                out.bets_sum += bet.amount;
+                                out.bets_count++;
+                            });
+                        modify(mkt, [&](pm_market_object& m) { m.bets_sum += bet.amount; });
+                    }
+                    modify(bet, [&](pm_bet_object& b) { b.status = 0; b.weight = tokens; });
+                    settled++;
+                } else {
+                    // Slippage: refund
+                    adjust_balance(get_account(bet.account), asset(bet.amount, TOKEN_SYMBOL));
+                    modify(bet, [](pm_bet_object& b) { b.status = 2; });
+                }
+            }
+
+            if (settled > 0)
+                push_virtual_operation(pm_batch_settle_operation(
+                    mkt.id._id, mkt.current_epoch, settled));
+
+            modify(mkt, [](pm_market_object& m) { m.current_epoch++; });
+            ++done;
+        }
+    }
+
+    // ── 7. Lazy pool recall step ──────────────────────────────────────────────
+    if (mp.pm_lazy_pool_enabled) {
+        const auto& idx = get_index<pm_lazy_allocation_index>().indices().get<by_alloc_check>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (uint8_t)0, time_point_sec(0), pm_lazy_allocation_id_type()));
+
+        while (it != idx.end() && it->status == 0 && done < cap) {
+            const auto& alloc = *it; ++it;
+
+            const auto* mkt_ptr = find<pm_market_object>(alloc.market);
+            if (!mkt_ptr || mkt_ptr->status == -1) {
+                // Market rejected/gone (never settled) — pull the LP position fully.
+                if (mkt_ptr && alloc.amount.value > 0) {
+                    share_type r = recall_pool_liquidity(*this, *mkt_ptr, alloc.amount);
+                    if (r.value > 0)
+                        push_virtual_operation(pm_lazy_recall_operation(
+                            alloc.market._id, asset(r, TOKEN_SYMBOL)));
+                }
+                modify(alloc, [](pm_lazy_allocation_object& a) { a.status = 1; });
+            } else if (mkt_ptr->status >= 2) {
+                // Resolved/closed: settle_liquidity / return_liquidity returns the LP
+                // position (with yield). Defer the scan so we don't pre-empt it.
+                modify(alloc, [&](pm_lazy_allocation_object& a) { a.last_check_time = now; });
+            } else {
+                const auto& mkt = *mkt_ptr;
+                bool idle = (mkt.bets_sum.value <= alloc.bets_sum_at_check.value);
+
+                // Graduated recall is spread across the market's lifetime: up to 10 steps,
+                // each gated by ~10% of the (creation → result_expiration) window. This cron
+                // runs every block, so without a time gate an idle market's whole subsidy
+                // would be drained within ~10 blocks instead of over its full duration
+                // (spec lazy-pool-properties: check_step = "10% duration step", last_check_time).
+                int64_t window   = (int64_t)mkt.result_expiration.sec_since_epoch()
+                                 - (int64_t)mkt.created_time.sec_since_epoch();
+                int64_t step_dur = window > 0 ? window / 10 : 0;
+                bool step_due = (int64_t)now.sec_since_epoch()
+                              >= (int64_t)alloc.last_check_time.sec_since_epoch() + step_dur;
+
+                if (!idle) {
+                    // New bets since the last check → market is live; reset the recall schedule.
+                    modify(alloc, [&](pm_lazy_allocation_object& a) {
+                        a.bets_sum_at_check = mkt.bets_sum;
+                        a.last_check_time   = now;
+                        a.check_step        = 0;
+                    });
+                } else if (alloc.check_step >= 10 || alloc.amount.value <= 0) {
+                    modify(alloc, [](pm_lazy_allocation_object& a) { a.status = 1; });
+                } else if (step_due) {
+                    share_type want = share_type(
+                        alloc.amount.value * mp.pm_lazy_recall_step_percent / 10000);
+                    if (want.value <= 0) want = share_type(1);
+                    if (want.value > alloc.amount.value) want = alloc.amount;
+
+                    share_type recalled = recall_pool_liquidity(*this, mkt, want);
+                    if (recalled.value > 0) {
+                        modify(alloc, [&](pm_lazy_allocation_object& a) {
+                            a.amount           -= recalled;
+                            a.recalled_amount  += recalled;
+                            a.bets_sum_at_check = mkt.bets_sum;
+                            a.last_check_time   = now;
+                            a.check_step++;
+                        });
+                        push_virtual_operation(pm_lazy_recall_operation(
+                            mkt.id._id, asset(recalled, TOKEN_SYMBOL)));
+                    } else {
+                        modify(alloc, [](pm_lazy_allocation_object& a) { a.status = 1; });
+                    }
+                }
+                // else: idle, steps remain, but this step isn't due yet → leave untouched.
+            }
+            ++done;
+        }
+    }
+}
+
+}} // graphene::chain

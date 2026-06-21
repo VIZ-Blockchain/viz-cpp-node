@@ -627,6 +627,111 @@ namespace graphene { namespace protocol {
             chain_properties_hf13& operator=(const chain_properties_hf13&) = default;
         };
 
+        // HF14 Prediction Markets (Onix). Inherits all hf13 fields and appends the PM consensus
+        // params (spec §5). Defaults are inline (single protocol definition → mainnet and testnet
+        // share identical consensus values, which is required). Variant index 5; index 4 is hf13.
+        struct chain_properties_pm: public chain_properties_hf13 {
+            // Oracle / market economics
+            asset    pm_oracle_registration_fee   = asset(10000,   TOKEN_SYMBOL); ///< 10.000 VIZ → committee fund
+            asset    pm_min_oracle_insurance      = asset(5000000, TOKEN_SYMBOL); ///< 5000.000 VIZ bond floor
+            asset    pm_market_creation_fee       = asset(5000,    TOKEN_SYMBOL); ///< 5.000 VIZ → committee fund
+            asset    pm_min_liquidity             = asset(100000,  TOKEN_SYMBOL); ///< 100.000 VIZ seed floor
+            uint8_t  pm_max_outcomes              = 10;
+            uint32_t pm_max_market_duration       = 31536000; ///< ≤ 1 year (s)
+            uint16_t pm_max_oracle_fee_percent    = 500;     ///< bp cap on the oracle % (5%)
+            uint16_t pm_default_time_penalty_percent = 50;
+            uint32_t pm_max_time_penalty          = 1000000; ///< 100% of profit (1e6 precision)
+            // Disputes
+            asset    pm_dispute_fee               = asset(1000000, TOKEN_SYMBOL); ///< 1000.000 VIZ
+            uint32_t pm_dispute_grace_sec         = 43200;   ///< 12 h
+            uint32_t pm_oracle_dispute_response_sec = 43200; ///< 12 h
+            uint32_t pm_dispute_auto_close_sec    = 1209600; ///< 14 d (anti-freeze)
+            uint32_t pm_dispute_vote_period_sec   = 259200;  ///< 3 d (committee mode)
+            uint16_t pm_dispute_approve_min_percent = 1000;  ///< participation threshold (bp)
+            uint16_t pm_oracle_penalty_percent    = 500;     ///< insurance slashed on missed deadline (bp)
+            uint16_t pm_no_contest_penalty_percent = 5000;   ///< bp of dispute fee (50%)
+            uint32_t pm_dispute_reward_multiplier = 30000;   ///< bp multiplier (10000=1x; default 3x)
+            // Batch / commit-reveal
+            uint32_t pm_batch_epoch_blocks        = 20;      ///< ~60 s
+            uint32_t pm_reveal_window_blocks      = 200;     ///< ~10 min liveness
+            uint16_t pm_commit_no_reveal_penalty_percent = 2000; ///< bp (20%) → winners' pool
+            asset    pm_min_batch_bet             = asset(1000, TOKEN_SYMBOL); ///< 1.000 VIZ anti-dust
+            bool     pm_commit_reveal_enabled     = true;    ///< kill-switch (median-voted)
+            // Cron / fairness
+            uint32_t pm_processing_cap_per_block  = 200;     ///< bounded per-block virtual-op work
+            // Lazy pool (allocation-only; leverage out of scope for HF14)
+            bool     pm_lazy_pool_enabled         = true;    ///< kill-switch (median-voted)
+            uint16_t pm_lazy_alloc_percent        = 2000;    ///< bp of free_balance allocated per market
+            uint16_t pm_lazy_max_total_alloc_percent = 7000; ///< bp cap on total allocation
+            uint32_t pm_lazy_lock_sec             = 604800;  ///< 7 d deposit lock
+            uint16_t pm_lazy_recall_step_percent  = 1000;    ///< bp recalled per idle step
+            uint16_t pm_lazy_emergency_penalty_percent = 5000; ///< bp of profit slashed on emergency
+                                                               ///< withdraw before unlock (→ reward_per_share)
+            // Leverage (margin via lazy-pool loans; CPMM-binary only). Kill-switch OFF by
+            // default — governance enables after validation. See leverage-risk-off-strategy.md §8.
+            bool     pm_leverage_enabled                    = false; ///< kill-switch (median-voted)
+            uint16_t pm_leverage_fund_percent               = 10;    ///< % of free_balance usable for loans (F)
+            uint16_t pm_leverage_max_per_position_bp        = 20;    ///< bp of leverage-fund-available per position (P=0.2%)
+            uint16_t pm_leverage_pool_profit_percent        = 10;    ///< pool profit per loan (R)
+            uint16_t pm_leverage_safety_margin_percent      = 1;     ///< open-time safety buffer (S)
+            uint16_t pm_leverage_max_slippage_percent       = 10;    ///< max price impact per bet (SL)
+            asset    pm_leverage_min_market_liquidity        = asset(5000000, TOKEN_SYMBOL); ///< min liquidity for leverage
+            uint16_t pm_leverage_max_position_ratio_percent = 5;     ///< max position as % of liquidity_sum (POS)
+            uint32_t pm_leverage_expiration_buffer_sec       = 86400; ///< leverage disabled N sec before expiration
+            uint16_t pm_leverage_m_factor_percent           = 50;    ///< M_effective = M_max × this% (VIZ DLT relaxation)
+            uint16_t pm_conversion_profit_cost_percent      = 50;    ///< fee % of unrealized profit on convert
+
+            void validate() const {
+                chain_properties_hf13::validate();
+                auto check_token = [](const asset& a, const char* n) {
+                    FC_ASSERT(a.symbol == TOKEN_SYMBOL, "${n} must be VIZ", ("n", n));
+                    FC_ASSERT(a.amount > 0, "${n} must be positive", ("n", n));
+                };
+                check_token(pm_oracle_registration_fee, "pm_oracle_registration_fee");
+                check_token(pm_min_oracle_insurance, "pm_min_oracle_insurance");
+                check_token(pm_market_creation_fee, "pm_market_creation_fee");
+                check_token(pm_min_liquidity, "pm_min_liquidity");
+                check_token(pm_dispute_fee, "pm_dispute_fee");
+                check_token(pm_min_batch_bet, "pm_min_batch_bet");
+                FC_ASSERT(pm_max_outcomes >= 2 && pm_max_outcomes <= MAX_PM_OUTCOMES_PER_MARKET,
+                    "pm_max_outcomes must be in [2, ${m}]", ("m", MAX_PM_OUTCOMES_PER_MARKET));
+                FC_ASSERT(pm_max_market_duration > 0, "pm_max_market_duration must be positive");
+                FC_ASSERT(pm_max_oracle_fee_percent <= 10000, "pm_max_oracle_fee_percent out of range");
+                FC_ASSERT(pm_default_time_penalty_percent <= 10000, "pm_default_time_penalty_percent out of range");
+                FC_ASSERT(pm_dispute_approve_min_percent <= 10000, "pm_dispute_approve_min_percent out of range");
+                FC_ASSERT(pm_oracle_penalty_percent <= 10000, "pm_oracle_penalty_percent out of range");
+                FC_ASSERT(pm_no_contest_penalty_percent <= 10000, "pm_no_contest_penalty_percent out of range");
+                // Reward multiplier is a bp multiplier (10000 = 1x). Floor at 10000 so a vindicated
+                // disputer at least recovers the fee; cap at 100x.
+                FC_ASSERT(pm_dispute_reward_multiplier >= 10000 && pm_dispute_reward_multiplier <= 1000000,
+                    "pm_dispute_reward_multiplier must be in [10000, 1000000]");
+                FC_ASSERT(pm_commit_no_reveal_penalty_percent <= 10000, "pm_commit_no_reveal_penalty_percent out of range");
+                FC_ASSERT(pm_batch_epoch_blocks > 0, "pm_batch_epoch_blocks must be positive");
+                FC_ASSERT(pm_reveal_window_blocks > 0, "pm_reveal_window_blocks must be positive");
+                FC_ASSERT(pm_processing_cap_per_block > 0, "pm_processing_cap_per_block must be positive");
+                FC_ASSERT(pm_lazy_alloc_percent <= 10000, "pm_lazy_alloc_percent out of range");
+                FC_ASSERT(pm_lazy_max_total_alloc_percent <= 10000, "pm_lazy_max_total_alloc_percent out of range");
+                FC_ASSERT(pm_lazy_recall_step_percent <= 10000, "pm_lazy_recall_step_percent out of range");
+                FC_ASSERT(pm_lazy_emergency_penalty_percent <= 10000, "pm_lazy_emergency_penalty_percent out of range");
+                FC_ASSERT(pm_leverage_fund_percent <= 100, "pm_leverage_fund_percent out of range");
+                FC_ASSERT(pm_leverage_max_per_position_bp <= 10000, "pm_leverage_max_per_position_bp out of range");
+                FC_ASSERT(pm_leverage_pool_profit_percent <= 100, "pm_leverage_pool_profit_percent out of range");
+                FC_ASSERT(pm_leverage_safety_margin_percent <= 100, "pm_leverage_safety_margin_percent out of range");
+                FC_ASSERT(pm_leverage_max_slippage_percent <= 100, "pm_leverage_max_slippage_percent out of range");
+                FC_ASSERT(pm_leverage_max_position_ratio_percent <= 100, "pm_leverage_max_position_ratio_percent out of range");
+                FC_ASSERT(pm_leverage_m_factor_percent <= 100, "pm_leverage_m_factor_percent out of range");
+                FC_ASSERT(pm_conversion_profit_cost_percent <= 100, "pm_conversion_profit_cost_percent out of range");
+                check_token(pm_leverage_min_market_liquidity, "pm_leverage_min_market_liquidity");
+            }
+
+            chain_properties_pm& operator=(const chain_properties_init& src) { chain_properties_init::operator=(src); return *this; }
+            chain_properties_pm& operator=(const chain_properties_hf4& src)  { chain_properties_hf4::operator=(src);  return *this; }
+            chain_properties_pm& operator=(const chain_properties_hf6& src)  { chain_properties_hf6::operator=(src);  return *this; }
+            chain_properties_pm& operator=(const chain_properties_hf9& src)  { chain_properties_hf9::operator=(src);  return *this; }
+            chain_properties_pm& operator=(const chain_properties_hf13& src) { chain_properties_hf13::operator=(src); return *this; }
+            chain_properties_pm& operator=(const chain_properties_pm&) = default;
+        };
+
         inline chain_properties_init& chain_properties_init::operator=(const chain_properties_hf13& src) {
             account_creation_fee = src.account_creation_fee;
             maximum_block_size = src.maximum_block_size;
@@ -696,7 +801,8 @@ namespace graphene { namespace protocol {
             chain_properties_hf4,
             chain_properties_hf6,
             chain_properties_hf9,
-            chain_properties_hf13
+            chain_properties_hf13,
+            chain_properties_pm      // index 5 (HF14) — APPEND ONLY
         >;
 
         /**
@@ -1210,6 +1316,22 @@ FC_REFLECT_DERIVED(
 FC_REFLECT_DERIVED(
     (graphene::protocol::chain_properties_hf13),((graphene::protocol::chain_properties_hf9)),
     (distribution_epoch_length))
+FC_REFLECT_DERIVED(
+    (graphene::protocol::chain_properties_pm),((graphene::protocol::chain_properties_hf13)),
+    (pm_oracle_registration_fee)(pm_min_oracle_insurance)(pm_market_creation_fee)(pm_min_liquidity)
+    (pm_max_outcomes)(pm_max_market_duration)(pm_max_oracle_fee_percent)
+    (pm_default_time_penalty_percent)(pm_max_time_penalty)(pm_dispute_fee)(pm_dispute_grace_sec)
+    (pm_oracle_dispute_response_sec)(pm_dispute_auto_close_sec)(pm_dispute_vote_period_sec)
+    (pm_dispute_approve_min_percent)(pm_oracle_penalty_percent)(pm_no_contest_penalty_percent)
+    (pm_dispute_reward_multiplier)(pm_batch_epoch_blocks)(pm_reveal_window_blocks)
+    (pm_commit_no_reveal_penalty_percent)(pm_min_batch_bet)(pm_commit_reveal_enabled)
+    (pm_processing_cap_per_block)(pm_lazy_pool_enabled)(pm_lazy_alloc_percent)
+    (pm_lazy_max_total_alloc_percent)(pm_lazy_lock_sec)(pm_lazy_recall_step_percent)
+    (pm_lazy_emergency_penalty_percent)
+    (pm_leverage_enabled)(pm_leverage_fund_percent)(pm_leverage_max_per_position_bp)
+    (pm_leverage_pool_profit_percent)(pm_leverage_safety_margin_percent)(pm_leverage_max_slippage_percent)
+    (pm_leverage_min_market_liquidity)(pm_leverage_max_position_ratio_percent)
+    (pm_leverage_expiration_buffer_sec)(pm_leverage_m_factor_percent)(pm_conversion_profit_cost_percent))
 
 FC_REFLECT_TYPENAME((graphene::protocol::versioned_chain_properties))
 

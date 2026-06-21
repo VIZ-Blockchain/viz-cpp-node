@@ -20,6 +20,8 @@
 #include <graphene/chain/operation_notification.hpp>
 #include <graphene/chain/proposal_object.hpp>
 #include <graphene/chain/committee_objects.hpp>
+#include <graphene/chain/pm_objects.hpp>
+#include <graphene/chain/pm_evaluator.hpp>
 #include <graphene/chain/invite_objects.hpp>
 #include <graphene/chain/paid_subscription_objects.hpp>
 
@@ -3137,6 +3139,32 @@ namespace graphene { namespace chain {
         void database::committee_processing() {
             const auto &props = get_dynamic_global_properties();
             const validator_schedule_object &consensus = get_validator_schedule_object();
+
+            // HF14 governance bridge: VIZ parked in the PM lazy pool keeps its DAO-committee voting
+            // weight — a voter's pool claim (NAV × their shares / total shares) is converted to
+            // vesting-shares with the SAME price as create_vesting and added to their vote weight.
+            // GATED on the PM hardfork: pre-HF14 the pool does not exist and this contributes 0.
+            const bool pm_active = has_hardfork(CHAIN_HARDFORK_14);
+            const auto vsh_price = props.get_vesting_share_price();
+            const pm_lazy_pool_object* lpool = pm_active
+                ? find<pm_lazy_pool_object>(pm_lazy_pool_id_type(0)) : nullptr;
+            const int64_t lp_nav = (lpool && lpool->total_shares.value > 0)
+                ? lpool->free_balance.value + lpool->allocated_balance.value + lpool->leverage_fund_used.value : 0;
+            const int64_t lp_total_shares = (lpool ? lpool->total_shares.value : 0);
+            const int64_t lp_nav_shares = (lp_nav > 0)
+                ? (asset(share_type(lp_nav), TOKEN_SYMBOL) * vsh_price).amount.value : 0;
+            auto lazy_vote_weight = [&](const account_name_type& acct) -> int64_t {
+                if (lp_nav <= 0 || lp_total_shares <= 0) return 0;
+                const auto& ldidx = get_index<pm_lazy_deposit_index>().indices().get<by_deposit_account>();
+                auto d = ldidx.find(acct);
+                if (d == ldidx.end() || d->shares.value <= 0) return 0;
+                int64_t viz = (int64_t)(fc::uint128_t((uint64_t)lp_nav)
+                              * fc::uint128_t((uint64_t)d->shares.value)
+                              / fc::uint128_t((uint64_t)lp_total_shares)).lo;
+                if (viz <= 0) return 0;
+                return (asset(share_type(viz), TOKEN_SYMBOL) * vsh_price).amount.value;
+            };
+
             const auto &idx0 = get_index<committee_request_index>().indices().get<by_status>();
             auto itr0 = idx0.lower_bound(0);
             while (itr0 != idx0.end() &&
@@ -3155,10 +3183,12 @@ namespace graphene { namespace chain {
                         const auto &cur_vote = *vote_itr;
                         ++vote_itr;
                         const auto &voter_account = get_account(cur_vote.voter);
-                        max_rshares+=voter_account.effective_vesting_shares().amount.value;
-                        actual_rshares+=voter_account.effective_vesting_shares().amount.value*cur_vote.vote_percent/CHAIN_100_PERCENT;
+                        int64_t vw = voter_account.effective_vesting_shares().amount.value
+                                   + lazy_vote_weight(cur_vote.voter); // + lazy-pool stake (HF14)
+                        max_rshares+=vw;
+                        actual_rshares+=vw*cur_vote.vote_percent/CHAIN_100_PERCENT;
                     }
-                    approve_min_shares=props.total_vesting_shares.amount * consensus.median_props.committee_request_approve_min_percent / CHAIN_100_PERCENT;
+                    approve_min_shares=(props.total_vesting_shares.amount + share_type(lp_nav_shares)) * consensus.median_props.committee_request_approve_min_percent / CHAIN_100_PERCENT;
                     if(has_hardfork(CHAIN_HARDFORK_2)){
                         if(approve_min_shares > max_rshares){
                             modify(cur_request, [&](committee_request_object &c) {
@@ -3633,7 +3663,7 @@ namespace graphene { namespace chain {
                 return;
             }
 
-            chain_properties_hf13 median_props;
+            chain_properties_pm median_props;
             auto median = active.size() / 2;
 
             auto calc_median = [&](auto&& param) {
@@ -3681,6 +3711,49 @@ namespace graphene { namespace chain {
             }
             if(has_hardfork(CHAIN_HARDFORK_13)){
                 calc_median(&chain_properties_hf13::distribution_epoch_length);
+            }
+            if(has_hardfork(CHAIN_HARDFORK_14)){
+                calc_median(&chain_properties_pm::pm_oracle_registration_fee);
+                calc_median(&chain_properties_pm::pm_min_oracle_insurance);
+                calc_median(&chain_properties_pm::pm_market_creation_fee);
+                calc_median(&chain_properties_pm::pm_min_liquidity);
+                calc_median(&chain_properties_pm::pm_max_outcomes);
+                calc_median(&chain_properties_pm::pm_max_market_duration);
+                calc_median(&chain_properties_pm::pm_max_oracle_fee_percent);
+                calc_median(&chain_properties_pm::pm_default_time_penalty_percent);
+                calc_median(&chain_properties_pm::pm_max_time_penalty);
+                calc_median(&chain_properties_pm::pm_dispute_fee);
+                calc_median(&chain_properties_pm::pm_dispute_grace_sec);
+                calc_median(&chain_properties_pm::pm_oracle_dispute_response_sec);
+                calc_median(&chain_properties_pm::pm_dispute_auto_close_sec);
+                calc_median(&chain_properties_pm::pm_dispute_vote_period_sec);
+                calc_median(&chain_properties_pm::pm_dispute_approve_min_percent);
+                calc_median(&chain_properties_pm::pm_oracle_penalty_percent);
+                calc_median(&chain_properties_pm::pm_no_contest_penalty_percent);
+                calc_median(&chain_properties_pm::pm_dispute_reward_multiplier);
+                calc_median(&chain_properties_pm::pm_batch_epoch_blocks);
+                calc_median(&chain_properties_pm::pm_reveal_window_blocks);
+                calc_median(&chain_properties_pm::pm_commit_no_reveal_penalty_percent);
+                calc_median(&chain_properties_pm::pm_min_batch_bet);
+                calc_median(&chain_properties_pm::pm_commit_reveal_enabled);
+                calc_median(&chain_properties_pm::pm_processing_cap_per_block);
+                calc_median(&chain_properties_pm::pm_lazy_pool_enabled);
+                calc_median(&chain_properties_pm::pm_lazy_alloc_percent);
+                calc_median(&chain_properties_pm::pm_lazy_max_total_alloc_percent);
+                calc_median(&chain_properties_pm::pm_lazy_lock_sec);
+                calc_median(&chain_properties_pm::pm_lazy_recall_step_percent);
+                calc_median(&chain_properties_pm::pm_lazy_emergency_penalty_percent);
+                calc_median(&chain_properties_pm::pm_leverage_enabled);
+                calc_median(&chain_properties_pm::pm_leverage_fund_percent);
+                calc_median(&chain_properties_pm::pm_leverage_max_per_position_bp);
+                calc_median(&chain_properties_pm::pm_leverage_pool_profit_percent);
+                calc_median(&chain_properties_pm::pm_leverage_safety_margin_percent);
+                calc_median(&chain_properties_pm::pm_leverage_max_slippage_percent);
+                calc_median(&chain_properties_pm::pm_leverage_min_market_liquidity);
+                calc_median(&chain_properties_pm::pm_leverage_max_position_ratio_percent);
+                calc_median(&chain_properties_pm::pm_leverage_expiration_buffer_sec);
+                calc_median(&chain_properties_pm::pm_leverage_m_factor_percent);
+                calc_median(&chain_properties_pm::pm_conversion_profit_cost_percent);
             }
 
             modify(wso, [&](validator_schedule_object &_wso) {
@@ -4987,6 +5060,28 @@ namespace graphene { namespace chain {
             _my->_evaluator_registry.register_evaluator<fixed_award_evaluator>();
             _my->_evaluator_registry.register_evaluator<target_account_sale_evaluator>();
             _my->_evaluator_registry.register_evaluator<set_reward_sharing_evaluator>();
+
+            _my->_evaluator_registry.register_evaluator<pm_oracle_register_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_oracle_update_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_create_market_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_oracle_accept_market_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_place_bet_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_commit_bet_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_reveal_bet_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_cancel_bet_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_add_liquidity_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_withdraw_liquidity_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_resolve_market_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_no_contest_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_dispute_create_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_dispute_vote_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_dispute_resolve_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_transfer_position_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_lazy_deposit_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_lazy_withdraw_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_leverage_open_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_leverage_close_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_leverage_convert_evaluator>();
         }
 
         void database::set_custom_operation_interpreter(const std::string &id, std::shared_ptr<custom_operation_interpreter> registry) {
@@ -5035,6 +5130,21 @@ namespace graphene { namespace chain {
             add_core_index<paid_subscribe_index>(*this);
             add_core_index<validator_penalty_expire_index>(*this);
             add_core_index<validator_confirmation_index>(*this);
+
+            // HF14 Prediction Markets (Onix) — consensus objects, registered as core indexes.
+            add_core_index<pm_oracle_index>(*this);
+            add_core_index<pm_market_index>(*this);
+            add_core_index<pm_outcome_index>(*this);
+            add_core_index<pm_bet_index>(*this);
+            add_core_index<pm_liquidity_index>(*this);
+            add_core_index<pm_commit_index>(*this);
+            add_core_index<pm_dispute_index>(*this);
+            add_core_index<pm_dispute_vote_index>(*this);
+            add_core_index<pm_lazy_pool_index>(*this);
+            add_core_index<pm_lazy_deposit_index>(*this);
+            add_core_index<pm_lazy_allocation_index>(*this);
+            add_core_index<pm_leverage_position_index>(*this);
+            add_core_index<pm_creator_ban_index>(*this);
 
             _plugin_index_signal();
         }
@@ -5650,6 +5760,7 @@ namespace graphene { namespace chain {
 
                 committee_processing();
                 paid_subscribe_processing();
+                process_pm_markets();
                 process_hardforks();
 
                 check_block_post_validation_chain();
@@ -7037,6 +7148,9 @@ namespace graphene { namespace chain {
             _hardfork_times[CHAIN_HARDFORK_13] = fc::time_point_sec(CHAIN_HARDFORK_13_TIME);
             _hardfork_versions[CHAIN_HARDFORK_13] = CHAIN_HARDFORK_13_VERSION;
 
+            _hardfork_times[CHAIN_HARDFORK_14] = fc::time_point_sec(CHAIN_HARDFORK_14_TIME);
+            _hardfork_versions[CHAIN_HARDFORK_14] = CHAIN_HARDFORK_14_VERSION;
+
             const auto &hardforks = get_hardfork_property_object();
             FC_ASSERT(
                 hardforks.last_hardfork <= CHAIN_NUM_HARDFORKS,
@@ -7952,6 +8066,12 @@ namespace graphene { namespace chain {
                     // Validator reward sharing: new fields sharing_rate and
                     // pending_stakeholder_reward on validator_object default to 0 (replay
                     // initialises them), no extra migration needed.
+                    break;
+                case CHAIN_HARDFORK_14:
+                    // Prediction Markets: instantiate the lazy-liquidity pool singleton
+                    // (id 0) so pm_lazy_deposit and the allocation/leverage paths can rely
+                    // on get<pm_lazy_pool_object>. All balances start at zero (empty pool).
+                    create<pm_lazy_pool_object>([](pm_lazy_pool_object&) {});
                     break;
                 default:
                     break;

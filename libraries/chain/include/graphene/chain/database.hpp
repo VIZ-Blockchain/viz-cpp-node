@@ -478,6 +478,7 @@ namespace graphene { namespace chain {
             void process_validator_epoch_distribution(); ///< HF13: distribute accumulated delegator TOKEN rewards
             void committee_processing();
             void paid_subscribe_processing();
+            void process_pm_markets();               ///< HF14: bounded per-block PM cron
 
             void expire_award_shares_processing();
 

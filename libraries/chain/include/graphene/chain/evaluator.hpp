@@ -11,6 +11,8 @@ namespace graphene {
         template<typename OperationType=graphene::protocol::operation>
         class evaluator {
         public:
+            virtual ~evaluator() = default; // polymorphic base: needed for delete via base ptr
+
             virtual void apply(const OperationType &op) = 0;
 
             virtual int get_type() const = 0;
