@@ -17,6 +17,7 @@
 #include <graphene/chain/committee_objects.hpp>
 #include <graphene/chain/invite_objects.hpp>
 #include <graphene/chain/paid_subscription_objects.hpp>
+#include <graphene/chain/pm_objects.hpp>
 #include <graphene/chain/hardfork.hpp>
 
 #include <fc/io/raw.hpp>
@@ -775,6 +776,151 @@ inline uint32_t import_account_recovery_requests(
     return count;
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// HF14 PM import helpers (shared_string members need set_shared_string)
+// ────────────────────────────────────────────────────────────────────────────
+
+inline uint32_t import_pm_oracles(graphene::chain::database& db, const fc::variants& arr) {
+    uint32_t count = 0;
+    for (const auto& v : arr) {
+        auto id_val = v["id"].as_int64();
+        auto& mutable_idx = db.get_mutable_index<pm_oracle_index>();
+        mutable_idx.set_next_id(pm_oracle_id_type(id_val));
+        db.create<pm_oracle_object>([&](pm_oracle_object& obj) {
+            obj.owner              = v["owner"].as<account_name_type>();
+            obj.insurance          = v["insurance"].as<share_type>();
+            obj.fee_percent        = static_cast<uint16_t>(v["fee_percent"].as_uint64());
+            obj.fixed_fee          = v["fixed_fee"].as<share_type>();
+            set_shared_string(obj.rules_url, v["rules_url"]);
+            obj.active_since       = v["active_since"].as<fc::time_point_sec>();
+            obj.last_active_time   = v["last_active_time"].as<fc::time_point_sec>();
+            obj.banned_until       = v["banned_until"].as<fc::time_point_sec>();
+            obj.markets_accepted   = static_cast<uint32_t>(v["markets_accepted"].as_uint64());
+            obj.markets_resolved   = static_cast<uint32_t>(v["markets_resolved"].as_uint64());
+            obj.no_contest_count   = static_cast<uint32_t>(v["no_contest_count"].as_uint64());
+            obj.missed_count       = static_cast<uint32_t>(v["missed_count"].as_uint64());
+            obj.disputes_received  = static_cast<uint32_t>(v["disputes_received"].as_uint64());
+            obj.disputes_lost      = static_cast<uint32_t>(v["disputes_lost"].as_uint64());
+            obj.disputes_won       = static_cast<uint32_t>(v["disputes_won"].as_uint64());
+            obj.disputes_auto_closed = static_cast<uint32_t>(v["disputes_auto_closed"].as_uint64());
+            obj.dispute_responses_missed = static_cast<uint32_t>(v["dispute_responses_missed"].as_uint64());
+            obj.total_volume_resolved = v["total_volume_resolved"].as<share_type>();
+            obj.total_insurance_slashed = v["total_insurance_slashed"].as<share_type>();
+            obj.avg_resolution_time = static_cast<uint32_t>(v["avg_resolution_time"].as_uint64());
+            obj.penalty_stamps     = static_cast<uint32_t>(v["penalty_stamps"].as_uint64());
+            obj.bans_received      = static_cast<uint32_t>(v["bans_received"].as_uint64());
+            if (v.get_object().contains("last_penalty_stamp_time"))
+                obj.last_penalty_stamp_time = v["last_penalty_stamp_time"].as<fc::time_point_sec>();
+            if (v.get_object().contains("auto_accept_creator"))
+                obj.auto_accept_creator  = v["auto_accept_creator"].as<account_name_type>();
+            if (v.get_object().contains("auto_accept_resolver"))
+                obj.auto_accept_resolver = v["auto_accept_resolver"].as<account_name_type>();
+            if (v.get_object().contains("auto_accept"))
+                obj.auto_accept          = v["auto_accept"].as<bool>();
+        });
+        ++count;
+    }
+    return count;
+}
+
+inline uint32_t import_pm_markets(graphene::chain::database& db, const fc::variants& arr) {
+    uint32_t count = 0;
+    for (const auto& v : arr) {
+        auto id_val = v["id"].as_int64();
+        auto& mutable_idx = db.get_mutable_index<pm_market_index>();
+        mutable_idx.set_next_id(pm_market_id_type(id_val));
+        db.create<pm_market_object>([&](pm_market_object& obj) {
+            obj.creator            = v["creator"].as<account_name_type>();
+            obj.oracle             = v["oracle"].as<account_name_type>();
+            obj.market_type        = static_cast<uint8_t>(v["market_type"].as_uint64());
+            obj.outcome_count      = static_cast<uint8_t>(v["outcome_count"].as_uint64());
+            set_shared_string(obj.url, v["url"]);
+            obj.status             = static_cast<int8_t>(v["status"].as_int64());
+            obj.payout_status      = static_cast<uint8_t>(v["payout_status"].as_uint64());
+            obj.created_time       = v["created_time"].as<fc::time_point_sec>();
+            obj.betting_expiration = v["betting_expiration"].as<fc::time_point_sec>();
+            obj.result_expiration  = v["result_expiration"].as<fc::time_point_sec>();
+            obj.resolved_outcome   = static_cast<int16_t>(v["resolved_outcome"].as_int64());
+            obj.reserve_a          = v["reserve_a"].as<share_type>();
+            obj.reserve_b          = v["reserve_b"].as<share_type>();
+            obj.k                  = v["k"].as<fc::uint128_t>();
+            obj.a_bets_sum         = v["a_bets_sum"].as<share_type>();
+            obj.b_bets_sum         = v["b_bets_sum"].as<share_type>();
+            obj.lmsr_b             = v["lmsr_b"].as<share_type>();
+            obj.lmsr_subsidy       = v["lmsr_subsidy"].as<share_type>();
+            obj.bets_sum           = v["bets_sum"].as<share_type>();
+            obj.liquidity_sum      = v["liquidity_sum"].as<share_type>();
+            obj.oracle_fee_percent    = static_cast<uint16_t>(v["oracle_fee_percent"].as_uint64());
+            obj.creator_fee_percent   = static_cast<uint16_t>(v["creator_fee_percent"].as_uint64());
+            obj.liquidity_fee_percent = static_cast<uint16_t>(v["liquidity_fee_percent"].as_uint64());
+            obj.oracle_fixed_fee   = v["oracle_fixed_fee"].as<share_type>();
+            obj.liquidity_fee_earned = v["liquidity_fee_earned"].as<share_type>();
+            obj.forfeit_pool       = v["forfeit_pool"].as<share_type>();
+            obj.time_penalty_type  = static_cast<uint8_t>(v["time_penalty_type"].as_uint64());
+            obj.time_penalty_value = static_cast<uint32_t>(v["time_penalty_value"].as_uint64());
+            obj.penalty_curve_type = static_cast<uint8_t>(v["penalty_curve_type"].as_uint64());
+            obj.allow_early_resolution = v["allow_early_resolution"].as_bool();
+            obj.allow_cancellation = v["allow_cancellation"].as_bool();
+            obj.allow_batch        = v["allow_batch"].as_bool();
+            obj.allow_instant_bet  = v["allow_instant_bet"].as_bool();
+            obj.endogeneity_tier   = static_cast<uint8_t>(v["endogeneity_tier"].as_uint64());
+            obj.current_epoch      = static_cast<uint32_t>(v["current_epoch"].as_uint64());
+            obj.dispute_mode       = static_cast<uint8_t>(v["dispute_mode"].as_uint64());
+            obj.dispute_resolver   = v["dispute_resolver"].as<account_name_type>();
+            if (v.get_object().contains("dispute_penalty_percent"))
+                obj.dispute_penalty_percent = static_cast<int16_t>(v["dispute_penalty_percent"].as_int64());
+            if (v.get_object().contains("metadata"))
+                set_shared_string(obj.metadata, v["metadata"]);
+        });
+        ++count;
+    }
+    return count;
+}
+
+inline uint32_t import_pm_outcomes(graphene::chain::database& db, const fc::variants& arr) {
+    uint32_t count = 0;
+    for (const auto& v : arr) {
+        auto id_val = v["id"].as_int64();
+        auto& mutable_idx = db.get_mutable_index<pm_outcome_index>();
+        mutable_idx.set_next_id(pm_outcome_id_type(id_val));
+        db.create<pm_outcome_object>([&](pm_outcome_object& obj) {
+            obj.market        = v["market"].as<pm_market_id_type>();
+            obj.outcome_index = static_cast<uint8_t>(v["outcome_index"].as_uint64());
+            set_shared_string(obj.label, v["label"]);
+            obj.q             = v["q"].as<share_type>();
+            obj.bets_sum      = v["bets_sum"].as<share_type>();
+            obj.weight_sum    = v["weight_sum"].as<share_type>();
+            obj.bets_count    = static_cast<uint32_t>(v["bets_count"].as_uint64());
+        });
+        ++count;
+    }
+    return count;
+}
+
+inline uint32_t import_pm_disputes(graphene::chain::database& db, const fc::variants& arr) {
+    uint32_t count = 0;
+    for (const auto& v : arr) {
+        auto id_val = v["id"].as_int64();
+        auto& mutable_idx = db.get_mutable_index<pm_dispute_index>();
+        mutable_idx.set_next_id(pm_dispute_id_type(id_val));
+        db.create<pm_dispute_object>([&](pm_dispute_object& obj) {
+            obj.market                   = v["market"].as<pm_market_id_type>();
+            obj.disputer                 = v["disputer"].as<account_name_type>();
+            obj.dispute_fee              = v["dispute_fee"].as<share_type>();
+            set_shared_string(obj.reason, v["reason"]);
+            obj.filed_time               = v["filed_time"].as<fc::time_point_sec>();
+            obj.oracle_response_deadline = v["oracle_response_deadline"].as<fc::time_point_sec>();
+            obj.dispute_mode             = static_cast<uint8_t>(v["dispute_mode"].as_uint64());
+            obj.voting_end_time          = v["voting_end_time"].as<fc::time_point_sec>();
+            obj.auto_close_time          = v["auto_close_time"].as<fc::time_point_sec>();
+            obj.proposed_outcome         = static_cast<int16_t>(v["proposed_outcome"].as_int64());
+            obj.status                   = static_cast<uint8_t>(v["status"].as_uint64());
+        });
+        ++count;
+    }
+    return count;
+}
+
 } // namespace detail
 
 // ============================================================================
@@ -1119,6 +1265,21 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(master_authority_history_index, master_authority_history_object, "master_authority_history")
     EXPORT_INDEX(account_recovery_request_index, account_recovery_request_object, "account_recovery_request")
     EXPORT_INDEX(change_recovery_account_request_index, change_recovery_account_request_object, "change_recovery_account_request")
+
+    // HF14 Prediction Market objects (empty before HF14 activates)
+    EXPORT_INDEX(pm_oracle_index,         pm_oracle_object,         "pm_oracle")
+    EXPORT_INDEX(pm_market_index,         pm_market_object,         "pm_market")
+    EXPORT_INDEX(pm_outcome_index,        pm_outcome_object,        "pm_outcome")
+    EXPORT_INDEX(pm_bet_index,            pm_bet_object,            "pm_bet")
+    EXPORT_INDEX(pm_liquidity_index,      pm_liquidity_object,      "pm_liquidity")
+    EXPORT_INDEX(pm_commit_index,         pm_commit_object,         "pm_commit")
+    EXPORT_INDEX(pm_dispute_index,        pm_dispute_object,        "pm_dispute")
+    EXPORT_INDEX(pm_dispute_vote_index,   pm_dispute_vote_object,   "pm_dispute_vote")
+    EXPORT_INDEX(pm_lazy_pool_index,      pm_lazy_pool_object,      "pm_lazy_pool")
+    EXPORT_INDEX(pm_lazy_deposit_index,   pm_lazy_deposit_object,   "pm_lazy_deposit")
+    EXPORT_INDEX(pm_lazy_allocation_index,pm_lazy_allocation_object,"pm_lazy_allocation")
+    EXPORT_INDEX(pm_leverage_position_index,pm_leverage_position_object,"pm_leverage_position")
+    EXPORT_INDEX(pm_creator_ban_index,    pm_creator_ban_object,    "pm_creator_ban")
 
     #undef EXPORT_INDEX
 
@@ -1525,6 +1686,34 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             const auto& cra_idx = db.get_index<change_recovery_account_request_index>().indices();
             while (!cra_idx.empty()) { db.remove(*cra_idx.begin()); }
 
+            // HF14 PM objects
+            const auto& pm_ora_idx  = db.get_index<pm_oracle_index>().indices();
+            while (!pm_ora_idx.empty())  { db.remove(*pm_ora_idx.begin()); }
+            const auto& pm_mkt_idx  = db.get_index<pm_market_index>().indices();
+            while (!pm_mkt_idx.empty())  { db.remove(*pm_mkt_idx.begin()); }
+            const auto& pm_out_idx  = db.get_index<pm_outcome_index>().indices();
+            while (!pm_out_idx.empty())  { db.remove(*pm_out_idx.begin()); }
+            const auto& pm_bet_idx  = db.get_index<pm_bet_index>().indices();
+            while (!pm_bet_idx.empty())  { db.remove(*pm_bet_idx.begin()); }
+            const auto& pm_liq_idx  = db.get_index<pm_liquidity_index>().indices();
+            while (!pm_liq_idx.empty())  { db.remove(*pm_liq_idx.begin()); }
+            const auto& pm_com_idx  = db.get_index<pm_commit_index>().indices();
+            while (!pm_com_idx.empty())  { db.remove(*pm_com_idx.begin()); }
+            const auto& pm_dsp_idx  = db.get_index<pm_dispute_index>().indices();
+            while (!pm_dsp_idx.empty())  { db.remove(*pm_dsp_idx.begin()); }
+            const auto& pm_dvt_idx  = db.get_index<pm_dispute_vote_index>().indices();
+            while (!pm_dvt_idx.empty())  { db.remove(*pm_dvt_idx.begin()); }
+            const auto& pm_lpl_idx  = db.get_index<pm_lazy_pool_index>().indices();
+            while (!pm_lpl_idx.empty())  { db.remove(*pm_lpl_idx.begin()); }
+            const auto& pm_ldp_idx  = db.get_index<pm_lazy_deposit_index>().indices();
+            while (!pm_ldp_idx.empty())  { db.remove(*pm_ldp_idx.begin()); }
+            const auto& pm_lac_idx  = db.get_index<pm_lazy_allocation_index>().indices();
+            while (!pm_lac_idx.empty())  { db.remove(*pm_lac_idx.begin()); }
+            const auto& pm_lev_idx  = db.get_index<pm_leverage_position_index>().indices();
+            while (!pm_lev_idx.empty())  { db.remove(*pm_lev_idx.begin()); }
+            const auto& pm_cbn_idx  = db.get_index<pm_creator_ban_index>().indices();
+            while (!pm_cbn_idx.empty())  { db.remove(*pm_cbn_idx.begin()); }
+
             ilog(CLOG_ORANGE "Existing objects cleared" CLOG_RESET);
         }
 
@@ -1687,6 +1876,60 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         if (state.contains("change_recovery_account_request")) {
             auto n = detail::import_simple_objects<change_recovery_account_request_object, change_recovery_account_request_index>(db, state["change_recovery_account_request"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} change recovery account requests" CLOG_RESET, ("n", n));
+        }
+
+        // HF14 Prediction Market objects (absent from pre-HF14 snapshots)
+        if (state.contains("pm_oracle")) {
+            auto n = detail::import_pm_oracles(db, state["pm_oracle"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_oracle objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_market")) {
+            auto n = detail::import_pm_markets(db, state["pm_market"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_market objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_outcome")) {
+            auto n = detail::import_pm_outcomes(db, state["pm_outcome"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_outcome objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_bet")) {
+            auto n = detail::import_simple_objects<pm_bet_object, pm_bet_index>(db, state["pm_bet"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_bet objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_liquidity")) {
+            auto n = detail::import_simple_objects<pm_liquidity_object, pm_liquidity_index>(db, state["pm_liquidity"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_liquidity objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_commit")) {
+            auto n = detail::import_simple_objects<pm_commit_object, pm_commit_index>(db, state["pm_commit"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_commit objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_dispute")) {
+            auto n = detail::import_pm_disputes(db, state["pm_dispute"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_dispute objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_dispute_vote")) {
+            auto n = detail::import_simple_objects<pm_dispute_vote_object, pm_dispute_vote_index>(db, state["pm_dispute_vote"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_dispute_vote objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_lazy_pool")) {
+            auto n = detail::import_simple_objects<pm_lazy_pool_object, pm_lazy_pool_index>(db, state["pm_lazy_pool"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_lazy_pool objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_lazy_deposit")) {
+            auto n = detail::import_simple_objects<pm_lazy_deposit_object, pm_lazy_deposit_index>(db, state["pm_lazy_deposit"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_lazy_deposit objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_lazy_allocation")) {
+            auto n = detail::import_simple_objects<pm_lazy_allocation_object, pm_lazy_allocation_index>(db, state["pm_lazy_allocation"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_lazy_allocation objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_leverage_position")) {
+            auto n = detail::import_simple_objects<pm_leverage_position_object, pm_leverage_position_index>(db, state["pm_leverage_position"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_leverage_position objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_creator_ban")) {
+            auto n = detail::import_simple_objects<pm_creator_ban_object, pm_creator_ban_index>(db, state["pm_creator_ban"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_creator_ban objects" CLOG_RESET, ("n", n));
         }
 
         // Self-healing: detect validators with penalty_percent > 0 but no
