@@ -3,6 +3,9 @@
 *.dylib
 *.sw*
 
+# macOS Finder metadata
+.DS_Store
+
 *.cmake
 CMakeCache.txt
 CMakeFiles

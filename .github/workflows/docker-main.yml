@@ -14,14 +14,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
         id: setup-buildx
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -31,7 +31,7 @@ jobs:
       # same key prefix — letting build_prod restore what build_testnet
       # just saved.
       - name: Restore BuildKit cache mounts from Actions Cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: cache-mounts
         with:
           path: cache-mount
@@ -59,7 +59,7 @@ jobs:
       # build_testnet via needs:) can reuse the ccache populated by the
       # testnet build. The two images differ only in CMake flags so most
       # compiled object files have identical ccache hashes.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: ./share/vizd/docker/Dockerfile-testnet
@@ -78,14 +78,14 @@ jobs:
     needs: build_testnet
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
         id: setup-buildx
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -95,7 +95,7 @@ jobs:
       # hashes). Apt content fully reusable; ccache reuse depends on how
       # -DBUILD_TESTNET propagates through the build (measured per run).
       - name: Restore BuildKit cache mounts from Actions Cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: cache-mounts
         with:
           path: cache-mount
@@ -119,7 +119,7 @@ jobs:
             }
           skip-extraction: ${{ steps.cache-mounts.outputs.cache-hit }}
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: ./share/vizd/docker/Dockerfile-production
