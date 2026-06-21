@@ -1,0 +1,14 @@
+// 14 Hardfork — Prediction Markets (Onix): binary CPMM + multi LMSR, oracles,
+// disputes, batch/commit-reveal, lazy liquidity pool. See plan Prediction_Market_HF14.
+#ifndef CHAIN_HARDFORK_14
+#define CHAIN_HARDFORK_14 14
+// NOTE: placeholder activation time — MUST be finalized before release (see plan risk register:
+// pm_processing_cap_per_block must be benchmarked under realistic load first).
+#ifdef BUILD_TESTNET
+// Testnet activates earlier so the full PM feature set can be exercised ahead of mainnet.
+#define CHAIN_HARDFORK_14_TIME 1780000000
+#else
+#define CHAIN_HARDFORK_14_TIME 1782849600
+#endif
+#define CHAIN_HARDFORK_14_VERSION hardfork_version( version(4, 0, 0) )
+#endif
