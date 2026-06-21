@@ -209,6 +209,7 @@ add_subdirectory(programs)
 if(BUILD_CONSENSUS_TESTS)
     enable_testing()
     add_subdirectory(tests/consensus_sim)
+    add_subdirectory(tests/pm)
 endif()
 
 if(ENABLE_INSTALLER)

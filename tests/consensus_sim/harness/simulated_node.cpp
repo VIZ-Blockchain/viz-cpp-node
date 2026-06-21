@@ -108,7 +108,7 @@ std::vector<chain_block_info> simulated_node::recent_blocks(uint32_t count) cons
         if (cur == graphene::protocol::block_id_type()) break;
         auto b = db_->fetch_block_by_id(cur);
         if (!b) break;
-        out.push_back({b->block_num(), cur, b->witness, b->timestamp});
+        out.push_back({b->block_num(), cur, b->validator, b->timestamp});
         cur = b->previous;
     }
     return out;

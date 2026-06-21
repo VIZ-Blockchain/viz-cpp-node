@@ -29,18 +29,24 @@ set_target_properties(consensus_sim_harness PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
-# Sanitizers on by default for the harness
-target_compile_options(consensus_sim_harness PUBLIC
-    -fsanitize=address
-    -fsanitize=undefined
-    -fno-omit-frame-pointer
-    -O1
-    -g
-)
-target_link_options(consensus_sim_harness PUBLIC
-    -fsanitize=address
-    -fsanitize=undefined
-)
+# Sanitizers on by default for the harness (GCC/Clang only — MSVC rejects these flags).
+if(NOT MSVC)
+    target_compile_options(consensus_sim_harness PUBLIC
+        -fsanitize=address
+        -fsanitize=undefined
+        # fc's static_variant / boost flat_set storage is intentionally under-aligned (benign on
+        # x86); the alignment check floods the log with non-fatal noise, so disable just that one.
+        -fno-sanitize=alignment
+        -fno-omit-frame-pointer
+        -O1
+        -g
+    )
+    target_link_options(consensus_sim_harness PUBLIC
+        -fsanitize=address
+        -fsanitize=undefined
+        -fno-sanitize=alignment
+    )
+endif()
 
 if(WITH_COVERAGE)
     target_compile_options(consensus_sim_harness PUBLIC --coverage)
@@ -56,6 +62,7 @@ set(SCENARIO_SOURCES
     scenarios/test_smoke_no_faults.cpp
     scenarios/test_determinism_replay.cpp
     scenarios/test_equivocation.cpp
+    scenarios/test_pm_lifecycle.cpp
 )
 
 add_executable(consensus_sim_tests ${SCENARIO_SOURCES})
