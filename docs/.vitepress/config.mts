@@ -1,4 +1,5 @@
 import { defineConfig, type DefaultTheme } from 'vitepress';
+import { withMermaid } from 'vitepress-plugin-mermaid';
 
 const githubRepo = 'https://github.com/VIZ-Blockchain/viz-cpp-node';
 
@@ -51,6 +52,15 @@ interface SidebarLabels {
   awards: string;
   subscriptions: string;
   accountMarket: string;
+  predictionMarkets: string;
+  predictionMarketApi: string;
+  predictionMarketsSection: string;
+  onixOverview: string;
+  onixWhitepaper: string;
+  onixSpecification: string;
+  pmHub: string;
+  pmWorkflows: string;
+  pmConcepts: string;
   proposals: string;
   storage: string;
   sharedMemory: string;
@@ -123,6 +133,15 @@ const en: SidebarLabels = {
   awards: 'Awards',
   subscriptions: 'Subscriptions',
   accountMarket: 'Account Market',
+  predictionMarkets: 'Prediction Markets',
+  predictionMarketApi: 'Prediction Market API',
+  predictionMarketsSection: 'Prediction Markets (Onix)',
+  onixOverview: 'Onix Overview',
+  onixWhitepaper: 'Whitepaper',
+  onixSpecification: 'Specification',
+  pmHub: 'Overview & map',
+  pmWorkflows: 'Workflows & diagrams',
+  pmConcepts: 'Concept analysis',
   proposals: 'Proposals',
   storage: 'Storage',
   sharedMemory: 'Shared Memory',
@@ -195,6 +214,15 @@ const ru: SidebarLabels = {
   awards: 'Награды',
   subscriptions: 'Подписки',
   accountMarket: 'Рынок аккаунтов',
+  predictionMarkets: 'Прогнозные рынки',
+  predictionMarketApi: 'API прогнозных рынков',
+  predictionMarketsSection: 'Прогнозные рынки (Onix)',
+  onixOverview: 'Обзор Onix',
+  onixWhitepaper: 'Whitepaper',
+  onixSpecification: 'Спецификация',
+  pmHub: 'Обзор и карта',
+  pmWorkflows: 'Воркфлоу и диаграммы',
+  pmConcepts: 'Анализ концептов',
   proposals: 'Предложения',
   storage: 'Хранилище',
   sharedMemory: 'Разделяемая память',
@@ -267,6 +295,15 @@ const zhCN: SidebarLabels = {
   awards: '奖励',
   subscriptions: '订阅',
   accountMarket: '账户市场',
+  predictionMarkets: '预测市场',
+  predictionMarketApi: '预测市场 API',
+  predictionMarketsSection: '预测市场（Onix）',
+  onixOverview: 'Onix 概览',
+  onixWhitepaper: '白皮书',
+  onixSpecification: '规范',
+  pmHub: '总览与地图',
+  pmWorkflows: '工作流与图',
+  pmConcepts: '概念分析',
   proposals: '提案',
   storage: '存储',
   sharedMemory: '共享内存',
@@ -303,6 +340,20 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
         { text: t.whatIsViz, link: p('/introduction/what-is-viz') },
         { text: t.architecture, link: p('/introduction/architecture') },
         { text: t.keyConcepts, link: p('/introduction/key-concepts') },
+      ],
+    },
+    {
+      text: t.predictionMarketsSection,
+      items: [
+        { text: t.pmHub, link: p('/prediction-markets/') },
+        { text: t.onixOverview, link: p('/prediction-markets/onix') },
+        { text: t.onixWhitepaper, link: p('/prediction-markets/whitepaper') },
+        { text: t.onixSpecification, link: p('/prediction-markets/specification') },
+        { text: t.predictionMarkets, link: p('/protocol/operations/prediction-markets') },
+        { text: t.virtualOperations, link: p('/protocol/virtual-operations') },
+        { text: t.predictionMarketApi, link: p('/plugins/prediction-market-api') },
+        { text: t.pmWorkflows, link: p('/prediction-markets/workflows') },
+        { text: t.pmConcepts, link: p('/prediction-markets/concepts-analysis') },
       ],
     },
     {
@@ -346,6 +397,7 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
         { text: t.snapshot, link: p('/plugins/snapshot') },
         { text: t.chain, link: p('/plugins/chain') },
         { text: t.databaseApi, link: p('/plugins/database-api') },
+        { text: t.predictionMarketApi, link: p('/plugins/prediction-market-api') },
         { text: t.webserver, link: p('/plugins/webserver') },
       ],
     },
@@ -370,6 +422,7 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
             { text: t.awards, link: p('/protocol/operations/awards') },
             { text: t.subscriptions, link: p('/protocol/operations/subscriptions') },
             { text: t.accountMarket, link: p('/protocol/operations/account-market') },
+            { text: t.predictionMarkets, link: p('/protocol/operations/prediction-markets') },
             { text: t.proposals, link: p('/protocol/operations/proposals') },
           ],
         },
@@ -432,6 +485,7 @@ function localizedNav(
   const p = (path: string) => `${prefix}${path}`;
   return [
     { text: introLabel, link: p('/introduction/what-is-viz') },
+    { text: 'Onix', link: p('/prediction-markets/') },
     { text: nodeLabel, link: p('/node/getting-started') },
     { text: protocolLabel, link: p('/protocol/data-types') },
     { text: apiLabel, link: p('/api/json-rpc') },
@@ -441,7 +495,7 @@ function localizedNav(
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
-export default defineConfig({
+export default withMermaid(defineConfig({
   title: 'VIZ Ledger Documentation',
   description: 'Official documentation for VIZ Ledger — hybrid DLT with Fair-DPOS consensus',
   base: '/viz-cpp-node/',
@@ -486,4 +540,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));
