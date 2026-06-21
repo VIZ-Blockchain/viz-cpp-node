@@ -351,4 +351,30 @@
 
 ---
 
+## 预测市场 (HF14)
+
+由 PM 共识逻辑发出 —— **并非**按时钟的 cron。两个来源：
+- **已签名操作的求值器**，在其应用的瞬间 —— `pm_market_accepted`（接受 / 自预言机 / 自动接受）与 `pm_leverage_liquidate`（对向或取消下注将杠杆头寸推过阈值时）。
+- **截止处理器 `process_pm_markets()`**，每块运行：结算已达到**到期 / 截止 / 争议宽限结束 / 纪元边界**的市场（上限 `pm_processing_cap_per_block`，最早截止优先）。
+
+参见 [预测市场操作](./operations/prediction-markets.md)。（ID 91–93 是*常规*操作 `pm_leverage_open`/`pm_leverage_close`/`pm_leverage_convert`，见该页。）
+
+| ID | 操作 | 触发 |
+|----|------|------|
+| 84 | `pm_batch_settle_operation` | 到达纪元边界：排队下注按纪元开盘快照执行 |
+| 85 | `pm_commit_forfeit_operation` | `reveal_deadline` 未揭示：罚金 → `forfeit_pool`，其余退还 |
+| 86 | `pm_auto_payout_operation` | 争议宽限到期（按市场）：同注分彩结算 + 返还 LP 本金 |
+| 87 | `pm_dispute_finalize_operation` | 到达 `voting_end_time`：计票裁定；预言机罚金；重判/维持 |
+| 88 | `pm_dispute_auto_close_operation` | 到达 `auto_close_time` 且预言机未响应：防冻结退款，罚没保证金 → DAO |
+| 89 | `pm_oracle_missed_penalty_operation` | `result_expiration` 已过仍未裁决：罚没 → DAO，全额退还下注 |
+| 90 | `pm_lazy_recall_operation` | 闲置的懒惰池分配到达回收步：一个分阶段步返还入池 |
+| 94 | `pm_leverage_liquidate_operation` | 求值器 —— 市场进行中的杠杆清算（对向 `0` / 取消 `1` 下注级联） |
+| 95 | `pm_leverage_resolve_operation` | 结算 —— 杠杆头寸按 `cancel_value` 强制关闭：`outcome_index`、`won`、`pool_received`/`bettor_received`、`leverage` |
+| 96 | `pm_market_accepted_operation` | 求值器 —— 市场上线：预言机接受、自预言机或自动接受；冻结条款 + `self_oracle` 标志 |
+| 97 | `pm_payout_operation` | 结算 —— 每个有效下注：`amount`（本金）、`side`/`outcome_index`、`payout`（**输则为 0**）；与按市场的 `pm_auto_payout` 并列 |
+
+所有 PM 资金流动严格零和（无增发）；结算守恒 `Σ out == Σ 下注 + LP 本金 + forfeit_pool`。
+
+---
+
 参见：[操作概述](./operations/overview.md)、[奖励](./operations/awards.md)、[委员会](./operations/committee.md)。

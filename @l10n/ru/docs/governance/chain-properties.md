@@ -122,8 +122,27 @@
 | `chain_properties_hf4` | 1 | HF4 | inflation_validator_percent, inflation_ratio_committee_vs_reward_fund, inflation_recalc_period |
 | `chain_properties_hf6` | 2 | HF6 | data_operations_cost_additional_bandwidth, validator_miss_penalty_percent, validator_miss_penalty_duration |
 | `chain_properties_hf9` | 3 | HF9 | create_invite_min_balance, committee_create_request_fee, create_paid_subscription_fee, account_on_sale_fee, subaccount_on_sale_fee, validator_declaration_fee, withdraw_intervals |
+| `chain_properties_hf13` | 4 | HF13 | distribution_epoch_length |
+| `chain_properties_pm` | 5 | HF14 | ~30 параметров прогнозных рынков + kill-switch `pm_commit_reveal_enabled`, `pm_lazy_pool_enabled` |
 
-Для всех новых публикаций параметров валидатора используйте индекс версии 3 (`chain_properties_hf9`).
+Для всех новых публикаций параметров валидатора используйте индекс версии **5** (`chain_properties_pm`). Индекс 4 — `chain_properties_hf13` (`distribution_epoch_length`).
+
+### Параметры прогнозных рынков (v5, HF14) {#pm-parameters}
+
+Все медиан-голосуемые; см. [Операции прогнозных рынков](../protocol/operations/prediction-markets.md).
+
+Все проценты PM — в bp (10000 = 100.00%), как прочие `*_percent`; промилле (‰) нигде нет.
+
+- **Оракул:** `pm_min_oracle_insurance`, `pm_max_oracle_fee_percent` (**единственный** governance-кэп на фи — на % оракула), `pm_oracle_registration_fee`, `pm_oracle_penalty_percent`, `pm_oracle_dispute_response_sec`.
+- **Рынок:** `pm_min_liquidity`, `pm_market_creation_fee`, `pm_max_outcomes`, `pm_max_market_duration`. *(Агрегатного кэпа фи нет; creator/liquidity-фи без кэпа, самолимитируются; статический инвариант `сумма ≤ 100%`.)*
+- **Batch / commit-reveal:** `pm_batch_epoch_blocks`, `pm_reveal_window_blocks`, `pm_min_batch_bet`, `pm_commit_no_reveal_penalty_percent`, `pm_commit_reveal_enabled`.
+- **Споры:** `pm_dispute_fee`, `pm_dispute_grace_sec`, `pm_dispute_vote_period_sec`, `pm_dispute_auto_close_sec`, `pm_dispute_approve_min_percent`, `pm_no_contest_penalty_percent`, `pm_dispute_reward_multiplier` (bp-множитель, 10000 = 1×).
+- **Time penalty:** `pm_default_time_penalty_percent`, `pm_max_time_penalty`.
+- **Lazy-пул:** `pm_lazy_pool_enabled`, `pm_lazy_alloc_percent`, `pm_lazy_max_total_alloc_percent`, `pm_lazy_recall_step_percent`, `pm_lazy_lock_sec`, `pm_lazy_emergency_penalty_percent`.
+- **Плечо (опц.):** `pm_leverage_enabled`, `pm_leverage_fund_percent`, `pm_leverage_max_per_position_bp`, `pm_leverage_max_position_ratio_percent`, `pm_leverage_min_market_liquidity`, `pm_leverage_safety_margin_percent`, `pm_leverage_max_slippage_percent`, `pm_leverage_m_factor_percent`, `pm_leverage_pool_profit_percent`, `pm_leverage_expiration_buffer_sec`, `pm_conversion_profit_cost_percent`.
+- **Справедливость:** `pm_processing_cap_per_block`.
+
+Три флага `*_enabled` (`pm_commit_reveal_enabled`, `pm_lazy_pool_enabled`, `pm_leverage_enabled`) — живые kill-switch: медиана валидаторов может отключить commit-reveal, lazy-пул или плечо без нового хардфорка.
 
 ---
 

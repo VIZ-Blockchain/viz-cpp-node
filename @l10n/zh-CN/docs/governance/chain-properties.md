@@ -122,8 +122,27 @@
 | `chain_properties_hf4` | 1 | HF4 | inflation_validator_percent、inflation_ratio_committee_vs_reward_fund、inflation_recalc_period |
 | `chain_properties_hf6` | 2 | HF6 | data_operations_cost_additional_bandwidth、validator_miss_penalty_percent、validator_miss_penalty_duration |
 | `chain_properties_hf9` | 3 | HF9 | create_invite_min_balance、committee_create_request_fee、create_paid_subscription_fee、account_on_sale_fee、subaccount_on_sale_fee、validator_declaration_fee、withdraw_intervals |
+| `chain_properties_hf13` | 4 | HF13 | distribution_epoch_length |
+| `chain_properties_pm` | 5 | HF14 | ~30 个预测市场参数 + 终止开关 `pm_commit_reveal_enabled`、`pm_lazy_pool_enabled` |
 
-所有新的验证者属性提交请使用版本索引 3（`chain_properties_hf9`）。
+所有新的验证者属性提交请使用版本索引 **5**（`chain_properties_pm`）。索引 4 为 `chain_properties_hf13`（`distribution_epoch_length`）。
+
+### 预测市场参数 (v5, HF14) {#pm-parameters}
+
+均为中位数投票；参见 [预测市场操作](../protocol/operations/prediction-markets.md)。
+
+所有 PM 百分比均以 bp 计（10000 = 100.00%），与其他 `*_percent` 一致；不再使用千分比（‰）。
+
+- **预言机：** `pm_min_oracle_insurance`、`pm_max_oracle_fee_percent`（**唯一**的费率治理上限——针对预言机 %）、`pm_oracle_registration_fee`、`pm_oracle_penalty_percent`、`pm_oracle_dispute_response_sec`。
+- **市场：** `pm_min_liquidity`、`pm_market_creation_fee`、`pm_max_outcomes`、`pm_max_market_duration`。*（无聚合费率上限；creator/liquidity 费率无上限、自我约束；静态 `总和 ≤ 100%` 偿付不变式。）*
+- **批次 / 承诺-揭示：** `pm_batch_epoch_blocks`、`pm_reveal_window_blocks`、`pm_min_batch_bet`、`pm_commit_no_reveal_penalty_percent`、`pm_commit_reveal_enabled`。
+- **争议：** `pm_dispute_fee`、`pm_dispute_grace_sec`、`pm_dispute_vote_period_sec`、`pm_dispute_auto_close_sec`、`pm_dispute_approve_min_percent`、`pm_no_contest_penalty_percent`、`pm_dispute_reward_multiplier`（bp 乘数，10000 = 1×）。
+- **时间惩罚：** `pm_default_time_penalty_percent`、`pm_max_time_penalty`。
+- **懒惰池：** `pm_lazy_pool_enabled`、`pm_lazy_alloc_percent`、`pm_lazy_max_total_alloc_percent`、`pm_lazy_recall_step_percent`、`pm_lazy_lock_sec`、`pm_lazy_emergency_penalty_percent`。
+- **杠杆（可选）：** `pm_leverage_enabled`、`pm_leverage_fund_percent`、`pm_leverage_max_per_position_bp`、`pm_leverage_max_position_ratio_percent`、`pm_leverage_min_market_liquidity`、`pm_leverage_safety_margin_percent`、`pm_leverage_max_slippage_percent`、`pm_leverage_m_factor_percent`、`pm_leverage_pool_profit_percent`、`pm_leverage_expiration_buffer_sec`、`pm_conversion_profit_cost_percent`。
+- **公平性：** `pm_processing_cap_per_block`。
+
+三个 `*_enabled` 标志（`pm_commit_reveal_enabled`、`pm_lazy_pool_enabled`、`pm_leverage_enabled`）为实时终止开关：验证者中位数可在无需新硬分叉的情况下停用承诺-揭示、懒惰池或杠杆。
 
 ---
 

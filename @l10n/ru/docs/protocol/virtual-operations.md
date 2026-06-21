@@ -351,4 +351,30 @@
 
 ---
 
+## Прогнозные рынки (HF14)
+
+Эмитируются логикой консенсуса PM — **не** кроном по часам. Два источника:
+- **Эвалуатор подписанной операции**, в момент её применения — `pm_market_accepted` (при accept / self-oracle / авто-приёме) и `pm_leverage_liquidate` (при встречной или отменяющей ставке, толкающей плечевую позицию за порог).
+- **Обработчик дедлайнов `process_pm_markets()`**, запускаемый каждый блок: рассчитывает рынки, достигшие **экспирации / дедлайна / окончания окна спора / границы эпохи** (кап `pm_processing_cap_per_block`, старейший дедлайн первым).
+
+См. [Операции прогнозных рынков](./operations/prediction-markets.md). (ID 91–93 — это *обычные* операции `pm_leverage_open`/`pm_leverage_close`/`pm_leverage_convert`, см. ту страницу.)
+
+| ID | Операция | Триггер |
+|----|----------|---------|
+| 84 | `pm_batch_settle_operation` | Достигнута граница эпохи: очередные ставки по снимку начала эпохи |
+| 85 | `pm_commit_forfeit_operation` | `reveal_deadline` без раскрытия: штраф → `forfeit_pool`, остаток возвращён |
+| 86 | `pm_auto_payout_operation` | Истекло окно спора (по рынку): паримутюэль-расчёт + возврат принципала LP |
+| 87 | `pm_dispute_finalize_operation` | Достигнут `voting_end_time`: подсчёт решает; штраф оракулу; пере-разрешение/поддержка |
+| 88 | `pm_dispute_auto_close_operation` | Достигнут `auto_close_time`, оракул не ответил: анти-фриз возврат, слэш страховки → DAO |
+| 89 | `pm_oracle_missed_penalty_operation` | Истёк `result_expiration` без разрешения: слэш → DAO, возврат всех ставок |
+| 90 | `pm_lazy_recall_operation` | Простаивающая аллокация lazy-пула достигла шага отзыва: один поэтапный шаг возвращён в пул |
+| 94 | `pm_leverage_liquidate_operation` | Эвалуатор — ликвидация плеча в ходе рынка (встречная `0` / отменяющая `1` ставка, каскад) |
+| 95 | `pm_leverage_resolve_operation` | Расчёт — плечевая позиция принудительно закрыта по `cancel_value`: `outcome_index`, `won`, `pool_received`/`bettor_received`, `leverage` |
+| 96 | `pm_market_accepted_operation` | Эвалуатор — рынок запущен: оракул принял, self-oracle или авто-приём; замороженные условия + флаг `self_oracle` |
+| 97 | `pm_payout_operation` | Расчёт — на каждую активную ставку: `amount` (стейк), `side`/`outcome_index`, `payout` (**0 при проигрыше**); рядом с порыночной `pm_auto_payout` |
+
+Всё движение средств PM строго zero-sum (без эмиссии); расчёт сохраняет `Σ out == Σ ставок + принципал LP + forfeit_pool`.
+
+---
+
 См. также: [Обзор операций](./operations/overview.md), [Награды](./operations/awards.md), [Комитет](./operations/committee.md).
