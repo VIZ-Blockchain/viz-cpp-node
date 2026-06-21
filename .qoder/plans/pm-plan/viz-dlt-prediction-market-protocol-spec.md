@@ -4,6 +4,26 @@
 >
 > Settlement model (both market types): **the AMM assigns weights (CPMM binary / LMSR multi); losers fund winners pro-rata by weight** — see [betting-rules](betting-rules-and-system-overview.md), [plan_unified_parimutuel_binary](plan_unified_parimutuel_binary.md). Front-running mitigation (instant default + opt-in batch/commit-reveal): [plan_batch_commit_reveal_betting](plan_batch_commit_reveal_betting.md).
 
+---
+
+> ## ⬛ СТАТУС РЕАЛИЗАЦИИ (HF14, на 2026-06-19)
+>
+> Аннотации ниже сверены с реально реализованным кодом (`libraries/chain/pm_evaluator.cpp`,
+> `pm_objects.hpp`, `database.cpp`, ops в `libraries/protocol/...`, плагин `prediction_market_api`,
+> snapshot) и интеграционными тестами `tests/consensus_sim/.../test_pm_lifecycle.cpp` (28 кейсов) +
+> `tests/pm/*` (LMSR-векторы, parimutuel, leverage, meta-parse).
+>
+> **Легенда пометок:**
+> - 🟢 **СДЕЛАНО** — реализовано как в спеке.
+> - 🟡 **СДЕЛАНО С ОТЛИЧИЯМИ** — реализовано, но модель/детали изменены (см. «почему»).
+> - 🔴 **НЕ СДЕЛАНО / ОТЛОЖЕНО** — особо выделено.
+> - ➕ **СВЕРХ СПЕКИ** — добавлено того, чего в этом документе нет.
+>
+> **Главное:** фазирование из §8 НЕ соблюдено — вместо «Phase 1 binary-only» реализованы
+> сразу **все три фазы**: binary CPMM + multi LMSR + batch/commit-reveal + полный Lazy Pool +
+> **подсистема leverage (маржа)**, которой в этой спеке нет вовсе. Решение принято осознанно
+> («у нас нет миграций, это не прод» — можно менять раскладку объектов свободно).
+
 ## 0. Conventions
 
 - **Amounts:** `asset` (VIZ, 3 decimals) in operation params; stored internally as `share_type` (int64 satoshi). Permille fees are `uint16` basis-of-1000.
@@ -12,6 +32,14 @@
 - **Time:** `time_point_sec`. Deterministic deadlines processed during block application via `by_<time>` indexes (same pattern as vesting withdrawals / escrow ratification).
 - **New op IDs** start at **64** (regular) and **96** (virtual) to avoid collision with existing IDs (0–63). New `chain_object_types` IDs appended after the existing registry.
 - **Hardfork:** all new objects/operations/chain-property version are gated behind a new hardfork (`CHAIN_HARDFORK_PM`); see [hardfork-management](../viz-cpp-node/docs/advanced/hardfork-management.md).
+
+> 🟡 **§0 СДЕЛАНО С ОТЛИЧИЯМИ.**
+> - **Op IDs «start at 64» — НЕ соблюдено (осознанно).** Операции просто **дописаны в конец**
+>   `operation` static_variant; индекс варианта = консенсусный op-id. Нумерация «с 64» из спеки —
+>   наследие прототипа и для VIZ неприменима (см. комментарий в `pm_operations.hpp`). Аналогично
+>   виртуальные op-id 96+ из §4 не используются как отдельные номера.
+> - **Хардфорк назван `CHAIN_HARDFORK_14`** (не `CHAIN_HARDFORK_PM`).
+> - Amounts/accounts/auth/time/stake-weight — 🟢 как в спеке.
 
 ---
 
@@ -39,6 +67,18 @@ Registered oracle: bonded insurance, fee policy, reputation counters.
 **Indexes:** `by_id`; `by_owner` (unique); `by_status` (banned/active); `by_insurance` (for min-bond checks).
 
 > Reputation **score** is *computed on read* in the API plugin (not stored) — same approach as the prototype and as `compute_oracle_reliability_score`.
+
+> 🟡 **§1.1 СДЕЛАНО С ОТЛИЧИЕМ — модель `fixed_fee` и оракульской фи изменена (offer→quote).**
+> Спека: фикс-фи *платит создатель оракулу при acceptance* (перевод creator→oracle); оракульская
+> фи задаётся создателем. **Реализовано иначе:** (1) фикс-фи и фи **финансируются из пула
+> проигравших на сеттлменте**, не минтятся (`oracle_take = oracle_fee + oracle_fixed_paid`, см.
+> `parimutuel.hpp`), держит zero-sum [[project_pm_zero_sum]]. (2) Условия фиксируются по схеме
+> **offer→quote**: создатель на `create` объявляет *потолок* (`oracle_fee_percent`+`oracle_fixed_fee`),
+> оракул на `accept` **котирует свои фактические** (≤ потолка и ≤ медианного кэпа), они замораживаются
+> в объект рынка; self-oracle фиксирует своё при создании. Объект оракула хранит `fee_percent`/
+> `fixed_fee` как **публичный прайс-лист** (advisory). Резолв читает только замороженные поля рынка,
+> к медиане не обращается. Проверено `oracle_fixed_fee_external_vs_self` (#56, offer/quote + negative).
+> Все 14 reputation-счётчиков + `penalty_stamps` — 🟢. **Все ‰ → bp (10000=100%).**
 
 ### 1.2 `pm_market_object`
 
@@ -77,7 +117,15 @@ Registered oracle: bonded insurance, fee policy, reputation counters.
 
 **Indexes:** `by_id`; `by_creator`; `by_oracle`; `by_status`; `by_betting_expiration` `(status, betting_expiration, id)`; `by_result_expiration` `(status, result_expiration, id)` (bounded cron scan for missed-resolution penalty); `by_payout_status`.
 
-### 1.3 `pm_outcome_object` (multi only)
+> 🟡 **§1.2 СДЕЛАНО + ➕ 2 поля сверх спеки.**
+> К `pm_market_object` добавлены:
+> - ➕ `dispute_penalty_percent` (int16, −10000..+10000) — политика наказания оракула на успешном
+>   диспуте: `>0` слэш % страховки ×consensus_strength; `<0` good-faith (без слэша, оракулу бонус
+>   из fee); `0` нет. Задаётся в `pm_create_market`. Покрыто кейсами committee/good-faith диспутов.
+> - ➕ `metadata` (`shared_string`, **без cap**, как `custom_op`) — свободный клиентский JSON,
+>   **консенсус-непрозрачный** (нода не валидирует/не интерпретирует), парсится офчейн плагином
+>   (категория/теги/юрисдикции). Добавлено по запросу «отдельное json-поле metadata».
+> Остальные поля (CPMM/LMSR/fees/flags/dispute routing) — 🟢 как в спеке.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -187,17 +235,51 @@ Registered oracle: bonded insurance, fee policy, reputation counters.
 
 Indexes mirror the prototype's MasterChef accounting. Deferred to a later phase; not required for v1.
 
+> 🟡 **§1.9 СДЕЛАНО ПОЛНОСТЬЮ — НЕ отложено** (вопреки «deferred to a later phase»).
+> Реализован весь Lazy Pool: deposit/shares/lock, MasterChef `reward_per_share` (1e9), late-depositor
+> fairness, unlock-consolidation, planned + emergency withdraw (со штрафом на залоченный профит),
+> авто-аллокация в рынки, **graduated early recall с тайм-гейтом** (1/10 шаг за `(result−created)/10`),
+> fault-stamp защита. Поля объектов расширены против эскиза (`earned_balance`, `original_amount`,
+> `bets_sum_at_check`, `last_check_time`, `leverage_fund_used` и т.д.).
+> **Найдены и починены консенсус-баги:** отсутствие синглтона пула (создаётся в HF14-хуке),
+> эмиссия pending-награды при withdraw, recall без тайм-гейта. См. [[project_pm_leverage]],
+> [[project_undo_all_recovery_hang]] не связан.
+>
+> ➕ **СВЕРХ СПЕКИ — подсистема Leverage (маржа), в этом документе отсутствует.**
+> Добавлен `pm_leverage_position_object` (collateral+loan, `liquidation_threshold`,
+> `cancel_value`, статусы liquidated/closed/converted) и 3 операции (см. §3). Заём фронтит
+> Lazy Pool (`leverage_fund_used`), проценты пула — в `earned_balance`. Каскадная ликвидация при
+> встречной/отменённой ставке, bad-debt поглощается пулом. Kill-switch `pm_leverage_enabled`
+> (по умолчанию **false** — выключено на мейннете до решения governance). Frozen-математика в
+> `pm/leverage.{hpp,cpp}`. Покрыто кейсами open/close, cascade-bad-debt, convert (#49/#50/#52).
+>
+> ➕ **СВЕРХ СПЕКИ — `pm_creator_ban_object`** (account → `banned_until`, `ban_count`). Введён,
+> чтобы поле `ban_creator`/`ban_creator_until` в `pm_dispute_resolve` (см. §3.9) перестало быть
+> no-op: account-mode резолвер банит создателя, `pm_create_market` отклоняет новые рынки пока бан
+> в силе. Покрыто кейсом `dispute_bans_creator_from_new_markets` (#14).
+
 ---
 
 ## 2. Object Type Registry additions
 
 Append to `chain_object_types.hpp` (after existing IDs): `pm_oracle`, `pm_market`, `pm_outcome`, `pm_bet`, `pm_liquidity`, `pm_commit`, `pm_dispute`, `pm_dispute_vote`, `pm_lazy_pool`, `pm_lazy_deposit`, `pm_lazy_allocation`. All registered via `db.add_core_index<...>()` during `initialize_indexes()` (these are **consensus** objects, not plugin-only).
 
+> 🟡 **§2 СДЕЛАНО — фактический реестр шире (13 типов, не 11).** Порядок APPEND-ONLY соблюдён:
+> 11 из спеки + ➕ `pm_leverage_position` + ➕ `pm_creator_ban` (дописаны в конец enum
+> `chain_object_types`, id-typedef, FC_REFLECT_ENUM, `add_core_index` в `database.cpp`). Все —
+> консенсусные core-индексы, все попадают в snapshot (§7.9).
+
 ---
 
 ## 3. Regular Operations (user-broadcast)
 
 All carry standard validation in `validate()` (static) + `do_apply()` (stateful, in an evaluator). `has_hardfork(CHAIN_HARDFORK_PM)` gates all of them.
+
+> 🟡 **§3 СДЕЛАНО + ➕ 5 операций сверх нумерованного списка спеки.**
+> Реализованы все операции §3.2–§3.10, **плюс** (т.к. Lazy Pool и Leverage реализованы сразу):
+> ➕ `pm_lazy_deposit`, ➕ `pm_lazy_withdraw`, ➕ `pm_leverage_open`, ➕ `pm_leverage_close`,
+> ➕ `pm_leverage_convert`. Все дописаны в конец `operation` variant (см. §0). Гейт —
+> `CHAIN_HARDFORK_14`.
 
 ### 3.1 Roles → who sends what
 
@@ -248,6 +330,15 @@ Charges `pm_market_creation_fee` → committee fund. Locks `liquidity`. Binary: 
 ### 3.5 `pm_oracle_accept_market` (ID 67) — auth: `active` of `oracle`
 `{oracle, market_id, accept}`. accept→ status 0→1, transfer `oracle_fixed_fee` creator→oracle, snapshot fee onto market, trigger lazy allocation. reject→ status 0→−1, refund liquidity to creator. Requires oracle insurance ≥ min.
 
+> 🟡 **§3.5 СДЕЛАНО С ОТЛИЧИЯМИ — accept несёт котировку оракула.**
+> - **`accept` получил 2 поля `oracle_fee_percent` + `oracle_fixed_fee`** — оракул котирует свои
+>   условия (≤ потолка создателя на рынке и ≤ медианного `pm_max_oracle_fee_percent`); они
+>   замораживаются в объект, status 0→1, эмитится **виртуальная `pm_market_accepted`** (см. §4).
+>   Фактическая выплата оракулу — на сеттлменте из пула (§1.1). 🟢 lazy allocation, проверка страховки.
+> - **`reject` — починен консенсус-баг двойного возврата (эмиссия).** Было: креди́т `liquidity_sum`
+>   И `return_liquidity()` → эмиссия. Стало: только `return_liquidity()`. Покрыто
+>   `oracle_reject_refunds_liquidity_once` (#2).
+
 ### 3.6 Betting
 
 **`pm_place_bet` (ID 68)** — auth: `active`
@@ -264,6 +355,14 @@ Charges `pm_market_creation_fee` → committee fund. Locks `liquidity`. Binary: 
 instant: apply to CPMM/LMSR immediately, mint `weight`, update reserves/q/sums. batch (requires `allow_batch`): enqueue (status 5, `epoch`), lock amount; settled by virtual `pm_batch_settle` (§4).
 
 > **`allow_instant_bet=false` enforcement.** When the market's `allow_instant_bet` flag is `false`, the chain MUST reject `mode=0` with `pm_instant_bet_disabled`. The bettor's only paths are `mode=1` (batch) or `pm_commit_bet` → `pm_reveal_bet`. Conversely the off-chain platform UX must hide the instant option and pre-select batch on these markets.
+
+> 🟡 **§3.6 СДЕЛАНО; гейт `allow_instant_bet` добавлен последним (был пропущен).** Поле хранилось,
+> но `pm_place_bet` его НЕ проверял — instant-ставки проходили при выключенном флаге (латентный
+> баг). Добавлен консенсус-гейт: `mode 0 ⇒ FC_ASSERT(allow_instant_bet)`, `mode 1 ⇒
+> FC_ASSERT(allow_batch)`. Взаимное ограничение `allow_instant_bet || allow_batch` — в `validate()`.
+> Покрыто `instant_bet_disabled_gate` (#55). 🟢 commit/reveal, cancel, time-penalty — реализованы.
+> Замечание по `batch (mode=1)`: в `pm_place_bet` он исполняется немедленно по CPMM (фронт-ран-защита
+> идёт через `commit_bet`/`reveal_bet` и эпохальный `pm_batch_settle`, не через `mode=1`).
 
 **`pm_commit_bet` (ID 69)** — auth: `active`
 
@@ -288,6 +387,14 @@ instant: apply to CPMM/LMSR immediately, mint `weight`, update reserves/q/sums. 
 
 **`pm_no_contest` (ID 75)** — auth: `active` of `oracle`. Refund all bets+LP (principal), penalty `pm_no_contest_penalty_permille` of dispute fee from insurance distributed to participants. Disputable (3-outcome).
 
+> 🟡 **§3.8 СДЕЛАНО; `pm_no_contest` переработан + починены 2 бага.** Было: штраф считался от
+> *всей страховки* (≈50%) и сжигался в forfeit_pool. Стало: `permille × dispute_fee`, распределяется
+> pro-rata возвращённым бетторам; no-contest сделан **disputable** — ставит `status=3/payout=1/
+> resolved=-1` + grace, а возврат/штраф откладываются в `settle_market` (ветка `win<0`), чтобы диспут
+> мог переопределить исход. Покрыто `oracle_no_contest_refund_and_compensate`, `dispute_overrides_no_contest`.
+> Parimutuel-сеттлмент 🟢 (zero-sum доказан, [[project_pm_zero_sum]]); починена инверсия сторон в
+> batch-сеттлменте (side 0 теперь как в `pm_place_bet`).
+
 **Settlement (both types, computed at resolve):**
 ```
 losers_sum   = Σ amount of non-winning bets
@@ -310,6 +417,21 @@ LP: principal returned unconditionally + time-weighted share of liq_fee (+ no-wi
 
 > **Both modes converge** on the same post-verdict recalculation path (delete pending payouts → flip/replace winner → regenerate parimutuel payouts → slash insurance/reward disputer → unfreeze). Only *who decides* differs: the whole SHARES electorate vs one configured account.
 
+> 🟡 **§3.9 СДЕЛАНО ПОЛНОСТЬЮ + починен no-op `ban_creator`.**
+> Committee-режим: stake-weighted tally (вес = `effective_vesting_shares` **+ доля в lazy-пуле,
+> сконвертированная в vesting-shares** через `get_vesting_share_price()` — чтобы DAO-участники,
+> переложившие токены в lazy-пул ради доходности, не теряли право голоса; знаменатель кворума тоже
+> включает `pool_NAV→shares`; покрыто `committee_dispute_lazy_pool_voting_weight`),
+> порог участия `pm_dispute_approve_min_percent`, winning = argmax по rshares,
+> **`consensus_strength = winning_rshares × 100% / max_rshares`** масштабирует слэш; распределение
+> fee zero-sum (uphold→оракулу; overturn→disputer fee + carve-out `fee×reward_multiplier/1000` из
+> слэша, остаток→forfeit_pool); good-faith (`dispute_penalty_percent<0`) — без слэша, оракулу
+> бонус. Account-режим — тот же канон, слэш = `penalty_amount` (без масштабирования). Auto-close
+> возвращает fee диспутеру (anti-freeze). Найдены/починены: double-refund emission, time-gate recall.
+> - 🔴→🟢 **`ban_creator`/`ban_creator_until` был no-op** (поле в операции есть, кода нет, хранилища
+>   нет). Теперь применяется: upsert `pm_creator_ban_object`, проверка в `pm_create_market`.
+>   Покрыто `dispute_bans_creator_from_new_markets` (#14). `ban_oracle` 🟢 работал ранее.
+
 ### 3.10 `pm_transfer_position` (ID 79) — auth: `active`
 `{from, bet_id, to, amount, memo}`. Reassign all/part of a bet's `weight` to `to` (same market/outcome). No market impact. `memo`: plaintext, or `#`-prefixed ECIES-encrypted via VIZ account memo keys.
 
@@ -328,6 +450,17 @@ Generated during block application by scanning `by_<time>`/`by_epoch` indexes wi
 | 100 | `pm_dispute_auto_close` | `auto_close_time` reached, unresolved | Full refund + oracle penalty + disputer fee return (anti-freeze) |
 | 101 | `pm_oracle_missed_penalty` | `result_expiration` passed, status 2 | Slash `pm_oracle_penalty_percent` of insurance; refund all; distribute bonus |
 | 102 | `pm_lazy_recall` | Lazy pool graduated-recall step | Recall idle allocation (phase 2) |
+
+> 🟢 **§4 СДЕЛАНО — единый ограниченный cron, виртуальные операции ЭМИТИРУЮТСЯ.**
+> Детерминированная логика собрана в `database::process_pm_markets()` (раз в блок, бюджет
+> `pm_processing_cap_per_block`, сканы по `by_<time>`/`by_reveal_deadline`/`by_epoch`). **Каждый шаг
+> эмитит свою virtual_operation** (`pm_virtual_operations.hpp`, derive от `virtual_operation` →
+> попадают в `account_history`): `pm_batch_settle`, `pm_commit_forfeit`, `pm_auto_payout`,
+> `pm_dispute_finalize`, `pm_dispute_auto_close`, `pm_oracle_missed_penalty`, `pm_lazy_recall`, плюс
+> leverage `pm_leverage_liquidate`/`pm_leverage_resolve`. Нумерация id 96–102 из спеки не
+> используется (op-id = индекс в `operation` variant, append-only). ➕ **Добавлена
+> `pm_market_accepted`** — эмитится при accept оракулом и при self-oracle авто-accept (фиксирует
+> условия + market_id + флаг self), чтобы парсеры истории видели «рынок запущен».
 
 ---
 
@@ -365,6 +498,27 @@ Set **only** via the existing `versioned_chain_properties_update_operation` (ID 
 
 > **Open governance question** (see §7.1): putting ~25 PM params into the validator median set materially enlarges what every validator must publish. Consider a smaller median-voted subset + a dedicated `pm_params_object` updated by a separate mechanism.
 
+> 🟡 **§5 СДЕЛАНО как `chain_properties_pm` (version index 4) + ➕ параметры сверх таблицы.**
+> Реализовано через существующий `versioned_chain_properties_update_operation` с per-field median
+> (как все прочие свойства). Сверх перечня добавлены:
+> - ➕ `pm_lazy_emergency_penalty_permille` (штраф emergency-вывода; раньше ошибочно переиспользовался
+>   `pm_no_contest_penalty_permille` — починено).
+> - ➕ Параметры leverage: `pm_leverage_enabled` (kill-switch, **false**), `pm_leverage_pool_profit_percent`
+>   (R, 10), `pm_leverage_safety_margin_percent`, `pm_leverage_max_slippage_percent`, `pm_leverage_*`
+>   (fund_percent, expiration_buffer, max_per_position_bp, max_position_ratio, min_market_liquidity),
+>   `pm_conversion_profit_cost_percent`, `pm_lazy_alloc_percent` и др.
+> - ➕ `pm_processing_cap_per_block` (бюджет cron из §4/§7.6).
+> **Решение по §7.1: пошли путём (a) — median-vote всех** (включая новые), отдельный `pm_params_object`
+> НЕ вводили. Поверхность параметров стала ещё больше — вопрос остаётся открытым (см. §7.1).
+>
+> **Пересмотр фи-параметров (по решению владельца):** (1) **`pm_max_total_fee_permille` УДАЛЁН** —
+> агрегатный кэп признан лишним; остаётся только `pm_max_oracle_fee_percent` (на фи оракула),
+> creator/liquidity самолимитируются, инвариант платёжеспособности «сумма ≤ 100%» — в `validate()`.
+> (2) **Все ‰ → bp (10000 = 100.00%)** как везде в VIZ: `*_fee_percent`, `pm_max_oracle_fee_percent`
+> (500), `pm_no_contest_penalty_percent` (5000), `pm_commit_no_reveal_penalty_percent` (2000),
+> `pm_lazy_emergency_penalty_percent` (5000); `pm_dispute_reward_multiplier` стал bp-множителем
+> (30000 = 3×, пол 10000=1×, потолок 100×). См. секцию фи в `chain-properties-governance.md`.
+
 ---
 
 ## 6. API Plugin: `prediction_market_api`
@@ -391,9 +545,29 @@ Read-only JSON-RPC plugin over the **consensus** objects (mirrors `committee_api
 
 **Real-time:** optional `set_market_applied_callback` via the webserver block callback for live odds.
 
+> 🟡 **§6 СДЕЛАНО + ➕ объединение двух плагинов в один и оффчейн-индекс метаданных.**
+> Был отдельный плагин `prediction_market_meta` — **слит в `prediction_market_api`** (один плагин
+> владеет markets/oracles/disputes/lazy/leverage/**metadata**; старый каталог удалён). Добавлены:
+> ➕ оффчейн-индекс `pm_market_meta_object` + хэндлер `applied_block`, который парсит поле `metadata`
+> рынка (категория/подкатегория/теги/`banned_jurisdictions`, неизвестные ключи игнорируются,
+> не бросает на не-JSON), TTL-прунинг; ➕ методы `get_market_meta`, `list_markets_by_category`;
+> опция `pmm-ttl-days`. Чистые хелперы в `meta_parse.hpp` юнит-тестятся (`tests/pm/meta_parse_test.cpp`).
+
 ---
 
 ## 7. Review — contentious / hard points to resolve before node implementation
+
+> ⬛ **§7 СТАТУС закрытия пунктов (на момент HF14-реализации):**
+> - **§7.2** 🟢 LMSR Q96 реализован в C++ (`pm/lmsr_q96.hpp`), bit-parity к замороженным векторам
+>   проверяется в CI (`tests/pm/lmsr_vectors_test.cpp`).
+> - **§7.6** 🟢 единый cron с бюджетом `pm_processing_cap_per_block` (см. §4).
+> - **§7.9** 🟢 все объекты (вкл. новые `pm_leverage_position`, `pm_creator_ban`) в snapshot
+>   export/import/clear, FC_REFLECT-нуты; APPEND-ONLY id стабильны.
+> - **§7.10** 🟢 floor-округление, zero-sum-инвариант доказан тестами parimutuel.
+> - **§7.12** 🟢 `MAX_PM_*` константы заданы и проверяются в эвалуаторах (`shared_string`).
+> - **🔴 Открыто:** §7.1 (поверхность параметров — стала ещё больше), §7.3 (точный in-block ordering
+>   batch vs instant — реализовано, но формально не специфицировано), §7.4 (кворум/сибил/vote-buying),
+>   §7.5/§7.7/§7.8 — проектные вопросы, кодом не «закрываются».
 
 ### 7.1 Chain-property surface (governance design)
 ~25 PM params in the validator median set is a lot for every validator to track and publish. **Options:** (a) median-vote all (consistent, but heavy + slow to change); (b) median-vote a small core (fees caps, insurance floor, dispute fee/periods) and fix the rest at hardfork; (c) a separate `pm_params_object` updated by committee vote or a 2/3 validator supermajority. **Decision needed.**
@@ -408,7 +582,7 @@ Uniform-price batch settlement (`pm_batch_settle`) and per-epoch processing must
 - **Quorum:** `pm_dispute_approve_min_percent` of *total* SHARES is hard to reach for niche markets → many disputes fall through to auto-close. Tune, or use participating-stake-relative thresholds.
 - **Vote storage:** one `pm_dispute_vote_object` per voter per dispute — unbounded; cap or require min stake to vote.
 - **Plutocracy / vote-buying:** whales decide outcomes; delegation can concentrate. Acceptable? (Same property as all VIZ governance.)
-- **Front-running the tally:** votes are public; consider commit-reveal for dispute votes too (KBC mitigation, see [FORECASTER-FIT](../.qoder/docs/theory_concepts/FORECASTER-FIT.md)).
+- **Front-running the tally — DECIDED: votes stay public, NO commit-reveal for disputes (will not be implemented).** A committee dispute is an **open public hearing**. The DAO's whole value proposition is resolving markets as truthfully and transparently as possible; hiding ballots behind a reveal phase would corrode that trust — the platform would lose credibility exactly where credibility matters most. Two consequences are locked in: (1) the live tally is queryable (`get_dispute_votes`); (2) **ballots are revisable** until `voting_end_time` — a repeat `pm_dispute_vote` overwrites the prior one (latest wins), so voters can change their mind as new arguments surface. The KBC/bandwagon worry is weak here because voters are **not paid** for matching the majority (influence is pure stake weight). Implemented in `pm_dispute_vote_evaluator` (modify-or-create); tested by `committee_dispute_flips_outcome`.
 - **Penalty scaling formula** (consensus_strength) and **tie-breaking** must be exactly specified (integer math).
 
 ### 7.5 Insurance & escrowed funds custody
@@ -458,6 +632,46 @@ Evaluators reject ops exceeding the cap; ChainBase fields use `fc::shared_string
 1. **Phase 1 (binary-only, integer-safe):** objects, oracle, create/accept, instant bet, liquidity, resolve, both dispute modes, auto-payout, missed-penalty. No LMSR (avoids §7.2), no batch/commit-reveal. Ships a usable consensus market.
 2. **Phase 2:** deterministic LMSR (resolve §7.2) → multi markets; batch + commit-reveal (§7.3); lazy pool.
 3. **Phase 3:** shared/category liquidity, automated data oracles, advanced governance of PM params.
+
+> 🟡 **§8 ФАЗИРОВАНИЕ НЕ соблюдено — реализованы Phase 1 + 2 (и часть «расширений») разом.**
+> Поскольку HF14 ещё не на мейннете и миграций нет, дробить релиз смысла не было. В одном HF14:
+> binary CPMM **и** multi LMSR, instant **и** batch/commit-reveal, полный Lazy Pool, **+ leverage**
+> (которого в фазах нет — ближе к Phase 3/«advanced»). Из Phase 3 **не сделано (🔴):** shared/category
+> liquidity (есть только оффчейн-категоризация через `metadata`), автоматические data-оракулы.
+> Верификация: `consensus_sim` 28 кейсов + `tests/pm/*` — всё зелёное.
+
+---
+
+## 9. ⬛ Сводка отличий реализации от спеки (приложение)
+
+**Изменённые модели (🟡):**
+1. Op-id не «с 64», а append-only в `operation` variant; хардфорк = `CHAIN_HARDFORK_14`.
+2. Оракульская фи и `oracle_fixed_fee` — модель **offer→quote**: создатель предлагает потолок на
+   create, оракул котирует фактическое на accept (≤ потолка, ≤ медианы), замораживается в рынок;
+   выплата из пула на сеттлменте (zero-sum). Резолв к медиане не обращается.
+3. Виртуальные операции §4 эмитируются (через `process_pm_markets`), но без нумерации id 96–102;
+   ➕ добавлена `pm_market_accepted` (announce запуска рынка).
+4. `pm_no_contest` штраф = % от dispute_fee (не от всей страховки) и сделан disputable.
+5. **Фи-параметры:** удалён `pm_max_total_fee_permille` (агрегатный кэп); все ‰ → bp (10000=100%);
+   `pm_dispute_reward_multiplier` — bp-множитель (10000=1×, ≤100×).
+
+**Добавлено сверх спеки (➕):**
+5. Подсистема **leverage**: объект `pm_leverage_position` + 3 операции + параметры + kill-switch.
+6. Объект **`pm_creator_ban`** (чтобы `ban_creator` перестал быть no-op).
+7. Поля рынка **`dispute_penalty_percent`** и **`metadata`** (консенсус-непрозрачный JSON).
+8. Параметры: `pm_lazy_emergency_penalty_permille`, `pm_processing_cap_per_block`, весь набор leverage.
+9. Объединение `prediction_market_meta` → `prediction_market_api` + оффчейн-индекс метаданных.
+
+**Реализовано вопреки «отложено/phase 2» (🟢):** весь Lazy Pool (§1.9), LMSR multi, batch/commit-reveal.
+
+**Закрытые консенсус-баги (найдены тестами):** double-refund при reject (эмиссия); отсутствие
+синглтона Lazy Pool; recall без тайм-гейта; эмиссия pending-награды при lazy-withdraw; инверсия
+сторон в batch-сеттлменте; no-op `allow_instant_bet`; no-op `ban_creator`; неверная база/сжигание
+штрафа no-contest; emergency-штраф брал не тот параметр.
+
+**Не сделано / отложено (🔴):** отдельные virtual-ops в `account_history`; shared/category on-chain
+liquidity; автоматические data-оракулы; формальная спецификация §7.3 ordering; открытые governance-
+вопросы §7.1/§7.4/§7.5/§7.7/§7.8.
 
 ---
 

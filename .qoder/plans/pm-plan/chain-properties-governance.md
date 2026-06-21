@@ -47,7 +47,7 @@ Each validator publishes their preferred chain properties using the `versioned_c
 }
 ```
 
-The `[3, {...}]` format indicates the version — `3` means `chain_properties_hf9` (the latest). Older versions (`0` = init, `1` = hf4, `2` = hf6) are accepted for backward compatibility.
+The `[3, {...}]` format indicates the version — `3` means `chain_properties_hf9`. Older versions (`0` = init, `1` = hf4, `2` = hf6) are accepted for backward compatibility. **Newer versions exist:** `4` = `chain_properties_hf13` and `5` = `chain_properties_pm` (HF14 Prediction Markets — adds the PM consensus params, see [the dedicated section below](#prediction-market-parameters-hf14)). A validator must publish the highest version whose hardfork is active.
 
 ### Step 2: Median Calculation
 
@@ -149,6 +149,43 @@ The calculated `median_props` is stored in the `validator_schedule_object` and u
 
 **How it's used**: When a user unstakes SHARES, the withdrawal happens over `withdraw_intervals` days (one installment per day). Validators can make unstaking faster or slower, affecting how liquid the network's governance token is.
 
+### Prediction Market Parameters (HF14)
+
+`chain_properties_pm` (variant `5`) inherits everything above and appends the Onix Prediction Market consensus params. They are median-voted exactly like every other property — there is **no separate PM transaction**. Categories (defaults in parentheses):
+
+> **All PM percentages use the project-wide bp scale: 10000 = 100.00%** (hundredths of a percent), like `min_curation_percent` and the other `*_percent` properties. There is no permille (‰) anywhere in PM.
+
+- **Oracle / market economics:** `pm_oracle_registration_fee` (10 VIZ), `pm_min_oracle_insurance` (5000 VIZ bond), `pm_market_creation_fee` (5 VIZ), `pm_min_liquidity` (100 VIZ), `pm_max_outcomes` (10), `pm_max_market_duration` (1 year), **`pm_max_oracle_fee_percent` (500 = 5%)**, `pm_default_time_penalty_percent` (50), `pm_max_time_penalty` (1e6). *(There is no aggregate fee cap — see below.)*
+- **Disputes:** `pm_dispute_fee` (1000 VIZ), `pm_dispute_grace_sec` (12 h), `pm_oracle_dispute_response_sec` (12 h), `pm_dispute_auto_close_sec` (14 d), `pm_dispute_vote_period_sec` (3 d), `pm_dispute_approve_min_percent` (1000 bp), `pm_oracle_penalty_percent` (500 bp), `pm_no_contest_penalty_percent` (5000 = 50% of the dispute fee), `pm_dispute_reward_multiplier` (30000 = 3× — a bp **multiplier** where 10000 = 1×, floored at 1× so a vindicated disputer recovers its fee, capped at 100×).
+- **Batch / commit-reveal:** `pm_batch_epoch_blocks` (20), `pm_reveal_window_blocks` (200), `pm_commit_no_reveal_penalty_percent` (2000 = 20%), `pm_min_batch_bet` (1 VIZ), `pm_commit_reveal_enabled` (true).
+- **Cron budget:** `pm_processing_cap_per_block` (200) — bound on deterministic per-block PM work.
+- **Lazy pool:** `pm_lazy_pool_enabled` (true), `pm_lazy_alloc_percent` (2000 bp), `pm_lazy_max_total_alloc_percent` (7000 bp), `pm_lazy_lock_sec` (7 d), `pm_lazy_recall_step_percent` (1000 bp), `pm_lazy_emergency_penalty_percent` (5000 = 50%).
+- **Leverage** (kill-switch **off** by default): `pm_leverage_enabled` (false), `pm_leverage_fund_percent` (10), `pm_leverage_max_per_position_bp` (20), `pm_leverage_pool_profit_percent` (10), `pm_leverage_safety_margin_percent` (1), `pm_leverage_max_slippage_percent` (10), `pm_leverage_min_market_liquidity` (5000 VIZ), `pm_leverage_max_position_ratio_percent` (5), `pm_leverage_expiration_buffer_sec` (1 d), `pm_leverage_m_factor_percent` (50), `pm_conversion_profit_cost_percent` (50).
+
+#### Market fees: who sets them, and the single governed cap
+
+A market charges up to **three** resolution fees (bp, 10000 = 100%). At settlement they are deducted from the **losers' pool**, and the remainder is paid to winners:
+
+| Fee on the market | Set by | Goes to | Cap |
+|---|---|---|---|
+| `oracle_fee_percent` | the **oracle** (quoted at accept) | the oracle | ≤ `pm_max_oracle_fee_percent` (500 = 5%) **and** ≤ the creator's offered ceiling |
+| `creator_fee_percent` | the creator (at create) | the creator | — (self-limiting) |
+| `liquidity_fee_percent` | the creator (at create) | the LPs (time-weighted) | — (self-limiting) |
+
+**Only one governed fee cap:** `pm_max_oracle_fee_percent`. The oracle is the neutral third party, so its fee is bounded. The creator's own `creator_fee`/`liquidity_fee` have **no governance cap** — a market that takes too much just becomes unattractive and loses bettors (market forces). The old aggregate `pm_max_total_fee` was **removed** as a redundant knob.
+
+The only hard limit on the other two is **solvency**: `oracle + creator + liquidity ≤ 100%` (10000 bp), checked statically in `validate()` so the winners' pool can never go negative.
+
+#### How the fee terms are fixed (offer → quote → freeze)
+
+The market maker and the oracle negotiate on-chain, and the agreed terms are **frozen into the market object**, so a later median shift can never change a live market's economics:
+
+1. **Create** — the creator publishes an **offer ceiling**: `oracle_fee_percent` + `oracle_fixed_fee` are the *most* it will pay the oracle, alongside its own `creator_fee_percent`/`liquidity_fee_percent`.
+2. **Accept** — the external oracle **quotes its actual terms** on `pm_oracle_accept_market` (≤ the offer, and `oracle_fee_percent ≤ pm_max_oracle_fee_percent`). The quote is the oracle's price list / reputation, not a bribe. It is frozen onto the market, the status flips to active, and a **`pm_market_accepted` virtual op** is emitted so history-parsing scripts see the launch + terms. A **self-oracle** market freezes its own terms and emits the same vop automatically at creation.
+3. **Resolve** — settlement reads only the **frozen** market fields; it never consults the live median. So the median cap matters only at the moment the oracle commits (register / accept), exactly when consent is given.
+
+> **Note on validation layers.** `validate()` is a static check (no chain state): it bounds each fee to ≤ 10000 bp and the solvency sum to ≤ 10000. The governed `pm_max_oracle_fee_percent` cap is enforced in the **evaluator** (which can read the median) at register/accept — not in `validate()`. So size the oracle fee against the median cap, not just the static 100% ceiling.
+
 ---
 
 ## The Governance Loop: Users → Validators → Parameters
@@ -217,6 +254,8 @@ Properties were introduced in stages:
 | `chain_properties_hf4` | HF4 | inflation_validator_percent, inflation_ratio_committee_vs_reward_fund, inflation_recalc_period |
 | `chain_properties_hf6` | HF6 | data_operations_cost_additional_bandwidth, validator_miss_penalty_percent, validator_miss_penalty_duration |
 | `chain_properties_hf9` | HF9 | create_invite_min_balance, committee_create_request_fee, create_paid_subscription_fee, account_on_sale_fee, subaccount_on_sale_fee, validator_declaration_fee, withdraw_intervals |
+| `chain_properties_hf13` | HF13 | (validator/consensus tuning fields inherited by PM) |
+| `chain_properties_pm` | HF14 | **~40 Prediction Market params** (oracle/market economics, disputes, batch/commit-reveal, cron budget, lazy pool, leverage) — see [Prediction Market Parameters](#prediction-market-parameters-hf14) |
 
 Validators publish properties using `versioned_chain_properties` — a variant that accepts any version. The evaluator validates the version against the current hardfork (you can't publish HF9 properties before HF9 activates). Properties from older versions use default values for newer fields.
 
