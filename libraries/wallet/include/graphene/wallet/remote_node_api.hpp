@@ -9,6 +9,7 @@
 
 #include <graphene/api/account_api_object.hpp>
 #include <graphene/plugins/validator_api/plugin.hpp>
+#include <graphene/plugins/prediction_market_api/prediction_market_api.hpp>
 
 namespace graphene { namespace wallet {
 
@@ -23,6 +24,10 @@ using namespace plugins::database_api;
 using namespace plugins::network_broadcast_api;
 using namespace graphene::api;
 using namespace plugins::validator_api;
+
+/// Short alias for the prediction_market_api plugin's computed DTOs (the namespace shares its name
+/// with the plugin class, so we alias to avoid the namespace-vs-class ambiguity at use sites).
+namespace pmapi = graphene::plugins::prediction_market_api;
 
 /**
  * This is a dummy class exists only to provide method signature information to fc::api, not to execute calls.
@@ -103,6 +108,36 @@ struct remote_validator_api {
     uint64_t get_validator_count();
 };
 
+/**
+ * Dummy signature class for the HF14 prediction_market_api plugin (Onix). Each method mirrors the
+ * node's msg_pack read API by name; fc::api serialises the positional args into the JSON-RPC array
+ * the plugin unpacks. Not used to execute calls — only to format them.
+ */
+struct remote_prediction_market_api {
+    pm_market_object                              get_market( int64_t );
+    vector< pm_market_object >                    list_markets( int8_t, uint32_t, uint32_t );
+    vector< pm_market_object >                    list_markets_by_oracle( account_name_type, uint32_t, uint32_t );
+    vector< pm_market_object >                    list_markets_by_creator( account_name_type, uint32_t, uint32_t );
+    vector< pm_outcome_object >                   get_market_outcomes( int64_t );
+    pmapi::pm_market_weight_sums_api_object        get_market_weight_sums( int64_t );
+    vector< pm_bet_object >                       get_market_bets( int64_t, uint32_t, uint32_t );
+    vector< pmapi::pm_position_api_object >        get_account_positions( account_name_type, uint32_t, uint32_t );
+    vector< pm_liquidity_object >                 get_market_liquidity( int64_t, uint32_t, uint32_t );
+    vector< pm_leverage_position_object >         get_account_leverage_positions( account_name_type, uint32_t, uint32_t );
+    vector< pm_leverage_position_object >         get_market_leverage_positions( int64_t, uint32_t, uint32_t );
+    pm_creator_ban_object                         get_creator_ban( account_name_type );
+    pmapi::pm_oracle_api_object                    get_oracle( account_name_type );
+    vector< pm_oracle_object >                    list_oracles( uint32_t, uint32_t );
+    pm_dispute_object                             get_dispute( int64_t );
+    pmapi::pm_dispute_votes_api_object             get_dispute_votes( int64_t );
+    pm_lazy_pool_object                           get_lazy_pool();
+    pm_lazy_deposit_object                        get_lazy_deposit( account_name_type );
+    graphene::protocol::chain_properties_pm       get_pm_chain_properties();
+    pmapi::pm_market_meta_object                   get_market_meta( int64_t );
+    vector< pmapi::pm_market_meta_object >         list_markets_by_category( string, uint32_t, uint32_t );
+    vector< pmapi::pm_kline_api_object >           get_market_kline( int64_t, uint32_t, uint32_t );
+};
+
 } }
 
 /**
@@ -175,4 +210,32 @@ FC_API( graphene::wallet::remote_validator_api,
         (get_validator_count)
         (get_validator_by_account)
         (lookup_validator_accounts)
+)
+
+/**
+ * Declaration of remote API formatter to prediction_market_api plugin on remote node
+ */
+FC_API( graphene::wallet::remote_prediction_market_api,
+        (get_market)
+        (list_markets)
+        (list_markets_by_oracle)
+        (list_markets_by_creator)
+        (get_market_outcomes)
+        (get_market_weight_sums)
+        (get_market_bets)
+        (get_account_positions)
+        (get_market_liquidity)
+        (get_account_leverage_positions)
+        (get_market_leverage_positions)
+        (get_creator_ban)
+        (get_oracle)
+        (list_oracles)
+        (get_dispute)
+        (get_dispute_votes)
+        (get_lazy_pool)
+        (get_lazy_deposit)
+        (get_pm_chain_properties)
+        (get_market_meta)
+        (list_markets_by_category)
+        (get_market_kline)
 )

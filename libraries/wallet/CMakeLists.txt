@@ -42,6 +42,7 @@ target_link_libraries(
         graphene::operation_history
         graphene::account_by_key
         graphene::validator_api
+        graphene::prediction_market_api
         graphene_protocol
         graphene_utilities
         fc
