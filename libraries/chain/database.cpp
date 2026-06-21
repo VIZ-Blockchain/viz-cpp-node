@@ -3581,6 +3581,18 @@ namespace graphene { namespace chain {
                         w.running_version = CHAIN_VERSION;
                         w.hardfork_version_vote = latest_hfp.current_hardfork_version;
                         w.hardfork_time_vote = latest_hfp.processed_hardforks[latest_hfp.last_hardfork];
+                        // Re-assert the committee signing key every schedule update while
+                        // emergency is active. If it was ever blanked (e.g. by the missed-
+                        // block logic before the is_emergency_committee guard, or any other
+                        // path), production halts because the validator plugin treats a zero
+                        // key as not_my_turn. Restoring it here lets a stuck network self-heal
+                        // on the next schedule update instead of needing a manual transaction.
+                        if (w.signing_key != CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY) {
+                            elog("Emergency consensus: restoring blanked committee signing_key "
+                                 "(was ${k}) at block ${b}",
+                                 ("k", w.signing_key)("b", head_block_num()));
+                            w.signing_key = CHAIN_EMERGENCY_VALIDATOR_PUBLIC_KEY;
+                        }
                     });
                 }
 
@@ -5907,7 +5919,21 @@ namespace graphene { namespace chain {
                             validator_missed.owner != b.validator &&
                             validator_missed.owner != CHAIN_EMERGENCY_VALIDATOR_ACCOUNT;
 
-                        if (!is_emergency_offline_validator && validator_missed.owner != b.validator) {
+                        // The committee (emergency) validator is the recovery anchor.
+                        // In the hybrid emergency schedule it occupies many slots it
+                        // cannot all fill, so every block produced by a real validator
+                        // marks committee's other slots as "missed". It must NEVER be
+                        // penalized or have its signing_key blanked by the miss logic:
+                        // blanking it makes every committee slot return not_my_turn in
+                        // the validator plugin, permanently disabling the only validator
+                        // that can sustain emergency consensus and deadlocking recovery.
+                        // Its key is managed solely by emergency activation/deactivation.
+                        bool is_emergency_committee =
+                            has_hardfork(CHAIN_HARDFORK_12) &&
+                            _dgp.emergency_consensus_active &&
+                            validator_missed.owner == CHAIN_EMERGENCY_VALIDATOR_ACCOUNT;
+
+                        if (!is_emergency_offline_validator && !is_emergency_committee && validator_missed.owner != b.validator) {
                             ilog("\033[91mMissed block: validator ${w} did not produce block #${n} at ${t} (next: ${next})\033[0m",
                                  ("w", validator_missed.owner)
                                  ("n", head_block_num() + i + 1)
@@ -5926,7 +5952,10 @@ namespace graphene { namespace chain {
                             if (w.owner != b.validator) {
                                 w.current_run = 0;
                             }
-                            if(is_emergency_offline_validator) {
+                            if(is_emergency_committee) {
+                                // Recovery anchor: never penalize or blank the committee
+                                // key for missed slots. See is_emergency_committee above.
+                            } else if(is_emergency_offline_validator) {
                                 // Emergency mode: skip per-block vote penalties and total_missed.
                                 // Key-blanking uses a deterministic consensus check:
                                 // head_block_num - last_confirmed_block_num (both on-chain state)
@@ -6047,51 +6076,30 @@ namespace graphene { namespace chain {
 
                 // === HARDFORK 12: EMERGENCY CONSENSUS MODE ACTIVATION ===
                 if (has_hardfork(CHAIN_HARDFORK_12) && !_dgp.emergency_consensus_active) {
-                    // Check if we should enter emergency mode:
-                    // More than CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC seconds have elapsed
-                    // since the last irreversible block timestamp.
+                    // Activate emergency mode when nobody produced a block for
+                    // at least CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC seconds, i.e.
+                    // there was a single continuous production gap of that length
+                    // between the previous head block and THIS block.
                     //
-                    // DETERMINISM: This check uses ONLY data embedded in the
-                    // block and chain state:
-                    //   seconds_since_lib = b.timestamp - lib_block.timestamp
-                    // Both values come from signed blocks, so the result is
-                    // identical on every node and during every replay.
-                    // No config flags, wall-clock time, or skip-flags may gate
-                    // this check — any such guard would break replay determinism.
+                    // We measure the REAL gap, not the distance from LIB. LIB is
+                    // frozen while emergency is active (check_block_post_validation_chain
+                    // returns early) and only catches up one block at a time after
+                    // recovery, so a LIB-based check re-fires the instant emergency
+                    // is deactivated — LIB is still far behind head — producing an
+                    // activation/deactivation flip-flop. The continuous gap is
+                    //   (missed_blocks + 1) * CHAIN_BLOCK_INTERVAL
+                    // and collapses back to one interval as soon as blocks flow
+                    // again, so it cannot re-trigger right after recovery.
                     //
-                    // IMPORTANT: If the LIB block is not available in block_log
-                    // (e.g., after snapshot restore when block_log is empty),
-                    // we CANNOT determine the real LIB timestamp. Falling back
-                    // to genesis_time would cause a false activation with
-                    // millions of seconds since LIB, immediately triggering
-                    // emergency mode and deadlocking the node (committee
-                    // schedule doesn't match real validator slots, blocks from
-                    // p2p are rejected, head_block_num never advances,
-                    // next_shuffle_block_num never reached).
+                    // DETERMINISM: missed_blocks is derived purely from block
+                    // timestamps via get_slot_at_time() (computed above, before
+                    // dgp.time is advanced to b.timestamp), so it is identical on
+                    // every node and during every replay. No block_log fetch,
+                    // config flag, wall-clock time, or skip-flag gates it.
+                    uint32_t gap_sec = (missed_blocks + 1) * CHAIN_BLOCK_INTERVAL;
 
-                    fc::time_point_sec lib_time;
-                    bool lib_time_available = false;
-
-                    if (_dgp.last_irreversible_block_num > 0) {
-                        auto lib_block = fetch_block_by_number(_dgp.last_irreversible_block_num);
-                        if (lib_block.valid()) {
-                            lib_time = lib_block->timestamp;
-                            lib_time_available = true;
-                        }
-                        // If lib_block is NOT valid (block_log empty after
-                        // snapshot restore), lib_time_available stays false.
-                        // We skip the emergency check entirely because we
-                        // cannot determine the real LIB time.
-                    }
-
-                    if (!lib_time_available) {
-                        // Cannot determine LIB time (block_log empty after
-                        // snapshot restore). Skip emergency check to avoid
-                        // false activation that would deadlock the node.
-                    } else {
-                        uint32_t seconds_since_lib = (b.timestamp - lib_time).to_seconds();
-
-                        if (seconds_since_lib >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC) {
+                    {
+                        if (gap_sec >= CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC) {
                             // Enter emergency consensus mode
                             modify(_dgp, [&](dynamic_global_property_object &dgp) {
                                 dgp.emergency_consensus_active = true;
@@ -6184,13 +6192,12 @@ namespace graphene { namespace chain {
                             _fork_db.set_emergency_mode(true);
 
                             ilog("EMERGENCY CONSENSUS MODE activated at block ${b}. "
-                                "No blocks for ${sec} seconds since LIB ${lib}. "
-                                "Emergency validator: ${w}",
-                                ("b", b.block_num())("sec", seconds_since_lib)
-                                ("lib", _dgp.last_irreversible_block_num)
+                                "No block produced for ${sec} seconds (${m} missed slots) "
+                                "before this block. Emergency validator: ${w}",
+                                ("b", b.block_num())("sec", gap_sec)("m", missed_blocks)
                                 ("w", CHAIN_EMERGENCY_VALIDATOR_ACCOUNT));
-                        } // end if (seconds_since_lib >= TIMEOUT)
-                    } // end else (lib_time_available)
+                        } // end if (gap_sec >= TIMEOUT)
+                    } // end bare scope (replaces former lib_time_available else)
                 } // end if (has_hardfork(HF12) && !emergency_active)
             } FC_CAPTURE_AND_RETHROW()
         }
