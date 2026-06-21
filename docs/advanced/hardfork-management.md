@@ -48,6 +48,8 @@ When the head block time passes `next_hardfork_time` and sufficient validators s
 | 10 | Inflation model |
 | 11 | Emission model changes |
 | 12 | Emergency consensus recovery (see below) |
+| 13 | Distribution epoch length (`chain_properties_hf13`) |
+| 14 | Prediction Markets (Onix): 18 ops + 7 virtual ops, CPMM/LMSR pricing, parimutuel settlement, oracles, disputes, commit-reveal, lazy pool; chain properties v5 |
 
 ---
 
