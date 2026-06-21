@@ -1,0 +1,78 @@
+#pragma once
+
+#include <chainbase/chainbase.hpp>
+#include <graphene/chain/index.hpp>
+#include <graphene/chain/chain_object_types.hpp>
+
+#include <boost/multi_index/composite_key.hpp>
+
+// HF14 Prediction-Market metadata index (NON-consensus plugin state, owned by the unified
+// prediction_market_api plugin). Each market carries a free-form `metadata` JSON string; the
+// plugin extracts the keys it indexes (category / subcategory / tags / banned jurisdictions),
+// builds queryable indexes, and prunes them X days after the market's dispute window closes.
+// Localization is a client concern; jurisdiction filtering is done here.
+
+#ifndef PM_META_SPACE_ID
+#define PM_META_SPACE_ID 30
+#endif
+
+namespace graphene { namespace plugins { namespace prediction_market_api {
+
+    enum pm_meta_object_types {
+        pm_market_meta_object_type = (PM_META_SPACE_ID << 8)
+    };
+
+    using namespace graphene::chain;
+    using namespace chainbase;
+
+    class pm_market_meta_object final : public object<pm_market_meta_object_type, pm_market_meta_object> {
+    public:
+        template<typename Constructor, typename Allocator>
+        pm_market_meta_object(Constructor&& c, allocator<Allocator> a)
+            : category(a), subcategory(a), tags(a), banned_jurisdictions(a) { c(*this); }
+
+        id_type           id;
+        pm_market_id_type market;
+        shared_string     category;
+        shared_string     subcategory;
+        shared_string     tags;                 ///< comma-joined
+        shared_string     banned_jurisdictions; ///< comma-joined ISO codes; empty = allowed everywhere
+        time_point_sec    expiry;               ///< prune after: dispute window close + TTL
+    };
+
+    using pm_market_meta_id_type = object_id<pm_market_meta_object>;
+
+    struct by_meta_market;
+    struct by_meta_category;
+    struct by_meta_expiry;
+    typedef boost::multi_index_container<
+        pm_market_meta_object,
+        boost::multi_index::indexed_by<
+            boost::multi_index::ordered_unique<boost::multi_index::tag<by_id>,
+                boost::multi_index::member<pm_market_meta_object, pm_market_meta_id_type, &pm_market_meta_object::id>>,
+            boost::multi_index::ordered_unique<boost::multi_index::tag<by_meta_market>,
+                boost::multi_index::member<pm_market_meta_object, pm_market_id_type, &pm_market_meta_object::market>>,
+            boost::multi_index::ordered_unique<boost::multi_index::tag<by_meta_category>,
+                boost::multi_index::composite_key<pm_market_meta_object,
+                    boost::multi_index::member<pm_market_meta_object, shared_string, &pm_market_meta_object::category>,
+                    boost::multi_index::member<pm_market_meta_object, pm_market_meta_id_type, &pm_market_meta_object::id>
+                >,
+                boost::multi_index::composite_key_compare<chainbase::strcmp_less, std::less<pm_market_meta_id_type>>
+            >,
+            boost::multi_index::ordered_unique<boost::multi_index::tag<by_meta_expiry>,
+                boost::multi_index::composite_key<pm_market_meta_object,
+                    boost::multi_index::member<pm_market_meta_object, time_point_sec, &pm_market_meta_object::expiry>,
+                    boost::multi_index::member<pm_market_meta_object, pm_market_meta_id_type, &pm_market_meta_object::id>
+                >,
+                boost::multi_index::composite_key_compare<std::less<time_point_sec>, std::less<pm_market_meta_id_type>>
+            >
+        >,
+        allocator<pm_market_meta_object>
+    > pm_market_meta_index;
+
+} } } // graphene::plugins::prediction_market_api
+
+FC_REFLECT((graphene::plugins::prediction_market_api::pm_market_meta_object),
+    (id)(market)(category)(subcategory)(tags)(banned_jurisdictions)(expiry))
+CHAINBASE_SET_INDEX_TYPE(graphene::plugins::prediction_market_api::pm_market_meta_object,
+    graphene::plugins::prediction_market_api::pm_market_meta_index)
