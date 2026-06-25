@@ -668,6 +668,10 @@ namespace graphene { namespace chain {
 
                 ilog("Replaying blocks...");
 
+                // Full replay holds the write lock for the whole run; mark it so
+                // the deadlock watchdog does not mistake it for a wedged writer.
+                expected_long_write_guard long_write_guard(*this);
+
                 uint64_t skip_flags =
                         skip_block_size_check |
                         skip_validator_signature |
@@ -787,6 +791,11 @@ namespace graphene { namespace chain {
 
                 ilog("Replaying blocks from dlt_block_log (${from}..${to}, ${count} blocks)...",
                      ("from", from_block_num)("to", dlt_last)("count", dlt_last - from_block_num + 1));
+
+                // Replaying many blocks legitimately holds the write lock for a
+                // long time; tell the deadlock watchdog not to mistake it for a
+                // wedged writer.
+                expected_long_write_guard long_write_guard(*this);
 
                 uint64_t skip_flags =
                         skip_block_size_check |

@@ -34,6 +34,7 @@
 #include <boost/asio.hpp>
 #include <fstream>
 #include <cstdio>
+#include <cstdlib>
 #include <set>
 #include <map>
 #include <algorithm>
@@ -884,6 +885,14 @@ public:
     // Stalled sync detection for DLT mode
     bool enable_stalled_sync_detection = false;
     uint32_t stalled_sync_timeout_minutes = 5;
+
+    // Write-lock deadlock detector threshold.  If a single writer holds the
+    // database write lock continuously for longer than this — and no expected
+    // long write (snapshot import, reindex/replay) is in progress — the node
+    // is wedged and we hard-exit for a runit restart.  Well above any healthy
+    // push_block / fork-switch (sub-second to a few seconds), well below the
+    // minutes a wedge would otherwise spin.
+    static constexpr uint64_t WRITE_LOCK_DEADLOCK_MS = 45000;
     fc::time_point last_block_received_time;
     std::unique_ptr<fc::thread> stalled_sync_thread;  // dedicated thread (main thread can't run fc fibers)
     fc::future<void> stalled_sync_check_future;
@@ -933,6 +942,7 @@ constexpr uint64_t snapshot_plugin::plugin_impl::RATE_LIMIT_WINDOW_SEC;
 constexpr uint32_t snapshot_plugin::plugin_impl::MAX_CONCURRENT_CONNECTIONS;
 constexpr uint32_t snapshot_plugin::plugin_impl::CONNECTION_TIMEOUT_SEC;
 constexpr uint32_t snapshot_plugin::plugin_impl::WATCHDOG_CHECK_INTERVAL_SEC;
+constexpr uint64_t snapshot_plugin::plugin_impl::WRITE_LOCK_DEADLOCK_MS;
 
 fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     fc::mutable_variant_object state;
@@ -1425,6 +1435,9 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
 
     // Import objects in dependency order
     std::cerr << "   Importing state into database...\n";
+    // Importing a large state holds the write lock for a long time; tell the
+    // deadlock watchdog not to mistake it for a wedged writer.
+    chainbase::database::expected_long_write_guard long_write_guard(db);
     db.with_strong_write_lock([&]() {
         try {
         // Clear ALL existing multi-instance objects before importing.
@@ -2098,6 +2111,34 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
 
             if (!stalled_sync_check_running.load()) {
                 break;
+            }
+
+            // === Write-lock deadlock detector ===
+            // A wedged writer holds the database write lock forever — e.g. a
+            // push_block fork-switch whose chainbase undo() failed and was
+            // suppressed (see chainbase ~session()).  Every reader then times
+            // out ("Unable to acquire READ lock") and the node spams locks
+            // until it is killed by hand.  No in-process recovery can take the
+            // lock back (close/reopen needs that very lock), so the only fix is
+            // to exit and let runit restart vizd — snapshot recovery runs on
+            // startup.  expected_long_write() excludes legitimately long writes
+            // (snapshot import, reindex/replay), so this fires only on a true
+            // wedge: no healthy push_block holds the lock anywhere near this
+            // long.  This thread never touches the lock, so it stays alive to
+            // observe and act while every DB-touching thread is starved.
+            {
+                uint64_t held_ms = db.write_lock_held_ms();
+                if (held_ms > WRITE_LOCK_DEADLOCK_MS && !db.expected_long_write()) {
+                    std::cerr << "FATAL: database write lock held for " << held_ms
+                              << "ms with no expected long write in progress — "
+                              << "deadlocked writer (likely a stuck push_block "
+                              << "fork-switch). Exiting so runit restarts vizd and "
+                              << "recovers from snapshot." << std::endl;
+                    std::cerr.flush();
+                    // Hard exit: a graceful shutdown would re-block on the dead
+                    // lock (flush/validator_guard need it) and hang again.
+                    std::_Exit(1);
+                }
             }
 
             // If a snapshot is currently in progress, the snapshot's
