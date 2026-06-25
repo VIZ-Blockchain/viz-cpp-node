@@ -35,6 +35,7 @@
 #include <fstream>
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 #include <set>
 #include <map>
 #include <algorithm>
@@ -893,6 +894,12 @@ public:
     // push_block / fork-switch (sub-second to a few seconds), well below the
     // minutes a wedge would otherwise spin.
     static constexpr uint64_t WRITE_LOCK_DEADLOCK_MS = 45000;
+
+    // Flap window for the deadlock detector.  Each detection ends in _Exit, so
+    // we persist exit timestamps to a marker file and count how many happened
+    // within this window — a high count means the restart isn't fixing the
+    // wedge (a deterministic re-trigger), which is the signal to dig deeper.
+    static constexpr uint32_t WRITE_LOCK_DEADLOCK_FLAP_WINDOW_SEC = 1800; // 30 min
     fc::time_point last_block_received_time;
     std::unique_ptr<fc::thread> stalled_sync_thread;  // dedicated thread (main thread can't run fc fibers)
     fc::future<void> stalled_sync_check_future;
@@ -943,6 +950,7 @@ constexpr uint32_t snapshot_plugin::plugin_impl::MAX_CONCURRENT_CONNECTIONS;
 constexpr uint32_t snapshot_plugin::plugin_impl::CONNECTION_TIMEOUT_SEC;
 constexpr uint32_t snapshot_plugin::plugin_impl::WATCHDOG_CHECK_INTERVAL_SEC;
 constexpr uint64_t snapshot_plugin::plugin_impl::WRITE_LOCK_DEADLOCK_MS;
+constexpr uint32_t snapshot_plugin::plugin_impl::WRITE_LOCK_DEADLOCK_FLAP_WINDOW_SEC;
 
 fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     fc::mutable_variant_object state;
@@ -2129,11 +2137,43 @@ void snapshot_plugin::plugin_impl::check_stalled_sync_loop() {
             {
                 uint64_t held_ms = db.write_lock_held_ms();
                 if (held_ms > WRITE_LOCK_DEADLOCK_MS && !db.expected_long_write()) {
+                    // Capture the wedged call site before exiting (e.g.
+                    // "database.cpp:1688 _push_block tid=...").
+                    const std::string holder = db.write_lock_holder_diag();
+                    // Count how many deadlock exits happened recently.  Each
+                    // detection ends in _Exit, so an in-process counter would
+                    // always read 1; persist timestamps to a marker file so a
+                    // flap loop (the restart not fixing the wedge) is visible in
+                    // the log across restarts.  Best-effort — never let this
+                    // bookkeeping get in the way of the exit.
+                    uint32_t restart_count = 1;
+                    try {
+                        const uint32_t now_s = fc::time_point::now().sec_since_epoch();
+                        const std::string marker =
+                            (appbase::app().data_dir() / "deadlock_restarts").string();
+                        std::vector<uint32_t> recent;
+                        {
+                            std::ifstream in(marker);
+                            uint32_t ts;
+                            while (in >> ts) {
+                                if (now_s >= ts &&
+                                    now_s - ts <= WRITE_LOCK_DEADLOCK_FLAP_WINDOW_SEC)
+                                    recent.push_back(ts);
+                            }
+                        }
+                        recent.push_back(now_s);
+                        restart_count = static_cast<uint32_t>(recent.size());
+                        std::ofstream out(marker, std::ios::trunc);
+                        for (uint32_t ts : recent) out << ts << "\n";
+                    } catch (...) {}
+
                     std::cerr << "FATAL: database write lock held for " << held_ms
-                              << "ms with no expected long write in progress — "
-                              << "deadlocked writer (likely a stuck push_block "
-                              << "fork-switch). Exiting so runit restarts vizd and "
-                              << "recovers from snapshot." << std::endl;
+                              << "ms by [" << holder << "] with no expected long "
+                              << "write in progress — deadlocked writer. "
+                              << "Deadlock restart #" << restart_count
+                              << " within last " << (WRITE_LOCK_DEADLOCK_FLAP_WINDOW_SEC / 60)
+                              << " min. Exiting so runit restarts vizd and recovers "
+                              << "from snapshot." << std::endl;
                     std::cerr.flush();
                     // Hard exit: a graceful shutdown would re-block on the dead
                     // lock (flush/validator_guard need it) and hang again.
