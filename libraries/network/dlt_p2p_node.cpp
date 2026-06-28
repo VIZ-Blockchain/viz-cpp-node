@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
+#include <iostream>
 #include <random>
 #include <chrono>
 #include <thread>
@@ -163,8 +165,41 @@ void dlt_p2p_node::start() {
     // Start periodic task fiber
     if (_thread) {
         _periodic_fiber = _thread->async([this]() {
+            // Busy-loop safety net.  A healthy loop errors at most about once
+            // per 5s (the usleep above sleeps between attempts).  If errors pile
+            // up far faster than that, the usleep is not actually sleeping —
+            // the signature of a poisoned per-thread exception state (a yield
+            // from inside a catch, p97): the fiber spins forever and the node
+            // stops processing blocks.  No in-process recovery is possible, so
+            // exit and let runit restart vizd.
+            constexpr uint32_t SPIN_ERROR_LIMIT = 1000;
+            constexpr int64_t  SPIN_WINDOW_US   = 10 * 1000000LL; // 10s
+
             uint32_t consecutive_errors = 0;
             fc::time_point last_error_log;
+            fc::time_point streak_start;
+
+            auto note_error = [&](const std::string& what) {
+                consecutive_errors++;
+                auto now = fc::time_point::now();
+                if (consecutive_errors == 1) streak_start = now;
+                if (consecutive_errors == 1 || (now - last_error_log).count() > 60 * 1000000LL) {
+                    elog("Error in DLT P2P periodic task (#${n}): ${e}",
+                         ("n", consecutive_errors)("e", what));
+                    last_error_log = now;
+                }
+                if (consecutive_errors >= SPIN_ERROR_LIMIT &&
+                    (now - streak_start).count() < SPIN_WINDOW_US) {
+                    std::cerr << "FATAL: DLT P2P periodic task busy-looping ("
+                              << consecutive_errors << " errors in "
+                              << ((now - streak_start).count() / 1000)
+                              << "ms) — poisoned fiber exception state. "
+                              << "Exiting so runit restarts vizd." << std::endl;
+                    std::cerr.flush();
+                    std::_Exit(1);
+                }
+            };
+
             while (_running) {
                 try {
                     fc::usleep(fc::seconds(5));
@@ -172,21 +207,9 @@ void dlt_p2p_node::start() {
                     periodic_task();
                     consecutive_errors = 0;
                 } catch (const fc::exception& e) {
-                    consecutive_errors++;
-                    auto now = fc::time_point::now();
-                    if (consecutive_errors == 1 || (now - last_error_log).count() > 60 * 1000000LL) {
-                        elog("Error in DLT P2P periodic task (#${n}): ${e}",
-                             ("n", consecutive_errors)("e", e.to_detail_string()));
-                        last_error_log = now;
-                    }
+                    note_error(e.to_detail_string());
                 } catch (const std::exception& e) {
-                    consecutive_errors++;
-                    auto now = fc::time_point::now();
-                    if (consecutive_errors == 1 || (now - last_error_log).count() > 60 * 1000000LL) {
-                        elog("Error in DLT P2P periodic task (#${n}): ${e}",
-                             ("n", consecutive_errors)("e", std::string(e.what())));
-                        last_error_log = now;
-                    }
+                    note_error(std::string(e.what()));
                 }
             }
         }, "dlt periodic_task");
