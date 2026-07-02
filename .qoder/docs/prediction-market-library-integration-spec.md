@@ -67,6 +67,16 @@ this floor.
 - **`time_penalty` on a bet:** `1e6 = 100%` (`pm_max_time_penalty = 1000000`).
 - **`pm_leverage_*_percent` governance knobs:** plain percent (`10 = 10%`), see §9.
 
+> ⚠️ **There is NO permille (‰) anywhere in the live protocol.** The original PHP prototype used
+> permille for market/oracle fees; the on-chain protocol converted every one of them to **bp**. Do
+> **not** carry a `fromPermille` helper over from prototype code. In particular the market/oracle
+> **fee** fields — `oracle_fee_percent`, `creator_fee_percent`, `liquidity_fee_percent`, the cap
+> `pm_max_oracle_fee_percent`, and the pool floor `pm_lazy_min_liquidity_fee_percent` — are **all bp**
+> (`10000 = 100%`), parsed with the *same* `fromBP`. Consensus proves it: settlement computes each fee
+> as `floor(losers_sum × fee_percent / 10000)` (`libraries/chain/pm/parimutuel.cpp`), and `validate()`
+> rejects markets whose fee sum exceeds `10000`. Using `fromPermille` on these fields renders/sends
+> values **10× off** (a real `200` = 2% LP fee would show as 20% and, on write, store as 0.2%).
+
 ### 1.2 Operation serialization
 
 Operations are members of a single `static_variant` (tagged union). Two encodings:
