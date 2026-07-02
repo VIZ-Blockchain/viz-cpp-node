@@ -738,7 +738,7 @@ void pm_create_market_evaluator::do_apply(const pm_create_market_operation& o) {
         // auto-accept) never enter the pending sweep, so leave it at 0.
         m.accept_deadline       = active_at_create
                                     ? time_point_sec()
-                                    : now + fc::seconds(mp.pm_oracle_accept_window_sec);
+                                    : time_point_sec(now + fc::seconds(mp.pm_oracle_accept_window_sec));
         m.betting_expiration    = o.betting_expiration;
         m.result_expiration     = o.result_expiration;
         m.resolved_outcome      = -1;
