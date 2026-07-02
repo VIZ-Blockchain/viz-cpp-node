@@ -9,7 +9,6 @@
 
 #include <graphene/api/account_api_object.hpp>
 #include <graphene/plugins/validator_api/plugin.hpp>
-#include <graphene/plugins/prediction_market_api/prediction_market_api.hpp>
 
 namespace graphene { namespace wallet {
 
@@ -24,10 +23,6 @@ using namespace plugins::database_api;
 using namespace plugins::network_broadcast_api;
 using namespace graphene::api;
 using namespace plugins::validator_api;
-
-/// Short alias for the prediction_market_api plugin's computed DTOs (the namespace shares its name
-/// with the plugin class, so we alias to avoid the namespace-vs-class ambiguity at use sites).
-namespace pmapi = graphene::plugins::prediction_market_api;
 
 /**
  * This is a dummy class exists only to provide method signature information to fc::api, not to execute calls.
