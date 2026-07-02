@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
+#include <iostream>
 #include <random>
 #include <chrono>
 #include <thread>
@@ -163,8 +165,41 @@ void dlt_p2p_node::start() {
     // Start periodic task fiber
     if (_thread) {
         _periodic_fiber = _thread->async([this]() {
+            // Busy-loop safety net.  A healthy loop errors at most about once
+            // per 5s (the usleep above sleeps between attempts).  If errors pile
+            // up far faster than that, the usleep is not actually sleeping —
+            // the signature of a poisoned per-thread exception state (a yield
+            // from inside a catch, p97): the fiber spins forever and the node
+            // stops processing blocks.  No in-process recovery is possible, so
+            // exit and let runit restart vizd.
+            constexpr uint32_t SPIN_ERROR_LIMIT = 1000;
+            constexpr int64_t  SPIN_WINDOW_US   = 10 * 1000000LL; // 10s
+
             uint32_t consecutive_errors = 0;
             fc::time_point last_error_log;
+            fc::time_point streak_start;
+
+            auto note_error = [&](const std::string& what) {
+                consecutive_errors++;
+                auto now = fc::time_point::now();
+                if (consecutive_errors == 1) streak_start = now;
+                if (consecutive_errors == 1 || (now - last_error_log).count() > 60 * 1000000LL) {
+                    elog("Error in DLT P2P periodic task (#${n}): ${e}",
+                         ("n", consecutive_errors)("e", what));
+                    last_error_log = now;
+                }
+                if (consecutive_errors >= SPIN_ERROR_LIMIT &&
+                    (now - streak_start).count() < SPIN_WINDOW_US) {
+                    std::cerr << "FATAL: DLT P2P periodic task busy-looping ("
+                              << consecutive_errors << " errors in "
+                              << ((now - streak_start).count() / 1000)
+                              << "ms) — poisoned fiber exception state. "
+                              << "Exiting so runit restarts vizd." << std::endl;
+                    std::cerr.flush();
+                    std::_Exit(1);
+                }
+            };
+
             while (_running) {
                 try {
                     fc::usleep(fc::seconds(5));
@@ -172,21 +207,9 @@ void dlt_p2p_node::start() {
                     periodic_task();
                     consecutive_errors = 0;
                 } catch (const fc::exception& e) {
-                    consecutive_errors++;
-                    auto now = fc::time_point::now();
-                    if (consecutive_errors == 1 || (now - last_error_log).count() > 60 * 1000000LL) {
-                        elog("Error in DLT P2P periodic task (#${n}): ${e}",
-                             ("n", consecutive_errors)("e", e.to_detail_string()));
-                        last_error_log = now;
-                    }
+                    note_error(e.to_detail_string());
                 } catch (const std::exception& e) {
-                    consecutive_errors++;
-                    auto now = fc::time_point::now();
-                    if (consecutive_errors == 1 || (now - last_error_log).count() > 60 * 1000000LL) {
-                        elog("Error in DLT P2P periodic task (#${n}): ${e}",
-                             ("n", consecutive_errors)("e", std::string(e.what())));
-                        last_error_log = now;
-                    }
+                    note_error(std::string(e.what()));
                 }
             }
         }, "dlt periodic_task");
@@ -691,6 +714,7 @@ void dlt_p2p_node::drain_send_queue(peer_id peer, std::vector<char> buf) {
         peer_ep = (ep_it != _peer_states.end()) ? std::string(ep_it->second.endpoint) : std::to_string(peer);
     }
 
+    bool send_failed = false;
     try {
         while (true) {
             // Write the current buffer to the socket in a loop —
@@ -718,11 +742,20 @@ void dlt_p2p_node::drain_send_queue(peer_id peer, std::vector<char> buf) {
         }
     } catch (const fc::exception& e) {
         wlog("Failed to send to peer ${ep}: ${e}", ("ep", peer_ep)("e", e.to_detail_string()));
-        _peer_sending.erase(peer);
-        handle_disconnect(peer, "send failed");
-        return;
+        send_failed = true;
     }
     _peer_sending.erase(peer);
+
+    // handle_disconnect() yields (cancel_and_wait on the read fiber).  It MUST
+    // run here, after the catch has fully unwound — never from inside the catch.
+    // FC fibers share one OS thread, and the C++ runtime's current-exception
+    // state is per-thread, not per-fiber: yielding while std::current_exception()
+    // is set leaves that state permanently non-null, after which every
+    // fc::usleep/yield on this thread trips the yield_until assert and the
+    // periodic fiber busy-loops forever (p97 dead loop).
+    if (send_failed) {
+        handle_disconnect(peer, "send failed");
+    }
 }
 
 void dlt_p2p_node::send_to_all_our_fork_peers(const message& msg, peer_id exclude, const block_id_type& block_id) {
@@ -888,13 +921,22 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
             case dlt_get_block_range_message_type:
                 on_dlt_get_block_range(peer, msg.as<dlt_get_block_range_message>());
                 break;
-            case dlt_block_range_reply_message_type:
+            case dlt_block_range_reply_message_type: {
+                // Deserialization of range reply may fail (corrupted block data
+                // from peer's dlt_block_log, protocol mismatch, etc.).  The
+                // message was fully read from TCP — stream is still aligned.
+                // The catch ONLY records the failure: the fallback below does
+                // delegate reads and send_message, both of which can yield, and
+                // yielding while std::current_exception() is set poisons the P2P
+                // thread's exception state (p97 dead loop).  So run it after the
+                // catch has unwound, never inside it.
+                bool range_reply_failed = false;
                 try {
                     on_dlt_block_range_reply(peer, msg.as<dlt_block_range_reply_message>());
                 } catch (const fc::exception& e) {
-                    // Deserialization of range reply failed (corrupted block data
-                    // from peer's dlt_block_log, protocol mismatch, etc.)
-                    // The message was fully read from TCP — stream is still aligned.
+                    range_reply_failed = true;
+                }
+                if (range_reply_failed) {
                     // Fall back to single-block requests to isolate the bad block.
                     auto ep_it_rr = _peer_states.find(peer);
                     if (ep_it_rr != _peer_states.end()) {
@@ -917,6 +959,7 @@ bool dlt_p2p_node::on_message(peer_id peer, const message& msg) {
                     }
                 }
                 break;
+            }
             case dlt_get_block_message_type:
                 on_dlt_get_block(peer, msg.as<dlt_get_block_message>());
                 break;
@@ -3974,6 +4017,15 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
         auto ep_str_rl = (ep_it_rl != _peer_states.end()) ? std::string(ep_it_rl->second.endpoint) : std::to_string(peer);
         ilog(DLT_LOG_DGRAY "Read loop started for peer ${ep}" DLT_LOG_RESET, ("ep", ep_str_rl));
 
+        // handle_disconnect() yields (cancel_and_wait).  Yielding while an
+        // exception is being handled poisons the P2P thread's per-thread
+        // current-exception state, after which every fc::usleep/yield trips the
+        // yield_until assert and the periodic fiber busy-loops forever (p97).
+        // So no disconnect path below calls it from inside a catch: each records
+        // the reason and breaks, and the single call runs after all catches have
+        // unwound.
+        const char* disconnect_reason = nullptr;
+        bool disconnect_skip_backoff = false;
         try {
             while (_running) {
                 // Read message header (8 bytes: size + msg_type)
@@ -3988,8 +4040,8 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
                         total_read += r;
                     }
                 } catch (const fc::eof_exception&) {
-                    handle_disconnect(peer, "connection closed");
-                    return;
+                    disconnect_reason = "connection closed";
+                    break;
                 }
 
                 // Validate message size
@@ -4006,8 +4058,9 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
                     wlog(DLT_LOG_ORANGE "Oversized message (${s} bytes, max=${m}) from peer ${ep} — blocking IP for ${d}s" DLT_LOG_RESET,
                          ("s", hdr.size)("m", MAX_MESSAGE_SIZE)("ep", ep_str)("d", BLOCKED_IP_DURATION_SEC));
                     if (peer_ip) block_incoming_ip(peer_ip, "oversized message (" + std::to_string(hdr.size) + " bytes)");
-                    handle_disconnect(peer, "oversized message", true);
-                    return;
+                    disconnect_reason = "oversized message";
+                    disconnect_skip_backoff = true;
+                    break;
                 }
 
                 // Read message data
@@ -4023,8 +4076,8 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
                             total_read += r;
                         }
                     } catch (const fc::eof_exception&) {
-                        handle_disconnect(peer, "connection closed during read");
-                        return;
+                        disconnect_reason = "connection closed during read";
+                        break;
                     }
                 }
 
@@ -4040,8 +4093,8 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
                 // no recovery possible, disconnect immediately.
                 bool msg_ok = on_message(peer, msg);
                 if (!msg_ok || !_running) {
-                    handle_disconnect(peer, "deserialization error");
-                    return;
+                    disconnect_reason = "deserialization error";
+                    break;
                 }
             }
         } catch (const fc::canceled_exception&) {
@@ -4103,8 +4156,14 @@ void dlt_p2p_node::start_read_loop(peer_id peer) {
                 wlog("Read loop error for peer ${ep}: ${e}",
                      ("ep", ep_str_rl)("e", detail));
             }
-            handle_disconnect(peer, "read error");
+            disconnect_reason = "read error";
         }
+
+        // All catches above have unwound, so std::current_exception() is null
+        // again and it is safe to yield here.  Calling handle_disconnect() from
+        // inside any of the catches would poison this thread's exception state
+        // (p97) — see the note at the top of this fiber.
+        if (disconnect_reason) handle_disconnect(peer, disconnect_reason, disconnect_skip_backoff);
 
         ilog("Read loop ended for peer ${ep}", ("ep", ep_str_rl));
     }, "dlt read_loop");

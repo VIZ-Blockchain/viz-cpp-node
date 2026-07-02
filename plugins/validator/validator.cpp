@@ -1052,6 +1052,51 @@ namespace graphene {
                         break;
                 }
 
+                // === NO-NEW-BLOCKS STATUS: chain-wide stall visibility ===
+                // Independent of whether WE are scheduled or producing: report when
+                // NO block from ANYONE has arrived for a while, so operators can watch
+                // the gap climb toward CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC (the point
+                // at which emergency consensus activates). Logged once per minute of
+                // head age. Suppressed while syncing/catching-up, where an old head
+                // just reflects historical replay rather than a real network stall.
+                {
+                    auto &db_age = database();
+                    int64_t head_age_s =
+                        (fc::time_point::now() - fc::time_point(db_age.head_block_time())).count() / 1000000;
+                    bool catching_up_age = false;
+                    try { catching_up_age = p2p().is_catching_up_after_pause(); } catch (...) {}
+                    bool dlt_syncing_age = false;
+                    try { dlt_syncing_age = chain().is_syncing(); } catch (...) {}
+
+                    if (head_age_s >= 60 && !catching_up_age && !dlt_syncing_age) {
+                        // Log at most once per whole minute of head age, and re-arm
+                        // when head advances (age drops back below the last logged minute).
+                        static int64_t _last_headage_logged_min = 0;
+                        int64_t cur_min = head_age_s / 60;
+                        if (cur_min != _last_headage_logged_min) {
+                            _last_headage_logged_min = cur_min;
+                            std::string next_w = "?";
+                            fc::time_point_sec next_slot_time;
+                            try {
+                                next_w = db_age.get_scheduled_validator(1);
+                                next_slot_time = db_age.get_slot_time(1);
+                            } catch (...) {}
+                            int64_t to_emergency_s =
+                                (int64_t)CHAIN_EMERGENCY_CONSENSUS_TIMEOUT_SEC - head_age_s;
+                            wlog("NO NEW BLOCKS: head=#${h} produced at ${hbt}, now=${now}, "
+                                 "gap=${g}s (${m} min). Next expected: block #${nb} by ${nw} at ${nst}. "
+                                 "Emergency consensus activates in ~${e}s.",
+                                 ("h", db_age.head_block_num())
+                                 ("hbt", db_age.head_block_time())
+                                 ("now", graphene::time::now())
+                                 ("g", head_age_s)("m", cur_min)
+                                 ("nb", db_age.head_block_num() + 1)
+                                 ("nw", next_w)("nst", next_slot_time)
+                                 ("e", to_emergency_s > 0 ? to_emergency_s : 0));
+                        }
+                    }
+                }
+
                 // Production watchdog: elog if we've produced before but have gone
                 // silent for too long while production is still enabled.
                 // Emergency master threshold: 60s (before 315s blanking at 105 missed blocks).

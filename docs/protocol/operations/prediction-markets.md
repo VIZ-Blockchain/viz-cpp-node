@@ -281,3 +281,18 @@ LP: principal returned UNCONDITIONALLY + pro-rata share of (liq_fee + Σpenalty 
 ```
 
 **Edge cases:** all bets on the winner → `winners_pool` is only `forfeit_pool` (each winner refunded principal); no winning tokens → whole pool becomes LP bonus; void result → full refund + LP principal. The pure split is unit-tested for exact conservation in `tests/pm/parimutuel_test.cpp`.
+
+---
+
+## Design decision: real depth only (no virtual/phantom liquidity)
+
+A *virtual* (phantom) liquidity offset — reserves added to the pricing curve to flatten price impact but backed by **no real capital** and deleted at settlement (optionally median-voted) — is value-conservative in the closed bet→cancel→settle loop (the vAMM technique) and is tempting as a cold-start stabilizer for thin markets. **Onix deliberately does not implement it.** Lazy-Pool auto-allocation already delivers the same launch-smoothing with **real** capital that earns fees, has an accountable owner, and follows demand per market.
+
+Phantom depth is rejected because, applied carelessly, it harms market structure and trust:
+
+1. **Forgeable depth** — a thin or manipulated market can be dressed to look deep and liquid, eroding the price signal that real, costly capital would carry.
+2. **Distorted information aggregation** — flattening the weight curve weakens the reward for early correct information and makes the price unresponsive to news (a stale forecast). The right depth is per-market and volume-dependent; one governance constant cannot track it.
+3. **Conditional solvency** — solvent only while never redeemed or used as collateral. The moment it backs a cancel, early withdrawal, or leverage loan it must be excluded everywhere or it leaks real money (e.g. leverage sized/recovered against fake depth → real bad debt to pool depositors).
+4. **No owner, no yield, no accountability** — it bears no risk and earns no fee for anyone real, deleting the retail safe-yield product on the markets it touches.
+
+Onix keeps **only real numbers**: every unit of depth is real capital — redeemable, fee-earning, accountable — provided through the Lazy Pool (`pm_lazy_deposit` + auto-allocation). The conscious tradeoff is to forgo a cheap virtual stabilizer in favour of price-signal integrity and the solvency of every real-money path.

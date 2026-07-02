@@ -94,6 +94,27 @@ WebSocket 客户端可以注册回调：
 
 ---
 
+## CORS
+
+webserver 插件原生处理浏览器的跨域（cross-origin）请求 — 本地或开发环境无需反向代理。
+
+**预检请求**（`OPTIONS`）会立即返回以下响应头：
+
+| 响应头 | 值 |
+|--------|-----|
+| `Access-Control-Allow-Origin` | `*` |
+| `Access-Control-Allow-Methods` | `POST, GET, OPTIONS` |
+| `Access-Control-Allow-Headers` | `Content-Type, Authorization` |
+| `Access-Control-Max-Age` | `86400` |
+
+**所有其他 HTTP 响应**都包含 `Access-Control-Allow-Origin: *`。
+
+这使得基于浏览器的钱包和 dApp 可以直接调用 JSON-RPC 端点。**节点自身授予 CORS** — 它在每个响应上都设置这些响应头，即使运行在反向代理之后也是如此。因此下文 **「通过 HTTPS 公开 API（nginx + certbot）」** 中的 nginx 配置只做代理转发，**不**设置自己的 CORS 响应头。
+
+> **不要**在节点已设置的情况下再在 nginx 层添加 `add_header Access-Control-Allow-Origin`：两个相同的响应头会让浏览器拒绝该响应。如果你还从同一域名提供静态文件（API explorer 或 SPA），只在这些静态 location 上添加 CORS 响应头 —— 且仅针对 `GET`/`HEAD` —— 以便代理转发的响应保留由节点设置的唯一响应头。
+
+---
+
 ## 安全性
 
 - **绑定到 localhost**（`127.0.0.1`）并使用反向代理（nginx/Caddy）进行公共暴露。绑定到 `0.0.0.0` 会将 RPC 直接暴露给网络。

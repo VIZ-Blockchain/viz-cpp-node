@@ -12,7 +12,13 @@
 namespace graphene {
     namespace chain {
         using boost::multi_index_container;
-        using namespace boost::multi_index;
+        using boost::multi_index::indexed_by;
+        using boost::multi_index::hashed_unique;
+        using boost::multi_index::hashed_non_unique;
+        using boost::multi_index::ordered_non_unique;
+        using boost::multi_index::tag;
+        using boost::multi_index::member;
+        using boost::multi_index::const_mem_fun;
 
         using graphene::protocol::signed_block;
         using graphene::protocol::block_id_type;

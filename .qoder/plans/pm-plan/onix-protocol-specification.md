@@ -858,6 +858,17 @@ All deposits (locked + unlocked):
 
 **C. Fault Stamps:** On bad market outcomes (no-contest, missed deadline, zero volume, dispute loss, no response, auto-close), oracle receives a fault stamp that auto-expires after a clean-operation window. `fault_factor = (1 − fault_penalty_pct / 100) ^ active_stamps`.
 
+### Design Decision: Real Depth Only (No Virtual/Phantom Liquidity)
+
+A *virtual* (phantom) liquidity offset — a curve reserve added for pricing but backed by no real capital and deleted at settlement, optionally median-voted — is value-conservative in the closed bet→cancel→settle loop (the vAMM technique) and is tempting as a cold-start stabilizer for thin markets. Onix **deliberately does not implement it.** Lazy-Pool auto-allocation (§16) already delivers the same launch-smoothing with **real** capital that earns fees, has an accountable owner, and follows demand per market. Phantom depth is rejected because, applied carelessly, it harms market structure and trust:
+
+1. **Forgeable depth** lets a thin or manipulated market look deep and liquid, eroding the price signal that real, costly depth would carry.
+2. **Distorted information aggregation** — virtual depth flattens curve weights, weakening the reward for early correct information and making the price unresponsive to news (a stale forecast). The right depth is per-market and volume-dependent; a single governance constant cannot track it.
+3. **Conditional solvency** — it stays solvent only while never redeemed or used as collateral. The moment it backs a cancel, early withdrawal, or leverage loan it must be excluded everywhere or it leaks real money (e.g. leverage sized/recovered against fake depth → real bad debt to pool depositors). Every "size-against-liquidity / pay-the-LP" path becomes an excludability footgun.
+4. **No owner, no yield, no accountability** — virtual depth bears no risk and earns no fee for anyone real, deleting the retail safe-yield product on the markets it touches.
+
+Onix therefore keeps **only real numbers**: every unit of depth is real capital — redeemable, fee-earning, accountable — provided through the Lazy Pool. The conscious tradeoff is to forgo a cheap virtual stabilizer in favour of price-signal integrity and the solvency of every real-money path.
+
 ---
 
 ## 16a. Opt-In Leverage (Lazy-Pool-Funded)

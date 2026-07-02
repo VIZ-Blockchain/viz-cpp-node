@@ -435,7 +435,14 @@ namespace graphene {
                 if (con->get_request().get_method() == "OPTIONS") {
                     con->append_header("Access-Control-Allow-Origin", "*");
                     con->append_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-                    con->append_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+                    // Reflect exactly the headers the browser asked to send. A fixed
+                    //   allow-list blocks any request carrying a header outside it
+                    //   (custom X-* headers, x-api-key, etc.), which the browser reports
+                    //   as a CORS preflight failure. Falls back to the common defaults
+                    //   when the browser did not advertise any headers.
+                    const std::string &requested_headers = con->get_request().get_header("Access-Control-Request-Headers");
+                    con->append_header("Access-Control-Allow-Headers",
+                        requested_headers.empty() ? std::string("Content-Type, Authorization") : requested_headers);
                     con->append_header("Access-Control-Max-Age", "86400");
                     con->set_status(websocketpp::http::status_code::ok);
                     try { con->send_http_response(); } catch (...) {}
