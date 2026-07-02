@@ -373,6 +373,7 @@ See [Prediction Market Operations](./operations/prediction-markets.md). (IDs 91�
 | 96 | `pm_market_accepted_operation` | Evaluator — market went live: oracle accepted, self-oracle, or auto-accept; frozen oracle terms + `self_oracle` |
 | 97 | `pm_payout_operation` | Settlement — per active bet: `amount` (stake), `side`/`outcome_index`, `payout` (**0 on a loss**); alongside the per-market `pm_auto_payout` |
 | 100 | `pm_ban_expired_operation` | A temporary oracle/creator ban lapsed at `banned_until`: the cron cleared it (`account`, `oracle`, `creator`). Early manual lifts use the signed `pm_unban` instead |
+| 101 | `pm_market_expired_operation` | `accept_deadline` passed on a pending market: the named oracle never accepted/rejected within `pm_oracle_accept_window_sec` — market voided (`status -1`), seed liquidity refunded (`refunded_liquidity`), creation fee **not** refunded (`oracle`, `creator`, `market_id`, `refunded_liquidity`) |
 
 All PM money movement is strictly zero-sum (no emission); settlement conserves `Σ out == Σ bets + LP principal + forfeit_pool`.
 

@@ -79,9 +79,10 @@ description: Onix 协议的正式技术规范，已实现为 VIZ DLT 上的共�
 |---|---|
 | 注册与下限 | `pm_oracle_registration_fee`、`pm_min_oracle_insurance`、`pm_market_creation_fee`、`pm_min_liquidity`、`pm_max_outcomes`、`pm_max_market_duration` |
 | 费用与罚则（bp） | `pm_max_oracle_fee_percent`、`pm_oracle_penalty_percent`、`pm_no_contest_penalty_percent`、`pm_default_time_penalty_percent`、`pm_max_time_penalty` |
+| 接受窗口 | `pm_oracle_accept_window_sec`（默认 3600 = 1 小时；未在此期限内被接受/拒绝的待定市场由 cron 作废——种子退还，创建费保留） |
 | 风险 / 覆盖率（成交量 %） | `pm_listing_min_coverage_percent`（250 = 2.5×；覆盖率低于此值的市场从默认目录中隐藏，经 `show_risky` 展示）、`pm_betting_min_coverage_percent`（150 = 1.5×；建议性客户端风险确认阈值，`≤` 挂牌阈值，不在链上强制） |
 | 争议 | `pm_dispute_fee`、`pm_dispute_grace_sec`、`pm_oracle_dispute_response_sec`、`pm_dispute_vote_period_sec`、`pm_dispute_auto_close_sec`、`pm_dispute_approve_min_percent`（bp）、`pm_dispute_reward_multiplier`（bp） |
-| 懒惰池 | `pm_lazy_pool_enabled`、`pm_lazy_alloc_percent`、`pm_lazy_max_total_alloc_percent`、`pm_lazy_recall_step_percent`、`pm_lazy_lock_sec`、`pm_lazy_emergency_penalty_percent` |
+| 懒惰池 | `pm_lazy_pool_enabled`、`pm_lazy_alloc_percent`、`pm_lazy_max_total_alloc_percent`、`pm_lazy_recall_step_percent`、`pm_lazy_lock_sec`、`pm_lazy_emergency_penalty_percent`、`pm_lazy_min_liquidity_fee_percent`（默认 200 = 2%；池跳过 `liquidity_fee_percent` 低于此奖励下限的市场） |
 | 杠杆 | `pm_leverage_enabled`、`pm_leverage_fund_percent`、`pm_leverage_max_per_position_bp`、`pm_leverage_max_position_ratio_percent`、`pm_leverage_min_market_liquidity`、`pm_leverage_safety_margin_percent`、`pm_leverage_max_slippage_percent`、`pm_leverage_m_factor_percent`、`pm_leverage_pool_profit_percent`、`pm_leverage_expiration_buffer_sec`、`pm_conversion_profit_cost_percent` |
 | 批量 / 提交-揭示 | `pm_commit_reveal_enabled`、`pm_batch_epoch_blocks`、`pm_reveal_window_blocks`、`pm_commit_no_reveal_penalty_percent`（bp）、`pm_min_batch_bet` |
 | 处理 | `pm_processing_cap_per_block` |
@@ -116,7 +117,7 @@ description: Onix 协议的正式技术规范，已实现为 VIZ DLT 上的共�
 
 | Status | 名称 | 描述 |
 |--------|------|-------------|
-| -1 | Deleted | 预言机拒绝；流动性返还创建者 |
+| -1 | Deleted | 预言机拒绝，**或**接受窗口（`pm_oracle_accept_window_sec`）到期；种子流动性返还创建者（创建费保留） |
 | 0 | Waiting | 等待预言机审阅 |
 | 1 | Active | 接受下注至 `betting_expiration` |
 | 2 | Closed | 下注结束，等待预言机裁定 |
@@ -145,6 +146,7 @@ stateDiagram-v2
   [*] --> Waiting
   Waiting --> Active: 预言机接受
   Waiting --> Deleted: 预言机拒绝
+  Waiting --> Deleted: 接受窗口到期 (pm_market_expired)
   Active --> Closed: betting_expiration
   Active --> Resolved: 提前裁定（若允许）
   Closed --> Resolved: 预言机裁定
@@ -159,7 +161,8 @@ stateDiagram-v2
 |-----------|---------------|
 | 0 → 1 | 预言机保险 ≥ `min_oracle_insurance`；预言机接受 |
 | 0 → 1（自预言机） | 创建者 = 预言机；保险检查；创建时自动批准 |
-| 0 → -1 | 预言机拒绝；流动性返还创建者 |
+| 0 → -1 | 预言机拒绝；种子流动性返还创建者 |
+| 0 → -1（到期） | `now ≥ created_time + pm_oracle_accept_window_sec` 且预言机无动作；cron 作废市场、退还种子（创建费保留）、发出 `pm_market_expired` |
 | 1 → 3 | 预言机提交带结果的裁定（0、1，或 -1 表示 no-contest）；`allow_early_resolution=1` 或 `time ≥ betting_expiration` |
 | 2 → 3 | 预言机提交裁定；`time ≤ result_expiration` |
 | 3 → paid | 宽限期内无争议；定时任务处理赔付 |
@@ -172,16 +175,18 @@ stateDiagram-v2
 4. 初始化储备：`reserve_a = floor(liquidity/2)`，`reserve_b = liquidity − reserve_a`
 5. 计算 `k = reserve_a × reserve_b`
 6. 若自预言机：经保险检查自动批准为 status=1
-7. 若外部预言机：进入 status=0
+7. 若外部预言机：进入 status=0 并设置 `accept_deadline = created_time + pm_oracle_accept_window_sec`
 
 ### 预言机接受流程
 
-当预言机接受（status 0 → 1）时：
+待定市场须由其预言机在接受窗口（`pm_oracle_accept_window_sec`，默认 1 小时）内处置。三种结局：
 
-1. 从创建者余额向预言机余额转移 `oracle_fixed_fee`（自预言机则跳过）
-2. 递增预言机 `markets_accepted` 计数
-3. 更新预言机 `last_active_time`
-4. 触发懒惰池自动分配（若池有自由余额）
+- **接受**（status 0 → 1）：(1) 从创建者向预言机转移 `oracle_fixed_fee`（自预言机则跳过）；
+  (2) 递增 `markets_accepted`；(3) 更新 `last_active_time`；(4) 触发懒惰池自动分配（若池有自由余额
+  **且**市场 `liquidity_fee_percent ≥ pm_lazy_min_liquidity_fee_percent`）。
+- **拒绝**（status 0 → -1）：种子流动性返还创建者；无 vop。
+- **到期**（status 0 → -1）：若到 `accept_deadline` 仍无动作，逐块 cron 作废市场、退还种子流动性
+  （**不**含创建费）、发出 `pm_market_expired`。
 
 ### 审计轨迹
 
@@ -824,6 +829,7 @@ Graphene 模型）。客户端加解密。
 | `pm_lazy_recall_step_percent` | 闲置市场的渐进式召回步长（bp） |
 | `pm_lazy_lock_sec` | 存款锁定期（秒） |
 | `pm_lazy_emergency_penalty_percent` | 紧急提取对锁定利润的罚则（bp） |
+| `pm_lazy_min_liquidity_fee_percent` | 池进行分配所需的市场最低 `liquidity_fee_percent`（bp）；低于它市场得不到池流动性（奖励下限） |
 | `pm_min_liquidity` | 每个市场的最低分配（亦为市场种子下限） |
 
 ### 存款
@@ -842,6 +848,8 @@ alloc_amount = free_balance × allocation_percent / 100
 × (1 − active_market_penalty_pct / 100) ^ oracle_active_market_count
 × (1 − fault_penalty_pct / 100) ^ oracle_active_fault_stamps
 ```
+
+奖励下限闸门（最先检查）：若市场 `liquidity_fee_percent < pm_lazy_min_liquidity_fee_percent`，池**不**分配任何资金——它只补贴 LP 费用付得起的市场。此时创建者自己的种子是唯一流动性。
 
 检查：`alloc_amount ≥ min_market_allocation`，`allocated + alloc_amount ≤ total × max_total_allocation / 100`。
 

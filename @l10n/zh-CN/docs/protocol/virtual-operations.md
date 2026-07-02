@@ -373,6 +373,7 @@
 | 96 | `pm_market_accepted_operation` | 求值器 —— 市场上线：预言机接受、自预言机或自动接受；冻结条款 + `self_oracle` 标志 |
 | 97 | `pm_payout_operation` | 结算 —— 每个有效下注：`amount`（本金）、`side`/`outcome_index`、`payout`（**输则为 0**）；与按市场的 `pm_auto_payout` 并列 |
 | 100 | `pm_ban_expired_operation` | 临时预言机/创建者封禁在 `banned_until` 失效：cron 将其清除（`account`、`oracle`、`creator`）。提前手动解除改用已签名的 `pm_unban` |
+| 101 | `pm_market_expired_operation` | 待定市场的 `accept_deadline` 到期：预言机未在 `pm_oracle_accept_window_sec` 内接受/拒绝——市场作废（`status -1`），种子流动性退还（`refunded_liquidity`），创建费**不**退还（`oracle`、`creator`、`market_id`、`refunded_liquidity`） |
 
 所有 PM 资金流动严格零和（无增发）；结算守恒 `Σ out == Σ 下注 + LP 本金 + forfeit_pool`。
 

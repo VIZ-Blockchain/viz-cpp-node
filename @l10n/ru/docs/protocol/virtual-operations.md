@@ -373,6 +373,7 @@
 | 96 | `pm_market_accepted_operation` | Эвалуатор — рынок запущен: оракул принял, self-oracle или авто-приём; замороженные условия + флаг `self_oracle` |
 | 97 | `pm_payout_operation` | Расчёт — на каждую активную ставку: `amount` (стейк), `side`/`outcome_index`, `payout` (**0 при проигрыше**); рядом с порыночной `pm_auto_payout` |
 | 100 | `pm_ban_expired_operation` | Временный бан оракула/создателя истёк на `banned_until`: крон очистил его (`account`, `oracle`, `creator`). Досрочные ручные снятия используют подписанную `pm_unban` |
+| 101 | `pm_market_expired_operation` | Дедлайн `accept_deadline` пендинг-рынка прошёл: оракул не принял/отклонил в течение `pm_oracle_accept_window_sec` — рынок аннулирован (`status -1`), сид-ликвидность возвращена (`refunded_liquidity`), комиссия за создание **не** возвращена (`oracle`, `creator`, `market_id`, `refunded_liquidity`) |
 
 Всё движение средств PM строго zero-sum (без эмиссии); расчёт сохраняет `Σ out == Σ ставок + принципал LP + forfeit_pool`.
 

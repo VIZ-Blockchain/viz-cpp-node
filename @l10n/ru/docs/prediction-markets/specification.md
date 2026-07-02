@@ -83,9 +83,10 @@ description: Формальная техническая спецификаци�
 |---|---|
 | Регистрация и полы | `pm_oracle_registration_fee`, `pm_min_oracle_insurance`, `pm_market_creation_fee`, `pm_min_liquidity`, `pm_max_outcomes`, `pm_max_market_duration` |
 | Комиссии и штрафы (bp) | `pm_max_oracle_fee_percent`, `pm_oracle_penalty_percent`, `pm_no_contest_penalty_percent`, `pm_default_time_penalty_percent`, `pm_max_time_penalty` |
+| Окно акцепта | `pm_oracle_accept_window_sec` (по умолчанию 3600 = 1 ч; пендинг-рынки, не принятые/отклонённые в этот срок, аннулируются кроном — сид возвращён, комиссия за создание удержана) |
 | Риск / покрытие (% от объёма) | `pm_listing_min_coverage_percent` (250 = 2.5×; рынки с покрытием ниже этого скрыты из каталога по умолчанию, показываются через `show_risky`), `pm_betting_min_coverage_percent` (150 = 1.5×; рекомендательный клиентский порог подтверждения риска, `≤` листингового, on-chain не навязывается) |
 | Споры | `pm_dispute_fee`, `pm_dispute_grace_sec`, `pm_oracle_dispute_response_sec`, `pm_dispute_vote_period_sec`, `pm_dispute_auto_close_sec`, `pm_dispute_approve_min_percent` (bp), `pm_dispute_reward_multiplier` (bp) |
-| Lazy-пул | `pm_lazy_pool_enabled`, `pm_lazy_alloc_percent`, `pm_lazy_max_total_alloc_percent`, `pm_lazy_recall_step_percent`, `pm_lazy_lock_sec`, `pm_lazy_emergency_penalty_percent` |
+| Lazy-пул | `pm_lazy_pool_enabled`, `pm_lazy_alloc_percent`, `pm_lazy_max_total_alloc_percent`, `pm_lazy_recall_step_percent`, `pm_lazy_lock_sec`, `pm_lazy_emergency_penalty_percent`, `pm_lazy_min_liquidity_fee_percent` (по умолчанию 200 = 2%; пул пропускает рынки, чей `liquidity_fee_percent` ниже этого порога вознаграждения) |
 | Плечо | `pm_leverage_enabled`, `pm_leverage_fund_percent`, `pm_leverage_max_per_position_bp`, `pm_leverage_max_position_ratio_percent`, `pm_leverage_min_market_liquidity`, `pm_leverage_safety_margin_percent`, `pm_leverage_max_slippage_percent`, `pm_leverage_m_factor_percent`, `pm_leverage_pool_profit_percent`, `pm_leverage_expiration_buffer_sec`, `pm_conversion_profit_cost_percent` |
 | Batch / commit-reveal | `pm_commit_reveal_enabled`, `pm_batch_epoch_blocks`, `pm_reveal_window_blocks`, `pm_commit_no_reveal_penalty_percent` (bp), `pm_min_batch_bet` |
 | Обработка | `pm_processing_cap_per_block` |
@@ -121,7 +122,7 @@ description: Формальная техническая спецификаци�
 
 | Status | Имя | Описание |
 |--------|------|-------------|
-| -1 | Deleted | Оракул отклонил; ликвидность возвращена создателю |
+| -1 | Deleted | Оракул отклонил **или** истекло окно акцепта (`pm_oracle_accept_window_sec`); сид-ликвидность возвращена создателю (комиссия за создание удержана) |
 | 0 | Waiting | Ожидает проверки оракула |
 | 1 | Active | Принимает ставки до `betting_expiration` |
 | 2 | Closed | Приём ставок закончен, ожидает резолюции оракула |
@@ -150,6 +151,7 @@ stateDiagram-v2
   [*] --> Waiting
   Waiting --> Active: оракул принял
   Waiting --> Deleted: оракул отклонил
+  Waiting --> Deleted: окно акцепта истекло (pm_market_expired)
   Active --> Closed: betting_expiration
   Active --> Resolved: раннее разрешение (если разрешено)
   Closed --> Resolved: оракул разрешает
@@ -164,7 +166,8 @@ stateDiagram-v2
 |-----------|---------------|
 | 0 → 1 | Страховка оракула ≥ `min_oracle_insurance`; оракул принимает |
 | 0 → 1 (self-oracle) | Создатель = оракул; проверка страховки; авто-одобрение при создании |
-| 0 → -1 | Оракул отклоняет; ликвидность возвращена создателю |
+| 0 → -1 | Оракул отклоняет; сид-ликвидность возвращена создателю |
+| 0 → -1 (экспирация) | `now ≥ created_time + pm_oracle_accept_window_sec` без действия оракула; крон аннулирует рынок, возвращает сид (комиссия за создание удержана), эмитит `pm_market_expired` |
 | 1 → 3 | Оракул подаёт резолюцию с исходом (0, 1 или -1 для no-contest); `allow_early_resolution=1` или `time ≥ betting_expiration` |
 | 2 → 3 | Оракул подаёт резолюцию; `time ≤ result_expiration` |
 | 3 → paid | Grace-период прошёл без спора; крон обрабатывает выплаты |
@@ -177,16 +180,20 @@ stateDiagram-v2
 4. Инициализировать резервы: `reserve_a = floor(liquidity/2)`, `reserve_b = liquidity − reserve_a`
 5. Вычислить `k = reserve_a × reserve_b`
 6. Если self-oracle: авто-одобрение до status=1 с проверкой страховки
-7. Если внешний оракул: войти в status=0
+7. Если внешний оракул: войти в status=0 и установить `accept_deadline = created_time + pm_oracle_accept_window_sec`
 
 ### Флоу акцепта оракула
 
-Когда оракул принимает (status 0 → 1):
+Пендинг-рынок должен быть разрешён своим оракулом в течение окна акцепта
+(`pm_oracle_accept_window_sec`, по умолчанию 1 ч). Три исхода:
 
-1. Перевести `oracle_fixed_fee` с баланса создателя на баланс оракула (пропускается для self-oracle)
-2. Инкремент счётчика `markets_accepted` оракула
-3. Обновить `last_active_time` оракула
-4. Запуск авто-аллокации Lazy Pool (если у пула есть свободный баланс)
+- **Принятие** (status 0 → 1): (1) перевести `oracle_fixed_fee` с баланса создателя на баланс оракула
+  (пропускается для self-oracle); (2) инкремент `markets_accepted`; (3) обновить `last_active_time`;
+  (4) запуск авто-аллокации Lazy Pool (если у пула есть свободный баланс **и** `liquidity_fee_percent
+  рынка ≥ pm_lazy_min_liquidity_fee_percent`).
+- **Отклонение** (status 0 → -1): сид-ликвидность возвращена создателю; без vop.
+- **Экспирация** (status 0 → -1): если ничего не произошло к `accept_deadline`, крон каждого блока
+  аннулирует рынок, возвращает сид-ликвидность (**не** комиссию за создание) и эмитит `pm_market_expired`.
 
 ### Audit Trail
 
@@ -845,6 +852,7 @@ memo-ключей аккаунтов VIZ (стандартная модель Gr
 | `pm_lazy_recall_step_percent` | шаг graduated-recall на простаивающих рынках (bp) |
 | `pm_lazy_lock_sec` | lock-период депозита (секунды) |
 | `pm_lazy_emergency_penalty_percent` | штраф на заблокированную прибыль при экстренном выводе (bp) |
+| `pm_lazy_min_liquidity_fee_percent` | минимальный `liquidity_fee_percent` рынка (bp) для аллокации пула; ниже него рынок не получает ликвидности пула (порог вознаграждения) |
 | `pm_min_liquidity` | мин. аллокация на рынок (он же пол сида рынка) |
 
 ### Депозит
@@ -863,6 +871,10 @@ alloc_amount = free_balance × allocation_percent / 100
 × (1 − active_market_penalty_pct / 100) ^ oracle_active_market_count
 × (1 − fault_penalty_pct / 100) ^ oracle_active_fault_stamps
 ```
+
+Гейт порога вознаграждения (проверяется первым): если у рынка `liquidity_fee_percent <
+pm_lazy_min_liquidity_fee_percent`, пул не аллоцирует **ничего** — он субсидирует только рынки, чья
+LP-комиссия платит ему достаточно. Единственной ликвидностью остаётся собственный сид создателя.
 
 Проверки: `alloc_amount ≥ min_market_allocation`, `allocated + alloc_amount ≤ total × max_total_allocation / 100`.
 

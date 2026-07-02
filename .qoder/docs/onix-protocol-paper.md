@@ -136,7 +136,7 @@ The lifecycle of $\mathcal{M}$ follows a finite state machine:
 
 $$q_0 \xrightarrow{\text{oracle accepts}} q_1 \xrightarrow{t \geq t_{\text{bet}}} q_2 \xrightarrow{\text{oracle resolves}} q_3 \xrightarrow{\text{grace period}} \text{paid}$$
 
-with a rejection path $q_0 \xrightarrow{\text{oracle rejects}} q_{-1}$ (deleted, liquidity returned).
+Two paths lead out of $q_0$ back to the terminal deleted state $q_{-1}$, both returning the seed liquidity to the creator (the anti-spam creation fee, already paid to the DAO fund at creation, is *not* refunded): an explicit rejection $q_0 \xrightarrow{\text{oracle rejects}} q_{-1}$, and a *timeout* $q_0 \xrightarrow{t \geq t_0 + \tau_{\text{accept}}} q_{-1}$ triggered by the per-block cron when the oracle neither accepts nor rejects within the governance-defined acceptance window $\tau_{\text{accept}}$ (default one hour). The timeout bounds how long an unresponsive oracle can hold a creator's seed capital hostage.
 
 ---
 
@@ -302,6 +302,8 @@ $$a_{\text{alloc}} = B_{\text{free}} \cdot \alpha / 100$$
 
 subject to $a_{\text{alloc}} \geq a_{\min}$ and $B_{\text{alloc}} + a_{\text{alloc}} \leq B_{\text{total}} \cdot \alpha_{\max} / 100$, where $\alpha$ is the per-market allocation percentage and $\alpha_{\max}$ is the maximum total allocation cap.
 
+Allocation is further gated by a **reward floor**: the pool provides capital to a market only if its LP fee $f_{\text{liq}}$ meets a governance minimum $f_{\text{liq}}^{\min}$ (default $2\%$). A market that offers LPs less than this earns nothing worth the pool's opportunity cost, so the pool allocates zero and the market's only depth is the creator's own seed. This makes the LP fee an explicit price the market pays for automated pool liquidity, and prevents the pool from subsidizing markets configured to route all fee revenue away from liquidity providers.
+
 The allocation formula includes oracle quality adjustments:
 
 $$a_{\text{alloc}} = B_{\text{free}} \cdot \frac{\alpha}{100} \cdot (1 - \beta)^{n_o} \cdot (1 - \gamma)^{f_o}$$
@@ -395,7 +397,7 @@ Each oracle $o$ must maintain an insurance bond $I_o \geq I_{\min}$. The bond cr
 
 These two fees enter the system at different points and must not be conflated. The **percentage fee** $f_{\text{oracle}}$ is deducted from $S_{\text{lose}}$ at resolution and appears in the money flow of Theorem 1 (§5.2). The **fixed fee** $f_{\text{fixed}}$ is a direct creator→oracle transfer executed at market *acceptance*, before any betting; it is therefore *not* part of the betting/LP money flow — it neither adds to the seed liquidity $L$ nor draws from $S_{\text{lose}}$, and so does not appear in Theorem 1. (It is omitted from the fee vector $\boldsymbol{\theta}$ of §3.3 for the same reason: $\boldsymbol{\theta}$ collects only the resolution-time, losers-funded percentage fees.) For self-oracle markets no transfer occurs and $f_{\text{fixed}} = 0$.
 
-The oracle acceptance flow implements an offer-quote mechanism: the creator publishes fee ceilings, and the oracle freezes its actual terms (bounded by both the creator ceiling and a governance cap) at acceptance.
+The oracle acceptance flow implements an offer-quote mechanism: the creator publishes fee ceilings, and the oracle freezes its actual terms (bounded by both the creator ceiling and a governance cap) at acceptance. Acceptance is time-bounded by the window $\tau_{\text{accept}}$ (§3.4): a market left pending beyond it is auto-expired by the per-block cron, which refunds the creator's seed liquidity while retaining the anti-spam creation fee — so an unresponsive oracle cannot indefinitely freeze the seed.
 
 ### 7.2 Two-Mode Dispute System
 

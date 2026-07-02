@@ -12,6 +12,39 @@
 
 ---
 
+## 0. Delta — 2026-07 (oracle-accept window + lazy-pool min-fee)
+
+> **Read this first if you already integrated an earlier version.** Two consensus additions.
+> Everything else in this document is unchanged. No signed operation was added or changed — the
+> client only needs to (a) read two new `get_pm_chain_properties` fields and (b) parse one new
+> virtual operation.
+
+**1. Oracle acceptance window (`pm_oracle_accept_window_sec`, default `3600` = 1h).**
+A pending market must be accepted or rejected by its named oracle within this window. On expiry the
+per-block cron **refunds the creator's seed liquidity** (but **NOT** the non-refundable creation fee)
+and voids the market.
+
+- New chain property `pm_oracle_accept_window_sec` (uint32, seconds) — read via `get_pm_chain_properties` (§10).
+- New read-only field `pm_market_object.accept_deadline` (time) — set to `created_time +
+  pm_oracle_accept_window_sec` on pending markets, `0` (epoch) on markets active at creation (§7.2).
+- New virtual operation **`pm_market_expired`** (op-id **101**): `oracle`, `creator`, `market_id`
+  (int64), `refunded_liquidity` (asset). Parse it in history like the other PM vops (§4.13).
+- **Client UX:** show the accept deadline as a countdown on pending markets; on `pm_market_expired`
+  in history, mark the market "expired — seed refunded, creation fee forfeited." A rejected market
+  (signed `pm_oracle_accept_market accept=false`) still emits **no** vop — detect it via `status = -1`.
+
+**2. Lazy-pool minimum LP fee (`pm_lazy_min_liquidity_fee_percent`, default `200` bp = 2%).**
+The lazy pool now refuses to co-provide liquidity to a market whose `liquidity_fee_percent` is below
+this floor.
+
+- New chain property `pm_lazy_min_liquidity_fee_percent` (uint16, bp) — read via `get_pm_chain_properties` (§10).
+- No new op, object, or vop. Pure allocation-gate behavior change.
+- **Client UX:** when the creator sets `liquidity_fee_percent` below this value in the create-market
+  form, warn that the lazy pool won't add depth to the market (the creator's own seed is the only
+  liquidity). Read the live threshold from `get_pm_chain_properties`; don't hard-code 2%.
+
+---
+
 ## 1. Conventions
 
 ### 1.1 Data types
@@ -440,6 +473,7 @@ They have no `extensions` field.
 | 96 | `pm_market_accepted` | Oracle accepted (or self-oracle auto-accepted); terms frozen |
 | 97 | `pm_payout` | Per-bettor parimutuel settlement (one per active bet inside settle) |
 | 100 | `pm_ban_expired` | A temporary oracle/creator ban lapsed at `banned_until`; the cron cleared it |
+| 101 | `pm_market_expired` | Oracle didn't accept/reject within `pm_oracle_accept_window_sec`; market voided, seed refunded |
 
 ### 4.1 `pm_batch_settle`
 `market_id` (int64), `epoch` (uint32), `settled_bets` (uint32).
@@ -486,6 +520,14 @@ oracle and/or creator ban reaches `banned_until` — the cron clears the ban and
 history/indexers observe the lift. An *early manual* lift is the signed `pm_unban` op instead (§3.23),
 so this vop fires only for automatic time-expiry. Permanent bans (`banned_until = maximum()`) never
 expire and never emit it.
+
+### 4.13 `pm_market_expired`
+`oracle`, `creator`, `market_id` (int64), `refunded_liquidity` (asset). Emitted by the per-block cron
+when a **pending** market (`status 0`) reaches `accept_deadline` (= `created_time +
+pm_oracle_accept_window_sec`) without the named oracle having accepted or rejected it. The cron voids
+the market (`status → -1`) and refunds the creator's **seed liquidity** (`refunded_liquidity`); the
+**creation fee is NOT refunded** (it went to the DAO fund at creation). Distinct from an explicit
+oracle reject (the signed `pm_oracle_accept_market` with `accept=false`, which emits no vop).
 
 ---
 
@@ -687,6 +729,7 @@ says `asset`.
 | `status` | int8 | `-1` deleted, `0` waiting, `1` active, `2` closed, `3` resolved |
 | `payout_status` | uint8 | `0` none, `1` pending, `2` paid, `3` disputed |
 | `created_time` | time | Creation time |
+| `accept_deadline` | time | Pending markets only: `created_time + pm_oracle_accept_window_sec`. If the oracle hasn't accepted/rejected by then the cron voids the market (refund seed) and emits `pm_market_expired`. `0` (epoch) for markets active at creation |
 | `betting_expiration` | time | Betting closes |
 | `result_expiration` | time | Oracle deadline |
 | `resolved_outcome` | int16 | Winning outcome; `-1` if unresolved |
@@ -1056,6 +1099,7 @@ VIZ; `*_percent` are **bp (10000 = 100%)** unless the row says otherwise.
 | `pm_max_outcomes` | 10 | count | Max outcomes per multi market (`≤ 16`) |
 | `pm_max_market_duration` | 31536000 | sec | Max market lifetime (≤ 1 year) |
 | `pm_max_oracle_fee_percent` | 500 | bp | Cap on oracle fee % (5%) |
+| `pm_oracle_accept_window_sec` | 3600 | sec | Time for the named oracle to accept/reject a pending market (1h). On expiry the cron refunds the seed liquidity (NOT the creation fee) and voids the market → `pm_market_expired` |
 | `pm_listing_min_coverage_percent` | 250 | **coverage %** | Hide markets whose oracle insurance covers < this % of bets (250 = 2.5×); enforced by `list_markets`/`list_markets_by_category` (revealed via `show_risky`) |
 | `pm_betting_min_coverage_percent` | 150 | **coverage %** | Advisory: below this coverage a client should require an explicit risk confirmation. Not enforced on-chain; must be `≤ pm_listing_min_coverage_percent` |
 | `pm_default_time_penalty_percent` | 50 | bp | Default time penalty |
@@ -1081,6 +1125,7 @@ VIZ; `*_percent` are **bp (10000 = 100%)** unless the row says otherwise.
 | `pm_lazy_lock_sec` | 604800 | sec | Deposit lock (7d) |
 | `pm_lazy_recall_step_percent` | 1000 | bp | Recalled per idle step |
 | `pm_lazy_emergency_penalty_percent` | 5000 | bp | Emergency-withdraw penalty on profit |
+| `pm_lazy_min_liquidity_fee_percent` | 200 | bp | Min market LP fee for the lazy pool to subsidize it (2%); markets below this get no pool liquidity |
 | `pm_leverage_enabled` | false | bool | **Leverage kill-switch (off by default)** |
 | `pm_leverage_fund_percent` | 10 | **percent** | % of free balance usable for loans (F) |
 | `pm_leverage_max_per_position_bp` | 20 | bp | Fund-available per position (P=0.2%) |

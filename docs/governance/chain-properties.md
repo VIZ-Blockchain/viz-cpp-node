@@ -133,13 +133,13 @@ All median-voted; see [Prediction Market Operations](../protocol/operations/pred
 
 All PM percentages are **bp (10000 = 100.00%)**, like the other `*_percent` properties — no permille (‰) anywhere.
 
-- **Oracle:** `pm_min_oracle_insurance`, `pm_max_oracle_fee_percent` (the *only* governed fee cap — on the oracle %), `pm_oracle_registration_fee`, `pm_oracle_penalty_percent`, `pm_oracle_dispute_response_sec`.
+- **Oracle:** `pm_min_oracle_insurance`, `pm_max_oracle_fee_percent` (the *only* governed fee cap — on the oracle %), `pm_oracle_registration_fee`, `pm_oracle_penalty_percent`, `pm_oracle_dispute_response_sec`, `pm_oracle_accept_window_sec` (default 3600 = 1h — the named oracle must accept or reject a pending market within this window; on expiry the cron refunds the creator's seed liquidity, but **not** the creation fee, and voids the market → `pm_market_expired`).
 - **Risk / coverage** *(percent of a market's betting volume, 100 = 1.0×):* `pm_listing_min_coverage_percent` (250 = 2.5×) — markets whose oracle insurance covers less than this share of their volume are hidden from the default `list_markets` catalog (revealed via `show_risky`); `pm_betting_min_coverage_percent` (150 = 1.5×) — advisory threshold, published for clients to require an explicit risk confirmation before betting (not enforced on-chain; must be `≤ pm_listing_min_coverage_percent`).
 - **Market:** `pm_min_liquidity`, `pm_market_creation_fee`, `pm_max_outcomes`, `pm_max_market_duration`. *(There is no aggregate fee cap; creator/liquidity fees are uncapped and self-limiting, with a static `sum ≤ 100%` solvency bound.)*
 - **Batch / commit-reveal:** `pm_batch_epoch_blocks`, `pm_reveal_window_blocks`, `pm_min_batch_bet`, `pm_commit_no_reveal_penalty_percent`, `pm_commit_reveal_enabled`.
 - **Disputes:** `pm_dispute_fee`, `pm_dispute_grace_sec`, `pm_dispute_vote_period_sec`, `pm_dispute_auto_close_sec`, `pm_dispute_approve_min_percent`, `pm_no_contest_penalty_percent`, `pm_dispute_reward_multiplier` (bp multiplier, 10000 = 1×).
 - **Time penalty:** `pm_default_time_penalty_percent`, `pm_max_time_penalty`.
-- **Lazy pool:** `pm_lazy_pool_enabled`, `pm_lazy_alloc_percent`, `pm_lazy_max_total_alloc_percent`, `pm_lazy_recall_step_percent`, `pm_lazy_lock_sec`, `pm_lazy_emergency_penalty_percent`.
+- **Lazy pool:** `pm_lazy_pool_enabled`, `pm_lazy_alloc_percent`, `pm_lazy_max_total_alloc_percent`, `pm_lazy_recall_step_percent`, `pm_lazy_lock_sec`, `pm_lazy_emergency_penalty_percent`, `pm_lazy_min_liquidity_fee_percent` (default 200 = 2% — the pool refuses to co-provide liquidity to a market whose `liquidity_fee_percent` is below this reward floor).
 - **Leverage (opt-in):** `pm_leverage_enabled`, `pm_leverage_fund_percent`, `pm_leverage_max_per_position_bp`, `pm_leverage_max_position_ratio_percent`, `pm_leverage_min_market_liquidity`, `pm_leverage_safety_margin_percent`, `pm_leverage_max_slippage_percent`, `pm_leverage_m_factor_percent`, `pm_leverage_pool_profit_percent`, `pm_leverage_expiration_buffer_sec`, `pm_conversion_profit_cost_percent`.
 - **Fairness:** `pm_processing_cap_per_block`.
 

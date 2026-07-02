@@ -106,6 +106,8 @@ flowchart TD
 
 预言机接受（`status → active`）或拒绝（流动性退还创建者；`status → deleted`）一个待定市场。接受时预言机通过 `oracle_fee_percent` + `oracle_fixed_fee` **报出其实际条款**——各须 `≤` 该市场创建者的报价，且 `oracle_fee_percent ≤ pm_max_oracle_fee_percent`。报价被**冻结入市场**并发出 `pm_market_accepted` 虚拟操作（使历史解析器看到上线 + 条款）。此后结算只读这些冻结字段——绝不读实时中位值。
 
+预言机须在创建后的 `pm_oracle_accept_window_sec`（默认 1 小时）内行动。若到市场的 `accept_deadline` 仍未接受或拒绝，逐块 cron 将作废市场（`status → deleted`），向创建者退还种子流动性（**不**含不可退还的创建费），并发出 `pm_market_expired`（见虚拟操作）。
+
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `market_id` | `int64` | 待定市场 |
@@ -253,6 +255,7 @@ flowchart TD
 | 96 | `pm_market_accepted_operation` | 求值器——市场上线：预言机接受、自预言机或自动接受；冻结条款 + `self_oracle` 标志 |
 | 97 | `pm_payout_operation` | 结算——每个有效下注：`amount`（本金）、`side`/`outcome_index`、`payout`（**输则为 0**） |
 | 100 | `pm_ban_expired_operation` | 临时的预言机/创建者封禁在 `banned_until` 时失效：cron 将其清除（字段 `account`、`oracle`、`creator`）。提前手动解除改用已签名的 `pm_unban` |
+| 101 | `pm_market_expired_operation` | 待定市场的 `accept_deadline` 到期：预言机未在 `pm_oracle_accept_window_sec` 内接受/拒绝——市场作废，种子退还（创建费保留）。字段 `oracle`、`creator`、`market_id`、`refunded_liquidity` |
 
 > ID 91–93 是*常规*操作 `pm_leverage_open`/`pm_leverage_close`/`pm_leverage_convert`（见规范）；
 > ID 98–99 是*常规*操作 `pm_dispute_oracle_respond`/`pm_unban`（见上）。每位下注者的结果是

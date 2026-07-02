@@ -259,11 +259,17 @@ read straight from `pm_create_market_evaluator` / `pm_oracle_accept_market_evalu
    - `liquidity` (the seed, ≥ `pm_min_liquidity`) — moved into the market as the creator's first LP
      position.
 2. **The market starts pending** (`status = 0`) waiting for the named oracle, unless it is a
-   self-oracle or matches the oracle's auto-accept policy (then it activates immediately).
+   self-oracle or matches the oracle's auto-accept policy (then it activates immediately). A pending
+   market carries an `accept_deadline` = `created_time + pm_oracle_accept_window_sec` (default 1h).
 3. **If the oracle rejects** (`pm_oracle_accept_market` with `accept=false`): the creator's
    **liquidity seed is refunded in full** (`return_liquidity`) and the market is marked deleted
    (`status = -1`). The **`pm_market_creation_fee` is NOT refunded** — it already went to the DAO
    fund at creation and stays there.
+4. **If the oracle does nothing before `accept_deadline`**: the per-block cron voids the market the
+   same way — seed refunded in full, market `status = -1`, creation fee kept — and emits the
+   `pm_market_expired` virtual op (op-id 101: `oracle`, `creator`, `market_id`, `refunded_liquidity`).
+   A reject emits no vop, so distinguish the two by watching for `pm_market_expired` vs. a bare
+   `status = -1`.
 
 So: *"any user can try to create a market by paying a fee and requesting an oracle; if the oracle
 declines, the seed liquidity comes back but the creation fee is forfeited to the DAO fund."* The

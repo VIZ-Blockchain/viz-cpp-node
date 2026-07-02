@@ -106,6 +106,8 @@ Creates a market; the creator seeds the first liquidity and becomes the first LP
 
 Oracle accepts (`status → active`) or rejects (liquidity refunded to creator; `status → deleted`) a pending market. On accept the oracle **quotes its actual terms** via `oracle_fee_percent` + `oracle_fixed_fee` — each must be `≤` the creator's offer on the market and `oracle_fee_percent ≤ pm_max_oracle_fee_percent`. The quote is **frozen onto the market** and a `pm_market_accepted` virtual op is emitted (so history parsers see the launch + terms). Settlement later reads only these frozen fields — never the live median.
 
+The oracle must act within `pm_oracle_accept_window_sec` (default 1h) of creation. If it does neither by the market's `accept_deadline`, the per-block cron voids the market (`status → deleted`), refunds the creator's seed liquidity (**not** the non-refundable creation fee), and emits `pm_market_expired` (see Virtual operations).
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `market_id` | `int64` | Pending market |
@@ -253,6 +255,7 @@ Emitted by the PM consensus logic — either by a signed operation's evaluator (
 | 96 | `pm_market_accepted_operation` | Evaluator — market went live: oracle accepted, self-oracle, or auto-accept; frozen oracle terms + `self_oracle` |
 | 97 | `pm_payout_operation` | Settlement — per active bet: `amount` (stake), `side`/`outcome_index`, `payout` (**0 on a loss**) |
 | 100 | `pm_ban_expired_operation` | A temporary oracle/creator ban lapsed at `banned_until`: the cron cleared it (fields `account`, `oracle`, `creator`). Early manual lifts use the signed `pm_unban` instead |
+| 101 | `pm_market_expired_operation` | A pending market's `accept_deadline` passed: the oracle never accepted/rejected within `pm_oracle_accept_window_sec` — market voided, seed refunded (creation fee kept). Fields `oracle`, `creator`, `market_id`, `refunded_liquidity` |
 
 > IDs 91–93 are the *regular* ops `pm_leverage_open`/`pm_leverage_close`/`pm_leverage_convert` (see the
 > spec); IDs 98–99 are the *regular* ops `pm_dispute_oracle_respond`/`pm_unban` (above). Per-bettor

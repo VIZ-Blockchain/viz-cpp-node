@@ -78,9 +78,10 @@ two coverage knobs, which are percent-of-volume (100 = 1.0×). Exact defaults an
 |---|---|
 | Registration & floors | `pm_oracle_registration_fee`, `pm_min_oracle_insurance`, `pm_market_creation_fee`, `pm_min_liquidity`, `pm_max_outcomes`, `pm_max_market_duration` |
 | Fees & penalties (bp) | `pm_max_oracle_fee_percent`, `pm_oracle_penalty_percent`, `pm_no_contest_penalty_percent`, `pm_default_time_penalty_percent`, `pm_max_time_penalty` |
+| Acceptance window | `pm_oracle_accept_window_sec` (default 3600 = 1h; pending markets not accepted/rejected within this are voided by the cron — seed refunded, creation fee kept) |
 | Risk / coverage (% of volume) | `pm_listing_min_coverage_percent` (250 = 2.5×; markets covered below this are hidden from the default catalog, shown via `show_risky`), `pm_betting_min_coverage_percent` (150 = 1.5×; advisory client risk-confirm threshold, `≤` the listing one, not enforced on-chain) |
 | Disputes | `pm_dispute_fee`, `pm_dispute_grace_sec`, `pm_oracle_dispute_response_sec`, `pm_dispute_vote_period_sec`, `pm_dispute_auto_close_sec`, `pm_dispute_approve_min_percent` (bp), `pm_dispute_reward_multiplier` (bp) |
-| Lazy pool | `pm_lazy_pool_enabled`, `pm_lazy_alloc_percent`, `pm_lazy_max_total_alloc_percent`, `pm_lazy_recall_step_percent`, `pm_lazy_lock_sec`, `pm_lazy_emergency_penalty_percent` |
+| Lazy pool | `pm_lazy_pool_enabled`, `pm_lazy_alloc_percent`, `pm_lazy_max_total_alloc_percent`, `pm_lazy_recall_step_percent`, `pm_lazy_lock_sec`, `pm_lazy_emergency_penalty_percent`, `pm_lazy_min_liquidity_fee_percent` (default 200 = 2%; pool skips markets whose `liquidity_fee_percent` is below this reward floor) |
 | Leverage | `pm_leverage_enabled`, `pm_leverage_fund_percent`, `pm_leverage_max_per_position_bp`, `pm_leverage_max_position_ratio_percent`, `pm_leverage_min_market_liquidity`, `pm_leverage_safety_margin_percent`, `pm_leverage_max_slippage_percent`, `pm_leverage_m_factor_percent`, `pm_leverage_pool_profit_percent`, `pm_leverage_expiration_buffer_sec`, `pm_conversion_profit_cost_percent` |
 | Batch / commit-reveal | `pm_commit_reveal_enabled`, `pm_batch_epoch_blocks`, `pm_reveal_window_blocks`, `pm_commit_no_reveal_penalty_percent` (bp), `pm_min_batch_bet` |
 | Processing | `pm_processing_cap_per_block` |
@@ -116,7 +117,7 @@ acceptance (offer→quote). Full field reference: [Prediction Market operations]
 
 | Status | Name | Description |
 |--------|------|-------------|
-| -1 | Deleted | Oracle rejected; liquidity returned to creator |
+| -1 | Deleted | Oracle rejected, **or** the acceptance window (`pm_oracle_accept_window_sec`) expired; seed liquidity returned to creator (creation fee kept) |
 | 0 | Waiting | Awaiting oracle review |
 | 1 | Active | Accepting bets until `betting_expiration` |
 | 2 | Closed | Betting ended, awaiting oracle resolution |
@@ -145,6 +146,7 @@ stateDiagram-v2
   [*] --> Waiting
   Waiting --> Active: oracle accepts
   Waiting --> Deleted: oracle rejects
+  Waiting --> Deleted: accept window expires (pm_market_expired)
   Active --> Closed: betting_expiration
   Active --> Resolved: early resolution (if allowed)
   Closed --> Resolved: oracle resolves
@@ -159,7 +161,8 @@ stateDiagram-v2
 |-----------|---------------|
 | 0 → 1 | Oracle has insurance ≥ `min_oracle_insurance`; oracle accepts |
 | 0 → 1 (self-oracle) | Creator = oracle; insurance check; auto-approves at creation |
-| 0 → -1 | Oracle rejects; liquidity returned to creator |
+| 0 → -1 | Oracle rejects; seed liquidity returned to creator |
+| 0 → -1 (expiry) | `now ≥ created_time + pm_oracle_accept_window_sec` with no oracle action; cron voids the market, refunds the seed (creation fee kept), emits `pm_market_expired` |
 | 1 → 3 | Oracle submits resolution with outcome (0, 1, or -1 for no-contest); `allow_early_resolution=1` or `time ≥ betting_expiration` |
 | 2 → 3 | Oracle submits resolution; `time ≤ result_expiration` |
 | 3 → paid | Grace period passed with no dispute; cron processes payouts |
@@ -172,16 +175,20 @@ stateDiagram-v2
 4. Initialize reserves: `reserve_a = floor(liquidity/2)`, `reserve_b = liquidity − reserve_a`
 5. Compute `k = reserve_a × reserve_b`
 6. If self-oracle: auto-approve to status=1 with insurance check
-7. If external oracle: enter status=0
+7. If external oracle: enter status=0 and set `accept_deadline = created_time + pm_oracle_accept_window_sec`
 
 ### Oracle Acceptance Flow
 
-When oracle accepts (status 0 → 1):
+A pending market must be resolved by its oracle within the acceptance window
+(`pm_oracle_accept_window_sec`, default 1h). Three outcomes:
 
-1. Transfer `oracle_fixed_fee` from creator balance to oracle balance (skipped if self-oracle)
-2. Increment oracle `markets_accepted` counter
-3. Update oracle `last_active_time`
-4. Lazy Pool auto-allocation triggered (if pool has free balance)
+- **Accept** (status 0 → 1): (1) transfer `oracle_fixed_fee` from creator to oracle (skipped if
+  self-oracle); (2) increment oracle `markets_accepted`; (3) update `last_active_time`; (4) trigger
+  Lazy Pool auto-allocation (if the pool has free balance **and** the market's `liquidity_fee_percent
+  ≥ pm_lazy_min_liquidity_fee_percent`).
+- **Reject** (status 0 → -1): seed liquidity refunded to creator; no vop.
+- **Expiry** (status 0 → -1): if neither happens by `accept_deadline`, the per-block cron voids the
+  market, refunds the seed liquidity (**not** the creation fee), and emits `pm_market_expired`.
 
 ### Audit Trail
 
@@ -816,6 +823,7 @@ Encryption: ECIES shared-secret `ECDH(sender_memo_private, recipient_memo_public
 | `pm_lazy_recall_step_percent` | graduated-recall step on idle markets (bp) |
 | `pm_lazy_lock_sec` | deposit lock period (seconds) |
 | `pm_lazy_emergency_penalty_percent` | penalty on locked profit for emergency withdrawal (bp) |
+| `pm_lazy_min_liquidity_fee_percent` | minimum market `liquidity_fee_percent` (bp) for the pool to allocate; below it the market gets no pool liquidity (reward floor) |
 | `pm_min_liquidity` | minimum allocation per market (also the market seed floor) |
 
 ### Deposit
@@ -834,6 +842,10 @@ alloc_amount = free_balance × allocation_percent / 100
 × (1 − active_market_penalty_pct / 100) ^ oracle_active_market_count
 × (1 − fault_penalty_pct / 100) ^ oracle_active_fault_stamps
 ```
+
+Reward-floor gate (checked first): if the market's `liquidity_fee_percent <
+pm_lazy_min_liquidity_fee_percent`, the pool allocates **nothing** — it only subsidizes markets whose
+LP fee pays it enough. The creator's own seed remains the sole liquidity.
 
 Checks: `alloc_amount ≥ min_market_allocation`, `allocated + alloc_amount ≤ total × max_total_allocation / 100`.
 

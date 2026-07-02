@@ -133,13 +133,13 @@
 
 所有 PM 百分比均以 bp 计（10000 = 100.00%），与其他 `*_percent` 一致；不再使用千分比（‰）。
 
-- **预言机：** `pm_min_oracle_insurance`、`pm_max_oracle_fee_percent`（**唯一**的费率治理上限——针对预言机 %）、`pm_oracle_registration_fee`、`pm_oracle_penalty_percent`、`pm_oracle_dispute_response_sec`。
+- **预言机：** `pm_min_oracle_insurance`、`pm_max_oracle_fee_percent`（**唯一**的费率治理上限——针对预言机 %）、`pm_oracle_registration_fee`、`pm_oracle_penalty_percent`、`pm_oracle_dispute_response_sec`、`pm_oracle_accept_window_sec`（默认 3600 = 1 小时——指定的预言机须在此窗口内接受或拒绝待定市场；超时后 cron 向创建者退还种子流动性，但**不**退还创建费，并作废市场 → `pm_market_expired`）。
 - **风险 / 覆盖率** *（市场下注量的百分比，100 = 1.0×）：* `pm_listing_min_coverage_percent`（250 = 2.5×）——预言机保险覆盖低于其下注量此比例的市场，会从默认 `list_markets` 目录中隐藏（经 `show_risky` 显示）；`pm_betting_min_coverage_percent`（150 = 1.5×）——建议性阈值，发布供客户端在下注前要求显式风险确认（不在链上强制；须 `≤ pm_listing_min_coverage_percent`）。
 - **市场：** `pm_min_liquidity`、`pm_market_creation_fee`、`pm_max_outcomes`、`pm_max_market_duration`。*（无聚合费率上限；creator/liquidity 费率无上限、自我约束；静态 `总和 ≤ 100%` 偿付不变式。）*
 - **批次 / 承诺-揭示：** `pm_batch_epoch_blocks`、`pm_reveal_window_blocks`、`pm_min_batch_bet`、`pm_commit_no_reveal_penalty_percent`、`pm_commit_reveal_enabled`。
 - **争议：** `pm_dispute_fee`、`pm_dispute_grace_sec`、`pm_dispute_vote_period_sec`、`pm_dispute_auto_close_sec`、`pm_dispute_approve_min_percent`、`pm_no_contest_penalty_percent`、`pm_dispute_reward_multiplier`（bp 乘数，10000 = 1×）。
 - **时间惩罚：** `pm_default_time_penalty_percent`、`pm_max_time_penalty`。
-- **懒惰池：** `pm_lazy_pool_enabled`、`pm_lazy_alloc_percent`、`pm_lazy_max_total_alloc_percent`、`pm_lazy_recall_step_percent`、`pm_lazy_lock_sec`、`pm_lazy_emergency_penalty_percent`。
+- **懒惰池：** `pm_lazy_pool_enabled`、`pm_lazy_alloc_percent`、`pm_lazy_max_total_alloc_percent`、`pm_lazy_recall_step_percent`、`pm_lazy_lock_sec`、`pm_lazy_emergency_penalty_percent`、`pm_lazy_min_liquidity_fee_percent`（默认 200 = 2%——池拒绝为 `liquidity_fee_percent` 低于此奖励下限的市场共同提供流动性）。
 - **杠杆（可选）：** `pm_leverage_enabled`、`pm_leverage_fund_percent`、`pm_leverage_max_per_position_bp`、`pm_leverage_max_position_ratio_percent`、`pm_leverage_min_market_liquidity`、`pm_leverage_safety_margin_percent`、`pm_leverage_max_slippage_percent`、`pm_leverage_m_factor_percent`、`pm_leverage_pool_profit_percent`、`pm_leverage_expiration_buffer_sec`、`pm_conversion_profit_cost_percent`。
 - **公平性：** `pm_processing_cap_per_block`。
 
