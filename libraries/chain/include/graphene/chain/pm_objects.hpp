@@ -93,6 +93,10 @@ namespace graphene { namespace chain {
             int8_t            status = 0;         ///< -1 deleted, 0 waiting, 1 active, 2 closed, 3 resolved
             uint8_t           payout_status = 0;  ///< 0 none, 1 pending, 2 paid, 3 disputed
             time_point_sec    created_time;
+            time_point_sec    accept_deadline;    ///< pending markets only: created_time + median
+                                                  ///< pm_oracle_accept_window_sec. The cron voids the
+                                                  ///< market (refund seed) if the oracle hasn't acted by
+                                                  ///< then. 0 for markets active at creation (never scanned).
             time_point_sec    betting_expiration;
             time_point_sec    result_expiration;
             int16_t           resolved_outcome = -1;
@@ -141,6 +145,7 @@ namespace graphene { namespace chain {
 
         struct by_creator;
         struct by_oracle;
+        struct by_accept_deadline;
         struct by_betting_expiration;
         struct by_result_expiration;
         struct by_payout_status;
@@ -151,6 +156,17 @@ namespace graphene { namespace chain {
                 ordered_non_unique<tag<by_creator>, member<pm_market_object, account_name_type, &pm_market_object::creator>, string_less>,
                 ordered_non_unique<tag<by_oracle>, member<pm_market_object, account_name_type, &pm_market_object::oracle>, string_less>,
                 ordered_non_unique<tag<by_status>, member<pm_market_object, int8_t, &pm_market_object::status>>,
+                // Pending-acceptance sweep: (status, accept_deadline, id). The cron lower_bounds at
+                // status 0 and stops at the first accept_deadline > now, so voiding never-accepted
+                // markets stays bounded. Accepted (1)/rejected (-1) markets sit in other status buckets.
+                ordered_unique<tag<by_accept_deadline>,
+                    composite_key<pm_market_object,
+                        member<pm_market_object, int8_t, &pm_market_object::status>,
+                        member<pm_market_object, time_point_sec, &pm_market_object::accept_deadline>,
+                        member<pm_market_object, pm_market_id_type, &pm_market_object::id>
+                    >,
+                    composite_key_compare<std::less<int8_t>, std::less<time_point_sec>, std::less<pm_market_id_type>>
+                >,
                 ordered_unique<tag<by_betting_expiration>,
                     composite_key<pm_market_object,
                         member<pm_market_object, int8_t, &pm_market_object::status>,
@@ -650,8 +666,8 @@ FC_REFLECT((graphene::chain::pm_oracle_object),
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_oracle_object, graphene::chain::pm_oracle_index)
 
 FC_REFLECT((graphene::chain::pm_market_object),
-    (id)(creator)(oracle)(market_type)(outcome_count)(url)(status)(payout_status)(created_time)(betting_expiration)
-    (result_expiration)(resolved_outcome)(reserve_a)(reserve_b)(k)(a_bets_sum)(b_bets_sum)(lmsr_b)(lmsr_subsidy)
+    (id)(creator)(oracle)(market_type)(outcome_count)(url)(status)(payout_status)(created_time)(accept_deadline)
+    (betting_expiration)(result_expiration)(resolved_outcome)(reserve_a)(reserve_b)(k)(a_bets_sum)(b_bets_sum)(lmsr_b)(lmsr_subsidy)
     (bets_sum)(liquidity_sum)(oracle_fee_percent)(creator_fee_percent)(liquidity_fee_percent)(oracle_fixed_fee)
     (liquidity_fee_earned)(forfeit_pool)(time_penalty_type)(time_penalty_value)(penalty_curve_type)
     (allow_early_resolution)(allow_cancellation)(allow_batch)(allow_instant_bet)(endogeneity_tier)(current_epoch)

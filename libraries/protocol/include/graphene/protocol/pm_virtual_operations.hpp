@@ -169,6 +169,22 @@ namespace graphene { namespace protocol {
             asset                 payout;             ///< credited at settle (0 on a loss)
         };
 
+        /// Acceptance window expired: the named oracle neither accepted nor rejected a pending market
+        /// within pm_oracle_accept_window_sec. The cron voids the market (status -1) and refunds the
+        /// creator's seed liquidity — the non-refundable creation fee already went to the DAO fund at
+        /// creation and is NOT returned. Distinct from an explicit oracle reject (a signed op).
+        struct pm_market_expired_operation : public virtual_operation {
+            pm_market_expired_operation() {}
+            pm_market_expired_operation(const account_name_type& o, const account_name_type& c,
+                                        pm_vop_object_id_type m, const asset& r)
+                : oracle(o), creator(c), market_id(m), refunded_liquidity(r) {}
+
+            account_name_type     oracle;
+            account_name_type     creator;
+            pm_vop_object_id_type market_id = 0;
+            asset                 refunded_liquidity; ///< seed returned to creator (creation fee NOT refunded)
+        };
+
         /// A temporary oracle and/or creator ban lapsed (now >= banned_until): the per-block cron
         /// cleared it and emits this so history/indexers observe the lift. An *early* manual lift is
         /// the signed pm_unban op instead (already visible in history), so this fires only for
@@ -200,5 +216,7 @@ FC_REFLECT((graphene::protocol::pm_market_accepted_operation),
     (oracle)(creator)(market_id)(oracle_fee_percent)(oracle_fixed_fee)(self_oracle))
 FC_REFLECT((graphene::protocol::pm_payout_operation),
     (account)(market_id)(bet_id)(side)(outcome_index)(amount)(payout))
+FC_REFLECT((graphene::protocol::pm_market_expired_operation),
+    (oracle)(creator)(market_id)(refunded_liquidity))
 FC_REFLECT((graphene::protocol::pm_ban_expired_operation),
     (account)(oracle)(creator))

@@ -639,6 +639,9 @@ namespace graphene { namespace protocol {
             uint8_t  pm_max_outcomes              = 10;
             uint32_t pm_max_market_duration       = 31536000; ///< ≤ 1 year (s)
             uint16_t pm_max_oracle_fee_percent    = 500;     ///< bp cap on the oracle % (5%)
+            uint32_t pm_oracle_accept_window_sec  = 3600;    ///< 1 h for the named oracle to accept/reject a
+                                                             ///< pending market; on expiry the cron refunds the
+                                                             ///< seed liquidity (NOT the creation fee) and voids it
             // Oracle-insurance coverage floors, as percent of a market's betting volume (100 = 1.0x).
             // Listing: markets below it are hidden from the default catalog (revealed via show_risky) —
             // enforced by the prediction_market_api plugin. Betting: advisory threshold below which a
@@ -673,6 +676,9 @@ namespace graphene { namespace protocol {
             uint16_t pm_lazy_recall_step_percent  = 1000;    ///< bp recalled per idle step
             uint16_t pm_lazy_emergency_penalty_percent = 5000; ///< bp of profit slashed on emergency
                                                                ///< withdraw before unlock (→ reward_per_share)
+            uint16_t pm_lazy_min_liquidity_fee_percent = 200; ///< bp; the pool refuses to subsidize markets
+                                                              ///< whose liquidity_fee_percent is below this
+                                                              ///< reward floor (2% default)
             // Leverage (margin via lazy-pool loans; CPMM-binary only). Kill-switch OFF by
             // default — governance enables after validation. See leverage-risk-off-strategy.md §8.
             bool     pm_leverage_enabled                    = false; ///< kill-switch (median-voted)
@@ -703,6 +709,7 @@ namespace graphene { namespace protocol {
                     "pm_max_outcomes must be in [2, ${m}]", ("m", MAX_PM_OUTCOMES_PER_MARKET));
                 FC_ASSERT(pm_max_market_duration > 0, "pm_max_market_duration must be positive");
                 FC_ASSERT(pm_max_oracle_fee_percent <= 10000, "pm_max_oracle_fee_percent out of range");
+                FC_ASSERT(pm_oracle_accept_window_sec > 0, "pm_oracle_accept_window_sec must be positive");
                 FC_ASSERT(pm_betting_min_coverage_percent <= pm_listing_min_coverage_percent,
                     "pm_betting_min_coverage_percent must be <= pm_listing_min_coverage_percent");
                 FC_ASSERT(pm_default_time_penalty_percent <= 10000, "pm_default_time_penalty_percent out of range");
@@ -721,6 +728,7 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(pm_lazy_max_total_alloc_percent <= 10000, "pm_lazy_max_total_alloc_percent out of range");
                 FC_ASSERT(pm_lazy_recall_step_percent <= 10000, "pm_lazy_recall_step_percent out of range");
                 FC_ASSERT(pm_lazy_emergency_penalty_percent <= 10000, "pm_lazy_emergency_penalty_percent out of range");
+                FC_ASSERT(pm_lazy_min_liquidity_fee_percent <= 10000, "pm_lazy_min_liquidity_fee_percent out of range");
                 FC_ASSERT(pm_leverage_fund_percent <= 100, "pm_leverage_fund_percent out of range");
                 FC_ASSERT(pm_leverage_max_per_position_bp <= 10000, "pm_leverage_max_per_position_bp out of range");
                 FC_ASSERT(pm_leverage_pool_profit_percent <= 100, "pm_leverage_pool_profit_percent out of range");
@@ -1327,7 +1335,7 @@ FC_REFLECT_DERIVED(
 FC_REFLECT_DERIVED(
     (graphene::protocol::chain_properties_pm),((graphene::protocol::chain_properties_hf13)),
     (pm_oracle_registration_fee)(pm_min_oracle_insurance)(pm_market_creation_fee)(pm_min_liquidity)
-    (pm_max_outcomes)(pm_max_market_duration)(pm_max_oracle_fee_percent)
+    (pm_max_outcomes)(pm_max_market_duration)(pm_max_oracle_fee_percent)(pm_oracle_accept_window_sec)
     (pm_listing_min_coverage_percent)(pm_betting_min_coverage_percent)
     (pm_default_time_penalty_percent)(pm_max_time_penalty)(pm_dispute_fee)(pm_dispute_grace_sec)
     (pm_oracle_dispute_response_sec)(pm_dispute_auto_close_sec)(pm_dispute_vote_period_sec)
@@ -1336,7 +1344,7 @@ FC_REFLECT_DERIVED(
     (pm_commit_no_reveal_penalty_percent)(pm_min_batch_bet)(pm_commit_reveal_enabled)
     (pm_processing_cap_per_block)(pm_lazy_pool_enabled)(pm_lazy_alloc_percent)
     (pm_lazy_max_total_alloc_percent)(pm_lazy_lock_sec)(pm_lazy_recall_step_percent)
-    (pm_lazy_emergency_penalty_percent)
+    (pm_lazy_emergency_penalty_percent)(pm_lazy_min_liquidity_fee_percent)
     (pm_leverage_enabled)(pm_leverage_fund_percent)(pm_leverage_max_per_position_bp)
     (pm_leverage_pool_profit_percent)(pm_leverage_safety_margin_percent)(pm_leverage_max_slippage_percent)
     (pm_leverage_min_market_liquidity)(pm_leverage_max_position_ratio_percent)

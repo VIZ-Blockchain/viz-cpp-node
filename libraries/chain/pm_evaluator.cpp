@@ -410,6 +410,9 @@ namespace {
     void maybe_allocate_lazy(database& db, const pm_market_object& mkt) {
         const auto& mp = median(db);
         if (!mp.pm_lazy_pool_enabled) return;
+        // Reward floor: the pool only subsidizes markets whose LP fee pays it enough. Below the
+        // governed minimum it stays out entirely (spec lazy-pool §min-fee gate).
+        if (mkt.liquidity_fee_percent < mp.pm_lazy_min_liquidity_fee_percent) return;
         const auto* pool = db.find<pm_lazy_pool_object>(pm_lazy_pool_id_type(0));
         if (!pool || pool->free_balance.value <= 0) return;
 
@@ -731,6 +734,11 @@ void pm_create_market_evaluator::do_apply(const pm_create_market_operation& o) {
         from_string(m.metadata, o.metadata);
         m.status                = active_at_create ? 1 : 0;
         m.created_time          = now;
+        // Pending markets get an acceptance deadline; markets that are live at creation (self-oracle /
+        // auto-accept) never enter the pending sweep, so leave it at 0.
+        m.accept_deadline       = active_at_create
+                                    ? time_point_sec()
+                                    : now + fc::seconds(mp.pm_oracle_accept_window_sec);
         m.betting_expiration    = o.betting_expiration;
         m.result_expiration     = o.result_expiration;
         m.resolved_outcome      = -1;
@@ -1939,6 +1947,31 @@ void database::process_pm_markets() {
 
             push_virtual_operation(pm_oracle_missed_penalty_operation(
                 mkt.oracle, mkt.id._id, asset(slashed, TOKEN_SYMBOL)));
+            ++done;
+        }
+    }
+
+    // ── 2b. Oracle acceptance window expired ───────────────────────────────────
+    // Pending markets (status 0) the named oracle never accepted nor rejected within
+    // pm_oracle_accept_window_sec. Refund the creator's seed liquidity (return_liquidity)
+    // and void the market (status -1). The non-refundable creation fee already went to the
+    // DAO fund at creation and is NOT returned. Mirrors the oracle-reject path, minus the
+    // oracle action. liquidity_sum == the single seed LP (a pending market cannot receive
+    // pm_add_liquidity), so it is the amount reported as refunded.
+    {
+        const auto& idx = get_index<pm_market_index>().indices().get<by_accept_deadline>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (int8_t)0, time_point_sec(0), pm_market_id_type()));
+        while (it != idx.end() && it->status == 0 && it->accept_deadline <= now && done < cap) {
+            const auto& mkt = *it; ++it;
+            share_type refunded = mkt.liquidity_sum;
+            return_liquidity(*this, mkt);
+            modify(mkt, [](pm_market_object& m) {
+                m.status        = -1;
+                m.payout_status = 3; // closed — no payout
+            });
+            push_virtual_operation(pm_market_expired_operation(
+                mkt.oracle, mkt.creator, mkt.id._id, asset(refunded, TOKEN_SYMBOL)));
             ++done;
         }
     }

@@ -3741,6 +3741,7 @@ namespace graphene { namespace chain {
                 calc_median(&chain_properties_pm::pm_max_outcomes);
                 calc_median(&chain_properties_pm::pm_max_market_duration);
                 calc_median(&chain_properties_pm::pm_max_oracle_fee_percent);
+                calc_median(&chain_properties_pm::pm_oracle_accept_window_sec);
                 calc_median(&chain_properties_pm::pm_listing_min_coverage_percent);
                 calc_median(&chain_properties_pm::pm_betting_min_coverage_percent);
                 calc_median(&chain_properties_pm::pm_default_time_penalty_percent);
@@ -3766,6 +3767,7 @@ namespace graphene { namespace chain {
                 calc_median(&chain_properties_pm::pm_lazy_lock_sec);
                 calc_median(&chain_properties_pm::pm_lazy_recall_step_percent);
                 calc_median(&chain_properties_pm::pm_lazy_emergency_penalty_percent);
+                calc_median(&chain_properties_pm::pm_lazy_min_liquidity_fee_percent);
                 calc_median(&chain_properties_pm::pm_leverage_enabled);
                 calc_median(&chain_properties_pm::pm_leverage_fund_percent);
                 calc_median(&chain_properties_pm::pm_leverage_max_per_position_bp);
