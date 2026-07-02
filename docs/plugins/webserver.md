@@ -108,7 +108,9 @@ The webserver plugin handles browser cross-origin requests natively — no rever
 
 **All other HTTP responses** include `Access-Control-Allow-Origin: *`.
 
-This allows browser-based wallets and dApps to call the JSON-RPC endpoint directly. For production deployments behind nginx, CORS is handled at the proxy layer (see [Exposing the API via HTTPS](#exposing-the-api-via-https-nginx--certbot)) — both layers setting the header is harmless.
+This allows browser-based wallets and dApps to call the JSON-RPC endpoint directly. **The node grants CORS itself** — it emits these headers on every response, even when running behind a reverse proxy. The nginx config in [Exposing the API via HTTPS](#exposing-the-api-via-https-nginx--certbot) therefore only proxies requests and sets **no** CORS header of its own.
+
+> **Do not** add `add_header Access-Control-Allow-Origin` at the nginx layer while the node also sets it: two identical headers make the browser reject the response. If you additionally serve static files (an API explorer or SPA) from the same domain, add the CORS header only on those static locations — and only for `GET`/`HEAD` — so proxied responses keep the single header set by the node.
 
 ---
 
