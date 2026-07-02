@@ -136,6 +136,13 @@ struct remote_prediction_market_api {
     pmapi::pm_market_meta_object                   get_market_meta( int64_t );
     vector< pmapi::pm_market_meta_object >         list_markets_by_category( string, uint32_t, uint32_t );
     vector< pmapi::pm_kline_api_object >           get_market_kline( int64_t, uint32_t, uint32_t );
+    pmapi::pm_leverage_quote_api_object            get_leverage_quote( int64_t, int16_t, int64_t );
+    pmapi::pm_leverage_close_preview_api_object    get_leverage_close_preview( int64_t );
+    pmapi::pm_leverage_convert_preview_api_object  get_leverage_convert_preview( int64_t );
+    pmapi::pm_market_categories_api_object         get_market_categories();
+    pmapi::pm_market_full_api_object               get_market_full( int64_t, account_name_type );
+    vector< pm_lazy_allocation_object >            get_lazy_allocations( uint32_t, uint32_t );
+    pm_lazy_allocation_object                      get_market_lazy_allocation( int64_t );
 };
 
 } }
@@ -238,4 +245,11 @@ FC_API( graphene::wallet::remote_prediction_market_api,
         (get_market_meta)
         (list_markets_by_category)
         (get_market_kline)
+        (get_leverage_quote)
+        (get_leverage_close_preview)
+        (get_leverage_convert_preview)
+        (get_market_categories)
+        (get_market_full)
+        (get_lazy_allocations)
+        (get_market_lazy_allocation)
 )

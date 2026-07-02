@@ -67,14 +67,19 @@ description: Onix 协议的正式技术规范，已实现为 VIZ DLT 上的共�
 
 ### 中位数投票参数（`chain_properties_pm`）
 
-所有经济参数由代表中位数投票（无需硬分叉即可调参），位于链上 `chain_properties_pm` 结构体。**所有百分比
-为基点（bp，10000 = 100.00%）；时长以秒或区块计。** 确切默认值与范围见
+所有经济参数由代表中位数投票（无需硬分叉即可调参），位于链上 `chain_properties_pm` 结构体。每个代表通过标准
+的 **`versioned_chain_properties_update_operation`**（op ID 46）发布其偏好值 —— `chain_properties_pm`
+是该版本化结构体的当前版本（v5，HF14）—— 网络对活跃代表应用**逐字段中位数**。两个风险覆盖率旋钮
+（`pm_listing_min_coverage_percent`、`pm_betting_min_coverage_percent`）属于同一个 v5 结构体，调参方式完全相同。
+**所有百分比为基点（bp，10000 = 100.00%）；时长以秒或区块计** —— 但这两个覆盖率旋钮例外，它们为成交量百分比
+（100 = 1.0×）。确切默认值与范围见
 [链参数](../governance/chain-properties#pm-parameters)；权威来源是结构体本身。
 
 | 分组 | 参数 |
 |---|---|
 | 注册与下限 | `pm_oracle_registration_fee`、`pm_min_oracle_insurance`、`pm_market_creation_fee`、`pm_min_liquidity`、`pm_max_outcomes`、`pm_max_market_duration` |
 | 费用与罚则（bp） | `pm_max_oracle_fee_percent`、`pm_oracle_penalty_percent`、`pm_no_contest_penalty_percent`、`pm_default_time_penalty_percent`、`pm_max_time_penalty` |
+| 风险 / 覆盖率（成交量 %） | `pm_listing_min_coverage_percent`（250 = 2.5×；覆盖率低于此值的市场从默认目录中隐藏，经 `show_risky` 展示）、`pm_betting_min_coverage_percent`（150 = 1.5×；建议性客户端风险确认阈值，`≤` 挂牌阈值，不在链上强制） |
 | 争议 | `pm_dispute_fee`、`pm_dispute_grace_sec`、`pm_oracle_dispute_response_sec`、`pm_dispute_vote_period_sec`、`pm_dispute_auto_close_sec`、`pm_dispute_approve_min_percent`（bp）、`pm_dispute_reward_multiplier`（bp） |
 | 懒惰池 | `pm_lazy_pool_enabled`、`pm_lazy_alloc_percent`、`pm_lazy_max_total_alloc_percent`、`pm_lazy_recall_step_percent`、`pm_lazy_lock_sec`、`pm_lazy_emergency_penalty_percent` |
 | 杠杆 | `pm_leverage_enabled`、`pm_leverage_fund_percent`、`pm_leverage_max_per_position_bp`、`pm_leverage_max_position_ratio_percent`、`pm_leverage_min_market_liquidity`、`pm_leverage_safety_margin_percent`、`pm_leverage_max_slippage_percent`、`pm_leverage_m_factor_percent`、`pm_leverage_pool_profit_percent`、`pm_leverage_expiration_buffer_sec`、`pm_conversion_profit_cost_percent` |
@@ -564,6 +569,11 @@ B 侧对称。
 
 须在 `pm_oracle_dispute_response_sec` 内。错过则从保险自动罚没 `pm_dispute_fee`，并记录在预言机对象上。
 
+预言机以 **`pm_dispute_oracle_respond`**（op ID 98）提交其反驳。由于争议是一场公开听证，该文本存储**在争议对象上**
+（`oracle_response` + `oracle_response_time`，可经 `get_dispute` 读取），以便每位委员会投票者或账户裁决者在裁决
+前予以权衡。仅市场的预言机可响应，且仅在争议未结且 `now ≤ oracle_response_deadline` 时；再次提交将覆盖先前的
+响应。
+
 ### 争议生命周期
 
 ```
@@ -597,17 +607,21 @@ Disputer 将全部 dispute_fee → 预言机（100%，补偿）。   // 无 50/5
 
 ### 重算流程（预言机有误）
 
-1. 校验罚款（以 reward_pool 之后的剩余保险为上限）
-2. 支付提出争议者奖励
-3. 支付裁决者奖励
-4. 罚没预言机保险
+1. 校验罚款（以剩余保险为上限）
+2. 支付提出争议者奖励（fee + bonus）；罚没余额 → `forfeit_pool`（赢家）
+3. 罚没预言机保险
 5. 应用封禁（若请求）
 6. 删除所有现存未支付的 payouts
 7. 翻转获胜结果（A↔B）
 8. 以修正后的结果从头重生成赔付
 9. 记录审计轨迹
 
-### 委员会权力
+### 裁决者权力 —— 封禁是合规/监管功能（仅账户模式）
+
+以下制裁是**账户模式** `pm_dispute_resolve`（op ID 80）的字段，由市场指定的 `dispute_resolver` 发出。当该裁决者
+是**监管方或持牌仲裁人**时，这正是其执行链下规则的方式：在单次裁决中即可罚没保险，**并将预言机与市场创建者双方**
+从平台上封禁，可临时或永久。**委员会/DAO 模式（`dispute_mode = 0`）在设计上无封禁权**——公开听证只罚没保险
+（按共识强度缩放）并经 `pm_dispute_finalize` 调整声誉；它从不封禁。
 
 | 参数 | 类型 | 描述 |
 |-----------|------|-------------|
@@ -616,6 +630,10 @@ Disputer 将全部 dispute_fee → 预言机（100%，补偿）。   // 无 50/5
 | `ban_oracle_until` | unix ts / 0 | 0=永久，>0=到期 |
 | `ban_creator` | 0/1 | 封禁创建者 |
 | `ban_creator_until` | unix ts / 0 | 0=永久，>0=到期 |
+
+封禁会将发出封禁的 `resolver` 记录到目标的 `banned_by`。**解除封禁：** 同一裁决者可以 **`pm_unban`**（op ID 99，
+`unban_oracle` / `unban_creator`）**提前**解除；否则封禁在 `banned_until` 到期时自然失效，此时逐块 cron 将其清除
+并发出 **`pm_ban_expired`** 虚拟操作（ID 100），以便历史/索引器观察到该解除。
 
 ### 自动关闭（14 天回退）
 
@@ -924,19 +942,19 @@ API：`get_account_leverage_positions`、`get_market_leverage_positions`、`get_
 
 | 对象（索引） | 保存 | 按何查找 |
 |---|---|---|
-| `pm_oracle_object` | 预言机注册、保险、14 个声誉计数器、故障印记、封禁 | owner |
-| `pm_market_object` | 市场配置、CPMM 储备（`reserve_a/b`、`k`）、`*_fee_percent`（bp）、`status` / `payout_status`、计时器、`dispute_mode`、`a_bets_sum` / `b_bets_sum` | id / creator / oracle / result_expiration |
+| `pm_oracle_object` | 预言机注册、保险、14 个声誉计数器、故障印记、封禁（`banned_until` + `banned_by`） | owner |
+| `pm_market_object` | 市场配置、CPMM 储备（`reserve_a/b`、`k`）、`*_fee_percent`（bp）、`status` / `payout_status`、计时器、`dispute_mode`、`a_bets_sum` / `b_bets_sum`、预言机裁定声明（`decision_url` / `decision_reason`） | id / creator / oracle / result_expiration |
 | `pm_outcome_object` | 每结果的 LMSR `q`、`bets_sum`、`bets_count`（多元市场） | market + outcome |
 | `pm_bet_object` | 一笔下注 —— account、`side` / `outcome_index`、`amount`、曲线 `weight`、`time_penalty`、`status`、`mode` | market / account |
 | `pm_liquidity_object` | 一个 LP 持仓 —— 本金、存款时间、时间权重；`provider` 为空 ⇒ 懒惰池 LP | market |
 | `pm_commit_object` | 提交-揭示的承诺哈希 + 托管（批量 / 提交-揭示） | market / account |
-| `pm_dispute_object` | 一个争议 —— disputer、`proposed_outcome`、费用托管、计时器、`status`、`dispute_mode` | market |
+| `pm_dispute_object` | 一个争议 —— disputer、`proposed_outcome`、费用托管、计时器、`status`、`dispute_mode`、预言机反驳（`oracle_response` / `oracle_response_time`） | market |
 | `pm_dispute_vote_object` | 一张委员会选票 —— voter、`vote_outcome`、`vote_percent`（关闭前可改） | market + voter |
 | `pm_lazy_pool_object` | 单例池 —— `free_balance` / `allocated_balance` / `earned_balance`、`reward_per_share`、`leverage_fund_used`、`total_shares` | 单例（id 0） |
 | `pm_lazy_deposit_object` | 一位存款人 —— shares、奖励快照、解锁时间 | account |
 | `pm_lazy_allocation_object` | 池对某市场的静默 LP 分配 + 渐进式召回状态（`bets_sum_at_check`、`check_step`、`recalled_amount`） | market |
 | `pm_leverage_position_object` | 一个已开杠杆持仓 —— collateral、loan、obligation、曲线权重、`status` | account / market + status |
-| `pm_creator_ban_object` | 被封禁的创建者 —— `banned_until`、`ban_count` | ban account |
+| `pm_creator_ban_object` | 被封禁的创建者 —— `banned_until`、`ban_count`、`banned_by` | ban account |
 
 声誉指标在读取时计算（`compute_oracle_reliability_score()` —— §14），不存储。所有百分比字段均为基点
 （`*_percent`，bp）。懒惰池的按市场分配与渐进式召回状态位于 `pm_lazy_allocation_object`；预言机故障印记与声誉计数器位于 `pm_oracle_object`。

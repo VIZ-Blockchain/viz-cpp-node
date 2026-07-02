@@ -1206,6 +1206,8 @@ void pm_resolve_market_evaluator::do_apply(const pm_resolve_market_operation& o)
         m.status           = 3;
         m.payout_status    = 1;
         m.resolved_outcome = o.winning_outcome;
+        from_string(m.decision_url, o.decision_url);
+        from_string(m.decision_reason, o.decision_reason);
     });
 
     const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
@@ -1243,6 +1245,7 @@ void pm_no_contest_evaluator::do_apply(const pm_no_contest_operation& o) {
         m.payout_status     = 1;
         m.resolved_outcome  = -1;
         m.result_expiration = now;  // start the dispute/settle grace from here
+        from_string(m.decision_reason, o.reason); // NO-CONTEST rationale, readable via get_market
     });
 }
 
@@ -1370,7 +1373,7 @@ void pm_dispute_resolve_evaluator::do_apply(const pm_dispute_resolve_operation& 
             db.modify(*it, [&](pm_oracle_object& ora) {
                 if (slash.value > 0) { ora.insurance -= slash; ora.total_insurance_slashed += slash; }
                 ora.disputes_lost++;
-                if (o.ban_oracle) ora.banned_until = o.ban_oracle_until;
+                if (o.ban_oracle) { ora.banned_until = o.ban_oracle_until; ora.banned_by = o.resolver; }
             });
         }
         // Disputer was right: refund fee + reward carve-out from the slash; remainder → winners.
@@ -1410,11 +1413,13 @@ void pm_dispute_resolve_evaluator::do_apply(const pm_dispute_resolve_operation& 
         if (cb == cbidx.end()) {
             db.create<pm_creator_ban_object>([&](pm_creator_ban_object& b) {
                 b.creator = mkt.creator; b.banned_until = o.ban_creator_until; b.ban_count = 1;
+                b.banned_by = o.resolver;
             });
         } else {
             db.modify(*cb, [&](pm_creator_ban_object& b) {
                 if (o.ban_creator_until > b.banned_until) b.banned_until = o.ban_creator_until;
                 b.ban_count++;
+                b.banned_by = o.resolver;
             });
         }
     }
@@ -1791,6 +1796,66 @@ void pm_leverage_convert_evaluator::do_apply(const pm_leverage_convert_operation
         m.bets_sum += pos.total_bet;
     });
     db.modify(pos, [&](pm_leverage_position_object& p) { p.status = 5; p.last_update = now; });
+}
+
+// ─── 22. pm_dispute_oracle_respond ───────────────────────────────────────────
+// The oracle posts a public rebuttal onto the open dispute. Disputes are public hearings, so the
+// text is stored on the dispute object (read by every voter/resolver via get_dispute). Allowed
+// only while the dispute is open and within the oracle_response_deadline; re-posting overwrites.
+void pm_dispute_oracle_respond_evaluator::do_apply(const pm_dispute_oracle_respond_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto now = db.head_block_time();
+
+    const auto& mkt = get_market(db, o.market_id);
+    FC_ASSERT(mkt.oracle == o.oracle, "Not the market oracle");
+    FC_ASSERT(o.response.size() <= MAX_PM_DISPUTE_REASON_LEN, "response too long");
+
+    const auto& didx = db.get_index<pm_dispute_index>().indices().get<by_market>();
+    auto dit = didx.find(mkt.id);
+    FC_ASSERT(dit != didx.end() && dit->status == 0, "No open dispute");
+    FC_ASSERT(now <= dit->oracle_response_deadline, "Oracle response window passed");
+
+    db.modify(*dit, [&](pm_dispute_object& d) {
+        from_string(d.oracle_response, o.response);
+        d.oracle_response_time = now;
+    });
+}
+
+// ─── 23. pm_unban ────────────────────────────────────────────────────────────
+// Reverse a ban set by an account-mode pm_dispute_resolve. Only the resolver recorded in
+// banned_by may lift it; the ban is set to epoch (past ⇒ not banned) and banned_by cleared.
+void pm_unban_evaluator::do_apply(const pm_unban_operation& o) {
+    auto& db = _db;
+    FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
+    const auto now = db.head_block_time();
+    bool did = false;
+
+    if (o.unban_oracle) {
+        const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+        auto it = oidx.find(o.target);
+        FC_ASSERT(it != oidx.end(), "Oracle not found");
+        FC_ASSERT(it->banned_until > now, "Oracle is not currently banned");
+        FC_ASSERT(it->banned_by == o.resolver, "Only the resolver that imposed the ban may lift it");
+        db.modify(*it, [&](pm_oracle_object& ora) {
+            ora.banned_until = time_point_sec(0);
+            ora.banned_by    = account_name_type();
+        });
+        did = true;
+    }
+    if (o.unban_creator) {
+        const auto& cbidx = db.get_index<pm_creator_ban_index>().indices().get<by_ban_account>();
+        auto it = cbidx.find(o.target);
+        FC_ASSERT(it != cbidx.end(), "No creator ban for target");
+        FC_ASSERT(it->banned_until > now, "Creator is not currently banned");
+        FC_ASSERT(it->banned_by == o.resolver, "Only the resolver that imposed the ban may lift it");
+        db.modify(*it, [&](pm_creator_ban_object& b) {
+            b.banned_until = time_point_sec(0);
+            b.banned_by    = account_name_type();
+        });
+        did = true;
+    }
+    FC_ASSERT(did, "Nothing to unban");
 }
 
 // ─── Cron: process_pm_markets (called once per block) ───────────────────────
@@ -2308,6 +2373,34 @@ void database::process_pm_markets() {
                 }
                 // else: idle, steps remain, but this step isn't due yet → leave untouched.
             }
+            ++done;
+        }
+    }
+
+    // ── 8. Ban expiry sweep ───────────────────────────────────────────────────
+    // Temporary oracle/creator bans lapse at banned_until. We clear the expired ones (banned_until
+    // → 0) and emit pm_ban_expired so history/indexers see the lift; cleared bans fall into the
+    // 0-bucket and are never re-swept, permanent bans (maximum()) sort past `now` and are skipped.
+    // lower_bound at epoch+1 skips the huge never-banned/cleared 0-cluster.
+    {
+        const auto& oidx = get_index<pm_oracle_index>().indices().get<by_status>();
+        auto it = oidx.lower_bound(time_point_sec(1));
+        while (it != oidx.end() && it->banned_until <= now && done < cap) {
+            const auto& ora = *it; ++it;
+            const account_name_type owner = ora.owner;
+            modify(ora, [](pm_oracle_object& o) { o.banned_until = time_point_sec(0); o.banned_by = account_name_type(); });
+            push_virtual_operation(pm_ban_expired_operation(owner, true, false));
+            ++done;
+        }
+    }
+    {
+        const auto& cbidx = get_index<pm_creator_ban_index>().indices().get<by_ban_expiry>();
+        auto it = cbidx.lower_bound(boost::make_tuple(time_point_sec(1), pm_creator_ban_id_type()));
+        while (it != cbidx.end() && it->banned_until <= now && done < cap) {
+            const auto& cb = *it; ++it;
+            const account_name_type who = cb.creator;
+            modify(cb, [](pm_creator_ban_object& b) { b.banned_until = time_point_sec(0); b.banned_by = account_name_type(); });
+            push_virtual_operation(pm_ban_expired_operation(who, false, true));
             ++done;
         }
     }

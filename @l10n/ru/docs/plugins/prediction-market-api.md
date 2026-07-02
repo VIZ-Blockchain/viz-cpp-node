@@ -18,10 +18,13 @@ Read-only JSON-RPC доступ к состоянию прогнозных ры�
 | `get_market_weight_sums` | `market_id` | `pm_market_weight_sums` (вычисляемый) |
 | `get_market_bets` | `market_id, from, limit` | `pm_bet_object[]` |
 | `get_market_liquidity` | `market_id, from, limit` | `pm_liquidity_object[]` |
+| `get_market_full` | `market_id, [account]` | `pm_market_full` (вычисляемый) |
 
 `status` для `list_markets`: `-1` удалён, `0` ожидание, `1` активен, `2` закрыт, `3` разрешён. По
 умолчанию `list_markets` скрывает недострахованные рынки (страховка оракула < **2.5×** объёма ставок);
 `show_risky = true` показывает их (рынки только скрываются, ставки on-chain всегда разрешены).
+
+`get_market_full` — **обогащённое представление за один вызов** для экрана деталей рынка: возвращает рынок + исходы + суммы весов + оракула (с надёжностью) + распарсенные метаданные и — если передан необязательный `account` — ставки, плечевые позиции и LP этого аккаунта **на этом рынке**. Экономит тонкому клиенту несколько round-trip'ов.
 
 ### Метаданные рынка (парсятся off-chain)
 
@@ -32,10 +35,16 @@ Read-only JSON-RPC доступ к состоянию прогнозных ры�
 | Метод | Аргументы | Возврат |
 |-------|-----------|---------|
 | `get_market_meta` | `market_id` | `pm_market_meta_object` (или ошибка, если нет) |
-| `list_markets_by_category` | `category, from, limit, [jurisdiction]` | `pm_market_meta_object[]` |
+| `list_markets_by_category` | `category, from, limit, [jurisdiction], [subcategory], [tag], [sort]` | `pm_market_meta_object[]` |
+| `get_market_categories` | — | `pm_market_categories` (вычисляемый) |
 
 `list_markets_by_category` исключает рынки, чьи `banned_jurisdictions` содержат необязательный ISO-код
 `jurisdiction` (регулируемый клиент передаёт свою юрисдикцию, чтобы получить только допустимые рынки).
+Необязательные `subcategory` (точное совпадение) и `tag` (членство в CSV) сужают набор; `sort` ∈ `newest`
+(id рынка по убыв., по умолч.) · `oldest` · `volume` (`bets_sum` по убыв.) · `expiration`
+(`betting_expiration` по возр.). `get_market_categories` возвращает живую таксономию — счётчики по
+категориям / подкатегориям плюс топ-20 горячих тегов (`jurisdiction-*` исключены) — агрегированную по
+проиндексированным сейчас рынкам, чтобы браузинг-UI строил свои фильтр-чипы без захардкоженной таксономии.
 Объект: `market`, `category`, `subcategory`, `tags` (через запятую), `banned_jurisdictions` (ISO через
 запятую; пусто = разрешено везде), `expiry` (пруна после закрытия окна спора + TTL).
 
@@ -50,6 +59,18 @@ Read-only JSON-RPC доступ к состоянию прогнозных ры�
 | `get_oracle` | `owner` | `pm_oracle` (объект + `reliability_score`) |
 | `list_oracles` | `from, limit` | `pm_oracle_object[]` |
 
+### Превью плеча (Boost)
+
+Read-only котировки, вызывающие **ту же внутриузловую математику маржи**, что и эвалуаторы, так что превью совпадает с тем, что вычислила бы соответствующая операция `pm_leverage_*` на головном блоке. Это неконсенсусные оценки (резервы двигаются между чтением и бродкастом — всегда отправляйте on-chain защиту от проскальзывания).
+
+| Метод | Аргументы | Возврат |
+|-------|-----------|---------|
+| `get_leverage_quote` | `market_id, outcome_index, collateral` | `pm_leverage_quote` (вычисляемый) |
+| `get_leverage_close_preview` | `position_id` | `pm_leverage_close_preview` (вычисляемый) |
+| `get_leverage_convert_preview` | `position_id` | `pm_leverage_convert_preview` (вычисляемый) |
+
+`get_leverage_quote` зеркалит `pm_leverage_open`: возвращает максимальный платёжеспособный заём и итоговое максимальное плечо, кэпы пула/позиции, до 12 стопов слайдера (каждый с токенами, порогом, текущей и худшей стоимостью отмены) и — когда плечо невозможно — `available = false` со списком `failed_constraints[]`. `get_leverage_close_preview` / `get_leverage_convert_preview` зеркалят `pm_leverage_close` / `pm_leverage_convert` при текущих резервах (стоимость отмены, обязательство пула, что получает беттер, закрываемость/конвертируемость и комиссия конвертации при текущей медиане `pm_conversion_profit_cost_percent`).
+
 > Выплата каждому беттору — виртуальная операция `pm_payout` (стейк, side/outcome, итог; `0` при
 > проигрыше); закрытие плечевой позиции — `pm_leverage_resolve` (`outcome_index`, `won`, `leverage`).
 > Обе видны в `account_history`; сами объекты позиций — через методы выше.
@@ -62,7 +83,11 @@ Read-only JSON-RPC доступ к состоянию прогнозных ры�
 | `get_dispute_votes` | `market_id` | `pm_dispute_votes` (голоса + живой подсчёт) |
 | `get_lazy_pool` | — | `pm_lazy_pool_object` |
 | `get_lazy_deposit` | `account` | `pm_lazy_deposit_object` |
+| `get_lazy_allocations` | `from, limit` | `pm_lazy_allocation_object[]` |
+| `get_market_lazy_allocation` | `market_id` | `pm_lazy_allocation_object` (или ошибка, если нет) |
 | `get_pm_chain_properties` | — | `chain_properties_pm` (медиана, v5) |
+
+`get_lazy_allocations` перечисляет записи аллокаций lazy-пула по рынкам (для дашборда пула); `get_market_lazy_allocation` берёт запись для конкретного рынка. Штрафные штампы оракула отдельного метода не требуют — они идут на `pm_oracle_object` (`penalty_stamps`, `last_penalty_stamp_time`) через `get_oracle`.
 
 ### Графики — kline / история весов
 
@@ -87,6 +112,39 @@ Read-only JSON-RPC доступ к состоянию прогнозных ры�
 - **`pm_market_weight_sums`** — `bets_sum`/`weight_sum` по сторонам/исходам (веса считаются сканом ставок, т.к. не хранятся).
 - **`pm_kline`** — одна точка графика: `seq` (uint32, 0-based, монотонный индекс изменения по рынку), `timestamp` (unix-секунды, x), `reason` (uint8: 0 ставка, 1 отмена, 2 ликвидация, 3 batch settle, 4 открытие плеча, 5 расчёт плеча), `bets_sum` (всего поставлено), `weights[]` (вес по каждому исходу, y; индекс = outcome_index).
 - **`pm_dispute_votes`** — голоса + подсчёт finalize. Старые поля (вес = `|vote_percent|`, не стейк): `uphold_weight`/`challenge_weight`/`total_weight`, `challenger_leads` (≥ `pm_dispute_approve_min_percent`), `proposed_outcome`. **Точная stake-взвешенная проекция (зеркалит `pm_dispute_finalize`; все `*_shares` в vesting-shares = `effective_vesting_shares` + стейк lazy-пула→shares):** `participation_shares` (Σ веса проголосовавших), `electorate_shares` (`total_vesting_shares` + NAV пула→shares), `quorum_required_shares`, `quorum_percent_bp` (кворум в bp, 10000 = 100.00%), `quorum_reached` (bool), `oracle_defense_shares`/`change_shares`, `outcome_change_shares[]` (по исходам), `expected_uphold` (останется ли решение оракула), `expected_outcome` (какой исход будет выставлен при резолюции сейчас), `expected_consensus_strength_bp`. Проекция совпадает с тем, что крон применит на `voting_end_time` при текущих голосах (голоса изменяемы до этого момента).
+
+**`pm_market_full`** — обогащённое представление рынка за один вызов (`oracle`/`meta` = `null`, когда
+отсутствуют; массивы `my_*` пусты, если не передан аргумент `account`):
+```
+{ market: pm_market_object,
+  outcomes: pm_outcome_object[],            // пусто для бинарных рынков
+  weight_sums: pm_market_weight_sums,
+  oracle: pm_oracle | null,
+  meta: pm_market_meta_object | null,
+  my_positions: pm_position[],              // ставки аккаунта на ЭТОМ рынке
+  my_leverage_positions: pm_leverage_position_object[],
+  my_liquidity: pm_liquidity_object[] }
+```
+
+**`pm_leverage_quote`** — превью открытия плеча (из `pm::leverage::*`, та же математика, что и в эвалуаторе):
+```
+{ available: bool, outcome_index, collateral,
+  max_loan, max_leverage_x100,              // 100 = 1.00×
+  pool_free_amount, fund_available, per_position_cap, market_position_cap,
+  pool_profit_percent, safety_margin_percent, max_slippage_percent, m_factor_percent,
+  expiration_buffer_sec, auto_close_time,   // betting_expiration − buffer
+  stops: [ { leverage_x100, loan, total_bet, expected_tokens, pool_profit,
+             liquidation_threshold, current_cancel_value, worst_case_cancel_value } ],
+  failed_constraints: [ { constraint, reason } ] }   // заполнено, когда !available
+```
+**`pm_leverage_close_preview`** — `{ position_id, outcome_index, cancel_value, pool_obligation, bettor_receives, collateral, loan, pool_profit_charge, closeable: bool, loss_vs_collateral, loss_percent_bp }`.
+**`pm_leverage_convert_preview`** — `{ position_id, outcome_index, cancel_value, pool_obligation, current_profit, conversion_profit_cost_percent, conversion_fee, total_user_payment, convertible: bool }`.
+
+**`pm_market_categories`** — браузинг-таксономия с живыми счётчиками:
+```
+{ categories: [ { category, count, subcategories: [ { subcategory, count } ] } ],  // сортировка по count убыв.
+  hot_tags:   [ { tag, count } ] }                                                 // топ-20 (jurisdiction-* исключены)
+```
 
 ## Пример
 

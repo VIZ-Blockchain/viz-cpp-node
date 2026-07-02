@@ -357,7 +357,7 @@
 - **已签名操作的求值器**，在其应用的瞬间 —— `pm_market_accepted`（接受 / 自预言机 / 自动接受）与 `pm_leverage_liquidate`（对向或取消下注将杠杆头寸推过阈值时）。
 - **截止处理器 `process_pm_markets()`**，每块运行：结算已达到**到期 / 截止 / 争议宽限结束 / 纪元边界**的市场（上限 `pm_processing_cap_per_block`，最早截止优先）。
 
-参见 [预测市场操作](./operations/prediction-markets.md)。（ID 91–93 是*常规*操作 `pm_leverage_open`/`pm_leverage_close`/`pm_leverage_convert`，见该页。）
+参见 [预测市场操作](./operations/prediction-markets.md)。（ID 91–93 是*常规*操作 `pm_leverage_open`/`pm_leverage_close`/`pm_leverage_convert`，ID 98–99 是*常规*操作 `pm_dispute_oracle_respond`/`pm_unban` —— 均见该页。）
 
 | ID | 操作 | 触发 |
 |----|------|------|
@@ -372,6 +372,7 @@
 | 95 | `pm_leverage_resolve_operation` | 结算 —— 杠杆头寸按 `cancel_value` 强制关闭：`outcome_index`、`won`、`pool_received`/`bettor_received`、`leverage` |
 | 96 | `pm_market_accepted_operation` | 求值器 —— 市场上线：预言机接受、自预言机或自动接受；冻结条款 + `self_oracle` 标志 |
 | 97 | `pm_payout_operation` | 结算 —— 每个有效下注：`amount`（本金）、`side`/`outcome_index`、`payout`（**输则为 0**）；与按市场的 `pm_auto_payout` 并列 |
+| 100 | `pm_ban_expired_operation` | 临时预言机/创建者封禁在 `banned_until` 失效：cron 将其清除（`account`、`oracle`、`creator`）。提前手动解除改用已签名的 `pm_unban` |
 
 所有 PM 资金流动严格零和（无增发）；结算守恒 `Σ out == Σ 下注 + LP 本金 + forfeit_pool`。
 

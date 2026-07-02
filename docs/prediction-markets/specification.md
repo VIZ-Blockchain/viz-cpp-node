@@ -65,14 +65,20 @@ Time penalty values use precision = 1/1,000,000 (micro-units).
 ### Median-voted parameters (`chain_properties_pm`)
 
 All economic parameters are delegate median-voted (no hard fork to tune) and live in the on-chain
-`chain_properties_pm` struct. **All percentages are basis points (bp, 10000 = 100.00%); durations are
-seconds or blocks.** Exact defaults and ranges are in [Chain Properties](../governance/chain-properties#pm-parameters);
-the authoritative source is the struct itself.
+`chain_properties_pm` struct. Each delegate publishes its preferred values through the standard
+**`versioned_chain_properties_update_operation`** (op ID 46) — `chain_properties_pm` is the current
+(v5, HF14) version of that versioned struct — and the network applies the **per-field median** of the
+active delegates. The two risk-coverage knobs (`pm_listing_min_coverage_percent`,
+`pm_betting_min_coverage_percent`) are part of this same v5 struct and are tuned exactly the same way.
+**All percentages are basis points (bp, 10000 = 100.00%); durations are seconds or blocks** — except the
+two coverage knobs, which are percent-of-volume (100 = 1.0×). Exact defaults and ranges are in
+[Chain Properties](../governance/chain-properties#pm-parameters); the authoritative source is the struct itself.
 
 | Group | Parameters |
 |---|---|
 | Registration & floors | `pm_oracle_registration_fee`, `pm_min_oracle_insurance`, `pm_market_creation_fee`, `pm_min_liquidity`, `pm_max_outcomes`, `pm_max_market_duration` |
 | Fees & penalties (bp) | `pm_max_oracle_fee_percent`, `pm_oracle_penalty_percent`, `pm_no_contest_penalty_percent`, `pm_default_time_penalty_percent`, `pm_max_time_penalty` |
+| Risk / coverage (% of volume) | `pm_listing_min_coverage_percent` (250 = 2.5×; markets covered below this are hidden from the default catalog, shown via `show_risky`), `pm_betting_min_coverage_percent` (150 = 1.5×; advisory client risk-confirm threshold, `≤` the listing one, not enforced on-chain) |
 | Disputes | `pm_dispute_fee`, `pm_dispute_grace_sec`, `pm_oracle_dispute_response_sec`, `pm_dispute_vote_period_sec`, `pm_dispute_auto_close_sec`, `pm_dispute_approve_min_percent` (bp), `pm_dispute_reward_multiplier` (bp) |
 | Lazy pool | `pm_lazy_pool_enabled`, `pm_lazy_alloc_percent`, `pm_lazy_max_total_alloc_percent`, `pm_lazy_recall_step_percent`, `pm_lazy_lock_sec`, `pm_lazy_emergency_penalty_percent` |
 | Leverage | `pm_leverage_enabled`, `pm_leverage_fund_percent`, `pm_leverage_max_per_position_bp`, `pm_leverage_max_position_ratio_percent`, `pm_leverage_min_market_liquidity`, `pm_leverage_safety_margin_percent`, `pm_leverage_max_slippage_percent`, `pm_leverage_m_factor_percent`, `pm_leverage_pool_profit_percent`, `pm_leverage_expiration_buffer_sec`, `pm_conversion_profit_cost_percent` |
@@ -555,6 +561,8 @@ Optional `min_return` parameter. If `amount_returned < min_return`, transaction 
 
 Mandatory within `pm_oracle_dispute_response_sec`. If missed, `pm_dispute_fee` is auto-slashed from insurance and recorded on the oracle object.
 
+The oracle posts its rebuttal with **`pm_dispute_oracle_respond`** (op ID 98). Because a dispute is an open public hearing, the text is stored **on the dispute object** (`oracle_response` + `oracle_response_time`, readable via `get_dispute`) so every committee voter or account resolver can weigh it before deciding. Only the market's oracle may respond, only while the dispute is open and `now ≤ oracle_response_deadline`; re-posting overwrites the previous response.
+
 ### Dispute Lifecycle
 
 ```
@@ -598,7 +606,14 @@ Disputer forfeits the whole dispute_fee → oracle (100%, compensation).   // no
 8. Regenerate payouts from scratch with corrected outcome
 9. Audit trail recorded
 
-### Committee Powers
+### Resolver Powers — bans are a compliance/regulator feature (account mode only)
+
+The sanctions below are fields of the **account-mode** `pm_dispute_resolve` (op ID 80), issued by the
+market's named `dispute_resolver`. When that resolver is a **regulator or a licensed arbitrator**, this is
+how it enforces off-chain rules: in a single verdict it can slash insurance **and bar both the oracle and
+the market creator** from the platform, temporarily or permanently. **Committee/DAO mode
+(`dispute_mode = 0`) has no ban power by design** — a public hearing only slashes insurance (scaled by
+consensus strength) and adjusts reputation via `pm_dispute_finalize`; it never bans.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -607,6 +622,11 @@ Disputer forfeits the whole dispute_fee → oracle (100%, compensation).   // no
 | `ban_oracle_until` | unix ts / 0 | 0=permanent, >0=expires |
 | `ban_creator` | 0/1 | Ban creator |
 | `ban_creator_until` | unix ts / 0 | 0=permanent, >0=expires |
+
+A ban records the issuing `resolver` in the target's `banned_by`. **Lifting a ban:** the same resolver
+may lift it **early** with **`pm_unban`** (op ID 99, `unban_oracle` / `unban_creator`); otherwise it simply
+lapses at `banned_until`, at which point the per-block cron clears it and emits the **`pm_ban_expired`**
+virtual op (ID 100) so history/indexers observe the lift.
 
 ### Auto-Close (14-day fallback)
 
@@ -917,19 +937,19 @@ reputation counters the prototype kept on a `users` table are now fields on `pm_
 
 | Object (index) | Holds | Looked up by |
 |---|---|---|
-| `pm_oracle_object` | oracle registration, insurance, the 14 reputation counters, fault stamps, bans | owner |
-| `pm_market_object` | market config, CPMM reserves (`reserve_a/b`, `k`), `*_fee_percent` (bp), `status` / `payout_status`, timers, `dispute_mode`, `a_bets_sum` / `b_bets_sum` | id / creator / oracle / result_expiration |
+| `pm_oracle_object` | oracle registration, insurance, the 14 reputation counters, fault stamps, ban (`banned_until` + `banned_by`) | owner |
+| `pm_market_object` | market config, CPMM reserves (`reserve_a/b`, `k`), `*_fee_percent` (bp), `status` / `payout_status`, timers, `dispute_mode`, `a_bets_sum` / `b_bets_sum`, oracle resolution statement (`decision_url` / `decision_reason`) | id / creator / oracle / result_expiration |
 | `pm_outcome_object` | per-outcome LMSR `q`, `bets_sum`, `bets_count` (multi markets) | market + outcome |
 | `pm_bet_object` | a bet — account, `side` / `outcome_index`, `amount`, curve `weight`, `time_penalty`, `status`, `mode` | market / account |
 | `pm_liquidity_object` | an LP position — principal, deposit time, time-weight; `provider` empty ⇒ lazy-pool LP | market |
 | `pm_commit_object` | a commit-reveal commitment hash + escrow (batch / commit-reveal) | market / account |
-| `pm_dispute_object` | a dispute — disputer, `proposed_outcome`, fee escrow, timers, `status`, `dispute_mode` | market |
+| `pm_dispute_object` | a dispute — disputer, `proposed_outcome`, fee escrow, timers, `status`, `dispute_mode`, oracle rebuttal (`oracle_response` / `oracle_response_time`) | market |
 | `pm_dispute_vote_object` | one committee ballot — voter, `vote_outcome`, `vote_percent` (revisable until close) | market + voter |
 | `pm_lazy_pool_object` | the singleton pool — `free_balance` / `allocated_balance` / `earned_balance`, `reward_per_share`, `leverage_fund_used`, `total_shares` | singleton (id 0) |
 | `pm_lazy_deposit_object` | a depositor — shares, reward snapshot, unlock time | account |
 | `pm_lazy_allocation_object` | the pool's silent LP allocation to one market + graduated-recall state (`bets_sum_at_check`, `check_step`, `recalled_amount`) | market |
 | `pm_leverage_position_object` | an open leveraged position — collateral, loan, obligation, curve weight, `status` | account / market + status |
-| `pm_creator_ban_object` | a banned creator — `banned_until`, `ban_count` | ban account |
+| `pm_creator_ban_object` | a banned creator — `banned_until`, `ban_count`, `banned_by` | ban account |
 
 Reputation metrics are computed on read (`compute_oracle_reliability_score()` — §14), not stored. All
 percentage fields are basis points (`*_percent`, bp). Lazy-pool per-market allocations and

@@ -3231,7 +3231,7 @@ BOOST_AUTO_TEST_CASE(auto_accept_resolver_and_creator_pins_gate_creation) {
     };
 
     const auto& oidx = node.db().get_index<pm_oracle_index>().indices().get<by_owner>();
-    auto orac_it = oidx.find("orac");
+    auto orac_it = oidx.find(account_name_type("orac"));
     BOOST_REQUIRE(orac_it != oidx.end());
 
     // M0 — carol + committee ⇒ auto-accepted at creation (live), oracle's LIST terms frozen.
@@ -4316,6 +4316,577 @@ BOOST_AUTO_TEST_CASE(odds_drift_multi_1000) {
     }
     run_drift_market(node, gp, when, /*binary=*/false, /*outcomes=*/3, feeBp, outc, stk, market_id,
                      "MULTI/LMSR (50/30/20)");
+}
+
+// #58 — Oracle rebuttal on a dispute (pm_dispute_oracle_respond) + resolution justification stored
+// on the market (pm_resolve_market.decision_reason / decision_url). Account-mode market so a named
+// dispute exists to rebut.
+BOOST_AUTO_TEST_CASE(oracle_rebuttal_and_decision_reason) {
+    auto gp = make_genesis_params(0x58EEu, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-rebuttal", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping rebuttal.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    {
+        chain_properties_pm props;
+        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_fee       = asset(unit, TOKEN_SYMBOL);
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+    }
+
+    auto orac_key = derive_key("orac"), judge_key = derive_key("judge");
+    const int64_t reg_fee = mp.pm_oracle_registration_fee.amount.value;
+    create_and_fund(node, gp, when, "orac", orac_key,
+                    share_type(mp.pm_min_oracle_insurance.amount.value + reg_fee + unit * 2));
+    create_and_fund(node, gp, when, "judge", judge_key, share_type(unit * 2));
+    pm_oracle_register_operation oreg;
+    oreg.owner = "orac"; oreg.insurance = mp.pm_min_oracle_insurance;
+    oreg.fixed_fee = asset(0, TOKEN_SYMBOL); oreg.rules_url = "";
+    node.push_pending_transaction(sign_ops({oreg}, orac_key, node));
+    produce(node, gp, when);
+
+    auto alice_key = derive_key("alice"), bob_key = derive_key("bob");
+    create_and_fund(node, gp, when, "alice", alice_key, share_type(unit * 4));
+    create_and_fund(node, gp, when, "bob",   bob_key,   share_type(unit * 4));
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = "orac";
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(30);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(90);
+    cm.allow_early_resolution = true;
+    cm.dispute_mode = 1; cm.dispute_resolver = "judge";
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+
+    pm_oracle_accept_market_operation acc;
+    acc.oracle = "orac"; acc.market_id = 0; acc.accept = true;
+    node.push_pending_transaction(sign_ops({acc}, orac_key, node));
+    produce(node, gp, when);
+
+    pm_place_bet_operation ba;
+    ba.account = "alice"; ba.market_id = 0; ba.side = 0; ba.outcome_index = -1;
+    ba.amount = asset(share_type(unit), TOKEN_SYMBOL); ba.mode = 0;
+    pm_place_bet_operation bb = ba; bb.account = "bob"; bb.side = 1;
+    node.push_pending_transaction(sign_ops({ba}, alice_key, node));
+    node.push_pending_transaction(sign_ops({bb}, bob_key, node));
+    produce(node, gp, when);
+
+    for (int i = 0; i < 15; ++i) produce(node, gp, when);
+    pm_resolve_market_operation rm;
+    rm.oracle = "orac"; rm.market_id = 0; rm.winning_outcome = 0;
+    rm.decision_url = "https://evidence.example/x"; rm.decision_reason = "A clearly won per source";
+    node.push_pending_transaction(sign_ops({rm}, orac_key, node));
+    produce(node, gp, when);
+
+    // J: the oracle's justification is stored on the market and readable directly.
+    {
+        const auto& m = node.db().get<pm_market_object>(market_id);
+        BOOST_CHECK_EQUAL(to_string(m.decision_url), std::string("https://evidence.example/x"));
+        BOOST_CHECK_EQUAL(to_string(m.decision_reason), std::string("A clearly won per source"));
+    }
+
+    pm_dispute_create_operation dc;
+    dc.disputer = "bob"; dc.market_id = 0; dc.proposed_outcome = 1; dc.reason = "B won";
+    node.push_pending_transaction(sign_ops({dc}, bob_key, node));
+    produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 2);
+
+    // D: a non-oracle cannot rebut.
+    pm_dispute_oracle_respond_operation badresp;
+    badresp.oracle = "alice"; badresp.market_id = 0; badresp.response = "not mine";
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({badresp}, alice_key, node)),
+                      std::runtime_error);
+
+    // D: the market oracle rebuts; the response is stored on the dispute for all viewers.
+    pm_dispute_oracle_respond_operation resp;
+    resp.oracle = "orac"; resp.market_id = 0; resp.response = "Source confirms A; dispute is wrong";
+    node.push_pending_transaction(sign_ops({resp}, orac_key, node));
+    produce(node, gp, when);
+
+    const auto& didx = node.db().get_index<pm_dispute_index>().indices().get<by_market>();
+    auto dit = didx.find(market_id);
+    BOOST_REQUIRE(dit != didx.end());
+    BOOST_CHECK_EQUAL(to_string(dit->oracle_response), std::string("Source confirms A; dispute is wrong"));
+    BOOST_CHECK(dit->oracle_response_time != fc::time_point_sec());
+    BOOST_TEST_MESSAGE("rebuttal stored; decision_reason persisted on market");
+}
+
+// #59 — Manual unban (pm_unban): the account-mode resolver that imposed an oracle+creator ban lifts
+// it early; a non-issuer is rejected; the creator can then open a market again.
+BOOST_AUTO_TEST_CASE(resolver_unban_lifts_ban) {
+    auto gp = make_genesis_params(0x59BAu, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-unban", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping unban.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    const int64_t creation_fee = mp.pm_market_creation_fee.amount.value;
+    {
+        chain_properties_pm props;
+        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_fee       = asset(unit, TOKEN_SYMBOL);
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+    }
+
+    auto orac_key = derive_key("orac"), judge_key = derive_key("judge"), maker_key = derive_key("maker");
+    const int64_t reg_fee = mp.pm_oracle_registration_fee.amount.value;
+    create_and_fund(node, gp, when, "orac", orac_key,
+                    share_type(mp.pm_min_oracle_insurance.amount.value + reg_fee + unit * 2));
+    create_and_fund(node, gp, when, "judge", judge_key, share_type(unit * 2));
+    create_and_fund(node, gp, when, "maker", maker_key, share_type(creation_fee * 4 + unit * 20));
+    pm_oracle_register_operation oreg;
+    oreg.owner = "orac"; oreg.insurance = mp.pm_min_oracle_insurance;
+    oreg.fixed_fee = asset(0, TOKEN_SYMBOL); oreg.rules_url = "";
+    node.push_pending_transaction(sign_ops({oreg}, orac_key, node));
+    produce(node, gp, when);
+
+    auto alice_key = derive_key("alice"), bob_key = derive_key("bob");
+    create_and_fund(node, gp, when, "alice", alice_key, share_type(unit * 4));
+    create_and_fund(node, gp, when, "bob",   bob_key,   share_type(unit * 4));
+
+    pm_create_market_operation cm;
+    cm.creator = "maker"; cm.oracle = "orac";
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(30);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(90);
+    cm.allow_early_resolution = true;
+    cm.dispute_mode = 1; cm.dispute_resolver = "judge";
+    node.push_pending_transaction(sign_ops({cm}, maker_key, node));
+    produce(node, gp, when);
+
+    pm_oracle_accept_market_operation acc;
+    acc.oracle = "orac"; acc.market_id = 0; acc.accept = true;
+    node.push_pending_transaction(sign_ops({acc}, orac_key, node));
+    produce(node, gp, when);
+
+    pm_place_bet_operation ba;
+    ba.account = "alice"; ba.market_id = 0; ba.side = 0; ba.outcome_index = -1;
+    ba.amount = asset(share_type(unit), TOKEN_SYMBOL); ba.mode = 0;
+    pm_place_bet_operation bb = ba; bb.account = "bob"; bb.side = 1;
+    node.push_pending_transaction(sign_ops({ba}, alice_key, node));
+    node.push_pending_transaction(sign_ops({bb}, bob_key, node));
+    produce(node, gp, when);
+
+    for (int i = 0; i < 15; ++i) produce(node, gp, when);
+    pm_resolve_market_operation rm;
+    rm.oracle = "orac"; rm.market_id = 0; rm.winning_outcome = 0;
+    node.push_pending_transaction(sign_ops({rm}, orac_key, node));
+    produce(node, gp, when);
+
+    pm_dispute_create_operation dc;
+    dc.disputer = "bob"; dc.market_id = 0; dc.proposed_outcome = 1; dc.reason = "B won";
+    node.push_pending_transaction(sign_ops({dc}, bob_key, node));
+    produce(node, gp, when);
+
+    // Resolver flips + bans BOTH the oracle and the creator far into the future.
+    const fc::time_point_sec ban_until = node.head_block_time() + fc::seconds(1000000);
+    pm_dispute_resolve_operation dr;
+    dr.resolver = "judge"; dr.market_id = 0; dr.correct_outcome = 1;
+    dr.penalty_amount = asset(unit, TOKEN_SYMBOL);
+    dr.ban_oracle = true;  dr.ban_oracle_until  = ban_until;
+    dr.ban_creator = true; dr.ban_creator_until = ban_until;
+    node.push_pending_transaction(sign_ops({dr}, judge_key, node));
+    produce(node, gp, when);
+
+    const auto& oidx = node.db().get_index<pm_oracle_index>().indices().get<by_owner>();
+    const auto& cbidx = node.db().get_index<pm_creator_ban_index>().indices().get<by_ban_account>();
+    BOOST_REQUIRE(oidx.find(account_name_type("orac"))->banned_until == ban_until);
+    BOOST_REQUIRE(oidx.find(account_name_type("orac"))->banned_by == account_name_type("judge"));
+    BOOST_REQUIRE(cbidx.find(account_name_type("maker")) != cbidx.end());
+    BOOST_REQUIRE(cbidx.find(account_name_type("maker"))->banned_until == ban_until);
+
+    // A non-issuer cannot lift the ban.
+    pm_unban_operation badu;
+    badu.resolver = "alice"; badu.target = "maker"; badu.unban_creator = true;
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({badu}, alice_key, node)),
+                      std::runtime_error);
+
+    // The issuing resolver lifts both bans.
+    pm_unban_operation u;
+    u.resolver = "judge"; u.target = "orac"; u.unban_oracle = true;
+    node.push_pending_transaction(sign_ops({u}, judge_key, node));
+    pm_unban_operation u2;
+    u2.resolver = "judge"; u2.target = "maker"; u2.unban_creator = true;
+    node.push_pending_transaction(sign_ops({u2}, judge_key, node));
+    produce(node, gp, when);
+
+    BOOST_CHECK(oidx.find(account_name_type("orac"))->banned_until == fc::time_point_sec(0));
+    BOOST_CHECK(cbidx.find(account_name_type("maker"))->banned_until == fc::time_point_sec(0));
+
+    // The un-banned creator can open a new market again.
+    pm_create_market_operation cm2;
+    cm2.creator = "maker"; cm2.oracle = "orac";
+    cm2.market_type = 0; cm2.outcomes = {"A", "B"}; cm2.url = "again";
+    cm2.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm2.betting_expiration = node.head_block_time() + fc::seconds(30);
+    cm2.result_expiration  = node.head_block_time() + fc::seconds(90);
+    cm2.dispute_mode = 1; cm2.dispute_resolver = "judge";
+    BOOST_CHECK_NO_THROW(node.push_pending_transaction(sign_ops({cm2}, maker_key, node)));
+    produce(node, gp, when);
+    BOOST_TEST_MESSAGE("unban: judge lifted oracle+creator bans; maker re-created a market");
+}
+
+// #60 — Automatic ban expiry: a short creator ban lapses at banned_until and the per-block cron
+// clears it (banned_until → 0) and emits pm_ban_expired, after which the creator can act again.
+BOOST_AUTO_TEST_CASE(creator_ban_auto_expires) {
+    auto gp = make_genesis_params(0x60AEu, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-banexpiry", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping ban expiry.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    const int64_t creation_fee = mp.pm_market_creation_fee.amount.value;
+    {
+        chain_properties_pm props;
+        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_fee       = asset(unit, TOKEN_SYMBOL);
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+    }
+
+    auto orac_key = derive_key("orac"), judge_key = derive_key("judge"), maker_key = derive_key("maker");
+    const int64_t reg_fee = mp.pm_oracle_registration_fee.amount.value;
+    create_and_fund(node, gp, when, "orac", orac_key,
+                    share_type(mp.pm_min_oracle_insurance.amount.value + reg_fee + unit * 2));
+    create_and_fund(node, gp, when, "judge", judge_key, share_type(unit * 2));
+    create_and_fund(node, gp, when, "maker", maker_key, share_type(creation_fee * 4 + unit * 20));
+    pm_oracle_register_operation oreg;
+    oreg.owner = "orac"; oreg.insurance = mp.pm_min_oracle_insurance;
+    oreg.fixed_fee = asset(0, TOKEN_SYMBOL); oreg.rules_url = "";
+    node.push_pending_transaction(sign_ops({oreg}, orac_key, node));
+    produce(node, gp, when);
+
+    auto alice_key = derive_key("alice"), bob_key = derive_key("bob");
+    create_and_fund(node, gp, when, "alice", alice_key, share_type(unit * 4));
+    create_and_fund(node, gp, when, "bob",   bob_key,   share_type(unit * 4));
+
+    pm_create_market_operation cm;
+    cm.creator = "maker"; cm.oracle = "orac";
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(30);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(90);
+    cm.allow_early_resolution = true;
+    cm.dispute_mode = 1; cm.dispute_resolver = "judge";
+    node.push_pending_transaction(sign_ops({cm}, maker_key, node));
+    produce(node, gp, when);
+
+    pm_oracle_accept_market_operation acc;
+    acc.oracle = "orac"; acc.market_id = 0; acc.accept = true;
+    node.push_pending_transaction(sign_ops({acc}, orac_key, node));
+    produce(node, gp, when);
+
+    pm_place_bet_operation ba;
+    ba.account = "alice"; ba.market_id = 0; ba.side = 0; ba.outcome_index = -1;
+    ba.amount = asset(share_type(unit), TOKEN_SYMBOL); ba.mode = 0;
+    pm_place_bet_operation bb = ba; bb.account = "bob"; bb.side = 1;
+    node.push_pending_transaction(sign_ops({ba}, alice_key, node));
+    node.push_pending_transaction(sign_ops({bb}, bob_key, node));
+    produce(node, gp, when);
+
+    for (int i = 0; i < 15; ++i) produce(node, gp, when);
+    pm_resolve_market_operation rm;
+    rm.oracle = "orac"; rm.market_id = 0; rm.winning_outcome = 0;
+    node.push_pending_transaction(sign_ops({rm}, orac_key, node));
+    produce(node, gp, when);
+
+    pm_dispute_create_operation dc;
+    dc.disputer = "bob"; dc.market_id = 0; dc.proposed_outcome = 1; dc.reason = "B won";
+    node.push_pending_transaction(sign_ops({dc}, bob_key, node));
+    produce(node, gp, when);
+
+    // Ban the creator for a SHORT window (~9s ≈ 3 blocks).
+    const fc::time_point_sec ban_until = node.head_block_time() + fc::seconds(9);
+    pm_dispute_resolve_operation dr;
+    dr.resolver = "judge"; dr.market_id = 0; dr.correct_outcome = 1;
+    dr.penalty_amount = asset(unit, TOKEN_SYMBOL);
+    dr.ban_creator = true; dr.ban_creator_until = ban_until;
+    node.push_pending_transaction(sign_ops({dr}, judge_key, node));
+    produce(node, gp, when);
+
+    const auto& cbidx = node.db().get_index<pm_creator_ban_index>().indices().get<by_ban_account>();
+    BOOST_REQUIRE(cbidx.find(account_name_type("maker"))->banned_until == ban_until);
+
+    // Advance past banned_until; the cron sweep clears it (→ 0) and emits pm_ban_expired.
+    for (int i = 0; i < 20 &&
+                    cbidx.find(account_name_type("maker"))->banned_until != fc::time_point_sec(0); ++i)
+        produce(node, gp, when);
+    BOOST_CHECK(cbidx.find(account_name_type("maker"))->banned_until == fc::time_point_sec(0));
+
+    // Creator can act again after automatic expiry.
+    pm_create_market_operation cm2;
+    cm2.creator = "maker"; cm2.oracle = "orac";
+    cm2.market_type = 0; cm2.outcomes = {"A", "B"}; cm2.url = "afterexpiry";
+    cm2.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm2.betting_expiration = node.head_block_time() + fc::seconds(30);
+    cm2.result_expiration  = node.head_block_time() + fc::seconds(90);
+    cm2.dispute_mode = 1; cm2.dispute_resolver = "judge";
+    BOOST_CHECK_NO_THROW(node.push_pending_transaction(sign_ops({cm2}, maker_key, node)));
+    produce(node, gp, when);
+    BOOST_TEST_MESSAGE("ban auto-expired via cron; maker re-created a market");
+}
+
+// #61 — Ban-expiry virtual op. A short oracle+creator ban lapses; the cron emits pm_ban_expired
+// (one per lifted ban, carrying the account and which ban(s) lifted).
+BOOST_AUTO_TEST_CASE(ban_expired_vop_emitted) {
+    auto gp = make_genesis_params(0x61EEu, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-banvop", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping ban-expiry vop.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    const int64_t creation_fee = mp.pm_market_creation_fee.amount.value;
+    {
+        chain_properties_pm props;
+        props.pm_dispute_grace_sec = 30;
+        props.pm_dispute_fee       = asset(unit, TOKEN_SYMBOL);
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 && mp.pm_dispute_grace_sec != 30; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_dispute_grace_sec, 30u);
+    }
+
+    auto orac_key = derive_key("orac"), judge_key = derive_key("judge"), maker_key = derive_key("maker");
+    const int64_t reg_fee = mp.pm_oracle_registration_fee.amount.value;
+    create_and_fund(node, gp, when, "orac", orac_key,
+                    share_type(mp.pm_min_oracle_insurance.amount.value + reg_fee + unit * 2));
+    create_and_fund(node, gp, when, "judge", judge_key, share_type(unit * 2));
+    create_and_fund(node, gp, when, "maker", maker_key, share_type(creation_fee * 4 + unit * 20));
+    pm_oracle_register_operation oreg;
+    oreg.owner = "orac"; oreg.insurance = mp.pm_min_oracle_insurance;
+    oreg.fixed_fee = asset(0, TOKEN_SYMBOL); oreg.rules_url = "";
+    node.push_pending_transaction(sign_ops({oreg}, orac_key, node));
+    produce(node, gp, when);
+
+    auto alice_key = derive_key("alice"), bob_key = derive_key("bob");
+    create_and_fund(node, gp, when, "alice", alice_key, share_type(unit * 4));
+    create_and_fund(node, gp, when, "bob",   bob_key,   share_type(unit * 4));
+
+    pm_create_market_operation cm;
+    cm.creator = "maker"; cm.oracle = "orac";
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(30);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(90);
+    cm.allow_early_resolution = true;
+    cm.dispute_mode = 1; cm.dispute_resolver = "judge";
+    node.push_pending_transaction(sign_ops({cm}, maker_key, node));
+    produce(node, gp, when);
+
+    pm_oracle_accept_market_operation acc;
+    acc.oracle = "orac"; acc.market_id = 0; acc.accept = true;
+    node.push_pending_transaction(sign_ops({acc}, orac_key, node));
+    produce(node, gp, when);
+
+    pm_place_bet_operation ba;
+    ba.account = "alice"; ba.market_id = 0; ba.side = 0; ba.outcome_index = -1;
+    ba.amount = asset(share_type(unit), TOKEN_SYMBOL); ba.mode = 0;
+    pm_place_bet_operation bb = ba; bb.account = "bob"; bb.side = 1;
+    node.push_pending_transaction(sign_ops({ba}, alice_key, node));
+    node.push_pending_transaction(sign_ops({bb}, bob_key, node));
+    produce(node, gp, when);
+
+    for (int i = 0; i < 15; ++i) produce(node, gp, when);
+    pm_resolve_market_operation rm;
+    rm.oracle = "orac"; rm.market_id = 0; rm.winning_outcome = 0;
+    node.push_pending_transaction(sign_ops({rm}, orac_key, node));
+    produce(node, gp, when);
+
+    pm_dispute_create_operation dc;
+    dc.disputer = "bob"; dc.market_id = 0; dc.proposed_outcome = 1; dc.reason = "B won";
+    node.push_pending_transaction(sign_ops({dc}, bob_key, node));
+    produce(node, gp, when);
+
+    const fc::time_point_sec ban_until = node.head_block_time() + fc::seconds(9);
+    pm_dispute_resolve_operation dr;
+    dr.resolver = "judge"; dr.market_id = 0; dr.correct_outcome = 1;
+    dr.penalty_amount = asset(unit, TOKEN_SYMBOL);
+    dr.ban_oracle = true;  dr.ban_oracle_until  = ban_until;
+    dr.ban_creator = true; dr.ban_creator_until = ban_until;
+    node.push_pending_transaction(sign_ops({dr}, judge_key, node));
+    produce(node, gp, when);
+
+    // Capture pm_ban_expired vops emitted by the cron once banned_until lapses.
+    std::vector<pm_ban_expired_operation> lifts;
+    node.db().enable_plugins_on_push_transaction(true);
+    auto conn = node.db().post_apply_operation.connect([&](const operation_notification& note) {
+        if (note.op.which() == operation::tag<pm_ban_expired_operation>::value)
+            lifts.push_back(note.op.get<pm_ban_expired_operation>());
+    });
+
+    for (int i = 0; i < 20 && lifts.size() < 2; ++i) produce(node, gp, when);
+    conn.disconnect();
+
+    bool oracle_lift = false, creator_lift = false;
+    for (const auto& l : lifts) {
+        if (l.account == account_name_type("orac")  && l.oracle)  oracle_lift = true;
+        if (l.account == account_name_type("maker") && l.creator) creator_lift = true;
+    }
+    BOOST_CHECK(oracle_lift);
+    BOOST_CHECK(creator_lift);
+    const auto& oidx = node.db().get_index<pm_oracle_index>().indices().get<by_owner>();
+    const auto& cbidx = node.db().get_index<pm_creator_ban_index>().indices().get<by_ban_account>();
+    BOOST_CHECK(oidx.find(account_name_type("orac"))->banned_until == fc::time_point_sec(0));
+    BOOST_CHECK(cbidx.find(account_name_type("maker"))->banned_until == fc::time_point_sec(0));
+    BOOST_TEST_MESSAGE("pm_ban_expired emitted for oracle+creator on auto-expiry");
+}
+
+// #62 — No-contest stores its rationale on the market as decision_reason (readable via get_market).
+BOOST_AUTO_TEST_CASE(no_contest_records_decision_reason) {
+    auto gp = make_genesis_params(0x62AAu, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-nocontest-reason", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping no-contest reason.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+
+    pm_oracle_register_operation oreg;
+    oreg.owner = gp.initiator_name; oreg.insurance = mp.pm_min_oracle_insurance;
+    oreg.fixed_fee = asset(0, TOKEN_SYMBOL); oreg.rules_url = "";
+    node.push_pending_transaction(sign_ops({oreg}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    auto alice_key = derive_key("alice");
+    create_and_fund(node, gp, when, "alice", alice_key, share_type(unit * 4));
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(30);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(90);
+    cm.allow_early_resolution = true; cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+
+    pm_place_bet_operation ba;
+    ba.account = "alice"; ba.market_id = 0; ba.side = 0; ba.outcome_index = -1;
+    ba.amount = asset(share_type(unit), TOKEN_SYMBOL); ba.mode = 0;
+    node.push_pending_transaction(sign_ops({ba}, alice_key, node));
+    produce(node, gp, when);
+
+    pm_no_contest_operation nc;
+    nc.oracle = gp.initiator_name; nc.market_id = 0;
+    nc.reason = "source unavailable, cannot verify";
+    node.push_pending_transaction(sign_ops({nc}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    const auto& m = node.db().get<pm_market_object>(market_id);
+    BOOST_CHECK_EQUAL(m.resolved_outcome, -1);
+    BOOST_CHECK_EQUAL(to_string(m.decision_reason), std::string("source unavailable, cannot verify"));
+    BOOST_TEST_MESSAGE("no-contest reason stored on market.decision_reason");
+}
+
+// #63 — pm_unban guards: lifting a ban that does not exist / is not active is rejected.
+BOOST_AUTO_TEST_CASE(unban_rejected_when_not_banned) {
+    auto gp = make_genesis_params(0x63BBu, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-unban-guard", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping unban guard.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    const int64_t reg_fee = mp.pm_oracle_registration_fee.amount.value;
+
+    auto orac_key = derive_key("orac"), judge_key = derive_key("judge");
+    create_and_fund(node, gp, when, "orac", orac_key,
+                    share_type(mp.pm_min_oracle_insurance.amount.value + reg_fee + unit * 2));
+    create_and_fund(node, gp, when, "judge", judge_key, share_type(unit * 2));
+    pm_oracle_register_operation oreg;
+    oreg.owner = "orac"; oreg.insurance = mp.pm_min_oracle_insurance;
+    oreg.fixed_fee = asset(0, TOKEN_SYMBOL); oreg.rules_url = "";
+    node.push_pending_transaction(sign_ops({oreg}, orac_key, node));
+    produce(node, gp, when);
+
+    // Oracle exists but is NOT banned → unban_oracle is rejected.
+    pm_unban_operation u1;
+    u1.resolver = "judge"; u1.target = "orac"; u1.unban_oracle = true;
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({u1}, judge_key, node)),
+                      std::runtime_error);
+
+    // No creator-ban row for the target → unban_creator is rejected.
+    pm_unban_operation u2;
+    u2.resolver = "judge"; u2.target = "orac"; u2.unban_creator = true;
+    BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({u2}, judge_key, node)),
+                      std::runtime_error);
+    BOOST_TEST_MESSAGE("unban rejected when there is no active ban");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

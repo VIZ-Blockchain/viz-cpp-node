@@ -134,6 +134,7 @@ All median-voted; see [Prediction Market Operations](../protocol/operations/pred
 All PM percentages are **bp (10000 = 100.00%)**, like the other `*_percent` properties — no permille (‰) anywhere.
 
 - **Oracle:** `pm_min_oracle_insurance`, `pm_max_oracle_fee_percent` (the *only* governed fee cap — on the oracle %), `pm_oracle_registration_fee`, `pm_oracle_penalty_percent`, `pm_oracle_dispute_response_sec`.
+- **Risk / coverage** *(percent of a market's betting volume, 100 = 1.0×):* `pm_listing_min_coverage_percent` (250 = 2.5×) — markets whose oracle insurance covers less than this share of their volume are hidden from the default `list_markets` catalog (revealed via `show_risky`); `pm_betting_min_coverage_percent` (150 = 1.5×) — advisory threshold, published for clients to require an explicit risk confirmation before betting (not enforced on-chain; must be `≤ pm_listing_min_coverage_percent`).
 - **Market:** `pm_min_liquidity`, `pm_market_creation_fee`, `pm_max_outcomes`, `pm_max_market_duration`. *(There is no aggregate fee cap; creator/liquidity fees are uncapped and self-limiting, with a static `sum ≤ 100%` solvency bound.)*
 - **Batch / commit-reveal:** `pm_batch_epoch_blocks`, `pm_reveal_window_blocks`, `pm_min_batch_bet`, `pm_commit_no_reveal_penalty_percent`, `pm_commit_reveal_enabled`.
 - **Disputes:** `pm_dispute_fee`, `pm_dispute_grace_sec`, `pm_dispute_vote_period_sec`, `pm_dispute_auto_close_sec`, `pm_dispute_approve_min_percent`, `pm_no_contest_penalty_percent`, `pm_dispute_reward_multiplier` (bp multiplier, 10000 = 1×).

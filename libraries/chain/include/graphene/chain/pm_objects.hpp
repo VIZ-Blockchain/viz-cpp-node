@@ -57,6 +57,7 @@ namespace graphene { namespace chain {
             account_name_type auto_accept_creator;
             account_name_type auto_accept_resolver;
             bool              auto_accept = false;
+            account_name_type banned_by;   ///< resolver that set banned_until (empty if unset); may pm_unban
         };
 
         struct by_owner;
@@ -78,7 +79,8 @@ namespace graphene { namespace chain {
         public:
             pm_market_object() = delete;
             template<typename Constructor, typename Allocator>
-            pm_market_object(Constructor&& c, allocator<Allocator> a) : url(a), metadata(a) { c(*this); }
+            pm_market_object(Constructor&& c, allocator<Allocator> a)
+                : url(a), metadata(a), decision_url(a), decision_reason(a) { c(*this); }
 
             id_type           id;
             account_name_type creator;
@@ -130,6 +132,11 @@ namespace graphene { namespace chain {
                                                            ///< successful dispute (>0 slash % of
                                                            ///< insurance ×consensus; <0 good-faith
                                                            ///< oracle bonus from fee; 0 none)
+            // Oracle's resolution statement, stored on-chain (like an oracle/validator's rules_url):
+            // set by pm_resolve_market (both) or pm_no_contest (reason → decision_reason). Empty until
+            // resolved. Readable directly via get_market — no history scan needed.
+            shared_string     decision_url;       ///< evidence link the oracle cited when resolving
+            shared_string     decision_reason;    ///< oracle's free-text justification (or NO-CONTEST reason)
         };
 
         struct by_creator;
@@ -371,7 +378,7 @@ namespace graphene { namespace chain {
         public:
             pm_dispute_object() = delete;
             template<typename Constructor, typename Allocator>
-            pm_dispute_object(Constructor&& c, allocator<Allocator> a) : reason(a) { c(*this); }
+            pm_dispute_object(Constructor&& c, allocator<Allocator> a) : reason(a), oracle_response(a) { c(*this); }
 
             id_type           id;
             pm_market_id_type market;
@@ -385,6 +392,8 @@ namespace graphene { namespace chain {
             time_point_sec    auto_close_time;
             int16_t           proposed_outcome = -1;
             uint8_t           status = 0;   ///< 0 open,1 oracle-wrong,2 oracle-right,3 auto-closed
+            shared_string     oracle_response;          ///< oracle's public rebuttal (empty until it responds)
+            time_point_sec    oracle_response_time;     ///< when the rebuttal was posted (0 = none)
         };
 
         struct by_voting_end;
@@ -605,16 +614,27 @@ namespace graphene { namespace chain {
 
             id_type           id;
             account_name_type creator;
-            time_point_sec    banned_until;   ///< time_point_sec::maximum() = permanent
+            time_point_sec    banned_until;   ///< time_point_sec::maximum() = permanent; past = not banned
             uint32_t          ban_count = 0;
+            account_name_type banned_by;      ///< resolver that set the current ban (may pm_unban)
         };
 
         struct by_ban_account;
+        struct by_ban_expiry;
         typedef multi_index_container<
             pm_creator_ban_object,
             indexed_by<
                 ordered_unique<tag<by_id>, member<pm_creator_ban_object, pm_creator_ban_id_type, &pm_creator_ban_object::id>>,
-                ordered_unique<tag<by_ban_account>, member<pm_creator_ban_object, account_name_type, &pm_creator_ban_object::creator>, string_less>
+                ordered_unique<tag<by_ban_account>, member<pm_creator_ban_object, account_name_type, &pm_creator_ban_object::creator>, string_less>,
+                // (banned_until, id): the per-block cron sweeps expired temp bans oldest-first. Cleared
+                // bans have banned_until = 0 (past), permanent bans = maximum(), so the sweep skips both.
+                ordered_unique<tag<by_ban_expiry>,
+                    composite_key<pm_creator_ban_object,
+                        member<pm_creator_ban_object, time_point_sec, &pm_creator_ban_object::banned_until>,
+                        member<pm_creator_ban_object, pm_creator_ban_id_type, &pm_creator_ban_object::id>
+                    >,
+                    composite_key_compare<std::less<time_point_sec>, std::less<pm_creator_ban_id_type>>
+                >
             >,
             allocator<pm_creator_ban_object>
         > pm_creator_ban_index;
@@ -626,7 +646,7 @@ FC_REFLECT((graphene::chain::pm_oracle_object),
     (markets_accepted)(markets_resolved)(no_contest_count)(missed_count)(disputes_received)(disputes_lost)
     (disputes_won)(disputes_auto_closed)(dispute_responses_missed)(total_volume_resolved)(total_insurance_slashed)
     (avg_resolution_time)(penalty_stamps)(bans_received)(last_penalty_stamp_time)
-    (auto_accept_creator)(auto_accept_resolver)(auto_accept))
+    (auto_accept_creator)(auto_accept_resolver)(auto_accept)(banned_by))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_oracle_object, graphene::chain::pm_oracle_index)
 
 FC_REFLECT((graphene::chain::pm_market_object),
@@ -635,7 +655,7 @@ FC_REFLECT((graphene::chain::pm_market_object),
     (bets_sum)(liquidity_sum)(oracle_fee_percent)(creator_fee_percent)(liquidity_fee_percent)(oracle_fixed_fee)
     (liquidity_fee_earned)(forfeit_pool)(time_penalty_type)(time_penalty_value)(penalty_curve_type)
     (allow_early_resolution)(allow_cancellation)(allow_batch)(allow_instant_bet)(endogeneity_tier)(current_epoch)
-    (dispute_mode)(dispute_resolver)(dispute_penalty_percent)(metadata))
+    (dispute_mode)(dispute_resolver)(dispute_penalty_percent)(metadata)(decision_url)(decision_reason))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_market_object, graphene::chain::pm_market_index)
 
 FC_REFLECT((graphene::chain::pm_outcome_object),
@@ -657,7 +677,7 @@ CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_commit_object, graphene::chain::pm_
 
 FC_REFLECT((graphene::chain::pm_dispute_object),
     (id)(market)(disputer)(dispute_fee)(reason)(filed_time)(oracle_response_deadline)(dispute_mode)
-    (voting_end_time)(auto_close_time)(proposed_outcome)(status))
+    (voting_end_time)(auto_close_time)(proposed_outcome)(status)(oracle_response)(oracle_response_time))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_dispute_object, graphene::chain::pm_dispute_index)
 
 FC_REFLECT((graphene::chain::pm_dispute_vote_object),
@@ -684,5 +704,5 @@ FC_REFLECT((graphene::chain::pm_leverage_position_object),
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_leverage_position_object, graphene::chain::pm_leverage_position_index)
 
 FC_REFLECT((graphene::chain::pm_creator_ban_object),
-    (id)(creator)(banned_until)(ban_count))
+    (id)(creator)(banned_until)(ban_count)(banned_by))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_creator_ban_object, graphene::chain::pm_creator_ban_index)

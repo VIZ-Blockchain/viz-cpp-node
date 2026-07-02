@@ -134,6 +134,7 @@
 所有 PM 百分比均以 bp 计（10000 = 100.00%），与其他 `*_percent` 一致；不再使用千分比（‰）。
 
 - **预言机：** `pm_min_oracle_insurance`、`pm_max_oracle_fee_percent`（**唯一**的费率治理上限——针对预言机 %）、`pm_oracle_registration_fee`、`pm_oracle_penalty_percent`、`pm_oracle_dispute_response_sec`。
+- **风险 / 覆盖率** *（市场下注量的百分比，100 = 1.0×）：* `pm_listing_min_coverage_percent`（250 = 2.5×）——预言机保险覆盖低于其下注量此比例的市场，会从默认 `list_markets` 目录中隐藏（经 `show_risky` 显示）；`pm_betting_min_coverage_percent`（150 = 1.5×）——建议性阈值，发布供客户端在下注前要求显式风险确认（不在链上强制；须 `≤ pm_listing_min_coverage_percent`）。
 - **市场：** `pm_min_liquidity`、`pm_market_creation_fee`、`pm_max_outcomes`、`pm_max_market_duration`。*（无聚合费率上限；creator/liquidity 费率无上限、自我约束；静态 `总和 ≤ 100%` 偿付不变式。）*
 - **批次 / 承诺-揭示：** `pm_batch_epoch_blocks`、`pm_reveal_window_blocks`、`pm_min_batch_bet`、`pm_commit_no_reveal_penalty_percent`、`pm_commit_reveal_enabled`。
 - **争议：** `pm_dispute_fee`、`pm_dispute_grace_sec`、`pm_dispute_vote_period_sec`、`pm_dispute_auto_close_sec`、`pm_dispute_approve_min_percent`、`pm_no_contest_penalty_percent`、`pm_dispute_reward_multiplier`（bp 乘数，10000 = 1×）。

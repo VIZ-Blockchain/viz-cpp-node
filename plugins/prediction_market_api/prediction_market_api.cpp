@@ -6,6 +6,7 @@
 #include <graphene/chain/index.hpp>
 #include <graphene/chain/chain_objects.hpp>
 #include <graphene/chain/pm_objects.hpp>
+#include <graphene/chain/pm/leverage.hpp>
 #include <graphene/chain/validator_objects.hpp>
 #include <graphene/chain/operation_notification.hpp>
 #include <graphene/protocol/pm_operations.hpp>
@@ -14,7 +15,9 @@
 #include <fc/uint128_t.hpp>
 #include <fc/io/json.hpp>
 
+#include <algorithm>
 #include <limits>
+#include <map>
 
 #define CHECK_ARG_SIZE(_S)                                 \
    FC_ASSERT(                                              \
@@ -105,7 +108,39 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
             auto it = oidx.find(mkt.oracle);
             int64_t ins = (it != oidx.end()) ? it->insurance.value : 0;
-            return ins * 2 < mkt.bets_sum.value * 5; // insurance / bets < 2.5×
+            // Governance-tunable coverage floor (percent of bets; 250 = 2.5×). Hidden below it.
+            const uint16_t cov = db.get_validator_schedule_object().median_props.pm_listing_min_coverage_percent;
+            return ins * 100 < mkt.bets_sum.value * (int64_t)cov;
+        }
+
+        // Per-outcome amount + curve-weight aggregate (live from active/resolved bets). Shared by
+        // get_market_weight_sums and get_market_full.
+        pm_market_weight_sums_api_object make_weight_sums(const database& db, const pm_market_object& mkt) {
+            const bool binary = (mkt.market_type == 0);
+            std::vector<share_type> amt(mkt.outcome_count, share_type(0));
+            std::vector<share_type> wgt(mkt.outcome_count, share_type(0));
+            const auto& bidx = db.get_index<pm_bet_index>().indices().get<by_market>();
+            for (auto it = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type()));
+                 it != bidx.end() && it->market == mkt.id; ++it) {
+                if (it->status != 0 && it->status != 3) continue;
+                int16_t s = binary ? (int16_t)it->side : it->outcome_index;
+                if (s >= 0 && s < (int16_t)mkt.outcome_count) { amt[s] += it->amount; wgt[s] += it->weight; }
+            }
+            pm_market_weight_sums_api_object out;
+            out.market_type = mkt.market_type;
+            out.bets_sum    = mkt.bets_sum;
+            if (binary) {
+                for (int16_t i = 0; i < (int16_t)mkt.outcome_count; ++i)
+                    out.outcomes.push_back({i, (i == 0 ? "A" : "B"), amt[i], wgt[i]});
+            } else {
+                const auto& oidx = db.get_index<pm_outcome_index>().indices().get<by_market_outcome>();
+                for (uint8_t i = 0; i < mkt.outcome_count; ++i) {
+                    auto oit = oidx.find(boost::make_tuple(mkt.id, i));
+                    std::string label = (oit != oidx.end()) ? to_string(oit->label) : std::string();
+                    out.outcomes.push_back({(int16_t)i, label, amt[i], wgt[i]});
+                }
+            }
+            return out;
         }
 
     } // anonymous namespace
@@ -386,37 +421,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         return db.with_weak_read_lock([&]() {
             const auto* m = db.find<pm_market_object>(pm_market_id_type(market_id));
             FC_ASSERT(m != nullptr, "Market not found");
-            const auto& mkt = *m;
-            const bool binary = (mkt.market_type == 0);
-
-            std::vector<share_type> amt(mkt.outcome_count, share_type(0));
-            std::vector<share_type> wgt(mkt.outcome_count, share_type(0));
-            const auto& bidx = db.get_index<pm_bet_index>().indices().get<by_market>();
-            for (auto it = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type()));
-                 it != bidx.end() && it->market == mkt.id; ++it) {
-                if (it->status != 0 && it->status != 3) continue;
-                int16_t s = binary ? (int16_t)it->side : it->outcome_index;
-                if (s >= 0 && s < (int16_t)mkt.outcome_count) {
-                    amt[s] += it->amount;
-                    wgt[s] += it->weight;
-                }
-            }
-
-            pm_market_weight_sums_api_object out;
-            out.market_type = mkt.market_type;
-            out.bets_sum    = mkt.bets_sum;
-            if (binary) {
-                for (int16_t i = 0; i < (int16_t)mkt.outcome_count; ++i)
-                    out.outcomes.push_back({i, (i == 0 ? "A" : "B"), amt[i], wgt[i]});
-            } else {
-                const auto& oidx = db.get_index<pm_outcome_index>().indices().get<by_market_outcome>();
-                for (uint8_t i = 0; i < mkt.outcome_count; ++i) {
-                    auto oit = oidx.find(boost::make_tuple(mkt.id, i));
-                    std::string label = (oit != oidx.end()) ? to_string(oit->label) : std::string();
-                    out.outcomes.push_back({(int16_t)i, label, amt[i], wgt[i]});
-                }
-            }
-            return out;
+            return make_weight_sums(db, *m);
         });
     }
 
@@ -741,30 +746,100 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
+    // list_markets_by_category(category, from, limit, [jurisdiction=""], [subcategory=""], [tag=""], [sort="newest"])
+    // Optional filters: jurisdiction (exclude markets banning it), subcategory (exact), tag (CSV membership).
+    // sort: "newest" (market id desc, default) · "oldest" (id asc) · "volume" (bets_sum desc) ·
+    // "expiration" (betting_expiration asc). volume/expiration load each matching market, so they
+    // scan the whole (non-pruned) category before paging; newest/oldest sort on the meta id alone.
     DEFINE_API(prediction_market_api, list_markets_by_category) {
-        CHECK_ARG_MIN_SIZE(3, 4)
+        CHECK_ARG_MIN_SIZE(3, 7)
         auto category     = args.args->at(0).as<std::string>();
         auto from         = args.args->at(1).as<uint32_t>();
         auto limit        = args.args->at(2).as<uint32_t>();
         auto jurisdiction = GET_OPTIONAL_ARG(3, std::string, std::string()); // exclude markets banning it
+        auto subcategory  = GET_OPTIONAL_ARG(4, std::string, std::string());
+        auto tag          = GET_OPTIONAL_ARG(5, std::string, std::string());
+        auto sort         = GET_OPTIONAL_ARG(6, std::string, std::string("newest"));
         FC_ASSERT(limit <= 1000);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
-            std::vector<pm_market_meta_object> result;
-            result.reserve(limit);
+            const bool need_market = (sort == "volume" || sort == "expiration");
+            struct entry { const pm_market_meta_object* m; int64_t vol; int64_t exp; int64_t mid; };
+            std::vector<entry> es;
             const auto& idx = db.get_index<pm_market_meta_index>().indices().get<by_meta_category>();
-            auto itr = idx.lower_bound(category);
-            uint32_t skipped = 0;
-            while (itr != idx.end() && to_string(itr->category) == category && result.size() < limit) {
-                bool allowed = jurisdiction.empty() ||
-                               !meta_csv_contains(to_string(itr->banned_jurisdictions), jurisdiction);
-                if (allowed) {
-                    if (skipped < from) ++skipped;
-                    else result.push_back(pm_market_meta_object(*itr));
-                }
-                ++itr;
+            for (auto itr = idx.lower_bound(category);
+                 itr != idx.end() && to_string(itr->category) == category; ++itr) {
+                if (!jurisdiction.empty() && meta_csv_contains(to_string(itr->banned_jurisdictions), jurisdiction)) continue;
+                if (!subcategory.empty() && to_string(itr->subcategory) != subcategory) continue;
+                if (!tag.empty() && !meta_csv_contains(to_string(itr->tags), tag)) continue;
+                const auto* mk = need_market ? db.find<pm_market_object>(itr->market) : nullptr;
+                es.push_back({ &*itr,
+                    mk ? mk->bets_sum.value : 0,
+                    mk ? (int64_t)mk->betting_expiration.sec_since_epoch() : std::numeric_limits<int64_t>::max(),
+                    (int64_t)itr->market._id });
             }
+            if (sort == "volume")
+                std::stable_sort(es.begin(), es.end(), [](const entry& a, const entry& b){ return a.vol > b.vol; });
+            else if (sort == "expiration")
+                std::stable_sort(es.begin(), es.end(), [](const entry& a, const entry& b){ return a.exp < b.exp; });
+            else if (sort == "oldest")
+                std::stable_sort(es.begin(), es.end(), [](const entry& a, const entry& b){ return a.mid < b.mid; });
+            else // "newest"
+                std::stable_sort(es.begin(), es.end(), [](const entry& a, const entry& b){ return a.mid > b.mid; });
+
+            std::vector<pm_market_meta_object> result;
+            result.reserve(std::min<size_t>(limit, es.size()));
+            for (uint32_t i = from; i < es.size() && result.size() < limit; ++i)
+                result.push_back(pm_market_meta_object(*es[i].m));
             return result;
+        });
+    }
+
+    // get_market_categories() — taxonomy + live counts + hot tags, aggregated over the currently
+    // indexed (non-pruned) markets. Categories sorted by count desc; hot_tags = top 20 by count
+    // (jurisdiction-* tags excluded, matching the browse filter). No args.
+    DEFINE_API(prediction_market_api, get_market_categories) {
+        CHECK_ARG_SIZE(0)
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            std::map<std::string, uint32_t>                            cat_total;
+            std::map<std::string, std::map<std::string, uint32_t>>     cat_sub;
+            std::map<std::string, uint32_t>                            tag_count;
+            const auto& cidx = db.get_index<pm_market_meta_index>().indices().get<by_meta_category>();
+            for (auto it = cidx.begin(); it != cidx.end(); ++it) {
+                const std::string cat = to_string(it->category);
+                if (cat.empty()) continue;
+                cat_total[cat]++;
+                const std::string sub = to_string(it->subcategory);
+                if (!sub.empty()) cat_sub[cat][sub]++;
+                const std::string tags = to_string(it->tags); // comma-joined
+                size_t start = 0;
+                while (start <= tags.size()) {
+                    size_t comma = tags.find(',', start);
+                    std::string t = tags.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+                    if (!t.empty() && t.rfind("jurisdiction", 0) != 0) tag_count[t]++;
+                    if (comma == std::string::npos) break;
+                    start = comma + 1;
+                }
+            }
+
+            pm_market_categories_api_object out;
+            for (auto& kv : cat_total) {
+                pm_category_count c;
+                c.category = kv.first;
+                c.count    = kv.second;
+                auto sit = cat_sub.find(kv.first);
+                if (sit != cat_sub.end())
+                    for (auto& sc : sit->second) c.subcategories.push_back({sc.first, sc.second});
+                out.categories.push_back(std::move(c));
+            }
+            std::stable_sort(out.categories.begin(), out.categories.end(),
+                [](const pm_category_count& a, const pm_category_count& b){ return a.count > b.count; });
+            for (auto& kv : tag_count) out.hot_tags.push_back({kv.first, kv.second});
+            std::stable_sort(out.hot_tags.begin(), out.hot_tags.end(),
+                [](const pm_tag_count& a, const pm_tag_count& b){ return a.count > b.count; });
+            if (out.hot_tags.size() > 20) out.hot_tags.resize(20);
+            return out;
         });
     }
 
@@ -807,6 +882,280 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 out.push_back(std::move(r));
             }
             return out;
+        });
+    }
+
+    // ── Leverage previews ───────────────────────────────────────────────────────────
+    // These reuse pm::leverage::* (the SAME frozen math the evaluators run) so a preview equals
+    // what pm_leverage_open/close/convert would compute at the head block. Non-consensus quotes.
+
+    // get_leverage_quote(market_id, outcome_index, collateral)
+    // Mirrors pm_leverage_open_evaluator: same constraint ladder + max_leverage_loan() search.
+    DEFINE_API(prediction_market_api, get_leverage_quote) {
+        CHECK_ARG_SIZE(3)
+        auto market_id     = args.args->at(0).as<int64_t>();
+        auto outcome_index = args.args->at(1).as<int16_t>();
+        auto collateral    = args.args->at(2).as<int64_t>();
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            const auto& mp = db.get_validator_schedule_object().median_props;
+            const auto now = db.head_block_time();
+            const auto* m  = db.find<pm_market_object>(pm_market_id_type(market_id));
+            FC_ASSERT(m != nullptr, "Market not found");
+            const auto& mkt = *m;
+
+            pm_leverage_quote_api_object out;
+            out.outcome_index         = outcome_index;
+            out.collateral            = share_type(collateral);
+            out.pool_profit_percent   = mp.pm_leverage_pool_profit_percent;
+            out.safety_margin_percent = mp.pm_leverage_safety_margin_percent;
+            out.max_slippage_percent  = mp.pm_leverage_max_slippage_percent;
+            out.m_factor_percent      = mp.pm_leverage_m_factor_percent;
+            out.expiration_buffer_sec = mp.pm_leverage_expiration_buffer_sec;
+            out.auto_close_time       = mkt.betting_expiration - fc::seconds(mp.pm_leverage_expiration_buffer_sec);
+
+            auto fail = [&](const char* c, const std::string& why) {
+                out.failed_constraints.push_back({std::string(c), why});
+            };
+            // Eligibility ladder — mirrors the evaluator's FC_ASSERTs (collected, not thrown).
+            if (!mp.pm_leverage_enabled)              fail("leverage_disabled", "Leverage is disabled by governance");
+            if (mkt.market_type != 0)                 fail("cpmm_binary_only", "Leverage is CPMM-binary only");
+            if (mkt.status != 1)                      fail("market_inactive", "Market is not active");
+            if (outcome_index != 0 && outcome_index != 1) fail("cpmm_binary_only", "outcome_index must be 0/1");
+            if (now >= mkt.betting_expiration - fc::seconds(mp.pm_leverage_expiration_buffer_sec))
+                fail("expiration_buffer", "Too close to betting expiration for leverage");
+            if (mkt.liquidity_sum < mp.pm_leverage_min_market_liquidity.amount)
+                fail("min_market_liquidity", "Market liquidity below leverage minimum");
+
+            const auto* pool = db.find<pm_lazy_pool_object>(pm_lazy_pool_id_type(0));
+            const int64_t free_bal   = pool ? pool->free_balance.value : 0;
+            const int64_t fund_used  = pool ? pool->leverage_fund_used.value : 0;
+            const int64_t free_amount = free_bal - fund_used;
+            const int64_t fund_total  = (int64_t)(fc::uint128_t((uint64_t)std::max<int64_t>(free_bal, 0))
+                                        * fc::uint128_t(mp.pm_leverage_fund_percent) / fc::uint128_t(100u)).lo;
+            const int64_t fund_available = fund_total - fund_used;
+            const int64_t per_pos_cap = fund_available > 0
+                ? (int64_t)(fc::uint128_t((uint64_t)fund_available)
+                    * fc::uint128_t(mp.pm_leverage_max_per_position_bp) / fc::uint128_t(10000u)).lo : 0;
+            const int64_t pos_cap = (int64_t)(fc::uint128_t((uint64_t)std::max<int64_t>(mkt.liquidity_sum.value, 0))
+                                    * fc::uint128_t(mp.pm_leverage_max_position_ratio_percent) / fc::uint128_t(100u)).lo;
+            out.pool_free_amount    = share_type(free_amount);
+            out.fund_available      = share_type(fund_available);
+            out.per_position_cap    = share_type(per_pos_cap);
+            out.market_position_cap = share_type(pos_cap);
+
+            if (free_amount <= 0 || fund_available <= 0) fail("fund_availability", "Leverage fund exhausted");
+            const int64_t pos_room = pos_cap - collateral; // loan headroom vs market-size cap
+            if (pos_room <= 0) fail("position_size", "Collateral already at/above market position cap");
+
+            // Only search when structurally eligible (no blocking constraint above, valid collateral).
+            const bool eligible = out.failed_constraints.empty() && collateral > 0;
+            int64_t max_loan = 0;
+            if (eligible) {
+                int64_t hi = std::min(free_amount, per_pos_cap);
+                hi = std::min(hi, pos_room);
+                if (hi < 0) hi = 0;
+                max_loan = pm::leverage::max_leverage_loan(
+                    mkt.reserve_a.value, mkt.reserve_b.value, mkt.k, collateral, (int)outcome_index, hi,
+                    mp.pm_leverage_pool_profit_percent, mp.pm_leverage_safety_margin_percent,
+                    mp.pm_leverage_max_slippage_percent, mp.pm_leverage_m_factor_percent);
+                if (max_loan <= 0) fail("solvency", "No loan size passes the worst-case solvency check");
+            }
+
+            out.max_loan  = share_type(max_loan);
+            out.available = (max_loan > 0);
+            out.max_leverage_x100 = (collateral > 0)
+                ? (uint32_t)(((int64_t)(collateral + max_loan) * 100) / collateral) : 100;
+
+            // Build up to 12 evenly-spaced stops in (0, max_loan]; skip sub-1.01× points.
+            if (out.available) {
+                const int N = 12;
+                uint32_t last_lev = 0;
+                for (int i = 1; i <= N; ++i) {
+                    int64_t loan = (int64_t)((fc::uint128_t((uint64_t)max_loan) * (uint64_t)i / (uint64_t)N).lo);
+                    if (loan <= 0) continue;
+                    uint32_t lev = (uint32_t)(((int64_t)(collateral + loan) * 100) / collateral);
+                    if (lev < 101 || lev == last_lev) continue; // min 1.01×, dedupe
+                    last_lev = lev;
+                    pm::leverage::cpmm_fill f = pm::leverage::cpmm_buy(
+                        mkt.reserve_a.value, mkt.reserve_b.value, mkt.k, collateral + loan, (int)outcome_index);
+                    int64_t thr = pm::leverage::liquidation_threshold(loan, mp.pm_leverage_pool_profit_percent);
+                    int64_t cur_cv = pm::leverage::cancel_value(f.new_reserve_a, f.new_reserve_b, mkt.k,
+                                                                f.tokens, (int)outcome_index);
+                    int64_t mm  = pm::leverage::worst_opposing_bet(f.new_reserve_a, f.new_reserve_b,
+                                    mp.pm_leverage_max_slippage_percent, mp.pm_leverage_m_factor_percent);
+                    int64_t cvw = pm::leverage::cancel_value_after_opposing(f.new_reserve_a, f.new_reserve_b, mkt.k,
+                                    f.tokens, (int)outcome_index, mm);
+                    pm_leverage_stop s;
+                    s.leverage_x100           = lev;
+                    s.loan                    = share_type(loan);
+                    s.total_bet               = share_type(collateral + loan);
+                    s.expected_tokens         = share_type(f.tokens);
+                    s.pool_profit             = share_type(thr - loan);
+                    s.liquidation_threshold   = share_type(thr);
+                    s.current_cancel_value    = share_type(cur_cv);
+                    s.worst_case_cancel_value = share_type(cvw);
+                    out.stops.push_back(std::move(s));
+                }
+            }
+            return out;
+        });
+    }
+
+    // get_leverage_close_preview(position_id) — mirrors pm_leverage_close_evaluator at head reserves.
+    DEFINE_API(prediction_market_api, get_leverage_close_preview) {
+        CHECK_ARG_SIZE(1)
+        auto position_id = args.args->at(0).as<int64_t>();
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            const auto* p = db.find<pm_leverage_position_object>(pm_leverage_position_id_type(position_id));
+            FC_ASSERT(p != nullptr, "Position not found");
+            const auto& pos = *p;
+            const auto& mkt = db.get<pm_market_object, by_id>(pos.market);
+
+            const int64_t cv = pm::leverage::cancel_value(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
+                                                          pos.tokens.value, (int)pos.outcome_index);
+            const int64_t obligation = pos.liquidation_threshold.value;
+            const int64_t bettor = cv >= obligation ? cv - obligation : 0;
+
+            pm_leverage_close_preview_api_object out;
+            out.position_id       = position_id;
+            out.outcome_index     = pos.outcome_index;
+            out.cancel_value      = share_type(cv);
+            out.pool_obligation   = share_type(obligation);
+            out.bettor_receives   = share_type(bettor);
+            out.collateral        = pos.collateral;
+            out.loan              = pos.loan;
+            out.pool_profit_charge = pos.pool_profit;
+            out.closeable         = (cv >= obligation);
+            out.loss_vs_collateral = pos.collateral.value - bettor;
+            out.loss_percent_bp   = pos.collateral.value > 0
+                ? (int32_t)((out.loss_vs_collateral * 10000) / pos.collateral.value) : 0;
+            return out;
+        });
+    }
+
+    // get_leverage_convert_preview(position_id) — mirrors pm_leverage_convert_evaluator at head reserves.
+    DEFINE_API(prediction_market_api, get_leverage_convert_preview) {
+        CHECK_ARG_SIZE(1)
+        auto position_id = args.args->at(0).as<int64_t>();
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            const auto& mp = db.get_validator_schedule_object().median_props;
+            const auto* p = db.find<pm_leverage_position_object>(pm_leverage_position_id_type(position_id));
+            FC_ASSERT(p != nullptr, "Position not found");
+            const auto& pos = *p;
+            const auto& mkt = db.get<pm_market_object, by_id>(pos.market);
+
+            const int64_t cv = pm::leverage::cancel_value(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
+                                                          pos.tokens.value, (int)pos.outcome_index);
+            const int64_t obligation = pos.liquidation_threshold.value;
+            const int64_t profit = cv > obligation ? cv - obligation : 0;
+            const int64_t fee = (int64_t)(fc::uint128_t((uint64_t)profit)
+                                * fc::uint128_t(mp.pm_conversion_profit_cost_percent) / fc::uint128_t(100u)).lo;
+
+            pm_leverage_convert_preview_api_object out;
+            out.position_id                    = position_id;
+            out.outcome_index                  = pos.outcome_index;
+            out.cancel_value                   = share_type(cv);
+            out.pool_obligation                = share_type(obligation);
+            out.current_profit                 = share_type(profit);
+            out.conversion_profit_cost_percent = mp.pm_conversion_profit_cost_percent;
+            out.conversion_fee                 = share_type(fee);
+            out.total_user_payment             = share_type(obligation + fee);
+            out.convertible                    = (profit > 0);
+            return out;
+        });
+    }
+
+    // ── Enriched market view + lazy allocations ─────────────────────────────────────
+
+    // get_market_full(market_id, [account]) — one call: market + outcomes + weight sums + oracle +
+    // metadata, plus (when account given) that account's bets / leverage / LP on THIS market.
+    DEFINE_API(prediction_market_api, get_market_full) {
+        CHECK_ARG_MIN_SIZE(1, 2)
+        auto market_id = args.args->at(0).as<int64_t>();
+        auto account   = GET_OPTIONAL_ARG(1, account_name_type, account_name_type());
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            const auto* m = db.find<pm_market_object>(pm_market_id_type(market_id));
+            FC_ASSERT(m != nullptr, "Market not found");
+            const auto& mkt = *m;
+
+            std::vector<pm_outcome_object> outcomes;
+            {
+                const auto& idx = db.get_index<pm_outcome_index>().indices().get<by_market_outcome>();
+                for (auto it = idx.lower_bound(boost::make_tuple(mkt.id, (uint8_t)0));
+                     it != idx.end() && it->market == mkt.id; ++it)
+                    outcomes.push_back(pm_outcome_object(*it));
+            }
+
+            fc::optional<pm_oracle_api_object> oracle;
+            {
+                const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+                auto oit = oidx.find(mkt.oracle);
+                if (oit != oidx.end())
+                    oracle = pm_oracle_api_object{pm_oracle_object(*oit), reliability_score(*oit)};
+            }
+
+            fc::optional<pm_market_meta_object> meta;
+            {
+                const auto& midx = db.get_index<pm_market_meta_index>().indices().get<by_meta_market>();
+                auto mit = midx.find(mkt.id);
+                if (mit != midx.end()) meta = pm_market_meta_object(*mit);
+            }
+
+            std::vector<pm_position_api_object>      my_positions;
+            std::vector<pm_leverage_position_object> my_leverage;
+            std::vector<pm_liquidity_object>         my_liquidity;
+            if (account != account_name_type()) {
+                const auto& bidx = db.get_index<pm_bet_index>().indices().get<by_market_account>();
+                for (auto it = bidx.lower_bound(boost::make_tuple(mkt.id, account, pm_bet_id_type()));
+                     it != bidx.end() && it->market == mkt.id && it->account == account; ++it)
+                    my_positions.push_back(pm_position_api_object{
+                        pm_bet_object(*it), expected_payout(db, *it, mkt), mkt.status, mkt.resolved_outcome});
+                const auto& lidx = db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>();
+                for (auto it = lidx.lower_bound(boost::make_tuple(mkt.id, (uint8_t)0, pm_leverage_position_id_type()));
+                     it != lidx.end() && it->market == mkt.id; ++it)
+                    if (it->account == account) my_leverage.push_back(pm_leverage_position_object(*it));
+                const auto& qidx = db.get_index<pm_liquidity_index>().indices().get<by_market>();
+                for (auto it = qidx.lower_bound(boost::make_tuple(mkt.id, pm_liquidity_id_type()));
+                     it != qidx.end() && it->market == mkt.id; ++it)
+                    if (it->provider == account) my_liquidity.push_back(pm_liquidity_object(*it));
+            }
+
+            return pm_market_full_api_object{
+                pm_market_object(mkt), std::move(outcomes), make_weight_sums(db, mkt),
+                oracle, meta, std::move(my_positions), std::move(my_leverage), std::move(my_liquidity)};
+        });
+    }
+
+    DEFINE_API(prediction_market_api, get_lazy_allocations) {
+        CHECK_ARG_MIN_SIZE(2, 2)
+        auto from  = args.args->at(0).as<uint32_t>();
+        auto limit = args.args->at(1).as<uint32_t>();
+        FC_ASSERT(limit <= 1000);
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            std::vector<pm_lazy_allocation_object> result;
+            result.reserve(limit);
+            const auto& idx = db.get_index<pm_lazy_allocation_index>().indices().get<by_id>();
+            auto it = idx.begin();
+            while (from > 0 && it != idx.end()) { ++it; --from; }
+            while (result.size() < limit && it != idx.end()) { result.push_back(pm_lazy_allocation_object(*it)); ++it; }
+            return result;
+        });
+    }
+
+    DEFINE_API(prediction_market_api, get_market_lazy_allocation) {
+        CHECK_ARG_SIZE(1)
+        auto market_id = args.args->at(0).as<int64_t>();
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            const auto& idx = db.get_index<pm_lazy_allocation_index>().indices().get<by_market>();
+            auto it = idx.find(pm_market_id_type(market_id));
+            FC_ASSERT(it != idx.end(), "No lazy allocation for market");
+            return pm_lazy_allocation_object(*it);
         });
     }
 

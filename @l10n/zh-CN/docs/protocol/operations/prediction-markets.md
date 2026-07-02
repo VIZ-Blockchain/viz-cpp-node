@@ -155,7 +155,14 @@ flowchart TD
 ### `pm_resolve_market_operation`（ID 76）
 **Auth：** `oracle` 的 `active`
 
-预言机裁定为 `winning_outcome`。开启争议宽限窗口（`result_expiration + pm_dispute_grace_sec`）；其过后由 `pm_auto_payout` 结算。
+预言机裁定为 `winning_outcome`。开启争议宽限窗口（`result_expiration + pm_dispute_grace_sec`）；其过后由 `pm_auto_payout` 结算。预言机的裁定声明**存储在市场上**（如同预言机的 `rules_url`），因此客户端可直接通过 `get_market` 读取，无需扫描历史。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `market_id` | `int64` | 目标市场 |
+| `winning_outcome` | `int16_t` | 获胜结果索引 |
+| `decision_url` | `string` | 证据链接，`≤ MAX_PM_DECISION_URL_LEN`；存储在市场上 |
+| `decision_reason` | `string` | 自由文本理由，`≤ MAX_PM_DISPUTE_REASON_LEN`；存储在市场上（`decision_reason`） |
 
 ### `pm_no_contest_operation`（ID 77）
 **Auth：** `oracle` 的 `active`
@@ -177,7 +184,39 @@ flowchart TD
 ### `pm_dispute_resolve_operation`（ID 80）
 **Auth：** `resolver` 的 `active`
 
-由市场配置的 `dispute_resolver` 做出账户模式裁决。可罚没 `penalty_amount` 的保证金，并将预言机/创建者封禁至给定时间。
+由市场配置的 `dispute_resolver` 做出账户模式裁决。可罚没 `penalty_amount` 的保证金，并将预言机/创建者封禁至给定时间（`ban_*_until = time_point_sec::maximum()` = 永久）。
+
+> **封禁是一项合规/监管功能，仅限账户模式。** 当市场将其争议路由到账户模式的 `dispute_resolver`（例如监管机构或持牌仲裁者）时，该解析者可在同一裁决中对**预言机与市场创建者双方**施加处罚——临时或永久——在保证金罚没之外：这让担任解析者的监管机构得以将恶意预言机或屡犯的创建者逐出平台。**委员会/DAO 模式（`dispute_mode == 0`）按设计没有封禁权**——它是透明的公开听证，只罚没保证金并调整声誉（`pm_dispute_finalize`），绝不封禁。此处设定的封禁会将发起的 `resolver` 记入目标的 `banned_by`，因此只有该解析者可通过 `pm_unban` 提前解除；否则封禁在 `banned_until` 时失效（cron 发出 `pm_ban_expired`）。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `market_id` | `int64` | 争议市场 |
+| `correct_outcome` | `int16_t` | 最终正确结果（`-1` = 作废/无争议） |
+| `penalty_amount` | `asset`（VIZ） | 罚没的预言机保证金 |
+| `ban_oracle` / `ban_oracle_until` | `bool` / `time_point_sec` | 将预言机封禁至给定时间 |
+| `ban_creator` / `ban_creator_until` | `bool` / `time_point_sec` | 将创建者封禁至给定时间（禁止创建市场） |
+
+### `pm_dispute_oracle_respond_operation`（ID 98）
+**Auth：** `oracle` 的 `active`
+
+市场的预言机在开放的争议上发布**公开反驳**。由于争议是公开听证，文本存储在争议对象上（`oracle_response` / `oracle_response_time`，可通过 `get_dispute` 读取），以便每位投票者/解析者权衡。仅在争议开放且 `now ≤ oracle_response_deadline` 时允许；重新发布会覆盖先前响应。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `market_id` | `int64` | 争议市场 |
+| `response` | `string` | 反驳文本，非空，`≤ MAX_PM_DISPUTE_REASON_LEN` |
+
+### `pm_unban_operation`（ID 99）
+**Auth：** `resolver` 的 `active`
+
+**提前**解除由账户模式 `pm_dispute_resolve` 施加的封禁。仅目标的 `banned_by` 中记录的账户（施加封禁的解析者）可解除；`unban_oracle` / `unban_creator` 中至少须设定一个，且对应封禁当前须处于活跃状态。将 `banned_until` 设为过去时间并清空 `banned_by`。（未在此解除的封禁只会在 `banned_until` 时到期——届时 cron 发出 `pm_ban_expired`。）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `resolver` | `account_name_type` | 施加封禁的账户（须等于目标的 `banned_by`） |
+| `target` | `account_name_type` | 被封禁的预言机 / 创建者 |
+| `unban_oracle` | `bool` | 清除预言机封禁（`pm_oracle_object.banned_until`） |
+| `unban_creator` | `bool` | 清除创建者封禁（`pm_creator_ban_object.banned_until`） |
 
 ### `pm_transfer_position_operation`（ID 81）
 **Auth：** `from` 的 `active`
@@ -213,6 +252,11 @@ flowchart TD
 | 95 | `pm_leverage_resolve_operation` | 结算——杠杆头寸被强制关闭：`outcome_index`、`won`、`pool_received`/`bettor_received`、`leverage` |
 | 96 | `pm_market_accepted_operation` | 求值器——市场上线：预言机接受、自预言机或自动接受；冻结条款 + `self_oracle` 标志 |
 | 97 | `pm_payout_operation` | 结算——每个有效下注：`amount`（本金）、`side`/`outcome_index`、`payout`（**输则为 0**） |
+| 100 | `pm_ban_expired_operation` | 临时的预言机/创建者封禁在 `banned_until` 时失效：cron 将其清除（字段 `account`、`oracle`、`creator`）。提前手动解除改用已签名的 `pm_unban` |
+
+> ID 91–93 是*常规*操作 `pm_leverage_open`/`pm_leverage_close`/`pm_leverage_convert`（见规范）；
+> ID 98–99 是*常规*操作 `pm_dispute_oracle_respond`/`pm_unban`（见上）。每位下注者的结果是
+> `pm_payout`；每市场的 `pm_auto_payout` 仍为结算标记。
 
 ---
 

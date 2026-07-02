@@ -134,6 +134,7 @@
 Все проценты PM — в bp (10000 = 100.00%), как прочие `*_percent`; промилле (‰) нигде нет.
 
 - **Оракул:** `pm_min_oracle_insurance`, `pm_max_oracle_fee_percent` (**единственный** governance-кэп на фи — на % оракула), `pm_oracle_registration_fee`, `pm_oracle_penalty_percent`, `pm_oracle_dispute_response_sec`.
+- **Риск / покрытие** *(процент от объёма ставок рынка, 100 = 1.0×):* `pm_listing_min_coverage_percent` (250 = 2.5×) — рынки, чья страховка оракула покрывает меньше этой доли их объёма, скрыты из каталога `list_markets` по умолчанию (показываются через `show_risky`); `pm_betting_min_coverage_percent` (150 = 1.5×) — рекомендательный порог, публикуемый для клиентов, чтобы требовать явного подтверждения риска перед ставкой (не форсится on-chain; должен быть `≤ pm_listing_min_coverage_percent`).
 - **Рынок:** `pm_min_liquidity`, `pm_market_creation_fee`, `pm_max_outcomes`, `pm_max_market_duration`. *(Агрегатного кэпа фи нет; creator/liquidity-фи без кэпа, самолимитируются; статический инвариант `сумма ≤ 100%`.)*
 - **Batch / commit-reveal:** `pm_batch_epoch_blocks`, `pm_reveal_window_blocks`, `pm_min_batch_bet`, `pm_commit_no_reveal_penalty_percent`, `pm_commit_reveal_enabled`.
 - **Споры:** `pm_dispute_fee`, `pm_dispute_grace_sec`, `pm_dispute_vote_period_sec`, `pm_dispute_auto_close_sec`, `pm_dispute_approve_min_percent`, `pm_no_contest_penalty_percent`, `pm_dispute_reward_multiplier` (bp-множитель, 10000 = 1×).

@@ -22,8 +22,11 @@ All list methods page with `from` (skip count) and `limit` (`≤ 1000`).
 | `get_market_weight_sums` | `market_id` | `pm_market_weight_sums` (computed) |
 | `get_market_bets` | `market_id, from, limit` | `pm_bet_object[]` |
 | `get_market_liquidity` | `market_id, from, limit` | `pm_liquidity_object[]` |
+| `get_market_full` | `market_id, [account]` | `pm_market_full` (computed) |
 
 `status` for `list_markets`: `-1` deleted, `0` waiting, `1` active, `2` closed, `3` resolved.
+
+`get_market_full` is a **one-call enriched view** for a market-detail screen: it returns the market + outcomes + weight sums + oracle (with reliability) + parsed metadata, and — when the optional `account` is given — that account's bets, leverage positions and LP **on this market**. Saves the thin client several round-trips.
 
 **Risk listing filter** (security-threat-model §4.3): by default `list_markets` hides under-insured markets — those whose oracle insurance covers less than **2.5×** the market's betting volume. Pass `show_risky = true` to reveal them. Markets are only hidden, never blocked/deleted (betting is always permitted on-chain — a consensus bet-block would be a censorship vector). The lazy-pool exposure penalties (active-market 5% recursive + fault stamps) are enforced in consensus on allocation.
 
@@ -36,11 +39,16 @@ discovery and jurisdiction filtering — **display/indexing only, never consensu
 | Method | Args | Returns |
 |--------|------|---------|
 | `get_market_meta` | `market_id` | `pm_market_meta_object` (or error if none) |
-| `list_markets_by_category` | `category, from, limit, [jurisdiction]` | `pm_market_meta_object[]` |
+| `list_markets_by_category` | `category, from, limit, [jurisdiction], [subcategory], [tag], [sort]` | `pm_market_meta_object[]` |
+| `get_market_categories` | — | `pm_market_categories` (computed) |
 
 `list_markets_by_category` excludes markets whose `banned_jurisdictions` contains the optional
 `jurisdiction` ISO code — so a regulated client passes its own jurisdiction to get only the markets it
-may list. The object:
+may list. Optional `subcategory` (exact) and `tag` (CSV membership) narrow the set; `sort` ∈ `newest`
+(market id desc, default) · `oldest` · `volume` (`bets_sum` desc) · `expiration` (`betting_expiration`
+asc). `get_market_categories` returns the live taxonomy — per-category / per-subcategory counts plus the
+top 20 hot tags (jurisdiction-* excluded) — aggregated over currently indexed markets, so a browse UI can
+build its filter chips without hard-coding a taxonomy. The meta object:
 ```
 { market: pm_object_id,
   category, subcategory, tags,          // strings; tags comma-joined
@@ -59,6 +67,18 @@ may list. The object:
 | `get_oracle` | `owner` | `pm_oracle` (object + `reliability_score`) |
 | `list_oracles` | `from, limit` | `pm_oracle_object[]` |
 
+### Leverage previews (Boost)
+
+Read-only quotes that call the **same in-node margin math** the evaluators use, so a preview matches what the corresponding `pm_leverage_*` op would compute at the head block. They are non-consensus estimates (reserves move between the read and the broadcast — always send the on-chain slippage guards).
+
+| Method | Args | Returns |
+|--------|------|---------|
+| `get_leverage_quote` | `market_id, outcome_index, collateral` | `pm_leverage_quote` (computed) |
+| `get_leverage_close_preview` | `position_id` | `pm_leverage_close_preview` (computed) |
+| `get_leverage_convert_preview` | `position_id` | `pm_leverage_convert_preview` (computed) |
+
+`get_leverage_quote` mirrors `pm_leverage_open`: it returns the max solvent loan and resulting max leverage, the pool/position caps, up to 12 slider stops (each with tokens, threshold, current & worst-case cancel value), and — when leverage is not possible — `available = false` with a `failed_constraints[]` list. `get_leverage_close_preview` / `get_leverage_convert_preview` mirror `pm_leverage_close` / `pm_leverage_convert` at the current reserves (cancel value, pool obligation, what the bettor receives, whether it is closeable/convertible, and the conversion fee at the current median `pm_conversion_profit_cost_percent`).
+
 > Per-bettor settlement is emitted as the `pm_payout` virtual op (stake, side/outcome, realized payout —
 > `0` on a loss); a leveraged position's settlement is the `pm_leverage_resolve` virtual op (with
 > `outcome_index`, `won`, `leverage`). Both appear in `account_history`; the leverage-position objects
@@ -72,7 +92,11 @@ may list. The object:
 | `get_dispute_votes` | `market_id` | `pm_dispute_votes` (votes + live tally) |
 | `get_lazy_pool` | — | `pm_lazy_pool_object` |
 | `get_lazy_deposit` | `account` | `pm_lazy_deposit_object` |
+| `get_lazy_allocations` | `from, limit` | `pm_lazy_allocation_object[]` |
+| `get_market_lazy_allocation` | `market_id` | `pm_lazy_allocation_object` (or error if none) |
 | `get_pm_chain_properties` | — | `chain_properties_pm` (median, v5) |
+
+`get_lazy_allocations` lists the lazy pool's per-market allocation records (for a pool dashboard); `get_market_lazy_allocation` fetches the one for a given market. Oracle penalty stamps need no separate method — they ship on `pm_oracle_object` (`penalty_stamps`, `last_penalty_stamp_time`) via `get_oracle`.
 
 ### Charts — kline / weight history
 
@@ -146,6 +170,39 @@ so a caller can show the live quorum status and the verdict that would be applie
   reason: uint8,         // 0 bet, 1 cancel, 2 liquidation, 3 batch settle, 4 leverage open, 5 leverage resolve
   bets_sum: share_type,  // total staked across all outcomes at this point
   weights: share_type[] }// per-outcome staked weight (y values), index = outcome_index
+```
+
+**`pm_market_full`** — one-call enriched market view (`oracle`/`meta` are `null` when absent; the `my_*`
+arrays are empty unless an `account` argument was supplied):
+```
+{ market: pm_market_object,
+  outcomes: pm_outcome_object[],            // empty for binary markets
+  weight_sums: pm_market_weight_sums,
+  oracle: pm_oracle | null,
+  meta: pm_market_meta_object | null,
+  my_positions: pm_position[],              // account's bets on THIS market
+  my_leverage_positions: pm_leverage_position_object[],
+  my_liquidity: pm_liquidity_object[] }
+```
+
+**`pm_leverage_quote`** — leverage-open preview (from `pm::leverage::*`, the same math the evaluator runs):
+```
+{ available: bool, outcome_index, collateral,
+  max_loan, max_leverage_x100,              // 100 = 1.00×
+  pool_free_amount, fund_available, per_position_cap, market_position_cap,
+  pool_profit_percent, safety_margin_percent, max_slippage_percent, m_factor_percent,
+  expiration_buffer_sec, auto_close_time,   // betting_expiration − buffer
+  stops: [ { leverage_x100, loan, total_bet, expected_tokens, pool_profit,
+             liquidation_threshold, current_cancel_value, worst_case_cancel_value } ],
+  failed_constraints: [ { constraint, reason } ] }   // populated when !available
+```
+**`pm_leverage_close_preview`** — `{ position_id, outcome_index, cancel_value, pool_obligation, bettor_receives, collateral, loan, pool_profit_charge, closeable: bool, loss_vs_collateral, loss_percent_bp }`.
+**`pm_leverage_convert_preview`** — `{ position_id, outcome_index, cancel_value, pool_obligation, current_profit, conversion_profit_cost_percent, conversion_fee, total_user_payment, convertible: bool }`.
+
+**`pm_market_categories`** — browse taxonomy with live counts:
+```
+{ categories: [ { category, count, subcategories: [ { subcategory, count } ] } ],  // sorted by count desc
+  hot_tags:   [ { tag, count } ] }                                                 // top 20 (jurisdiction-* excluded)
 ```
 
 ---

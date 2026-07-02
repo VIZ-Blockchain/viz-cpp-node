@@ -155,7 +155,14 @@ Withdraws liquidity (principal-safe). Locked from `betting_expiration` until res
 ### `pm_resolve_market_operation` (ID 76)
 **Auth:** `active` of `oracle`
 
-Oracle resolves to `winning_outcome`. Opens the dispute grace window (`result_expiration + pm_dispute_grace_sec`); after it elapses `pm_auto_payout` settles.
+Oracle resolves to `winning_outcome`. Opens the dispute grace window (`result_expiration + pm_dispute_grace_sec`); after it elapses `pm_auto_payout` settles. The oracle's resolution statement is **stored on the market** (like an oracle's `rules_url`) so a client can read it directly via `get_market` without scanning history.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `market_id` | `int64` | Target market |
+| `winning_outcome` | `int16_t` | Winning outcome index |
+| `decision_url` | `string` | Evidence link, `≤ MAX_PM_DECISION_URL_LEN`; stored on the market |
+| `decision_reason` | `string` | Free-text justification, `≤ MAX_PM_DISPUTE_REASON_LEN`; stored on the market (`decision_reason`) |
 
 ### `pm_no_contest_operation` (ID 77)
 **Auth:** `active` of `oracle`
@@ -177,7 +184,39 @@ A committee dispute is an **open public hearing** — there is **no commit-revea
 ### `pm_dispute_resolve_operation` (ID 80)
 **Auth:** `active` of `resolver`
 
-Account-mode verdict by the market's configured `dispute_resolver`. May slash `penalty_amount` of insurance and ban the oracle/creator until the given times.
+Account-mode verdict by the market's configured `dispute_resolver`. May slash `penalty_amount` of insurance and ban the oracle/creator until the given times (`ban_*_until = time_point_sec::maximum()` = permanent).
+
+> **Bans are a compliance/regulator feature, exclusive to account mode.** When a market routes its disputes to an account-mode `dispute_resolver` (e.g. a regulator or a licensed arbitrator), that resolver can sanction **both the oracle and the market creator** — temporarily or permanently — in the same verdict, on top of the insurance slash: it lets a regulator serving as resolver bar a bad-faith oracle or a repeat-offender creator from the platform. **Committee/DAO mode (`dispute_mode == 0`) has no ban power by design** — it is a transparent public hearing that only slashes insurance and adjusts reputation (`pm_dispute_finalize`), never bans. A ban set here records the issuing `resolver` in the target's `banned_by`, so only that resolver may lift it early via `pm_unban`; otherwise it lapses at `banned_until` (the cron emits `pm_ban_expired`).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `market_id` | `int64` | Disputed market |
+| `correct_outcome` | `int16_t` | Final correct outcome (`-1` = void/no-contest) |
+| `penalty_amount` | `asset` (VIZ) | Oracle insurance to slash |
+| `ban_oracle` / `ban_oracle_until` | `bool` / `time_point_sec` | Ban the oracle until the given time |
+| `ban_creator` / `ban_creator_until` | `bool` / `time_point_sec` | Ban the creator from creating markets until the given time |
+
+### `pm_dispute_oracle_respond_operation` (ID 98)
+**Auth:** `active` of `oracle`
+
+The market's oracle posts a **public rebuttal** onto an open dispute. Because a dispute is a public hearing, the text is stored on the dispute object (`oracle_response` / `oracle_response_time`, readable via `get_dispute`) so every voter/resolver can weigh it. Allowed only while the dispute is open and `now ≤ oracle_response_deadline`; re-posting overwrites the previous response.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `market_id` | `int64` | Disputed market |
+| `response` | `string` | Rebuttal text, non-empty, `≤ MAX_PM_DISPUTE_REASON_LEN` |
+
+### `pm_unban_operation` (ID 99)
+**Auth:** `active` of `resolver`
+
+Lifts a ban imposed by an account-mode `pm_dispute_resolve` **early**. Only the account recorded in the target's `banned_by` (the resolver that set the ban) may lift it; at least one of `unban_oracle` / `unban_creator` must be set, and the corresponding ban must currently be active. Sets `banned_until` to a past time and clears `banned_by`. (Bans not lifted here simply expire at `banned_until` — the cron then emits `pm_ban_expired`.)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `resolver` | `account_name_type` | The account that imposed the ban (must equal the target's `banned_by`) |
+| `target` | `account_name_type` | The banned oracle / creator |
+| `unban_oracle` | `bool` | Clear the oracle ban (`pm_oracle_object.banned_until`) |
+| `unban_creator` | `bool` | Clear the creator ban (`pm_creator_ban_object.banned_until`) |
 
 ### `pm_transfer_position_operation` (ID 81)
 **Auth:** `active` of `from`
@@ -213,9 +252,11 @@ Emitted by the PM consensus logic — either by a signed operation's evaluator (
 | 95 | `pm_leverage_resolve_operation` | Settlement — leveraged position force-closed: `outcome_index`, `won`, `pool_received`/`bettor_received`, `leverage` |
 | 96 | `pm_market_accepted_operation` | Evaluator — market went live: oracle accepted, self-oracle, or auto-accept; frozen oracle terms + `self_oracle` |
 | 97 | `pm_payout_operation` | Settlement — per active bet: `amount` (stake), `side`/`outcome_index`, `payout` (**0 on a loss**) |
+| 100 | `pm_ban_expired_operation` | A temporary oracle/creator ban lapsed at `banned_until`: the cron cleared it (fields `account`, `oracle`, `creator`). Early manual lifts use the signed `pm_unban` instead |
 
 > IDs 91–93 are the *regular* ops `pm_leverage_open`/`pm_leverage_close`/`pm_leverage_convert` (see the
-> spec). Per-bettor results are `pm_payout`; the per-market `pm_auto_payout` remains a settlement marker.
+> spec); IDs 98–99 are the *regular* ops `pm_dispute_oracle_respond`/`pm_unban` (above). Per-bettor
+> results are `pm_payout`; the per-market `pm_auto_payout` remains a settlement marker.
 
 ---
 

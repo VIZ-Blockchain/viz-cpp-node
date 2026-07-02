@@ -141,7 +141,13 @@ namespace graphene { namespace protocol {
                 pm_leverage_liquidate_operation,
                 pm_leverage_resolve_operation,
                 pm_market_accepted_operation,
-                pm_payout_operation
+                pm_payout_operation,
+
+                // HF14 PM follow-ups (appended after the initial block — indices stay stable):
+                pm_dispute_oracle_respond_operation,
+                pm_unban_operation,
+                // virtual operation:
+                pm_ban_expired_operation
         > operation;
 
         /*void operation_get_required_authorities( const operation& op,

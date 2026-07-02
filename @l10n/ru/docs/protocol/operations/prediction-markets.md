@@ -155,7 +155,14 @@ Commit-reveal фаза 2: раскрывает ставку и ставит её
 ### `pm_resolve_market_operation` (ID 76)
 **Auth:** `active` аккаунта `oracle`
 
-Оракул разрешает в `winning_outcome`. Открывает окно ожидания спора (`result_expiration + pm_dispute_grace_sec`); по его истечении `pm_auto_payout` рассчитывает.
+Оракул разрешает в `winning_outcome`. Открывает окно ожидания спора (`result_expiration + pm_dispute_grace_sec`); по его истечении `pm_auto_payout` рассчитывает. Заявление оракула о разрешении **сохраняется на рынке** (как `rules_url` оракула), чтобы клиент мог прочитать его прямо через `get_market`, не сканируя историю.
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `market_id` | `int64` | Целевой рынок |
+| `winning_outcome` | `int16_t` | Индекс выигравшего исхода |
+| `decision_url` | `string` | Ссылка на доказательства, `≤ MAX_PM_DECISION_URL_LEN`; сохраняется на рынке |
+| `decision_reason` | `string` | Свободное обоснование, `≤ MAX_PM_DISPUTE_REASON_LEN`; сохраняется на рынке (`decision_reason`) |
 
 ### `pm_no_contest_operation` (ID 77)
 **Auth:** `active` аккаунта `oracle`
@@ -177,7 +184,39 @@ Commit-reveal фаза 2: раскрывает ставку и ставит её
 ### `pm_dispute_resolve_operation` (ID 80)
 **Auth:** `active` аккаунта `resolver`
 
-Вердикт в режиме аккаунта от заданного рынком `dispute_resolver`. Может слешить `penalty_amount` страховки и банить оракула/создателя до заданных времён.
+Вердикт в режиме аккаунта от заданного рынком `dispute_resolver`. Может слешить `penalty_amount` страховки и банить оракула/создателя до заданных времён (`ban_*_until = time_point_sec::maximum()` = навсегда).
+
+> **Баны — это фича комплаенса/регулятора, эксклюзивная для режима аккаунта.** Когда рынок направляет свои споры на `dispute_resolver` режима аккаунта (например, регулятора или лицензированного арбитра), этот резолвер может санкционировать **и оракула, и создателя рынка** — временно или навсегда — тем же вердиктом, поверх слэша страховки: это позволяет регулятору-резолверу отстранить недобросовестного оракула или создателя-рецидивиста от платформы. **Режим комитета/DAO (`dispute_mode == 0`) не имеет права бана по замыслу** — это прозрачные публичные слушания, которые лишь слешат страховку и корректируют репутацию (`pm_dispute_finalize`), но никогда не банят. Установленный здесь бан записывает выдавшего `resolver` в `banned_by` цели, так что снять его досрочно через `pm_unban` может только этот резолвер; иначе бан истекает на `banned_until` (крон эмитит `pm_ban_expired`).
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `market_id` | `int64` | Оспариваемый рынок |
+| `correct_outcome` | `int16_t` | Финальный верный исход (`-1` = void/no-contest) |
+| `penalty_amount` | `asset` (VIZ) | Страховка оракула к слэшу |
+| `ban_oracle` / `ban_oracle_until` | `bool` / `time_point_sec` | Забанить оракула до заданного времени |
+| `ban_creator` / `ban_creator_until` | `bool` / `time_point_sec` | Запретить создателю создавать рынки до заданного времени |
+
+### `pm_dispute_oracle_respond_operation` (ID 98)
+**Auth:** `active` аккаунта `oracle`
+
+Оракул рынка публикует **публичное опровержение** на открытый спор. Поскольку спор — это публичные слушания, текст сохраняется на объекте спора (`oracle_response` / `oracle_response_time`, читается через `get_dispute`), чтобы каждый голосующий/резолвер мог его учесть. Разрешено только пока спор открыт и `now ≤ oracle_response_deadline`; повторная публикация перезаписывает предыдущий ответ.
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `market_id` | `int64` | Оспариваемый рынок |
+| `response` | `string` | Текст опровержения, непустой, `≤ MAX_PM_DISPUTE_REASON_LEN` |
+
+### `pm_unban_operation` (ID 99)
+**Auth:** `active` аккаунта `resolver`
+
+Снимает бан, наложенный `pm_dispute_resolve` режима аккаунта, **досрочно**. Снять его может только аккаунт, записанный в `banned_by` цели (резолвер, установивший бан); хотя бы один из `unban_oracle` / `unban_creator` должен быть задан, а соответствующий бан — быть активным сейчас. Ставит `banned_until` в прошлое и очищает `banned_by`. (Баны, не снятые здесь, просто истекают на `banned_until` — тогда крон эмитит `pm_ban_expired`.)
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `resolver` | `account_name_type` | Аккаунт, наложивший бан (должен равняться `banned_by` цели) |
+| `target` | `account_name_type` | Забаненный оракул / создатель |
+| `unban_oracle` | `bool` | Снять бан оракула (`pm_oracle_object.banned_until`) |
+| `unban_creator` | `bool` | Снять бан создателя (`pm_creator_ban_object.banned_until`) |
 
 ### `pm_transfer_position_operation` (ID 81)
 **Auth:** `active` аккаунта `from`
@@ -213,6 +252,11 @@ Commit-reveal фаза 2: раскрывает ставку и ставит её
 | 95 | `pm_leverage_resolve_operation` | Расчёт — плечевая позиция принудительно закрыта: `outcome_index`, `won`, `pool_received`/`bettor_received`, `leverage` |
 | 96 | `pm_market_accepted_operation` | Эвалуатор — рынок запущен: оракул принял, self-oracle или авто-приём; замороженные условия + флаг `self_oracle` |
 | 97 | `pm_payout_operation` | Расчёт — на каждую активную ставку: `amount` (стейк), `side`/`outcome_index`, `payout` (**0 при проигрыше**) |
+| 100 | `pm_ban_expired_operation` | Временный бан оракула/создателя истёк на `banned_until`: крон снял его (поля `account`, `oracle`, `creator`). Досрочное ручное снятие — через подписанный `pm_unban` |
+
+> ID 91–93 — это *обычные* операции `pm_leverage_open`/`pm_leverage_close`/`pm_leverage_convert` (см.
+> спецификацию); ID 98–99 — *обычные* операции `pm_dispute_oracle_respond`/`pm_unban` (выше). Результаты
+> по каждому беттору — `pm_payout`; помарочный `pm_auto_payout` остаётся маркером расчёта.
 
 ---
 

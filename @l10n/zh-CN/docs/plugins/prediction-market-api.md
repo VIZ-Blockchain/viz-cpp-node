@@ -18,10 +18,13 @@
 | `get_market_weight_sums` | `market_id` | `pm_market_weight_sums`（计算型） |
 | `get_market_bets` | `market_id, from, limit` | `pm_bet_object[]` |
 | `get_market_liquidity` | `market_id, from, limit` | `pm_liquidity_object[]` |
+| `get_market_full` | `market_id, [account]` | `pm_market_full`（计算型） |
 
 `list_markets` 的 `status`：`-1` 已删除、`0` 等待、`1` 活跃、`2` 关闭、`3` 已裁定。默认情况下
 `list_markets` 会隐藏保证金不足的市场（预言机保险 < 下注量的 **2.5×**）；`show_risky = true` 可显示它们
 （仅隐藏，链上始终允许下注）。
+
+`get_market_full` 是市场详情页的**单次调用富集视图**：返回市场 + 结果 + 权重合计 + 预言机（含可靠度）+ 已解析元数据，且——当提供可选 `account` 时——返回该账户**在本市场上**的下注、杠杆头寸与 LP。为瘦客户端省去多次往返。
 
 ### 市场元数据（链下解析）
 
@@ -31,10 +34,14 @@
 | 方法 | 参数 | 返回 |
 |------|------|------|
 | `get_market_meta` | `market_id` | `pm_market_meta_object`（无则报错） |
-| `list_markets_by_category` | `category, from, limit, [jurisdiction]` | `pm_market_meta_object[]` |
+| `list_markets_by_category` | `category, from, limit, [jurisdiction], [subcategory], [tag], [sort]` | `pm_market_meta_object[]` |
+| `get_market_categories` | — | `pm_market_categories`（计算型） |
 
 `list_markets_by_category` 会排除其 `banned_jurisdictions` 含可选 ISO 代码 `jurisdiction` 的市场（受监管
-客户端传入自身辖区即可只获取可列出的市场）。对象：`market`、`category`、`subcategory`、`tags`（逗号分隔）、
+客户端传入自身辖区即可只获取可列出的市场）。可选的 `subcategory`（精确）与 `tag`（CSV 成员）进一步收窄集合；
+`sort` ∈ `newest`（市场 id 降序，默认）· `oldest` · `volume`（`bets_sum` 降序）· `expiration`（`betting_expiration`
+升序）。`get_market_categories` 返回实时分类法——每类别 / 每子类别计数，外加前 20 个热门标签（排除 jurisdiction-*）——
+在当前已索引市场上聚合，使浏览 UI 无需硬编码分类法即可构建其筛选标签。对象：`market`、`category`、`subcategory`、`tags`（逗号分隔）、
 `banned_jurisdictions`（逗号分隔 ISO；为空 = 全球允许）、`expiry`（争议窗口关闭 + TTL 后清理）。
 
 ### 持仓与预言机
@@ -51,6 +58,18 @@
 > 每位下注者的结算以 `pm_payout` 虚拟操作发出（本金、side/outcome、结果；输则为 `0`）；杠杆头寸的结算为
 > `pm_leverage_resolve`（`outcome_index`、`won`、`leverage`）。两者均见于 `account_history`；头寸对象本身可经上述方法查询。
 
+### 杠杆预览（Boost）
+
+只读报价，调用评估器所用的**同一套节点内保证金数学**，因此预览与对应 `pm_leverage_*` 操作在头区块的计算结果一致。它们是非共识估算（读取与广播之间储备会变动——务必发送链上滑点保护）。
+
+| 方法 | 参数 | 返回 |
+|------|------|------|
+| `get_leverage_quote` | `market_id, outcome_index, collateral` | `pm_leverage_quote`（计算型） |
+| `get_leverage_close_preview` | `position_id` | `pm_leverage_close_preview`（计算型） |
+| `get_leverage_convert_preview` | `position_id` | `pm_leverage_convert_preview`（计算型） |
+
+`get_leverage_quote` 镜像 `pm_leverage_open`：返回最大偿付贷款与由此得到的最大杠杆、池/头寸上限、至多 12 个滑块档位（每档含代币、阈值、当前及最坏情形取消价值），且——当无法杠杆时——返回 `available = false` 并附 `failed_constraints[]` 列表。`get_leverage_close_preview` / `get_leverage_convert_preview` 在当前储备下镜像 `pm_leverage_close` / `pm_leverage_convert`（取消价值、池义务、下注者所得、是否可平仓/可转换，以及按当前中位数 `pm_conversion_profit_cost_percent` 的转换费）。
+
 ### 争议、懒惰池、治理
 
 | 方法 | 参数 | 返回 |
@@ -59,7 +78,11 @@
 | `get_dispute_votes` | `market_id` | `pm_dispute_votes`（投票 + 实时计票） |
 | `get_lazy_pool` | — | `pm_lazy_pool_object` |
 | `get_lazy_deposit` | `account` | `pm_lazy_deposit_object` |
+| `get_lazy_allocations` | `from, limit` | `pm_lazy_allocation_object[]` |
+| `get_market_lazy_allocation` | `market_id` | `pm_lazy_allocation_object`（无则报错） |
 | `get_pm_chain_properties` | — | `chain_properties_pm`（中位数, v5） |
+
+`get_lazy_allocations` 列出懒惰池的每市场分配记录（用于池仪表盘）；`get_market_lazy_allocation` 获取给定市场的那一条。预言机罚分戳记无需单独方法——它们随 `pm_oracle_object`（`penalty_stamps`、`last_penalty_stamp_time`）经 `get_oracle` 一并返回。
 
 ### 图表 —— kline / 权重历史
 
@@ -84,6 +107,38 @@
 - **`pm_market_weight_sums`** —— 各方/各结果的 `bets_sum`/`weight_sum`（权重通过扫描下注计算，因其不存储）。
 - **`pm_kline`** —— 一个图表点：`seq`（uint32，0 起、按市场单调递增的变化索引）、`timestamp`（unix 秒，x）、`reason`（uint8：0 下注、1 取消、2 清算、3 批次结算、4 杠杆开仓、5 杠杆结算）、`bets_sum`（总下注额）、`weights[]`（每个结果的权重，y；索引 = outcome_index）。
 - **`pm_dispute_votes`** —— 投票 + finalize 计票。旧字段（权重 = `|vote_percent|`，非质押）：`uphold_weight`/`challenge_weight`/`total_weight`、`challenger_leads`（≥ `pm_dispute_approve_min_percent`）、`proposed_outcome`。**精确的按质押加权投影（镜像 `pm_dispute_finalize`；所有 `*_shares` 为 vesting-shares = `effective_vesting_shares` + 懒惰池质押→shares）：** `participation_shares`（已投票者权重之和）、`electorate_shares`（`total_vesting_shares` + 池 NAV→shares）、`quorum_required_shares`、`quorum_percent_bp`（法定人数，bp，10000 = 100.00%）、`quorum_reached`（bool）、`oracle_defense_shares`/`change_shares`、`outcome_change_shares[]`（按结果）、`expected_uphold`（预言机裁决是否维持）、`expected_outcome`（当前若裁决将设定的结果）、`expected_consensus_strength_bp`。该投影与定时任务在 `voting_end_time` 按当前投票应用的结果一致（在此之前投票可更改）。
+
+**`pm_market_full`** —— 单次调用的富集市场视图（`oracle`/`meta` 缺失时为 `null`；除非提供 `account` 参数，否则 `my_*` 数组为空）：
+```
+{ market: pm_market_object,
+  outcomes: pm_outcome_object[],            // 二元市场为空
+  weight_sums: pm_market_weight_sums,
+  oracle: pm_oracle | null,
+  meta: pm_market_meta_object | null,
+  my_positions: pm_position[],              // 账户在本市场的下注
+  my_leverage_positions: pm_leverage_position_object[],
+  my_liquidity: pm_liquidity_object[] }
+```
+
+**`pm_leverage_quote`** —— 杠杆开仓预览（来自 `pm::leverage::*`，即评估器运行的同一套数学）：
+```
+{ available: bool, outcome_index, collateral,
+  max_loan, max_leverage_x100,              // 100 = 1.00×
+  pool_free_amount, fund_available, per_position_cap, market_position_cap,
+  pool_profit_percent, safety_margin_percent, max_slippage_percent, m_factor_percent,
+  expiration_buffer_sec, auto_close_time,   // betting_expiration − buffer
+  stops: [ { leverage_x100, loan, total_bet, expected_tokens, pool_profit,
+             liquidation_threshold, current_cancel_value, worst_case_cancel_value } ],
+  failed_constraints: [ { constraint, reason } ] }   // !available 时填充
+```
+**`pm_leverage_close_preview`** —— `{ position_id, outcome_index, cancel_value, pool_obligation, bettor_receives, collateral, loan, pool_profit_charge, closeable: bool, loss_vs_collateral, loss_percent_bp }`。
+**`pm_leverage_convert_preview`** —— `{ position_id, outcome_index, cancel_value, pool_obligation, current_profit, conversion_profit_cost_percent, conversion_fee, total_user_payment, convertible: bool }`。
+
+**`pm_market_categories`** —— 带实时计数的浏览分类法：
+```
+{ categories: [ { category, count, subcategories: [ { subcategory, count } ] } ],  // 按 count 降序
+  hot_tags:   [ { tag, count } ] }                                                 // 前 20（排除 jurisdiction-*）
+```
 
 ## 示例
 

@@ -357,7 +357,7 @@
 - **Эвалуатор подписанной операции**, в момент её применения — `pm_market_accepted` (при accept / self-oracle / авто-приёме) и `pm_leverage_liquidate` (при встречной или отменяющей ставке, толкающей плечевую позицию за порог).
 - **Обработчик дедлайнов `process_pm_markets()`**, запускаемый каждый блок: рассчитывает рынки, достигшие **экспирации / дедлайна / окончания окна спора / границы эпохи** (кап `pm_processing_cap_per_block`, старейший дедлайн первым).
 
-См. [Операции прогнозных рынков](./operations/prediction-markets.md). (ID 91–93 — это *обычные* операции `pm_leverage_open`/`pm_leverage_close`/`pm_leverage_convert`, см. ту страницу.)
+См. [Операции прогнозных рынков](./operations/prediction-markets.md). (ID 91–93 — это *обычные* операции `pm_leverage_open`/`pm_leverage_close`/`pm_leverage_convert`, а ID 98–99 — *обычные* операции `pm_dispute_oracle_respond`/`pm_unban` — см. ту страницу.)
 
 | ID | Операция | Триггер |
 |----|----------|---------|
@@ -372,6 +372,7 @@
 | 95 | `pm_leverage_resolve_operation` | Расчёт — плечевая позиция принудительно закрыта по `cancel_value`: `outcome_index`, `won`, `pool_received`/`bettor_received`, `leverage` |
 | 96 | `pm_market_accepted_operation` | Эвалуатор — рынок запущен: оракул принял, self-oracle или авто-приём; замороженные условия + флаг `self_oracle` |
 | 97 | `pm_payout_operation` | Расчёт — на каждую активную ставку: `amount` (стейк), `side`/`outcome_index`, `payout` (**0 при проигрыше**); рядом с порыночной `pm_auto_payout` |
+| 100 | `pm_ban_expired_operation` | Временный бан оракула/создателя истёк на `banned_until`: крон очистил его (`account`, `oracle`, `creator`). Досрочные ручные снятия используют подписанную `pm_unban` |
 
 Всё движение средств PM строго zero-sum (без эмиссии); расчёт сохраняет `Σ out == Σ ставок + принципал LP + forfeit_pool`.
 

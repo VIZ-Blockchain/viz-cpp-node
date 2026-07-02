@@ -357,7 +357,7 @@ Emitted by the PM consensus logic — **not** a wall-clock cron. Two sources:
 - A **signed operation's evaluator**, at the instant it applies — `pm_market_accepted` (on accept / self-oracle / auto-accept) and `pm_leverage_liquidate` (on an opposing- or cancel-bet that pushes a leveraged position under threshold).
 - The **deadline processor `process_pm_markets()`**, run each block: it settles markets that have reached an **expiration / deadline / dispute-grace / epoch boundary** (bounded at `pm_processing_cap_per_block`, oldest-deadline-first).
 
-See [Prediction Market Operations](./operations/prediction-markets.md). (IDs 91–93 are the *regular* ops `pm_leverage_open`/`pm_leverage_close`/`pm_leverage_convert` — see that page.)
+See [Prediction Market Operations](./operations/prediction-markets.md). (IDs 91–93 are the *regular* ops `pm_leverage_open`/`pm_leverage_close`/`pm_leverage_convert`, and IDs 98–99 the *regular* ops `pm_dispute_oracle_respond`/`pm_unban` — see that page.)
 
 | ID | Operation | Trigger |
 |----|-----------|---------|
@@ -372,6 +372,7 @@ See [Prediction Market Operations](./operations/prediction-markets.md). (IDs 91�
 | 95 | `pm_leverage_resolve_operation` | Settlement — leveraged position force-closed at `cancel_value`: `outcome_index`, `won`, `pool_received`/`bettor_received`, `leverage` |
 | 96 | `pm_market_accepted_operation` | Evaluator — market went live: oracle accepted, self-oracle, or auto-accept; frozen oracle terms + `self_oracle` |
 | 97 | `pm_payout_operation` | Settlement — per active bet: `amount` (stake), `side`/`outcome_index`, `payout` (**0 on a loss**); alongside the per-market `pm_auto_payout` |
+| 100 | `pm_ban_expired_operation` | A temporary oracle/creator ban lapsed at `banned_until`: the cron cleared it (`account`, `oracle`, `creator`). Early manual lifts use the signed `pm_unban` instead |
 
 All PM money movement is strictly zero-sum (no emission); settlement conserves `Σ out == Σ bets + LP principal + forfeit_pool`.
 

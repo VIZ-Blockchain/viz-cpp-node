@@ -34,5 +34,7 @@ namespace graphene { namespace chain {
     DEFINE_PM_EVALUATOR(leverage_open)
     DEFINE_PM_EVALUATOR(leverage_close)
     DEFINE_PM_EVALUATOR(leverage_convert)
+    DEFINE_PM_EVALUATOR(dispute_oracle_respond)
+    DEFINE_PM_EVALUATOR(unban)
 
 }} // graphene::chain

@@ -639,6 +639,12 @@ namespace graphene { namespace protocol {
             uint8_t  pm_max_outcomes              = 10;
             uint32_t pm_max_market_duration       = 31536000; ///< ≤ 1 year (s)
             uint16_t pm_max_oracle_fee_percent    = 500;     ///< bp cap on the oracle % (5%)
+            // Oracle-insurance coverage floors, as percent of a market's betting volume (100 = 1.0x).
+            // Listing: markets below it are hidden from the default catalog (revealed via show_risky) —
+            // enforced by the prediction_market_api plugin. Betting: advisory threshold below which a
+            // client should require an explicit risk confirmation (not enforced on-chain).
+            uint16_t pm_listing_min_coverage_percent = 250;  ///< hide if insurance < 2.5x bets
+            uint16_t pm_betting_min_coverage_percent = 150;  ///< client risk-confirm below 1.5x (advisory)
             uint16_t pm_default_time_penalty_percent = 50;
             uint32_t pm_max_time_penalty          = 1000000; ///< 100% of profit (1e6 precision)
             // Disputes
@@ -697,6 +703,8 @@ namespace graphene { namespace protocol {
                     "pm_max_outcomes must be in [2, ${m}]", ("m", MAX_PM_OUTCOMES_PER_MARKET));
                 FC_ASSERT(pm_max_market_duration > 0, "pm_max_market_duration must be positive");
                 FC_ASSERT(pm_max_oracle_fee_percent <= 10000, "pm_max_oracle_fee_percent out of range");
+                FC_ASSERT(pm_betting_min_coverage_percent <= pm_listing_min_coverage_percent,
+                    "pm_betting_min_coverage_percent must be <= pm_listing_min_coverage_percent");
                 FC_ASSERT(pm_default_time_penalty_percent <= 10000, "pm_default_time_penalty_percent out of range");
                 FC_ASSERT(pm_dispute_approve_min_percent <= 10000, "pm_dispute_approve_min_percent out of range");
                 FC_ASSERT(pm_oracle_penalty_percent <= 10000, "pm_oracle_penalty_percent out of range");
@@ -1320,6 +1328,7 @@ FC_REFLECT_DERIVED(
     (graphene::protocol::chain_properties_pm),((graphene::protocol::chain_properties_hf13)),
     (pm_oracle_registration_fee)(pm_min_oracle_insurance)(pm_market_creation_fee)(pm_min_liquidity)
     (pm_max_outcomes)(pm_max_market_duration)(pm_max_oracle_fee_percent)
+    (pm_listing_min_coverage_percent)(pm_betting_min_coverage_percent)
     (pm_default_time_penalty_percent)(pm_max_time_penalty)(pm_dispute_fee)(pm_dispute_grace_sec)
     (pm_oracle_dispute_response_sec)(pm_dispute_auto_close_sec)(pm_dispute_vote_period_sec)
     (pm_dispute_approve_min_percent)(pm_oracle_penalty_percent)(pm_no_contest_penalty_percent)

@@ -3720,6 +3720,8 @@ namespace graphene { namespace chain {
                 calc_median(&chain_properties_pm::pm_max_outcomes);
                 calc_median(&chain_properties_pm::pm_max_market_duration);
                 calc_median(&chain_properties_pm::pm_max_oracle_fee_percent);
+                calc_median(&chain_properties_pm::pm_listing_min_coverage_percent);
+                calc_median(&chain_properties_pm::pm_betting_min_coverage_percent);
                 calc_median(&chain_properties_pm::pm_default_time_penalty_percent);
                 calc_median(&chain_properties_pm::pm_max_time_penalty);
                 calc_median(&chain_properties_pm::pm_dispute_fee);
@@ -5082,6 +5084,8 @@ namespace graphene { namespace chain {
             _my->_evaluator_registry.register_evaluator<pm_leverage_open_evaluator>();
             _my->_evaluator_registry.register_evaluator<pm_leverage_close_evaluator>();
             _my->_evaluator_registry.register_evaluator<pm_leverage_convert_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_dispute_oracle_respond_evaluator>();
+            _my->_evaluator_registry.register_evaluator<pm_unban_evaluator>();
         }
 
         void database::set_custom_operation_interpreter(const std::string &id, std::shared_ptr<custom_operation_interpreter> registry) {

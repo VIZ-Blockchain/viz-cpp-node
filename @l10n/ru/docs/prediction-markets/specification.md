@@ -70,14 +70,20 @@ description: Формальная техническая спецификаци�
 ### Медиана-голосуемые параметры (`chain_properties_pm`)
 
 Все экономические параметры голосуются медианой делегатов (без хардфорка для настройки) и живут в on-chain
-структуре `chain_properties_pm`. **Все проценты — базисные пункты (bp, 10000 = 100.00%); длительности — в
-секундах или блоках.** Точные дефолты и диапазоны — в [Chain Properties](../governance/chain-properties#pm-parameters);
-авторитетный источник — сама структура.
+структуре `chain_properties_pm`. Каждый делегат публикует свои предпочтительные значения через стандартную
+**`versioned_chain_properties_update_operation`** (op ID 46) — `chain_properties_pm` является текущей
+(v5, HF14) версией этой versioned-структуры — а сеть применяет **медиану по каждому полю** активных
+делегатов. Две ручки риск-покрытия (`pm_listing_min_coverage_percent`, `pm_betting_min_coverage_percent`)
+входят в ту же v5-структуру и настраиваются ровно так же. **Все проценты — базисные пункты
+(bp, 10000 = 100.00%); длительности — в секундах или блоках** — за исключением двух ручек покрытия, которые
+измеряются в проценте от объёма (100 = 1.0×). Точные дефолты и диапазоны — в
+[Chain Properties](../governance/chain-properties#pm-parameters); авторитетный источник — сама структура.
 
 | Группа | Параметры |
 |---|---|
 | Регистрация и полы | `pm_oracle_registration_fee`, `pm_min_oracle_insurance`, `pm_market_creation_fee`, `pm_min_liquidity`, `pm_max_outcomes`, `pm_max_market_duration` |
 | Комиссии и штрафы (bp) | `pm_max_oracle_fee_percent`, `pm_oracle_penalty_percent`, `pm_no_contest_penalty_percent`, `pm_default_time_penalty_percent`, `pm_max_time_penalty` |
+| Риск / покрытие (% от объёма) | `pm_listing_min_coverage_percent` (250 = 2.5×; рынки с покрытием ниже этого скрыты из каталога по умолчанию, показываются через `show_risky`), `pm_betting_min_coverage_percent` (150 = 1.5×; рекомендательный клиентский порог подтверждения риска, `≤` листингового, on-chain не навязывается) |
 | Споры | `pm_dispute_fee`, `pm_dispute_grace_sec`, `pm_oracle_dispute_response_sec`, `pm_dispute_vote_period_sec`, `pm_dispute_auto_close_sec`, `pm_dispute_approve_min_percent` (bp), `pm_dispute_reward_multiplier` (bp) |
 | Lazy-пул | `pm_lazy_pool_enabled`, `pm_lazy_alloc_percent`, `pm_lazy_max_total_alloc_percent`, `pm_lazy_recall_step_percent`, `pm_lazy_lock_sec`, `pm_lazy_emergency_penalty_percent` |
 | Плечо | `pm_leverage_enabled`, `pm_leverage_fund_percent`, `pm_leverage_max_per_position_bp`, `pm_leverage_max_position_ratio_percent`, `pm_leverage_min_market_liquidity`, `pm_leverage_safety_margin_percent`, `pm_leverage_max_slippage_percent`, `pm_leverage_m_factor_percent`, `pm_leverage_pool_profit_percent`, `pm_leverage_expiration_buffer_sec`, `pm_conversion_profit_cost_percent` |
@@ -579,6 +585,12 @@ if amount_returned <= 0: amount_returned = 0
 Обязателен в течение `pm_oracle_dispute_response_sec`. При пропуске `pm_dispute_fee` авто-слешится из
 страховки и записывается на объект оракула.
 
+Оракул публикует свой контраргумент через **`pm_dispute_oracle_respond`** (op ID 98). Поскольку спор — это
+открытое публичное слушание, текст хранится **на объекте спора** (`oracle_response` + `oracle_response_time`,
+читается через `get_dispute`), чтобы каждый голосующий комитета или аккаунт-резолвер мог взвесить его перед
+решением. Отвечать может только оракул рынка, только пока спор открыт и `now ≤ oracle_response_deadline`;
+повторная публикация перезаписывает предыдущий ответ.
+
 ### Жизненный цикл спора
 
 ```
@@ -612,17 +624,23 @@ Disputer отдаёт всю dispute_fee → оракулу (100%, компен�
 
 ### Процесс пересчёта (оракул неправ)
 
-1. Валидировать штраф (ограничен оставшейся страховкой после reward_pool)
-2. Выплачена награда диспутёру
-3. Выплачена награда резолверу
-4. Слешинг страховки оракула
+1. Валидировать штраф (ограничен оставшейся страховкой)
+2. Выплачена награда диспутёру (fee + bonus); остаток слэша → `forfeit_pool` (победителям)
+3. Слешинг страховки оракула
 5. Применены баны (если запрошены)
 6. Удалить все существующие невыплаченные payouts
 7. Перевернуть выигрышный исход (A↔B)
 8. Заново сгенерировать выплаты с исправленным исходом
 9. Записан audit trail
 
-### Полномочия комитета
+### Полномочия резолвера — баны это compliance/регуляторная функция (только режим аккаунта)
+
+Санкции ниже — это поля **аккаунт-режимной** `pm_dispute_resolve` (op ID 80), выносимой именованным
+`dispute_resolver` рынка. Когда этот резолвер — **регулятор или лицензированный арбитр**, именно так он
+принуждает к off-chain-правилам: одним вердиктом он может слешить страховку **и забанить как оракула, так и
+создателя рынка** на платформе, временно или навсегда. **Режим комитета/DAO (`dispute_mode = 0`) по замыслу
+не имеет полномочий бана** — публичное слушание только слешит страховку (масштабируемую силой консенсуса) и
+корректирует репутацию через `pm_dispute_finalize`; оно никогда не банит.
 
 | Параметр | Тип | Описание |
 |-----------|------|-------------|
@@ -631,6 +649,11 @@ Disputer отдаёт всю dispute_fee → оракулу (100%, компен�
 | `ban_oracle_until` | unix ts / 0 | 0=навсегда, >0=истекает |
 | `ban_creator` | 0/1 | Забанить создателя |
 | `ban_creator_until` | unix ts / 0 | 0=навсегда, >0=истекает |
+
+Бан записывает выносящего `resolver` в поле `banned_by` цели. **Снятие бана:** тот же резолвер может снять
+его **досрочно** через **`pm_unban`** (op ID 99, `unban_oracle` / `unban_creator`); иначе он просто истекает
+на `banned_until`, после чего per-block крон очищает его и эмитит виртуальную операцию **`pm_ban_expired`**
+(ID 100), чтобы история/индексаторы наблюдали снятие.
 
 ### Авто-закрытие (14-дневный fallback)
 
@@ -950,19 +973,19 @@ Live с HF14 для **бинарных** рынков (мульти форсит
 
 | Объект (индекс) | Хранит | Ищется по |
 |---|---|---|
-| `pm_oracle_object` | регистрацию оракула, страховку, 14 счётчиков репутации, fault-штампы, баны | owner |
-| `pm_market_object` | конфиг рынка, CPMM-резервы (`reserve_a/b`, `k`), `*_fee_percent` (bp), `status` / `payout_status`, таймеры, `dispute_mode`, `a_bets_sum` / `b_bets_sum` | id / creator / oracle / result_expiration |
+| `pm_oracle_object` | регистрацию оракула, страховку, 14 счётчиков репутации, fault-штампы, бан (`banned_until` + `banned_by`) | owner |
+| `pm_market_object` | конфиг рынка, CPMM-резервы (`reserve_a/b`, `k`), `*_fee_percent` (bp), `status` / `payout_status`, таймеры, `dispute_mode`, `a_bets_sum` / `b_bets_sum`, заявление оракула о разрешении (`decision_url` / `decision_reason`) | id / creator / oracle / result_expiration |
 | `pm_outcome_object` | per-outcome LMSR `q`, `bets_sum`, `bets_count` (мульти-рынки) | market + outcome |
 | `pm_bet_object` | ставку — account, `side` / `outcome_index`, `amount`, вес кривой `weight`, `time_penalty`, `status`, `mode` | market / account |
 | `pm_liquidity_object` | позицию LP — принципал, время депозита, time-weight; `provider` пуст ⇒ lazy-pool LP | market |
 | `pm_commit_object` | commitment-хэш + escrow (batch / commit-reveal) | market / account |
-| `pm_dispute_object` | спор — disputer, `proposed_outcome`, escrow комиссии, таймеры, `status`, `dispute_mode` | market |
+| `pm_dispute_object` | спор — disputer, `proposed_outcome`, escrow комиссии, таймеры, `status`, `dispute_mode`, контраргумент оракула (`oracle_response` / `oracle_response_time`) | market |
 | `pm_dispute_vote_object` | один бюллетень комитета — voter, `vote_outcome`, `vote_percent` (изменяем до закрытия) | market + voter |
 | `pm_lazy_pool_object` | синглтон-пул — `free_balance` / `allocated_balance` / `earned_balance`, `reward_per_share`, `leverage_fund_used`, `total_shares` | синглтон (id 0) |
 | `pm_lazy_deposit_object` | депозитчика — shares, snapshot наград, unlock time | account |
 | `pm_lazy_allocation_object` | тихую LP-аллокацию пула в один рынок + состояние graduated-recall (`bets_sum_at_check`, `check_step`, `recalled_amount`) | market |
 | `pm_leverage_position_object` | открытую позицию с плечом — collateral, loan, obligation, вес кривой, `status` | account / market + status |
-| `pm_creator_ban_object` | забаненного создателя — `banned_until`, `ban_count` | ban account |
+| `pm_creator_ban_object` | забаненного создателя — `banned_until`, `ban_count`, `banned_by` | ban account |
 
 Метрики репутации считаются на чтение (`compute_oracle_reliability_score()` — §14), не хранятся. Все
 процентные поля — базисные пункты (`*_percent`, bp). Аллокации lazy-пула на рынок и состояние

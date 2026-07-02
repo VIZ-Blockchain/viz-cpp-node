@@ -6,6 +6,7 @@
 #include <graphene/chain/pm_objects.hpp>
 #include <graphene/plugins/prediction_market_api/meta_object.hpp>
 #include <graphene/protocol/chain_operations.hpp>
+#include <fc/optional.hpp>
 
 namespace graphene { namespace plugins { namespace prediction_market_api {
     using plugins::json_rpc::msg_pack;
@@ -79,6 +80,112 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         std::vector<share_type> weights;       ///< per-outcome staked weight (y values), index = outcome_index
     };
 
+    // ── Leverage previews (read-only projections of the in-node margin math) ─────────
+    // All three below call the SAME frozen pm::leverage::* functions the evaluators use, so a
+    // preview matches what pm_leverage_open/close/convert would compute in the next block. They
+    // are non-consensus quotes: reserves move, so treat the numbers as an estimate at head block.
+
+    // One reason a market/collateral pair cannot support (more) leverage.
+    struct pm_leverage_constraint {
+        std::string constraint; ///< leverage_disabled|cpmm_binary_only|market_inactive|expiration_buffer|min_market_liquidity|fund_availability|position_size|solvency
+        std::string reason;     ///< human-readable explanation
+    };
+
+    // One point on the leverage slider: everything the open evaluator would derive for this loan.
+    struct pm_leverage_stop {
+        uint32_t   leverage_x100 = 0;        ///< (collateral+loan)/collateral × 100 (100 = 1.00×)
+        share_type loan;                     ///< pool loan at this stop
+        share_type total_bet;                ///< collateral + loan (fed into the CPMM)
+        share_type expected_tokens;          ///< weight the AMM would return
+        share_type pool_profit;              ///< liquidation_threshold − loan (pool's cut)
+        share_type liquidation_threshold;    ///< loan × (1 + r%/100) = pool obligation
+        share_type current_cancel_value;     ///< cancel value right after open (no opposing bet)
+        share_type worst_case_cancel_value;  ///< cancel value after the worst opposing bet (solvency basis)
+    };
+
+    // get_leverage_quote result: max leverage + a slider of stops, mirroring pm_leverage_open.
+    struct pm_leverage_quote_api_object {
+        bool           available = false;               ///< true ⇒ max_loan > 0 (some leverage possible)
+        int16_t        outcome_index = -1;
+        share_type     collateral;
+        share_type     max_loan;                        ///< largest solvent loan (0 if none qualifies)
+        uint32_t       max_leverage_x100 = 100;         ///< (collateral+max_loan)/collateral × 100
+        share_type     pool_free_amount;                ///< free_balance − leverage_fund_used
+        share_type     fund_available;                  ///< free_balance×fund% − leverage_fund_used
+        share_type     per_position_cap;                ///< fund_available × max_per_position_bp
+        share_type     market_position_cap;             ///< liquidity_sum × max_position_ratio%
+        uint16_t       pool_profit_percent = 0;         ///< r (plain %)
+        uint16_t       safety_margin_percent = 0;       ///< s (plain %)
+        uint16_t       max_slippage_percent = 0;        ///< sl (plain %)
+        uint16_t       m_factor_percent = 0;            ///< worst-opposing m-factor (plain %)
+        uint32_t       expiration_buffer_sec = 0;       ///< leverage disabled this long before betting_expiration
+        time_point_sec auto_close_time;                 ///< betting_expiration − buffer (protocol force-close point)
+        std::vector<pm_leverage_stop>       stops;      ///< up to 12 evenly-spaced solvent stops (0 < loan ≤ max_loan)
+        std::vector<pm_leverage_constraint> failed_constraints; ///< populated when !available
+    };
+
+    // get_leverage_close_preview result: mirrors pm_leverage_close at current reserves.
+    struct pm_leverage_close_preview_api_object {
+        int64_t    position_id = 0;
+        int16_t    outcome_index = -1;
+        share_type cancel_value;        ///< VIZ the tokens fetch from the curve now
+        share_type pool_obligation;     ///< liquidation_threshold → returned to the pool
+        share_type bettor_receives;     ///< cancel_value − pool_obligation (floored 0)
+        share_type collateral;          ///< original bettor stake
+        share_type loan;                ///< pool loan
+        share_type pool_profit_charge;  ///< pool's fixed profit on the loan
+        bool       closeable = false;   ///< cancel_value ≥ pool_obligation (else protocol liquidates)
+        int64_t    loss_vs_collateral = 0; ///< collateral − bettor_receives (negative = profit)
+        int32_t    loss_percent_bp = 0;    ///< loss_vs_collateral / collateral (bp)
+    };
+
+    // get_leverage_convert_preview result: mirrors pm_leverage_convert at current reserves.
+    struct pm_leverage_convert_preview_api_object {
+        int64_t    position_id = 0;
+        int16_t    outcome_index = -1;
+        share_type cancel_value;                   ///< VIZ the tokens fetch now
+        share_type pool_obligation;                ///< loan + pool profit (repaid on convert)
+        share_type current_profit;                 ///< cancel_value − pool_obligation
+        uint16_t   conversion_profit_cost_percent = 0; ///< median value the op MUST echo
+        share_type conversion_fee;                 ///< current_profit × cost% /100
+        share_type total_user_payment;             ///< pool_obligation + conversion_fee (debited on convert)
+        bool       convertible = false;            ///< current_profit > 0
+    };
+
+    // ── Category taxonomy + live counts (non-consensus, from the meta index) ─────────
+    // Aggregated over currently-indexed (non-pruned) markets, so counts reflect live/recent
+    // markets — pruned-out expired markets drop off, matching a "browse now" catalog.
+    struct pm_subcategory_count {
+        std::string subcategory;
+        uint32_t    count = 0;
+    };
+    struct pm_category_count {
+        std::string                       category;
+        uint32_t                          count = 0;
+        std::vector<pm_subcategory_count> subcategories;
+    };
+    struct pm_tag_count {
+        std::string tag;
+        uint32_t    count = 0;
+    };
+    struct pm_market_categories_api_object {
+        std::vector<pm_category_count> categories; ///< sorted by count desc
+        std::vector<pm_tag_count>      hot_tags;   ///< top tags by count (jurisdiction-ban tags excluded)
+    };
+
+    // One-call enriched market view (saves the thin client several round-trips). The account-scoped
+    // vectors are populated only when get_market_full is called with a non-empty account argument.
+    struct pm_market_full_api_object {
+        pm_market_object                          market;
+        std::vector<pm_outcome_object>            outcomes;      ///< empty for binary markets
+        pm_market_weight_sums_api_object          weight_sums;   ///< per-outcome amount + curve weight
+        fc::optional<pm_oracle_api_object>        oracle;        ///< the market's oracle (+ reliability)
+        fc::optional<pm_market_meta_object>       meta;          ///< parsed metadata, if indexed
+        std::vector<pm_position_api_object>       my_positions;          ///< account's bets on THIS market
+        std::vector<pm_leverage_position_object>  my_leverage_positions; ///< account's leverage on THIS market
+        std::vector<pm_liquidity_object>          my_liquidity;          ///< account's LP on THIS market
+    };
+
     DEFINE_API_ARGS(get_market,                msg_pack, pm_market_object)
     DEFINE_API_ARGS(list_markets,              msg_pack, std::vector<pm_market_object>)
     DEFINE_API_ARGS(list_markets_by_oracle,    msg_pack, std::vector<pm_market_object>)
@@ -101,6 +208,13 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
     DEFINE_API_ARGS(get_market_meta,           msg_pack, pm_market_meta_object)
     DEFINE_API_ARGS(list_markets_by_category,  msg_pack, std::vector<pm_market_meta_object>)
     DEFINE_API_ARGS(get_market_kline,          msg_pack, std::vector<pm_kline_api_object>)
+    DEFINE_API_ARGS(get_leverage_quote,           msg_pack, pm_leverage_quote_api_object)
+    DEFINE_API_ARGS(get_leverage_close_preview,   msg_pack, pm_leverage_close_preview_api_object)
+    DEFINE_API_ARGS(get_leverage_convert_preview, msg_pack, pm_leverage_convert_preview_api_object)
+    DEFINE_API_ARGS(get_market_categories,     msg_pack, pm_market_categories_api_object)
+    DEFINE_API_ARGS(get_market_full,           msg_pack, pm_market_full_api_object)
+    DEFINE_API_ARGS(get_lazy_allocations,      msg_pack, std::vector<pm_lazy_allocation_object>)
+    DEFINE_API_ARGS(get_market_lazy_allocation, msg_pack, pm_lazy_allocation_object)
 
     class prediction_market_api final : public appbase::plugin<prediction_market_api> {
     public:
@@ -132,6 +246,13 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             (get_market_meta)
             (list_markets_by_category)
             (get_market_kline)
+            (get_leverage_quote)
+            (get_leverage_close_preview)
+            (get_leverage_convert_preview)
+            (get_market_categories)
+            (get_market_full)
+            (get_lazy_allocations)
+            (get_market_lazy_allocation)
         )
 
         prediction_market_api();
@@ -170,3 +291,29 @@ FC_REFLECT((graphene::plugins::prediction_market_api::pm_dispute_votes_api_objec
     (expected_uphold)(expected_outcome)(expected_consensus_strength_bp))
 FC_REFLECT((graphene::plugins::prediction_market_api::pm_kline_api_object),
     (seq)(timestamp)(reason)(bets_sum)(weights))
+FC_REFLECT((graphene::plugins::prediction_market_api::pm_leverage_constraint),
+    (constraint)(reason))
+FC_REFLECT((graphene::plugins::prediction_market_api::pm_leverage_stop),
+    (leverage_x100)(loan)(total_bet)(expected_tokens)(pool_profit)(liquidation_threshold)
+    (current_cancel_value)(worst_case_cancel_value))
+FC_REFLECT((graphene::plugins::prediction_market_api::pm_leverage_quote_api_object),
+    (available)(outcome_index)(collateral)(max_loan)(max_leverage_x100)(pool_free_amount)
+    (fund_available)(per_position_cap)(market_position_cap)(pool_profit_percent)
+    (safety_margin_percent)(max_slippage_percent)(m_factor_percent)(expiration_buffer_sec)
+    (auto_close_time)(stops)(failed_constraints))
+FC_REFLECT((graphene::plugins::prediction_market_api::pm_leverage_close_preview_api_object),
+    (position_id)(outcome_index)(cancel_value)(pool_obligation)(bettor_receives)(collateral)
+    (loan)(pool_profit_charge)(closeable)(loss_vs_collateral)(loss_percent_bp))
+FC_REFLECT((graphene::plugins::prediction_market_api::pm_leverage_convert_preview_api_object),
+    (position_id)(outcome_index)(cancel_value)(pool_obligation)(current_profit)
+    (conversion_profit_cost_percent)(conversion_fee)(total_user_payment)(convertible))
+FC_REFLECT((graphene::plugins::prediction_market_api::pm_subcategory_count),
+    (subcategory)(count))
+FC_REFLECT((graphene::plugins::prediction_market_api::pm_category_count),
+    (category)(count)(subcategories))
+FC_REFLECT((graphene::plugins::prediction_market_api::pm_tag_count),
+    (tag)(count))
+FC_REFLECT((graphene::plugins::prediction_market_api::pm_market_categories_api_object),
+    (categories)(hot_tags))
+FC_REFLECT((graphene::plugins::prediction_market_api::pm_market_full_api_object),
+    (market)(outcomes)(weight_sums)(oracle)(meta)(my_positions)(my_leverage_positions)(my_liquidity))

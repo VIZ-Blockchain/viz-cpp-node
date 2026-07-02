@@ -202,6 +202,8 @@ namespace graphene { namespace protocol {
             pm_object_id_type   market_id = 0;
             int16_t             winning_outcome = -1;
             string              decision_url;       ///< <= MAX_PM_DECISION_URL_LEN
+            string              decision_reason;    ///< free-text justification, <= MAX_PM_DISPUTE_REASON_LEN
+                                                    ///< (lives in operation history alongside decision_url)
 
             extensions_type extensions;
 
@@ -341,6 +343,37 @@ namespace graphene { namespace protocol {
             void get_required_active_authorities(flat_set<account_name_type>& a) const { a.insert(account); }
         };
 
+        /// 22. Oracle posts a public rebuttal to an open dispute filed against its resolution.
+        /// Disputes are public hearings: the response is stored on the dispute object so every
+        /// viewer (committee voters / account resolver) can read it before deciding. Only the
+        /// market's oracle may respond, only while the dispute is open and within the response
+        /// window (oracle_response_deadline).
+        struct pm_dispute_oracle_respond_operation : public base_operation {
+            account_name_type   oracle;
+            pm_object_id_type   market_id = 0;
+            string              response;           ///< rebuttal text, <= MAX_PM_DISPUTE_REASON_LEN
+
+            extensions_type extensions;
+
+            void validate() const;
+            void get_required_active_authorities(flat_set<account_name_type>& a) const { a.insert(oracle); }
+        };
+
+        /// 23. Lift an oracle and/or creator ban early. A ban set by an account-mode dispute
+        /// resolve (pm_dispute_resolve) records its issuer in `banned_by`; only that same resolver
+        /// may reverse it here. Bans otherwise expire only when now >= banned_until.
+        struct pm_unban_operation : public base_operation {
+            account_name_type   resolver;           ///< the account that imposed the ban (banned_by)
+            account_name_type   target;             ///< the banned oracle / creator account
+            bool                unban_oracle = false;
+            bool                unban_creator = false;
+
+            extensions_type extensions;
+
+            void validate() const;
+            void get_required_active_authorities(flat_set<account_name_type>& a) const { a.insert(resolver); }
+        };
+
 } } // graphene::protocol
 
 FC_REFLECT((graphene::protocol::pm_oracle_register_operation),
@@ -370,7 +403,7 @@ FC_REFLECT((graphene::protocol::pm_add_liquidity_operation),
 FC_REFLECT((graphene::protocol::pm_withdraw_liquidity_operation),
     (provider)(liquidity_id)(amount)(extensions))
 FC_REFLECT((graphene::protocol::pm_resolve_market_operation),
-    (oracle)(market_id)(winning_outcome)(decision_url)(extensions))
+    (oracle)(market_id)(winning_outcome)(decision_url)(decision_reason)(extensions))
 FC_REFLECT((graphene::protocol::pm_no_contest_operation),
     (oracle)(market_id)(reason)(extensions))
 FC_REFLECT((graphene::protocol::pm_dispute_create_operation),
@@ -392,3 +425,7 @@ FC_REFLECT((graphene::protocol::pm_leverage_close_operation),
     (account)(position_id)(min_return)(extensions))
 FC_REFLECT((graphene::protocol::pm_leverage_convert_operation),
     (account)(position_id)(conversion_profit_cost)(extensions))
+FC_REFLECT((graphene::protocol::pm_dispute_oracle_respond_operation),
+    (oracle)(market_id)(response)(extensions))
+FC_REFLECT((graphene::protocol::pm_unban_operation),
+    (resolver)(target)(unban_oracle)(unban_creator)(extensions))

@@ -147,6 +147,7 @@ namespace graphene { namespace protocol {
             FC_ASSERT(market_id >= 0, "market_id must be non-negative");
             FC_ASSERT(winning_outcome >= -1, "winning_outcome must be >= -1");
             pm_validate_utf8_cap(decision_url, MAX_PM_DECISION_URL_LEN, "decision_url");
+            pm_validate_utf8_cap(decision_reason, MAX_PM_DISPUTE_REASON_LEN, "decision_reason");
         }
 
         void pm_no_contest_operation::validate() const {
@@ -216,6 +217,19 @@ namespace graphene { namespace protocol {
         void pm_leverage_convert_operation::validate() const {
             pm_validate_account_name(account);
             FC_ASSERT(conversion_profit_cost <= 100, "conversion_profit_cost out of range");
+        }
+
+        void pm_dispute_oracle_respond_operation::validate() const {
+            pm_validate_account_name(oracle);
+            FC_ASSERT(market_id >= 0, "market_id must be non-negative");
+            FC_ASSERT(response.size() > 0, "response cannot be empty");
+            pm_validate_utf8_cap(response, MAX_PM_DISPUTE_REASON_LEN, "response");
+        }
+
+        void pm_unban_operation::validate() const {
+            pm_validate_account_name(resolver);
+            pm_validate_account_name(target);
+            FC_ASSERT(unban_oracle || unban_creator, "nothing to unban: set unban_oracle and/or unban_creator");
         }
 
 } } // graphene::protocol

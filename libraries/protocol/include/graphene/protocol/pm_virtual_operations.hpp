@@ -169,6 +169,20 @@ namespace graphene { namespace protocol {
             asset                 payout;             ///< credited at settle (0 on a loss)
         };
 
+        /// A temporary oracle and/or creator ban lapsed (now >= banned_until): the per-block cron
+        /// cleared it and emits this so history/indexers observe the lift. An *early* manual lift is
+        /// the signed pm_unban op instead (already visible in history), so this fires only for
+        /// automatic time-expiry.
+        struct pm_ban_expired_operation : public virtual_operation {
+            pm_ban_expired_operation() {}
+            pm_ban_expired_operation(const account_name_type& a, bool o, bool c)
+                : account(a), oracle(o), creator(c) {}
+
+            account_name_type account;
+            bool              oracle = false;   ///< an oracle ban expired
+            bool              creator = false;  ///< a creator ban expired
+        };
+
 } } // graphene::protocol
 
 FC_REFLECT((graphene::protocol::pm_batch_settle_operation), (market_id)(epoch)(settled_bets))
@@ -186,3 +200,5 @@ FC_REFLECT((graphene::protocol::pm_market_accepted_operation),
     (oracle)(creator)(market_id)(oracle_fee_percent)(oracle_fixed_fee)(self_oracle))
 FC_REFLECT((graphene::protocol::pm_payout_operation),
     (account)(market_id)(bet_id)(side)(outcome_index)(amount)(payout))
+FC_REFLECT((graphene::protocol::pm_ban_expired_operation),
+    (account)(oracle)(creator))
