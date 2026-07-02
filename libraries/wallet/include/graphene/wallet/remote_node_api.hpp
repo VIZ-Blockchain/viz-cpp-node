@@ -114,35 +114,40 @@ struct remote_validator_api {
  * the plugin unpacks. Not used to execute calls — only to format them.
  */
 struct remote_prediction_market_api {
-    pm_market_object                              get_market( int64_t );
-    vector< pm_market_object >                    list_markets( int8_t, uint32_t, uint32_t );
-    vector< pm_market_object >                    list_markets_by_oracle( account_name_type, uint32_t, uint32_t );
-    vector< pm_market_object >                    list_markets_by_creator( account_name_type, uint32_t, uint32_t );
-    vector< pm_outcome_object >                   get_market_outcomes( int64_t );
-    pmapi::pm_market_weight_sums_api_object        get_market_weight_sums( int64_t );
-    vector< pm_bet_object >                       get_market_bets( int64_t, uint32_t, uint32_t );
-    vector< pmapi::pm_position_api_object >        get_account_positions( account_name_type, uint32_t, uint32_t );
-    vector< pm_liquidity_object >                 get_market_liquidity( int64_t, uint32_t, uint32_t );
-    vector< pm_leverage_position_object >         get_account_leverage_positions( account_name_type, uint32_t, uint32_t );
-    vector< pm_leverage_position_object >         get_market_leverage_positions( int64_t, uint32_t, uint32_t );
-    pm_creator_ban_object                         get_creator_ban( account_name_type );
-    pmapi::pm_oracle_api_object                    get_oracle( account_name_type );
-    vector< pm_oracle_object >                    list_oracles( uint32_t, uint32_t );
-    pm_dispute_object                             get_dispute( int64_t );
-    pmapi::pm_dispute_votes_api_object             get_dispute_votes( int64_t );
-    pm_lazy_pool_object                           get_lazy_pool();
-    pm_lazy_deposit_object                        get_lazy_deposit( account_name_type );
-    graphene::protocol::chain_properties_pm       get_pm_chain_properties();
-    pmapi::pm_market_meta_object                   get_market_meta( int64_t );
-    vector< pmapi::pm_market_meta_object >         list_markets_by_category( string, uint32_t, uint32_t );
-    vector< pmapi::pm_kline_api_object >           get_market_kline( int64_t, uint32_t, uint32_t );
-    pmapi::pm_leverage_quote_api_object            get_leverage_quote( int64_t, int16_t, int64_t );
-    pmapi::pm_leverage_close_preview_api_object    get_leverage_close_preview( int64_t );
-    pmapi::pm_leverage_convert_preview_api_object  get_leverage_convert_preview( int64_t );
-    pmapi::pm_market_categories_api_object         get_market_categories();
-    pmapi::pm_market_full_api_object               get_market_full( int64_t, account_name_type );
-    vector< pm_lazy_allocation_object >            get_lazy_allocations( uint32_t, uint32_t );
-    pm_lazy_allocation_object                      get_market_lazy_allocation( int64_t );
+    // Every read method returns fc::variant rather than the node's typed object. The chainbase state
+    // objects (pm_market_object, pm_bet_object, …) and the API DTOs that embed them are intentionally
+    // NOT default-constructible (deleted default ctor / shared_string members need a segment manager),
+    // so fc::api's client-side deserializer (`T tmp; var.as<T>()`) cannot instantiate them. The node
+    // already emits fully-formed JSON; the wallet just forwards it as a variant (cli_wallet prints it).
+    fc::variant  get_market( int64_t );
+    fc::variant  list_markets( int8_t, uint32_t, uint32_t );
+    fc::variant  list_markets_by_oracle( account_name_type, uint32_t, uint32_t );
+    fc::variant  list_markets_by_creator( account_name_type, uint32_t, uint32_t );
+    fc::variant  get_market_outcomes( int64_t );
+    fc::variant  get_market_weight_sums( int64_t );
+    fc::variant  get_market_bets( int64_t, uint32_t, uint32_t );
+    fc::variant  get_account_positions( account_name_type, uint32_t, uint32_t );
+    fc::variant  get_market_liquidity( int64_t, uint32_t, uint32_t );
+    fc::variant  get_account_leverage_positions( account_name_type, uint32_t, uint32_t );
+    fc::variant  get_market_leverage_positions( int64_t, uint32_t, uint32_t );
+    fc::variant  get_creator_ban( account_name_type );
+    fc::variant  get_oracle( account_name_type );
+    fc::variant  list_oracles( uint32_t, uint32_t );
+    fc::variant  get_dispute( int64_t );
+    fc::variant  get_dispute_votes( int64_t );
+    fc::variant  get_lazy_pool();
+    fc::variant  get_lazy_deposit( account_name_type );
+    fc::variant  get_pm_chain_properties();
+    fc::variant  get_market_meta( int64_t );
+    fc::variant  list_markets_by_category( string, uint32_t, uint32_t );
+    fc::variant  get_market_kline( int64_t, uint32_t, uint32_t );
+    fc::variant  get_leverage_quote( int64_t, int16_t, int64_t );
+    fc::variant  get_leverage_close_preview( int64_t );
+    fc::variant  get_leverage_convert_preview( int64_t );
+    fc::variant  get_market_categories();
+    fc::variant  get_market_full( int64_t, account_name_type );
+    fc::variant  get_lazy_allocations( uint32_t, uint32_t );
+    fc::variant  get_market_lazy_allocation( int64_t );
 };
 
 } }

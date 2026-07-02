@@ -1328,30 +1328,34 @@ namespace graphene { namespace wallet {
             // Thin pass-throughs to the node's prediction_market_api plugin so cli_wallet can inspect
             // markets, oracles, positions, disputes and the lazy pool. Require the node to run that plugin.
 
-            pm_market_object                          pm_get_market(int64_t market_id) const;
-            vector<pm_market_object>                  pm_list_markets(int8_t status, uint32_t from, uint32_t limit) const;
-            vector<pm_market_object>                  pm_list_markets_by_oracle(string oracle, uint32_t from, uint32_t limit) const;
-            vector<pm_market_object>                  pm_list_markets_by_creator(string creator, uint32_t from, uint32_t limit) const;
-            vector<pm_outcome_object>                 pm_get_market_outcomes(int64_t market_id) const;
-            pmapi::pm_market_weight_sums_api_object    pm_get_market_weight_sums(int64_t market_id) const;
-            vector<pm_bet_object>                     pm_get_market_bets(int64_t market_id, uint32_t from, uint32_t limit) const;
-            vector<pmapi::pm_position_api_object>      pm_get_account_positions(string account, uint32_t from, uint32_t limit) const;
-            vector<pm_liquidity_object>               pm_get_market_liquidity(int64_t market_id, uint32_t from, uint32_t limit) const;
-            vector<pm_leverage_position_object>       pm_get_account_leverage_positions(string account, uint32_t from, uint32_t limit) const;
-            vector<pm_leverage_position_object>       pm_get_market_leverage_positions(int64_t market_id, uint32_t from, uint32_t limit) const;
-            pm_creator_ban_object                     pm_get_creator_ban(string account) const;
-            pmapi::pm_oracle_api_object                pm_get_oracle(string owner) const;
-            vector<pm_oracle_object>                  pm_list_oracles(uint32_t from, uint32_t limit) const;
-            pm_dispute_object                         pm_get_dispute(int64_t market_id) const;
-            pmapi::pm_dispute_votes_api_object         pm_get_dispute_votes(int64_t market_id) const;
-            pm_lazy_pool_object                       pm_get_lazy_pool() const;
-            pm_lazy_deposit_object                    pm_get_lazy_deposit(string account) const;
-            graphene::protocol::chain_properties_pm   pm_get_chain_properties() const;
-            pmapi::pm_market_meta_object               pm_get_market_meta(int64_t market_id) const;
-            vector<pmapi::pm_market_meta_object>       pm_list_markets_by_category(string category, uint32_t from, uint32_t limit) const;
+            // These read pass-throughs return fc::variant (raw JSON from the node) rather than the
+            // node's typed objects: the underlying chainbase state objects and the API DTOs that embed
+            // them are not default-constructible, so the fc::api client proxy cannot deserialize them
+            // into concrete types. cli_wallet renders the variant as JSON, so the surface is unchanged.
+            fc::variant  pm_get_market(int64_t market_id) const;
+            fc::variant  pm_list_markets(int8_t status, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_list_markets_by_oracle(string oracle, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_list_markets_by_creator(string creator, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_market_outcomes(int64_t market_id) const;
+            fc::variant  pm_get_market_weight_sums(int64_t market_id) const;
+            fc::variant  pm_get_market_bets(int64_t market_id, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_account_positions(string account, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_market_liquidity(int64_t market_id, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_account_leverage_positions(string account, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_market_leverage_positions(int64_t market_id, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_creator_ban(string account) const;
+            fc::variant  pm_get_oracle(string owner) const;
+            fc::variant  pm_list_oracles(uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_dispute(int64_t market_id) const;
+            fc::variant  pm_get_dispute_votes(int64_t market_id) const;
+            fc::variant  pm_get_lazy_pool() const;
+            fc::variant  pm_get_lazy_deposit(string account) const;
+            fc::variant  pm_get_chain_properties() const;
+            fc::variant  pm_get_market_meta(int64_t market_id) const;
+            fc::variant  pm_list_markets_by_category(string category, uint32_t from, uint32_t limit) const;
             /// Kline / weight-over-time history for charting. Pagination is offset-from-newest:
             /// (from=0,limit=1000) = latest ≤1000 changes; (from=1000,…) steps another 1000 back.
-            vector<pmapi::pm_kline_api_object>         pm_get_market_kline(int64_t market_id, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_get_market_kline(int64_t market_id, uint32_t from, uint32_t limit) const;
 
             // ========== VIZ DNS Nameserver Helpers ==========
 

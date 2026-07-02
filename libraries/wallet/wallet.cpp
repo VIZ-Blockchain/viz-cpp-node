@@ -2823,70 +2823,70 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
 
         // ---------- prediction_market_api read pass-throughs ----------
 
-        pm_market_object wallet_api::pm_get_market(int64_t market_id) const {
+        fc::variant wallet_api::pm_get_market(int64_t market_id) const {
             return my->pm_api()->get_market(market_id);
         }
-        vector<pm_market_object> wallet_api::pm_list_markets(int8_t status, uint32_t from, uint32_t limit) const {
+        fc::variant wallet_api::pm_list_markets(int8_t status, uint32_t from, uint32_t limit) const {
             return my->pm_api()->list_markets(status, from, limit);
         }
-        vector<pm_market_object> wallet_api::pm_list_markets_by_oracle(string oracle, uint32_t from, uint32_t limit) const {
+        fc::variant wallet_api::pm_list_markets_by_oracle(string oracle, uint32_t from, uint32_t limit) const {
             return my->pm_api()->list_markets_by_oracle(oracle, from, limit);
         }
-        vector<pm_market_object> wallet_api::pm_list_markets_by_creator(string creator, uint32_t from, uint32_t limit) const {
+        fc::variant wallet_api::pm_list_markets_by_creator(string creator, uint32_t from, uint32_t limit) const {
             return my->pm_api()->list_markets_by_creator(creator, from, limit);
         }
-        vector<pm_outcome_object> wallet_api::pm_get_market_outcomes(int64_t market_id) const {
+        fc::variant wallet_api::pm_get_market_outcomes(int64_t market_id) const {
             return my->pm_api()->get_market_outcomes(market_id);
         }
-        pmapi::pm_market_weight_sums_api_object wallet_api::pm_get_market_weight_sums(int64_t market_id) const {
+        fc::variant wallet_api::pm_get_market_weight_sums(int64_t market_id) const {
             return my->pm_api()->get_market_weight_sums(market_id);
         }
-        vector<pm_bet_object> wallet_api::pm_get_market_bets(int64_t market_id, uint32_t from, uint32_t limit) const {
+        fc::variant wallet_api::pm_get_market_bets(int64_t market_id, uint32_t from, uint32_t limit) const {
             return my->pm_api()->get_market_bets(market_id, from, limit);
         }
-        vector<pmapi::pm_position_api_object> wallet_api::pm_get_account_positions(string account, uint32_t from, uint32_t limit) const {
+        fc::variant wallet_api::pm_get_account_positions(string account, uint32_t from, uint32_t limit) const {
             return my->pm_api()->get_account_positions(account, from, limit);
         }
-        vector<pm_liquidity_object> wallet_api::pm_get_market_liquidity(int64_t market_id, uint32_t from, uint32_t limit) const {
+        fc::variant wallet_api::pm_get_market_liquidity(int64_t market_id, uint32_t from, uint32_t limit) const {
             return my->pm_api()->get_market_liquidity(market_id, from, limit);
         }
-        vector<pm_leverage_position_object> wallet_api::pm_get_account_leverage_positions(string account, uint32_t from, uint32_t limit) const {
+        fc::variant wallet_api::pm_get_account_leverage_positions(string account, uint32_t from, uint32_t limit) const {
             return my->pm_api()->get_account_leverage_positions(account, from, limit);
         }
-        vector<pm_leverage_position_object> wallet_api::pm_get_market_leverage_positions(int64_t market_id, uint32_t from, uint32_t limit) const {
+        fc::variant wallet_api::pm_get_market_leverage_positions(int64_t market_id, uint32_t from, uint32_t limit) const {
             return my->pm_api()->get_market_leverage_positions(market_id, from, limit);
         }
-        pm_creator_ban_object wallet_api::pm_get_creator_ban(string account) const {
+        fc::variant wallet_api::pm_get_creator_ban(string account) const {
             return my->pm_api()->get_creator_ban(account);
         }
-        pmapi::pm_oracle_api_object wallet_api::pm_get_oracle(string owner) const {
+        fc::variant wallet_api::pm_get_oracle(string owner) const {
             return my->pm_api()->get_oracle(owner);
         }
-        vector<pm_oracle_object> wallet_api::pm_list_oracles(uint32_t from, uint32_t limit) const {
+        fc::variant wallet_api::pm_list_oracles(uint32_t from, uint32_t limit) const {
             return my->pm_api()->list_oracles(from, limit);
         }
-        pm_dispute_object wallet_api::pm_get_dispute(int64_t market_id) const {
+        fc::variant wallet_api::pm_get_dispute(int64_t market_id) const {
             return my->pm_api()->get_dispute(market_id);
         }
-        pmapi::pm_dispute_votes_api_object wallet_api::pm_get_dispute_votes(int64_t market_id) const {
+        fc::variant wallet_api::pm_get_dispute_votes(int64_t market_id) const {
             return my->pm_api()->get_dispute_votes(market_id);
         }
-        pm_lazy_pool_object wallet_api::pm_get_lazy_pool() const {
+        fc::variant wallet_api::pm_get_lazy_pool() const {
             return my->pm_api()->get_lazy_pool();
         }
-        pm_lazy_deposit_object wallet_api::pm_get_lazy_deposit(string account) const {
+        fc::variant wallet_api::pm_get_lazy_deposit(string account) const {
             return my->pm_api()->get_lazy_deposit(account);
         }
-        graphene::protocol::chain_properties_pm wallet_api::pm_get_chain_properties() const {
+        fc::variant wallet_api::pm_get_chain_properties() const {
             return my->pm_api()->get_pm_chain_properties();
         }
-        pmapi::pm_market_meta_object wallet_api::pm_get_market_meta(int64_t market_id) const {
+        fc::variant wallet_api::pm_get_market_meta(int64_t market_id) const {
             return my->pm_api()->get_market_meta(market_id);
         }
-        vector<pmapi::pm_market_meta_object> wallet_api::pm_list_markets_by_category(string category, uint32_t from, uint32_t limit) const {
+        fc::variant wallet_api::pm_list_markets_by_category(string category, uint32_t from, uint32_t limit) const {
             return my->pm_api()->list_markets_by_category(category, from, limit);
         }
-        vector<pmapi::pm_kline_api_object> wallet_api::pm_get_market_kline(int64_t market_id, uint32_t from, uint32_t limit) const {
+        fc::variant wallet_api::pm_get_market_kline(int64_t market_id, uint32_t from, uint32_t limit) const {
             return my->pm_api()->get_market_kline(market_id, from, limit);
         }
 
