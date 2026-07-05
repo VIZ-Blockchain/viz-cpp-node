@@ -2264,15 +2264,14 @@ void database::process_pm_markets() {
     // Any market that has become terminal — resolved+paid, void/no-contest, oracle-rejected,
     // or accept-window-expired — carries a non-zero finalized_time and can never be acted on
     // again; it only lingers "for history". Reclaim its whole object cluster
-    // PM_CLOSED_MARKET_RETENTION_SEC after that moment. The retention is a fixed protocol
-    // constant, identical on every node, so pruning is deterministic: every node deletes the
+    // pm_closed_market_retention_sec after that moment. The retention is median-voted, so it is
+    // identical on every node at any block → pruning is deterministic: every node deletes the
     // same markets at the same block, keeping shared-memory state and snapshots in lock-step
     // network-wide (a node syncing from a snapshot ends up with the same market set as all).
     {
-        const uint32_t PM_CLOSED_MARKET_RETENTION_SEC = 5u * 86400u; // 5 days, uniform for all nodes
+        const uint32_t retention = mp.pm_closed_market_retention_sec; // median-voted, 5 d default
         const time_point_sec cutoff(
-            (now.sec_since_epoch() > PM_CLOSED_MARKET_RETENTION_SEC)
-                ? (uint32_t)(now.sec_since_epoch() - PM_CLOSED_MARKET_RETENTION_SEC) : 0u);
+            (now.sec_since_epoch() > retention) ? (uint32_t)(now.sec_since_epoch() - retention) : 0u);
 
         // finalized_time == 0 for every live market (sorts first) — start just past them.
         const auto& idx = get_index<pm_market_index>().indices().get<by_finalized>();

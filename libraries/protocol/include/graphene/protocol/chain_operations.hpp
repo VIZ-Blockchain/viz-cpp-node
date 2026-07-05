@@ -692,6 +692,12 @@ namespace graphene { namespace protocol {
             uint32_t pm_leverage_expiration_buffer_sec       = 86400; ///< leverage disabled N sec before expiration
             uint16_t pm_leverage_m_factor_percent           = 50;    ///< M_effective = M_max × this% (VIZ DLT relaxation)
             uint16_t pm_conversion_profit_cost_percent      = 50;    ///< fee % of unrealized profit on convert
+            // Garbage collection of terminal markets
+            uint32_t pm_closed_market_retention_sec         = 432000; ///< 5 d: a market and its whole object
+                                                                     ///< cluster are pruned from state this long
+                                                                     ///< after it becomes terminal (finalized_time).
+                                                                     ///< Median-voted → identical on every node, so
+                                                                     ///< pruning stays deterministic / snapshot-safe.
 
             void validate() const {
                 chain_properties_hf13::validate();
@@ -1348,7 +1354,8 @@ FC_REFLECT_DERIVED(
     (pm_leverage_enabled)(pm_leverage_fund_percent)(pm_leverage_max_per_position_bp)
     (pm_leverage_pool_profit_percent)(pm_leverage_safety_margin_percent)(pm_leverage_max_slippage_percent)
     (pm_leverage_min_market_liquidity)(pm_leverage_max_position_ratio_percent)
-    (pm_leverage_expiration_buffer_sec)(pm_leverage_m_factor_percent)(pm_conversion_profit_cost_percent))
+    (pm_leverage_expiration_buffer_sec)(pm_leverage_m_factor_percent)(pm_conversion_profit_cost_percent)
+    (pm_closed_market_retention_sec))
 
 FC_REFLECT_TYPENAME((graphene::protocol::versioned_chain_properties))
 

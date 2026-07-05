@@ -207,6 +207,64 @@ namespace {
     }
 }
 
+    // ── GC helpers (terminal-market garbage collection) ──────────────────────────
+    // True once the market AND every object in its cluster are gone from state.
+    bool market_cluster_absent(const database& db, const pm_market_id_type& mid) {
+        if (db.find<pm_market_object>(mid) != nullptr) return false;
+        auto range_empty = [&](const auto& idx) {
+            auto it = idx.lower_bound(boost::make_tuple(mid));
+            return it == idx.end() || it->market != mid;
+        };
+        if (!range_empty(db.get_index<pm_outcome_index>().indices().get<by_market_outcome>()))             return false;
+        if (!range_empty(db.get_index<pm_bet_index>().indices().get<by_market>()))                          return false;
+        if (!range_empty(db.get_index<pm_liquidity_index>().indices().get<by_market>()))                    return false;
+        if (!range_empty(db.get_index<pm_commit_index>().indices().get<by_market>()))                       return false;
+        if (!range_empty(db.get_index<pm_dispute_vote_index>().indices().get<by_market_voter>()))           return false;
+        if (!range_empty(db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>())) return false;
+        { const auto& d = db.get_index<pm_dispute_index>().indices().get<by_market>();          if (d.find(mid) != d.end()) return false; }
+        { const auto& a = db.get_index<pm_lazy_allocation_index>().indices().get<by_market>();  if (a.find(mid) != a.end()) return false; }
+        return true;
+    }
+
+    // A terminal market must carry a finalized_time and still be present, then be fully GC'd once
+    // pm_closed_market_retention_sec elapses. GC tests set that retention small (30s below).
+    void assert_gc_after_retention(simulated_node& node, const genesis_params& gp,
+                                   fc::time_point_sec& when, const pm_market_id_type& mid) {
+        BOOST_REQUIRE(node.db().find<pm_market_object>(mid) != nullptr);
+        BOOST_CHECK_MESSAGE(node.db().get<pm_market_object>(mid).finalized_time != fc::time_point_sec(),
+                            "finalized_time must be stamped when the market becomes terminal");
+        BOOST_REQUIRE(!market_cluster_absent(node.db(), mid)); // cluster present pre-retention
+
+        for (int i = 0; i < 400 && node.db().find<pm_market_object>(mid) != nullptr; ++i)
+            produce(node, gp, when);
+
+        BOOST_CHECK(node.db().find<pm_market_object>(mid) == nullptr);   // market reclaimed
+        BOOST_CHECK(market_cluster_absent(node.db(), mid));             // whole cluster reclaimed
+    }
+
+    // Publish PM props with test-short timers (grace + GC retention = 30s) so the crons fire fast.
+    void publish_fast_pm_props(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when,
+                               chain_properties_pm props) {
+        props.pm_dispute_grace_sec           = 30;
+        props.pm_closed_market_retention_sec = 30;  // GC 30s after death (5 d in production)
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        for (int i = 0; i < 60 &&
+             node.db().get_validator_schedule_object().median_props.pm_closed_market_retention_sec != 30u; ++i)
+            produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(node.db().get_validator_schedule_object().median_props.pm_closed_market_retention_sec, 30u);
+    }
+
+    void register_self_oracle(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when) {
+        const auto& mp = node.db().get_validator_schedule_object().median_props;
+        pm_oracle_register_operation oreg;
+        oreg.owner = gp.initiator_name; oreg.insurance = mp.pm_min_oracle_insurance;
+        oreg.fixed_fee = asset(0, TOKEN_SYMBOL); oreg.rules_url = "";
+        node.push_pending_transaction(sign_ops({oreg}, gp.initiator_key, node));
+        produce(node, gp, when);
+    }
+
 BOOST_AUTO_TEST_SUITE(pm_lifecycle_suite)
 
 BOOST_AUTO_TEST_CASE(oracle_register_after_hf14) {
@@ -4887,6 +4945,268 @@ BOOST_AUTO_TEST_CASE(unban_rejected_when_not_banned) {
     BOOST_CHECK_THROW(node.push_pending_transaction(sign_ops({u2}, judge_key, node)),
                       std::runtime_error);
     BOOST_TEST_MESSAGE("unban rejected when there is no active ban");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Terminal-market garbage collection — all five ways a market can die must, after
+// pm_closed_market_retention_sec, have their whole object cluster reclaimed from state.
+// Each case first drives the market to its terminal state (asserting finalized_time is
+// stamped), then advances past the (test-short) retention and asserts the market and its
+// bets/outcomes/liquidity/… are gone. Deterministic cron ⇒ identical on every node.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Death #5 — resolved + auto-paid.
+BOOST_AUTO_TEST_CASE(gc_resolved_market_after_retention) {
+    auto gp = make_genesis_params(0x6C01u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-gc-resolved", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skipping."); return; }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    publish_fast_pm_props(node, gp, when, chain_properties_pm{});
+    register_self_oracle(node, gp, when);
+
+    auto alice_key = derive_key("alice"), bob_key = derive_key("bob");
+    create_and_fund(node, gp, when, "alice", alice_key, share_type(unit * 4));
+    create_and_fund(node, gp, when, "bob",   bob_key,   share_type(unit * 4));
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(30);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(90);
+    cm.allow_early_resolution = true; cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+
+    pm_place_bet_operation ba;
+    ba.account = "alice"; ba.market_id = 0; ba.side = 0; ba.outcome_index = -1;
+    ba.amount = asset(share_type(unit), TOKEN_SYMBOL); ba.mode = 0;
+    pm_place_bet_operation bb = ba; bb.account = "bob"; bb.side = 1;
+    node.push_pending_transaction(sign_ops({ba}, alice_key, node));
+    node.push_pending_transaction(sign_ops({bb}, bob_key, node));
+    produce(node, gp, when);
+
+    for (int i = 0; i < 15; ++i) produce(node, gp, when);            // past betting_expiration
+    pm_resolve_market_operation rm;
+    rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0;
+    node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    for (int i = 0; i < 120 && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+        produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
+
+    assert_gc_after_retention(node, gp, when, market_id);
+    BOOST_TEST_MESSAGE("resolved market GC'd after retention");
+}
+
+// Death #1 — oracle rejects the market's terms.
+BOOST_AUTO_TEST_CASE(gc_oracle_reject_after_retention) {
+    auto gp = make_genesis_params(0x6C02u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-gc-reject", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skipping."); return; }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    const int64_t fee  = mp.pm_market_creation_fee.amount.value;
+    publish_fast_pm_props(node, gp, when, chain_properties_pm{});
+    register_self_oracle(node, gp, when); // viz is the (external) oracle
+
+    auto carol_key = derive_key("carol");
+    create_and_fund(node, gp, when, "carol", carol_key, share_type(unit * 4 + fee + unit));
+
+    pm_create_market_operation cm;
+    cm.creator = "carol"; cm.oracle = gp.initiator_name; // external oracle → pending
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(60);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(120);
+    cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, carol_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).status, 0); // pending
+
+    pm_oracle_accept_market_operation rej;
+    rej.oracle = gp.initiator_name; rej.market_id = 0; rej.accept = false;
+    node.push_pending_transaction(sign_ops({rej}, gp.initiator_key, node));
+    produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).status, -1); // rejected
+
+    assert_gc_after_retention(node, gp, when, market_id);
+    BOOST_TEST_MESSAGE("oracle-rejected market GC'd after retention");
+}
+
+// Death #2 — oracle never accepts; the accept window expires and the cron voids the market.
+BOOST_AUTO_TEST_CASE(gc_accept_window_expired_after_retention) {
+    auto gp = make_genesis_params(0x6C03u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-gc-expired", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skipping."); return; }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    const int64_t fee  = mp.pm_market_creation_fee.amount.value;
+    chain_properties_pm props; props.pm_oracle_accept_window_sec = 15; // short accept window
+    publish_fast_pm_props(node, gp, when, props);
+    register_self_oracle(node, gp, when); // viz is the (external) oracle
+
+    auto carol_key = derive_key("carol");
+    create_and_fund(node, gp, when, "carol", carol_key, share_type(unit * 4 + fee + unit));
+
+    pm_create_market_operation cm;
+    cm.creator = "carol"; cm.oracle = gp.initiator_name; // external oracle → pending
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(120);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(240);
+    cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, carol_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+
+    // Never accept — advance past the accept window; the cron voids the market (status -1).
+    for (int i = 0; i < 120 && node.db().get<pm_market_object>(market_id).status != -1; ++i)
+        produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).status, -1); // expired-unaccepted
+
+    assert_gc_after_retention(node, gp, when, market_id);
+    BOOST_TEST_MESSAGE("accept-window-expired market GC'd after retention");
+}
+
+// Death #3 — oracle misses the resolution deadline; the cron refunds and closes the market.
+BOOST_AUTO_TEST_CASE(gc_oracle_missed_after_retention) {
+    auto gp = make_genesis_params(0x6C04u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-gc-missed", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skipping."); return; }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    publish_fast_pm_props(node, gp, when, chain_properties_pm{});
+    register_self_oracle(node, gp, when);
+
+    auto alice_key = derive_key("alice"), bob_key = derive_key("bob");
+    create_and_fund(node, gp, when, "alice", alice_key, share_type(unit * 4));
+    create_and_fund(node, gp, when, "bob",   bob_key,   share_type(unit * 4));
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(30);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(60);
+    cm.allow_early_resolution = false; cm.dispute_mode = 0; // let it expire unresolved
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+
+    pm_place_bet_operation ba;
+    ba.account = "alice"; ba.market_id = 0; ba.side = 0; ba.outcome_index = -1;
+    ba.amount = asset(share_type(unit), TOKEN_SYMBOL); ba.mode = 0;
+    pm_place_bet_operation bb = ba; bb.account = "bob"; bb.side = 1;
+    node.push_pending_transaction(sign_ops({ba}, alice_key, node));
+    node.push_pending_transaction(sign_ops({bb}, bob_key, node));
+    produce(node, gp, when);
+
+    // Never resolve — advance past result_expiration; the missed-oracle cron closes it.
+    for (int i = 0; i < 120 && node.db().get<pm_market_object>(market_id).status != 3; ++i)
+        produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).status, 3);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
+
+    assert_gc_after_retention(node, gp, when, market_id);
+    BOOST_TEST_MESSAGE("oracle-missed market GC'd after retention");
+}
+
+// Death #4 — a dispute is filed but nobody votes; the anti-freeze auto-close voids the market.
+BOOST_AUTO_TEST_CASE(gc_dispute_auto_close_after_retention) {
+    auto gp = make_genesis_params(0x6C05u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-gc-autoclose", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+    if (!bring_to_hf14(node, gp, when)) { BOOST_TEST_MESSAGE("HF14 not reachable; skipping."); return; }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    chain_properties_pm props;
+    props.pm_oracle_dispute_response_sec = 5;
+    props.pm_dispute_vote_period_sec     = 600;
+    props.pm_dispute_auto_close_sec      = 5;
+    props.pm_dispute_fee                 = asset(unit, TOKEN_SYMBOL);
+    publish_fast_pm_props(node, gp, when, props);
+    register_self_oracle(node, gp, when);
+
+    auto alice_key = derive_key("alice"), bob_key = derive_key("bob");
+    create_and_fund(node, gp, when, "alice", alice_key, share_type(unit * 4));
+    create_and_fund(node, gp, when, "bob",   bob_key,   share_type(unit * 4));
+
+    pm_create_market_operation cm;
+    cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+    cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+    cm.liquidity = asset(share_type(unit * 4), TOKEN_SYMBOL);
+    cm.betting_expiration = node.head_block_time() + fc::seconds(30);
+    cm.result_expiration  = node.head_block_time() + fc::seconds(90);
+    cm.allow_early_resolution = true; cm.dispute_mode = 0;
+    node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+    produce(node, gp, when);
+    const pm_market_id_type market_id(0);
+
+    pm_place_bet_operation ba;
+    ba.account = "alice"; ba.market_id = 0; ba.side = 0; ba.outcome_index = -1;
+    ba.amount = asset(share_type(unit), TOKEN_SYMBOL); ba.mode = 0;
+    pm_place_bet_operation bb = ba; bb.account = "bob"; bb.side = 1;
+    node.push_pending_transaction(sign_ops({ba}, alice_key, node));
+    node.push_pending_transaction(sign_ops({bb}, bob_key, node));
+    produce(node, gp, when);
+
+    for (int i = 0; i < 15; ++i) produce(node, gp, when);            // past betting_expiration
+    pm_resolve_market_operation rm;
+    rm.oracle = gp.initiator_name; rm.market_id = 0; rm.winning_outcome = 0;
+    node.push_pending_transaction(sign_ops({rm}, gp.initiator_key, node));
+    produce(node, gp, when);
+
+    pm_dispute_create_operation dc;
+    dc.disputer = "bob"; dc.market_id = 0; dc.proposed_outcome = 1; dc.reason = "B won";
+    node.push_pending_transaction(sign_ops({dc}, bob_key, node));
+    produce(node, gp, when);
+
+    // Nobody votes — advance past auto_close_time; the cron voids the market.
+    for (int i = 0; i < 200 && node.db().get<pm_market_object>(market_id).payout_status != 3; ++i)
+        produce(node, gp, when);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).payout_status, 3);
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_market_object>(market_id).resolved_outcome, -1); // voided
+
+    assert_gc_after_retention(node, gp, when, market_id);
+    BOOST_TEST_MESSAGE("dispute-auto-closed market GC'd after retention");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

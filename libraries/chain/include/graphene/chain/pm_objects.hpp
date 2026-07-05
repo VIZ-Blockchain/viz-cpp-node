@@ -104,7 +104,7 @@ namespace graphene { namespace chain {
             time_point_sec    finalized_time;     ///< 0 while live; set to head-block time the moment the
                                                   ///< market becomes terminal (resolved+paid, void/no-contest,
                                                   ///< oracle-rejected, or accept-window expired). The cron GCs
-                                                  ///< the whole market cluster PM_CLOSED_MARKET_RETENTION_SEC
+                                                  ///< the whole market cluster pm_closed_market_retention_sec
                                                   ///< after this — deterministic, so every node prunes alike.
             int16_t           resolved_outcome = -1;
 
