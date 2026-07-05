@@ -887,7 +887,7 @@ void pm_oracle_accept_market_evaluator::do_apply(const pm_oracle_accept_market_o
         // cannot have received pm_add_liquidity (that requires status==1), so liquidity_sum
         // equals that single LP amount — crediting liquidity_sum here too would emit tokens.
         return_liquidity(db, mkt);
-        db.modify(mkt, [](pm_market_object& m) { m.status = -1; });
+        db.modify(mkt, [&](pm_market_object& m) { m.status = -1; m.finalized_time = db.head_block_time(); });
     }
 }
 
@@ -1971,10 +1971,11 @@ void database::process_pm_markets() {
             refund_all_bets(*this, mkt);
             return_liquidity(*this, mkt);
 
-            modify(mkt, [](pm_market_object& m) {
+            modify(mkt, [&](pm_market_object& m) {
                 m.status           = 3;
                 m.payout_status    = 3; // closed — no payout
                 m.resolved_outcome = -1;
+                m.finalized_time   = now;
             });
 
             push_virtual_operation(pm_oracle_missed_penalty_operation(
@@ -1998,9 +1999,10 @@ void database::process_pm_markets() {
             const auto& mkt = *it; ++it;
             share_type refunded = mkt.liquidity_sum;
             return_liquidity(*this, mkt);
-            modify(mkt, [](pm_market_object& m) {
+            modify(mkt, [&](pm_market_object& m) {
                 m.status        = -1;
                 m.payout_status = 3; // closed — no payout
+                m.finalized_time = now;
             });
             push_virtual_operation(pm_market_expired_operation(
                 mkt.oracle, mkt.creator, mkt.id._id, asset(refunded, TOKEN_SYMBOL)));
@@ -2043,10 +2045,11 @@ void database::process_pm_markets() {
                 adjust_balance(get_account(disp.disputer),
                                asset(disp.dispute_fee, TOKEN_SYMBOL));
 
-            modify(mkt, [](pm_market_object& m) {
+            modify(mkt, [&](pm_market_object& m) {
                 m.status           = 3;
                 m.payout_status    = 3;
                 m.resolved_outcome = -1;
+                m.finalized_time   = now;
             });
             modify(disp, [](pm_dispute_object& d) { d.status = 3; }); // auto-closed
 
@@ -2249,7 +2252,7 @@ void database::process_pm_markets() {
             if (mkt.payout_status != 1) continue;
 
             settle_market(*this, mkt);
-            modify(mkt, [](pm_market_object& m) { m.payout_status = 3; });
+            modify(mkt, [&](pm_market_object& m) { m.payout_status = 3; m.finalized_time = now; });
 
             push_virtual_operation(pm_auto_payout_operation(
                 mkt.oracle, mkt.id._id, -1LL, asset(mkt.bets_sum, TOKEN_SYMBOL)));
@@ -2257,25 +2260,25 @@ void database::process_pm_markets() {
         }
     }
 
-    // ── 5b. Garbage-collect finalized markets ─────────────────────────────────
-    // A resolved+settled market (status 3, payout_status 3) is immutable — it exists only
-    // "for history". Keep it PM_CLOSED_MARKET_RETENTION_SEC after its result window closes,
-    // then reclaim its whole object cluster (bets/outcomes/liquidity/…). The retention is a
-    // fixed protocol constant — identical on every node — so pruning is deterministic and
-    // shared-memory state / snapshots stay in lock-step network-wide (a node that syncs from
-    // a snapshot ends up with exactly the same market set as everyone else).
+    // ── 5b. Garbage-collect terminal markets ──────────────────────────────────
+    // Any market that has become terminal — resolved+paid, void/no-contest, oracle-rejected,
+    // or accept-window-expired — carries a non-zero finalized_time and can never be acted on
+    // again; it only lingers "for history". Reclaim its whole object cluster
+    // PM_CLOSED_MARKET_RETENTION_SEC after that moment. The retention is a fixed protocol
+    // constant, identical on every node, so pruning is deterministic: every node deletes the
+    // same markets at the same block, keeping shared-memory state and snapshots in lock-step
+    // network-wide (a node syncing from a snapshot ends up with the same market set as all).
     {
         const uint32_t PM_CLOSED_MARKET_RETENTION_SEC = 5u * 86400u; // 5 days, uniform for all nodes
-        const uint64_t horizon = (uint64_t)mp.pm_dispute_grace_sec + PM_CLOSED_MARKET_RETENTION_SEC;
         const time_point_sec cutoff(
-            (now.sec_since_epoch() > horizon) ? (uint32_t)(now.sec_since_epoch() - horizon) : 0u);
+            (now.sec_since_epoch() > PM_CLOSED_MARKET_RETENTION_SEC)
+                ? (uint32_t)(now.sec_since_epoch() - PM_CLOSED_MARKET_RETENTION_SEC) : 0u);
 
-        const auto& idx = get_index<pm_market_index>().indices().get<by_result_expiration>();
-        auto it = idx.lower_bound(boost::make_tuple(
-            (int8_t)3, time_point_sec(0), pm_market_id_type()));
-        while (it != idx.end() && it->status == 3 && it->result_expiration <= cutoff && done < cap) {
+        // finalized_time == 0 for every live market (sorts first) — start just past them.
+        const auto& idx = get_index<pm_market_index>().indices().get<by_finalized>();
+        auto it = idx.lower_bound(boost::make_tuple(time_point_sec(1), pm_market_id_type()));
+        while (it != idx.end() && it->finalized_time <= cutoff && done < cap) {
             const auto& mkt = *it; ++it;
-            if (mkt.payout_status != 3) continue; // only fully-settled markets
             gc_market(*this, mkt);
             ++done;
         }

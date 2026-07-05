@@ -842,6 +842,8 @@ inline uint32_t import_pm_markets(graphene::chain::database& db, const fc::varia
             obj.created_time       = v["created_time"].as<fc::time_point_sec>();
             obj.betting_expiration = v["betting_expiration"].as<fc::time_point_sec>();
             obj.result_expiration  = v["result_expiration"].as<fc::time_point_sec>();
+            if (v.get_object().contains("finalized_time"))
+                obj.finalized_time = v["finalized_time"].as<fc::time_point_sec>();
             obj.resolved_outcome   = static_cast<int16_t>(v["resolved_outcome"].as_int64());
             obj.reserve_a          = v["reserve_a"].as<share_type>();
             obj.reserve_b          = v["reserve_b"].as<share_type>();

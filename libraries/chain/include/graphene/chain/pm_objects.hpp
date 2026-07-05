@@ -101,6 +101,11 @@ namespace graphene { namespace chain {
                                                   ///< then. 0 for markets active at creation (never scanned).
             time_point_sec    betting_expiration;
             time_point_sec    result_expiration;
+            time_point_sec    finalized_time;     ///< 0 while live; set to head-block time the moment the
+                                                  ///< market becomes terminal (resolved+paid, void/no-contest,
+                                                  ///< oracle-rejected, or accept-window expired). The cron GCs
+                                                  ///< the whole market cluster PM_CLOSED_MARKET_RETENTION_SEC
+                                                  ///< after this — deterministic, so every node prunes alike.
             int16_t           resolved_outcome = -1;
 
             // Binary CPMM
@@ -151,6 +156,7 @@ namespace graphene { namespace chain {
         struct by_betting_expiration;
         struct by_result_expiration;
         struct by_payout_status;
+        struct by_finalized;
         typedef multi_index_container<
             pm_market_object,
             indexed_by<
@@ -185,7 +191,17 @@ namespace graphene { namespace chain {
                     >,
                     composite_key_compare<std::less<int8_t>, std::less<time_point_sec>, std::less<pm_market_id_type>>
                 >,
-                ordered_non_unique<tag<by_payout_status>, member<pm_market_object, uint8_t, &pm_market_object::payout_status>>
+                ordered_non_unique<tag<by_payout_status>, member<pm_market_object, uint8_t, &pm_market_object::payout_status>>,
+                // GC sweep: terminal markets ordered by finalized_time (0 = still live, sorts first
+                // and is skipped). The cron lower_bounds just past 0 and stops at the first
+                // finalized_time newer than the retention cutoff → bounded, deterministic pruning.
+                ordered_unique<tag<by_finalized>,
+                    composite_key<pm_market_object,
+                        member<pm_market_object, time_point_sec, &pm_market_object::finalized_time>,
+                        member<pm_market_object, pm_market_id_type, &pm_market_object::id>
+                    >,
+                    composite_key_compare<std::less<time_point_sec>, std::less<pm_market_id_type>>
+                >
             >,
             allocator<pm_market_object>
         > pm_market_index;
@@ -669,7 +685,7 @@ CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_oracle_object, graphene::chain::pm_
 
 FC_REFLECT((graphene::chain::pm_market_object),
     (id)(creator)(oracle)(market_type)(outcome_count)(url)(status)(payout_status)(created_time)(accept_deadline)
-    (betting_expiration)(result_expiration)(resolved_outcome)(reserve_a)(reserve_b)(k)(a_bets_sum)(b_bets_sum)(lmsr_b)(lmsr_subsidy)
+    (betting_expiration)(result_expiration)(finalized_time)(resolved_outcome)(reserve_a)(reserve_b)(k)(a_bets_sum)(b_bets_sum)(lmsr_b)(lmsr_subsidy)
     (bets_sum)(liquidity_sum)(oracle_fee_percent)(creator_fee_percent)(liquidity_fee_percent)(oracle_fixed_fee)
     (liquidity_fee_earned)(forfeit_pool)(time_penalty_type)(time_penalty_value)(penalty_curve_type)
     (allow_early_resolution)(allow_cancellation)(allow_batch)(allow_instant_bet)(endogeneity_tier)(current_epoch)
