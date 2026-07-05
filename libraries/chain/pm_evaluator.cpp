@@ -370,6 +370,37 @@ namespace {
         db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
     }
 
+    // Garbage-collect a fully-finalized market and its whole object cluster. A settled market
+    // (status 3 / payout_status 3) can no longer be acted on — no betting, dispute, resolve or
+    // payout is possible — it only lingers "for history". process_pm_markets() calls this a few
+    // days after closure. Deletion is driven purely by chain time, so every node prunes exactly
+    // the same markets at the same block → shared-memory state and snapshots stay identical
+    // network-wide. Nothing else holds an id-reference to a settled market, so no dangling refs.
+    void gc_market(database& db, const pm_market_object& mkt) {
+        const pm_market_id_type mid = mkt.id;
+        // Composite (market, …)-keyed indexes: drop the whole market range.
+        auto drop_range = [&](const auto& idx) {
+            for (auto it = idx.lower_bound(boost::make_tuple(mid));
+                 it != idx.end() && it->market == mid; ) {
+                const auto& obj = *it; ++it; db.remove(obj);
+            }
+        };
+        // Single-key (unique per market) by_market indexes: at most one row.
+        auto drop_unique = [&](const auto& idx) {
+            auto it = idx.find(mid);
+            if (it != idx.end()) db.remove(*it);
+        };
+        drop_range(db.get_index<pm_outcome_index>().indices().get<by_market_outcome>());
+        drop_range(db.get_index<pm_bet_index>().indices().get<by_market>());
+        drop_range(db.get_index<pm_liquidity_index>().indices().get<by_market>());
+        drop_range(db.get_index<pm_commit_index>().indices().get<by_market>());
+        drop_range(db.get_index<pm_dispute_vote_index>().indices().get<by_market_voter>());
+        drop_range(db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>());
+        drop_unique(db.get_index<pm_dispute_index>().indices().get<by_market>());
+        drop_unique(db.get_index<pm_lazy_allocation_index>().indices().get<by_market>());
+        db.remove(mkt);
+    }
+
     void refund_all_bets(database& db, const pm_market_object& mkt) {
         const auto& bidx = db.get_index<pm_bet_index>().indices().get<by_market>();
         auto it = bidx.lower_bound(boost::make_tuple(mkt.id, pm_bet_id_type()));
@@ -2222,6 +2253,30 @@ void database::process_pm_markets() {
 
             push_virtual_operation(pm_auto_payout_operation(
                 mkt.oracle, mkt.id._id, -1LL, asset(mkt.bets_sum, TOKEN_SYMBOL)));
+            ++done;
+        }
+    }
+
+    // ── 5b. Garbage-collect finalized markets ─────────────────────────────────
+    // A resolved+settled market (status 3, payout_status 3) is immutable — it exists only
+    // "for history". Keep it PM_CLOSED_MARKET_RETENTION_SEC after its result window closes,
+    // then reclaim its whole object cluster (bets/outcomes/liquidity/…). The retention is a
+    // fixed protocol constant — identical on every node — so pruning is deterministic and
+    // shared-memory state / snapshots stay in lock-step network-wide (a node that syncs from
+    // a snapshot ends up with exactly the same market set as everyone else).
+    {
+        const uint32_t PM_CLOSED_MARKET_RETENTION_SEC = 5u * 86400u; // 5 days, uniform for all nodes
+        const uint64_t horizon = (uint64_t)mp.pm_dispute_grace_sec + PM_CLOSED_MARKET_RETENTION_SEC;
+        const time_point_sec cutoff(
+            (now.sec_since_epoch() > horizon) ? (uint32_t)(now.sec_since_epoch() - horizon) : 0u);
+
+        const auto& idx = get_index<pm_market_index>().indices().get<by_result_expiration>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (int8_t)3, time_point_sec(0), pm_market_id_type()));
+        while (it != idx.end() && it->status == 3 && it->result_expiration <= cutoff && done < cap) {
+            const auto& mkt = *it; ++it;
+            if (mkt.payout_status != 3) continue; // only fully-settled markets
+            gc_market(*this, mkt);
             ++done;
         }
     }
