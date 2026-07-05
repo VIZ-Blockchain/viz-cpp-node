@@ -731,7 +731,8 @@ void pm_create_market_evaluator::do_apply(const pm_create_market_operation& o) {
         m.market_type           = o.market_type;
         m.outcome_count         = (uint8_t)o.outcomes.size();
         from_string(m.url, o.url);
-        from_string(m.metadata, o.metadata);
+        // o.metadata is intentionally NOT persisted in consensus state — the
+        // prediction_market_api plugin ingests it off-chain (prunable). See pm_objects.hpp.
         m.status                = active_at_create ? 1 : 0;
         m.created_time          = now;
         // Pending markets get an acceptance deadline; markets that are live at creation (self-oracle /

@@ -80,7 +80,7 @@ namespace graphene { namespace chain {
             pm_market_object() = delete;
             template<typename Constructor, typename Allocator>
             pm_market_object(Constructor&& c, allocator<Allocator> a)
-                : url(a), metadata(a), decision_url(a), decision_reason(a) { c(*this); }
+                : url(a), decision_url(a), decision_reason(a) { c(*this); }
 
             id_type           id;
             account_name_type creator;
@@ -88,8 +88,10 @@ namespace graphene { namespace chain {
             uint8_t           market_type = 0;   ///< 0 binary (CPMM), 1 multi (LMSR)
             uint8_t           outcome_count = 2;
             shared_string     url;
-            shared_string     metadata;          ///< free-form client JSON; parsed off-chain by the
-                                                 ///< prediction_market_api plugin (unknown keys ignored)
+            // NB: the free-form client `metadata` is intentionally NOT stored in consensus state.
+            // It is opaque to consensus (never read here), so the prediction_market_api plugin
+            // ingests it off-chain from pm_create_market_operation into its own prunable index.
+            // This keeps chainbase lean and lets each node prune it (see --pmm-ttl-days).
             int8_t            status = 0;         ///< -1 deleted, 0 waiting, 1 active, 2 closed, 3 resolved
             uint8_t           payout_status = 0;  ///< 0 none, 1 pending, 2 paid, 3 disputed
             time_point_sec    created_time;
@@ -671,7 +673,7 @@ FC_REFLECT((graphene::chain::pm_market_object),
     (bets_sum)(liquidity_sum)(oracle_fee_percent)(creator_fee_percent)(liquidity_fee_percent)(oracle_fixed_fee)
     (liquidity_fee_earned)(forfeit_pool)(time_penalty_type)(time_penalty_value)(penalty_curve_type)
     (allow_early_resolution)(allow_cancellation)(allow_batch)(allow_instant_bet)(endogeneity_tier)(current_epoch)
-    (dispute_mode)(dispute_resolver)(dispute_penalty_percent)(metadata)(decision_url)(decision_reason))
+    (dispute_mode)(dispute_resolver)(dispute_penalty_percent)(decision_url)(decision_reason))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_market_object, graphene::chain::pm_market_index)
 
 FC_REFLECT((graphene::chain::pm_outcome_object),

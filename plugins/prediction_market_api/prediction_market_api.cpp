@@ -152,34 +152,12 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         graphene::chain::database& database() { return database_; }
         graphene::chain::database& database() const { return database_; }
 
-        // Metadata indexer (non-consensus): parse each new market's free-form `metadata` JSON
-        // into queryable meta entries, then prune entries past their TTL.
+        // Off-chain metadata is ingested per-operation in ingest_market_meta() (from the create op,
+        // since `metadata` is no longer kept in consensus state). on_block() only prunes expired data.
         void on_block() {
             auto& db = database_;
-            const uint32_t grace = (uint32_t)db.get_validator_schedule_object().median_props.pm_dispute_grace_sec;
+            if (ttl_days_ == 0) return; // archival node: keep off-chain metadata/klines forever
             const auto now = db.head_block_time();
-
-            const auto& midx = db.get_index<pm_market_index>().indices().get<by_id>();
-            const auto& meta_by_market = db.get_index<pm_market_meta_index>().indices().get<by_meta_market>();
-
-            auto it = midx.lower_bound(pm_market_id_type(last_market_id_));
-            for (; it != midx.end(); ++it) {
-                if (meta_by_market.find(it->id) != meta_by_market.end()) {
-                    last_market_id_ = it->id._id + 1; continue;
-                }
-                const parsed_meta pm = parse_market_metadata(to_string(it->metadata));
-                const pm_market_id_type mkt_id = it->id;
-                const time_point_sec res_exp = it->result_expiration;
-                db.create<pm_market_meta_object>([&](pm_market_meta_object& m) {
-                    m.market = mkt_id;
-                    from_string(m.category, pm.category);
-                    from_string(m.subcategory, pm.subcategory);
-                    from_string(m.tags, pm.tags);
-                    from_string(m.banned_jurisdictions, pm.banned_jurisdictions);
-                    m.expiry = res_exp + fc::seconds(grace) + fc::seconds((int64_t)ttl_days_ * 86400);
-                });
-                last_market_id_ = it->id._id + 1;
-            }
 
             // Prune expired markets. Both the metadata and the (potentially large) kline history are
             // dropped together: drain the market's kline points first (bounded), then remove the meta
@@ -225,11 +203,49 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             template<typename T> result_type operator()(const T&) const { return result_type(); }
         };
 
+        // Picks out a pm_create_market_operation from the variant (nullptr for anything else),
+        // so we can ingest its metadata off-chain without storing it in consensus state.
+        struct create_market_visitor {
+            typedef const protocol::pm_create_market_operation* result_type;
+            result_type operator()(const protocol::pm_create_market_operation& o) const { return &o; }
+            template<typename T> result_type operator()(const T&) const { return nullptr; }
+        };
+
+        // Parse and index a new market's free-form metadata off-chain (non-consensus, prunable).
+        // The raw blob lives only in the block log / operation — never in chainbase state — so each
+        // node keeps it only as long as --pmm-ttl-days, and clients stay free to shape it ("like custom").
+        void ingest_market_meta(const protocol::pm_create_market_operation& op) {
+            auto& db = database_;
+            // The market this op just created is the newest one; guard by creator + idempotency.
+            const auto& midx = db.get_index<pm_market_index>().indices().get<by_id>();
+            if (midx.begin() == midx.end()) return;
+            auto rit = midx.rbegin();
+            if (rit->creator != op.creator) return;
+            const pm_market_id_type mkt_id = rit->id;
+            const time_point_sec    res_exp = rit->result_expiration;
+            const auto& meta_by_market = db.get_index<pm_market_meta_index>().indices().get<by_meta_market>();
+            if (meta_by_market.find(mkt_id) != meta_by_market.end()) return;
+            const uint32_t grace = (uint32_t)db.get_validator_schedule_object().median_props.pm_dispute_grace_sec;
+            const parsed_meta pm = parse_market_metadata(op.metadata);
+            db.create<pm_market_meta_object>([&](pm_market_meta_object& m) {
+                m.market = mkt_id;
+                from_string(m.category, pm.category);
+                from_string(m.subcategory, pm.subcategory);
+                from_string(m.tags, pm.tags);
+                from_string(m.banned_jurisdictions, pm.banned_jurisdictions);
+                m.expiry = res_exp + fc::seconds(grace) + fc::seconds((int64_t)ttl_days_ * 86400);
+            });
+        }
+
         // A plugin observer must never throw out of the apply path — swallow everything.
         void on_post_apply_operation(const graphene::chain::operation_notification& note) {
             try {
                 const auto ev = note.op.visit(kline_event_visitor{database_});
                 if (ev) record_kline(ev->first, ev->second);
+            } catch (...) {}
+            try {
+                if (const auto* cop = note.op.visit(create_market_visitor{}))
+                    ingest_market_meta(*cop);
             } catch (...) {}
         }
 
@@ -270,8 +286,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
 
         boost::signals2::connection block_conn_;
         boost::signals2::connection op_conn_;
-        uint64_t last_market_id_ = 0;
-        uint32_t ttl_days_ = 7;
+        uint32_t ttl_days_ = 5;
 
     private:
         graphene::chain::database& database_;
@@ -301,8 +316,8 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         boost::program_options::options_description&,
         boost::program_options::options_description& cfg) {
         cfg.add_options()
-            ("pmm-ttl-days", boost::program_options::value<uint32_t>()->default_value(7),
-             "Days to keep PM market metadata after the dispute window closes");
+            ("pmm-ttl-days", boost::program_options::value<uint32_t>()->default_value(5),
+             "Days to keep PM market metadata/klines (off-chain) after the dispute window closes; 0 keeps forever");
     }
 
     void prediction_market_api::plugin_initialize(const boost::program_options::variables_map& options) {
