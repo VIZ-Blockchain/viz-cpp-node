@@ -164,6 +164,9 @@ docker run -d \
 ### 少数派 Fork 检测
 如果节点的 fork 数据库显示 21+ 个连续区块全部来自此节点自己的验证者，它会自动回滚到 LIB 并重新同步。这可以捕获网络隔离情况。
 
+> [!WARNING] 单运营者分叉
+> 在**一个运营者控制所有验证者**的测试网或主网分叉上，「连续 21 个区块都是我们的」是正常的健康状态，因此检测器会无限循环地回滚到 LIB。此时 `enable-stale-production = true` **无效**：在参与率 ≥33% 时，该覆盖会在每个区块被自动清除。请改用 `disable-minority-fork-detection = true`——它会完全绕过标准检测路径和 DLT 检测路径，并且永远不会被自动清除。**切勿在真实的公共网络上启用**——它会移除隔离保护。
+
 ### 生产 Watchdog
 如果在 `should_be_producing` 为 true 的情况下 180 秒内（紧急主节点为 60 秒）没有生产区块，watchdog 会自动清除卡住的标志（`minority_fork_recovering`、P2P 追赶、链同步）并尝试恢复生产。
 

@@ -164,6 +164,9 @@ If fewer than 33% of validators are participating, production stops to prevent s
 ### Minority Fork Detection
 If the node's fork database shows 21+ consecutive blocks all from this node's own validators, it automatically rolls back to LIB and resyncs. This catches network isolation.
 
+> [!WARNING] Single-operator forks
+> On a testnet or mainnet fork where **one operator controls all validators**, "21 blocks all ours" is the normal healthy state, so this detector loops forever resetting to LIB. `enable-stale-production = true` does **not** help here: healthy participation (≥33%) auto-clears that override every block. Use `disable-minority-fork-detection = true` instead — it bypasses both the standard and DLT detection paths and is never auto-cleared. **Never enable it on a real public network** — it removes the isolation guard.
+
 ### Production Watchdog
 If no block has been produced for 180 seconds (60s for emergency master) while `should_be_producing` is true, the watchdog automatically clears stuck flags (`minority_fork_recovering`, P2P catchup, chain syncing) and attempts to resume.
 

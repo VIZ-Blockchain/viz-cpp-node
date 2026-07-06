@@ -24,6 +24,7 @@ chain::plugin, p2p::p2p_plugin, snapshot::snapshot_plugin
 | `private-key` | — | 用于签名的 WIF 私钥；可重复 |
 | `emergency-private-key` | — | 紧急共识的 WIF 密钥；自动将 `CHAIN_EMERGENCY_VALIDATOR_ACCOUNT` 添加到验证者集合 |
 | `enable-stale-production` | `false` | 绕过参与度和同步检查（仅用于测试网/网络恢复） |
+| `disable-minority-fork-detection` | `false` | 完全跳过少数派 fork 检测（仅用于单运营者测试网/分叉）。在健康参与度下永远不会被自动清除——参见[少数派 Fork 检测](#少数派-fork-检测) |
 | `required-participation` | `3300` | 最低验证者参与度（**基点**，3300 = 33%） |
 | `fork-collision-timeout-blocks` | `21` | 强制生产前的连续 fork 冲突延迟次数（一个完整的验证者轮次） |
 
@@ -116,7 +117,8 @@ T=6.000s 的槽位：
 在每次生产尝试之前（在 HF12 安全检查之后），插件遍历 `fork_db` 中最后 21 个区块。如果所有 21 个都由节点自己配置的验证者生产，则节点被隔离在少数派 fork 上。
 
 - **默认操作：** 调用 `p2p().resync_from_lib()` — 回滚到 LIB，重置 fork DB，重新启动 P2P 同步，重新连接种子节点。返回 `minority_fork`。
-- **使用 `enable-stale-production=true`：** 记录警告，继续生产。
+- **使用 `enable-stale-production=true`：** 记录警告，继续生产。**注意：** 在参与度 ≥33% 时，该覆盖会在每个区块被自动清除，因此在单运营者分叉上它*不会*停止检测器——请改用 `disable-minority-fork-detection`。
+- **使用 `disable-minority-fork-detection=true`：** 完全跳过标准检测路径和 DLT 检测路径，且该标志永远不会被自动清除。适用于「连续 21 个区块都是我们的」为健康稳态的单运营者测试网/分叉。**切勿在真实的公共网络上启用**——它会移除隔离保护。
 - **跳过时机：** 紧急共识激活时（committee 区块总会匹配我们配置的集合）。在紧急模式下，DLT 特定的从节点隔离检查取代它。
 
 ---
@@ -217,7 +219,7 @@ validator[skip_flags=0x0 catching_up=0 head=#79881136 last_prod=45s_ago minority
 | `no_private_key` | 配置中缺少链上注册的签名密钥对应的 `private-key` |
 | `low_participation` | 网络参与度 < 33%；检查节点连接或设置 `enable-stale-production=true` |
 | `fork_collision` | 下一高度有竞争区块；等待投票权重解决或 21 次延迟超时 |
-| `minority_fork` | 已隔离；插件自动重新同步到 LIB |
+| `minority_fork` | 已隔离；插件自动重新同步到 LIB。在单运营者分叉上会无限循环——请设置 `disable-minority-fork-detection=true` |
 | Watchdog 重复触发 | 同步或追赶标志卡住；头部推进时 watchdog 会自动清除 |
 | `SLOT-HIJACK` 日志 | 紧急主节点清空了我们的密钥；通过 `validator_update_operation` 恢复 |
 
