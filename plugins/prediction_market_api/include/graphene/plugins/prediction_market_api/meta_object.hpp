@@ -29,7 +29,8 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
     public:
         template<typename Constructor, typename Allocator>
         pm_market_meta_object(Constructor&& c, allocator<Allocator> a)
-            : category(a), subcategory(a), tags(a), banned_jurisdictions(a) { c(*this); }
+            : category(a), subcategory(a), tags(a), banned_jurisdictions(a),
+              title(a), image(a), condition_id(a) { c(*this); }
 
         id_type           id;
         pm_market_id_type market;
@@ -37,6 +38,9 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         shared_string     subcategory;
         shared_string     tags;                 ///< comma-joined
         shared_string     banned_jurisdictions; ///< comma-joined ISO codes; empty = allowed everywhere
+        shared_string     title;                ///< human-readable market question (for cards/detail)
+        shared_string     image;                ///< icon/cover URL (hotlinked by clients; not hosted)
+        shared_string     condition_id;         ///< source dedup id (e.g. Polymarket conditionId) for back-link
         time_point_sec    expiry;               ///< prune after: dispute window close + TTL
     };
 
@@ -73,6 +77,6 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
 } } } // graphene::plugins::prediction_market_api
 
 FC_REFLECT((graphene::plugins::prediction_market_api::pm_market_meta_object),
-    (id)(market)(category)(subcategory)(tags)(banned_jurisdictions)(expiry))
+    (id)(market)(category)(subcategory)(tags)(banned_jurisdictions)(title)(image)(condition_id)(expiry))
 CHAINBASE_SET_INDEX_TYPE(graphene::plugins::prediction_market_api::pm_market_meta_object,
     graphene::plugins::prediction_market_api::pm_market_meta_index)

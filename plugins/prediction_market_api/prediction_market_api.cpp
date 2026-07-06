@@ -233,6 +233,9 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 from_string(m.subcategory, pm.subcategory);
                 from_string(m.tags, pm.tags);
                 from_string(m.banned_jurisdictions, pm.banned_jurisdictions);
+                from_string(m.title, pm.title);
+                from_string(m.image, pm.image);
+                from_string(m.condition_id, pm.condition_id);
                 m.expiry = res_exp + fc::seconds(grace) + fc::seconds((int64_t)ttl_days_ * 86400);
             });
         }

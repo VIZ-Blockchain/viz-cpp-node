@@ -17,6 +17,9 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         std::string subcategory;
         std::string tags;                 ///< CSV
         std::string banned_jurisdictions; ///< CSV
+        std::string title;                ///< human-readable question
+        std::string image;                ///< icon/cover URL
+        std::string condition_id;         ///< source dedup id (for client back-link)
     };
 
     /// Flatten a JSON array (or bare string) into a comma-separated string.
@@ -58,6 +61,9 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                     r.banned_jurisdictions = meta_join_array(o["banned_jurisdictions"]);
                 else if (o.contains("jurisdictions_banned"))
                     r.banned_jurisdictions = meta_join_array(o["jurisdictions_banned"]);
+                if (o.contains("title"))        r.title        = o["title"].as_string();
+                if (o.contains("image"))        r.image        = o["image"].as_string();
+                if (o.contains("condition_id")) r.condition_id = o["condition_id"].as_string();
             }
         } catch (...) { /* metadata is not JSON — leave empty */ }
         return r;
