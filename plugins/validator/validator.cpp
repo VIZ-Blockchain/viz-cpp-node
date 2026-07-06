@@ -159,6 +159,15 @@ namespace graphene {
                 bool _minority_fork_recovering = false;
                 fc::time_point _minority_fork_recovery_start;
 
+                // Operator override (testnet / single-operator fork): when set via
+                // 'disable-minority-fork-detection', both the standard and the DLT
+                // minority-fork checks are skipped entirely.  On a fork where the
+                // operator controls ALL validators, "last 21 blocks all ours" is the
+                // normal healthy state, not an isolation symptom — the detector would
+                // otherwise loop forever resetting to LIB.  Unlike enable-stale-production,
+                // this flag is never auto-cleared by the healthy-participation path.
+                bool _disable_minority_fork_detection = false;
+
                 // P18: slot=0 stall detection — tracks consecutive
                 // not_time_yet returns to detect NTP/clock issues.
                 uint32_t _slot_zero_streak = 0;
@@ -228,6 +237,7 @@ namespace graphene {
 
                 command_line_options.add_options()
                         ("enable-stale-production", bpo::value<bool>()->implicit_value(true) , "Enable block production, even if the chain is stale.")
+                        ("disable-minority-fork-detection", bpo::value<bool>()->implicit_value(true) , "Disable minority-fork detection (testnet / single-operator fork where this node controls all validators). Never auto-cleared by healthy participation.")
                         ("required-participation", bpo::value<uint32_t>()->default_value(33 * CHAIN_1_PERCENT), "Percent of validators (0-99) that must be participating in order to produce blocks")
                         ("validator,v", bpo::value<vector<string>>()->composing()->multitoken(), ("name of validator controlled by this node (e.g. " + validator_id_example + " )").c_str())
                         ("witness,w", bpo::value<vector<string>>()->composing()->multitoken(), "[DEPRECATED] Use --validator. Name of validator controlled by this node (legacy 'witness' option, kept for config.ini backward compatibility).")
@@ -285,6 +295,15 @@ namespace graphene {
                     if(options.count("enable-stale-production")){
                         if (options["enable-stale-production"].as<bool>()) {
                             pimpl->_production_skip_flags |= graphene::chain::database::skip_undo_history_check;
+                        }
+                    }
+
+                    if(options.count("disable-minority-fork-detection")){
+                        if (options["disable-minority-fork-detection"].as<bool>()) {
+                            pimpl->_disable_minority_fork_detection = true;
+                            wlog("Minority-fork detection DISABLED by operator config. "
+                                 "Use only on a testnet / single-operator fork where this node "
+                                 "controls all validators.");
                         }
                     }
 
@@ -1584,7 +1603,7 @@ namespace graphene {
                 //   continue producing (bootstrap / testnet / recovery scenario).
                 // With enable-stale-production=false (default): we're on the wrong fork,
                 //   pop back to LIB and resync from the P2P network.
-                if (!emergency_active) {
+                if (!emergency_active && !_disable_minority_fork_detection) {
                     auto fork_head = db.get_fork_db().head();
                     if (fork_head) {
                         bool all_ours = true;
@@ -1647,7 +1666,7 @@ namespace graphene {
                 // "ours" is expected — other nodes sync from us.  Skip minority fork
                 // detection entirely to avoid false positives and the production
                 // deadlock that would otherwise occur.
-                if (emergency_active && db._dlt_mode) {
+                if (emergency_active && db._dlt_mode && !_disable_minority_fork_detection) {
                     // If committee is in the schedule and we have its key, WE are the
                     // emergency master.  All blocks being "ours" is expected -- other
                     // nodes sync from us.  Skip minority fork detection to prevent
