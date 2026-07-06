@@ -14,6 +14,7 @@
 
 #include <fc/uint128_t.hpp>
 #include <fc/io/json.hpp>
+#include <fc/variant_object.hpp>
 
 #include <algorithm>
 #include <limits>
@@ -340,6 +341,48 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
 
     // ── Markets ──────────────────────────────────────────────────────────────────
 
+    // comma-joined meta string → JSON array (clients expect tags / banned_jurisdictions as arrays)
+    static fc::variant csv_to_array(const std::string& csv) {
+        std::vector<fc::variant> out;
+        size_t start = 0;
+        while (start <= csv.size()) {
+            size_t comma = csv.find(',', start);
+            std::string tok = csv.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+            if (!tok.empty()) out.push_back(fc::variant(tok));
+            if (comma == std::string::npos) break;
+            start = comma + 1;
+        }
+        return fc::variant(std::move(out));
+    }
+
+    // Build a client "market card": the consensus pm_market_object plus the parsed metadata the
+    // browse/detail views need but the on-chain object doesn't carry (metadata is off-chain, in
+    // pm_market_meta_index). We inject BOTH a reconstructed `metadata` object — so clients that
+    // parse market.metadata keep working with no change — AND flat title/image/category fields for
+    // clients that read them directly. Empty when the meta was pruned or never ingested.
+    static fc::variant market_card(const graphene::chain::database& db, const pm_market_object& m) {
+        fc::variant v;
+        fc::to_variant(m, v);
+        fc::mutable_variant_object o(v.get_object());
+        const auto& midx = db.get_index<pm_market_meta_index>().indices().get<by_meta_market>();
+        auto it = midx.find(m.id);
+        std::string title, image, category;
+        fc::mutable_variant_object md;
+        if (it != midx.end()) {
+            title = to_string(it->title); image = to_string(it->image); category = to_string(it->category);
+            md("title", title)("image", image)("category", category)
+              ("subcategory", to_string(it->subcategory))
+              ("tags", csv_to_array(to_string(it->tags)))
+              ("banned_jurisdictions", csv_to_array(to_string(it->banned_jurisdictions)))
+              ("condition_id", to_string(it->condition_id));
+        }
+        o["title"]    = title;
+        o["image"]    = image;
+        o["category"] = category;
+        o["metadata"] = fc::variant(std::move(md));   // reconstructed; clients parse market.metadata
+        return fc::variant(std::move(o));
+    }
+
     DEFINE_API(prediction_market_api, get_market) {
         CHECK_ARG_SIZE(1)
         auto market_id = args.args->at(0).as<int64_t>();
@@ -347,7 +390,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         return db.with_weak_read_lock([&]() {
             const auto* m = db.find<pm_market_object>(pm_market_id_type(market_id));
             FC_ASSERT(m != nullptr, "Market not found");
-            return pm_market_object(*m);
+            return market_card(db, *m);
         });
     }
 
@@ -360,14 +403,14 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         FC_ASSERT(limit <= 1000);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
-            std::vector<pm_market_object> result;
+            std::vector<fc::variant> result;
             result.reserve(limit);
             const auto& idx = db.get_index<pm_market_index>().indices().get<by_status>();
             auto itr = idx.lower_bound(status);
             while (from > 0 && itr != idx.end() && itr->status == status) { ++itr; --from; }
             while (result.size() < limit && itr != idx.end() && itr->status == status) {
                 if (show_risky || !below_risk_floor(db, *itr))
-                    result.push_back(pm_market_object(*itr));
+                    result.push_back(market_card(db, *itr));
                 ++itr;
             }
             return result;
@@ -382,13 +425,13 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         FC_ASSERT(limit <= 1000);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
-            std::vector<pm_market_object> result;
+            std::vector<fc::variant> result;
             result.reserve(limit);
             const auto& idx = db.get_index<pm_market_index>().indices().get<by_oracle>();
             auto itr = idx.lower_bound(oracle);
             while (from > 0 && itr != idx.end() && itr->oracle == oracle) { ++itr; --from; }
             while (result.size() < limit && itr != idx.end() && itr->oracle == oracle) {
-                result.push_back(pm_market_object(*itr));
+                result.push_back(market_card(db, *itr));
                 ++itr;
             }
             return result;
@@ -403,13 +446,13 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         FC_ASSERT(limit <= 1000);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
-            std::vector<pm_market_object> result;
+            std::vector<fc::variant> result;
             result.reserve(limit);
             const auto& idx = db.get_index<pm_market_index>().indices().get<by_creator>();
             auto itr = idx.lower_bound(creator);
             while (from > 0 && itr != idx.end() && itr->creator == creator) { ++itr; --from; }
             while (result.size() < limit && itr != idx.end() && itr->creator == creator) {
-                result.push_back(pm_market_object(*itr));
+                result.push_back(market_card(db, *itr));
                 ++itr;
             }
             return result;
@@ -1142,9 +1185,16 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                     if (it->provider == account) my_liquidity.push_back(pm_liquidity_object(*it));
             }
 
-            return pm_market_full_api_object{
+            pm_market_full_api_object full{
                 pm_market_object(mkt), std::move(outcomes), make_weight_sums(db, mkt),
                 oracle, meta, std::move(my_positions), std::move(my_leverage), std::move(my_liquidity)};
+            // Overlay the metadata-enriched market card so detail views (which read market.metadata)
+            // get title/image without depending on the separate `meta` field.
+            fc::variant fv;
+            fc::to_variant(full, fv);
+            fc::mutable_variant_object fo(fv.get_object());
+            fo["market"] = market_card(db, mkt);
+            return fc::variant(std::move(fo));
         });
     }
 

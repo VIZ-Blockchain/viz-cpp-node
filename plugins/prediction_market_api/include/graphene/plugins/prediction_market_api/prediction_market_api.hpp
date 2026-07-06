@@ -186,10 +186,10 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         std::vector<pm_liquidity_object>          my_liquidity;          ///< account's LP on THIS market
     };
 
-    DEFINE_API_ARGS(get_market,                msg_pack, pm_market_object)
-    DEFINE_API_ARGS(list_markets,              msg_pack, std::vector<pm_market_object>)
-    DEFINE_API_ARGS(list_markets_by_oracle,    msg_pack, std::vector<pm_market_object>)
-    DEFINE_API_ARGS(list_markets_by_creator,   msg_pack, std::vector<pm_market_object>)
+    DEFINE_API_ARGS(get_market,                msg_pack, fc::variant)
+    DEFINE_API_ARGS(list_markets,              msg_pack, std::vector<fc::variant>)
+    DEFINE_API_ARGS(list_markets_by_oracle,    msg_pack, std::vector<fc::variant>)
+    DEFINE_API_ARGS(list_markets_by_creator,   msg_pack, std::vector<fc::variant>)
     DEFINE_API_ARGS(get_market_outcomes,       msg_pack, std::vector<pm_outcome_object>)
     DEFINE_API_ARGS(get_market_weight_sums,    msg_pack, pm_market_weight_sums_api_object)
     DEFINE_API_ARGS(get_market_bets,           msg_pack, std::vector<pm_bet_object>)
@@ -212,7 +212,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
     DEFINE_API_ARGS(get_leverage_close_preview,   msg_pack, pm_leverage_close_preview_api_object)
     DEFINE_API_ARGS(get_leverage_convert_preview, msg_pack, pm_leverage_convert_preview_api_object)
     DEFINE_API_ARGS(get_market_categories,     msg_pack, pm_market_categories_api_object)
-    DEFINE_API_ARGS(get_market_full,           msg_pack, pm_market_full_api_object)
+    DEFINE_API_ARGS(get_market_full,           msg_pack, fc::variant)
     DEFINE_API_ARGS(get_lazy_allocations,      msg_pack, std::vector<pm_lazy_allocation_object>)
     DEFINE_API_ARGS(get_market_lazy_allocation, msg_pack, pm_lazy_allocation_object)
 
