@@ -438,6 +438,36 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
+    // Markets awaiting THIS oracle's result: active (status 1) markets whose betting window has
+    // already closed (betting_expiration <= head_block_time) and that are therefore not yet resolved.
+    // "Awaiting" is not a distinct status — a market stays status 1 from open through close until
+    // resolve — so it can't be isolated by status alone. The by_betting_expiration index is
+    // (status, betting_expiration, id): every status-1 market sits contiguously, ordered by
+    // betting_expiration, so we walk only the bounded prefix whose betting has passed and keep this
+    // oracle's rows. This is far cheaper than scanning the oracle's entire (mostly resolved) history.
+    DEFINE_API(prediction_market_api, list_markets_awaiting_resolution) {
+        CHECK_ARG_MIN_SIZE(3, 3)
+        auto oracle = args.args->at(0).as<account_name_type>();
+        auto from   = args.args->at(1).as<uint32_t>();
+        auto limit  = args.args->at(2).as<uint32_t>();
+        FC_ASSERT(limit <= 1000);
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            std::vector<fc::variant> result;
+            result.reserve(limit);
+            const auto now = db.head_block_time();
+            const auto& idx = db.get_index<pm_market_index>().indices().get<by_betting_expiration>();
+            auto itr = idx.lower_bound(boost::make_tuple((int8_t)1, time_point_sec(0), pm_market_id_type()));
+            for (; itr != idx.end() && itr->status == 1 && itr->betting_expiration <= now; ++itr) {
+                if (itr->oracle != oracle) continue;
+                if (from > 0) { --from; continue; }
+                result.push_back(market_card(db, *itr));
+                if (result.size() >= limit) break;
+            }
+            return result;
+        });
+    }
+
     DEFINE_API(prediction_market_api, list_markets_by_creator) {
         CHECK_ARG_MIN_SIZE(3, 3)
         auto creator = args.args->at(0).as<account_name_type>();
