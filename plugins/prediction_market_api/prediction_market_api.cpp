@@ -157,6 +157,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         // since `metadata` is no longer kept in consensus state). on_block() only prunes expired data.
         void on_block() {
             auto& db = database_;
+            run_meta_backfill();        // one-shot DLT meta recovery (no-op once complete)
             if (ttl_days_ == 0) return; // archival node: keep off-chain metadata/klines forever
             const auto now = db.head_block_time();
 
@@ -215,15 +216,11 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         // Parse and index a new market's free-form metadata off-chain (non-consensus, prunable).
         // The raw blob lives only in the block log / operation — never in chainbase state — so each
         // node keeps it only as long as --pmm-ttl-days, and clients stay free to shape it ("like custom").
-        void ingest_market_meta(const protocol::pm_create_market_operation& op) {
+        // Create the off-chain meta object for a SPECIFIC market from its create op. Idempotent.
+        // res_exp is the market's result_expiration (== op.result_expiration at creation time).
+        void create_meta_for(pm_market_id_type mkt_id, time_point_sec res_exp,
+                             const protocol::pm_create_market_operation& op) {
             auto& db = database_;
-            // The market this op just created is the newest one; guard by creator + idempotency.
-            const auto& midx = db.get_index<pm_market_index>().indices().get<by_id>();
-            if (midx.begin() == midx.end()) return;
-            auto rit = midx.rbegin();
-            if (rit->creator != op.creator) return;
-            const pm_market_id_type mkt_id = rit->id;
-            const time_point_sec    res_exp = rit->result_expiration;
             const auto& meta_by_market = db.get_index<pm_market_meta_index>().indices().get<by_meta_market>();
             if (meta_by_market.find(mkt_id) != meta_by_market.end()) return;
             const uint32_t grace = (uint32_t)db.get_validator_schedule_object().median_props.pm_dispute_grace_sec;
@@ -240,6 +237,76 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 from_string(m.description, pm.description);
                 m.expiry = res_exp + fc::seconds(grace) + fc::seconds((int64_t)ttl_days_ * 86400);
             });
+        }
+
+        void ingest_market_meta(const protocol::pm_create_market_operation& op) {
+            auto& db = database_;
+            // The market this op just created is the newest one; guard by creator + idempotency.
+            const auto& midx = db.get_index<pm_market_index>().indices().get<by_id>();
+            if (midx.begin() == midx.end()) return;
+            auto rit = midx.rbegin();
+            if (rit->creator != op.creator) return;
+            create_meta_for(rit->id, rit->result_expiration, op);
+        }
+
+        // ── One-shot meta backfill from the DLT block log (fallback) ──────────────────
+        // After --replay-from-snapshot, meta is rebuilt only for markets whose create op was in the
+        // reindex window (snapshot_head+1..head). But the DLT rolling block log can reach FURTHER back
+        // than the snapshot — those older create ops are still on disk, just never re-applied. This
+        // one-shot pass scans the whole DLT log and re-ingests meta for any market still missing it.
+        // Runs from on_block() (a safe chainbase write context, like pruning), budgeted across blocks
+        // to avoid stalling. Mapping op→market is positional: meta ingest is per-block all-or-nothing
+        // (a block is either fully reindexed → all have meta, or from-snapshot → none), so within a
+        // block the k-th create op created the k-th (by id) missing-meta market of that block.
+        bool     mb_done_    = false;
+        bool     mb_started_ = false;
+        uint32_t mb_next_    = 0;   // next DLT block number to scan
+        uint32_t mb_end_     = 0;   // head block of the DLT log at scan start
+        std::map<uint32_t, std::vector<pm_market_id_type>> mb_buckets_; // block time (sec) → ALL market ids of that block, asc by id
+
+        void run_meta_backfill() {
+            if (mb_done_) return;
+            auto& db = database_;
+            const auto& dlt = db.get_dlt_block_log();
+            if (!mb_started_) {
+                mb_started_ = true;
+                const uint32_t s = dlt.start_block_num(), h = dlt.head_block_num();
+                if (s == 0 || h == 0 || h < s) { mb_done_ = true; return; } // no DLT log → nothing to do
+                const auto& midx = db.get_index<pm_market_index>().indices().get<by_id>();
+                const auto& meta_by_market = db.get_index<pm_market_meta_index>().indices().get<by_meta_market>();
+                uint64_t missing = 0;
+                // Bucket ALL markets by their creation block-time (not just those missing meta): the
+                // op→market positional zip needs full per-block membership to stay aligned even if a
+                // block is "mixed" (some metas already pruned by expiry). create_meta_for() is
+                // idempotent, so markets that still have meta are simply skipped during the scan.
+                for (auto it = midx.begin(); it != midx.end(); ++it) {
+                    if (meta_by_market.find(it->id) == meta_by_market.end()) ++missing;
+                    mb_buckets_[it->created_time.sec_since_epoch()].push_back(it->id);
+                }
+                mb_next_ = s; mb_end_ = h;
+                if (missing == 0 || mb_buckets_.empty()) { mb_done_ = true; mb_buckets_.clear(); return; } // nothing to recover (normal restart)
+                wlog("pm meta backfill: scanning DLT blocks ${s}..${h} for ${n} markets missing meta",
+                     ("s", s)("h", h)("n", missing));
+            }
+            uint32_t budget = 500; // DLT block reads per block-apply (bounded to avoid stalls)
+            uint64_t recovered = 0;
+            while (mb_next_ <= mb_end_ && budget > 0) {
+                const uint32_t bn = mb_next_++; --budget;
+                auto blk = dlt.read_block_by_num(bn);
+                if (!blk) continue;
+                auto bit = mb_buckets_.find(blk->timestamp.sec_since_epoch());
+                if (bit == mb_buckets_.end()) continue; // this block has no missing-meta markets
+                std::vector<const protocol::pm_create_market_operation*> ops;
+                for (const auto& trx : blk->transactions)
+                    for (const auto& op : trx.operations)
+                        if (const auto* cop = op.visit(create_market_visitor{}))
+                            ops.push_back(cop);
+                const auto& mids = bit->second;
+                const size_t n = std::min(ops.size(), mids.size());
+                for (size_t i = 0; i < n; ++i) { create_meta_for(mids[i], ops[i]->result_expiration, *ops[i]); ++recovered; }
+            }
+            if (recovered) wlog("pm meta backfill: recovered ${n} markets (up to block ${b})", ("n", recovered)("b", mb_next_ - 1));
+            if (mb_next_ > mb_end_) { mb_done_ = true; mb_buckets_.clear(); wlog("pm meta backfill: complete"); }
         }
 
         // A plugin observer must never throw out of the apply path — swallow everything.
@@ -396,24 +463,41 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
+    // list_markets(status, from, limit, [show_risky=false], [order="oldest"])
+    // order: "oldest" (id asc, default — legacy) · "newest" (id desc). The by_status index keeps
+    // equal-status elements in insertion order; markets are born into their status (active markets
+    // never re-enter the group), so within a status insertion order == id order → reverse traversal
+    // of the equal-range yields newest-first without a full scan/sort. Discovery feeds pass "newest".
     DEFINE_API(prediction_market_api, list_markets) {
-        CHECK_ARG_MIN_SIZE(3, 4)
+        CHECK_ARG_MIN_SIZE(3, 5)
         auto status = args.args->at(0).as<int8_t>();
         auto from   = args.args->at(1).as<uint32_t>();
         auto limit  = args.args->at(2).as<uint32_t>();
         auto show_risky = GET_OPTIONAL_ARG(3, bool, false); // reveal under-insured markets
+        auto order  = GET_OPTIONAL_ARG(4, std::string, std::string("oldest"));
         FC_ASSERT(limit <= 1000);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<fc::variant> result;
             result.reserve(limit);
             const auto& idx = db.get_index<pm_market_index>().indices().get<by_status>();
-            auto itr = idx.lower_bound(status);
-            while (from > 0 && itr != idx.end() && itr->status == status) { ++itr; --from; }
-            while (result.size() < limit && itr != idx.end() && itr->status == status) {
-                if (show_risky || !below_risk_floor(db, *itr))
-                    result.push_back(market_card(db, *itr));
-                ++itr;
+            auto range = idx.equal_range(status);
+            if (order == "newest") {
+                auto itr = range.second;                    // one past the last equal-status market
+                while (from > 0 && itr != range.first) { --itr; --from; } // skip newest `from`
+                while (result.size() < limit && itr != range.first) {
+                    --itr;
+                    if (show_risky || !below_risk_floor(db, *itr))
+                        result.push_back(market_card(db, *itr));
+                }
+            } else {
+                auto itr = range.first;
+                while (from > 0 && itr != range.second) { ++itr; --from; }
+                while (result.size() < limit && itr != range.second) {
+                    if (show_risky || !below_risk_floor(db, *itr))
+                        result.push_back(market_card(db, *itr));
+                    ++itr;
+                }
             }
             return result;
         });
