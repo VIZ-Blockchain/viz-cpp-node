@@ -254,15 +254,23 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         // reindex window (snapshot_head+1..head). But the DLT rolling block log can reach FURTHER back
         // than the snapshot — those older create ops are still on disk, just never re-applied. This
         // one-shot pass scans the whole DLT log and re-ingests meta for any market still missing it.
-        // Runs from on_block() (a safe chainbase write context, like pruning), budgeted across blocks
-        // to avoid stalling. Mapping op→market is positional: meta ingest is per-block all-or-nothing
-        // (a block is either fully reindexed → all have meta, or from-snapshot → none), so within a
-        // block the k-th create op created the k-th (by id) missing-meta market of that block.
+        // Runs from on_block() (a safe chainbase write context, like pruning), budgeted across blocks.
+        //
+        // op→market mapping is by a STRONG IDENTITY KEY (creator+url+both expirations+outcome count),
+        // all consensus fields the evaluator copies verbatim from the op into the market. This can never
+        // mis-assign: a key mismatch just leaves that market empty (no wrong title), unlike a positional
+        // scheme. Duplicate keys (identical re-created markets) are matched in id order via a small list.
         bool     mb_done_    = false;
         bool     mb_started_ = false;
         uint32_t mb_next_    = 0;   // next DLT block number to scan
         uint32_t mb_end_     = 0;   // head block of the DLT log at scan start
-        std::map<uint32_t, std::vector<pm_market_id_type>> mb_buckets_; // block time (sec) → ALL market ids of that block, asc by id
+        std::map<std::string, std::vector<pm_market_id_type>> mb_index_; // identity key → candidate market ids (asc)
+
+        static std::string mb_key(const std::string& creator, const std::string& url,
+                                  uint32_t bexp, uint32_t rexp, uint32_t ocount) {
+            return creator + '\x1f' + url + '\x1f' + std::to_string(bexp) + '\x1f'
+                 + std::to_string(rexp) + '\x1f' + std::to_string(ocount);
+        }
 
         void run_meta_backfill() {
             if (mb_done_) return;
@@ -275,16 +283,16 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 const auto& midx = db.get_index<pm_market_index>().indices().get<by_id>();
                 const auto& meta_by_market = db.get_index<pm_market_meta_index>().indices().get<by_meta_market>();
                 uint64_t missing = 0;
-                // Bucket ALL markets by their creation block-time (not just those missing meta): the
-                // op→market positional zip needs full per-block membership to stay aligned even if a
-                // block is "mixed" (some metas already pruned by expiry). create_meta_for() is
-                // idempotent, so markets that still have meta are simply skipped during the scan.
                 for (auto it = midx.begin(); it != midx.end(); ++it) {
-                    if (meta_by_market.find(it->id) == meta_by_market.end()) ++missing;
-                    mb_buckets_[it->created_time.sec_since_epoch()].push_back(it->id);
+                    if (meta_by_market.find(it->id) != meta_by_market.end()) continue; // already has meta
+                    mb_index_[mb_key(std::string(it->creator), to_string(it->url),
+                                     it->betting_expiration.sec_since_epoch(),
+                                     it->result_expiration.sec_since_epoch(),
+                                     (uint32_t)it->outcome_count)].push_back(it->id);
+                    ++missing;
                 }
                 mb_next_ = s; mb_end_ = h;
-                if (missing == 0 || mb_buckets_.empty()) { mb_done_ = true; mb_buckets_.clear(); return; } // nothing to recover (normal restart)
+                if (missing == 0 || mb_index_.empty()) { mb_done_ = true; mb_index_.clear(); return; } // nothing to recover (normal restart)
                 wlog("pm meta backfill: scanning DLT blocks ${s}..${h} for ${n} markets missing meta",
                      ("s", s)("h", h)("n", missing));
             }
@@ -294,19 +302,23 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 const uint32_t bn = mb_next_++; --budget;
                 auto blk = dlt.read_block_by_num(bn);
                 if (!blk) continue;
-                auto bit = mb_buckets_.find(blk->timestamp.sec_since_epoch());
-                if (bit == mb_buckets_.end()) continue; // this block has no missing-meta markets
-                std::vector<const protocol::pm_create_market_operation*> ops;
                 for (const auto& trx : blk->transactions)
-                    for (const auto& op : trx.operations)
-                        if (const auto* cop = op.visit(create_market_visitor{}))
-                            ops.push_back(cop);
-                const auto& mids = bit->second;
-                const size_t n = std::min(ops.size(), mids.size());
-                for (size_t i = 0; i < n; ++i) { create_meta_for(mids[i], ops[i]->result_expiration, *ops[i]); ++recovered; }
+                    for (const auto& opv : trx.operations) {
+                        const auto* op = opv.visit(create_market_visitor{});
+                        if (!op) continue;
+                        auto kit = mb_index_.find(mb_key(std::string(op->creator), op->url,
+                                     op->betting_expiration.sec_since_epoch(),
+                                     op->result_expiration.sec_since_epoch(),
+                                     (uint32_t)op->outcomes.size()));
+                        if (kit == mb_index_.end() || kit->second.empty()) continue;
+                        const pm_market_id_type mid = kit->second.front();
+                        kit->second.erase(kit->second.begin());
+                        create_meta_for(mid, op->result_expiration, *op);
+                        ++recovered;
+                    }
             }
             if (recovered) wlog("pm meta backfill: recovered ${n} markets (up to block ${b})", ("n", recovered)("b", mb_next_ - 1));
-            if (mb_next_ > mb_end_) { mb_done_ = true; mb_buckets_.clear(); wlog("pm meta backfill: complete"); }
+            if (mb_next_ > mb_end_) { mb_done_ = true; mb_index_.clear(); wlog("pm meta backfill: complete"); }
         }
 
         // A plugin observer must never throw out of the apply path — swallow everything.
