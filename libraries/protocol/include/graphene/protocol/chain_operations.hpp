@@ -691,6 +691,7 @@ namespace graphene { namespace protocol {
             uint16_t pm_leverage_max_position_ratio_percent = 5;     ///< max position as % of liquidity_sum (POS)
             uint32_t pm_leverage_expiration_buffer_sec       = 86400; ///< leverage disabled N sec before expiration
             uint16_t pm_leverage_m_factor_percent           = 50;    ///< M_effective = M_max × this% (VIZ DLT relaxation)
+            uint32_t pm_leverage_funding_rate_ppm_per_day    = 50;    ///< funding on the loan per 24h, in ppm (1e6). 0.005%/day = 50 ppm; 0 disables
             uint16_t pm_conversion_profit_cost_percent      = 50;    ///< fee % of unrealized profit on convert
             // Garbage collection of terminal markets
             uint32_t pm_closed_market_retention_sec         = 432000; ///< 5 d: a market and its whole object
@@ -742,6 +743,7 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(pm_leverage_max_slippage_percent <= 100, "pm_leverage_max_slippage_percent out of range");
                 FC_ASSERT(pm_leverage_max_position_ratio_percent <= 100, "pm_leverage_max_position_ratio_percent out of range");
                 FC_ASSERT(pm_leverage_m_factor_percent <= 100, "pm_leverage_m_factor_percent out of range");
+                FC_ASSERT(pm_leverage_funding_rate_ppm_per_day <= 1000000, "pm_leverage_funding_rate_ppm_per_day out of range (<= 100%/day)");
                 FC_ASSERT(pm_conversion_profit_cost_percent <= 100, "pm_conversion_profit_cost_percent out of range");
                 check_token(pm_leverage_min_market_liquidity, "pm_leverage_min_market_liquidity");
             }
@@ -1354,7 +1356,8 @@ FC_REFLECT_DERIVED(
     (pm_leverage_enabled)(pm_leverage_fund_percent)(pm_leverage_max_per_position_bp)
     (pm_leverage_pool_profit_percent)(pm_leverage_safety_margin_percent)(pm_leverage_max_slippage_percent)
     (pm_leverage_min_market_liquidity)(pm_leverage_max_position_ratio_percent)
-    (pm_leverage_expiration_buffer_sec)(pm_leverage_m_factor_percent)(pm_conversion_profit_cost_percent)
+    (pm_leverage_expiration_buffer_sec)(pm_leverage_m_factor_percent)(pm_leverage_funding_rate_ppm_per_day)
+    (pm_conversion_profit_cost_percent)
     (pm_closed_market_retention_sec))
 
 FC_REFLECT_TYPENAME((graphene::protocol::versioned_chain_properties))

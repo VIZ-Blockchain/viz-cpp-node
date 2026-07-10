@@ -55,16 +55,51 @@ namespace {
             });
     }
 
+    // ── Leverage funding (spec §7 — perpetual carry cost) ────────────────────────
+    // Charge any whole 24h funding periods that have come due on an ACTIVE position.
+    // funding_per_period = loan × pm_leverage_funding_rate_ppm_per_day / 1e6, accrued into
+    // pos.funding_paid, which raises the effective pool obligation (liquidation_threshold +
+    // funding_paid) and therefore pulls the liquidation point up over time. Funding is realized
+    // out of the bettor's own equity (the collateral leg of the position value) at settlement.
+    // Idempotent: after charging, funding_due_time is advanced strictly past `now`. One-shot
+    // catch-up (multiplies by the number of whole periods due) so a cap-throttled sweep can never
+    // under-charge. rate 0 → no-op except advancing the clock (no retroactive charge on re-enable).
+    void accrue_leverage_funding(database& db, const pm_leverage_position_object& pos,
+                                 uint32_t rate_ppm_per_day, time_point_sec now) {
+        if (pos.status != 0) return;
+        if (pos.funding_due_time == time_point_sec()) return;   // not initialized (pre-funding position)
+        if (pos.funding_due_time > now) return;
+        uint32_t due = ((now.sec_since_epoch() - pos.funding_due_time.sec_since_epoch()) / 86400u) + 1u;
+        int64_t add = 0;
+        if (rate_ppm_per_day > 0)
+            add = (int64_t)(fc::uint128_t((uint64_t)pos.loan.value)
+                          * fc::uint128_t((uint64_t)rate_ppm_per_day)
+                          * fc::uint128_t((uint64_t)due)
+                          / fc::uint128_t((uint64_t)1000000u)).lo;
+        db.modify(pos, [&](pm_leverage_position_object& p) {
+            p.funding_paid    += share_type(add);
+            p.funding_due_time = time_point_sec(p.funding_due_time.sec_since_epoch() + 86400u * due);
+            p.last_update      = now;
+        });
+    }
+
     // ── Leverage liquidation (spec §5/§6) ────────────────────────────────────────
     // Liquidate one position at CURRENT reserves: sell its tokens back, the pool recovers
     // min(cancel_value, obligation), the bettor gets any remainder. Zero-sum: the C+L that
     // entered the curve at open returns as cancel_value (split pool/bettor); the price-impact
-    // difference accrues to the rest of the market. reason: 0 opposing-bet, 1 cancel-bet, 2 expiry.
+    // difference accrues to the rest of the market. reason: 0 opposing-bet, 1 cancel-bet, 2 expiry,
+    // 3 funding (position pulled underwater by accrued carry cost).
     void liquidate_position(database& db, const pm_leverage_position_object& pos, uint8_t reason) {
+        // Bring funding current before settling so the obligation reflects carry owed to now.
+        accrue_leverage_funding(db, pos,
+            db.get_validator_schedule_object().median_props.pm_leverage_funding_rate_ppm_per_day,
+            db.head_block_time());
         const auto& mkt = db.get<pm_market_object, by_id>(pos.market);
         int64_t cv = pm::leverage::cancel_value(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
                                             pos.tokens.value, (int)pos.outcome_index);
-        int64_t obligation      = pos.liquidation_threshold.value;
+        // Effective obligation = base pool markup (loan×(1+R%)) + accrued funding. The funding
+        // portion is captured by pool_profit = pool_received − loan and thus flows to LP yield.
+        int64_t obligation      = pos.liquidation_threshold.value + pos.funding_paid.value;
         int64_t pool_received   = cv < obligation ? cv : obligation;
         int64_t bettor_received = cv - pool_received; // ≥ 0
         int64_t pool_profit     = pool_received - pos.loan.value;
@@ -135,7 +170,7 @@ namespace {
                 if (side >= 0 && it->outcome_index != side) continue;
                 int64_t cv = pm::leverage::cancel_value(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
                                                     it->tokens.value, (int)it->outcome_index);
-                if (cv <= it->liquidation_threshold.value) { victim = &*it; break; }
+                if (cv <= it->liquidation_threshold.value + it->funding_paid.value) { victim = &*it; break; }
             }
             if (!victim) break;
             liquidate_position(db, *victim, reason);
@@ -1753,6 +1788,8 @@ void pm_leverage_open_evaluator::do_apply(const pm_leverage_open_operation& o) {
         pos.status                = 0;
         pos.created_time          = now;
         pos.last_update           = now;
+        pos.funding_paid          = share_type(0);
+        pos.funding_due_time      = time_point_sec(now + fc::seconds(86400)); // first 24h funding period
     });
 }
 
@@ -1766,11 +1803,13 @@ void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o)
     const auto& pos = db.get<pm_leverage_position_object, by_id>(pm_leverage_position_id_type(o.position_id));
     FC_ASSERT(pos.account == o.account, "Not your position");
     FC_ASSERT(pos.status == 0, "Position not active");
+    accrue_leverage_funding(db, pos,
+        db.get_validator_schedule_object().median_props.pm_leverage_funding_rate_ppm_per_day, now);
     const auto& mkt = db.get<pm_market_object, by_id>(pos.market);
 
     int64_t cv = pm::leverage::cancel_value(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
                                         pos.tokens.value, (int)pos.outcome_index);
-    const int64_t obligation = pos.liquidation_threshold.value;
+    const int64_t obligation = pos.liquidation_threshold.value + pos.funding_paid.value;
     FC_ASSERT(cv >= obligation, "Position underwater: cannot voluntarily close");
     int64_t bettor_received = cv - obligation;
     FC_ASSERT(bettor_received >= o.min_return, "Return below min_return");
@@ -1787,12 +1826,13 @@ void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o)
             m.reserve_b = share_type((int64_t)(m.k / fc::uint128_t((uint64_t)new_ra)).lo);
         }
     });
+    int64_t pool_yield = pos.pool_profit.value + pos.funding_paid.value; // R-markup + accrued funding → LP yield
     db.modify(db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0)), [&](pm_lazy_pool_object& p) {
         p.free_balance       += share_type(obligation);
         p.leverage_fund_used -= pos.loan;
-        p.earned_balance     += pos.pool_profit;
+        p.earned_balance     += share_type(pool_yield);
         if (p.total_shares.value > 0)
-            p.reward_per_share += fc::uint128_t((uint64_t)pos.pool_profit.value)
+            p.reward_per_share += fc::uint128_t((uint64_t)pool_yield)
                                 * fc::uint128_t((uint64_t)1000000000) / fc::uint128_t((uint64_t)p.total_shares.value);
     });
     if (bettor_received > 0)
@@ -1816,11 +1856,12 @@ void pm_leverage_convert_evaluator::do_apply(const pm_leverage_convert_operation
     const auto& pos = db.get<pm_leverage_position_object, by_id>(pm_leverage_position_id_type(o.position_id));
     FC_ASSERT(pos.account == o.account, "Not your position");
     FC_ASSERT(pos.status == 0, "Position not active");
+    accrue_leverage_funding(db, pos, mp.pm_leverage_funding_rate_ppm_per_day, now);
     const auto& mkt = db.get<pm_market_object, by_id>(pos.market);
 
     int64_t cv = pm::leverage::cancel_value(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
                                         pos.tokens.value, (int)pos.outcome_index);
-    const int64_t obligation = pos.liquidation_threshold.value;
+    const int64_t obligation = pos.liquidation_threshold.value + pos.funding_paid.value;
     FC_ASSERT(cv >= obligation, "Position underwater");
     int64_t current_profit = cv - obligation;
     FC_ASSERT(current_profit > 0, "No profit to convert");
@@ -1832,7 +1873,7 @@ void pm_leverage_convert_evaluator::do_apply(const pm_leverage_convert_operation
     FC_ASSERT(acct.balance.amount >= total_payment, "Insufficient balance for conversion");
     db.adjust_balance(acct, -asset(share_type(total_payment), TOKEN_SYMBOL));
 
-    int64_t pool_profit_total = pos.pool_profit.value + conversion_fee;
+    int64_t pool_profit_total = pos.pool_profit.value + conversion_fee + pos.funding_paid.value;
     db.modify(db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0)), [&](pm_lazy_pool_object& p) {
         p.free_balance       += share_type(total_payment);
         p.leverage_fund_used -= pos.loan;
@@ -2029,6 +2070,29 @@ void database::process_pm_markets() {
             });
             push_virtual_operation(pm_market_expired_operation(
                 mkt.oracle, mkt.creator, mkt.id._id, asset(refunded, TOKEN_SYMBOL)));
+            ++done;
+        }
+    }
+
+    // ── 2c. Leverage funding accrual + liquidation check ──────────────────────
+    // Active leverage positions whose 24h funding period has come due: charge the carry cost
+    // (raising the effective obligation via accrue_leverage_funding), then re-price at current
+    // reserves — if the higher obligation now exceeds cancel_value, liquidate (reason 3). This is
+    // the "recompute the liquidation point + maybe liquidate" step. by_lev_funding_due keeps the
+    // due set contiguous (status 0, funding_due_time ascending); accrue advances the clock so a
+    // position is revisited only once per period. funding_due_time > 0 sentinel skips legacy rows.
+    {
+        const uint32_t frate = mp.pm_leverage_funding_rate_ppm_per_day;
+        const auto& idx = get_index<pm_leverage_position_index>().indices().get<by_lev_funding_due>();
+        auto it = idx.lower_bound(boost::make_tuple((uint8_t)0, time_point_sec(1), pm_leverage_position_id_type()));
+        while (it != idx.end() && it->status == 0 && it->funding_due_time <= now && done < cap) {
+            const auto& pos = *it; ++it;
+            accrue_leverage_funding(*this, pos, frate, now);
+            const auto& mkt = get<pm_market_object>(pos.market);
+            int64_t cv = pm::leverage::cancel_value(mkt.reserve_a.value, mkt.reserve_b.value, mkt.k,
+                                                    pos.tokens.value, (int)pos.outcome_index);
+            if (cv <= pos.liquidation_threshold.value + pos.funding_paid.value)
+                liquidate_position(*this, pos, 3);   // reason 3 = funding pulled the position underwater
             ++done;
         }
     }

@@ -119,6 +119,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         uint16_t       max_slippage_percent = 0;        ///< sl (plain %)
         uint16_t       m_factor_percent = 0;            ///< worst-opposing m-factor (plain %)
         uint32_t       expiration_buffer_sec = 0;       ///< leverage disabled this long before betting_expiration
+        uint32_t       funding_rate_ppm_per_day = 0;    ///< carry cost on the loan per 24h, in ppm (1e6)
         time_point_sec auto_close_time;                 ///< betting_expiration − buffer (protocol force-close point)
         std::vector<pm_leverage_stop>       stops;      ///< up to 12 evenly-spaced solvent stops (0 < loan ≤ max_loan)
         std::vector<pm_leverage_constraint> failed_constraints; ///< populated when !available
@@ -302,7 +303,7 @@ FC_REFLECT((graphene::plugins::prediction_market_api::pm_leverage_quote_api_obje
     (available)(outcome_index)(collateral)(max_loan)(max_leverage_x100)(pool_free_amount)
     (fund_available)(per_position_cap)(market_position_cap)(pool_profit_percent)
     (safety_margin_percent)(max_slippage_percent)(m_factor_percent)(expiration_buffer_sec)
-    (auto_close_time)(stops)(failed_constraints))
+    (funding_rate_ppm_per_day)(auto_close_time)(stops)(failed_constraints))
 FC_REFLECT((graphene::plugins::prediction_market_api::pm_leverage_close_preview_api_object),
     (position_id)(outcome_index)(cancel_value)(pool_obligation)(bettor_receives)(collateral)
     (loan)(pool_profit_charge)(closeable)(loss_vs_collateral)(loss_percent_bp))

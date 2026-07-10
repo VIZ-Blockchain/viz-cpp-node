@@ -607,11 +607,14 @@ namespace graphene { namespace chain {
             share_type        bettor_received;
             time_point_sec    created_time;
             time_point_sec    last_update;
+            share_type        funding_paid;       ///< cumulative funding charged from the bettor's equity → pool (raises effective obligation)
+            time_point_sec    funding_due_time;   ///< next 24h funding-period boundary (created_time + N×24h); 0 = none yet
         };
 
         struct by_lev_market_status;
         struct by_lev_account;
         struct by_lev_bet;
+        struct by_lev_funding_due;
         typedef multi_index_container<
             pm_leverage_position_object,
             indexed_by<
@@ -631,7 +634,15 @@ namespace graphene { namespace chain {
                     >,
                     composite_key_compare<string_less, std::less<pm_leverage_position_id_type>>
                 >,
-                ordered_unique<tag<by_lev_bet>, member<pm_leverage_position_object, pm_bet_id_type, &pm_leverage_position_object::bet>>
+                ordered_unique<tag<by_lev_bet>, member<pm_leverage_position_object, pm_bet_id_type, &pm_leverage_position_object::bet>>,
+                ordered_unique<tag<by_lev_funding_due>,
+                    composite_key<pm_leverage_position_object,
+                        member<pm_leverage_position_object, uint8_t, &pm_leverage_position_object::status>,
+                        member<pm_leverage_position_object, time_point_sec, &pm_leverage_position_object::funding_due_time>,
+                        member<pm_leverage_position_object, pm_leverage_position_id_type, &pm_leverage_position_object::id>
+                    >,
+                    composite_key_compare<std::less<uint8_t>, std::less<time_point_sec>, std::less<pm_leverage_position_id_type>>
+                >
             >,
             allocator<pm_leverage_position_object>
         > pm_leverage_position_index;
@@ -734,7 +745,7 @@ CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_lazy_allocation_object, graphene::c
 FC_REFLECT((graphene::chain::pm_leverage_position_object),
     (id)(market)(account)(outcome_index)(collateral)(loan)(total_bet)(tokens)(bet)(pool_profit)
     (liquidation_threshold)(status)(liquidated_at)(liquidated_by_bet)(cancel_value_at_liquidation)
-    (pool_received)(bettor_received)(created_time)(last_update))
+    (pool_received)(bettor_received)(created_time)(last_update)(funding_paid)(funding_due_time))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_leverage_position_object, graphene::chain::pm_leverage_position_index)
 
 FC_REFLECT((graphene::chain::pm_creator_ban_object),

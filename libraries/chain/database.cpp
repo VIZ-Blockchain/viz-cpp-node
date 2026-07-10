@@ -3778,6 +3778,7 @@ namespace graphene { namespace chain {
                 calc_median(&chain_properties_pm::pm_leverage_max_position_ratio_percent);
                 calc_median(&chain_properties_pm::pm_leverage_expiration_buffer_sec);
                 calc_median(&chain_properties_pm::pm_leverage_m_factor_percent);
+                calc_median(&chain_properties_pm::pm_leverage_funding_rate_ppm_per_day);
                 calc_median(&chain_properties_pm::pm_conversion_profit_cost_percent);
             }
 

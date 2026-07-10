@@ -1101,6 +1101,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             out.max_slippage_percent  = mp.pm_leverage_max_slippage_percent;
             out.m_factor_percent      = mp.pm_leverage_m_factor_percent;
             out.expiration_buffer_sec = mp.pm_leverage_expiration_buffer_sec;
+            out.funding_rate_ppm_per_day = mp.pm_leverage_funding_rate_ppm_per_day;
             // Open-ended markets (betting_expiration == 0) have no protocol force-close point.
             out.auto_close_time       = (mkt.betting_expiration == fc::time_point_sec())
                                           ? fc::time_point_sec()
