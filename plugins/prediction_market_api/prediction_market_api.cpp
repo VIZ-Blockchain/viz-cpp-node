@@ -1101,7 +1101,10 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             out.max_slippage_percent  = mp.pm_leverage_max_slippage_percent;
             out.m_factor_percent      = mp.pm_leverage_m_factor_percent;
             out.expiration_buffer_sec = mp.pm_leverage_expiration_buffer_sec;
-            out.auto_close_time       = mkt.betting_expiration - fc::seconds(mp.pm_leverage_expiration_buffer_sec);
+            // Open-ended markets (betting_expiration == 0) have no protocol force-close point.
+            out.auto_close_time       = (mkt.betting_expiration == fc::time_point_sec())
+                                          ? fc::time_point_sec()
+                                          : fc::time_point_sec(mkt.betting_expiration - fc::seconds(mp.pm_leverage_expiration_buffer_sec));
 
             auto fail = [&](const char* c, const std::string& why) {
                 out.failed_constraints.push_back({std::string(c), why});
@@ -1111,7 +1114,8 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             if (mkt.market_type != 0)                 fail("cpmm_binary_only", "Leverage is CPMM-binary only");
             if (mkt.status != 1)                      fail("market_inactive", "Market is not active");
             if (outcome_index != 0 && outcome_index != 1) fail("cpmm_binary_only", "outcome_index must be 0/1");
-            if (now >= mkt.betting_expiration - fc::seconds(mp.pm_leverage_expiration_buffer_sec))
+            if (mkt.betting_expiration != fc::time_point_sec()
+                && now >= mkt.betting_expiration - fc::seconds(mp.pm_leverage_expiration_buffer_sec))
                 fail("expiration_buffer", "Too close to betting expiration for leverage");
             if (mkt.liquidity_sum < mp.pm_leverage_min_market_liquidity.amount)
                 fail("min_market_liquidity", "Market liquidity below leverage minimum");

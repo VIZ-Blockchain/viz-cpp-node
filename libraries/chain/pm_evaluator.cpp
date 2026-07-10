@@ -662,10 +662,25 @@ void pm_create_market_evaluator::do_apply(const pm_create_market_operation& o) {
     FC_ASSERT(o.liquidity.symbol == TOKEN_SYMBOL, "Liquidity must be VIZ");
     FC_ASSERT(o.liquidity.amount >= mp.pm_min_liquidity.amount, "Liquidity below minimum");
     FC_ASSERT(o.url.size() <= MAX_PM_MARKET_TITLE_LEN, "Market url too long");
-    FC_ASSERT(o.betting_expiration > now, "betting_expiration must be in the future");
-    FC_ASSERT(o.result_expiration > o.betting_expiration, "result_expiration must be after betting_expiration");
-    FC_ASSERT(o.result_expiration <= now + fc::seconds(mp.pm_max_market_duration),
-              "Market duration exceeds maximum");
+    // Open-ended market: betting_expiration == 0 (epoch) means betting stays open until the
+    // oracle resolves. result_expiration then acts purely as the emergency backstop deadline
+    // (<= now + pm_max_market_duration, i.e. <= 1 year): if the oracle never resolves by then,
+    // process_pm_markets() refunds every bet and slashes the oracle insurance (missed-resolution
+    // path). Requires allow_early_resolution so the oracle can resolve at any time (with
+    // betting_expiration == 0, now >= betting_expiration is always true, so the early-resolution
+    // branch in pm_resolve_market is the only way to resolve before the backstop fires).
+    if (o.betting_expiration == time_point_sec()) {
+        FC_ASSERT(o.allow_early_resolution,
+                  "open-ended market (betting_expiration=0) requires allow_early_resolution");
+        FC_ASSERT(o.result_expiration > now, "result_expiration must be in the future");
+        FC_ASSERT(o.result_expiration <= now + fc::seconds(mp.pm_max_market_duration),
+                  "Market duration exceeds maximum");
+    } else {
+        FC_ASSERT(o.betting_expiration > now, "betting_expiration must be in the future");
+        FC_ASSERT(o.result_expiration > o.betting_expiration, "result_expiration must be after betting_expiration");
+        FC_ASSERT(o.result_expiration <= now + fc::seconds(mp.pm_max_market_duration),
+                  "Market duration exceeds maximum");
+    }
 
     // Fee solvency (sum of bp fees <= 100%) is enforced statically in validate(). The oracle terms
     // in this op are only the creator's OFFER CEILING; the governed cap (pm_max_oracle_fee_percent)
@@ -900,7 +915,7 @@ void pm_place_bet_evaluator::do_apply(const pm_place_bet_operation& o) {
 
     const auto& mkt = get_market(db, o.market_id);
     FC_ASSERT(mkt.status == 1, "Market not active");
-    FC_ASSERT(now < mkt.betting_expiration, "Betting period ended");
+    FC_ASSERT(mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration, "Betting period ended");
 
     // Betting-mode gate (scenario #55): a market may disable instant bets (allow_instant_bet=false)
     // to force the front-run-resistant batch / commit-reveal flow. mode 0 = instant, mode 1 = batch.
@@ -1012,7 +1027,7 @@ void pm_commit_bet_evaluator::do_apply(const pm_commit_bet_operation& o) {
     const auto& mkt = get_market(db, o.market_id);
     FC_ASSERT(mkt.status == 1, "Market not active");
     FC_ASSERT(mkt.allow_batch, "Batch mode not enabled");
-    FC_ASSERT(now < mkt.betting_expiration, "Betting period ended");
+    FC_ASSERT(mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration, "Betting period ended");
 
     FC_ASSERT(o.escrow_amount.symbol == TOKEN_SYMBOL, "Escrow must be VIZ");
     FC_ASSERT(o.escrow_amount.amount >= mp.pm_min_batch_bet.amount, "Escrow below minimum batch bet");
@@ -1061,7 +1076,7 @@ void pm_reveal_bet_evaluator::do_apply(const pm_reveal_bet_operation& o) {
 
     const auto& mkt = get_market(db, commit.market._id);
     FC_ASSERT(mkt.status == 1, "Market not active");
-    FC_ASSERT(now < mkt.betting_expiration, "Betting period ended");
+    FC_ASSERT(mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration, "Betting period ended");
 
     share_type surplus = share_type(commit.escrow_amount.value - o.amount.amount.value);
     if (surplus.value > 0)
@@ -1148,7 +1163,7 @@ void pm_add_liquidity_evaluator::do_apply(const pm_add_liquidity_operation& o) {
 
     const auto& mkt = get_market(db, o.market_id);
     FC_ASSERT(mkt.status == 1, "Market not active");
-    FC_ASSERT(now < mkt.betting_expiration, "Cannot add liquidity after betting ends");
+    FC_ASSERT(mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration, "Cannot add liquidity after betting ends");
     FC_ASSERT(o.amount.symbol == TOKEN_SYMBOL, "Amount must be VIZ");
     FC_ASSERT(o.amount.amount > 0, "Amount must be positive");
 
@@ -1198,7 +1213,7 @@ void pm_withdraw_liquidity_evaluator::do_apply(const pm_withdraw_liquidity_opera
     FC_ASSERT(lp.status == 0, "Position already closed");
 
     const auto& mkt = db.get<pm_market_object, by_id>(lp.market);
-    FC_ASSERT(now < mkt.betting_expiration || mkt.status >= 2,
+    FC_ASSERT(mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration || mkt.status >= 2,
               "Cannot withdraw active liquidity during betting period");
 
     share_type withdraw = (o.amount.amount == 0) ? lp.amount : o.amount.amount;
@@ -1661,8 +1676,16 @@ void pm_leverage_open_evaluator::do_apply(const pm_leverage_open_operation& o) {
     FC_ASSERT(mkt.status == 1, "Market not active");
     FC_ASSERT(mkt.market_type == 0, "Leverage is CPMM-binary only");
     FC_ASSERT(o.outcome_index == 0 || o.outcome_index == 1, "outcome_index must be 0/1");
-    FC_ASSERT(now < mkt.betting_expiration - fc::seconds(mp.pm_leverage_expiration_buffer_sec),
-              "Too close to betting expiration for leverage");
+    // The expiration buffer only applies to markets with a fixed betting deadline. Open-ended
+    // markets (betting_expiration == 0) have no deadline to buffer against, so leverage stays
+    // available for the market's entire active life — the extra volatility on an open-ended risk
+    // is the bettor's own choice, not a consensus concern. Positions are force-closed on
+    // resolve/void either way (settle_market / return_liquidity). Guarding the subtraction also
+    // avoids the epoch-0 underflow of (betting_expiration - buffer).
+    if (mkt.betting_expiration != time_point_sec()) {
+        FC_ASSERT(now < mkt.betting_expiration - fc::seconds(mp.pm_leverage_expiration_buffer_sec),
+                  "Too close to betting expiration for leverage");
+    }
     FC_ASSERT(mkt.liquidity_sum >= mp.pm_leverage_min_market_liquidity.amount,
               "Market liquidity below leverage minimum");
     FC_ASSERT(o.collateral.symbol == TOKEN_SYMBOL && o.loan.symbol == TOKEN_SYMBOL, "Must be VIZ");
