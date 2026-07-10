@@ -20,6 +20,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         std::string title;                ///< human-readable question
         std::string image;                ///< icon/cover URL
         std::string condition_id;         ///< source dedup id (for client back-link)
+        std::string description;          ///< short resolution rules (how the oracle resolves) — surface-level, for clients
     };
 
     /// Flatten a JSON array (or bare string) into a comma-separated string.
@@ -64,6 +65,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 if (o.contains("title"))        r.title        = o["title"].as_string();
                 if (o.contains("image"))        r.image        = o["image"].as_string();
                 if (o.contains("condition_id")) r.condition_id = o["condition_id"].as_string();
+                if (o.contains("description"))  r.description  = o["description"].as_string();
             }
         } catch (...) { /* metadata is not JSON — leave empty */ }
         return r;

@@ -36,8 +36,11 @@ All list methods page with `from` (skip count) and `limit` (`≤ 1000`).
 ### Market metadata (off-chain parsed)
 
 Each market carries a free-form, consensus-opaque `metadata` JSON string. This plugin parses the keys it
-indexes (category / subcategory / tags / banned jurisdictions) into a `pm_market_meta_object` for
-discovery and jurisdiction filtering — **display/indexing only, never consensus**.
+indexes (category / subcategory / tags / banned jurisdictions / title / image / condition_id /
+**description**) into a `pm_market_meta_object` for discovery, jurisdiction filtering and display —
+**display/indexing only, never consensus**. `description` holds the short resolution rules (how the oracle
+will resolve the market — surface-level, for clients); the market's on-chain `url` still points to the full
+legal terms at the source.
 
 | Method | Args | Returns |
 |--------|------|---------|
@@ -56,6 +59,8 @@ build its filter chips without hard-coding a taxonomy. The meta object:
 { market: pm_object_id,
   category, subcategory, tags,          // strings; tags comma-joined
   banned_jurisdictions,                 // comma-joined ISO codes; empty = allowed everywhere
+  title, image, condition_id,           // display + source back-link
+  description,                          // short resolution rules (url = full legal terms)
   expiry }                              // pruned after the dispute window closes + TTL
 ```
 
