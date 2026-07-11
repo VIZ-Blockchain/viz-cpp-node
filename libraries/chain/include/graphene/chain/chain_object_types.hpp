@@ -88,7 +88,8 @@ namespace graphene { namespace chain {
             pm_lazy_deposit_object_type,
             pm_lazy_allocation_object_type,
             pm_leverage_position_object_type,
-            pm_creator_ban_object_type
+            pm_creator_ban_object_type,
+            pm_lazy_withdraw_request_object_type
         };
 
         class dynamic_global_property_object;
@@ -139,6 +140,7 @@ namespace graphene { namespace chain {
         class pm_lazy_allocation_object;
         class pm_leverage_position_object;
         class pm_creator_ban_object;
+        class pm_lazy_withdraw_request_object;
 
         typedef object_id<dynamic_global_property_object> dynamic_global_property_id_type;
         typedef object_id<account_object> account_id_type;
@@ -187,6 +189,7 @@ namespace graphene { namespace chain {
         typedef object_id<pm_lazy_allocation_object> pm_lazy_allocation_id_type;
         typedef object_id<pm_leverage_position_object> pm_leverage_position_id_type;
         typedef object_id<pm_creator_ban_object> pm_creator_ban_id_type;
+        typedef object_id<pm_lazy_withdraw_request_object> pm_lazy_withdraw_request_id_type;
 
 } } //graphene::chain
 

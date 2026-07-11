@@ -920,6 +920,21 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
+    // Pending (queued) lazy-pool withdrawals for an account: amounts still owed that could not be
+    // paid in full from free_balance yet. Empty = nothing queued (already paid or never queued).
+    DEFINE_API(prediction_market_api, get_lazy_withdraw_requests) {
+        CHECK_ARG_SIZE(1)
+        auto account = args.args->at(0).as<account_name_type>();
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            std::vector<pm_lazy_withdraw_request_object> out;
+            const auto& idx = db.get_index<pm_lazy_withdraw_request_index>().indices().get<by_request_account>();
+            auto range = idx.equal_range(account);
+            for (auto it = range.first; it != range.second; ++it) out.push_back(*it);
+            return out;
+        });
+    }
+
     DEFINE_API(prediction_market_api, get_pm_chain_properties) {
         CHECK_ARG_SIZE(0)
         auto& db = pimpl->database();

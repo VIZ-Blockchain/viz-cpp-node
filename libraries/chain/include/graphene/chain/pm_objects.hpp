@@ -510,6 +510,7 @@ namespace graphene { namespace chain {
             share_type earned_balance;     ///< monotonically non-decreasing
             fc::uint128_t reward_per_share = 0; ///< LAZY_POOL_PRECISION (1e9) accumulator
             share_type leverage_fund_used; ///< total active leverage loans (cap on free_balance)
+            share_type pending_withdrawals; ///< VIZ owed to queued withdrawers not yet paid (first claim on returning capital); free_balance never goes negative
         };
 
         typedef multi_index_container<
@@ -544,6 +545,34 @@ namespace graphene { namespace chain {
             >,
             allocator<pm_lazy_deposit_object>
         > pm_lazy_deposit_index;
+
+        // Queued lazy-pool withdrawal: created when a withdrawal cannot be paid in full from
+        // free_balance at request time. Shares are already burned and rewards/penalty already
+        // applied; `amount` is the fixed VIZ still owed. Serviced FIFO (by id) as capital returns
+        // to free_balance, so the pool never pays out more than it holds liquid (free_balance
+        // never goes negative). A withdrawal that IS fully covered creates and clears its request
+        // within the same operation.
+        class pm_lazy_withdraw_request_object : public object<pm_lazy_withdraw_request_object_type, pm_lazy_withdraw_request_object> {
+        public:
+            pm_lazy_withdraw_request_object() = delete;
+            template<typename Constructor, typename Allocator>
+            pm_lazy_withdraw_request_object(Constructor&& c, allocator<Allocator>) { c(*this); }
+
+            id_type           id;
+            account_name_type account;
+            share_type        amount;   ///< VIZ still owed to this account
+            time_point_sec    created;  ///< enqueue time (FIFO order == id)
+        };
+
+        struct by_request_account;
+        typedef multi_index_container<
+            pm_lazy_withdraw_request_object,
+            indexed_by<
+                ordered_unique<tag<by_id>, member<pm_lazy_withdraw_request_object, pm_lazy_withdraw_request_id_type, &pm_lazy_withdraw_request_object::id>>,
+                ordered_non_unique<tag<by_request_account>, member<pm_lazy_withdraw_request_object, account_name_type, &pm_lazy_withdraw_request_object::account>, string_less>
+            >,
+            allocator<pm_lazy_withdraw_request_object>
+        > pm_lazy_withdraw_request_index;
 
         class pm_lazy_allocation_object : public object<pm_lazy_allocation_object_type, pm_lazy_allocation_object> {
         public:
@@ -730,8 +759,12 @@ FC_REFLECT((graphene::chain::pm_dispute_vote_object),
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_dispute_vote_object, graphene::chain::pm_dispute_vote_index)
 
 FC_REFLECT((graphene::chain::pm_lazy_pool_object),
-    (id)(total_shares)(free_balance)(allocated_balance)(earned_balance)(reward_per_share)(leverage_fund_used))
+    (id)(total_shares)(free_balance)(allocated_balance)(earned_balance)(reward_per_share)(leverage_fund_used)(pending_withdrawals))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_lazy_pool_object, graphene::chain::pm_lazy_pool_index)
+
+FC_REFLECT((graphene::chain::pm_lazy_withdraw_request_object),
+    (id)(account)(amount)(created))
+CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_lazy_withdraw_request_object, graphene::chain::pm_lazy_withdraw_request_index)
 
 FC_REFLECT((graphene::chain::pm_lazy_deposit_object),
     (id)(account)(shares)(principal)(reward_snapshot)(pending_rewards)(unlock_time))

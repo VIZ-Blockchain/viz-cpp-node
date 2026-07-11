@@ -23,6 +23,36 @@ namespace {
         return db.get_validator_schedule_object().median_props;
     }
 
+    // Pay queued lazy-pool withdrawals FIFO (oldest id first) from whatever is liquid in
+    // free_balance right now. Each request is paid in full or in part; when free is exhausted we
+    // stop. Called at every point capital returns to free_balance (LP return, deposit, leverage
+    // repay) so queued withdrawers have first claim on returning capital and free_balance never
+    // goes negative — the ledger never hands out more than the pool holds liquid.
+    void service_lazy_withdraw_queue(database& db) {
+        const auto* poolp = db.find<pm_lazy_pool_object>(pm_lazy_pool_id_type(0));
+        if (!poolp) return;
+        for (;;) {
+            const auto& pool = db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0));
+            if (pool.free_balance.value <= 0) break;
+            const auto& qidx = db.get_index<pm_lazy_withdraw_request_index>().indices().get<by_id>();
+            if (qidx.empty()) break;
+            const auto& req = *qidx.begin();                 // FIFO: lowest id == oldest
+            const int64_t pay = std::min(pool.free_balance.value, req.amount.value);
+            if (pay <= 0) break;
+            db.adjust_balance(db.get_account(req.account), asset(share_type(pay), TOKEN_SYMBOL));
+            db.modify(pool, [&](pm_lazy_pool_object& p) {
+                p.free_balance        -= share_type(pay);
+                p.pending_withdrawals -= share_type(pay);
+            });
+            if (req.amount.value == pay) {
+                db.remove(req);                              // fully settled
+            } else {
+                db.modify(req, [&](pm_lazy_withdraw_request_object& r) { r.amount -= share_type(pay); });
+                break;                                       // free_balance exhausted
+            }
+        }
+    }
+
     // Return a lazy-pool LP position's capital to the pool: principal to free_balance,
     // yield (its share of the LP bonus) into the MasterChef accumulator (reward_per_share
     // ×1e9) so depositors can claim it. Mirrors the lazy deposit/withdraw accounting.
@@ -42,6 +72,7 @@ namespace {
                                         / fc::uint128_t((uint64_t)p.total_shares.value);
             }
         });
+        service_lazy_withdraw_queue(db);   // returning capital first pays queued withdrawers
     }
 
     // Close the market's lazy allocation (recall-tracking object) once its LP position
@@ -125,6 +156,7 @@ namespace {
                                         * fc::uint128_t((uint64_t)1000000000) / fc::uint128_t((uint64_t)p.total_shares.value);
             }
         });
+        service_lazy_withdraw_queue(db);   // returning leverage capital first pays queued withdrawers
         if (bettor_received > 0)
             db.adjust_balance(db.get_account(pos.account), asset(share_type(bettor_received), TOKEN_SYMBOL));
 
@@ -1617,6 +1649,7 @@ void pm_lazy_deposit_evaluator::do_apply(const pm_lazy_deposit_operation& o) {
             d.unlock_time     = now + fc::seconds(mp.pm_lazy_lock_sec);
         });
     }
+    service_lazy_withdraw_queue(db);   // fresh capital first pays anyone already queued to withdraw
 }
 
 // ─── 18. pm_lazy_withdraw ────────────────────────────────────────────────────
@@ -1642,34 +1675,16 @@ void pm_lazy_withdraw_evaluator::do_apply(const pm_lazy_withdraw_operation& o) {
                             fc::uint128_t((uint64_t)1000000000ULL);
     share_type pending = share_type((int64_t)pend_u.lo + dep.pending_rewards.value);
 
-    if (o.emergency) {
-        // Full exit. Before unlock the profit is penalised; the penalty stays in the pool and is
-        // redistributed to the remaining LPs via reward_per_share (spec lazy-pool Transition 11).
-        share_type principal_out = dep.principal;
-        share_type penalty(0);
-        if (now < dep.unlock_time)
-            penalty = share_type(pending.value * mp.pm_lazy_emergency_penalty_percent / 10000);
-        share_type total_out = share_type(principal_out.value + pending.value - penalty.value);
-        db.adjust_balance(db.get_account(o.account), asset(total_out, TOKEN_SYMBOL));
-
-        const share_type remaining = share_type(pool.total_shares.value - dep.shares.value);
-        db.modify(pool, [&](pm_lazy_pool_object& p) {
-            p.total_shares -= dep.shares;
-            p.free_balance -= total_out;          // penalty (if any) stays in free_balance
-            if (penalty.value > 0 && remaining.value > 0)
-                p.reward_per_share += fc::uint128_t((uint64_t)penalty.value)
-                                    * fc::uint128_t((uint64_t)1000000000ULL)
-                                    / fc::uint128_t((uint64_t)remaining.value);
-        });
-        db.remove(dep);
-        return;
-    }
-
-    // Planned withdrawal: only after the deposit lock has elapsed; partial allowed.
-    FC_ASSERT(now >= dep.unlock_time, "Deposit is locked; use emergency withdrawal or wait for unlock");
+    // A planned withdrawal is only allowed once the lock has elapsed; an emergency withdrawal is
+    // allowed any time (penalised while still locked). Both support a PARTIAL amount: o.shares==0
+    // withdraws the whole position, otherwise exactly o.shares are burned.
+    const bool locked = now < dep.unlock_time;
+    if (!o.emergency)
+        FC_ASSERT(!locked, "Deposit is locked; use emergency withdrawal or wait for unlock");
     share_type burn_shares = (o.shares == 0) ? dep.shares : share_type(o.shares);
     FC_ASSERT(burn_shares.value > 0 && burn_shares.value <= dep.shares.value, "Invalid shares amount");
 
+    // Pro-rate principal and accrued rewards to the shares being burned.
     share_type principal_out = share_type((int64_t)(
         fc::uint128_t((uint64_t)dep.principal.value) *
         fc::uint128_t((uint64_t)burn_shares.value) /
@@ -1678,24 +1693,50 @@ void pm_lazy_withdraw_evaluator::do_apply(const pm_lazy_withdraw_operation& o) {
         fc::uint128_t((uint64_t)pending.value) *
         fc::uint128_t((uint64_t)burn_shares.value) /
         fc::uint128_t((uint64_t)dep.shares.value)).lo);
-    share_type total_out = share_type(principal_out.value + pending_out.value);
-    db.adjust_balance(db.get_account(o.account), asset(total_out, TOKEN_SYMBOL));
 
+    // Emergency-while-locked penalty applies to the withdrawn PROFIT only (never principal); it
+    // stays in the pool and is redistributed to the remaining LPs via reward_per_share.
+    share_type penalty(0);
+    if (o.emergency && locked)
+        penalty = share_type(pending_out.value * mp.pm_lazy_emergency_penalty_percent / 10000);
+    share_type owed = share_type(principal_out.value + pending_out.value - penalty.value);
+
+    // Burn the shares now, register the amount owed as a first-claim liability, and redistribute the
+    // penalty to the remaining LPs. The payout itself is NOT made here — it is queued and serviced
+    // FIFO from free_balance, so the pool never hands out capital it doesn't hold liquid.
+    const share_type remaining = share_type(pool.total_shares.value - burn_shares.value);
     db.modify(pool, [&](pm_lazy_pool_object& p) {
-        p.total_shares -= burn_shares;
-        p.free_balance -= total_out;              // principal AND rewards both leave free_balance
+        p.total_shares        -= burn_shares;
+        p.pending_withdrawals += owed;
+        if (penalty.value > 0 && remaining.value > 0)
+            p.reward_per_share += fc::uint128_t((uint64_t)penalty.value)
+                                * fc::uint128_t((uint64_t)1000000000ULL)
+                                / fc::uint128_t((uint64_t)remaining.value);
     });
 
     if (burn_shares == dep.shares) {
         db.remove(dep);
     } else {
+        const auto& pool2 = db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0)); // penalty-bumped rps
         db.modify(dep, [&](pm_lazy_deposit_object& d) {
             d.shares          -= burn_shares;
             d.principal       -= principal_out;
             d.pending_rewards  = share_type(pending.value - pending_out.value);
-            d.reward_snapshot  = pool.reward_per_share;
+            d.reward_snapshot  = pool2.reward_per_share;
         });
     }
+
+    // Queue the owed amount (FIFO by id) and pay out as much as free_balance covers right now. Any
+    // uncovered remainder waits in the queue and is paid as capital returns to the pool — older
+    // queued withdrawers are always paid first and free_balance never goes negative.
+    if (owed.value > 0) {
+        db.create<pm_lazy_withdraw_request_object>([&](pm_lazy_withdraw_request_object& r) {
+            r.account = o.account;
+            r.amount  = owed;
+            r.created = now;
+        });
+    }
+    service_lazy_withdraw_queue(db);
 }
 
 // ─── 19. pm_leverage_open (margin position via lazy-pool loan) ───────────────
@@ -1835,6 +1876,7 @@ void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o)
             p.reward_per_share += fc::uint128_t((uint64_t)pool_yield)
                                 * fc::uint128_t((uint64_t)1000000000) / fc::uint128_t((uint64_t)p.total_shares.value);
     });
+    service_lazy_withdraw_queue(db);   // returning leverage capital first pays queued withdrawers
     if (bettor_received > 0)
         db.adjust_balance(db.get_account(o.account), asset(share_type(bettor_received), TOKEN_SYMBOL));
     db.modify(pos, [&](pm_leverage_position_object& p) {
@@ -1882,6 +1924,7 @@ void pm_leverage_convert_evaluator::do_apply(const pm_leverage_convert_operation
             p.reward_per_share += fc::uint128_t((uint64_t)pool_profit_total)
                                 * fc::uint128_t((uint64_t)1000000000) / fc::uint128_t((uint64_t)p.total_shares.value);
     });
+    service_lazy_withdraw_queue(db);   // returning leverage capital first pays queued withdrawers
 
     // Position becomes a normal parimutuel bet, 100% bettor-owned (reserves unchanged).
     db.create<pm_bet_object>([&](pm_bet_object& b) {
