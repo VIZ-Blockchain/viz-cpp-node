@@ -946,6 +946,9 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
     // sort: "newest" (market id desc, default) · "oldest" (id asc) · "volume" (bets_sum desc) ·
     // "expiration" (betting_expiration asc). volume/expiration load each matching market, so they
     // scan the whole (non-pruned) category before paging; newest/oldest sort on the meta id alone.
+    // When the market is loaded (volume/expiration sort) each returned row also carries a `volume`
+    // field (= bets_sum, raw shares) so clients render exact volume badges and rank across categories
+    // without a second round-trip; newest/oldest rows omit it (client fills volume lazily).
     DEFINE_API(prediction_market_api, list_markets_by_category) {
         CHECK_ARG_MIN_SIZE(3, 7)
         auto category     = args.args->at(0).as<std::string>();
@@ -982,10 +985,20 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             else // "newest"
                 std::stable_sort(es.begin(), es.end(), [](const entry& a, const entry& b){ return a.mid > b.mid; });
 
-            std::vector<pm_market_meta_object> result;
+            std::vector<fc::variant> result;
             result.reserve(std::min<size_t>(limit, es.size()));
-            for (uint32_t i = from; i < es.size() && result.size() < limit; ++i)
-                result.push_back(pm_market_meta_object(*es[i].m));
+            for (uint32_t i = from; i < es.size() && result.size() < limit; ++i) {
+                fc::variant v; fc::to_variant(pm_market_meta_object(*es[i].m), v);
+                if (need_market) {
+                    // surface the bets_sum already computed for the sort → exact client-side volume
+                    // badge + global cross-category ranking, no extra get_market_weight_sums call
+                    fc::mutable_variant_object o(v.get_object());
+                    o["volume"] = es[i].vol;
+                    result.push_back(fc::variant(std::move(o)));
+                } else {
+                    result.push_back(std::move(v));
+                }
+            }
             return result;
         });
     }
