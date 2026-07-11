@@ -966,7 +966,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                  itr != idx.end() && to_string(itr->category) == category; ++itr) {
                 if (!jurisdiction.empty() && meta_csv_contains(to_string(itr->banned_jurisdictions), jurisdiction)) continue;
                 if (!subcategory.empty() && to_string(itr->subcategory) != subcategory) continue;
-                if (!tag.empty() && !meta_csv_contains(to_string(itr->tags), tag)) continue;
+                if (!tag.empty() && !meta_csv_contains_ci(to_string(itr->tags), tag)) continue; // case-insensitive tags
                 const auto* mk = need_market ? db.find<pm_market_object>(itr->market) : nullptr;
                 es.push_back({ &*itr,
                     mk ? mk->bets_sum.value : 0,

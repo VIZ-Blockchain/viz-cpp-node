@@ -36,6 +36,14 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         return s;
     }
 
+    /// ASCII-lowercase a copy. Used for case-insensitive tag matching (tags are English labels
+    /// with inconsistent source casing — "Dota 2" vs "counter strike 2"; clients pass them
+    /// lowercased). ASCII-only keeps it locale-independent and deterministic.
+    inline std::string meta_ascii_lower(std::string s) {
+        for (char& c : s) if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        return s;
+    }
+
     /// CSV membership with exact-token boundaries (commas), so "US" never matches "USA".
     inline bool meta_csv_contains(const std::string& csv, const std::string& token) {
         if (token.empty() || csv.empty()) return false;
@@ -47,6 +55,12 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             pos += token.size();
         }
         return false;
+    }
+
+    /// Case-insensitive CSV membership — both sides ASCII-lowercased, so a "dota 2" query matches
+    /// a stored "Dota 2" tag. Same comma-boundary semantics as meta_csv_contains.
+    inline bool meta_csv_contains_ci(const std::string& csv, const std::string& token) {
+        return meta_csv_contains(meta_ascii_lower(csv), meta_ascii_lower(token));
     }
 
     /// Parse a market's free-form `metadata` field as JSON, extracting the keys we index and
