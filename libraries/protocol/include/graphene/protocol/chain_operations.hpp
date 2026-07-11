@@ -679,9 +679,11 @@ namespace graphene { namespace protocol {
             uint16_t pm_lazy_min_liquidity_fee_percent = 200; ///< bp; the pool refuses to subsidize markets
                                                               ///< whose liquidity_fee_percent is below this
                                                               ///< reward floor (2% default)
-            // Leverage (margin via lazy-pool loans; CPMM-binary only). Kill-switch OFF by
-            // default — governance enables after validation. See leverage-risk-off-strategy.md §8.
-            bool     pm_leverage_enabled                    = false; ///< kill-switch (median-voted)
+            // Leverage (margin via lazy-pool loans; CPMM-binary only). Kill-switch ON by
+            // default on this pm/testnet branch so a fresh chain enables leverage out of the
+            // box; on an already-running chain the median persists, so validators must still
+            // vote it on. See leverage-risk-off-strategy.md §8.
+            bool     pm_leverage_enabled                    = true;  ///< kill-switch (median-voted)
             uint16_t pm_leverage_fund_percent               = 10;    ///< % of free_balance usable for loans (F)
             uint16_t pm_leverage_max_per_position_bp        = 20;    ///< bp of leverage-fund-available per position (P=0.2%)
             uint16_t pm_leverage_pool_profit_percent        = 10;    ///< pool profit per loan (R)
