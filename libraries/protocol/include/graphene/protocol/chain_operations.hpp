@@ -636,7 +636,7 @@ namespace graphene { namespace protocol {
             asset    pm_min_oracle_insurance      = asset(5000000, TOKEN_SYMBOL); ///< 5000.000 VIZ bond floor
             asset    pm_market_creation_fee       = asset(5000,    TOKEN_SYMBOL); ///< 5.000 VIZ → committee fund
             asset    pm_min_liquidity             = asset(100000,  TOKEN_SYMBOL); ///< 100.000 VIZ seed floor
-            uint8_t  pm_max_outcomes              = 10;
+            uint8_t  pm_max_outcomes              = 64;
             uint32_t pm_max_market_duration       = 31536000; ///< ≤ 1 year (s)
             uint16_t pm_max_oracle_fee_percent    = 500;     ///< bp cap on the oracle % (5%)
             uint32_t pm_oracle_accept_window_sec  = 3600;    ///< 1 h for the named oracle to accept/reject a

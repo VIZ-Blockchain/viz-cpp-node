@@ -203,7 +203,7 @@
 #define MAX_PM_DISPUTE_REASON_LEN             1024
 #define MAX_PM_MARKET_TITLE_LEN               256
 #define MAX_PM_OUTCOME_LABEL_LEN              64
-#define MAX_PM_OUTCOMES_PER_MARKET            16
+#define MAX_PM_OUTCOMES_PER_MARKET            128
 
 // Deprecated defines
 #define CHAIN_CASHOUT_WINDOW_SECONDS          (60*60*24)  // 1 day
