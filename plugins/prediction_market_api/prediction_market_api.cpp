@@ -130,14 +130,16 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             pm_market_weight_sums_api_object out;
             out.market_type = mkt.market_type;
             out.bets_sum    = mkt.bets_sum;
-            if (binary) {
-                for (int16_t i = 0; i < (int16_t)mkt.outcome_count; ++i)
-                    out.outcomes.push_back({i, (i == 0 ? "A" : "B"), amt[i], wgt[i]});
-            } else {
+            // Real per-outcome labels are stored on-chain (pm_outcome_object) for BOTH binary and
+            // multi markets (see pm_create_market_evaluator). Serve them for binary too so clients
+            // show the actual outcome names (team A / team B, Yes/No, Over/Under) instead of "A"/"B".
+            // Fallback to "A"/"B" only when a label is missing (legacy/blank).
+            {
                 const auto& oidx = db.get_index<pm_outcome_index>().indices().get<by_market_outcome>();
                 for (uint8_t i = 0; i < mkt.outcome_count; ++i) {
                     auto oit = oidx.find(boost::make_tuple(mkt.id, i));
                     std::string label = (oit != oidx.end()) ? to_string(oit->label) : std::string();
+                    if (binary && label.empty()) label = (i == 0 ? "A" : "B");
                     out.outcomes.push_back({(int16_t)i, label, amt[i], wgt[i]});
                 }
             }
