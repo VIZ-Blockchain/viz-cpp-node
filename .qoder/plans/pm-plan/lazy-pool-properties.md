@@ -19,7 +19,7 @@ The pool uses **Lazy Accounting** (MasterChef/Compound pattern): a single global
 
 | Column | Type | Precision | Description |
 |--------|------|-----------|-------------|
-| `total_shares` | bigint | milli-VIZ | Total share tokens outstanding. 1:1 on first deposit; subsequent deposits: `new_shares = amount × total_shares / free_balance` |
+| `total_shares` | bigint | milli-VIZ | Total share tokens outstanding. 1:1 on first deposit; subsequent deposits price against **pool equity**: `new_shares = amount × total_shares / pool_equity` (see `pool_equity` below) |
 | `free_balance` | bigint | milli-VIZ | VIZ not currently deployed — available for new allocations, leverage loans, and withdrawals. This is the **working capital** of the pool |
 | `allocated_balance` | bigint | milli-VIZ | VIZ currently deployed as LP liquidity on active markets. Returned to `free_balance` on market resolution or recall |
 | `earned_balance` | bigint | milli-VIZ | Cumulative total VIZ earned by the pool from all sources (LP profits, leverage profits, penalties, fees). **Monotonically non-decreasing** — only grows, never shrinks |
@@ -32,12 +32,13 @@ The pool uses **Lazy Accounting** (MasterChef/Compound pattern): a single global
 | Property | Formula | Description |
 |----------|---------|-------------|
 | `total_value` | `free_balance + allocated_balance` | Total VIZ controlled by the pool |
+| `pool_equity` | `free_balance + allocated_balance − pending_withdrawals` | VIZ that actually backs the **outstanding** shares (excludes capital already owed to queued withdrawers). **This is the share-pricing basis** — deposits and per-share value use it, NOT `free_balance` alone |
 | `invested_liquidity` | `allocated_balance` | VIZ deployed as LP on active markets |
 | `invested_leverage` | `leverage_fund_used` | VIZ deployed as leverage loans |
 | `free_amount` | `free_balance − leverage_fund_used` | Truly free VIZ — not on markets, not loaned for leverage. Available for new allocations and leverage loans |
 | `leverage_fund_total` | `free_balance × F% / 100` | Cap on how much of `free_balance` may be used for leverage loans |
 | `leverage_fund_available` | `leverage_fund_total − leverage_fund_used` | Remaining leverage loan capacity |
-| `per_share_value` | `free_balance / total_shares` | Current VIZ value of one share (withdrawal exchange rate) |
+| `per_share_value` | `pool_equity / total_shares` | Current VIZ value of one share (deposit-pricing basis) |
 | `pool_profit_ratio` | `earned_balance / total_value` | Lifetime pool profitability (monitoring metric) |
 
 ### 2.3 Example State
@@ -53,10 +54,11 @@ lazy_pool:
 
 Computed:
   total_value        = 10,000,000 + 7,000,000 = 17,000,000 mVIZ (17,000 VIZ)
+  pool_equity        = 10,000,000 + 7,000,000 − 0 = 17,000,000 mVIZ (no pending withdrawals here)
   invested_liquidity =  7,000,000 mVIZ  (7,000 VIZ on active markets)
   invested_leverage  =    100,000 mVIZ  (  100 VIZ in leverage loans)
   free_amount        = 10,000,000 − 100,000 = 9,900,000 mVIZ (9,900 VIZ)
-  per_share_value    = 10,000,000 / 8,000,000 = 1.25 VIZ/share
+  per_share_value    = pool_equity / total_shares = 17,000,000 / 8,000,000 = 2.125 VIZ/share
 
 Leverage fund (F% = 10%):
   leverage_fund_total     = 10,000,000 × 10% = 1,000,000 mVIZ (1,000 VIZ)
@@ -74,7 +76,7 @@ These must hold after every state transition:
 2. free_balance ≥ leverage_fund_used                    (loans cannot exceed free capital)
 3. earned_balance is monotonically non-decreasing        (cumulative earnings only grow)
 4. reward_per_share is monotonically non-decreasing      (accumulated rewards only grow)
-5. total_shares > 0 iff free_balance > 0                (no shares without capital)
+5. total_shares > 0 iff pool_equity > 0                 (no shares without backing capital; equity, not free, since capital may be deployed)
 6. free_balance ≥ 0                                     (never pay out capital not held — LEDGER INTEGRITY)
 7. Σ withdrawal_queue.amount = pending_withdrawals       (queue liability is exact)
 ```
@@ -110,19 +112,29 @@ user_principal        = user_total_value − user_earned
 ### 5.1 Deposit — New Shares
 
 ```
-First depositor:   new_shares = amount                     (1:1 ratio)
-Subsequent:        new_shares = amount × total_shares / free_balance
+pool_equity = free_balance + allocated_balance − pending_withdrawals   (capital backing shares)
+First depositor / empty pool:  new_shares = amount                     (1:1 ratio)
+Subsequent:                    new_shares = amount × total_shares / pool_equity
 ```
 
-The exchange rate (`free_balance / total_shares`) increases as the pool earns profit, so later depositors get fewer shares per VIZ — this is how early LPs capture returns.
+Shares are priced against **pool_equity**, not `free_balance` alone. `pool_equity` is the VIZ that
+actually backs outstanding shares: it counts capital deployed in markets (`allocated_balance`) and
+excludes what is already owed to queued withdrawers (`pending_withdrawals`). This keeps the reward
+weight of a new deposit proportional to the capital it contributes, regardless of how much of the
+pool is currently deployed.
 
-### 5.2 Withdrawal — Share Value
+> **Fix (2026-07-11).** Previously the denominator was `free_balance` alone. When capital was
+> deployed (`allocated_balance > 0`), `free_balance` was small, so a new depositor minted a
+> disproportionately large share/reward weight for the same VIZ. Using `pool_equity` removes that
+> distortion. If `pool_equity ≤ 0` (empty or insolvent pool), minting falls back to 1:1.
 
-```
-share_value = shares_to_burn × free_balance / total_shares
-```
+### 5.2 Withdrawal — Value Returned
 
-Since `free_balance` includes accumulated profit (via `reward_per_share` distributions are separate, but `free_balance` grows when profit arrives), the per-share value drifts upward over time.
+A withdrawal returns the depositor's **stored principal** (pro-rated to the shares burned) plus their
+accrued rewards (`reward_per_share` accumulator) — it is principal-preserving, not a share-price sale.
+The payout is bounded by `free_balance` and queued when short (Transitions 9/11/12). Because principal
+is tracked per deposit, `per_share_value` (`pool_equity / total_shares`) is used only to price new
+deposits, not to compute withdrawals.
 
 ---
 
@@ -139,7 +151,7 @@ BEFORE:  settle user rewards (pending += shares × (rps − snapshot) / 10^9; sn
 
 lazy_pool:
   free_balance       += A
-  total_shares       += new_shares    (A × total_shares / free_balance before deposit)
+  total_shares       += new_shares    (A × total_shares / pool_equity before deposit; pool_equity = free + allocated − pending_withdrawals)
   allocated_balance  — no change
   earned_balance     — no change
   leverage_fund_used — no change
@@ -487,7 +499,7 @@ User's earned portion at withdrawal:
   user_earned    = earned_balance × (user_shares / total_shares)
   user_principal = user_total_value − user_earned
 
-Where user_total_value = user_shares × free_balance / total_shares + pending_rewards
+Where user_total_value = user_shares × pool_equity / total_shares + pending_rewards
 ```
 
 This separation matters for:

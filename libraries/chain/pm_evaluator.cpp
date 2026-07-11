@@ -1611,13 +1611,19 @@ void pm_lazy_deposit_evaluator::do_apply(const pm_lazy_deposit_operation& o) {
     const auto& pool = db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0));
 
     share_type new_shares;
-    if (pool.total_shares.value == 0 || pool.free_balance.value == 0) {
-        new_shares = o.amount.amount;
+    // Share price is backed by the pool's LP EQUITY = free + allocated − pending_withdrawals — the
+    // capital that actually backs outstanding shares — NOT just free_balance. Pricing off
+    // free_balance alone over-issued shares whenever capital was deployed in markets (allocated>0)
+    // or owed to queued withdrawers, letting a new depositor mint a disproportionate reward weight.
+    const int64_t pool_equity =
+        pool.free_balance.value + pool.allocated_balance.value - pool.pending_withdrawals.value;
+    if (pool.total_shares.value == 0 || pool_equity <= 0) {
+        new_shares = o.amount.amount;                       // empty/insolvent pool → 1:1 reset
     } else {
         new_shares = share_type((int64_t)(
             fc::uint128_t((uint64_t)o.amount.amount.value) *
             fc::uint128_t((uint64_t)pool.total_shares.value) /
-            fc::uint128_t((uint64_t)pool.free_balance.value)).lo);
+            fc::uint128_t((uint64_t)pool_equity)).lo);
     }
     FC_ASSERT(new_shares.value > 0, "Zero shares minted");
 
