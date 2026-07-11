@@ -24,6 +24,7 @@ The pool uses **Lazy Accounting** (MasterChef/Compound pattern): a single global
 | `allocated_balance` | bigint | milli-VIZ | VIZ currently deployed as LP liquidity on active markets. Returned to `free_balance` on market resolution or recall |
 | `earned_balance` | bigint | milli-VIZ | Cumulative total VIZ earned by the pool from all sources (LP profits, leverage profits, penalties, fees). **Monotonically non-decreasing** — only grows, never shrinks |
 | `leverage_fund_used` | bigint | milli-VIZ | Total active leverage loans outstanding. A sub-allocation **cap** on `free_balance`, not a separate pool |
+| `pending_withdrawals` | bigint | milli-VIZ | VIZ owed to queued withdrawers not yet paid (Σ of the FIFO request queue). A **first claim** on returning capital; guarantees `free_balance` never goes negative (see Transition 12) |
 | `reward_per_share` | bigint | 10^9 | Accumulated reward per share (LAZY_POOL_PRECISION). **Monotonically non-decreasing** — only grows. The Lazy Accounting accumulator |
 
 ### 2.2 Computed Properties (Derived at Query Time)
@@ -74,6 +75,8 @@ These must hold after every state transition:
 3. earned_balance is monotonically non-decreasing        (cumulative earnings only grow)
 4. reward_per_share is monotonically non-decreasing      (accumulated rewards only grow)
 5. total_shares > 0 iff free_balance > 0                (no shares without capital)
+6. free_balance ≥ 0                                     (never pay out capital not held — LEDGER INTEGRITY)
+7. Σ withdrawal_queue.amount = pending_withdrawals       (queue liability is exact)
 ```
 
 ---
@@ -333,24 +336,25 @@ Effect:     invested_leverage decreases. Pool earns L × R% profit.
 
 ### Transition 9: User Withdrawal (Planned)
 
+Allowed only after the lock elapses; partial allowed (`shares == 0` ⇒ all). The payout is **queued and
+bounded by `free_balance`** exactly like the emergency path — see Transitions 11–12. It is instant when
+the pool is liquid, and paid in parts (oldest-first) when it is not; `free_balance` never goes negative.
+
 ```
 User withdraws shares from the pool.
-  share_value    = shares_to_burn × free_balance / total_shares
-  reward_portion = pending_rewards × withdraw_percent / 100
-  total_payout   = share_value + reward_portion
+  principal_out  = principal × shares_to_burn / total_shares
+  reward_portion = accrued_rewards × shares_to_burn / total_shares
+  owed           = principal_out + reward_portion       (no penalty when unlocked)
 
 BEFORE:  settle user rewards (pending += shares × (rps − snapshot) / 10^9; snapshot = rps)
 
 lazy_pool:
-  free_balance       −= total_payout                  (share value + rewards paid out)
-  total_shares       −= shares_to_burn                 (shares burned)
-  allocated_balance  — no change
-  earned_balance     — no change                       (cumulative earnings never decrease)
-  leverage_fund_used — no change
-  reward_per_share   — no change
+  total_shares        −= shares_to_burn                (shares burned)
+  pending_withdrawals += owed                          (first-claim liability)
+  allocated_balance / earned_balance / leverage_fund_used / reward_per_share — no change
 
-Fund flow:  lazy_pool.free_balance → user.balance
-Effect:     User receives proportional share of free_balance + accumulated rewards.
+THEN: create request { account, amount = owed } and run Transition 12 (pays from free_balance, FIFO).
+Effect:     User receives their share of principal + accumulated rewards, bounded by liquid funds.
 ```
 
 ### Transition 10: Convert Leveraged Position to Normal Bet
@@ -390,24 +394,63 @@ See [Leverage Risk-Off Strategy](../.qoder/docs/leverage-risk-off-strategy.md) �
 
 ### Transition 11: Emergency Withdrawal (With Penalty)
 
-```
-User emergency-withdraws with penalty on locked portion's profit.
-  penalty = profit × (locked_shares / total_shares) × emergency_penalty / 100
+Emergency withdrawal is allowed any time (penalised while still locked) and supports a **partial
+amount** (`shares == 0` ⇒ whole position, else burn exactly `shares`). Like the planned withdrawal
+(Transition 9) it **never pays out more than the pool holds liquid** — the amount owed is registered
+as a first-claim liability (`pending_withdrawals`) and paid FIFO from `free_balance` (Transition 12).
 
-BEFORE:  settle user rewards
+```
+User emergency-withdraws (partial allowed); penalty on the withdrawn profit while locked.
+  principal_out = principal × burn_shares / user_total_shares
+  pending_out   = accrued_rewards × burn_shares / user_total_shares
+  penalty       = locked ? pending_out × emergency_penalty% / 10000 : 0
+  owed          = principal_out + pending_out − penalty
+
+BEFORE:  settle user rewards (accrue rps delta into pending)
 
 lazy_pool:
-  free_balance       −= (total_value − penalty)       (pay out to user)
-  total_shares       −= user_total_shares              (all shares burned)
-  earned_balance     — no change
-  reward_per_share   += penalty × 10^9 / remaining_shares  (penalty redistributed)
-  allocated_balance  — no change
-  leverage_fund_used — no change
+  total_shares        −= burn_shares                    (shares burned now)
+  pending_withdrawals += owed                           (first-claim liability, not yet paid)
+  reward_per_share    += penalty × 10^9 / remaining_shares   (penalty redistributed, if locked)
+  free_balance        — unchanged HERE (payout happens in Transition 12)
+  allocated_balance / leverage_fund_used / earned_balance — no change
 
-Fund flow:  lazy_pool.free_balance → user.balance (minus penalty)
-            penalty stays in pool → redistributed to remaining LP investors via reward_per_share
-Effect:     Penalty incentivizes planned withdrawals and compensates remaining LPs.
+THEN: create a withdrawal request { account, amount = owed } and run Transition 12.
+
+Effect:  Shares burn immediately; the exiting LP becomes a fixed-VIZ creditor. Penalty stays in the
+         pool and compensates remaining LPs. The payout is bounded by free_balance — see Transition 12.
 ```
+
+### Transition 12: Withdrawal Queue Servicing (Ledger-Integrity Fix, 2026-07-11)
+
+The **critical invariant**: the pool may never pay out capital it does not hold liquid — `free_balance`
+must never go negative. A withdrawal (planned or emergency) whose `owed` exceeds the liquid
+`free_balance` is paid in part now and the rest **waits in a FIFO queue**, settled as capital returns
+from markets and leverage. This is run at every point `free_balance` increases (LP return —
+Transitions 3/4, leverage repay — 7/8/10, and new deposits — 1) so queued withdrawers have **first
+claim** on returning capital and nothing is redeployed ahead of them.
+
+```
+service_queue():                     # run after every free_balance increase
+  while free_balance > 0 and queue not empty:
+    req  = oldest request (lowest id = FIFO)
+    pay  = min(free_balance, req.amount)
+    user.balance        += pay
+    free_balance        −= pay
+    pending_withdrawals −= pay
+    if pay == req.amount:  remove req            # fully settled
+    else:                  req.amount −= pay; break   # free exhausted, keep remainder queued
+
+Invariant preserved:  free_balance ≥ 0  and  Σ queue.amount == pending_withdrawals
+Effect:  A withdrawal that IS fully covered is created and cleared within the same operation
+         (instant, unchanged UX). When capital is short, the withdrawer is paid in parts, oldest
+         first, as markets resolve and leverage repays — never overdrawing the ledger.
+```
+
+**Why:** before this fix, emergency withdrawal paid `principal + rewards` from `free_balance`
+unconditionally. When the principal was still deployed (`allocated_balance`), `free_balance` went
+negative — the pool handed out capital that had not yet returned. The queue makes the liability
+explicit and bounds every payout by liquid funds.
 
 ---
 
