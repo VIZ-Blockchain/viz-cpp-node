@@ -113,7 +113,7 @@ namespace graphene { namespace chain { namespace lmsr {
         }
 
         void validate_domain(const std::vector<int64_t>& q, int64_t b) {
-            FC_ASSERT(q.size() >= 2 && q.size() <= 16, "LMSR_INVALID_N: outcomes must be 2..16");
+            FC_ASSERT(q.size() >= 2 && q.size() <= 128, "LMSR_INVALID_N: outcomes must be 2..128");
             FC_ASSERT(b > 0, "LMSR_INVALID_B: b must be > 0");
             FC_ASSERT(q96(b) <= MAX_B, "LMSR_INVALID_B: b exceeds MAX_B (2^53)");
             for (int64_t qi : q) {
@@ -241,7 +241,7 @@ namespace graphene { namespace chain { namespace lmsr {
 
     int64_t lmsr_b_from_liquidity(int64_t liquidity, int n) {
         if (liquidity <= 0 || n <= 1) return 0;
-        FC_ASSERT(n <= 16, "LMSR_INVALID_N");
+        FC_ASSERT(n <= 128, "LMSR_INVALID_N");
         q96 n_q96 = q96(n) * ONE;
         q96 ln_n = ln_q(n_q96);
         q96 num = q96(liquidity) * ONE;
