@@ -16,7 +16,7 @@ BOOST_AUTO_TEST_CASE(parse_full_metadata) {
         R"({"category":"sports","subcategory":"soccer","tags":["world-cup","final"],
             "banned_jurisdictions":["US","FR"],"title":"Will USA win the World Cup?",
             "image":"https://cdn.example/usa.png","condition_id":"0xabc123",
-            "unknown_key":{"x":1},"extra":[1,2,3]})");
+            "event":"wc-final-2026","unknown_key":{"x":1},"extra":[1,2,3]})");
     BOOST_CHECK_EQUAL(m.category, "sports");
     BOOST_CHECK_EQUAL(m.subcategory, "soccer");
     BOOST_CHECK_EQUAL(m.tags, "world-cup,final");
@@ -24,6 +24,7 @@ BOOST_AUTO_TEST_CASE(parse_full_metadata) {
     BOOST_CHECK_EQUAL(m.title, "Will USA win the World Cup?");
     BOOST_CHECK_EQUAL(m.image, "https://cdn.example/usa.png");
     BOOST_CHECK_EQUAL(m.condition_id, "0xabc123");
+    BOOST_CHECK_EQUAL(m.event, "wc-final-2026");
 }
 
 BOOST_AUTO_TEST_CASE(title_image_absent_leave_empty) {
@@ -31,6 +32,7 @@ BOOST_AUTO_TEST_CASE(title_image_absent_leave_empty) {
     BOOST_CHECK(m.title.empty());
     BOOST_CHECK(m.image.empty());
     BOOST_CHECK(m.condition_id.empty());
+    BOOST_CHECK(m.event.empty());
 }
 
 BOOST_AUTO_TEST_CASE(non_json_yields_empty) {

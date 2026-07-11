@@ -1353,6 +1353,8 @@ namespace graphene { namespace wallet {
             fc::variant  pm_get_chain_properties() const;
             fc::variant  pm_get_market_meta(int64_t market_id) const;
             fc::variant  pm_list_markets_by_category(string category, uint32_t from, uint32_t limit) const;
+            /// Sibling markets sharing a parent event key (one match/game); full cards, oldest-first.
+            fc::variant  pm_list_markets_by_event(string event, uint32_t from, uint32_t limit) const;
             /// Kline / weight-over-time history for charting. Pagination is offset-from-newest:
             /// (from=0,limit=1000) = latest ≤1000 changes; (from=1000,…) steps another 1000 back.
             fc::variant  pm_get_market_kline(int64_t market_id, uint32_t from, uint32_t limit) const;
@@ -1621,6 +1623,7 @@ FC_API( graphene::wallet::wallet_api,
                 (pm_get_chain_properties)
                 (pm_get_market_meta)
                 (pm_list_markets_by_category)
+                (pm_list_markets_by_event)
                 (pm_get_market_kline)
 
                 /// NS DNS helpers

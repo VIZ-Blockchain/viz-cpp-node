@@ -135,6 +135,7 @@ struct remote_prediction_market_api {
     fc::variant  get_pm_chain_properties();
     fc::variant  get_market_meta( int64_t );
     fc::variant  list_markets_by_category( string, uint32_t, uint32_t );
+    fc::variant  list_markets_by_event( string, uint32_t, uint32_t );
     fc::variant  get_market_kline( int64_t, uint32_t, uint32_t );
     fc::variant  get_leverage_quote( int64_t, int16_t, int64_t );
     fc::variant  get_leverage_close_preview( int64_t );
@@ -244,6 +245,7 @@ FC_API( graphene::wallet::remote_prediction_market_api,
         (get_pm_chain_properties)
         (get_market_meta)
         (list_markets_by_category)
+        (list_markets_by_event)
         (get_market_kline)
         (get_leverage_quote)
         (get_leverage_close_preview)

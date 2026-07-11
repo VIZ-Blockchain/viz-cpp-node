@@ -235,6 +235,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 from_string(m.image, pm.image);
                 from_string(m.condition_id, pm.condition_id);
                 from_string(m.description, pm.description);
+                from_string(m.event, pm.event);
                 m.expiry = res_exp + fc::seconds(grace) + fc::seconds((int64_t)ttl_days_ * 86400);
             });
         }
@@ -455,7 +456,8 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
               ("tags", csv_to_array(to_string(it->tags)))
               ("banned_jurisdictions", csv_to_array(to_string(it->banned_jurisdictions)))
               ("condition_id", to_string(it->condition_id))
-              ("description", to_string(it->description));
+              ("description", to_string(it->description))
+              ("event", to_string(it->event));
         }
         o["title"]    = title;
         o["image"]    = image;
@@ -980,6 +982,32 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             result.reserve(std::min<size_t>(limit, es.size()));
             for (uint32_t i = from; i < es.size() && result.size() < limit; ++i)
                 result.push_back(pm_market_meta_object(*es[i].m));
+            return result;
+        });
+    }
+
+    // list_markets_by_event(event, from, limit) — sibling markets sharing a parent event key
+    // (one match/game), oldest-first (meta id asc). Returns full market cards so a client can render
+    // an event page with each child's outcomes/volume in one round-trip. Empty event key yields
+    // nothing (standalone markets are not an "event"). Pruned markets are skipped.
+    DEFINE_API(prediction_market_api, list_markets_by_event) {
+        CHECK_ARG_MIN_SIZE(3, 3)
+        auto event = args.args->at(0).as<std::string>();
+        auto from  = args.args->at(1).as<uint32_t>();
+        auto limit = args.args->at(2).as<uint32_t>();
+        FC_ASSERT(limit <= 1000);
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            std::vector<fc::variant> result;
+            if (event.empty()) return result;
+            result.reserve(limit);
+            const auto& idx = db.get_index<pm_market_meta_index>().indices().get<by_meta_event>();
+            for (auto itr = idx.lower_bound(event);
+                 itr != idx.end() && to_string(itr->event) == event && result.size() < limit; ++itr) {
+                if (from > 0) { --from; continue; }
+                const auto* mk = db.find<pm_market_object>(itr->market);
+                if (mk) result.push_back(market_card(db, *mk));
+            }
             return result;
         });
     }

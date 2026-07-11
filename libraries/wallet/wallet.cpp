@@ -2886,6 +2886,9 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
         fc::variant wallet_api::pm_list_markets_by_category(string category, uint32_t from, uint32_t limit) const {
             return my->pm_api()->list_markets_by_category(category, from, limit);
         }
+        fc::variant wallet_api::pm_list_markets_by_event(string event, uint32_t from, uint32_t limit) const {
+            return my->pm_api()->list_markets_by_event(event, from, limit);
+        }
         fc::variant wallet_api::pm_get_market_kline(int64_t market_id, uint32_t from, uint32_t limit) const {
             return my->pm_api()->get_market_kline(market_id, from, limit);
         }
