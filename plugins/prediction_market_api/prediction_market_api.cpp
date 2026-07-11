@@ -1064,6 +1064,37 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
+    // get_category_tag_counts(category) — authoritative per-tag market counts WITHIN one category
+    // (all tags, not the global top-20 of get_market_categories). Lets a browse UI show a stable tag
+    // count that doesn't change with the currently-loaded page. Scans only the category's index slice.
+    // jurisdiction-* tags excluded (they aren't browse tags). Returns tags in the `hot_tags` field
+    // (the `categories` field is left empty), sorted by count desc.
+    DEFINE_API(prediction_market_api, get_category_tag_counts) {
+        CHECK_ARG_SIZE(1)
+        auto category = args.args->at(0).as<std::string>();
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            std::map<std::string, uint32_t> tag_count;
+            const auto& idx = db.get_index<pm_market_meta_index>().indices().get<by_meta_category>();
+            for (auto it = idx.lower_bound(category); it != idx.end() && to_string(it->category) == category; ++it) {
+                const std::string tags = to_string(it->tags); // comma-joined
+                size_t start = 0;
+                while (start <= tags.size()) {
+                    size_t comma = tags.find(',', start);
+                    std::string t = tags.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+                    if (!t.empty() && t.rfind("jurisdiction", 0) != 0) tag_count[t]++;
+                    if (comma == std::string::npos) break;
+                    start = comma + 1;
+                }
+            }
+            pm_market_categories_api_object out;
+            for (auto& kv : tag_count) out.hot_tags.push_back({kv.first, kv.second});
+            std::stable_sort(out.hot_tags.begin(), out.hot_tags.end(),
+                [](const pm_tag_count& a, const pm_tag_count& b){ return a.count > b.count; });
+            return out;
+        });
+    }
+
     // get_market_kline(market_id, from = 0, limit = 1000)
     // Returns a time-window of per-outcome weight snapshots, ascending by seq (oldest→newest), for a
     // thin client to plot. Pagination is offset-from-newest: `from` newest points are skipped, then up
