@@ -239,6 +239,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 from_string(m.description, pm.description);
                 from_string(m.event, pm.event);
                 from_string(m.event_title, pm.event_title);
+                m.child = pm.child;
                 m.expiry = res_exp + fc::seconds(grace) + fc::seconds((int64_t)ttl_days_ * 86400);
             });
         }
@@ -941,8 +942,10 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
-    // list_markets_by_category(category, from, limit, [jurisdiction=""], [subcategory=""], [tag=""], [sort="newest"])
+    // list_markets_by_category(category, from, limit, [jurisdiction=""], [subcategory=""], [tag=""], [sort="newest"], [hide_children=true])
     // Optional filters: jurisdiction (exclude markets banning it), subcategory (exact), tag (CSV membership).
+    // hide_children (default true): drop child/prop markets of a split match so the listing shows only
+    // parent markets; the props stay reachable via the parent's event page. Pass false to include them.
     // sort: "newest" (market id desc, default) · "oldest" (id asc) · "volume" (bets_sum desc) ·
     // "expiration" (betting_expiration asc). volume/expiration load each matching market, so they
     // scan the whole (non-pruned) category before paging; newest/oldest sort on the meta id alone.
@@ -950,7 +953,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
     // field (= bets_sum, raw shares) so clients render exact volume badges and rank across categories
     // without a second round-trip; newest/oldest rows omit it (client fills volume lazily).
     DEFINE_API(prediction_market_api, list_markets_by_category) {
-        CHECK_ARG_MIN_SIZE(3, 7)
+        CHECK_ARG_MIN_SIZE(3, 8)
         auto category     = args.args->at(0).as<std::string>();
         auto from         = args.args->at(1).as<uint32_t>();
         auto limit        = args.args->at(2).as<uint32_t>();
@@ -958,6 +961,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto subcategory  = GET_OPTIONAL_ARG(4, std::string, std::string());
         auto tag          = GET_OPTIONAL_ARG(5, std::string, std::string());
         auto sort         = GET_OPTIONAL_ARG(6, std::string, std::string("newest"));
+        auto hide_children= GET_OPTIONAL_ARG(7, bool, true); // drop child/prop markets by default
         FC_ASSERT(limit <= 1000);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
@@ -967,6 +971,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             const auto& idx = db.get_index<pm_market_meta_index>().indices().get<by_meta_category>();
             for (auto itr = idx.lower_bound(category);
                  itr != idx.end() && to_string(itr->category) == category; ++itr) {
+                if (hide_children && itr->child) continue;                    // parent-only listing by default
                 if (!jurisdiction.empty() && meta_csv_contains(to_string(itr->banned_jurisdictions), jurisdiction)) continue;
                 if (!subcategory.empty() && to_string(itr->subcategory) != subcategory) continue;
                 if (!tag.empty() && !meta_csv_contains_ci(to_string(itr->tags), tag)) continue; // case-insensitive tags

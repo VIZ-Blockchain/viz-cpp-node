@@ -23,6 +23,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         std::string description;          ///< short resolution rules (how the oracle resolves) — surface-level, for clients
         std::string event;                ///< parent grouping key (e.g. one match/game); siblings share it
         std::string event_title;          ///< human-readable event label (e.g. "Dota 2: A vs B") for the event page/cards
+        bool        child = false;        ///< true = a child/prop market of a parent event; hidden from category/tag listings by default
     };
 
     /// Flatten a JSON array (or bare string) into a comma-separated string.
@@ -84,6 +85,16 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 if (o.contains("description"))  r.description  = o["description"].as_string();
                 if (o.contains("event"))        r.event        = o["event"].as_string();
                 if (o.contains("event_title"))  r.event_title  = o["event_title"].as_string();
+                // child: props side of a split match ("<slug>-more-markets"). Accept bool / int(1) /
+                // "1"/"true" — the parser emits it as an integer 1.
+                if (o.contains("child")) {
+                    const auto& c = o["child"];
+                    try { r.child = c.as_bool(); }
+                    catch (...) {
+                        try { r.child = (c.as_int64() != 0); }
+                        catch (...) { const auto s = c.as_string(); r.child = (s == "1" || s == "true"); }
+                    }
+                }
             }
         } catch (...) { /* metadata is not JSON — leave empty */ }
         return r;
