@@ -22,6 +22,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         std::string condition_id;         ///< source dedup id (for client back-link)
         std::string description;          ///< short resolution rules (how the oracle resolves) — surface-level, for clients
         std::string event;                ///< parent grouping key (e.g. one match/game); siblings share it
+        std::string event_title;          ///< human-readable event label (e.g. "Dota 2: A vs B") for the event page/cards
     };
 
     /// Flatten a JSON array (or bare string) into a comma-separated string.
@@ -68,6 +69,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 if (o.contains("condition_id")) r.condition_id = o["condition_id"].as_string();
                 if (o.contains("description"))  r.description  = o["description"].as_string();
                 if (o.contains("event"))        r.event        = o["event"].as_string();
+                if (o.contains("event_title"))  r.event_title  = o["event_title"].as_string();
             }
         } catch (...) { /* metadata is not JSON — leave empty */ }
         return r;

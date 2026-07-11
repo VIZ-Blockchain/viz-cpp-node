@@ -30,7 +30,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         template<typename Constructor, typename Allocator>
         pm_market_meta_object(Constructor&& c, allocator<Allocator> a)
             : category(a), subcategory(a), tags(a), banned_jurisdictions(a),
-              title(a), image(a), condition_id(a), description(a), event(a) { c(*this); }
+              title(a), image(a), condition_id(a), description(a), event(a), event_title(a) { c(*this); }
 
         id_type           id;
         pm_market_id_type market;
@@ -43,6 +43,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         shared_string     condition_id;         ///< source dedup id (e.g. Polymarket conditionId) for back-link
         shared_string     description;          ///< short resolution rules (how the oracle resolves); url holds full legal terms
         shared_string     event;                ///< parent grouping key (siblings of one match/game share it); empty = standalone
+        shared_string     event_title;          ///< human-readable event label (e.g. "Dota 2: A vs B") for event page/cards
         time_point_sec    expiry;               ///< prune after: dispute window close + TTL
     };
 
@@ -87,6 +88,6 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
 } } } // graphene::plugins::prediction_market_api
 
 FC_REFLECT((graphene::plugins::prediction_market_api::pm_market_meta_object),
-    (id)(market)(category)(subcategory)(tags)(banned_jurisdictions)(title)(image)(condition_id)(description)(event)(expiry))
+    (id)(market)(category)(subcategory)(tags)(banned_jurisdictions)(title)(image)(condition_id)(description)(event)(event_title)(expiry))
 CHAINBASE_SET_INDEX_TYPE(graphene::plugins::prediction_market_api::pm_market_meta_object,
     graphene::plugins::prediction_market_api::pm_market_meta_index)

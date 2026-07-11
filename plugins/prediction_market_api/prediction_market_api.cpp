@@ -236,6 +236,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 from_string(m.condition_id, pm.condition_id);
                 from_string(m.description, pm.description);
                 from_string(m.event, pm.event);
+                from_string(m.event_title, pm.event_title);
                 m.expiry = res_exp + fc::seconds(grace) + fc::seconds((int64_t)ttl_days_ * 86400);
             });
         }
@@ -457,7 +458,8 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
               ("banned_jurisdictions", csv_to_array(to_string(it->banned_jurisdictions)))
               ("condition_id", to_string(it->condition_id))
               ("description", to_string(it->description))
-              ("event", to_string(it->event));
+              ("event", to_string(it->event))
+              ("event_title", to_string(it->event_title));
         }
         o["title"]    = title;
         o["image"]    = image;
