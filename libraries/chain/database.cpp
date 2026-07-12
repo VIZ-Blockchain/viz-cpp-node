@@ -2765,8 +2765,9 @@ namespace graphene { namespace chain {
                         pending_block.transactions.push_back(tx);
                     }
                     catch (const fc::exception &e) {
-                        // Do nothing, transaction will not be re-applied
-                        //wlog( "Transaction was not processed while generating block due to ${e}", ("e", e) );
+                        // Transaction will not be re-applied. Log why so silently-dropped
+                        // txs (valid at pending push, but failing block-gen apply) are debuggable.
+                        wlog( "Transaction was not processed while generating block due to ${e}", ("e", e.to_detail_string()) );
                         //wlog( "The transaction was ${t}", ("t", tx) );
                     }
                 }
