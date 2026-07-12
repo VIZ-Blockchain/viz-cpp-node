@@ -1009,15 +1009,20 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             result.reserve(std::min<size_t>(limit, es.size()));
             for (uint32_t i = from; i < es.size() && result.size() < limit; ++i) {
                 fc::variant v; fc::to_variant(pm_market_meta_object(*es[i].m), v);
-                if (need_market) {
+                fc::mutable_variant_object o(v.get_object());
+                if (need_market)
                     // surface the bets_sum already computed for the sort → exact client-side volume
                     // badge + global cross-category ranking, no extra get_market_weight_sums call
-                    fc::mutable_variant_object o(v.get_object());
                     o["volume"] = es[i].vol;
-                    result.push_back(fc::variant(std::move(o)));
-                } else {
-                    result.push_back(std::move(v));
+                // The meta object carries no lifecycle state, so category/tag browsing rendered every
+                // card as "active". Attach the live status/result from the market (query-time, bounded
+                // by `limit`) so cards show the right badge and can mark the resolved winner.
+                if (const auto* mk = db.find<pm_market_object>(es[i].m->market)) {
+                    o["status"]           = mk->status;
+                    o["payout_status"]    = mk->payout_status;
+                    o["resolved_outcome"] = mk->resolved_outcome;
                 }
+                result.push_back(fc::variant(std::move(o)));
             }
             return result;
         });
