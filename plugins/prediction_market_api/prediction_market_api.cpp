@@ -1022,6 +1022,21 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                     o["payout_status"]    = mk->payout_status;
                     o["resolved_outcome"] = mk->resolved_outcome;
                 }
+                // Emit tags / banned_jurisdictions as ARRAYS (not raw CSV) and expose a reconstructed
+                // `metadata` object, matching market_card so clients read market.metadata.tags uniformly
+                // across every listing — the UI never parses raw meta CSV (owner 2026-07-12).
+                const auto& mm = *es[i].m;
+                fc::variant tags_arr   = csv_to_array(to_string(mm.tags));
+                fc::variant banned_arr = csv_to_array(to_string(mm.banned_jurisdictions));
+                o["tags"]                 = tags_arr;
+                o["banned_jurisdictions"] = banned_arr;
+                fc::mutable_variant_object md;
+                md("title", to_string(mm.title))("image", to_string(mm.image))
+                  ("category", to_string(mm.category))("subcategory", to_string(mm.subcategory))
+                  ("tags", tags_arr)("banned_jurisdictions", banned_arr)
+                  ("condition_id", to_string(mm.condition_id))("description", to_string(mm.description))
+                  ("event", to_string(mm.event))("event_title", to_string(mm.event_title));
+                o["metadata"] = fc::variant(std::move(md));
                 result.push_back(fc::variant(std::move(o)));
             }
             return result;
