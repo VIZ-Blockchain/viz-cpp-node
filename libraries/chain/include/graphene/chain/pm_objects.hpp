@@ -663,7 +663,18 @@ namespace graphene { namespace chain {
                     >,
                     composite_key_compare<string_less, std::less<pm_leverage_position_id_type>>
                 >,
-                ordered_unique<tag<by_lev_bet>, member<pm_leverage_position_object, pm_bet_id_type, &pm_leverage_position_object::bet>>,
+                // (bet, id): `bet` is left at its default (0) for every leverage position — the evaluator
+                // never links an underlying pm_bet — so a bare ordered_unique on `bet` alone let only ONE
+                // position exist chain-wide; the 2nd pm_leverage_open failed insert with a uniqueness
+                // violation. Append `id` as tiebreaker (like every sibling index here) so inserts always
+                // succeed while a bet-prefix lookup still works.
+                ordered_unique<tag<by_lev_bet>,
+                    composite_key<pm_leverage_position_object,
+                        member<pm_leverage_position_object, pm_bet_id_type, &pm_leverage_position_object::bet>,
+                        member<pm_leverage_position_object, pm_leverage_position_id_type, &pm_leverage_position_object::id>
+                    >,
+                    composite_key_compare<std::less<pm_bet_id_type>, std::less<pm_leverage_position_id_type>>
+                >,
                 ordered_unique<tag<by_lev_funding_due>,
                     composite_key<pm_leverage_position_object,
                         member<pm_leverage_position_object, uint8_t, &pm_leverage_position_object::status>,
