@@ -280,6 +280,10 @@ namespace chain {
         return my->db;
     }
 
+    std::string plugin::get_state_dir() const {
+        return my->shared_memory_dir.string();
+    }
+
     bool plugin::is_syncing() const {
         return my->currently_syncing.load(std::memory_order_acquire);
     }
@@ -510,6 +514,34 @@ namespace chain {
         if (my->resync) {
             wlog("resync requested: deleting block log and shared memory");
             my->db.wipe(data_dir, my->shared_memory_dir, true);
+        }
+
+        // ========== force_resync marker recovery (wedge watchdog self-heal) ==========
+        // The P2P wedged-behind-network watchdog (dlt_p2p_node) writes this marker
+        // next to shared_memory.bin and exits when it confirms the node is
+        // permanently stuck on a divergent fork below LIB (rejection livelock,
+        // 2026-07-13 rpc.viz.cx incident).  Fork-switch can't recover state below
+        // LIB — only wipe + snapshot re-import can.  Honor the marker by wiping
+        // state so head becomes 0; the empty-state gate later in this function then
+        // re-bootstraps from a trusted snapshot peer.  This is the exact recovery a
+        // manual `docker compose up -d --force-recreate` performs, minus the operator.
+        {
+            auto force_resync_marker = my->shared_memory_dir / "force_resync";
+            if (boost::filesystem::exists(force_resync_marker)) {
+                wlog("Detected force_resync marker (P2P wedge watchdog). Wiping state to re-bootstrap "
+                     "from a trusted snapshot peer.");
+                std::cerr << "   force_resync marker found — wiping state for snapshot re-bootstrap.\n";
+                try {
+                    my->db.wipe(data_dir, my->shared_memory_dir, true);
+                } catch (...) {
+                    wlog("force_resync: db.wipe() threw; removing shared_memory.bin directly.");
+                    auto shm = my->shared_memory_dir / "shared_memory.bin";
+                    if (boost::filesystem::exists(shm)) boost::filesystem::remove(shm);
+                }
+                // Remove the marker only after the wipe so a crash mid-wipe re-triggers recovery.
+                boost::filesystem::remove(force_resync_marker);
+                ilog("force_resync marker cleared; state wiped. Empty-state gate will re-bootstrap from snapshot.");
+            }
         }
 
         my->db.set_flush_interval(my->flush_interval);

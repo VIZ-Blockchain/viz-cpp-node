@@ -450,6 +450,7 @@ public:
     uint32_t peer_exchange_min_uptime_sec = 600;
     uint32_t stats_interval_sec = 300;
     bool isolated_peers = false;
+    bool auto_resync_on_wedge = false;
 
     chain::plugin& chain;
 
@@ -497,7 +498,13 @@ void p2p_plugin::set_program_options(
         ("p2p-isolated-peers", boost::program_options::bool_switch()->default_value(false),
             "Restrict P2P to configured seed nodes only: reject inbound connections from "
             "unknown IPs and suppress peer exchange. Useful for nodes that must only talk "
-            "to a fixed set of peers.");
+            "to a fixed set of peers.")
+        ("auto-resync-on-wedge", boost::program_options::value<bool>()->default_value(false),
+            "When the node detects it is permanently wedged behind the network (head frozen "
+            "far below the tip while it keeps rejecting the canonical chain — a state divergence "
+            "below LIB that fork-switching cannot repair), write a force_resync marker next to "
+            "shared_memory.bin and exit so a supervised restart re-bootstraps from a trusted "
+            "snapshot. Default false: the watchdog only logs the condition (observe before enabling).");
 }
 
 void p2p_plugin::plugin_initialize(const boost::program_options::variables_map& options) {
@@ -571,6 +578,9 @@ void p2p_plugin::plugin_initialize(const boost::program_options::variables_map& 
     if (options.count("p2p-isolated-peers")) {
         my->isolated_peers = options.at("p2p-isolated-peers").as<bool>();
     }
+    if (options.count("auto-resync-on-wedge")) {
+        my->auto_resync_on_wedge = options.at("auto-resync-on-wedge").as<bool>();
+    }
 }
 
 void p2p_plugin::plugin_startup() {
@@ -601,6 +611,17 @@ void p2p_plugin::plugin_startup() {
                                             my->peer_exchange_min_uptime_sec);
         my->node->set_stats_log_interval(my->stats_interval_sec);
         my->node->set_isolated_peers(my->isolated_peers);
+
+        // Wedged-behind-network watchdog: give the node the state dir so it can
+        // place the force_resync marker next to shared_memory.bin, and gate the
+        // destructive auto-exit behind the config flag (default off).
+        try {
+            my->node->set_state_dir(my->chain.get_state_dir());
+        } catch (...) {
+            wlog("Could not resolve chain state dir for wedge watchdog marker; "
+                 "auto-resync-on-wedge will exit without writing a marker.");
+        }
+        my->node->set_auto_resync_on_wedge(my->auto_resync_on_wedge);
 
         // Wire up witness diagnostic provider so FORWARD stagnation logs include
         // production state without the network library taking a plugin dependency.

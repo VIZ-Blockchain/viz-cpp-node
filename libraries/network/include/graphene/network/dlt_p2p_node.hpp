@@ -116,6 +116,14 @@ public:
     // both outbound (no requests sent) and inbound (empty reply returned).
     void set_isolated_peers(bool isolated);
 
+    // Wedged-behind-network watchdog configuration.
+    // _state_dir is the directory that holds shared_memory.bin — the force_resync
+    // marker must live there so it persists exactly as long as the state it
+    // condemns.  auto_resync_on_wedge gates the destructive std::_Exit action:
+    // when OFF (default) the watchdog only elogs on a confirmed wedge.
+    void set_state_dir(const std::string& dir);
+    void set_auto_resync_on_wedge(bool enabled);
+
     // Registers a callback that returns a compact witness-state string.
     // Called during FORWARD stagnation logs so the P2P layer can include
     // witness production state without taking a plugin dependency.
@@ -282,6 +290,34 @@ private:
     void periodic_task();
     void block_validation_timeout();
 
+    // ── Wedged-behind-network watchdog ───────────────────────────
+    // Detects the "rejection livelock": our head frozen far behind the network
+    // tip while we actively reject the canonical chain — state divergence at or
+    // below LIB that fork-switching cannot repair (only wipe + snapshot re-import
+    // does).  This is DISTINCT from the push_block write-lock deadlock monitors
+    // (#117–#120): there push_block is *held* too long; here it fails *fast* on
+    // every canonical block, so those monitors never fire.
+    void check_wedge_watchdog();
+
+    // Pure predicate for the wedge state machine — no I/O, table-testable.
+    // Aggregated over the sustained observation window:
+    //   behind         — how far our head trails the network tip (blocks)
+    //   head_advanced   — did our head move at all during the window
+    //   rejects_climbed — did gap-fill rejections increase during the window
+    //   elapsed_sec     — how long the (behind && head-flat) condition has held
+    // Verdict CONFIRMED only when the node is far behind, its head never moved,
+    // it is still actively rejecting the chain, and this has been sustained.
+    //   - a syncing node advances its head        → head_advanced ⇒ not wedged
+    //   - a partitioned node has no blocks/rejects → !rejects_climbed ⇒ not wedged
+    //   - genuine divergence trips all three, and only after WEDGE_CONFIRM_SEC.
+    static bool is_wedged(uint32_t behind, bool head_advanced,
+                          bool rejects_climbed, uint32_t elapsed_sec) {
+        return behind > WEDGE_BEHIND_THRESHOLD
+            && !head_advanced
+            && rejects_climbed
+            && elapsed_sec >= WEDGE_CONFIRM_SEC;
+    }
+
     // ── Subnet diversity ─────────────────────────────────────────
     uint32_t count_peers_in_subnet(const fc::ip::address& addr) const;
     bool is_same_subnet(const fc::ip::address& a, const fc::ip::address& b) const;
@@ -407,9 +443,21 @@ private:
     // ── Gap fill rejection tracking ──────────────────────────────
     uint32_t                        _gap_rejected_block_num = 0;  ///< Last block num rejected by gap fill
     uint32_t                        _gap_rejected_count = 0;      ///< How many times that block was rejected
+    uint64_t                        _gap_rejected_total = 0;      ///< Monotonic total rejections (never reset; wedge watchdog signal)
     static constexpr uint32_t       GAP_REJECT_MAX_RETRIES = 3;   ///< Give up after this many rejections of same block
     static constexpr uint32_t       GAP_REJECT_BLACKLIST_SEC = 120; ///< Blacklist a permanently-rejected block for this long
     fc::time_point                  _gap_rejected_blacklist_until;   ///< Don't gap-fill any block until this time
+
+    // ── Wedged-behind-network watchdog ───────────────────────────
+    static constexpr uint32_t       WEDGE_BEHIND_THRESHOLD = 200;  ///< Blocks behind network tip to be considered "behind"
+    static constexpr uint32_t       WEDGE_CONFIRM_SEC      = 900;  ///< Wedge condition must hold this long (15 min) before acting
+    static constexpr uint32_t       WEDGE_RELOG_SEC        = 60;   ///< Loud re-log cadence while a wedge is building
+    bool                            _auto_resync_on_wedge = false; ///< Gate the destructive _Exit action (default OFF: elog only)
+    std::string                     _state_dir;                    ///< Directory holding shared_memory.bin (force_resync marker lives here)
+    fc::time_point                  _wedge_since;                  ///< When the (behind && head-flat) window began (unset when not behind)
+    uint32_t                        _wedge_window_head = 0;        ///< our_head at window start — any change ⇒ head advanced ⇒ reset
+    uint64_t                        _wedge_reject_baseline = 0;    ///< _gap_rejected_total at window start — a rise ⇒ still rejecting
+    fc::time_point                  _wedge_last_relog;             ///< Last loud re-log while a wedge is building
 
     // ── FORWARD stagnation ──────────────────────────────────────
     uint32_t                        _last_forward_head_num = 0;
