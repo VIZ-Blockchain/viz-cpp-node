@@ -1808,39 +1808,43 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                 }
             };
 
-            #define CHECK_SECTION(section, index_type) \
-                expect_count(section, db.get_index<index_type>().indices().size());
-
-            CHECK_SECTION("account", account_index)
-            CHECK_SECTION("account_authority", account_authority_index)
-            CHECK_SECTION("validator", validator_index)
-            CHECK_SECTION("validator_vote", validator_vote_index)
-            CHECK_SECTION("block_summary", block_summary_index)
-            CHECK_SECTION("content", content_index)
-            CHECK_SECTION("content_vote", content_vote_index)
-            CHECK_SECTION("block_post_validation", validator_confirmation_index)
-            CHECK_SECTION("transaction", transaction_index)
-            CHECK_SECTION("vesting_delegation", vesting_delegation_index)
-            CHECK_SECTION("vesting_delegation_expiration", vesting_delegation_expiration_index)
-            CHECK_SECTION("fix_vesting_delegation", fix_vesting_delegation_index)
-            CHECK_SECTION("withdraw_vesting_route", withdraw_vesting_route_index)
-            CHECK_SECTION("escrow", escrow_index)
-            CHECK_SECTION("proposal", proposal_index)
-            CHECK_SECTION("required_approval", required_approval_index)
-            CHECK_SECTION("committee_request", committee_request_index)
-            CHECK_SECTION("committee_vote", committee_vote_index)
-            CHECK_SECTION("invite", invite_index)
-            CHECK_SECTION("award_shares_expire", award_shares_expire_index)
-            CHECK_SECTION("paid_subscription", paid_subscription_index)
-            CHECK_SECTION("paid_subscribe", paid_subscribe_index)
-            CHECK_SECTION("validator_penalty_expire", validator_penalty_expire_index)
-            CHECK_SECTION("content_type", content_type_index)
-            CHECK_SECTION("account_metadata", account_metadata_index)
-            CHECK_SECTION("master_authority_history", master_authority_history_index)
-            CHECK_SECTION("account_recovery_request", account_recovery_request_index)
-            CHECK_SECTION("change_recovery_account_request", change_recovery_account_request_index)
-
-            #undef CHECK_SECTION
+            // NB: expanded as direct calls rather than a local #define/#undef.
+            // This whole block is the body of the db.with_strong_write_lock([&]{...})
+            // lambda, and with_strong_write_lock is itself a function-like macro — a
+            // preprocessor directive inside a macro argument list is undefined
+            // behavior (GCC silently drops the #define, leaving CHECK_SECTION
+            // undeclared and the build broken).
+            auto check_section = [&](const std::string& section, size_t actual) {
+                expect_count(section, actual);
+            };
+            check_section("account", db.get_index<account_index>().indices().size());
+            check_section("account_authority", db.get_index<account_authority_index>().indices().size());
+            check_section("validator", db.get_index<validator_index>().indices().size());
+            check_section("validator_vote", db.get_index<validator_vote_index>().indices().size());
+            check_section("block_summary", db.get_index<block_summary_index>().indices().size());
+            check_section("content", db.get_index<content_index>().indices().size());
+            check_section("content_vote", db.get_index<content_vote_index>().indices().size());
+            check_section("block_post_validation", db.get_index<validator_confirmation_index>().indices().size());
+            check_section("transaction", db.get_index<transaction_index>().indices().size());
+            check_section("vesting_delegation", db.get_index<vesting_delegation_index>().indices().size());
+            check_section("vesting_delegation_expiration", db.get_index<vesting_delegation_expiration_index>().indices().size());
+            check_section("fix_vesting_delegation", db.get_index<fix_vesting_delegation_index>().indices().size());
+            check_section("withdraw_vesting_route", db.get_index<withdraw_vesting_route_index>().indices().size());
+            check_section("escrow", db.get_index<escrow_index>().indices().size());
+            check_section("proposal", db.get_index<proposal_index>().indices().size());
+            check_section("required_approval", db.get_index<required_approval_index>().indices().size());
+            check_section("committee_request", db.get_index<committee_request_index>().indices().size());
+            check_section("committee_vote", db.get_index<committee_vote_index>().indices().size());
+            check_section("invite", db.get_index<invite_index>().indices().size());
+            check_section("award_shares_expire", db.get_index<award_shares_expire_index>().indices().size());
+            check_section("paid_subscription", db.get_index<paid_subscription_index>().indices().size());
+            check_section("paid_subscribe", db.get_index<paid_subscribe_index>().indices().size());
+            check_section("validator_penalty_expire", db.get_index<validator_penalty_expire_index>().indices().size());
+            check_section("content_type", db.get_index<content_type_index>().indices().size());
+            check_section("account_metadata", db.get_index<account_metadata_index>().indices().size());
+            check_section("master_authority_history", db.get_index<master_authority_history_index>().indices().size());
+            check_section("account_recovery_request", db.get_index<account_recovery_request_index>().indices().size());
+            check_section("change_recovery_account_request", db.get_index<change_recovery_account_request_index>().indices().size());
 
             // (2) Referential integrity: every account_authority must reference an
             // existing account.  This is the exact invariant the wedge incident
