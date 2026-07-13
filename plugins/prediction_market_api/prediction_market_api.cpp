@@ -101,17 +101,42 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             return share_type(bet.amount.value + profit - penalty);
         }
 
-        // Listing risk floor (security-threat-model §4.3): a market whose oracle insurance
-        // covers less than 2.5× its betting volume is hidden from the default listing
-        // (revealed via show_risky). Per-market, non-consensus. Returns true if BELOW floor.
-        bool below_risk_floor(const database& db, const pm_market_object& mkt) {
-            if (mkt.bets_sum.value <= 0) return false; // no volume → no risk
+        // Listing risk floor (security-threat-model §4.3) — AGGREGATE, per-ORACLE (owner 2026-07-13).
+        // Insurance backs the oracle's WHOLE book, not each market in isolation, so the verdict is on
+        // the oracle, not one market. Hidden from default listing (revealed via show_risky) when EITHER:
+        //   (A) insurance < pm_min_oracle_insurance — stake gone/insufficient (e.g. slashed to ~0) → the
+        //       entire book is hidden, INCLUDING zero-bet markets. Fixes the old bug where a broke oracle
+        //       kept full visibility because each fresh market had bets_sum==0 (no per-market "risk").
+        //   (B) insurance×100 < coverage% × Σ bets_sum over the oracle's OPEN markets — aggregate exposure
+        //       outgrew the stake (an oracle can't honestly back 2.5× its whole open volume).
+        // Non-consensus (API-only, no HF/replay). Cached per oracle per head block (thread_local) so a
+        // listing loop over N markets stays O(N + distinct-oracles), not O(N × book).
+        bool oracle_below_risk_floor(const database& db, const account_name_type& oracle) {
+            static thread_local std::map<account_name_type, std::pair<uint32_t, bool>> cache;
+            const uint32_t epoch = db.head_block_num();
+            auto cit = cache.find(oracle);
+            if (cit != cache.end() && cit->second.first == epoch) return cit->second.second;
+            const auto& mp = db.get_validator_schedule_object().median_props;
             const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
-            auto it = oidx.find(mkt.oracle);
-            int64_t ins = (it != oidx.end()) ? it->insurance.value : 0;
-            // Governance-tunable coverage floor (percent of bets; 250 = 2.5×). Hidden below it.
-            const uint16_t cov = db.get_validator_schedule_object().median_props.pm_listing_min_coverage_percent;
-            return ins * 100 < mkt.bets_sum.value * (int64_t)cov;
+            auto oit = oidx.find(oracle);
+            const int64_t ins = (oit != oidx.end()) ? oit->insurance.value : 0;
+            bool verdict;
+            if (ins < mp.pm_min_oracle_insurance.amount.value) {
+                verdict = true;                                                  // (A) below minimum stake
+            } else {
+                int64_t agg = 0;                                                 // (B) aggregate open exposure
+                const auto& midx = db.get_index<pm_market_index>().indices().get<by_oracle>();
+                for (auto mit = midx.lower_bound(oracle); mit != midx.end() && mit->oracle == oracle; ++mit)
+                    if (mit->status == 1) agg += mit->bets_sum.value;
+                verdict = (ins * 100 < agg * (int64_t)mp.pm_listing_min_coverage_percent);
+            }
+            cache[oracle] = { epoch, verdict };
+            return verdict;
+        }
+
+        // Back-compat thin wrapper (list_markets et al. call this per market).
+        bool below_risk_floor(const database& db, const pm_market_object& mkt) {
+            return oracle_below_risk_floor(db, mkt.oracle);
         }
 
         // Per-outcome amount + curve-weight aggregate (live from active/resolved bets). Shared by
@@ -968,7 +993,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
     // field (= bets_sum, raw shares) so clients render exact volume badges and rank across categories
     // without a second round-trip; newest/oldest rows omit it (client fills volume lazily).
     DEFINE_API(prediction_market_api, list_markets_by_category) {
-        CHECK_ARG_MIN_SIZE(3, 8)
+        CHECK_ARG_MIN_SIZE(3, 9)
         auto category     = args.args->at(0).as<std::string>();
         auto from         = args.args->at(1).as<uint32_t>();
         auto limit        = args.args->at(2).as<uint32_t>();
@@ -977,6 +1002,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         auto tag          = GET_OPTIONAL_ARG(5, std::string, std::string());
         auto sort         = GET_OPTIONAL_ARG(6, std::string, std::string("newest"));
         auto hide_children= GET_OPTIONAL_ARG(7, bool, true); // drop child/prop markets by default
+        auto show_risky   = GET_OPTIONAL_ARG(8, bool, false); // reveal markets of under-insured oracles
         FC_ASSERT(limit <= 1000);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
@@ -991,6 +1017,10 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 if (!subcategory.empty() && to_string(itr->subcategory) != subcategory) continue;
                 if (!tag.empty() && !meta_csv_contains_ci(to_string(itr->tags), tag)) continue; // case-insensitive tags
                 const auto* mk = need_market ? db.find<pm_market_object>(itr->market) : nullptr;
+                if (!show_risky) { // hide markets whose oracle is under-insured (aggregate risk floor)
+                    const auto* mko = mk ? mk : db.find<pm_market_object>(itr->market);
+                    if (mko && oracle_below_risk_floor(db, mko->oracle)) continue;
+                }
                 es.push_back({ &*itr,
                     mk ? mk->bets_sum.value : 0,
                     mk ? (int64_t)mk->betting_expiration.sec_since_epoch() : std::numeric_limits<int64_t>::max(),
@@ -1048,10 +1078,11 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
     // an event page with each child's outcomes/volume in one round-trip. Empty event key yields
     // nothing (standalone markets are not an "event"). Pruned markets are skipped.
     DEFINE_API(prediction_market_api, list_markets_by_event) {
-        CHECK_ARG_MIN_SIZE(3, 3)
+        CHECK_ARG_MIN_SIZE(3, 4)
         auto event = args.args->at(0).as<std::string>();
         auto from  = args.args->at(1).as<uint32_t>();
         auto limit = args.args->at(2).as<uint32_t>();
+        auto show_risky = GET_OPTIONAL_ARG(3, bool, false); // reveal markets of under-insured oracles
         FC_ASSERT(limit <= 1000);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
@@ -1061,9 +1092,11 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             const auto& idx = db.get_index<pm_market_meta_index>().indices().get<by_meta_event>();
             for (auto itr = idx.lower_bound(event);
                  itr != idx.end() && to_string(itr->event) == event && result.size() < limit; ++itr) {
-                if (from > 0) { --from; continue; }
                 const auto* mk = db.find<pm_market_object>(itr->market);
-                if (mk) result.push_back(market_card(db, *mk));
+                if (!mk) continue;
+                if (!show_risky && oracle_below_risk_floor(db, mk->oracle)) continue;
+                if (from > 0) { --from; continue; }
+                result.push_back(market_card(db, *mk));
             }
             return result;
         });
