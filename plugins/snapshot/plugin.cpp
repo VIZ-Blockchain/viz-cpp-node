@@ -1777,6 +1777,116 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                       << " (was " << old_lib << ") for P2P sync\n";
         }
 
+        // ── Post-import completeness / invariant verification (Finding A) ──
+        // The payload_checksum only proves the download matches what the serving
+        // node serialized; it cannot detect that the serving node serialized
+        // INCOMPLETE state.  A single missing account on the serving side would
+        // pass the checksum, import cleanly, and then wedge the node the moment a
+        // canonical block references that account (the 2026-07-13 rpc.viz.cx
+        // incident: out_of_range "viz-social-bot" at database.cpp get_account).
+        //
+        // These checks catch a lossy import (serialized N, imported M) and gross
+        // referential holes regardless of cause, turning a silent bad-state
+        // acceptance into a loud, retryable FC_ASSERT — the P2P-sync path then
+        // rejects the snapshot and retries another trusted peer.
+        {
+            uint32_t invariant_failures = 0;
+
+            // (1) Per-section object-count reconciliation.  header.object_counts
+            // is recorded at export from the serialized section-array sizes; every
+            // multi-instance index is cleared before import (see clear block above),
+            // so the live index size must equal the recorded count.  A mismatch
+            // means the import silently dropped objects.
+            auto expect_count = [&](const std::string& section, size_t actual) {
+                auto itr = header.object_counts.find(section);
+                if (itr == header.object_counts.end()) return;  // section absent from this snapshot
+                if (itr->second != actual) {
+                    elog(CLOG_RED "Snapshot completeness: section '${s}' count mismatch — "
+                         "header=${h}, imported=${a}" CLOG_RESET,
+                         ("s", section)("h", itr->second)("a", static_cast<uint32_t>(actual)));
+                    ++invariant_failures;
+                }
+            };
+
+            #define CHECK_SECTION(section, index_type) \
+                expect_count(section, db.get_index<index_type>().indices().size());
+
+            CHECK_SECTION("account", account_index)
+            CHECK_SECTION("account_authority", account_authority_index)
+            CHECK_SECTION("validator", validator_index)
+            CHECK_SECTION("validator_vote", validator_vote_index)
+            CHECK_SECTION("block_summary", block_summary_index)
+            CHECK_SECTION("content", content_index)
+            CHECK_SECTION("content_vote", content_vote_index)
+            CHECK_SECTION("block_post_validation", validator_confirmation_index)
+            CHECK_SECTION("transaction", transaction_index)
+            CHECK_SECTION("vesting_delegation", vesting_delegation_index)
+            CHECK_SECTION("vesting_delegation_expiration", vesting_delegation_expiration_index)
+            CHECK_SECTION("fix_vesting_delegation", fix_vesting_delegation_index)
+            CHECK_SECTION("withdraw_vesting_route", withdraw_vesting_route_index)
+            CHECK_SECTION("escrow", escrow_index)
+            CHECK_SECTION("proposal", proposal_index)
+            CHECK_SECTION("required_approval", required_approval_index)
+            CHECK_SECTION("committee_request", committee_request_index)
+            CHECK_SECTION("committee_vote", committee_vote_index)
+            CHECK_SECTION("invite", invite_index)
+            CHECK_SECTION("award_shares_expire", award_shares_expire_index)
+            CHECK_SECTION("paid_subscription", paid_subscription_index)
+            CHECK_SECTION("paid_subscribe", paid_subscribe_index)
+            CHECK_SECTION("validator_penalty_expire", validator_penalty_expire_index)
+            CHECK_SECTION("content_type", content_type_index)
+            CHECK_SECTION("account_metadata", account_metadata_index)
+            CHECK_SECTION("master_authority_history", master_authority_history_index)
+            CHECK_SECTION("account_recovery_request", account_recovery_request_index)
+            CHECK_SECTION("change_recovery_account_request", change_recovery_account_request_index)
+
+            #undef CHECK_SECTION
+
+            // (2) Referential integrity: every account_authority must reference an
+            // existing account.  This is the exact invariant the wedge incident
+            // violated (a canonical block referenced an account absent from state).
+            {
+                uint32_t dangling = 0;
+                const auto& auth_idx = db.get_index<account_authority_index>().indices();
+                for (auto itr = auth_idx.begin(); itr != auth_idx.end(); ++itr) {
+                    if (db.find_account(itr->account) == nullptr) {
+                        if (dangling < 20)
+                            elog(CLOG_RED "Snapshot completeness: account_authority references missing "
+                                 "account '${a}'" CLOG_RESET, ("a", itr->account));
+                        ++dangling;
+                    }
+                }
+                if (dangling > 0) {
+                    elog(CLOG_RED "Snapshot completeness: ${n} account_authority record(s) reference "
+                         "missing accounts" CLOG_RESET, ("n", dangling));
+                    ++invariant_failures;
+                }
+            }
+
+            // (3) Critical singletons must be present.
+            if (db.find<dynamic_global_property_object>() == nullptr) {
+                elog(CLOG_RED "Snapshot completeness: dynamic_global_property singleton missing" CLOG_RESET);
+                ++invariant_failures;
+            }
+            if (db.find<validator_schedule_object>() == nullptr) {
+                elog(CLOG_RED "Snapshot completeness: validator_schedule singleton missing" CLOG_RESET);
+                ++invariant_failures;
+            }
+            if (db.find<hardfork_property_object>() == nullptr) {
+                elog(CLOG_RED "Snapshot completeness: hardfork_property singleton missing" CLOG_RESET);
+                ++invariant_failures;
+            }
+
+            FC_ASSERT(invariant_failures == 0,
+                "Snapshot import failed post-import invariant checks (${n} failure(s)); the snapshot "
+                "is incomplete. Refusing to start on corrupt state — will retry another trusted peer.",
+                ("n", invariant_failures));
+
+            ilog(CLOG_ORANGE "Snapshot completeness checks passed (${a} accounts, ${w} validators)" CLOG_RESET,
+                 ("a", db.get_index<account_index>().indices().size())
+                 ("w", db.get_index<validator_index>().indices().size()));
+        }
+
         ilog(CLOG_ORANGE "All objects imported successfully" CLOG_RESET);
         } catch (const fc::exception& e) {
             elog(CLOG_RED "Snapshot import failed with fc::exception: ${e}" CLOG_RESET, ("e", e.to_detail_string()));
