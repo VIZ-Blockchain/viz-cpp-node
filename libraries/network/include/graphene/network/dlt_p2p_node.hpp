@@ -299,6 +299,13 @@ private:
     // every canonical block, so those monitors never fire.
     void check_wedge_watchdog();
 
+public:
+    // Thresholds feeding the pure wedge predicate below.  Public (with the
+    // predicate) so the truth-table unit test can assert the boundaries
+    // symbolically rather than hard-coding magic numbers.
+    static constexpr uint32_t       WEDGE_BEHIND_THRESHOLD = 200;  ///< Blocks behind network tip to be considered "behind"
+    static constexpr uint32_t       WEDGE_CONFIRM_SEC      = 900;  ///< Wedge condition must hold this long (15 min) before acting
+
     // Pure predicate for the wedge state machine — no I/O, table-testable.
     // Aggregated over the sustained observation window:
     //   behind         — how far our head trails the CORROBORATED network tip (blocks)
@@ -321,6 +328,7 @@ private:
             && elapsed_sec >= WEDGE_CONFIRM_SEC;
     }
 
+private:
     // ── Subnet diversity ─────────────────────────────────────────
     uint32_t count_peers_in_subnet(const fc::ip::address& addr) const;
     bool is_same_subnet(const fc::ip::address& a, const fc::ip::address& b) const;
@@ -452,8 +460,8 @@ private:
     fc::time_point                  _gap_rejected_blacklist_until;   ///< Don't gap-fill any block until this time
 
     // ── Wedged-behind-network watchdog ───────────────────────────
-    static constexpr uint32_t       WEDGE_BEHIND_THRESHOLD = 200;  ///< Blocks behind network tip to be considered "behind"
-    static constexpr uint32_t       WEDGE_CONFIRM_SEC      = 900;  ///< Wedge condition must hold this long (15 min) before acting
+    // (WEDGE_BEHIND_THRESHOLD / WEDGE_CONFIRM_SEC are public, declared with
+    //  the is_wedged predicate above.)
     static constexpr uint32_t       WEDGE_RELOG_SEC        = 60;   ///< Loud re-log cadence while a wedge is building
     bool                            _auto_resync_on_wedge = false; ///< Gate the destructive _Exit action (default OFF: elog only)
     std::string                     _state_dir;                    ///< Directory holding shared_memory.bin (force_resync marker lives here)
