@@ -521,26 +521,55 @@ namespace chain {
         // next to shared_memory.bin and exits when it confirms the node is
         // permanently stuck on a divergent fork below LIB (rejection livelock,
         // 2026-07-13 rpc.viz.cx incident).  Fork-switch can't recover state below
-        // LIB — only wipe + snapshot re-import can.  Honor the marker by wiping
-        // state so head becomes 0; the empty-state gate later in this function then
-        // re-bootstraps from a trusted snapshot peer.  This is the exact recovery a
-        // manual `docker compose up -d --force-recreate` performs, minus the operator.
+        // LIB — only wipe + fresh re-bootstrap can.  Honor the marker by wiping
+        // state so head becomes 0, then come up on empty state.  This is the exact
+        // recovery a manual `docker compose up -d --force-recreate` performs, minus
+        // the operator.
         {
             auto force_resync_marker = my->shared_memory_dir / "force_resync";
             if (boost::filesystem::exists(force_resync_marker)) {
-                wlog("Detected force_resync marker (P2P wedge watchdog). Wiping state to re-bootstrap "
-                     "from a trusted snapshot peer.");
-                std::cerr << "   force_resync marker found — wiping state for snapshot re-bootstrap.\n";
+                wlog("Detected force_resync marker (P2P wedge watchdog). Wiping state for a clean "
+                     "re-bootstrap (network resync or fresh operator-supplied snapshot).");
+                std::cerr << "   force_resync marker found — wiping state for clean re-bootstrap.\n";
                 try {
                     my->db.wipe(data_dir, my->shared_memory_dir, true);
                 } catch (...) {
                     wlog("force_resync: db.wipe() threw; removing shared_memory.bin directly.");
                     auto shm = my->shared_memory_dir / "shared_memory.bin";
-                    if (boost::filesystem::exists(shm)) boost::filesystem::remove(shm);
+                    if (boost::filesystem::exists(shm)) {
+                        boost::system::error_code _shm_ec;
+                        boost::filesystem::remove(shm, _shm_ec);
+                    }
                 }
-                // Remove the marker only after the wipe so a crash mid-wipe re-triggers recovery.
-                boost::filesystem::remove(force_resync_marker);
-                ilog("force_resync marker cleared; state wiped. Empty-state gate will re-bootstrap from snapshot.");
+                // A wedge is a below-LIB divergence: any snapshot THIS node created
+                // locally (allow-snapshot-serving) was serialized FROM the corrupt
+                // state, so re-importing it would just re-wedge — a crash loop.
+                // db.wipe() clears shared_memory.bin + block_log but NOT the
+                // snapshots/ dir, so --snapshot / --snapshot-auto-latest could
+                // rediscover that poisoned local snapshot.  For this boot, drop any
+                // configured/auto local snapshot path and disable local snapshot
+                // auto-recovery so neither the snapshot-load path nor the
+                // schema/revision recovery paths silently re-import a node-local
+                // snapshot.  The node then comes up on empty state and resyncs from
+                // the P2P network; if the deployment refreshes a trusted snapshot
+                // out of band on the supervised restart, that fresh file is used on
+                // the NEXT boot (marker already cleared).  NB: there is no in-wire
+                // snapshot-fetch-from-peer — recovery is network resync or an
+                // operator/entrypoint-supplied snapshot, not a protocol download.
+                my->snapshot_path.clear();
+                my->auto_recover_from_snapshot = false;
+                // Remove the marker only after the wipe so a crash mid-wipe re-triggers
+                // recovery.  Use the non-throwing overload: this runs OUTSIDE the
+                // surrounding try/catch, and a throw here (file locked, permission)
+                // would abort plugin_startup — with the crash-safe re-trigger that
+                // becomes a crash loop.
+                boost::system::error_code _rm_ec;
+                boost::filesystem::remove(force_resync_marker, _rm_ec);
+                if (_rm_ec)
+                    wlog("force_resync: failed to remove marker (${e}); may re-trigger next boot.",
+                         ("e", _rm_ec.message()));
+                ilog("force_resync marker cleared; state wiped. Node will come up on empty state and "
+                     "resync from the network (local snapshot auto-import disabled for this boot).");
             }
         }
 

@@ -301,14 +301,17 @@ private:
 
     // Pure predicate for the wedge state machine — no I/O, table-testable.
     // Aggregated over the sustained observation window:
-    //   behind         — how far our head trails the network tip (blocks)
+    //   behind         — how far our head trails the CORROBORATED network tip (blocks)
     //   head_advanced   — did our head move at all during the window
-    //   rejects_climbed — did gap-fill rejections increase during the window
+    //   rejects_climbed — was a gap-fill rejection observed within the last
+    //                     WEDGE_RELOG_SEC (i.e. rejections are STILL climbing now,
+    //                     not merely "happened once early in the window")
     //   elapsed_sec     — how long the (behind && head-flat) condition has held
     // Verdict CONFIRMED only when the node is far behind, its head never moved,
     // it is still actively rejecting the chain, and this has been sustained.
-    //   - a syncing node advances its head        → head_advanced ⇒ not wedged
-    //   - a partitioned node has no blocks/rejects → !rejects_climbed ⇒ not wedged
+    //   - a syncing node advances its head          → head_advanced ⇒ not wedged
+    //   - a partitioned/silent node stops rejecting → !rejects_climbed ⇒ not wedged
+    //     (recency matters: one early rejection then silence must NOT confirm)
     //   - genuine divergence trips all three, and only after WEDGE_CONFIRM_SEC.
     static bool is_wedged(uint32_t behind, bool head_advanced,
                           bool rejects_climbed, uint32_t elapsed_sec) {
@@ -456,8 +459,10 @@ private:
     std::string                     _state_dir;                    ///< Directory holding shared_memory.bin (force_resync marker lives here)
     fc::time_point                  _wedge_since;                  ///< When the (behind && head-flat) window began (unset when not behind)
     uint32_t                        _wedge_window_head = 0;        ///< our_head at window start — any change ⇒ head advanced ⇒ reset
-    uint64_t                        _wedge_reject_baseline = 0;    ///< _gap_rejected_total at window start — a rise ⇒ still rejecting
+    uint64_t                        _wedge_reject_last_total = 0;  ///< _gap_rejected_total at last observed increment (edge detect)
+    fc::time_point                  _wedge_last_reject;            ///< When a rejection was last observed; "climbing" ⇒ one within WEDGE_RELOG_SEC
     fc::time_point                  _wedge_last_relog;             ///< Last loud re-log while a wedge is building
+    static constexpr uint32_t       WEDGE_MIN_CORROBORATING_PEERS = 2; ///< Network tip must be corroborated by >=N peers (anti-eclipse)
 
     // ── FORWARD stagnation ──────────────────────────────────────
     uint32_t                        _last_forward_head_num = 0;

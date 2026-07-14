@@ -1785,10 +1785,24 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         // canonical block references that account (the 2026-07-13 rpc.viz.cx
         // incident: out_of_range "viz-social-bot" at database.cpp get_account).
         //
-        // These checks catch a lossy import (serialized N, imported M) and gross
-        // referential holes regardless of cause, turning a silent bad-state
-        // acceptance into a loud, retryable FC_ASSERT — the P2P-sync path then
-        // rejects the snapshot and retries another trusted peer.
+        // SCOPE / LIMITATION: these are import-side sanity checks, NOT a full
+        // state-integrity proof.  Check (1) reconciles live index sizes against
+        // header.object_counts, so it catches a LOSSY IMPORT (serialized N,
+        // imported M) — but NOT export-side incompleteness, because
+        // header.object_counts is itself derived from the same serialized arrays
+        // at export: a short export records the short count and reconciles
+        // cleanly.  The real net for the incident class (an account missing
+        // entirely on the serving side) is the referential check (2) below, and
+        // only if a dangling reference survived.  A stronger value invariant
+        // (dgp.current_supply vs summed balances/vesting/escrow) is the proper
+        // export-side detector but is deferred: the chain's own
+        // database::validate_invariants() is currently only declared, not
+        // defined, and a hand-rolled partial accounting here would risk rejecting
+        // VALID snapshots.  Tracked as follow-up.
+        //
+        // What these DO buy: a lossy import and gross referential holes become a
+        // loud, retryable FC_ASSERT instead of silent bad-state acceptance — the
+        // P2P-sync path then rejects the snapshot and retries another trusted peer.
         {
             uint32_t invariant_failures = 0;
 
@@ -1796,7 +1810,8 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
             // is recorded at export from the serialized section-array sizes; every
             // multi-instance index is cleared before import (see clear block above),
             // so the live index size must equal the recorded count.  A mismatch
-            // means the import silently dropped objects.
+            // means the import silently dropped objects (lossy import only — see
+            // the SCOPE note above for why this cannot see export-side gaps).
             auto expect_count = [&](const std::string& section, size_t actual) {
                 auto itr = header.object_counts.find(section);
                 if (itr == header.object_counts.end()) return;  // section absent from this snapshot
@@ -1808,43 +1823,40 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                 }
             };
 
-            // NB: expanded as direct calls rather than a local #define/#undef.
-            // This whole block is the body of the db.with_strong_write_lock([&]{...})
-            // lambda, and with_strong_write_lock is itself a function-like macro — a
+            // NB: direct calls rather than a local #define/#undef.  This whole
+            // block is the body of the db.with_strong_write_lock([&]{...}) lambda,
+            // and with_strong_write_lock is itself a function-like macro — a
             // preprocessor directive inside a macro argument list is undefined
-            // behavior (GCC silently drops the #define, leaving CHECK_SECTION
-            // undeclared and the build broken).
-            auto check_section = [&](const std::string& section, size_t actual) {
-                expect_count(section, actual);
-            };
-            check_section("account", db.get_index<account_index>().indices().size());
-            check_section("account_authority", db.get_index<account_authority_index>().indices().size());
-            check_section("validator", db.get_index<validator_index>().indices().size());
-            check_section("validator_vote", db.get_index<validator_vote_index>().indices().size());
-            check_section("block_summary", db.get_index<block_summary_index>().indices().size());
-            check_section("content", db.get_index<content_index>().indices().size());
-            check_section("content_vote", db.get_index<content_vote_index>().indices().size());
-            check_section("block_post_validation", db.get_index<validator_confirmation_index>().indices().size());
-            check_section("transaction", db.get_index<transaction_index>().indices().size());
-            check_section("vesting_delegation", db.get_index<vesting_delegation_index>().indices().size());
-            check_section("vesting_delegation_expiration", db.get_index<vesting_delegation_expiration_index>().indices().size());
-            check_section("fix_vesting_delegation", db.get_index<fix_vesting_delegation_index>().indices().size());
-            check_section("withdraw_vesting_route", db.get_index<withdraw_vesting_route_index>().indices().size());
-            check_section("escrow", db.get_index<escrow_index>().indices().size());
-            check_section("proposal", db.get_index<proposal_index>().indices().size());
-            check_section("required_approval", db.get_index<required_approval_index>().indices().size());
-            check_section("committee_request", db.get_index<committee_request_index>().indices().size());
-            check_section("committee_vote", db.get_index<committee_vote_index>().indices().size());
-            check_section("invite", db.get_index<invite_index>().indices().size());
-            check_section("award_shares_expire", db.get_index<award_shares_expire_index>().indices().size());
-            check_section("paid_subscription", db.get_index<paid_subscription_index>().indices().size());
-            check_section("paid_subscribe", db.get_index<paid_subscribe_index>().indices().size());
-            check_section("validator_penalty_expire", db.get_index<validator_penalty_expire_index>().indices().size());
-            check_section("content_type", db.get_index<content_type_index>().indices().size());
-            check_section("account_metadata", db.get_index<account_metadata_index>().indices().size());
-            check_section("master_authority_history", db.get_index<master_authority_history_index>().indices().size());
-            check_section("account_recovery_request", db.get_index<account_recovery_request_index>().indices().size());
-            check_section("change_recovery_account_request", db.get_index<change_recovery_account_request_index>().indices().size());
+            // behavior (GCC silently drops the #define, leaving the section-check
+            // macro undeclared and the build broken).
+            expect_count("account", db.get_index<account_index>().indices().size());
+            expect_count("account_authority", db.get_index<account_authority_index>().indices().size());
+            expect_count("validator", db.get_index<validator_index>().indices().size());
+            expect_count("validator_vote", db.get_index<validator_vote_index>().indices().size());
+            expect_count("block_summary", db.get_index<block_summary_index>().indices().size());
+            expect_count("content", db.get_index<content_index>().indices().size());
+            expect_count("content_vote", db.get_index<content_vote_index>().indices().size());
+            expect_count("block_post_validation", db.get_index<validator_confirmation_index>().indices().size());
+            expect_count("transaction", db.get_index<transaction_index>().indices().size());
+            expect_count("vesting_delegation", db.get_index<vesting_delegation_index>().indices().size());
+            expect_count("vesting_delegation_expiration", db.get_index<vesting_delegation_expiration_index>().indices().size());
+            expect_count("fix_vesting_delegation", db.get_index<fix_vesting_delegation_index>().indices().size());
+            expect_count("withdraw_vesting_route", db.get_index<withdraw_vesting_route_index>().indices().size());
+            expect_count("escrow", db.get_index<escrow_index>().indices().size());
+            expect_count("proposal", db.get_index<proposal_index>().indices().size());
+            expect_count("required_approval", db.get_index<required_approval_index>().indices().size());
+            expect_count("committee_request", db.get_index<committee_request_index>().indices().size());
+            expect_count("committee_vote", db.get_index<committee_vote_index>().indices().size());
+            expect_count("invite", db.get_index<invite_index>().indices().size());
+            expect_count("award_shares_expire", db.get_index<award_shares_expire_index>().indices().size());
+            expect_count("paid_subscription", db.get_index<paid_subscription_index>().indices().size());
+            expect_count("paid_subscribe", db.get_index<paid_subscribe_index>().indices().size());
+            expect_count("validator_penalty_expire", db.get_index<validator_penalty_expire_index>().indices().size());
+            expect_count("content_type", db.get_index<content_type_index>().indices().size());
+            expect_count("account_metadata", db.get_index<account_metadata_index>().indices().size());
+            expect_count("master_authority_history", db.get_index<master_authority_history_index>().indices().size());
+            expect_count("account_recovery_request", db.get_index<account_recovery_request_index>().indices().size());
+            expect_count("change_recovery_account_request", db.get_index<change_recovery_account_request_index>().indices().size());
 
             // (2) Referential integrity: every account_authority must reference an
             // existing account.  This is the exact invariant the wedge incident
