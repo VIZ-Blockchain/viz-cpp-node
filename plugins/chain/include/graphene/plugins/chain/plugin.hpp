@@ -90,6 +90,11 @@ namespace graphene {
 
                 const graphene::chain::database &db() const;
 
+                /// Directory containing shared_memory.bin (the state dir).  Used by
+                /// the P2P wedge watchdog to place the force_resync marker next to
+                /// the state it condemns, so it persists exactly as long as that state.
+                std::string get_state_dir() const;
+
                 /// Returns true when the node is processing P2P sync blocks
                 /// (i.e. catching up to the network head).  Plugins that perform
                 /// heavy background work (e.g. periodic snapshots) should defer
