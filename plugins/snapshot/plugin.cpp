@@ -2308,6 +2308,36 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
 
                 const int64_t summed_token = base_token + pm_token;
                 const int64_t expected_supply = dgp.current_supply.amount.value;
+                // ── issue #127 TEMP instrumentation: per-status PM token breakdown to localize the delta.
+                // Read-only. Remove after localizing. Reload snapshot 81631202 (no replay) and grep "issue127".
+                {
+                    int64_t bet_all = 0, bet_held = 0, mkt_bets_sum = 0;
+                    std::map<int,int64_t> bet_st, lev_st, cmt_st, dsp_st, liq_st;
+                    { const auto& idx = db.get_index<pm_bet_index>().indices();
+                      for (auto i = idx.begin(); i != idx.end(); ++i) {
+                          bet_all += i->amount.value; bet_st[i->status] += i->amount.value;
+                          if (i->status == 0 || i->status == 5 || i->status == 6) bet_held += i->amount.value;
+                      } }
+                    { const auto& idx = db.get_index<pm_market_index>().indices();
+                      for (auto i = idx.begin(); i != idx.end(); ++i) mkt_bets_sum += i->bets_sum.value; }
+                    { const auto& idx = db.get_index<pm_leverage_position_index>().indices();
+                      for (auto i = idx.begin(); i != idx.end(); ++i) lev_st[i->status] += i->collateral.value + i->loan.value; }
+                    { const auto& idx = db.get_index<pm_commit_index>().indices();
+                      for (auto i = idx.begin(); i != idx.end(); ++i) cmt_st[i->status] += i->escrow_amount.value; }
+                    { const auto& idx = db.get_index<pm_dispute_index>().indices();
+                      for (auto i = idx.begin(); i != idx.end(); ++i) dsp_st[i->status] += i->dispute_fee.value; }
+                    { const auto& idx = db.get_index<pm_liquidity_index>().indices();
+                      for (auto i = idx.begin(); i != idx.end(); ++i) if (i->provider.size() > 0) liq_st[i->status] += i->amount.value; }
+                    auto S = [](std::map<int,int64_t>& m){ std::string r;
+                        for (auto& kv : m) r += " [" + std::to_string(kv.first) + "]=" + std::to_string(kv.second); return r; };
+                    ilog("issue127 bet_all=${a} bet_held(0,5,6)=${h} sum_market.bets_sum=${m} drift(held-bets_sum)=${d}",
+                         ("a", bet_all)("h", bet_held)("m", mkt_bets_sum)("d", bet_held - mkt_bets_sum));
+                    ilog("issue127 bet.amount by_status:${x}",              ("x", S(bet_st)));
+                    ilog("issue127 leverage.coll_loan by_status:${x}",      ("x", S(lev_st)));
+                    ilog("issue127 commit.escrow by_status:${x}",           ("x", S(cmt_st)));
+                    ilog("issue127 dispute.fee by_status:${x}",             ("x", S(dsp_st)));
+                    ilog("issue127 liquidity.amount_provider by_status:${x}", ("x", S(liq_st)));
+                }
                 ilog(CLOG_ORANGE "Snapshot TOKEN invariant: "
                      "current_supply=${cs} vs summed=${sm} (base=${bt} + pm=${pm}), delta=${d}. "
                      "Base: acc_balance=${ab} acc_reserved=${ar} escrow_balance=${eb} escrow_fee=${ef} "
