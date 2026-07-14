@@ -2022,6 +2022,330 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                       << " (was " << old_lib << ") for P2P sync\n";
         }
 
+        // ── Post-import completeness / invariant verification (Finding A) ──
+        // The payload_checksum only proves the download matches what the serving
+        // node serialized; it cannot detect that the serving node serialized
+        // INCOMPLETE state.  A single missing account on the serving side would
+        // pass the checksum, import cleanly, and then wedge the node the moment a
+        // canonical block references that account (the 2026-07-13 rpc.viz.cx
+        // incident: out_of_range "viz-social-bot" at database.cpp get_account).
+        //
+        // SCOPE / LIMITATION: these are import-side sanity checks, NOT a full
+        // state-integrity proof.  Check (1) reconciles live index sizes against
+        // header.object_counts, so it catches a LOSSY IMPORT (serialized N,
+        // imported M) — but NOT export-side incompleteness, because
+        // header.object_counts is itself derived from the same serialized arrays
+        // at export: a short export records the short count and reconciles
+        // cleanly.  The real net for the incident class (an account missing
+        // entirely on the serving side) is the referential check (2) below, and
+        // only if a dangling reference survived.  A stronger value invariant
+        // (dgp.current_supply vs summed balances/vesting/escrow) is the proper
+        // export-side detector but is deferred: the chain's own
+        // database::validate_invariants() is currently only declared, not
+        // defined, and a hand-rolled partial accounting here would risk rejecting
+        // VALID snapshots.  Tracked as follow-up.
+        //
+        // What these DO buy: a lossy import and gross referential holes become a
+        // loud, retryable FC_ASSERT instead of silent bad-state acceptance — the
+        // P2P-sync path then rejects the snapshot and retries another trusted peer.
+        {
+            uint32_t invariant_failures = 0;
+
+            // (1) Per-section object-count reconciliation.  header.object_counts
+            // is recorded at export from the serialized section-array sizes; every
+            // multi-instance index is cleared before import (see clear block above),
+            // so the live index size must equal the recorded count.  A mismatch
+            // means the import silently dropped objects (lossy import only — see
+            // the SCOPE note above for why this cannot see export-side gaps).
+            auto expect_count = [&](const std::string& section, size_t actual) {
+                auto itr = header.object_counts.find(section);
+                if (itr == header.object_counts.end()) return;  // section absent from this snapshot
+                if (itr->second != actual) {
+                    elog(CLOG_RED "Snapshot completeness: section '${s}' count mismatch — "
+                         "header=${h}, imported=${a}" CLOG_RESET,
+                         ("s", section)("h", itr->second)("a", static_cast<uint32_t>(actual)));
+                    ++invariant_failures;
+                }
+            };
+
+            // NB: direct calls rather than a local #define/#undef.  This whole
+            // block is the body of the db.with_strong_write_lock([&]{...}) lambda,
+            // and with_strong_write_lock is itself a function-like macro — a
+            // preprocessor directive inside a macro argument list is undefined
+            // behavior (GCC silently drops the #define, leaving the section-check
+            // macro undeclared and the build broken).
+            expect_count("account", db.get_index<account_index>().indices().size());
+            expect_count("account_authority", db.get_index<account_authority_index>().indices().size());
+            expect_count("validator", db.get_index<validator_index>().indices().size());
+            expect_count("validator_vote", db.get_index<validator_vote_index>().indices().size());
+            expect_count("block_summary", db.get_index<block_summary_index>().indices().size());
+            expect_count("content", db.get_index<content_index>().indices().size());
+            expect_count("content_vote", db.get_index<content_vote_index>().indices().size());
+            expect_count("block_post_validation", db.get_index<validator_confirmation_index>().indices().size());
+            expect_count("transaction", db.get_index<transaction_index>().indices().size());
+            expect_count("vesting_delegation", db.get_index<vesting_delegation_index>().indices().size());
+            expect_count("vesting_delegation_expiration", db.get_index<vesting_delegation_expiration_index>().indices().size());
+            expect_count("fix_vesting_delegation", db.get_index<fix_vesting_delegation_index>().indices().size());
+            expect_count("withdraw_vesting_route", db.get_index<withdraw_vesting_route_index>().indices().size());
+            expect_count("escrow", db.get_index<escrow_index>().indices().size());
+            expect_count("proposal", db.get_index<proposal_index>().indices().size());
+            expect_count("required_approval", db.get_index<required_approval_index>().indices().size());
+            expect_count("committee_request", db.get_index<committee_request_index>().indices().size());
+            expect_count("committee_vote", db.get_index<committee_vote_index>().indices().size());
+            expect_count("invite", db.get_index<invite_index>().indices().size());
+            expect_count("award_shares_expire", db.get_index<award_shares_expire_index>().indices().size());
+            expect_count("paid_subscription", db.get_index<paid_subscription_index>().indices().size());
+            expect_count("paid_subscribe", db.get_index<paid_subscribe_index>().indices().size());
+            expect_count("validator_penalty_expire", db.get_index<validator_penalty_expire_index>().indices().size());
+            expect_count("content_type", db.get_index<content_type_index>().indices().size());
+            expect_count("account_metadata", db.get_index<account_metadata_index>().indices().size());
+            expect_count("master_authority_history", db.get_index<master_authority_history_index>().indices().size());
+            expect_count("account_recovery_request", db.get_index<account_recovery_request_index>().indices().size());
+            expect_count("change_recovery_account_request", db.get_index<change_recovery_account_request_index>().indices().size());
+
+            // (2) Referential integrity: every account_authority must reference an
+            // existing account.  This is the exact invariant the wedge incident
+            // violated (a canonical block referenced an account absent from state).
+            {
+                uint32_t dangling = 0;
+                const auto& auth_idx = db.get_index<account_authority_index>().indices();
+                for (auto itr = auth_idx.begin(); itr != auth_idx.end(); ++itr) {
+                    if (db.find_account(itr->account) == nullptr) {
+                        if (dangling < 20)
+                            elog(CLOG_RED "Snapshot completeness: account_authority references missing "
+                                 "account '${a}'" CLOG_RESET, ("a", itr->account));
+                        ++dangling;
+                    }
+                }
+                if (dangling > 0) {
+                    elog(CLOG_RED "Snapshot completeness: ${n} account_authority record(s) reference "
+                         "missing accounts" CLOG_RESET, ("n", dangling));
+                    ++invariant_failures;
+                }
+            }
+
+            // (3) Critical singletons must be present.
+            if (db.find<dynamic_global_property_object>() == nullptr) {
+                elog(CLOG_RED "Snapshot completeness: dynamic_global_property singleton missing" CLOG_RESET);
+                ++invariant_failures;
+            }
+            if (db.find<validator_schedule_object>() == nullptr) {
+                elog(CLOG_RED "Snapshot completeness: validator_schedule singleton missing" CLOG_RESET);
+                ++invariant_failures;
+            }
+            if (db.find<hardfork_property_object>() == nullptr) {
+                elog(CLOG_RED "Snapshot completeness: hardfork_property singleton missing" CLOG_RESET);
+                ++invariant_failures;
+            }
+
+            // (4) SHARES conservation (Finding #4, the deferred value invariant).
+            // dgp.total_vesting_shares must equal the sum of every account's OWN
+            // vesting_shares. This is the export-side completeness net the count
+            // reconciliation (1) cannot provide: an account missing from the export
+            // that held vesting_shares drops the sum below the recorded total, which
+            // is derived independently at inflation time — so a short export no
+            // longer reconciles.
+            //
+            // Delegation is deliberately NOT summed. vesting_delegation_object /
+            // fix_vesting_delegation_object / vesting_delegation_expiration_object
+            // only redistribute vests already counted in the delegator's
+            // account.vesting_shares (delegated_/received_vesting_shares net to zero
+            // network-wide), so adding them would double-count. Gross account
+            // vesting_shares IS the minted total the dgp tracks.
+            {
+                const auto& dgp = db.get_dynamic_global_properties();
+                int64_t summed_vesting_shares = 0;
+                const auto& acc_idx = db.get_index<account_index>().indices();
+                for (auto itr = acc_idx.begin(); itr != acc_idx.end(); ++itr)
+                    summed_vesting_shares += itr->vesting_shares.amount.value;
+
+                const int64_t expected_vesting_shares = dgp.total_vesting_shares.amount.value;
+                ilog(CLOG_ORANGE "Snapshot SHARES invariant: Sum(account.vesting_shares)=${s}, "
+                     "dgp.total_vesting_shares=${e}, delta=${d}" CLOG_RESET,
+                     ("s", summed_vesting_shares)("e", expected_vesting_shares)
+                     ("d", summed_vesting_shares - expected_vesting_shares));
+                if (summed_vesting_shares != expected_vesting_shares) {
+                    elog(CLOG_RED "Snapshot completeness: SHARES conservation violated — summed "
+                         "account vesting_shares (${s}) != dgp.total_vesting_shares (${e}); the "
+                         "snapshot is missing accounts that held vesting stake" CLOG_RESET,
+                         ("s", summed_vesting_shares)("e", expected_vesting_shares));
+                    ++invariant_failures;
+                }
+            }
+
+            // (5) TOKEN supply conservation. dgp.current_supply must equal the sum
+            // of every locked and liquid TOKEN pool. Like (4), this catches
+            // export-side incompleteness the count reconciliation cannot: an account
+            // missing from the export that held a liquid balance drops the sum below
+            // the independently-tracked current_supply.
+            //
+            // The BASE (chain-core) pools below were verified satoshi-exact (delta=0)
+            // against six real mainnet snapshots spanning blocks 81334800–81620400 on
+            // master (PR #126) — including the height-varying validator pending-reward
+            // term. current_supply already includes validator pending_stakeholder_reward
+            // (credited at inflation, moved into total_vesting_fund at create_vesting),
+            // so it is summed here. Delegation objects and reward-tracking share_type
+            // counters (curation/posting rewards, rshares) are NOT token pools.
+            //
+            // ── Prediction-Markets (PM) branch extension ─────────────────────────
+            // PM is zero-sum: it never mints. A bet / liquidity / lazy-deposit /
+            // commit-escrow / dispute-fee / oracle-insurance / leverage-collateral
+            // moves TOKEN OUT of account.balance INTO a PM object field, so
+            // current_supply still counts it but acc_balance no longer does. Those
+            // PM-held pools must therefore be added, or the equality is off by exactly
+            // the PM float. Minimal NON-OVERLAPPING holdings (duplicates excluded):
+            //   bets      Σ pm_bet.amount                (market/outcome bets_sum & CPMM
+            //                                             reserves are aggregates of these)
+            //   user LPs  Σ pm_liquidity.amount WHERE provider != ""   (empty provider =
+            //                                             lazy pool, already in allocated_balance)
+            //   lazy pool free_balance + allocated_balance   (pm_lazy_deposit.principal is a
+            //                                             per-depositor CLAIM on this = duplicate)
+            //   commits   Σ pm_commit.escrow_amount
+            //   disputes  Σ pm_dispute.dispute_fee
+            //   forfeit   Σ pm_market.forfeit_pool
+            //   insurance Σ pm_oracle.insurance
+            //   leverage  Σ (collateral + loan)   (loan is debited from free_balance at
+            //                                       open, so it is held in the position, not the pool)
+            //
+            // TODO(pm): this PM accounting is NOT YET satoshi-validated against real PM
+            // snapshots (unlike the base pools). The status filters and double-count
+            // exclusions below are a best-effort static read of pm_evaluator.cpp and
+            // MUST be reconciled to delta==0 on real PM snapshots (all market lifecycle
+            // states: active / committed / revealed / disputed / settled / leveraged)
+            // before the TOKEN check is re-armed as a fatal FC_ASSERT. Until then this
+            // check is LOG-ONLY on the pm branch — it does NOT increment
+            // invariant_failures. The (4) SHARES check and the #125 count/referential/
+            // singleton checks stay fatal (PM holds no VESTS; those pools are unchanged).
+            // Tracking issue: https://github.com/VIZ-Blockchain/viz-cpp-node/issues/127
+            {
+                const auto& dgp = db.get_dynamic_global_properties();
+                int64_t acc_balance = 0, acc_reserved = 0;
+                const auto& acc_idx = db.get_index<account_index>().indices();
+                for (auto itr = acc_idx.begin(); itr != acc_idx.end(); ++itr) {
+                    acc_balance  += itr->balance.amount.value;
+                    acc_reserved += itr->reserved_balance.amount.value;
+                }
+                int64_t escrow_balance = 0, escrow_fee = 0;
+                const auto& esc_idx = db.get_index<escrow_index>().indices();
+                for (auto itr = esc_idx.begin(); itr != esc_idx.end(); ++itr) {
+                    escrow_balance += itr->token_balance.amount.value;
+                    escrow_fee     += itr->pending_fee.amount.value;
+                }
+                int64_t invite_balance = 0;
+                const auto& inv_idx = db.get_index<invite_index>().indices();
+                for (auto itr = inv_idx.begin(); itr != inv_idx.end(); ++itr)
+                    invite_balance += itr->balance.amount.value;
+                int64_t validator_pending = 0;
+                const auto& val_idx = db.get_index<validator_index>().indices();
+                for (auto itr = val_idx.begin(); itr != val_idx.end(); ++itr)
+                    validator_pending += itr->pending_stakeholder_reward.value;
+
+                const int64_t vesting_fund   = dgp.total_vesting_fund.amount.value;
+                const int64_t reward_fund    = dgp.total_reward_fund.amount.value;
+                const int64_t committee_fund = dgp.committee_fund.amount.value;
+                const int64_t base_token = acc_balance + acc_reserved
+                    + escrow_balance + escrow_fee + invite_balance
+                    + validator_pending + vesting_fund + reward_fund + committee_fund;
+
+                // ── PM pools (see TODO(pm) above — LOG-ONLY, unvalidated) ──
+                // Status codes are documented in pm_objects.hpp; held-state filters are
+                // marked UNVERIFIED and are the crux of the reconciliation task.
+                int64_t pm_bets = 0;
+                {
+                    const auto& idx = db.get_index<pm_bet_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        if (itr->status == 0 || itr->status == 5 || itr->status == 6) // UNVERIFIED: active/queued/revealed-pending held
+                            pm_bets += itr->amount.value;
+                }
+                int64_t pm_user_lp = 0;
+                {
+                    const auto& idx = db.get_index<pm_liquidity_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        if (itr->status == 0 && itr->provider.size() > 0)          // exclude empty-provider lazy LP (dup of allocated_balance)
+                            pm_user_lp += itr->amount.value;
+                }
+                int64_t pm_lazy = 0;
+                {
+                    const auto& idx = db.get_index<pm_lazy_pool_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        pm_lazy += itr->free_balance.value + itr->allocated_balance.value;
+                }
+                int64_t pm_commit = 0;
+                {
+                    const auto& idx = db.get_index<pm_commit_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        if (itr->status == 0)                                       // UNVERIFIED: escrow held only while committed
+                            pm_commit += itr->escrow_amount.value;
+                }
+                int64_t pm_dispute = 0;
+                {
+                    const auto& idx = db.get_index<pm_dispute_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        if (itr->status == 0)                                       // UNVERIFIED: fee held only while dispute open
+                            pm_dispute += itr->dispute_fee.value;
+                }
+                int64_t pm_forfeit = 0;
+                {
+                    const auto& idx = db.get_index<pm_market_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        pm_forfeit += itr->forfeit_pool.value;                      // zeroed post-settlement
+                }
+                int64_t pm_insurance = 0;
+                {
+                    const auto& idx = db.get_index<pm_oracle_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        pm_insurance += itr->insurance.value;
+                }
+                int64_t pm_leverage = 0;
+                {
+                    const auto& idx = db.get_index<pm_leverage_position_index>().indices();
+                    for (auto itr = idx.begin(); itr != idx.end(); ++itr)
+                        if (itr->status == 0)                                       // UNVERIFIED: collateral+loan held only while active
+                            pm_leverage += itr->collateral.value + itr->loan.value;
+                }
+                const int64_t pm_token = pm_bets + pm_user_lp + pm_lazy + pm_commit
+                    + pm_dispute + pm_forfeit + pm_insurance + pm_leverage;
+
+                const int64_t summed_token = base_token + pm_token;
+                const int64_t expected_supply = dgp.current_supply.amount.value;
+                ilog(CLOG_ORANGE "Snapshot TOKEN invariant: "
+                     "current_supply=${cs} vs summed=${sm} (base=${bt} + pm=${pm}), delta=${d}. "
+                     "Base: acc_balance=${ab} acc_reserved=${ar} escrow_balance=${eb} escrow_fee=${ef} "
+                     "invite_balance=${ib} validator_pending=${vp} vesting_fund=${vf} "
+                     "reward_fund=${rf} committee_fund=${cf}. "
+                     "PM: bets=${pb} user_lp=${pl} lazy=${plz} commit=${pc} dispute=${pd} "
+                     "forfeit=${pf} insurance=${pi} leverage=${plv}" CLOG_RESET,
+                     ("cs", expected_supply)("sm", summed_token)("bt", base_token)("pm", pm_token)
+                     ("d", summed_token - expected_supply)
+                     ("ab", acc_balance)("ar", acc_reserved)("eb", escrow_balance)("ef", escrow_fee)
+                     ("ib", invite_balance)("vp", validator_pending)("vf", vesting_fund)
+                     ("rf", reward_fund)("cf", committee_fund)
+                     ("pb", pm_bets)("pl", pm_user_lp)("plz", pm_lazy)("pc", pm_commit)
+                     ("pd", pm_dispute)("pf", pm_forfeit)("pi", pm_insurance)("plv", pm_leverage));
+                if (summed_token != expected_supply) {
+                    // LOG-ONLY on the pm branch: do NOT ++invariant_failures until the
+                    // PM accounting above is reconciled satoshi-exact (see TODO(pm)).
+                    wlog(CLOG_RED "Snapshot TOKEN supply invariant NOT reconciled — summed "
+                         "(${sm}) != dgp.current_supply (${cs}), delta=${d} (base_delta=${bd}). "
+                         "This is LOG-ONLY on the pm branch: the PM pool accounting is not yet "
+                         "satoshi-validated (TODO(pm)), so import is NOT failed on this. If "
+                         "base_delta != 0 the base chain state is genuinely incomplete." CLOG_RESET,
+                         ("sm", summed_token)("cs", expected_supply)
+                         ("d", summed_token - expected_supply)
+                         ("bd", base_token - expected_supply));
+                }
+            }
+
+            FC_ASSERT(invariant_failures == 0,
+                "Snapshot import failed post-import invariant checks (${n} failure(s)); the snapshot "
+                "is incomplete. Refusing to start on corrupt state — will retry another trusted peer.",
+                ("n", invariant_failures));
+
+            ilog(CLOG_ORANGE "Snapshot completeness checks passed (${a} accounts, ${w} validators)" CLOG_RESET,
+                 ("a", db.get_index<account_index>().indices().size())
+                 ("w", db.get_index<validator_index>().indices().size()));
+        }
+
         ilog(CLOG_ORANGE "All objects imported successfully" CLOG_RESET);
         } catch (const fc::exception& e) {
             elog(CLOG_RED "Snapshot import failed with fc::exception: ${e}" CLOG_RESET, ("e", e.to_detail_string()));

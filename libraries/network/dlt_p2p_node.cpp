@@ -12,6 +12,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <iostream>
+#include <fstream>
 #include <random>
 #include <chrono>
 #include <thread>
@@ -34,6 +35,9 @@ constexpr uint32_t dlt_p2p_node::FORWARD_STAGNATION_SEC;
 constexpr uint32_t dlt_p2p_node::ISOLATION_RESET_SEC;
 constexpr uint32_t dlt_p2p_node::GAP_REJECT_BLACKLIST_SEC;
 constexpr uint32_t dlt_p2p_node::BLOCKED_IP_DURATION_SEC;
+constexpr uint32_t dlt_p2p_node::WEDGE_BEHIND_THRESHOLD;
+constexpr uint32_t dlt_p2p_node::WEDGE_CONFIRM_SEC;
+constexpr uint32_t dlt_p2p_node::WEDGE_RELOG_SEC;
 
 // ── Construction / destruction ───────────────────────────────────────
 
@@ -81,6 +85,17 @@ void dlt_p2p_node::set_isolated_peers(bool isolated) {
 
 void dlt_p2p_node::set_witness_diag_provider(std::function<std::string()> fn) {
     _witness_diag_provider = std::move(fn);
+}
+
+void dlt_p2p_node::set_state_dir(const std::string& dir) { _state_dir = dir; }
+
+void dlt_p2p_node::set_auto_resync_on_wedge(bool enabled) {
+    _auto_resync_on_wedge = enabled;
+    if (enabled)
+        ilog("DLT P2P: auto-resync-on-wedge ENABLED — a confirmed network wedge will "
+             "write a force_resync marker and exit for supervised snapshot re-bootstrap");
+    else
+        ilog("DLT P2P: auto-resync-on-wedge disabled — wedge watchdog will elog only (no auto-exit)");
 }
 
 void dlt_p2p_node::block_incoming_ip(uint32_t ip, const std::string& reason) {
@@ -1777,6 +1792,10 @@ void dlt_p2p_node::on_dlt_block_reply(peer_id peer, const dlt_block_reply_messag
     if (result == dlt_block_accept_result::REJECTED) {
         wlog(DLT_LOG_RED "Rejected block #${n} from ${ep}" DLT_LOG_RESET,
              ("n", block_num)("ep", state.endpoint));
+        // Monotonic total (never reset) — the wedge watchdog uses this to prove
+        // rejections are still climbing.  _gap_rejected_count oscillates
+        // (resets to 0 on blacklist), so it cannot be used for a "still rejecting" signal.
+        _gap_rejected_total++;
         // Track rejected blocks to prevent gap fill infinite retry loop
         if (block_num == _gap_rejected_block_num) {
             _gap_rejected_count++;
@@ -2236,6 +2255,8 @@ void dlt_p2p_node::on_dlt_gap_fill_reply(peer_id peer, const dlt_gap_fill_reply&
         } else {
             wlog(DLT_LOG_RED "Gap fill: rejected block #${n} from ${ep}" DLT_LOG_RESET,
                  ("n", block.block_num())("ep", it->second.endpoint));
+            // Monotonic total (never reset) — see note at the other rejection site.
+            _gap_rejected_total++;
             // Track rejected blocks to prevent infinite retry loop
             if (block.block_num() == _gap_rejected_block_num) {
                 _gap_rejected_count++;
@@ -3741,6 +3762,156 @@ void dlt_p2p_node::periodic_known_peers_cleanup() {
     }
 }
 
+void dlt_p2p_node::check_wedge_watchdog() {
+    if (!_delegate) return;
+
+    uint32_t our_head = _delegate->get_head_block_num();
+    if (our_head == 0) return;  // not bootstrapped yet (or mid snapshot import)
+
+    auto now = fc::time_point::now();
+
+    // ── Corroborated network tip (anti-eclipse) ──────────────────────
+    // _highest_seen_block_num is monotonic and peer-influenced: a single
+    // malicious/buggy peer advertising an impossibly-high head would pin
+    // `behind` open forever and, with the flag ON, drive an operator-invisible
+    // auto-wipe under an eclipse scenario.  For this DESTRUCTIVE decision we
+    // require corroboration — use the SECOND-highest head across established
+    // (SYNCING/ACTIVE) peers, so no single outlier can move the tip.  Fewer
+    // than WEDGE_MIN_CORROBORATING_PEERS established peers ⇒ we cannot
+    // corroborate ⇒ do not arm the watchdog (network_tip collapses to 0).
+    uint32_t highest_peer_head = 0, second_peer_head = 0, established_peers = 0;
+    for (const auto& kv : _peer_states) {
+        const auto& ps = kv.second;
+        if (ps.lifecycle_state != DLT_PEER_LIFECYCLE_SYNCING &&
+            ps.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;
+        uint32_t h = ps.peer_head_num;
+        if (h == 0) continue;
+        ++established_peers;
+        if (h > highest_peer_head) { second_peer_head = highest_peer_head; highest_peer_head = h; }
+        else if (h > second_peer_head) { second_peer_head = h; }
+    }
+    uint32_t network_tip = (established_peers >= WEDGE_MIN_CORROBORATING_PEERS)
+                         ? second_peer_head : 0;
+
+    uint32_t behind = (network_tip > our_head) ? (network_tip - our_head) : 0;
+
+    // "Stuck behind" gate: far enough behind the CORROBORATED tip to be
+    // suspicious.  An under-corroborated tip is 0, collapsing `behind` to 0 and
+    // tripping this branch — so an eclipsed / low-peer node never arms.
+    if (behind <= WEDGE_BEHIND_THRESHOLD) {
+        if (_wedge_since != fc::time_point()) {
+            ilog(DLT_LOG_GREEN "Wedge watchdog: caught up / under-corroborated (behind=${b} <= ${thr}, "
+                 "corroborating_peers=${p}), clearing wedge timer (our_head=#${h})" DLT_LOG_RESET,
+                 ("b", behind)("thr", WEDGE_BEHIND_THRESHOLD)("p", established_peers)("h", our_head));
+        }
+        _wedge_since = fc::time_point();
+        return;
+    }
+
+    // Behind this tick.  Open the window if not already open.
+    if (_wedge_since == fc::time_point()) {
+        _wedge_since = now;
+        _wedge_window_head = our_head;
+        _wedge_reject_last_total = _gap_rejected_total;
+        _wedge_last_reject = fc::time_point();   // no rejection observed yet this window
+        _wedge_last_relog = now;
+        elog(DLT_LOG_RED "Wedge watchdog: node is ${b} blocks behind corroborated network tip "
+             "(our_head=#${h}, network_tip=#${t}, corroborating_peers=${p}) — watching for a rejection "
+             "livelock. Will confirm over ${c}s if head stays flat and rejections keep climbing." DLT_LOG_RESET,
+             ("b", behind)("h", our_head)("t", network_tip)("p", established_peers)("c", WEDGE_CONFIRM_SEC));
+        return;
+    }
+
+    // Window is open.  Head advancing at all means we are syncing, not wedged —
+    // reset and re-arm (we're still behind, so a fresh window opens next tick).
+    bool head_advanced = (our_head != _wedge_window_head);
+    if (head_advanced) {
+        ilog(DLT_LOG_GREEN "Wedge watchdog: head advanced (#${p} → #${h}) while behind — syncing, not wedged; "
+             "resetting timer" DLT_LOG_RESET, ("p", _wedge_window_head)("h", our_head));
+        _wedge_since = fc::time_point();
+        return;
+    }
+
+    // "Rejections still climbing" = a NEW gap-fill rejection observed within the
+    // last WEDGE_RELOG_SEC.  A once-captured baseline stays tripped for the whole
+    // window after a single early rejection, so a node that took one rejection
+    // then went silent (partial isolation) would falsely confirm.  Track the last
+    // increment time instead, so "climbing" means SUSTAINED, not "happened once".
+    if (_gap_rejected_total > _wedge_reject_last_total) {
+        _wedge_reject_last_total = _gap_rejected_total;
+        _wedge_last_reject = now;
+    }
+    bool rejects_climbed = (_wedge_last_reject != fc::time_point())
+        && (now - _wedge_last_reject).count() <= int64_t(WEDGE_RELOG_SEC) * 1000000LL;
+    uint32_t elapsed_sec = static_cast<uint32_t>((now - _wedge_since).count() / 1000000LL);
+
+    // Loud periodic re-log while the wedge builds toward confirmation.
+    if ((now - _wedge_last_relog).count() >= int64_t(WEDGE_RELOG_SEC) * 1000000LL) {
+        _wedge_last_relog = now;
+        elog(DLT_LOG_RED "Wedge watchdog: head flat at #${h} for ${s}s / ${c}s — behind=${b} "
+             "(network_tip=#${t}, corroborating_peers=${p}), rejections ${rc} (total=${r})" DLT_LOG_RESET,
+             ("h", our_head)("s", elapsed_sec)("c", WEDGE_CONFIRM_SEC)("b", behind)
+             ("t", network_tip)("p", established_peers)
+             ("rc", rejects_climbed ? "climbing" : "flat")("r", _gap_rejected_total));
+    }
+
+    if (!is_wedged(behind, head_advanced, rejects_climbed, elapsed_sec)) return;
+
+    // ── Confirmed wedge ──────────────────────────────────────────
+    elog(DLT_LOG_RED "Wedge watchdog: CONFIRMED network wedge — head frozen at #${h} for ${s}s while "
+         "${b} blocks behind (corroborated network_tip=#${t}), gap rejections total=${r}. State has "
+         "diverged at/below LIB; fork-switch cannot recover — only wipe + snapshot re-import can." DLT_LOG_RESET,
+         ("h", our_head)("s", elapsed_sec)("b", behind)("t", network_tip)("r", _gap_rejected_total));
+
+    if (!_auto_resync_on_wedge) {
+        elog(DLT_LOG_RED "Wedge watchdog: auto-resync-on-wedge is OFF — NOT exiting. Enable "
+             "'auto-resync-on-wedge = true' for automatic snapshot re-bootstrap. Manual recovery: "
+             "restart with a fresh state dir (docker compose up -d --force-recreate)." DLT_LOG_RESET);
+        // Keep the window open but re-arm the relog timer so we emit the CONFIRMED
+        // line at WEDGE_RELOG_SEC cadence rather than every 5s tick.
+        _wedge_last_relog = now;
+        return;
+    }
+
+    // Write the force_resync marker next to shared_memory.bin so the supervised
+    // restart re-bootstraps from a trusted snapshot (see chain plugin_startup).
+    bool marker_written = false;
+    if (!_state_dir.empty()) {
+        std::string marker_path = _state_dir;
+        if (marker_path.back() != '/' && marker_path.back() != '\\') marker_path += '/';
+        marker_path += "force_resync";
+        try {
+            std::ofstream f(marker_path);
+            f << "reason=wedged-behind-network\n"
+              << "our_head=" << our_head << "\n"
+              << "network_tip=" << network_tip << "\n"
+              << "highest_seen=" << _highest_seen_block_num << "\n"
+              << "behind=" << behind << "\n"
+              << "gap_rejected_total=" << _gap_rejected_total << "\n"
+              << "sustained_sec=" << elapsed_sec << "\n"
+              << "detected_at_us=" << now.time_since_epoch().count() << "\n";
+            f.flush();
+            marker_written = f.good();
+        } catch (...) {
+            marker_written = false;
+        }
+        if (marker_written)
+            elog(DLT_LOG_RED "Wedge watchdog: wrote force_resync marker at ${p}" DLT_LOG_RESET, ("p", marker_path));
+        else
+            elog(DLT_LOG_RED "Wedge watchdog: FAILED to write force_resync marker at ${p}" DLT_LOG_RESET, ("p", marker_path));
+    } else {
+        elog(DLT_LOG_RED "Wedge watchdog: no state dir configured — cannot write force_resync marker. "
+             "Exiting anyway; operator must re-bootstrap manually." DLT_LOG_RESET);
+    }
+
+    elog(DLT_LOG_RED "Wedge watchdog: exiting process (code 2) for supervised snapshot re-bootstrap." DLT_LOG_RESET);
+    std::cerr << "FATAL: node wedged behind network (behind=" << behind
+              << ", head=" << our_head << ", tip=" << network_tip
+              << "). Wrote force_resync marker=" << (marker_written ? "yes" : "no")
+              << "; exiting for snapshot re-bootstrap." << std::endl;
+    std::_Exit(2);
+}
+
 void dlt_p2p_node::periodic_task() {
     if (!_dead_fibers.empty()) {
     std::vector<fc::future<void>> to_clean;
@@ -3810,6 +3981,9 @@ void dlt_p2p_node::periodic_task() {
     try { request_gap_fill(); }     // P36 fix: fill gaps via exchange-enabled peers
         catch (const fc::exception& e) { wlog("request_gap_fill: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("request_gap_fill: ${e}", ("e", std::string(e.what()))); }
+    try { check_wedge_watchdog(); } // self-heal: detect rejection-livelock wedge behind the network
+        catch (const fc::exception& e) { wlog("check_wedge_watchdog: ${e}", ("e", e.to_detail_string())); }
+        catch (const std::exception& e) { wlog("check_wedge_watchdog: ${e}", ("e", std::string(e.what()))); }
     try { periodic_peer_exchange(); }
         catch (const fc::exception& e) { wlog("periodic_peer_exchange: ${e}", ("e", e.to_detail_string())); }
         catch (const std::exception& e) { wlog("periodic_peer_exchange: ${e}", ("e", std::string(e.what()))); }
