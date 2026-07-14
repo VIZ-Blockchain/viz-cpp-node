@@ -1893,6 +1893,104 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                 ++invariant_failures;
             }
 
+            // (4) SHARES conservation (Finding #4, the deferred value invariant).
+            // dgp.total_vesting_shares must equal the sum of every account's OWN
+            // vesting_shares. This is the export-side completeness net the count
+            // reconciliation (1) cannot provide: an account missing from the export
+            // that held vesting_shares drops the sum below the recorded total, which
+            // is derived independently at inflation time — so a short export no
+            // longer reconciles.
+            //
+            // Delegation is deliberately NOT summed. vesting_delegation_object /
+            // fix_vesting_delegation_object / vesting_delegation_expiration_object
+            // only redistribute vests already counted in the delegator's
+            // account.vesting_shares (delegated_/received_vesting_shares net to zero
+            // network-wide), so adding them would double-count. Gross account
+            // vesting_shares IS the minted total the dgp tracks.
+            {
+                const auto& dgp = db.get_dynamic_global_properties();
+                int64_t summed_vesting_shares = 0;
+                const auto& acc_idx = db.get_index<account_index>().indices();
+                for (auto itr = acc_idx.begin(); itr != acc_idx.end(); ++itr)
+                    summed_vesting_shares += itr->vesting_shares.amount.value;
+
+                const int64_t expected_vesting_shares = dgp.total_vesting_shares.amount.value;
+                ilog(CLOG_ORANGE "Snapshot SHARES invariant: Sum(account.vesting_shares)=${s}, "
+                     "dgp.total_vesting_shares=${e}, delta=${d}" CLOG_RESET,
+                     ("s", summed_vesting_shares)("e", expected_vesting_shares)
+                     ("d", summed_vesting_shares - expected_vesting_shares));
+                if (summed_vesting_shares != expected_vesting_shares) {
+                    elog(CLOG_RED "Snapshot completeness: SHARES conservation violated — summed "
+                         "account vesting_shares (${s}) != dgp.total_vesting_shares (${e}); the "
+                         "snapshot is missing accounts that held vesting stake" CLOG_RESET,
+                         ("s", summed_vesting_shares)("e", expected_vesting_shares));
+                    ++invariant_failures;
+                }
+            }
+
+            // (5) TOKEN supply conservation. dgp.current_supply must equal the sum
+            // of every locked and liquid TOKEN pool. Like (4), this catches
+            // export-side incompleteness the count reconciliation cannot: an account
+            // missing from the export that held a liquid balance drops the sum below
+            // the independently-tracked current_supply.
+            //
+            // Accounting verified satoshi-exact (delta=0) against six real mainnet
+            // snapshots spanning blocks 81334800–81620400 before arming — including
+            // the height-varying validator pending-reward term, which nets correctly
+            // every time. The per-component subtotals are logged unconditionally so a
+            // future mismatch can be attributed to a specific pool. current_supply
+            // already includes validator pending_stakeholder_reward (credited at
+            // inflation, moved into total_vesting_fund at create_vesting), so it is
+            // summed here. Delegation objects and reward-tracking share_type counters
+            // (curation/posting rewards, rshares) are NOT token pools and are excluded.
+            {
+                const auto& dgp = db.get_dynamic_global_properties();
+                int64_t acc_balance = 0, acc_reserved = 0;
+                const auto& acc_idx = db.get_index<account_index>().indices();
+                for (auto itr = acc_idx.begin(); itr != acc_idx.end(); ++itr) {
+                    acc_balance  += itr->balance.amount.value;
+                    acc_reserved += itr->reserved_balance.amount.value;
+                }
+                int64_t escrow_balance = 0, escrow_fee = 0;
+                const auto& esc_idx = db.get_index<escrow_index>().indices();
+                for (auto itr = esc_idx.begin(); itr != esc_idx.end(); ++itr) {
+                    escrow_balance += itr->token_balance.amount.value;
+                    escrow_fee     += itr->pending_fee.amount.value;
+                }
+                int64_t invite_balance = 0;
+                const auto& inv_idx = db.get_index<invite_index>().indices();
+                for (auto itr = inv_idx.begin(); itr != inv_idx.end(); ++itr)
+                    invite_balance += itr->balance.amount.value;
+                int64_t validator_pending = 0;
+                const auto& val_idx = db.get_index<validator_index>().indices();
+                for (auto itr = val_idx.begin(); itr != val_idx.end(); ++itr)
+                    validator_pending += itr->pending_stakeholder_reward.value;
+
+                const int64_t vesting_fund   = dgp.total_vesting_fund.amount.value;
+                const int64_t reward_fund    = dgp.total_reward_fund.amount.value;
+                const int64_t committee_fund = dgp.committee_fund.amount.value;
+                const int64_t summed_token = acc_balance + acc_reserved
+                    + escrow_balance + escrow_fee + invite_balance
+                    + validator_pending + vesting_fund + reward_fund + committee_fund;
+                const int64_t expected_supply = dgp.current_supply.amount.value;
+                ilog(CLOG_ORANGE "Snapshot TOKEN invariant: "
+                     "current_supply=${cs} vs summed=${sm}, delta=${d}. Components: "
+                     "acc_balance=${ab} acc_reserved=${ar} escrow_balance=${eb} escrow_fee=${ef} "
+                     "invite_balance=${ib} validator_pending=${vp} vesting_fund=${vf} "
+                     "reward_fund=${rf} committee_fund=${cf}" CLOG_RESET,
+                     ("cs", expected_supply)("sm", summed_token)("d", summed_token - expected_supply)
+                     ("ab", acc_balance)("ar", acc_reserved)("eb", escrow_balance)("ef", escrow_fee)
+                     ("ib", invite_balance)("vp", validator_pending)("vf", vesting_fund)
+                     ("rf", reward_fund)("cf", committee_fund));
+                if (summed_token != expected_supply) {
+                    elog(CLOG_RED "Snapshot completeness: TOKEN supply conservation violated — "
+                         "summed pools (${sm}) != dgp.current_supply (${cs}), delta=${d}; the "
+                         "snapshot is missing accounts that held a liquid balance" CLOG_RESET,
+                         ("sm", summed_token)("cs", expected_supply)("d", summed_token - expected_supply));
+                    ++invariant_failures;
+                }
+            }
+
             FC_ASSERT(invariant_failures == 0,
                 "Snapshot import failed post-import invariant checks (${n} failure(s)); the snapshot "
                 "is incomplete. Refusing to start on corrupt state — will retry another trusted peer.",
