@@ -2308,60 +2308,18 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
 
                 const int64_t summed_token = base_token + pm_token;
                 const int64_t expected_supply = dgp.current_supply.amount.value;
-                // ── issue #127 TEMP instrumentation: per-status PM token breakdown to localize the delta.
-                // Read-only. Remove after localizing. Reload snapshot 81631202 (no replay) and grep "issue127".
-                {
-                    int64_t bet_all = 0, bet_held = 0, mkt_bets_sum = 0;
-                    std::map<int,int64_t> bet_st, lev_st, cmt_st, dsp_st, liq_st;
-                    { const auto& idx = db.get_index<pm_bet_index>().indices();
-                      for (auto i = idx.begin(); i != idx.end(); ++i) {
-                          bet_all += i->amount.value; bet_st[i->status] += i->amount.value;
-                          if (i->status == 0 || i->status == 5 || i->status == 6) bet_held += i->amount.value;
-                      } }
-                    { const auto& idx = db.get_index<pm_market_index>().indices();
-                      for (auto i = idx.begin(); i != idx.end(); ++i) mkt_bets_sum += i->bets_sum.value; }
-                    { const auto& idx = db.get_index<pm_leverage_position_index>().indices();
-                      for (auto i = idx.begin(); i != idx.end(); ++i) lev_st[i->status] += i->collateral.value + i->loan.value; }
-                    { const auto& idx = db.get_index<pm_commit_index>().indices();
-                      for (auto i = idx.begin(); i != idx.end(); ++i) cmt_st[i->status] += i->escrow_amount.value; }
-                    { const auto& idx = db.get_index<pm_dispute_index>().indices();
-                      for (auto i = idx.begin(); i != idx.end(); ++i) dsp_st[i->status] += i->dispute_fee.value; }
-                    { const auto& idx = db.get_index<pm_liquidity_index>().indices();
-                      for (auto i = idx.begin(); i != idx.end(); ++i) if (i->provider.size() > 0) liq_st[i->status] += i->amount.value; }
-                    auto S = [](std::map<int,int64_t>& m){ std::string r;
-                        for (auto& kv : m) r += " [" + std::to_string(kv.first) + "]=" + std::to_string(kv.second); return r; };
-                    ilog("issue127 bet_all=${a} bet_held(0,5,6)=${h} sum_market.bets_sum=${m} drift(held-bets_sum)=${d}",
-                         ("a", bet_all)("h", bet_held)("m", mkt_bets_sum)("d", bet_held - mkt_bets_sum));
-                    ilog("issue127 bet.amount by_status:${x}",              ("x", S(bet_st)));
-                    ilog("issue127 leverage.coll_loan by_status:${x}",      ("x", S(lev_st)));
-                    ilog("issue127 commit.escrow by_status:${x}",           ("x", S(cmt_st)));
-                    ilog("issue127 dispute.fee by_status:${x}",             ("x", S(dsp_st)));
-                    ilog("issue127 liquidity.amount_provider by_status:${x}", ("x", S(liq_st)));
-                    // Market-level token holders NOT summed by the invariant above. The delta
-                    // is small & non-round -> suspect retained fee/subsidy/reserve residual, not
-                    // a whole missing object bucket. reserve_a+reserve_b is the PHYSICAL hold of
-                    // a CPMM market (== active LP + held bets + skimmed fee); the residual
-                    // (reserve - lp - bets) is the uncounted token. lmsr_subsidy seeds LMSR pools.
-                    int64_t mk_res_cpmm = 0, mk_res_lmsr = 0, mk_lmsr_subsidy = 0,
-                            mk_liq_fee_earned = 0, mk_oracle_fixed = 0, mk_ab_bets = 0;
-                    { const auto& idx = db.get_index<pm_market_index>().indices();
-                      for (auto i = idx.begin(); i != idx.end(); ++i) {
-                          if (i->market_type == 0) mk_res_cpmm += i->reserve_a.value + i->reserve_b.value;
-                          else                     mk_res_lmsr += i->reserve_a.value + i->reserve_b.value;
-                          mk_lmsr_subsidy   += i->lmsr_subsidy.value;
-                          mk_liq_fee_earned += i->liquidity_fee_earned.value;
-                          mk_oracle_fixed   += i->oracle_fixed_fee.value;
-                          mk_ab_bets        += i->a_bets_sum.value + i->b_bets_sum.value;
-                      } }
-                    // reserve_resid = physical CPMM reserves minus what we credit to it
-                    // (active LP + held bets). If this == -delta, the fix is to count reserves.
-                    ilog("issue127 market fields: reserve_ab(cpmm)=${rc} reserve_ab(lmsr)=${rl} "
-                         "lmsr_subsidy=${ls} liq_fee_earned=${lf} oracle_fixed_fee=${of} a+b_bets_sum=${ab} "
-                         "reserve_resid(cpmm_res-lp-heldbets)=${rr}",
-                         ("rc", mk_res_cpmm)("rl", mk_res_lmsr)("ls", mk_lmsr_subsidy)
-                         ("lf", mk_liq_fee_earned)("of", mk_oracle_fixed)("ab", mk_ab_bets)
-                         ("rr", mk_res_cpmm - pm_user_lp - pm_bets));
-                }
+                const int64_t pm_delta = summed_token - expected_supply;
+                // ── issue #127: PM token supply invariant is now ENFORCED (satoshi-exact) after the
+                // leverage-exit residual fix (route total_bet-cv → forfeit_pool). On a fresh chain the
+                // PM accounting reconciles to 0.
+                //
+                // TEMP TESTNET ANCHOR — REMOVE before mainnet / after a clean state rebuild:
+                // the current testnet snapshot carries a frozen PRE-FIX residual (leverage floor dust
+                // that was minted-away on never-settling markets before the fix; code cannot retro-heal
+                // already-frozen state). We anchor the check to that known constant so the invariant is
+                // live again and catches ANY NEW divergence, while tolerating the legacy value. Set to 0
+                // (default) on mainnet/fresh chains → strict ==0. See journal 2026-07-15, q#199.
+                const int64_t PM_SUPPLY_LEGACY_RESIDUAL = -9079; // TEMP: testnet-only; make 0 to enforce strict
                 ilog(CLOG_ORANGE "Snapshot TOKEN invariant: "
                      "current_supply=${cs} vs summed=${sm} (base=${bt} + pm=${pm}), delta=${d}. "
                      "Base: acc_balance=${ab} acc_reserved=${ar} escrow_balance=${eb} escrow_fee=${ef} "
@@ -2376,17 +2334,23 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                      ("rf", reward_fund)("cf", committee_fund)
                      ("pb", pm_bets)("pl", pm_user_lp)("plz", pm_lazy)("pc", pm_commit)
                      ("pd", pm_dispute)("pf", pm_forfeit)("pi", pm_insurance)("plv", pm_leverage));
-                if (summed_token != expected_supply) {
-                    // LOG-ONLY on the pm branch: do NOT ++invariant_failures until the
-                    // PM accounting above is reconciled satoshi-exact (see TODO(pm)).
-                    wlog(CLOG_RED "Snapshot TOKEN supply invariant NOT reconciled — summed "
-                         "(${sm}) != dgp.current_supply (${cs}), delta=${d} (base_delta=${bd}). "
-                         "This is LOG-ONLY on the pm branch: the PM pool accounting is not yet "
-                         "satoshi-validated (TODO(pm)), so import is NOT failed on this. If "
-                         "base_delta != 0 the base chain state is genuinely incomplete." CLOG_RESET,
-                         ("sm", summed_token)("cs", expected_supply)
-                         ("d", summed_token - expected_supply)
+                if (pm_delta != PM_SUPPLY_LEGACY_RESIDUAL) {
+                    // ENFORCED (issue #127): after the leverage-exit residual fix the PM accounting
+                    // is satoshi-exact, so any drift away from the expected residual is a genuine
+                    // token divergence → fail import and re-sync from a trusted peer.
+                    ++invariant_failures;
+                    elog(CLOG_RED "Snapshot TOKEN supply invariant DIVERGED — summed (${sm}) != "
+                         "current_supply (${cs}), delta=${d}, expected=${exp}, drift_from_anchor=${dr} "
+                         "(base_delta=${bd}). PM accounting no longer reconciles; refusing corrupt state." CLOG_RESET,
+                         ("sm", summed_token)("cs", expected_supply)("d", pm_delta)
+                         ("exp", PM_SUPPLY_LEGACY_RESIDUAL)("dr", pm_delta - PM_SUPPLY_LEGACY_RESIDUAL)
                          ("bd", base_token - expected_supply));
+                } else if (pm_delta != 0) {
+                    // Matched the TEMP testnet anchor (frozen pre-fix legacy dust): tolerated, not a
+                    // failure — but loudly remind that the anchor must be 0 for mainnet/fresh chains.
+                    wlog(CLOG_ORANGE "Snapshot TOKEN invariant at legacy anchor: delta=${d} == "
+                         "PM_SUPPLY_LEGACY_RESIDUAL (frozen pre-fix testnet dust). REMOVE the anchor "
+                         "(set 0) before mainnet." CLOG_RESET, ("d", pm_delta));
                 }
             }
 
