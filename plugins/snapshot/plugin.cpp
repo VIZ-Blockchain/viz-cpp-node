@@ -2337,6 +2337,30 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                     ilog("issue127 commit.escrow by_status:${x}",           ("x", S(cmt_st)));
                     ilog("issue127 dispute.fee by_status:${x}",             ("x", S(dsp_st)));
                     ilog("issue127 liquidity.amount_provider by_status:${x}", ("x", S(liq_st)));
+                    // Market-level token holders NOT summed by the invariant above. The delta
+                    // is small & non-round -> suspect retained fee/subsidy/reserve residual, not
+                    // a whole missing object bucket. reserve_a+reserve_b is the PHYSICAL hold of
+                    // a CPMM market (== active LP + held bets + skimmed fee); the residual
+                    // (reserve - lp - bets) is the uncounted token. lmsr_subsidy seeds LMSR pools.
+                    int64_t mk_res_cpmm = 0, mk_res_lmsr = 0, mk_lmsr_subsidy = 0,
+                            mk_liq_fee_earned = 0, mk_oracle_fixed = 0, mk_ab_bets = 0;
+                    { const auto& idx = db.get_index<pm_market_index>().indices();
+                      for (auto i = idx.begin(); i != idx.end(); ++i) {
+                          if (i->market_type == 0) mk_res_cpmm += i->reserve_a.value + i->reserve_b.value;
+                          else                     mk_res_lmsr += i->reserve_a.value + i->reserve_b.value;
+                          mk_lmsr_subsidy   += i->lmsr_subsidy.value;
+                          mk_liq_fee_earned += i->liquidity_fee_earned.value;
+                          mk_oracle_fixed   += i->oracle_fixed_fee.value;
+                          mk_ab_bets        += i->a_bets_sum.value + i->b_bets_sum.value;
+                      } }
+                    // reserve_resid = physical CPMM reserves minus what we credit to it
+                    // (active LP + held bets). If this == -delta, the fix is to count reserves.
+                    ilog("issue127 market fields: reserve_ab(cpmm)=${rc} reserve_ab(lmsr)=${rl} "
+                         "lmsr_subsidy=${ls} liq_fee_earned=${lf} oracle_fixed_fee=${of} a+b_bets_sum=${ab} "
+                         "reserve_resid(cpmm_res-lp-heldbets)=${rr}",
+                         ("rc", mk_res_cpmm)("rl", mk_res_lmsr)("ls", mk_lmsr_subsidy)
+                         ("lf", mk_liq_fee_earned)("of", mk_oracle_fixed)("ab", mk_ab_bets)
+                         ("rr", mk_res_cpmm - pm_user_lp - pm_bets));
                 }
                 ilog(CLOG_ORANGE "Snapshot TOKEN invariant: "
                      "current_supply=${cs} vs summed=${sm} (base=${bt} + pm=${pm}), delta=${d}. "
