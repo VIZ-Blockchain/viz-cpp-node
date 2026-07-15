@@ -135,6 +135,14 @@ namespace {
         int64_t bettor_received = cv - pool_received; // ≥ 0
         int64_t pool_profit     = pool_received - pos.loan.value;
 
+        // Conservation: (C+L) entered the curve at open and is tracked as this position's
+        // collateral+loan until now; only `cv` returns (pool_received + bettor_received). The
+        // remainder = total_bet − cv (AMM price-impact + kdiv floor) must be routed, not left
+        // frozen in the virtual reserves — on a never-settling market that would be an untracked
+        // token deficit. Route it to forfeit_pool: it "accrues to the rest of the market" (the
+        // design intent, spec §5) and is distributed to winners at settlement, so token supply
+        // reconciles exactly. See issue #127.
+        const int64_t curve_residual = pos.total_bet.value - cv;
         db.modify(mkt, [&](pm_market_object& m) { // unwind tokens (k preserved)
             if (pos.outcome_index == 0) {
                 int64_t new_rb = m.reserve_b.value + pos.tokens.value;
@@ -145,6 +153,7 @@ namespace {
                 m.reserve_a = share_type(new_ra);
                 m.reserve_b = share_type((int64_t)(m.k / fc::uint128_t((uint64_t)new_ra)).lo);
             }
+            m.forfeit_pool += share_type(curve_residual);
         });
         db.modify(db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0)), [&](pm_lazy_pool_object& p) {
             p.free_balance       += share_type(pool_received);
@@ -1861,6 +1870,11 @@ void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o)
     int64_t bettor_received = cv - obligation;
     FC_ASSERT(bettor_received >= o.min_return, "Return below min_return");
 
+    // Conservation (see issue #127): only `cv` (= obligation + bettor_received) returns, while
+    // the position's total_bet (C+L) is what left circulation at open. The remainder
+    // total_bet − cv (AMM spread + kdiv floor) is routed to forfeit_pool so no token is left
+    // frozen in the virtual reserves; it accrues to the rest of the market and settles to winners.
+    const int64_t curve_residual = pos.total_bet.value - cv;
     // Unwind the tokens from the curve (k preserved).
     db.modify(mkt, [&](pm_market_object& m) {
         if (pos.outcome_index == 0) {
@@ -1872,6 +1886,7 @@ void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o)
             m.reserve_a = share_type(new_ra);
             m.reserve_b = share_type((int64_t)(m.k / fc::uint128_t((uint64_t)new_ra)).lo);
         }
+        m.forfeit_pool += share_type(curve_residual);
     });
     int64_t pool_yield = pos.pool_profit.value + pos.funding_paid.value; // R-markup + accrued funding → LP yield
     db.modify(db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0)), [&](pm_lazy_pool_object& p) {
