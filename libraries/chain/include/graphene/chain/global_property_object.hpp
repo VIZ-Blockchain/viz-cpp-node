@@ -143,6 +143,14 @@ namespace graphene {
              * Zero if never activated. Used to compute duration and for exit condition.
              */
             uint32_t emergency_consensus_start_block = 0;
+
+            /**
+             * One-time flag: the PM per-account frozen-funds counters
+             * (account.pm_liquidity_committed / pm_bets_staked / pm_leverage_collateral)
+             * have been seeded from existing objects. Set on the first block processed
+             * after the upgrade so counters are correct without a full replay.
+             */
+            bool pm_frozen_counters_seeded = false;
         };
 
         typedef multi_index_container <
@@ -190,5 +198,6 @@ FC_REFLECT((graphene::chain::dynamic_global_property_object),
                 (inflation_ratio)
                 (emergency_consensus_active)
                 (emergency_consensus_start_block)
+                (pm_frozen_counters_seeded)
 )
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::dynamic_global_property_object, graphene::chain::dynamic_global_property_index)

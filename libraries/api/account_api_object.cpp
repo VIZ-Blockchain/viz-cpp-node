@@ -24,7 +24,8 @@ account_api_object::account_api_object(const account_object& a, const graphene::
         subaccount_seller(a.subaccount_seller), subaccount_offer_price(a.subaccount_offer_price), subaccount_on_sale(a.subaccount_on_sale),
         reserved_balance(a.reserved_balance), target_buyer(a.target_buyer), account_on_auction(a.account_on_auction),
         current_bid(a.current_bid), current_bidder(a.current_bidder), current_bidder_key(a.current_bidder_key),
-        last_bid(a.last_bid){
+        last_bid(a.last_bid),
+        pm_liquidity_committed(a.pm_liquidity_committed), pm_bets_staked(a.pm_bets_staked), pm_leverage_collateral(a.pm_leverage_collateral){
     size_t n = a.proxied_vsf_votes.size();
     proxied_vsf_votes.reserve(n);
     for (size_t i = 0; i < n; i++) {

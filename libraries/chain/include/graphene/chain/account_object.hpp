@@ -140,6 +140,14 @@ public:
     account_name_type subaccount_seller;
     asset subaccount_offer_price = asset(0, TOKEN_SYMBOL);
     bool subaccount_on_sale = false;
+
+    // Display-only running aggregates: how much of this account's own funds is currently
+    // frozen in prediction markets. Maintained incrementally at every PM lock/unlock/move
+    // point and seeded once from existing objects on upgrade (no full replay). NEVER gate
+    // consensus on these — they are read-only telemetry for clients (get_accounts).
+    asset pm_liquidity_committed = asset(0, TOKEN_SYMBOL);///< own LP/creator liquidity in live markets
+    asset pm_bets_staked = asset(0, TOKEN_SYMBOL);        ///< own stake locked in open/queued bets
+    asset pm_leverage_collateral = asset(0, TOKEN_SYMBOL);///< own collateral in active leverage positions
 };
 
 class account_authority_object
@@ -528,6 +536,7 @@ FC_REFLECT((graphene::chain::account_object),
                 (reserved_balance)
                 (target_buyer)(account_on_auction)(current_bid)(current_bidder)(current_bidder_key)(last_bid)
                 (subaccount_seller)(subaccount_offer_price)(subaccount_on_sale)
+                (pm_liquidity_committed)(pm_bets_staked)(pm_leverage_collateral)
 )
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::account_object, graphene::chain::account_index)
 

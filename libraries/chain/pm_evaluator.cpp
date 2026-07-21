@@ -2032,8 +2032,56 @@ void pm_unban_evaluator::do_apply(const pm_unban_operation& o) {
 // Uses the anonymous-namespace helpers (settle_market, refund_all_bets,
 // return_liquidity) that are visible within this translation unit.
 
+// PM frozen-funds telemetry helper (display-only). kind: 0=liquidity, 1=bets, 2=leverage.
+// Clamped at zero so a stray double-decrement can never wrap a share_type negative — these
+// are cosmetic aggregates, never consensus inputs.
+void database::pm_adjust_frozen(const account_name_type& account, uint8_t kind, share_type delta) {
+    if (delta == 0) return;
+    const auto* a = find_account(account);
+    if (a == nullptr) return;
+    modify(*a, [&](account_object& acc) {
+        asset* f = (kind == 0) ? &acc.pm_liquidity_committed
+                 : (kind == 1) ? &acc.pm_bets_staked
+                               : &acc.pm_leverage_collateral;
+        f->amount += delta;
+        if (f->amount < 0) f->amount = 0;
+    });
+}
+
+// One-time seed of the per-account frozen counters from existing PM objects. Runs once,
+// on the first block after the upgrade (guarded by dgpo.pm_frozen_counters_seeded), so the
+// counters are correct without a full replay (VIZ testnet is DLT-only, no genesis).
+void database::pm_seed_frozen_counters() {
+    // liquidity: own provider liquidity in live markets (skip empty-provider lazy-pool rows)
+    const auto& lidx = get_index<pm_liquidity_index>().indices().get<by_provider>();
+    for (auto it = lidx.begin(); it != lidx.end(); ++it) {
+        if (it->status == 0 && it->provider.size() > 0)
+            pm_adjust_frozen(it->provider, 0, it->amount.value);
+    }
+    // bets: own stake still held on-chain — status 0 active, 5 queued, 6 revealed-pending
+    // (1 cancelled / 2 refunded / 3 resolved have already returned to free balance)
+    const auto& bidx = get_index<pm_bet_index>().indices().get<by_account>();
+    for (auto it = bidx.begin(); it != bidx.end(); ++it) {
+        if (it->status == 0 || it->status == 5 || it->status == 6)
+            pm_adjust_frozen(it->account, 1, it->amount.value);
+    }
+    // leverage: own collateral in active positions
+    const auto& vidx = get_index<pm_leverage_position_index>().indices().get<by_lev_account>();
+    for (auto it = vidx.begin(); it != vidx.end(); ++it) {
+        if (it->status == 0)
+            pm_adjust_frozen(it->account, 2, it->collateral.value);
+    }
+}
+
 void database::process_pm_markets() {
     if (!has_hardfork(CHAIN_HARDFORK_14)) return;
+
+    if (!get_dynamic_global_properties().pm_frozen_counters_seeded) {
+        pm_seed_frozen_counters();
+        modify(get_dynamic_global_properties(), [](dynamic_global_property_object& d) {
+            d.pm_frozen_counters_seeded = true;
+        });
+    }
 
     const auto  now = head_block_time();
     const auto& mp  = get_validator_schedule_object().median_props;

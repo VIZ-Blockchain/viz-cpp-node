@@ -434,6 +434,14 @@ namespace graphene { namespace chain {
 
             void adjust_balance(const account_object &a, const asset &delta);
 
+            // PM frozen-funds telemetry (display-only; account_object.pm_*). kind:
+            // 0 = liquidity_committed, 1 = bets_staked, 2 = leverage_collateral.
+            // NEVER gate consensus on these; they only feed get_accounts for clients.
+            void pm_adjust_frozen(const account_name_type &account, uint8_t kind, share_type delta);
+            // One-time seed of the pm_* counters from existing objects on the first block
+            // processed after the upgrade (guarded by dgpo.pm_frozen_counters_seeded).
+            void pm_seed_frozen_counters();
+
             void burn_asset(const asset &delta);
 
             void adjust_rshares(const content_object &content, fc::uint128_t old_rshares, fc::uint128_t new_rshares);
