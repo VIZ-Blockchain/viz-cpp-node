@@ -180,6 +180,7 @@ namespace {
             p.bettor_received = share_type(bettor_received);
             p.last_update     = db.head_block_time();
         });
+        db.pm_adjust_frozen(pos.account, 2, -pos.collateral); // UNLOCK: collateral leaves active leverage (liquidate/settle)
         if (settle) {
             uint16_t lev = pos.collateral.value > 0
                          ? (uint16_t)(pos.total_bet.value / pos.collateral.value) : (uint16_t)0;
@@ -295,6 +296,7 @@ namespace {
                 share_type ret = share_type(lp.amount.value + share.value);
                 if (ret.value > 0)
                     db.adjust_balance(db.get_account(lp.provider), asset(ret, TOKEN_SYMBOL));
+                db.pm_adjust_frozen(lp.provider, 0, -lp.amount); // UNLOCK: LP principal returns on finalize
             } else {
                 route_pool_lp_return(db, lp.amount.value, share.value); // lazy pool LP
             }
@@ -351,6 +353,7 @@ namespace {
                 const auto& bet = *it; ++it;
                 if (bet.status != 0) continue;
                 db.adjust_balance(db.get_account(bet.account), asset(bet.amount, TOKEN_SYMBOL));
+                db.pm_adjust_frozen(bet.account, 1, -bet.amount); // UNLOCK: stake refunded on void
                 db.modify(bet, [](pm_bet_object& b) { b.status = 2; });
             }
             settle_liquidity(db, mkt, 0);
@@ -425,6 +428,7 @@ namespace {
 
         // Per-bettor settlement record (winners + losers) so history parsers see each result.
         for (const auto* lb : loser_bets) {
+            db.pm_adjust_frozen(lb->account, 1, -lb->amount); // UNLOCK: losing stake leaves the bet set at settle
             db.modify(*lb, [](pm_bet_object& b) { b.status = 3; b.resolved_amount = 0; });
             db.push_virtual_operation(pm_payout_operation(
                 lb->account, mkt.id._id, lb->id._id, lb->side, lb->outcome_index,
@@ -435,6 +439,7 @@ namespace {
             share_type payout(res.winner_payout[i]);
             if (payout.value > 0)
                 db.adjust_balance(db.get_account(winner_bets[i]->account), asset(payout, TOKEN_SYMBOL));
+            db.pm_adjust_frozen(winner_bets[i]->account, 1, -winner_bets[i]->amount); // UNLOCK: original stake leaves the bet set (payout is winnings)
             db.modify(*winner_bets[i], [&](pm_bet_object& b) { b.status = 3; b.resolved_amount = payout; });
             db.push_virtual_operation(pm_payout_operation(
                 winner_bets[i]->account, mkt.id._id, winner_bets[i]->id._id,
@@ -483,6 +488,7 @@ namespace {
         while (it != bidx.end() && it->market == mkt.id) {
             if (it->status == 0) {
                 db.adjust_balance(db.get_account(it->account), asset(it->amount, TOKEN_SYMBOL));
+                db.pm_adjust_frozen(it->account, 1, -it->amount); // UNLOCK: stake refunded (missed-resolution/auto-close)
                 db.modify(*it, [](pm_bet_object& b) { b.status = 2; });
             }
             ++it;
@@ -496,9 +502,10 @@ namespace {
         auto it = lidx.lower_bound(boost::make_tuple(mkt.id, pm_liquidity_id_type()));
         while (it != lidx.end() && it->market == mkt.id) {
             if (it->status == 0) {
-                if (it->provider.size() > 0)
+                if (it->provider.size() > 0) {
                     db.adjust_balance(db.get_account(it->provider), asset(it->amount, TOKEN_SYMBOL));
-                else
+                    db.pm_adjust_frozen(it->provider, 0, -it->amount); // UNLOCK: LP principal on void/refund
+                } else
                     route_pool_lp_return(db, it->amount.value, 0); // lazy pool LP, no yield on refund
                 db.modify(*it, [](pm_liquidity_object& l) { l.status = 3; });
             }
@@ -809,6 +816,7 @@ void pm_create_market_evaluator::do_apply(const pm_create_market_operation& o) {
         });
     }
     db.adjust_balance(creator, -o.liquidity);
+    db.pm_adjust_frozen(o.creator, 0, o.liquidity.amount); // LOCK: creator liquidity → live market
 
     share_type lmsr_b_val = 0;
     if (o.market_type == 1) {
@@ -1028,6 +1036,7 @@ void pm_place_bet_evaluator::do_apply(const pm_place_bet_operation& o) {
         FC_ASSERT(tokens_out.value >= o.min_tokens, "Slippage: tokens below min_tokens");
 
         db.adjust_balance(acct, -o.amount);
+        db.pm_adjust_frozen(o.account, 1, o.amount.amount); // LOCK: stake → open bet (binary/CPMM)
         db.modify(mkt, [&](pm_market_object& m) {
             if (o.side == 0) {
                 m.reserve_a += delta;  m.reserve_b = new_reserve_out;  m.a_bets_sum += delta;
@@ -1068,6 +1077,7 @@ void pm_place_bet_evaluator::do_apply(const pm_place_bet_operation& o) {
         FC_ASSERT(tokens >= o.min_tokens, "Slippage: LMSR tokens below min_tokens");
 
         db.adjust_balance(acct, -o.amount);
+        db.pm_adjust_frozen(o.account, 1, o.amount.amount); // LOCK: stake → open bet (LMSR)
         db.modify(mkt, [&](pm_market_object& m) { m.bets_sum += o.amount.amount; });
 
         auto it = oidx_out.lower_bound(boost::make_tuple(mkt.id, (uint8_t)o.outcome_index));
@@ -1173,6 +1183,9 @@ void pm_reveal_bet_evaluator::do_apply(const pm_reveal_bet_operation& o) {
         bet.status        = 5; // queued
         bet.created_time  = now;
     });
+    // LOCK: revealed stake becomes a queued bet. The escrow left balance at commit but is not a
+    // tracked category; count it as frozen from the moment it materializes as a bet object.
+    db.pm_adjust_frozen(o.account, 1, o.amount.amount);
 }
 
 // ─── 8. pm_cancel_bet ────────────────────────────────────────────────────────
@@ -1220,6 +1233,7 @@ void pm_cancel_bet_evaluator::do_apply(const pm_cancel_bet_operation& o) {
     }
 
     db.adjust_balance(db.get_account(o.account), asset(refund, TOKEN_SYMBOL));
+    db.pm_adjust_frozen(o.account, 1, -bet.amount); // UNLOCK: stake returned on cancel
     db.modify(bet, [](pm_bet_object& b) { b.status = 1; });
 
     // Case B (spec §5): the cancel-bettor was paid first at current reserves; now cascade-
@@ -1246,6 +1260,7 @@ void pm_add_liquidity_evaluator::do_apply(const pm_add_liquidity_operation& o) {
     const auto& provider = db.get_account(o.provider);
     FC_ASSERT(provider.balance >= o.amount, "Insufficient balance");
     db.adjust_balance(provider, -o.amount);
+    db.pm_adjust_frozen(o.provider, 0, o.amount.amount); // LOCK: LP liquidity → live market
 
     share_type b_share = 0;
     if (mkt.market_type == 1 && mkt.liquidity_sum.value > 0) {
@@ -1297,6 +1312,7 @@ void pm_withdraw_liquidity_evaluator::do_apply(const pm_withdraw_liquidity_opera
 
     share_type total = share_type(withdraw.value + lp.earned_fee.value);
     db.adjust_balance(db.get_account(o.provider), asset(total, TOKEN_SYMBOL));
+    db.pm_adjust_frozen(o.provider, 0, -withdraw); // UNLOCK: principal back to free (earned_fee is profit, not frozen)
 
     db.modify(mkt, [&](pm_market_object& m) {
         m.liquidity_sum -= withdraw;
@@ -1574,7 +1590,10 @@ void pm_transfer_position_evaluator::do_apply(const pm_transfer_position_operati
     FC_ASSERT(mkt.status == 1, "Market not active");
 
     if (transfer_weight == bet.weight) {
+        const share_type moved = bet.amount;
         db.modify(bet, [&](pm_bet_object& b) { b.account = o.to; });
+        db.pm_adjust_frozen(o.from, 1, -moved); // MOVE: whole stake changes owner
+        db.pm_adjust_frozen(o.to,   1,  moved);
     } else {
         share_type transferred_amount = share_type((int64_t)(
             fc::uint128_t((uint64_t)bet.amount.value) *
@@ -1585,6 +1604,8 @@ void pm_transfer_position_evaluator::do_apply(const pm_transfer_position_operati
             b.weight -= transfer_weight;
             b.amount -= transferred_amount;
         });
+        db.pm_adjust_frozen(o.from, 1, -transferred_amount); // MOVE: partial stake to recipient
+        db.pm_adjust_frozen(o.to,   1,  transferred_amount);
 
         db.create<pm_bet_object>([&](pm_bet_object& nb) {
             nb.market        = bet.market;
@@ -1823,6 +1844,7 @@ void pm_leverage_open_evaluator::do_apply(const pm_leverage_open_operation& o) {
 
     // Apply: bettor pays collateral, pool fronts the loan, capital enters the curve.
     db.adjust_balance(acct, -o.collateral);
+    db.pm_adjust_frozen(o.account, 2, o.collateral.amount); // LOCK: collateral → active leverage (loan is pool capital, not counted)
     db.modify(pool, [&](pm_lazy_pool_object& p) {
         p.free_balance       -= share_type(loan);
         p.leverage_fund_used += share_type(loan);
@@ -1904,6 +1926,7 @@ void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o)
         p.status = 4; p.pool_received = share_type(obligation);
         p.bettor_received = share_type(bettor_received); p.last_update = now;
     });
+    db.pm_adjust_frozen(o.account, 2, -pos.collateral); // UNLOCK: collateral leaves active leverage (voluntary close)
 }
 
 // ─── 21. pm_leverage_convert (pay off loan, keep position as a normal bet) ─────
@@ -1964,6 +1987,9 @@ void pm_leverage_convert_evaluator::do_apply(const pm_leverage_convert_operation
         m.bets_sum += pos.total_bet;
     });
     db.modify(pos, [&](pm_leverage_position_object& p) { p.status = 5; p.last_update = now; });
+    // MOVE: position converts to a plain bet — collateral leaves leverage, total_bet enters bets.
+    db.pm_adjust_frozen(o.account, 2, -pos.collateral);
+    db.pm_adjust_frozen(o.account, 1, pos.total_bet);
 }
 
 // ─── 22. pm_dispute_oracle_respond ───────────────────────────────────────────
@@ -2073,6 +2099,41 @@ void database::pm_seed_frozen_counters() {
     }
 }
 
+// Debug drift-check for the frozen counters (see header). Independently re-derives the expected
+// per-account totals from the live objects and diffs them against the stored aggregates. O(accounts
+// + PM objects); intended for tests / manual invocation, not per-block. Returns true when clean.
+bool database::pm_verify_frozen_counters() const {
+    std::map<account_name_type, std::array<int64_t, 3>> exp;
+    const auto& lidx = get_index<pm_liquidity_index>().indices().get<by_provider>();
+    for (auto it = lidx.begin(); it != lidx.end(); ++it)
+        if (it->status == 0 && it->provider.size() > 0) exp[it->provider][0] += it->amount.value;
+    const auto& bidx = get_index<pm_bet_index>().indices().get<by_account>();
+    for (auto it = bidx.begin(); it != bidx.end(); ++it)
+        if (it->status == 0 || it->status == 5 || it->status == 6) exp[it->account][1] += it->amount.value;
+    const auto& vidx = get_index<pm_leverage_position_index>().indices().get<by_lev_account>();
+    for (auto it = vidx.begin(); it != vidx.end(); ++it)
+        if (it->status == 0) exp[it->account][2] += it->collateral.value;
+
+    bool ok = true;
+    const auto& aidx = get_index<account_index>().indices().get<by_id>();
+    for (auto it = aidx.begin(); it != aidx.end(); ++it) {
+        auto e = exp.find(it->name);
+        int64_t el = e == exp.end() ? 0 : e->second[0];
+        int64_t eb = e == exp.end() ? 0 : e->second[1];
+        int64_t ev = e == exp.end() ? 0 : e->second[2];
+        if (it->pm_liquidity_committed.amount.value != el ||
+            it->pm_bets_staked.amount.value       != eb ||
+            it->pm_leverage_collateral.amount.value != ev) {
+            ok = false;
+            elog("pm frozen-counter drift ${a}: liq ${cl}!=${el} bets ${cb}!=${eb} lev ${cv}!=${ev}",
+                ("a", it->name)("cl", it->pm_liquidity_committed.amount.value)("el", el)
+                ("cb", it->pm_bets_staked.amount.value)("eb", eb)
+                ("cv", it->pm_leverage_collateral.amount.value)("ev", ev));
+        }
+    }
+    return ok;
+}
+
 void database::process_pm_markets() {
     if (!has_hardfork(CHAIN_HARDFORK_14)) return;
 
@@ -2081,6 +2142,8 @@ void database::process_pm_markets() {
         modify(get_dynamic_global_properties(), [](dynamic_global_property_object& d) {
             d.pm_frozen_counters_seeded = true;
         });
+        ilog("pm frozen-counters seeded; drift-check ${r}",
+             ("r", pm_verify_frozen_counters() ? "clean" : "MISMATCH"));
     }
 
     const auto  now = head_block_time();
@@ -2580,6 +2643,7 @@ void database::process_pm_markets() {
                 } else {
                     // Slippage: refund
                     adjust_balance(get_account(bet.account), asset(bet.amount, TOKEN_SYMBOL));
+                    pm_adjust_frozen(bet.account, 1, -bet.amount); // UNLOCK: queued stake refunded (slippage)
                     modify(bet, [](pm_bet_object& b) { b.status = 2; });
                 }
             }

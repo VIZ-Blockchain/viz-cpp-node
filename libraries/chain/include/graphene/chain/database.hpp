@@ -441,6 +441,10 @@ namespace graphene { namespace chain {
             // One-time seed of the pm_* counters from existing objects on the first block
             // processed after the upgrade (guarded by dgpo.pm_frozen_counters_seeded).
             void pm_seed_frozen_counters();
+            // Debug drift-check: recompute the frozen counters straight from the live objects and
+            // compare against the stored per-account aggregates. Logs every mismatch and returns
+            // false if any is found. Read-only; safe to call any time (walks accounts + PM objects).
+            bool pm_verify_frozen_counters() const;
 
             void burn_asset(const asset &delta);
 
