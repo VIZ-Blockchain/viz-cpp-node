@@ -17,6 +17,7 @@ All list methods page with `from` (skip count) and `limit` (`≤ 1000`).
 | `get_market` | `market_id` | `pm_market_object` |
 | `list_markets` | `status, from, limit, [show_risky]` | `pm_market_object[]` |
 | `list_markets_by_oracle` | `oracle, from, limit` | `pm_market_object[]` |
+| `list_markets_by_oracle_status` | `oracle, status, from, limit` | `pm_market_object[]` |
 | `list_markets_awaiting_resolution` | `oracle, from, limit` | `pm_market_object[]` |
 | `list_markets_by_creator` | `creator, from, limit` | `pm_market_object[]` |
 | `get_market_outcomes` | `market_id` | `pm_outcome_object[]` |
@@ -26,6 +27,8 @@ All list methods page with `from` (skip count) and `limit` (`≤ 1000`).
 | `get_market_full` | `market_id, [account]` | `pm_market_full` (computed) |
 
 `status` for `list_markets`: `-1` deleted, `0` waiting, `1` active, `2` closed, `3` resolved.
+
+`list_markets_by_oracle_status` returns **one oracle's markets filtered to a single `status`** (`1` active, `3` resolved, …) — walked over the dedicated `by_oracle_status` composite index (keyed `oracle, status, id`) as a bounded prefix, instead of pulling the oracle's whole set with `list_markets_by_oracle` and filtering client-side. Use it for an oracle profile's "Active / Resolved" tabs, or to page just an oracle's resolved history. (For markets *awaiting* this oracle's result — active but past betting-close — use `list_markets_awaiting_resolution`, which cannot be expressed by `status` alone.)
 
 `list_markets_awaiting_resolution` returns the markets that need **this oracle's result now**: active (`status 1`) markets whose betting window has already closed (`betting_expiration ≤ head_block_time`) and are therefore not yet resolved. "Awaiting" is not a distinct status — a market stays `active` from open through betting-close until it is resolved — so it cannot be isolated by `status` alone. This method walks the `by_betting_expiration` index (keyed `status, betting_expiration, id`) over just the bounded prefix of active markets whose betting has passed, avoiding a full scan of the oracle's (mostly resolved) history that an Oracle Console would otherwise have to do client-side.
 

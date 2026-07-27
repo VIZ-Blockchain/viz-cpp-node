@@ -561,6 +561,8 @@ offsets; `limit ≤ 1000`. Returned object schemas are in §7.
 
 **`list_markets_by_oracle(oracle, from, limit)`** → `pm_market_object[]` for `oracle` (account name).
 
+**`list_markets_by_oracle_status(oracle, status, from, limit)`** → `pm_market_object[]` for `oracle` filtered to a single `status` (`1` active, `3` resolved, …), over the `by_oracle_status` composite index — avoids the "no dedicated per-oracle-status query, filter client-side" workaround.
+
 **`list_markets_by_creator(creator, from, limit)`** → `pm_market_object[]` for `creator` (account name).
 
 **`get_market_outcomes(market_id)`** → `pm_outcome_object[]` (§7.3), ordered by `outcome_index`.
