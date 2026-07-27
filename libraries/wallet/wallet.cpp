@@ -2832,6 +2832,9 @@ fc::ecc::private_key wallet_api::derive_private_key(const std::string& prefix_st
         fc::variant wallet_api::pm_list_markets_by_oracle(string oracle, uint32_t from, uint32_t limit) const {
             return my->pm_api()->list_markets_by_oracle(oracle, from, limit);
         }
+        fc::variant wallet_api::pm_list_markets_by_oracle_status(string oracle, int8_t status, uint32_t from, uint32_t limit) const {
+            return my->pm_api()->list_markets_by_oracle_status(oracle, status, from, limit);
+        }
         fc::variant wallet_api::pm_list_markets_by_creator(string creator, uint32_t from, uint32_t limit) const {
             return my->pm_api()->list_markets_by_creator(creator, from, limit);
         }

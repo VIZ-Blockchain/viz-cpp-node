@@ -117,6 +117,7 @@ struct remote_prediction_market_api {
     fc::variant  get_market( int64_t );
     fc::variant  list_markets( int8_t, uint32_t, uint32_t );
     fc::variant  list_markets_by_oracle( account_name_type, uint32_t, uint32_t );
+    fc::variant  list_markets_by_oracle_status( account_name_type, int8_t, uint32_t, uint32_t );
     fc::variant  list_markets_by_creator( account_name_type, uint32_t, uint32_t );
     fc::variant  get_market_outcomes( int64_t );
     fc::variant  get_market_weight_sums( int64_t );
@@ -227,6 +228,7 @@ FC_API( graphene::wallet::remote_prediction_market_api,
         (get_market)
         (list_markets)
         (list_markets_by_oracle)
+        (list_markets_by_oracle_status)
         (list_markets_by_creator)
         (get_market_outcomes)
         (get_market_weight_sums)

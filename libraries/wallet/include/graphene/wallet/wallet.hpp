@@ -1335,6 +1335,7 @@ namespace graphene { namespace wallet {
             fc::variant  pm_get_market(int64_t market_id) const;
             fc::variant  pm_list_markets(int8_t status, uint32_t from, uint32_t limit) const;
             fc::variant  pm_list_markets_by_oracle(string oracle, uint32_t from, uint32_t limit) const;
+            fc::variant  pm_list_markets_by_oracle_status(string oracle, int8_t status, uint32_t from, uint32_t limit) const;
             fc::variant  pm_list_markets_by_creator(string creator, uint32_t from, uint32_t limit) const;
             fc::variant  pm_get_market_outcomes(int64_t market_id) const;
             fc::variant  pm_get_market_weight_sums(int64_t market_id) const;
@@ -1605,6 +1606,7 @@ FC_API( graphene::wallet::wallet_api,
                 (pm_get_market)
                 (pm_list_markets)
                 (pm_list_markets_by_oracle)
+                (pm_list_markets_by_oracle_status)
                 (pm_list_markets_by_creator)
                 (pm_get_market_outcomes)
                 (pm_get_market_weight_sums)

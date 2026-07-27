@@ -152,6 +152,7 @@ namespace graphene { namespace chain {
 
         struct by_creator;
         struct by_oracle;
+        struct by_oracle_status;
         struct by_accept_deadline;
         struct by_betting_expiration;
         struct by_result_expiration;
@@ -164,6 +165,17 @@ namespace graphene { namespace chain {
                 ordered_non_unique<tag<by_creator>, member<pm_market_object, account_name_type, &pm_market_object::creator>, string_less>,
                 ordered_non_unique<tag<by_oracle>, member<pm_market_object, account_name_type, &pm_market_object::oracle>, string_less>,
                 ordered_non_unique<tag<by_status>, member<pm_market_object, int8_t, &pm_market_object::status>>,
+                // (oracle, status, id): one oracle's markets filtered by a single status in a bounded
+                // walk — e.g. its still-active (1) or already-resolved (3) rows — without scanning the
+                // oracle's entire (mostly resolved) history the way plain by_oracle does.
+                ordered_unique<tag<by_oracle_status>,
+                    composite_key<pm_market_object,
+                        member<pm_market_object, account_name_type, &pm_market_object::oracle>,
+                        member<pm_market_object, int8_t, &pm_market_object::status>,
+                        member<pm_market_object, pm_market_id_type, &pm_market_object::id>
+                    >,
+                    composite_key_compare<string_less, std::less<int8_t>, std::less<pm_market_id_type>>
+                >,
                 // Pending-acceptance sweep: (status, accept_deadline, id). The cron lower_bounds at
                 // status 0 and stops at the first accept_deadline > now, so voiding never-accepted
                 // markets stays bounded. Accepted (1)/rejected (-1) markets sit in other status buckets.

@@ -568,6 +568,31 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
+    // list_markets_by_oracle_status(oracle, status, from, limit): this oracle's markets in ONE
+    // status, walked over the (oracle, status, id) prefix. Lets a client pull e.g. an oracle's
+    // active (1) or resolved (3) markets directly instead of fetching by_oracle and filtering.
+    DEFINE_API(prediction_market_api, list_markets_by_oracle_status) {
+        CHECK_ARG_MIN_SIZE(4, 4)
+        auto oracle = args.args->at(0).as<account_name_type>();
+        auto status = args.args->at(1).as<int8_t>();
+        auto from   = args.args->at(2).as<uint32_t>();
+        auto limit  = args.args->at(3).as<uint32_t>();
+        FC_ASSERT(limit <= 1000);
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            std::vector<fc::variant> result;
+            result.reserve(limit);
+            const auto& idx = db.get_index<pm_market_index>().indices().get<by_oracle_status>();
+            auto itr = idx.lower_bound(boost::make_tuple(oracle, status, pm_market_id_type()));
+            while (from > 0 && itr != idx.end() && itr->oracle == oracle && itr->status == status) { ++itr; --from; }
+            while (result.size() < limit && itr != idx.end() && itr->oracle == oracle && itr->status == status) {
+                result.push_back(market_card(db, *itr));
+                ++itr;
+            }
+            return result;
+        });
+    }
+
     // Markets awaiting THIS oracle's result: active (status 1) markets whose betting window has
     // already closed (betting_expiration <= head_block_time) and that are therefore not yet resolved.
     // "Awaiting" is not a distinct status — a market stays status 1 from open through close until
