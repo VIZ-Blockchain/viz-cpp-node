@@ -2074,10 +2074,26 @@ void database::pm_adjust_frozen(const account_name_type& account, uint8_t kind, 
     });
 }
 
-// One-time seed of the per-account frozen counters from existing PM objects. Runs once,
-// on the first block after the upgrade (guarded by dgpo.pm_frozen_counters_seeded), so the
-// counters are correct without a full replay (VIZ testnet is DLT-only, no genesis).
+// (Re)seed the per-account frozen counters from existing PM objects. Runs once, on the first block
+// after the upgrade (guarded by dgpo flags), so the counters are correct without a full replay (VIZ
+// testnet is DLT-only, no genesis). **Idempotent:** every account's three counters are zeroed first,
+// then re-summed from the live objects — so re-running it (the task #266 corrective re-seed) always
+// converges to the exact object totals regardless of any prior over/under-count.
 void database::pm_seed_frozen_counters() {
+    // Reset first — makes the (re)seed idempotent. Counters are display-only (never gate consensus),
+    // so recomputing them is safe. Without this a second run would double-count the objects.
+    const auto& aidx = get_index<account_index>().indices().get<by_id>();
+    for (auto it = aidx.begin(); it != aidx.end(); ++it) {
+        if (it->pm_liquidity_committed.amount.value != 0 ||
+            it->pm_bets_staked.amount.value       != 0 ||
+            it->pm_leverage_collateral.amount.value != 0) {
+            modify(*it, [&](account_object& a) {
+                a.pm_liquidity_committed   = asset(0, TOKEN_SYMBOL);
+                a.pm_bets_staked           = asset(0, TOKEN_SYMBOL);
+                a.pm_leverage_collateral   = asset(0, TOKEN_SYMBOL);
+            });
+        }
+    }
     // liquidity: own provider liquidity in live markets (skip empty-provider lazy-pool rows)
     const auto& lidx = get_index<pm_liquidity_index>().indices().get<by_provider>();
     for (auto it = lidx.begin(); it != lidx.end(); ++it) {
@@ -2137,12 +2153,17 @@ bool database::pm_verify_frozen_counters() const {
 void database::process_pm_markets() {
     if (!has_hardfork(CHAIN_HARDFORK_14)) return;
 
-    if (!get_dynamic_global_properties().pm_frozen_counters_seeded) {
+    // First seed OR the task #266 corrective re-seed (fixes the over-counted live counters). The
+    // (re)seed zeroes then re-sums from objects, so running it again converges to the exact totals.
+    if (!get_dynamic_global_properties().pm_frozen_counters_reseeded_v1) {
+        const bool first = !get_dynamic_global_properties().pm_frozen_counters_seeded;
         pm_seed_frozen_counters();
         modify(get_dynamic_global_properties(), [](dynamic_global_property_object& d) {
-            d.pm_frozen_counters_seeded = true;
+            d.pm_frozen_counters_seeded      = true;
+            d.pm_frozen_counters_reseeded_v1 = true;
         });
-        ilog("pm frozen-counters seeded; drift-check ${r}",
+        ilog("pm frozen-counters ${w}; drift-check ${r}",
+             ("w", first ? "seeded" : "re-seeded (#266 correction)")
              ("r", pm_verify_frozen_counters() ? "clean" : "MISMATCH"));
     }
 

@@ -151,6 +151,15 @@ namespace graphene {
              * after the upgrade so counters are correct without a full replay.
              */
             bool pm_frozen_counters_seeded = false;
+            /**
+             * One-time CORRECTIVE re-seed of the frozen counters. The initial seed left the
+             * counters over-stated on the live testnet (they carried legacy/inflated state — see
+             * task #266: pm_liquidity_committed read ~3.76× a physically-impossible value). Because
+             * the counters are display-only (never gate consensus) they can be safely recomputed:
+             * on the first block after this upgrade, pm_seed_frozen_counters() zeroes every account's
+             * three counters and re-sums them from the live objects. Idempotent.
+             */
+            bool pm_frozen_counters_reseeded_v1 = false;
         };
 
         typedef multi_index_container <
@@ -199,5 +208,6 @@ FC_REFLECT((graphene::chain::dynamic_global_property_object),
                 (emergency_consensus_active)
                 (emergency_consensus_start_block)
                 (pm_frozen_counters_seeded)
+                (pm_frozen_counters_reseeded_v1)
 )
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::dynamic_global_property_object, graphene::chain::dynamic_global_property_index)
