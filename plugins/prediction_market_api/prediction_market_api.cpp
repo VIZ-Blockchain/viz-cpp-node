@@ -508,7 +508,8 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
     }
 
     // list_markets(status, from, limit, [show_risky=false], [order="oldest"])
-    // order: "oldest" (id asc, default — legacy) · "newest" (id desc). The by_status index keeps
+    // order: "oldest" (id asc, default — legacy) · "newest" (id desc) · "expiration" (soonest-closing
+    //        first via by_betting_expiration, still-open only — global "ending soon" feed). The by_status index keeps
     // equal-status elements in insertion order; markets are born into their status (active markets
     // never re-enter the group), so within a status insertion order == id order → reverse traversal
     // of the equal-range yields newest-first without a full scan/sort. Discovery feeds pass "newest".
@@ -524,23 +525,40 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         return db.with_weak_read_lock([&]() {
             std::vector<fc::variant> result;
             result.reserve(limit);
-            const auto& idx = db.get_index<pm_market_index>().indices().get<by_status>();
-            auto range = idx.equal_range(status);
-            if (order == "newest") {
-                auto itr = range.second;                    // one past the last equal-status market
-                while (from > 0 && itr != range.first) { --itr; --from; } // skip newest `from`
-                while (result.size() < limit && itr != range.first) {
-                    --itr;
-                    if (show_risky || !below_risk_floor(db, *itr))
-                        result.push_back(market_card(db, *itr));
-                }
-            } else {
-                auto itr = range.first;
-                while (from > 0 && itr != range.second) { ++itr; --from; }
-                while (result.size() < limit && itr != range.second) {
+            if (order == "expiration") {
+                // Still-open markets, SOONEST-CLOSING first (global "ending soon" feed). Walk the
+                // by_betting_expiration index (status, betting_expiration, id) from head_block_time
+                // forward: this skips already-closed markets (betting_expiration <= now) and
+                // open-ended ones (betting_expiration == 0 sorts before `now`), leaving exactly the
+                // markets whose betting window is about to end, nearest deadline first.
+                const auto now = db.head_block_time();
+                const auto& eidx = db.get_index<pm_market_index>().indices().get<by_betting_expiration>();
+                auto itr = eidx.lower_bound(boost::make_tuple(status, now, pm_market_id_type()));
+                while (from > 0 && itr != eidx.end() && itr->status == status) { ++itr; --from; }
+                while (result.size() < limit && itr != eidx.end() && itr->status == status) {
                     if (show_risky || !below_risk_floor(db, *itr))
                         result.push_back(market_card(db, *itr));
                     ++itr;
+                }
+            } else {
+                const auto& idx = db.get_index<pm_market_index>().indices().get<by_status>();
+                auto range = idx.equal_range(status);
+                if (order == "newest") {
+                    auto itr = range.second;                    // one past the last equal-status market
+                    while (from > 0 && itr != range.first) { --itr; --from; } // skip newest `from`
+                    while (result.size() < limit && itr != range.first) {
+                        --itr;
+                        if (show_risky || !below_risk_floor(db, *itr))
+                            result.push_back(market_card(db, *itr));
+                    }
+                } else {
+                    auto itr = range.first;
+                    while (from > 0 && itr != range.second) { ++itr; --from; }
+                    while (result.size() < limit && itr != range.second) {
+                        if (show_risky || !below_risk_floor(db, *itr))
+                            result.push_back(market_card(db, *itr));
+                        ++itr;
+                    }
                 }
             }
             return result;
