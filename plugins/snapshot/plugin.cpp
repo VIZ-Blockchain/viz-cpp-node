@@ -18,6 +18,7 @@
 #include <graphene/chain/invite_objects.hpp>
 #include <graphene/chain/paid_subscription_objects.hpp>
 #include <graphene/chain/pm_objects.hpp>
+#include <graphene/chain/pm_meta_object.hpp>
 #include <graphene/chain/hardfork.hpp>
 
 #include <fc/io/raw.hpp>
@@ -881,6 +882,35 @@ inline uint32_t import_pm_markets(graphene::chain::database& db, const fc::varia
     return count;
 }
 
+// NON-consensus PM metadata (10 shared_string fields → needs a dedicated handler, not the generic
+// fc::from_variant path). Only called when the section is present AND the index is registered.
+inline uint32_t import_pm_market_meta(graphene::chain::database& db, const fc::variants& arr) {
+    uint32_t count = 0;
+    for (const auto& v : arr) {
+        auto id_val = v["id"].as_int64();
+        auto& mutable_idx = db.get_mutable_index<pm_market_meta_index>();
+        mutable_idx.set_next_id(pm_market_meta_id_type(id_val));
+        db.create<pm_market_meta_object>([&](pm_market_meta_object& obj) {
+            obj.market = v["market"].as<pm_market_id_type>();
+            set_shared_string(obj.category,             v["category"]);
+            set_shared_string(obj.subcategory,          v["subcategory"]);
+            set_shared_string(obj.tags,                 v["tags"]);
+            set_shared_string(obj.banned_jurisdictions, v["banned_jurisdictions"]);
+            set_shared_string(obj.title,                v["title"]);
+            set_shared_string(obj.image,                v["image"]);
+            set_shared_string(obj.condition_id,         v["condition_id"]);
+            set_shared_string(obj.description,          v["description"]);
+            set_shared_string(obj.event,                v["event"]);
+            set_shared_string(obj.event_title,          v["event_title"]);
+            if (v.get_object().contains("child"))
+                obj.child = v["child"].as_bool();
+            obj.expiry = v["expiry"].as<fc::time_point_sec>();
+        });
+        ++count;
+    }
+    return count;
+}
+
 inline uint32_t import_pm_outcomes(graphene::chain::database& db, const fc::variants& arr) {
     uint32_t count = 0;
     for (const auto& v : arr) {
@@ -960,6 +990,11 @@ public:
     bool needs_fresh_snapshot = false;
 
     // Snapshot P2P sync config
+    // --snapshot-include-pm-meta: serialize the (non-consensus) PM metadata index into the
+    // snapshot so titles/images/tags survive DLT block-log rotation and snapshot hand-off. Default
+    // ON. When OFF (or when importing an older snapshot that lacks the section) the node falls back
+    // to rebuilding meta from pm_create_market ops (live seed + DLT backfill).
+    bool include_pm_meta = true;
     bool allow_snapshot_serving = false;
     bool allow_snapshot_serving_only_trusted = false;
     bool disable_snapshot_anti_spam = false;  // Skip all anti-spam checks (for trusted networks)
@@ -1300,6 +1335,13 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(pm_lazy_allocation_index,pm_lazy_allocation_object,"pm_lazy_allocation")
     EXPORT_INDEX(pm_leverage_position_index,pm_leverage_position_object,"pm_leverage_position")
     EXPORT_INDEX(pm_creator_ban_index,    pm_creator_ban_object,    "pm_creator_ban")
+
+    // NON-consensus PM metadata (titles/images/tags/event). Serialized only when the operator opts
+    // in AND the prediction_market_api plugin is loaded (so the index actually exists). Absent from
+    // the snapshot => importers fall back to rebuilding meta from pm_create_market ops.
+    if (include_pm_meta && db.has_index<pm_market_meta_index>()) {
+        EXPORT_INDEX(pm_market_meta_index, pm_market_meta_object, "pm_market_meta")
+    }
 
     #undef EXPORT_INDEX
 
@@ -1953,6 +1995,13 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         if (state.contains("pm_creator_ban")) {
             auto n = detail::import_simple_objects<pm_creator_ban_object, pm_creator_ban_index>(db, state["pm_creator_ban"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} pm_creator_ban objects" CLOG_RESET, ("n", n));
+        }
+        // NON-consensus PM metadata: present only in snapshots taken with snapshot-include-pm-meta.
+        // Guard on has_index so nodes without the prediction_market_api plugin skip it cleanly; when
+        // absent the node rebuilds meta from pm_create_market ops (live seed + DLT backfill).
+        if (state.contains("pm_market_meta") && db.has_index<pm_market_meta_index>()) {
+            auto n = detail::import_pm_market_meta(db, state["pm_market_meta"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_market_meta objects" CLOG_RESET, ("n", n));
         }
 
         // Self-healing: detect validators with penalty_percent > 0 but no
@@ -4477,6 +4526,10 @@ void snapshot_plugin::set_program_options(
             "Directory for auto-generated snapshot files (default: <data-dir>/snapshots)")
         ("snapshot-max-age-days", bpo::value<uint32_t>()->default_value(90),
             "Delete snapshots older than N days after creating a new one (0 = disabled)")
+        ("snapshot-include-pm-meta", bpo::value<bool>()->default_value(true),
+            "Serialize the (non-consensus) prediction-market metadata index (titles/images/tags/event) "
+            "into snapshots so it survives DLT block-log rotation and snapshot hand-off. Disable to keep "
+            "snapshots smaller; importers then rebuild meta from pm_create_market ops (live seed + DLT backfill).")
         ("allow-snapshot-serving", bpo::value<bool>()->default_value(false),
             "Enable serving snapshots over TCP to other nodes")
         ("allow-snapshot-serving-only-trusted", bpo::value<bool>()->default_value(false),
@@ -4538,6 +4591,11 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     ilog("Snapshot directory: ${d}", ("d", my->snapshot_dir));
 
     my->snapshot_auto_latest = options.at("snapshot-auto-latest").as<bool>();
+
+    if (options.count("snapshot-include-pm-meta")) {
+        my->include_pm_meta = options.at("snapshot-include-pm-meta").as<bool>();
+        ilog("Snapshot PM metadata section: ${e}", ("e", my->include_pm_meta ? "ENABLED" : "disabled"));
+    }
     if (my->snapshot_auto_latest) {
         if (my->snapshot_path.empty()) {
             // Auto-discover latest snapshot in snapshot-dir
