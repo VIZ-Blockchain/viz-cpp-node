@@ -177,10 +177,12 @@ evaluated in `pm_evaluator.cpp`:
 | `pm_leverage_liquidate` | ✔ | mid-market liquidation: reason **0** opposing-bet, **1** cancel-bet (`cascade_liquidate`) |
 | `pm_leverage_resolve` | ✔ | **settlement** of a leveraged position: carries `market_id`, `outcome_index`, `won` (solvent ⇒ positive), `pool_received`/`bettor_received`, and `leverage` (= `total_bet/collateral`) |
 
-> A leveraged position is force-closed at its `cancel_value` at settlement: the pool takes
-> `min(cv, obligation)`, the bettor gets the rest. **`pm_leverage_resolve`** marks that close (positive
-> if `cv ≥ obligation`, else collateral lost); **`pm_leverage_liquidate`** is only for the *mid-market*
-> opposing-bet / cancel-bet cascades.
+> A leveraged position is force-closed at its `cancel_value` **as soon as new betting is impossible** —
+> at `betting_expiration` (fixed-deadline markets, *before* the oracle resolves) or at resolve/void
+> (open-ended markets). It is a price/sentiment bet, so it does **not** wait for the outcome: the pool
+> takes `min(cv, obligation)`, the bettor gets the rest. **`pm_leverage_resolve`** marks that close
+> (positive if `cv ≥ obligation`, else collateral lost); **`pm_leverage_liquidate`** is only for the
+> *mid-market* opposing-bet / cancel-bet cascades. `settle_market` still force-closes as an idempotent backstop.
 
 See the [Plugin API](../plugins/prediction-market-api) for the read methods that surface each of these
 (`get_account_leverage_positions`, `get_market_leverage_positions`, `get_creator_ban`, `get_dispute_votes`, …);

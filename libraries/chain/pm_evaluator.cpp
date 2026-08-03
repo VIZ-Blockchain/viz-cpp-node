@@ -2293,6 +2293,35 @@ void database::process_pm_markets() {
         }
     }
 
+    // ── 2d. Force-close leverage once betting can no longer happen ─────────────
+    // A leveraged position is a bet on the market PRICE (crowd sentiment) and settles at its
+    // cancel_value — it does NOT depend on the oracle outcome. So it must not linger open through
+    // resolution + dispute grace, bleeding carry (funding still accrues, secs 2c) and staying
+    // funding-liquidatable while nobody can even bet anymore. Close it the moment NEW betting is
+    // impossible: at betting_expiration for fixed-deadline markets (before the oracle resolves), or
+    // at resolve/void (status >= 3) for open-ended markets (betting_expiration == 0, no deadline).
+    // settle_market / return_liquidity still force-close as a backstop; both are idempotent (a
+    // position already out of status 0 is skipped). Anchored on the OPEN-position set (status 0)
+    // via by_lev_funding_due so each position is force-closed exactly once and, once it flips out
+    // of status 0, never re-scanned. done is charged per close only (cap = settlements/block); the
+    // status-0 working set is bounded by pool free capital, so a full scan per block is cheap.
+    {
+        const auto& idx = get_index<pm_leverage_position_index>().indices().get<by_lev_funding_due>();
+        auto it = idx.lower_bound(boost::make_tuple(
+            (uint8_t)0, time_point_sec(), pm_leverage_position_id_type()));
+        while (it != idx.end() && it->status == 0 && done < cap) {
+            const auto& pos = *it; ++it;
+            const auto& mkt = get<pm_market_object>(pos.market);
+            const bool betting_over =
+                (mkt.betting_expiration != time_point_sec() && mkt.betting_expiration <= now)
+                || mkt.status >= 3;
+            if (betting_over) {
+                liquidate_position(*this, pos, 2); // reason 2 = settlement force-close (pm_leverage_resolve)
+                ++done;
+            }
+        }
+    }
+
     // ── 3. Dispute auto-close (priority over voting finalize) ─────────────────
     {
         const auto& idx = get_index<pm_dispute_index>().indices().get<by_auto_close>();

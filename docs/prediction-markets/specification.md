@@ -922,6 +922,13 @@ Live since HF14; opt-in, governed by median kill-switch `pm_leverage_enabled` (d
   full-recovery (loan + interest → pool); the **only** bounded bad-debt path is a same-side
   `pm_cancel_bet` (Case B). The cascade is **not** gated by `pm_leverage_enabled` (the flag blocks only
   new opens), so disabling leverage never strips protection from open positions.
+- **Close timing (does NOT wait for the oracle)** — a leveraged position is a bet on the market
+  *price* (crowd sentiment), settled at its `cancel_value`; it is independent of the resolved
+  outcome. So `process_pm_markets` **force-closes it the moment new betting is impossible**: at
+  `betting_expiration` for fixed-deadline markets (i.e. *before* the oracle resolves), or at
+  resolve/void (`status >= 3`) for open-ended markets (`betting_expiration == 0`). The holder never
+  bleeds funding, and can never be funding-liquidated, during the post-betting resolve + dispute
+  window. `settle_market` / `return_liquidity` still force-close as an idempotent backstop.
 - **Virtual ops** — `pm_leverage_resolve` (force-close at settlement, with outcome + leverage),
   `pm_leverage_liquidate` (mid-market, `reason` 0 opposing / 1 cancel).
 - **Governance weight** — Lazy-Pool depositors keep their PM-dispute and DAO-committee vote weight

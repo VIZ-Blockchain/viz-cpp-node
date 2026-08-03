@@ -461,6 +461,12 @@ loan`, so the pool gets its loan plus interest back; the only bounded bad-debt p
 protective liquidation cascade is deliberately **not** gated by it — toggling leverage off never strips
 protection from open positions. The pool earns leverage interest in addition to LP yield, accounted via the same shared `reward_per_share` accumulator as in §5.3. Settlement of pool loans emits `pm_leverage_resolve` / `pm_leverage_liquidate`.
 
+A leveraged position is a bet on the market **price** (crowd sentiment), not on the oracle's verdict —
+so it **does not wait for resolution**. It is force-closed at its `cancel_value` the instant new betting
+becomes impossible: at `betting_expiration` for a fixed-deadline market (before the oracle even reports),
+or at resolve for an open-ended one. The holder therefore never carries funding, nor faces liquidation,
+across the resolution + dispute window.
+
 ---
 
 ## 6. Governance
