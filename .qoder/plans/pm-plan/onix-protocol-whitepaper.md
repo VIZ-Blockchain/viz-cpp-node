@@ -5,7 +5,8 @@
 *Anatoly Piskunov (On1x)*
 *Version 2.0 — June 2026 (on-chain / HF14)*
 
-*Published version: [SSRN abstract 6978138](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6978138). Cite the SSRN version for academic use.*
+*Published (peer-facing) version — cite this for academic use:*
+*Piskunov, Anatoly. "Combining Parimutuel Settlement with Automated Market Makers for Liquidity-Guaranteed Prediction Markets: The Onix Protocol" (June 22, 2026). SSRN: [ssrn.com/abstract=6978138](https://ssrn.com/abstract=6978138) · DOI: [10.2139/ssrn.6978138](https://dx.doi.org/10.2139/ssrn.6978138). Posted 16 Jul 2026, 29 pp. © All rights reserved; no reuse without permission.*
 
 ---
 
