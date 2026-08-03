@@ -445,6 +445,12 @@ namespace graphene { namespace chain {
             // compare against the stored per-account aggregates. Logs every mismatch and returns
             // false if any is found. Read-only; safe to call any time (walks accounts + PM objects).
             bool pm_verify_frozen_counters() const;
+            // One-time seed of pm_oracle_object.active_markets from live markets (guarded by
+            // dgpo.pm_active_markets_seeded). Display-only O(1) live-market count per oracle.
+            void pm_seed_oracle_active_markets();
+            // Debug drift-check for active_markets: recompute per-oracle from live markets and diff
+            // against the stored counter. Read-only; logs mismatches; returns false if any is found.
+            bool pm_verify_oracle_active_markets() const;
 
             void burn_asset(const asset &delta);
 

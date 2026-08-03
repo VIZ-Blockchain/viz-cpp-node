@@ -58,6 +58,12 @@ namespace graphene { namespace chain {
             account_name_type auto_accept_resolver;
             bool              auto_accept = false;
             account_name_type banned_by;   ///< resolver that set banned_until (empty if unset); may pm_unban
+            // Live count of this oracle's markets currently in the active(1) state. Display-only O(1)
+            // read for get_oracle / watchdogs (avoids paging list_markets). Maintained by
+            // pm_oracle_inc/dec_active at create-active/accept and resolve/no_contest/missed-void;
+            // seeded from live markets on the first block after upgrade (dgpo.pm_active_markets_seeded).
+            // NEVER gates consensus.
+            uint32_t          active_markets = 0;
         };
 
         struct by_owner;
@@ -743,7 +749,7 @@ FC_REFLECT((graphene::chain::pm_oracle_object),
     (markets_accepted)(markets_resolved)(no_contest_count)(missed_count)(disputes_received)(disputes_lost)
     (disputes_won)(disputes_auto_closed)(dispute_responses_missed)(total_volume_resolved)(total_insurance_slashed)
     (avg_resolution_time)(penalty_stamps)(bans_received)(last_penalty_stamp_time)
-    (auto_accept_creator)(auto_accept_resolver)(auto_accept)(banned_by))
+    (auto_accept_creator)(auto_accept_resolver)(auto_accept)(banned_by)(active_markets))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_oracle_object, graphene::chain::pm_oracle_index)
 
 FC_REFLECT((graphene::chain::pm_market_object),

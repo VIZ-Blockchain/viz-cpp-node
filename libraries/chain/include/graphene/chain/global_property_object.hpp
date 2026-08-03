@@ -160,6 +160,13 @@ namespace graphene {
              * three counters and re-sums them from the live objects. Idempotent.
              */
             bool pm_frozen_counters_reseeded_v1 = false;
+            /**
+             * One-time seed of the per-oracle live active-market counter
+             * (pm_oracle_object.active_markets) from existing markets. Set on the first block after
+             * this upgrade so get_oracle exposes the count without a full replay. Display-only;
+             * never gates consensus. pm_seed_oracle_active_markets() zeroes then re-sums — idempotent.
+             */
+            bool pm_active_markets_seeded = false;
         };
 
         typedef multi_index_container <
@@ -209,5 +216,6 @@ FC_REFLECT((graphene::chain::dynamic_global_property_object),
                 (emergency_consensus_start_block)
                 (pm_frozen_counters_seeded)
                 (pm_frozen_counters_reseeded_v1)
+                (pm_active_markets_seeded)
 )
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::dynamic_global_property_object, graphene::chain::dynamic_global_property_index)

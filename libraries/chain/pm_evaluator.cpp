@@ -23,6 +23,28 @@ namespace {
         return db.get_validator_schedule_object().median_props;
     }
 
+    // ── Per-oracle live active-market counter (display-only, pm_oracle_object.active_markets) ──
+    // O(1) upkeep so get_oracle/watchdogs read the count without paging list_markets. NEVER gates
+    // consensus. A market is "active" == status 1; inc when it enters (create-active / accept),
+    // dec when it leaves (resolve / no_contest / missed-void). Both no-op when the oracle has no
+    // pm_oracle_object (self-oracle accounts that never registered) — such markets aren't counted
+    // anywhere, and are correctly excluded by the seed/verify walks too.
+    void pm_oracle_inc_active(database& db, const account_name_type& oracle) {
+        const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+        auto it = oidx.find(oracle);
+        if (it != oidx.end())
+            db.modify(*it, [](pm_oracle_object& o) { o.active_markets++; });
+    }
+    // Guarded: decrements only if the market is still active(1), so it is safe (idempotent) to call
+    // at any terminal transition even if the market was already non-active.
+    void pm_oracle_dec_active(database& db, const pm_market_object& mkt) {
+        if (mkt.status != 1) return;
+        const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+        auto it = oidx.find(mkt.oracle);
+        if (it != oidx.end())
+            db.modify(*it, [](pm_oracle_object& o) { if (o.active_markets > 0) o.active_markets--; });
+    }
+
     // Pay queued lazy-pool withdrawals FIFO (oldest id first) from whatever is liquid in
     // free_balance right now. Each request is paid in full or in part; when free is exhausted we
     // stop. Called at every point capital returns to free_balance (LP return, deposit, leverage
@@ -940,6 +962,9 @@ void pm_create_market_evaluator::do_apply(const pm_create_market_operation& o) {
             o.oracle, o.creator, mkt.id._id,
             aa_fee, asset(aa_fixed, TOKEN_SYMBOL), false));
     }
+
+    // A market that is live at creation (self-oracle or auto-accepted) enters the active set now.
+    if (active_at_create) pm_oracle_inc_active(db, o.oracle);
 }
 
 // ─── 4. pm_oracle_accept_market ──────────────────────────────────────────────
@@ -974,6 +999,7 @@ void pm_oracle_accept_market_evaluator::do_apply(const pm_oracle_accept_market_o
         if (it != oidx.end())
             db.modify(*it, [&](pm_oracle_object& ora) {
                 ora.markets_accepted++;
+                ora.active_markets++;                 // market goes live (status 0 → 1)
                 ora.last_active_time = db.head_block_time();
             });
         maybe_allocate_lazy(db, mkt); // pool subsidy on activation
@@ -1362,6 +1388,7 @@ void pm_resolve_market_evaluator::do_apply(const pm_resolve_market_operation& o)
     if (it != oidx.end())
         db.modify(*it, [&](pm_oracle_object& ora) {
             ora.markets_resolved++;
+            if (ora.active_markets > 0) ora.active_markets--;   // leaves active set (1 → 3)
             ora.total_volume_resolved += mkt.bets_sum;
             ora.last_active_time = now;
         });
@@ -1386,7 +1413,11 @@ void pm_no_contest_evaluator::do_apply(const pm_no_contest_operation& o) {
     const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
     auto it = oidx.find(o.oracle);
     if (it != oidx.end())
-        db.modify(*it, [&](pm_oracle_object& ora) { ora.no_contest_count++; ora.last_active_time = now; });
+        db.modify(*it, [&](pm_oracle_object& ora) {
+            ora.no_contest_count++;
+            if (ora.active_markets > 0) ora.active_markets--;   // leaves active set (1 → 3)
+            ora.last_active_time = now;
+        });
     db.modify(mkt, [&](pm_market_object& m) {
         m.status            = 3;
         m.payout_status     = 1;
@@ -2150,6 +2181,43 @@ bool database::pm_verify_frozen_counters() const {
     return ok;
 }
 
+// One-time seed of pm_oracle_object.active_markets from live markets (see header). Zeroes every
+// oracle's counter then re-sums the status==1 markets per registered oracle — idempotent, display-only.
+void database::pm_seed_oracle_active_markets() {
+    const auto& obyid = get_index<pm_oracle_index>().indices().get<by_id>();
+    for (auto it = obyid.begin(); it != obyid.end(); ++it)
+        if (it->active_markets != 0)
+            modify(*it, [](pm_oracle_object& o) { o.active_markets = 0; });
+    const auto& obyowner = get_index<pm_oracle_index>().indices().get<by_owner>();
+    const auto& midx = get_index<pm_market_index>().indices().get<by_status>();
+    for (auto it = midx.lower_bound((int8_t)1); it != midx.end() && it->status == 1; ++it) {
+        auto oit = obyowner.find(it->oracle);
+        if (oit != obyowner.end())
+            modify(*oit, [](pm_oracle_object& o) { o.active_markets++; });
+    }
+}
+
+// Debug drift-check for active_markets: re-derive the live count per oracle and diff the stored
+// counter. O(active markets + oracles); read-only. Logs every mismatch, returns true when clean.
+bool database::pm_verify_oracle_active_markets() const {
+    std::map<account_name_type, uint32_t> exp;
+    const auto& midx = get_index<pm_market_index>().indices().get<by_status>();
+    for (auto it = midx.lower_bound((int8_t)1); it != midx.end() && it->status == 1; ++it)
+        exp[it->oracle]++;
+    bool ok = true;
+    const auto& oidx = get_index<pm_oracle_index>().indices().get<by_id>();
+    for (auto it = oidx.begin(); it != oidx.end(); ++it) {
+        auto e = exp.find(it->owner);
+        uint32_t ev = (e == exp.end()) ? 0u : e->second;
+        if (it->active_markets != ev) {
+            ok = false;
+            elog("pm active_markets drift ${o}: ${c}!=${e}",
+                ("o", it->owner)("c", it->active_markets)("e", ev));
+        }
+    }
+    return ok;
+}
+
 void database::process_pm_markets() {
     if (!has_hardfork(CHAIN_HARDFORK_14)) return;
 
@@ -2165,6 +2233,17 @@ void database::process_pm_markets() {
         ilog("pm frozen-counters ${w}; drift-check ${r}",
              ("w", first ? "seeded" : "re-seeded (#266 correction)")
              ("r", pm_verify_frozen_counters() ? "clean" : "MISMATCH"));
+    }
+
+    // One-time seed of the per-oracle live active-market counter (display-only). Runs once on the
+    // first block after this upgrade; thereafter maintained incrementally by pm_oracle_inc/dec_active.
+    if (!get_dynamic_global_properties().pm_active_markets_seeded) {
+        pm_seed_oracle_active_markets();
+        modify(get_dynamic_global_properties(), [](dynamic_global_property_object& d) {
+            d.pm_active_markets_seeded = true;
+        });
+        ilog("pm oracle active_markets seeded; drift-check ${r}",
+             ("r", pm_verify_oracle_active_markets() ? "clean" : "MISMATCH"));
     }
 
     const auto  now = head_block_time();
@@ -2231,6 +2310,7 @@ void database::process_pm_markets() {
             refund_all_bets(*this, mkt);
             return_liquidity(*this, mkt);
 
+            pm_oracle_dec_active(*this, mkt);   // leaves active set (1 → 3, missed-resolution void)
             modify(mkt, [&](pm_market_object& m) {
                 m.status           = 3;
                 m.payout_status    = 3; // closed — no payout
