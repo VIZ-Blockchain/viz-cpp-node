@@ -922,6 +922,11 @@ Live since HF14; opt-in, governed by median kill-switch `pm_leverage_enabled` (d
   full-recovery (loan + interest → pool); the **only** bounded bad-debt path is a same-side
   `pm_cancel_bet` (Case B). The cascade is **not** gated by `pm_leverage_enabled` (the flag blocks only
   new opens), so disabling leverage never strips protection from open positions.
+- **Exit residual → `forfeit_pool`** — on close/liquidate the holder is paid the floored
+  `cancel_value`; the sub-mVIZ remainder `curve_residual = total_bet − cancel_value` is **dust of the
+  pool's own curve assets**, so it is routed to the market's `forfeit_pool` (accrues to the remaining
+  bettors at settlement), not the DAO fund. This keeps `pool + bettor + residual = total_bet` exact on
+  every exit (fix `6b002c14`; the general final-payout dust rule above still sends to the DAO fund).
 - **Close timing (does NOT wait for the oracle)** — a leveraged position is a bet on the market
   *price* (crowd sentiment), settled at its `cancel_value`; it is independent of the resolved
   outcome. So `process_pm_markets` **force-closes it the moment new betting is impossible**: at
