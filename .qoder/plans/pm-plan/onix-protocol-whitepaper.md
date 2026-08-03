@@ -5,6 +5,8 @@
 *Anatoly Piskunov (On1x)*
 *Version 2.0 — June 2026 (on-chain / HF14)*
 
+*Published version: [SSRN abstract 6978138](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6978138). Cite the SSRN version for academic use.*
+
 ---
 
 > **On-chain status (HF14).** This paper was first written against the centralized prototype. The
