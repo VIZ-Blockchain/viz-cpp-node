@@ -1485,8 +1485,9 @@ void pm_withdraw_liquidity_evaluator::do_apply(const pm_withdraw_liquidity_opera
     // is exploit-free (this is what B4 fixed; the earlier assert *message* wrongly implied
     // withdrawal was blocked during betting — the condition itself is correct).
     // F1-escape fix (PR #124): resolution is the lock trigger, settlement is the unlock. Settlement
-    // runs from the deferred cron sweep (after the ≥12h dispute grace, or the full result_expiration
-    // for an early-resolved market), and resolution is exactly when the F1 `uncovered` LP charge
+    // runs from the deferred cron sweep (result_expiration + ≥12h dispute grace; an early resolution
+    // pulls result_expiration forward to the report time, so it settles ~grace after the report too),
+    // and resolution is exactly when the F1 `uncovered` LP charge
     // becomes computable+public (forfeit_pool is on get_market). If an LP could withdraw in that
     // window it would empty settle_liquidity's `active` set and dodge its share of the charge.
     // Withdrawable iff (a) already finalized (finalized_time stamped — settle/void/expire), or
@@ -1566,14 +1567,19 @@ void pm_resolve_market_evaluator::do_apply(const pm_resolve_market_operation& o)
     bool can_resolve_early = mkt.allow_early_resolution && now >= mkt.betting_expiration;
     FC_ASSERT(can_resolve_early || now >= mkt.result_expiration, "Cannot resolve yet");
 
-    // Note: early resolution deliberately does NOT advance result_expiration — disputers keep the
-    // originally-advertised window, and the auto-payout sweep still gates on the full
-    // result_expiration. That window also sets how long LP principal stays locked (F1 escape fix
-    // above) and the market stays unsettled; intentional, not an oversight.
+    // Early resolution pulls the whole downstream schedule forward: when the event settles before
+    // the advertised deadline we shift result_expiration earlier by exactly how early the oracle
+    // reported (new value = now), mirroring pm_no_contest. That collapses the LP-principal lock and
+    // the settle wait to `now + dispute_grace` instead of `result_expiration + grace` (open-ended
+    // markets could otherwise stay locked ~pm_max_market_duration). Disputers still get the full
+    // pm_dispute_grace_sec window, now anchored to the announcement rather than a far-future date.
+    // Only ever shift EARLIER: a late resolution (now ≥ result_expiration) leaves the advertised
+    // window untouched — we never extend a disputer's/settle deadline past what was promised.
     db.modify(mkt, [&](pm_market_object& m) {
         m.status           = 3;
         m.payout_status    = 1;
         m.resolved_outcome = o.winning_outcome;
+        if (now < m.result_expiration) m.result_expiration = now;
         from_string(m.decision_url, o.decision_url);
         from_string(m.decision_reason, o.decision_reason);
     });
