@@ -26,6 +26,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
+#include <utility>
 
 using namespace consensus_sim;
 using namespace graphene::chain;
@@ -5207,6 +5209,372 @@ BOOST_AUTO_TEST_CASE(gc_dispute_auto_close_after_retention) {
 
     assert_gc_after_retention(node, gp, when, market_id);
     BOOST_TEST_MESSAGE("dispute-auto-closed market GC'd after retention");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// Binary-CPMM state conservation.
+//
+// The four binary-market state transitions:
+//
+//   pm_place_bet          reserve_in += amount; reserve_out = k / (reserve_in + amount)   :1051-1073
+//   pm_cancel_bet         reserve_in -= amount; reserve_out += weight; k = reserve_a*reserve_b  :1235-1247
+//   pm_add_liquidity      reserve_a += half; reserve_b += amount-half; k = reserve_a*reserve_b  :1298-1309
+//   pm_withdraw_liquidity liquidity_sum -= amount  (reserves and k untouched)             :1343-1352
+//
+// Properties asserted below, in order:
+//
+//   P1  bet -> cancel is the identity on (reserve_a, reserve_b, k, bets_sum).
+//   P2  add_liquidity(X) -> withdraw_liquidity(X) is the identity on (reserve_a, reserve_b, k).
+//   P3  splitting a stake around an LP add/withdraw cannot buy more claim weight than
+//       staking it in one bet against the honest curve.
+//   P4  a fully unwound market (every bet cancelled, all added liquidity withdrawn) is back
+//       in its creation state, however many times the sequence is repeated.
+//
+// P1 holds. P2/P3/P4 do not, because pm_withdraw_liquidity never removes the half/half that
+// pm_add_liquidity put into the reserves: each round trip is free to the provider yet leaves the
+// curve permanently deeper than the VIZ the market holds, and depth is what sets how much claim
+// weight a stake buys. The curve price returns to 50/50 on every pass and the implied probability
+// reported by prediction_market_api (a_bets_sum / Σ bets) is untouched, so nothing surfaces the
+// drift except the reserves themselves — hence state assertions rather than price ones.
+namespace {
+
+    struct cyc_curve_state {
+        share_type    reserve_a;
+        share_type    reserve_b;
+        fc::uint128_t k;
+        share_type    bets_sum;
+        share_type    liquidity_sum;
+
+        int64_t reserve_sum() const { return reserve_a.value + reserve_b.value; }
+        /// VIZ the market is actually holding: frozen stakes + live LP principal.
+        int64_t viz_held()    const { return bets_sum.value + liquidity_sum.value; }
+        /// Curve-implied probability of A in bp: price_A = reserve_b / (reserve_a + reserve_b).
+        int64_t curve_bp_a()  const {
+            const int64_t s = reserve_sum();
+            return s ? (reserve_b.value * 10000) / s : 5000;
+        }
+    };
+
+    cyc_curve_state cyc_snap(simulated_node& node, pm_market_id_type id) {
+        const auto& m = node.db().get<pm_market_object>(id);
+        cyc_curve_state s;
+        s.reserve_a     = m.reserve_a;
+        s.reserve_b     = m.reserve_b;
+        s.k             = m.k;
+        s.bets_sum      = m.bets_sum;
+        s.liquidity_sum = m.liquidity_sum;
+        return s;
+    }
+
+    std::string cyc_show(const cyc_curve_state& s) {
+        return "reserve_a=" + std::to_string(s.reserve_a.value)
+             + " reserve_b=" + std::to_string(s.reserve_b.value)
+             + " reserve_sum=" + std::to_string(s.reserve_sum())
+             + " viz_held=" + std::to_string(s.viz_held())
+             + " curveA=" + std::to_string(s.curve_bp_a()) + "bp"
+             + " bets_sum=" + std::to_string(s.bets_sum.value);
+    }
+
+    /// Self-oracle binary market, cancellation enabled, betting window long enough that LP
+    /// withdrawal is accepted. `expect_id` is the pm_market_object id it will be assigned.
+    pm_market_id_type cyc_make_market(simulated_node& node, const genesis_params& gp,
+                                      fc::time_point_sec& when, int64_t liquidity, int64_t expect_id) {
+        pm_create_market_operation cm;
+        cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+        cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+        cm.liquidity = asset(share_type(liquidity), TOKEN_SYMBOL);
+        cm.betting_expiration = node.head_block_time() + fc::seconds(3600);
+        cm.result_expiration  = node.head_block_time() + fc::seconds(7200);
+        cm.allow_cancellation = true;
+        cm.allow_instant_bet  = true;
+        cm.dispute_mode = 0;
+        node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+        produce(node, gp, when);
+        return pm_market_id_type(expect_id);
+    }
+
+    /// Place `amount` on side 0 (A / "yes"); returns (bet id, weight received).
+    std::pair<int64_t, int64_t> cyc_bet_a(simulated_node& node, const genesis_params& gp,
+                                          fc::time_point_sec& when, pm_market_id_type market,
+                                          const std::string& who, const fc::ecc::private_key& key,
+                                          int64_t amount) {
+        pm_place_bet_operation pb;
+        pb.account = who; pb.market_id = market._id; pb.side = 0; pb.outcome_index = -1;
+        pb.amount = asset(share_type(amount), TOKEN_SYMBOL); pb.mode = 0;
+        node.push_pending_transaction(sign_ops({pb}, key, node));
+        produce(node, gp, when);
+
+        // Highest-id open bet of `who` on this market for this stake.
+        int64_t id = -1, weight = 0;
+        for (const auto& b : node.db().get_index<pm_bet_index>().indices()) {
+            if (b.market == market && b.account == account_name_type(who) && b.status == 0
+                && b.amount.value == amount && (int64_t)b.id._id > id) {
+                id = (int64_t)b.id._id; weight = b.weight.value;
+            }
+        }
+        BOOST_REQUIRE_MESSAGE(id >= 0, "no open bet found for " << who);
+        return std::make_pair(id, weight);
+    }
+
+    void cyc_cancel(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when,
+                    const std::string& who, const fc::ecc::private_key& key, int64_t bet_id) {
+        pm_cancel_bet_operation cb;
+        cb.account = who; cb.bet_id = bet_id; cb.min_return = 0;
+        node.push_pending_transaction(sign_ops({cb}, key, node));
+        produce(node, gp, when);
+    }
+
+    /// Add `amount` of liquidity and immediately withdraw the whole position. The withdrawal is
+    /// accepted mid-betting: pm_evaluator.cpp:1333 asserts `now < betting_expiration`, the inverse
+    /// of the condition its own error message states.
+    void cyc_lp_round_trip(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when,
+                           pm_market_id_type market, const std::string& who,
+                           const fc::ecc::private_key& key, int64_t amount, int64_t lp_id) {
+        pm_add_liquidity_operation al;
+        al.provider = who; al.market_id = market._id;
+        al.amount = asset(share_type(amount), TOKEN_SYMBOL);
+        node.push_pending_transaction(sign_ops({al}, key, node));
+        produce(node, gp, when);
+
+        BOOST_REQUIRE_EQUAL(node.db().get<pm_liquidity_object>(pm_liquidity_id_type(lp_id)).amount.value,
+                            amount);
+
+        pm_withdraw_liquidity_operation wl;
+        wl.provider = who; wl.liquidity_id = lp_id;
+        wl.amount = asset(0, TOKEN_SYMBOL);   // 0 = full position
+        node.push_pending_transaction(sign_ops({wl}, key, node));
+        produce(node, gp, when);
+    }
+
+    /// Shared preamble: node at HF14. Returns false when HF14 is unreachable on this build.
+    bool cyc_boot(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when) {
+        return bring_to_hf14(node, gp, when);
+    }
+
+} // namespace
+
+// P1 — bet then cancel is the identity.
+// Scenario steps 1-3: stake 100 VIZ on A, record the odds, cancel. Nothing else touches the
+// market in between, so every field must return to its starting value. This case PASSES on the
+// current head; it is the control for the three below and a regression guard on the cancel path.
+BOOST_AUTO_TEST_CASE(cpmm_bet_then_cancel_is_the_identity) {
+    auto gp = make_genesis_params(0xC101u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-cyc-p1", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!cyc_boot(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping bet/cancel identity.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;      // 100.000 VIZ by default
+    BOOST_REQUIRE_MESSAGE(unit % 2 == 0, "test assumes an even pm_min_liquidity");
+
+    auto cyca_key = derive_key("cyca");
+    create_and_fund(node, gp, when, "cyca", cyca_key, share_type(unit * 10));
+
+    const auto market = cyc_make_market(node, gp, when, unit * 4, 0);
+    const auto before = cyc_snap(node, market);
+    BOOST_TEST_MESSAGE("created:      " << cyc_show(before));
+
+    // 1. bet 100 on A.  2. record the odds.
+    const auto b = cyc_bet_a(node, gp, when, market, "cyca", cyca_key, unit);
+    const auto after_bet = cyc_snap(node, market);
+    BOOST_TEST_MESSAGE("after 100 A:  " << cyc_show(after_bet) << " weight=" << b.second);
+    BOOST_CHECK_GT(b.second, 0);
+    BOOST_CHECK_LT(after_bet.curve_bp_a(), before.curve_bp_a());   // A got more expensive
+    BOOST_CHECK_LE(after_bet.reserve_sum(), after_bet.viz_held()); // curve never exceeds backing
+
+    // 3. cancel it.
+    cyc_cancel(node, gp, when, "cyca", cyca_key, b.first);
+    const auto after_cancel = cyc_snap(node, market);
+    BOOST_TEST_MESSAGE("after cancel: " << cyc_show(after_cancel));
+
+    BOOST_CHECK_EQUAL(after_cancel.reserve_a.value, before.reserve_a.value);
+    BOOST_CHECK_EQUAL(after_cancel.reserve_b.value, before.reserve_b.value);
+    BOOST_CHECK(after_cancel.k == before.k);
+    BOOST_CHECK_EQUAL(after_cancel.bets_sum.value, before.bets_sum.value);
+    BOOST_CHECK_EQUAL(after_cancel.curve_bp_a(), before.curve_bp_a());
+}
+
+// P2 — add_liquidity(X) then withdraw_liquidity(X) is the identity.
+// Scenario steps 5-6 in isolation. pm_add_liquidity puts half/half of X into the reserves and
+// recomputes k; pm_withdraw_liquidity returns the principal in full but only decrements
+// liquidity_sum. The reserves and k keep the deposit, leaving the curve X deeper than the VIZ
+// the market holds.
+BOOST_AUTO_TEST_CASE(cpmm_lp_add_then_withdraw_must_be_reserve_neutral) {
+    auto gp = make_genesis_params(0xC102u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-cyc-p2", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!cyc_boot(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping LP reserve neutrality.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+
+    auto cyca_key = derive_key("cyca");
+    create_and_fund(node, gp, when, "cyca", cyca_key, share_type(unit * 10));
+
+    const auto market = cyc_make_market(node, gp, when, unit * 4, 0);
+    const auto before = cyc_snap(node, market);
+    const asset bal_before = node.db().get_account("cyca").balance;
+
+    // pm_liquidity id 1: the market's own seed position is id 0.
+    cyc_lp_round_trip(node, gp, when, market, "cyca", cyca_key, unit / 2, 1);
+
+    const auto after = cyc_snap(node, market);
+    const asset bal_after = node.db().get_account("cyca").balance;
+
+    BOOST_TEST_MESSAGE("before: " << cyc_show(before));
+    BOOST_TEST_MESSAGE("after:  " << cyc_show(after));
+    BOOST_TEST_MESSAGE("provider net cost: " << (bal_before - bal_after).amount.value
+                       << " (0 = the round trip was free)");
+
+    // The round trip costs the provider nothing...
+    BOOST_CHECK_EQUAL((bal_before - bal_after).amount.value, 0);
+    // ...so it must not have moved the curve either.
+    BOOST_CHECK_EQUAL(after.reserve_a.value, before.reserve_a.value);
+    BOOST_CHECK_EQUAL(after.reserve_b.value, before.reserve_b.value);
+    BOOST_CHECK(after.k == before.k);
+    // And the curve must never claim more depth than the market actually holds.
+    BOOST_CHECK_LE(after.reserve_sum(), after.viz_held());
+}
+
+// P3 — splitting a stake around an LP cycle must not buy more weight.
+// Scenario steps 4-7 against the step-1 baseline, on two identically created markets:
+//   market 0: one bet of 100 VIZ on A.
+//   market 1: 50 on A -> add 50 LP -> withdraw 50 LP -> 50 on A.
+// Same stake, same side, same starting curve, and the LP cycle is free — so it must not change
+// what the stake buys. The phantom depth flattens the curve's price impact, so the split path
+// receives strictly more claim weight, diluting everyone who bet earlier at the honest price.
+BOOST_AUTO_TEST_CASE(cpmm_split_bet_around_lp_cycle_must_not_beat_single_bet) {
+    auto gp = make_genesis_params(0xC103u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-cyc-p3", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!cyc_boot(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping split-bet comparison.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    const int64_t half = unit / 2;
+
+    auto cyca_key = derive_key("cyca");
+    auto cycb_key = derive_key("cycb");
+    create_and_fund(node, gp, when, "cyca", cyca_key, share_type(unit * 10));
+    create_and_fund(node, gp, when, "cycb", cycb_key, share_type(unit * 10));
+
+    // Baseline: a single 100 VIZ bet.
+    const auto m_base = cyc_make_market(node, gp, when, unit * 4, 0);
+    const auto base_start = cyc_snap(node, m_base);
+    const auto single = cyc_bet_a(node, gp, when, m_base, "cyca", cyca_key, unit);
+    const int64_t weight_single = single.second;
+
+    // Split path on an identically created market.
+    const auto m_split = cyc_make_market(node, gp, when, unit * 4, 1);
+    const auto split_start = cyc_snap(node, m_split);
+    BOOST_REQUIRE_EQUAL(split_start.reserve_a.value, base_start.reserve_a.value);
+    BOOST_REQUIRE_EQUAL(split_start.reserve_b.value, base_start.reserve_b.value);
+    BOOST_REQUIRE(split_start.k == base_start.k);
+
+    const auto s1 = cyc_bet_a(node, gp, when, m_split, "cycb", cycb_key, half);
+    // pm_liquidity ids: market 0 seed = 0, market 1 seed = 1, so this deposit is 2.
+    cyc_lp_round_trip(node, gp, when, m_split, "cycb", cycb_key, half, 2);
+    const auto after_lp = cyc_snap(node, m_split);
+    const auto s2 = cyc_bet_a(node, gp, when, m_split, "cycb", cycb_key, half);
+
+    const int64_t weight_split = s1.second + s2.second;
+
+    BOOST_TEST_MESSAGE("single 100 on A        : weight " << weight_single);
+    BOOST_TEST_MESSAGE("50 + free LP cycle + 50: weight " << weight_split
+                       << " (first 50 -> " << s1.second << ", second 50 -> " << s2.second << ")");
+    BOOST_TEST_MESSAGE("curve after LP cycle   : " << cyc_show(after_lp));
+
+    // A free operation must not improve the fill.
+    BOOST_CHECK_LE(weight_split, weight_single);
+}
+
+// P4 — a fully unwound market is back where it started.
+// Scenario steps 8-9: cancel both 50s, compare against creation, then repeat the sequence. Every
+// operation is reversed and every VIZ returned, so the market must be indistinguishable from a
+// freshly created one. Instead each pass ratchets the reserves up by the LP amount while the VIZ
+// held stays flat, and the weight the same 100 VIZ buys grows every pass.
+BOOST_AUTO_TEST_CASE(cpmm_repeated_unwound_cycle_must_not_ratchet_reserves) {
+    auto gp = make_genesis_params(0xC104u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-cyc-p4", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!cyc_boot(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping cycle ratchet.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+    const int64_t half = unit / 2;
+
+    auto cyca_key = derive_key("cyca");
+    create_and_fund(node, gp, when, "cyca", cyca_key, share_type(unit * 20));
+
+    const auto market = cyc_make_market(node, gp, when, unit * 4, 0);
+    const auto genesis_state = cyc_snap(node, market);
+    BOOST_TEST_MESSAGE("cycle 0 (created):  " << cyc_show(genesis_state));
+
+    int64_t first_weight = 0;
+    int64_t next_lp_id = 1;   // 0 is the market's seed LP position
+
+    for (int cycle = 1; cycle <= 3; ++cycle) {
+        const auto x = cyc_bet_a(node, gp, when, market, "cyca", cyca_key, half);
+        cyc_lp_round_trip(node, gp, when, market, "cyca", cyca_key, half, next_lp_id++);
+        const auto y = cyc_bet_a(node, gp, when, market, "cyca", cyca_key, half);
+        const int64_t weight = x.second + y.second;
+
+        cyc_cancel(node, gp, when, "cyca", cyca_key, x.first);
+        cyc_cancel(node, gp, when, "cyca", cyca_key, y.first);
+
+        const auto s = cyc_snap(node, market);
+        BOOST_TEST_MESSAGE("cycle " << cycle << " (unwound): " << cyc_show(s)
+                           << " weight_for_100=" << weight);
+
+        // Everything was reversed, so the market must be back at its creation state.
+        BOOST_CHECK_EQUAL(s.reserve_a.value, genesis_state.reserve_a.value);
+        BOOST_CHECK_EQUAL(s.reserve_b.value, genesis_state.reserve_b.value);
+        BOOST_CHECK(s.k == genesis_state.k);
+        BOOST_CHECK_EQUAL(s.bets_sum.value, genesis_state.bets_sum.value);
+        BOOST_CHECK_EQUAL(s.liquidity_sum.value, genesis_state.liquidity_sum.value);
+        // The curve must never be deeper than the VIZ backing it.
+        BOOST_CHECK_LE(s.reserve_sum(), s.viz_held());
+
+        // The same 100 VIZ must buy the same weight on an unchanged market.
+        if (cycle == 1) first_weight = weight;
+        else            BOOST_CHECK_EQUAL(weight, first_weight);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
