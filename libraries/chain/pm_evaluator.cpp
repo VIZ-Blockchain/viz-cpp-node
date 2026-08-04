@@ -163,7 +163,10 @@ namespace {
         // frozen in the virtual reserves — on a never-settling market that would be an untracked
         // token deficit. Route it to forfeit_pool: it "accrues to the rest of the market" (the
         // design intent, spec §5) and is distributed to winners at settlement, so token supply
-        // reconciles exactly. See issue #127.
+        // reconciles exactly. See issue #127. NB: a profitable close (cv > total_bet) makes the
+        // residual NEGATIVE — the surplus was paid to the winner out of the pool, so forfeit_pool
+        // (a signed accumulator) correctly nets down the parimutuel winners' pool at settlement,
+        // where it is floored at 0 to prevent the uint64-cast mint (B3, compute_settlement).
         const int64_t curve_residual = pos.total_bet.value - cv;
         db.modify(mkt, [&](pm_market_object& m) { // unwind tokens (k preserved)
             if (pos.outcome_index == 0) {
@@ -1239,11 +1242,23 @@ void pm_cancel_bet_evaluator::do_apply(const pm_cancel_bet_operation& o) {
     const auto& mkt = db.get<pm_market_object, by_id>(bet.market);
     FC_ASSERT(mkt.allow_cancellation, "Cancellation not allowed");
     FC_ASSERT(mkt.status == 1, "Market not active");
+    // B7: cancellation is a pre-close action only. Once betting closes the outcome starts
+    // becoming known, so a late cancel would be a free option to unwind a losing bet.
+    // Open-ended markets (no betting deadline) stay cancellable while active.
+    const auto now = db.head_block_time();
+    FC_ASSERT(mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration,
+              "Cannot cancel bets after betting closes");
 
     share_type refund = bet.amount;
     FC_ASSERT(refund.value >= o.min_return, "Refund below min_return");
 
     if (mkt.market_type == 0) {
+        // B6: reversing the bet must not drive a reserve negative. Later opposite-side bets
+        // move the CPMM curve, so the nominal stake may no longer fit the reserve it was
+        // added to; an unchecked subtraction underflows share_type and corrupts
+        // k = reserve_a × reserve_b. Refuse the cancel instead (the bet can still settle).
+        FC_ASSERT((bet.side == 0 ? mkt.reserve_a.value : mkt.reserve_b.value) >= bet.amount.value,
+                  "Cannot cancel: market moved, reserves would underflow — let the bet settle");
         db.modify(mkt, [&](pm_market_object& m) {
             if (bet.side == 0) {
                 m.reserve_a -= bet.amount;
@@ -1981,6 +1996,9 @@ void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o)
     // the position's total_bet (C+L) is what left circulation at open. The remainder
     // total_bet − cv (AMM spread + kdiv floor) is routed to forfeit_pool so no token is left
     // frozen in the virtual reserves; it accrues to the rest of the market and settles to winners.
+    // NB: a profitable close (cv > total_bet) makes this NEGATIVE — the surplus was paid to the
+    // bettor from the pool, so forfeit_pool (signed) nets down the winners' pool at settlement,
+    // floored at 0 there to prevent the uint64-cast mint (B3, compute_settlement).
     const int64_t curve_residual = pos.total_bet.value - cv;
     // Unwind the tokens from the curve (k preserved).
     db.modify(mkt, [&](pm_market_object& m) {

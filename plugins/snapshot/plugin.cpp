@@ -995,6 +995,13 @@ public:
     // ON. When OFF (or when importing an older snapshot that lacks the section) the node falls back
     // to rebuilding meta from pm_create_market ops (live seed + DLT backfill).
     bool include_pm_meta = true;
+    // --snapshot-pm-legacy-residual: the PM token-supply invariant is satoshi-exact on a fresh
+    // chain (delta == 0), so the default is 0 = strict. A testnet that carries frozen PRE-FIX
+    // leverage-exit dust in its snapshot can set this to that known constant (e.g. -9079) to
+    // tolerate exactly that legacy value while still catching any NEW divergence. MUST stay 0 on
+    // mainnet / after a clean state rebuild. (B1: PR #124 review — was a hardcoded -9079 that
+    // made every healthy/fresh chain fail import.)
+    int64_t pm_supply_legacy_residual = 0;
     bool allow_snapshot_serving = false;
     bool allow_snapshot_serving_only_trusted = false;
     bool disable_snapshot_anti_spam = false;  // Skip all anti-spam checks (for trusted networks)
@@ -2362,13 +2369,13 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
                 // leverage-exit residual fix (route total_bet-cv → forfeit_pool). On a fresh chain the
                 // PM accounting reconciles to 0.
                 //
-                // TEMP TESTNET ANCHOR — REMOVE before mainnet / after a clean state rebuild:
-                // the current testnet snapshot carries a frozen PRE-FIX residual (leverage floor dust
-                // that was minted-away on never-settling markets before the fix; code cannot retro-heal
-                // already-frozen state). We anchor the check to that known constant so the invariant is
-                // live again and catches ANY NEW divergence, while tolerating the legacy value. Set to 0
-                // (default) on mainnet/fresh chains → strict ==0. See journal 2026-07-15, q#199.
-                const int64_t PM_SUPPLY_LEGACY_RESIDUAL = -9079; // TEMP: testnet-only; make 0 to enforce strict
+                // Anchor the check to a configurable legacy residual (default 0 = strict, satoshi-exact).
+                // A testnet snapshot may carry frozen PRE-FIX leverage-exit dust that code cannot
+                // retro-heal; the operator sets --snapshot-pm-legacy-residual to that known constant to
+                // import that specific state while STILL catching any new divergence. Default 0 keeps
+                // mainnet/fresh chains strict. (B1: PR #124 — was hardcoded -9079, fatal on healthy
+                // chains. See journal 2026-07-15, q#199.)
+                const int64_t PM_SUPPLY_LEGACY_RESIDUAL = pm_supply_legacy_residual;
                 ilog(CLOG_ORANGE "Snapshot TOKEN invariant: "
                      "current_supply=${cs} vs summed=${sm} (base=${bt} + pm=${pm}), delta=${d}. "
                      "Base: acc_balance=${ab} acc_reserved=${ar} escrow_balance=${eb} escrow_fee=${ef} "
@@ -4530,6 +4537,11 @@ void snapshot_plugin::set_program_options(
             "Serialize the (non-consensus) prediction-market metadata index (titles/images/tags/event) "
             "into snapshots so it survives DLT block-log rotation and snapshot hand-off. Disable to keep "
             "snapshots smaller; importers then rebuild meta from pm_create_market ops (live seed + DLT backfill).")
+        ("snapshot-pm-legacy-residual", bpo::value<int64_t>()->default_value(0),
+            "Tolerated PM token-supply invariant residual (raw) when importing a snapshot. Default 0 = "
+            "strict (satoshi-exact), required for mainnet/fresh chains. Set to a testnet snapshot's known "
+            "frozen pre-fix dust (e.g. -9079) only to import that specific legacy state; any OTHER drift "
+            "still fails import.")
         ("allow-snapshot-serving", bpo::value<bool>()->default_value(false),
             "Enable serving snapshots over TCP to other nodes")
         ("allow-snapshot-serving-only-trusted", bpo::value<bool>()->default_value(false),
@@ -4595,6 +4607,12 @@ void snapshot_plugin::plugin_initialize(const bpo::variables_map& options) {
     if (options.count("snapshot-include-pm-meta")) {
         my->include_pm_meta = options.at("snapshot-include-pm-meta").as<bool>();
         ilog("Snapshot PM metadata section: ${e}", ("e", my->include_pm_meta ? "ENABLED" : "disabled"));
+    }
+    if (options.count("snapshot-pm-legacy-residual")) {
+        my->pm_supply_legacy_residual = options.at("snapshot-pm-legacy-residual").as<int64_t>();
+        if (my->pm_supply_legacy_residual != 0)
+            wlog("Snapshot PM supply invariant anchored to legacy residual ${r} (non-strict); MUST be 0 on mainnet/fresh chains",
+                 ("r", my->pm_supply_legacy_residual));
     }
     if (my->snapshot_auto_latest) {
         if (my->snapshot_path.empty()) {

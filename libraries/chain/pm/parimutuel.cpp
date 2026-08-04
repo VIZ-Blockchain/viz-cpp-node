@@ -16,7 +16,14 @@ namespace graphene { namespace chain { namespace pm {
         int64_t avail = p.losers_sum - oracle_fee - creator_fee - liq_fee;
         if (avail < 0) avail = 0;
         int64_t fixed_paid = (p.oracle_fixed_fee < avail) ? p.oracle_fixed_fee : avail;
+        // forfeit_pool is a SIGNED accumulator: leverage positions that close in profit route
+        // a negative residual (cv > total_bet — the surplus was paid to the winner out of the
+        // pool, so it must reduce what parimutuel winners can share). If leverage wins exceed
+        // the losers' pool the sum goes negative; floor at 0 so winners simply get their
+        // principal back (line 44) and the negative NEVER reaches the uint64 casts below — an
+        // unclamped negative would wrap to ~1.8e19 and mint. (B3: PR #124 review.)
         int64_t winners_pool = avail - fixed_paid + p.forfeit_pool;
+        if (winners_pool < 0) winners_pool = 0;
 
         r.oracle_take  = oracle_fee + fixed_paid;
         r.creator_take = creator_fee;
