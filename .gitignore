@@ -53,6 +53,8 @@ documentation/doxygen/latex
 *.pyo
 *.egg-info/
 build
+# Side-by-side configure trees, e.g. build-190 for a Boost 1.90 probe
+build-*/
 
 node_modules/*
 
