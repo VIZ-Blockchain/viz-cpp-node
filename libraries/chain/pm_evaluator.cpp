@@ -255,8 +255,9 @@ namespace {
 
     // Graduated recall: withdraw `amount` of the lazy pool's LP position from an idle
     // market and return it to free_balance. Mirrors pm_withdraw_liquidity — shrink
-    // liquidity_sum, reduce LMSR b proportionally (binary reserves are the pricing engine
-    // and stay, as on every LP withdraw/settle). Returns the amount actually recalled.
+    // liquidity_sum and shrink the pricing curve price-neutrally (LMSR b for multi,
+    // both CPMM reserves proportionally for binary) so depth tracks the remaining
+    // capital while the odds stay put. Returns the amount actually recalled.
     share_type recall_pool_liquidity(database& db, const pm_market_object& mkt, share_type amount) {
         if (amount.value <= 0) return share_type(0);
         const auto& lidx = db.get_index<pm_liquidity_index>().indices().get<by_market>();
@@ -276,8 +277,19 @@ namespace {
                           * fc::uint128_t((uint64_t)w.value) / fc::uint128_t((uint64_t)poollp->amount.value)).lo);
         }
         db.modify(mkt, [&](pm_market_object& m) {
+            const int64_t L = m.liquidity_sum.value; // capital BEFORE this recall
             m.liquidity_sum -= w;
-            if (m.market_type == 1) m.lmsr_b -= b_remove;
+            if (m.market_type == 1) {
+                m.lmsr_b -= b_remove;
+            } else if (L > 0) {
+                // CPMM: price-neutral shrink, mirroring pm_withdraw_liquidity so the
+                // reserve ratio (odds) is preserved and depth tracks liquidity_sum.
+                const fc::uint128_t num((uint64_t)(L - w.value));
+                const fc::uint128_t den((uint64_t)L);
+                m.reserve_a = share_type((int64_t)(fc::uint128_t((uint64_t)m.reserve_a.value) * num / den).lo);
+                m.reserve_b = share_type((int64_t)(fc::uint128_t((uint64_t)m.reserve_b.value) * num / den).lo);
+                m.k = fc::uint128_t((uint64_t)m.reserve_a.value) * fc::uint128_t((uint64_t)m.reserve_b.value);
+            }
         });
         if (w == poollp->amount)
             db.modify(*poollp, [](pm_liquidity_object& l) { l.status = 3; });
@@ -1296,14 +1308,27 @@ void pm_add_liquidity_evaluator::do_apply(const pm_add_liquidity_operation& o) {
     }
 
     db.modify(mkt, [&](pm_market_object& m) {
-        m.liquidity_sum += o.amount.amount;
         if (m.market_type == 1) {
+            m.liquidity_sum += o.amount.amount;
             m.lmsr_b       += b_share;
             m.lmsr_subsidy += o.amount.amount;
         } else {
-            share_type half = share_type(o.amount.amount.value / 2);
-            m.reserve_a += half;
-            m.reserve_b += share_type(o.amount.amount.value - half.value);
+            // CPMM: price-neutral add. Scale both reserves by (L + amount) / L so the
+            // reserve ratio (the odds) is unchanged and only depth grows with capital.
+            // A round-trip (add then withdraw the same amount) restores the reserves.
+            const int64_t L = m.liquidity_sum.value; // capital BEFORE this deposit
+            if (L > 0) {
+                const fc::uint128_t num((uint64_t)(L + o.amount.amount.value));
+                const fc::uint128_t den((uint64_t)L);
+                m.reserve_a = share_type((int64_t)(fc::uint128_t((uint64_t)m.reserve_a.value) * num / den).lo);
+                m.reserve_b = share_type((int64_t)(fc::uint128_t((uint64_t)m.reserve_b.value) * num / den).lo);
+            } else {
+                // No prior capital: seed a balanced curve (matches market genesis).
+                const share_type half = share_type(o.amount.amount.value / 2);
+                m.reserve_a += half;
+                m.reserve_b += share_type(o.amount.amount.value - half.value);
+            }
+            m.liquidity_sum += o.amount.amount;
             m.k = fc::uint128_t((uint64_t)m.reserve_a.value) * fc::uint128_t((uint64_t)m.reserve_b.value);
         }
     });
@@ -1330,24 +1355,53 @@ void pm_withdraw_liquidity_evaluator::do_apply(const pm_withdraw_liquidity_opera
     FC_ASSERT(lp.status == 0, "Position already closed");
 
     const auto& mkt = db.get<pm_market_object, by_id>(lp.market);
+    // LP positions may be withdrawn early *during* the betting window (Early Withdrawal,
+    // spec §9) but are locked once betting closes, until resolution — this keeps the LP
+    // set stable for the time-weighted fee settlement. Open-ended markets (no betting
+    // deadline) have no lock window; status >= 2 means already closed/resolved. The
+    // withdrawal shrinks the reserves price-neutrally below, so an add→withdraw round-trip
+    // is exploit-free (this is what B4 fixed; the earlier assert *message* wrongly implied
+    // withdrawal was blocked during betting — the condition itself is correct).
     FC_ASSERT(mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration || mkt.status >= 2,
-              "Cannot withdraw active liquidity during betting period");
+              "LP positions are locked once betting closes, until resolution");
 
     share_type withdraw = (o.amount.amount == 0) ? lp.amount : o.amount.amount;
     FC_ASSERT(withdraw.value > 0 && withdraw.value <= lp.amount.value, "Invalid withdrawal amount");
+
+    // A live market's pricing curve must stay funded above the minimum: the reserves
+    // (CPMM) / lmsr_b (Multi) now track liquidity_sum, so an unchecked full exit could
+    // drain them to zero and brick pricing. Resolved markets (status >= 2) have no live
+    // curve. Positions that cannot exit early settle in full at resolution.
+    if (mkt.status < 2) {
+        const auto& mp = median(db);
+        FC_ASSERT(mkt.liquidity_sum.value - withdraw.value >= mp.pm_min_liquidity.amount.value,
+                  "Withdrawal would drop market liquidity below the minimum");
+    }
 
     share_type total = share_type(withdraw.value + lp.earned_fee.value);
     db.adjust_balance(db.get_account(o.provider), asset(total, TOKEN_SYMBOL));
     db.pm_adjust_frozen(o.provider, 0, -withdraw); // UNLOCK: principal back to free (earned_fee is profit, not frozen)
 
     db.modify(mkt, [&](pm_market_object& m) {
+        const int64_t L = m.liquidity_sum.value; // capital BEFORE this withdrawal
         m.liquidity_sum -= withdraw;
-        if (m.market_type == 1 && lp.b_share.value > 0 && lp.amount.value > 0) {
-            share_type b_remove = (withdraw == lp.amount) ? lp.b_share :
-                share_type((int64_t)(fc::uint128_t((uint64_t)lp.b_share.value) *
-                            fc::uint128_t((uint64_t)withdraw.value) /
-                            fc::uint128_t((uint64_t)lp.amount.value)).lo);
-            m.lmsr_b -= b_remove;
+        if (m.market_type == 1) {
+            if (lp.b_share.value > 0 && lp.amount.value > 0) {
+                share_type b_remove = (withdraw == lp.amount) ? lp.b_share :
+                    share_type((int64_t)(fc::uint128_t((uint64_t)lp.b_share.value) *
+                                fc::uint128_t((uint64_t)withdraw.value) /
+                                fc::uint128_t((uint64_t)lp.amount.value)).lo);
+                m.lmsr_b -= b_remove;
+            }
+        } else if (L > 0) {
+            // CPMM: price-neutral withdraw. Shrink both reserves by (L - withdraw) / L so
+            // the reserve ratio (the odds) is unchanged and depth falls with capital.
+            // Mirrors the proportional add — a round-trip leaves the curve untouched.
+            const fc::uint128_t num((uint64_t)(L - withdraw.value));
+            const fc::uint128_t den((uint64_t)L);
+            m.reserve_a = share_type((int64_t)(fc::uint128_t((uint64_t)m.reserve_a.value) * num / den).lo);
+            m.reserve_b = share_type((int64_t)(fc::uint128_t((uint64_t)m.reserve_b.value) * num / den).lo);
+            m.k = fc::uint128_t((uint64_t)m.reserve_a.value) * fc::uint128_t((uint64_t)m.reserve_b.value);
         }
     });
 

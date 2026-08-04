@@ -424,11 +424,14 @@ net_payout = bet_amount + profit − penalty_deduction
 ### Adding Liquidity
 
 ```
-add_a = amount × reserve_a / (reserve_a + reserve_b)
-add_b = amount − add_a
-new_reserve_a = reserve_a + add_a
-new_reserve_b = reserve_b + add_b
-new_k = new_reserve_a × new_reserve_b
+// Price-neutral: scale both reserves by (L + amount) / L, where L = liquidity_sum
+// BEFORE the deposit. The reserve ratio (the odds) is unchanged — only depth grows,
+// linearly with capital (k scales by ((L+amount)/L)²). A first deposit into an empty
+// curve (L = 0) seeds a balanced 50/50 split, as at market genesis.
+factor        = (liquidity_sum + amount) / liquidity_sum
+new_reserve_a = floor(reserve_a × factor)
+new_reserve_b = floor(reserve_b × factor)
+new_k         = new_reserve_a × new_reserve_b
 ```
 
 Records `sec_to_expiration = betting_expiration − current_time` at deposit time.
@@ -448,18 +451,17 @@ Each deposit is an independent position. Multiple deposits by the same user are 
 
 ### Early Withdrawal
 
-**Preconditions:** market status=1, `time < betting_expiration`, `resulting liquidity_sum ≥ 100,000 mVIZ`.
+**Preconditions:** market live (`status < 2`) and betting still open (`time < betting_expiration`, or an open-ended market with no deadline); `resulting liquidity_sum ≥ pm_min_liquidity`. Once betting closes the position is locked until resolution (see below).
 
 ```
-// Fractional withdrawal
-fraction = withdraw_amount / lp_amount
-withdraw_weight_a = floor(weight_a × fraction)
-withdraw_weight_b = floor(weight_b × fraction)
-
-// Reverse reserves
-new_reserve_a = reserve_a − withdraw_weight_a
-new_reserve_b = reserve_b − withdraw_weight_b
-new_k = new_reserve_a × new_reserve_b
+// Price-neutral: shrink both reserves by (L − withdraw_amount) / L, where L =
+// liquidity_sum BEFORE the withdrawal. Mirror of the proportional add — the reserve
+// ratio (the odds) is unchanged, depth falls with capital, and an add→withdraw
+// round-trip of the same amount leaves the curve untouched.
+factor        = (liquidity_sum − withdraw_amount) / liquidity_sum
+new_reserve_a = floor(reserve_a × factor)
+new_reserve_b = floor(reserve_b × factor)
+new_k         = new_reserve_a × new_reserve_b
 
 // Time-ratio discount
 time_served = current_time − lp_deposit_time
