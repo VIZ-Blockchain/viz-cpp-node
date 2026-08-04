@@ -14,6 +14,11 @@
 
 #include <fc/smart_ref_impl.hpp>
 
+// Boost 1.87 dropped the deprecated Asio interface from <boost/asio.hpp>.
+// deadline_timer, which production_timer_ below is, still exists but has to be
+// included directly now.
+#include <boost/asio/deadline_timer.hpp>
+
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -73,7 +78,8 @@ namespace graphene {
                     // separate from appbase's shared io_service so that P2P network
                     // activity (peer disconnects, send-queue drains) cannot delay the
                     // production timer callback and cause missed-slot lag.
-                    production_io_work_ = std::make_unique<asio::io_service::work>(production_io_service_);
+                    production_io_work_ = std::make_unique<asio::executor_work_guard<asio::io_context::executor_type>>(
+                        asio::make_work_guard(production_io_service_));
                     production_io_thread_ = std::thread([this]() { production_io_service_.run(); });
                 }
 
@@ -139,8 +145,8 @@ namespace graphene {
 
                 // Dedicated io_service for the production timer — must be declared
                 // before production_timer_ so it is initialized first.
-                asio::io_service production_io_service_;
-                std::unique_ptr<asio::io_service::work> production_io_work_;
+                asio::io_context production_io_service_;
+                std::unique_ptr<asio::executor_work_guard<asio::io_context::executor_type>> production_io_work_;
                 std::thread production_io_thread_;
                 asio::deadline_timer production_timer_;
 

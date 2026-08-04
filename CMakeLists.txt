@@ -40,7 +40,6 @@ get_git_head_revision(GIT_REFSPEC GIT_SHA2)
 set(BOOST_COMPONENTS)
 list(APPEND BOOST_COMPONENTS thread
         date_time
-        system
         filesystem
         program_options
         serialization
@@ -82,11 +81,32 @@ if(WIN32)
     set(BOOST_ALL_DYN_LINK OFF) # force dynamic linking for all libraries
 endif(WIN32)
 
-find_package(Boost 1.71 REQUIRED COMPONENTS ${BOOST_COMPONENTS})
-set(BOOST_LIBRARIES_TEMP ${Boost_LIBRARIES})
-find_package(Boost 1.71 REQUIRED COMPONENTS coroutine)
+# CMake removed its bundled FindBoost module in 3.30. Boost >= 1.70 ships
+# BoostConfig.cmake, which still populates Boost_LIBRARIES with Boost::* targets,
+# so the existing ${Boost_LIBRARIES} references keep working and the old
+# double-find_package dance for coroutine collapses into one call.
 list(APPEND BOOST_COMPONENTS coroutine)
-set(Boost_LIBRARIES ${BOOST_LIBRARIES_TEMP} ${Boost_LIBRARIES})
+
+# Boost.System has been header-only since 1.69. Boost 1.90 stopped shipping a
+# compiled library for it, and with it the boost_system CMake config, so naming
+# system in COMPONENTS hard-fails there -- while Boost 1.83 still ships and
+# wants it. Probe for the component instead of assuming either way.
+find_package(boost_system QUIET CONFIG)
+if(boost_system_FOUND)
+    list(APPEND BOOST_COMPONENTS system)
+else()
+    message(STATUS "Boost.System is header-only in this Boost; not requesting it as a component")
+endif()
+
+find_package(Boost 1.83 CONFIG REQUIRED COMPONENTS ${BOOST_COMPONENTS})
+
+# Boost 1.87 dropped the deprecated Asio interface from the <boost/asio.hpp>
+# umbrella header. deadline_timer (used by plugins/validator) still exists, but
+# only when Asio's Boost.DateTime integration is enabled and the header is
+# included directly -- see plugins/validator/validator.cpp. The integration is
+# on by default; defining this keeps it on even if something else disables it,
+# and it must precede every Asio header, so it lives here rather than in one.
+add_compile_definitions(BOOST_ASIO_HAS_BOOST_DATE_TIME)
 
 find_program(CCACHE_FOUND ccache)
 if(CCACHE_FOUND)
