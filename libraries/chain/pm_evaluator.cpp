@@ -1326,28 +1326,36 @@ void pm_cancel_bet_evaluator::do_apply(const pm_cancel_bet_operation& o) {
     FC_ASSERT(mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration,
               "Cannot cancel bets after betting closes");
 
+    // Binary markets re-price the refund on the current curve (F2, below); type-1/LMSR stays
+    // nominal. min_return is checked once the final refund is known (after the branch).
     share_type refund = bet.amount;
-    FC_ASSERT(refund.value >= o.min_return, "Refund below min_return");
 
     if (mkt.market_type == 0) {
-        // B6: reversing the bet must not drive a reserve negative. Later opposite-side bets
-        // move the CPMM curve, so the nominal stake may no longer fit the reserve it was
-        // added to; an unchecked subtraction underflows share_type and corrupts
-        // k = reserve_a × reserve_b. Refuse the cancel instead (the bet can still settle).
-        FC_ASSERT((bet.side == 0 ? mkt.reserve_a.value : mkt.reserve_b.value) >= bet.amount.value,
-                  "Cannot cancel: market moved, reserves would underflow — let the bet settle");
+        // F2: a cancel is the MIRROR OF THE BUY — sell bet.weight back at the CURRENT reserves so
+        // k stays invariant. The old nominal reversal (refund bet.amount, hand back bet.weight at
+        // today's price) corrupted k on any curve that had moved since the bet — and an opposing bet
+        // is enough to move it — leaving the retained position an inflated claim weight (up to 103×)
+        // that settles as real money, plus a free option to unwind a losing bet at 100%. Curve-priced:
+        //   new_reserve_in = k / (reserve_out + weight);  refund = reserve_in − new_reserve_in.
+        // new_reserve_in < reserve_in always (weight > 0 ⇒ larger denominator), so refund > 0 and no
+        // reserve can underflow — this subsumes the B6 guard. min_return (checked below) protects the
+        // bettor from an adverse move. The gap between the original stake and the curve-priced refund
+        // routes to forfeit_pool (signed): a loss accrues to the rest of the market, a gain is charged
+        // to LP principal at settlement via the F1 shortfall path. (PR #124 finding 2.)
+        const bool a = (bet.side == 0);
+        share_type reserve_in  = a ? mkt.reserve_a : mkt.reserve_b;
+        share_type reserve_out = a ? mkt.reserve_b : mkt.reserve_a;
+        fc::uint128_t denom = fc::uint128_t((uint64_t)(reserve_out.value + bet.weight.value));
+        FC_ASSERT(denom.lo > 0 || denom.hi > 0, "CPMM overflow");
+        share_type new_reserve_in = share_type((int64_t)(mkt.k / denom).lo);
+        refund = share_type(reserve_in.value - new_reserve_in.value); // > 0 by construction
+        FC_ASSERT(refund.value >= 0, "curve-priced refund underflow");
+        const int64_t residual = bet.amount.value - refund.value; // signed → forfeit_pool (conserves VIZ)
         db.modify(mkt, [&](pm_market_object& m) {
-            if (bet.side == 0) {
-                m.reserve_a -= bet.amount;
-                m.reserve_b += bet.weight;
-                m.a_bets_sum -= bet.amount;
-            } else {
-                m.reserve_b -= bet.amount;
-                m.reserve_a += bet.weight;
-                m.b_bets_sum -= bet.amount;
-            }
-            m.bets_sum -= bet.amount;
-            m.k = fc::uint128_t((uint64_t)m.reserve_a.value) * fc::uint128_t((uint64_t)m.reserve_b.value);
+            if (a) { m.reserve_a = new_reserve_in; m.reserve_b += bet.weight; m.a_bets_sum -= bet.amount; }
+            else   { m.reserve_b = new_reserve_in; m.reserve_a += bet.weight; m.b_bets_sum -= bet.amount; }
+            m.bets_sum     -= bet.amount;
+            m.forfeit_pool += residual; // stake = refund + residual; k unchanged (mirror of buy)
         });
     } else {
         const auto& oidx_out = db.get_index<pm_outcome_index>().indices().get<by_market_outcome>();
@@ -1362,8 +1370,9 @@ void pm_cancel_bet_evaluator::do_apply(const pm_cancel_bet_operation& o) {
         db.modify(mkt, [&](pm_market_object& m) { m.bets_sum -= bet.amount; });
     }
 
+    FC_ASSERT(refund.value >= o.min_return, "Refund below min_return");
     db.adjust_balance(db.get_account(o.account), asset(refund, TOKEN_SYMBOL));
-    db.pm_adjust_frozen(o.account, 1, -bet.amount); // UNLOCK: stake returned on cancel
+    db.pm_adjust_frozen(o.account, 1, -bet.amount); // UNLOCK: original stake leaves the bet set on cancel
     db.modify(bet, [](pm_bet_object& b) { b.status = 1; });
 
     // Case B (spec §5): the cancel-bettor was paid first at current reserves; now cascade-
