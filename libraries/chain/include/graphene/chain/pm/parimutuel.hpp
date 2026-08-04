@@ -9,9 +9,11 @@
 // wrapper that feeds chain state in and applies the result via adjust_balance.
 //
 // Strictly ZERO-SUM (no token emission):
-//   Σ winner_payout + oracle_take + creator_take + lp_bonus
+//   Σ winner_payout + oracle_take + creator_take + lp_bonus + uncovered
 //     == Σ winner.amount + losers_sum + forfeit_pool
-// LP principal is returned separately by the caller and is unaffected here.
+// LP principal is returned separately by the caller; when winners_pool would go negative the
+// shortfall is reported as `uncovered` and the caller charges it to LP principal (F1), so the
+// identity above holds unconditionally rather than emitting the shortfall.
 
 namespace graphene { namespace chain { namespace pm {
 
@@ -36,6 +38,11 @@ namespace graphene { namespace chain { namespace pm {
         int64_t oracle_take = 0;             ///< oracle_fee + oracle_fixed_paid
         int64_t creator_take = 0;
         int64_t lp_bonus = 0;                ///< liq_fee + Σpenalty + rounding dust + undistributed pool
+        int64_t uncovered = 0;               ///< F1: |negative winners_pool| the pot couldn't cover.
+                                             ///< Flooring winners_pool at 0 returns winners their principal
+                                             ///< but leaves this shortfall uncharged; the caller MUST net it
+                                             ///< off LP principal (the leverage counterparty) pro-rata so the
+                                             ///< zero-sum invariant above holds unconditionally. (PR #124 F1.)
     };
 
     /// Compute the parimutuel payout split. Winners are paid by weight out of the

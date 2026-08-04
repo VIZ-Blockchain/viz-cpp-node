@@ -350,7 +350,12 @@ namespace {
     // principal × time-in-market (pure, unit-tested distribute_lp; last entry absorbs
     // rounding). The lazy pool is a real LP (pm_liquidity_object with empty provider);
     // its principal + yield route back into the pool instead of to an account.
-    void settle_liquidity(database& db, const pm_market_object& mkt, share_type bonus) {
+    // `uncovered` (F1): the parimutuel shortfall compute_settlement could not fund from the
+    // losers'+forfeit pot (see settle_result::uncovered). LPs are the leverage counterparty, so the
+    // shortfall is charged against LP principal pro-rata here — otherwise flooring winners_pool at 0
+    // would silently emit exactly `uncovered` tokens. Default 0 for void/refund callers.
+    void settle_liquidity(database& db, const pm_market_object& mkt, share_type bonus,
+                          share_type uncovered = share_type(0)) {
         const auto& lidx = db.get_index<pm_liquidity_index>().indices().get<by_market>();
         auto first = lidx.lower_bound(boost::make_tuple(mkt.id, pm_liquidity_id_type()));
 
@@ -368,16 +373,40 @@ namespace {
 
         const std::vector<int64_t> shares = pm::distribute_lp(lps, bonus.value);
 
+        // F1: split `uncovered` across LP principal pro-rata (by principal, not time — it's a capital
+        // loss, not a fee). Each charge is <= its LP's principal by construction; the last LP absorbs
+        // the rounding remainder so Σ charge == min(uncovered, Σ principal) exactly. If uncovered ever
+        // exceeded total principal (leverage paid out more than the whole pool — pos_cap should stop
+        // this), we charge only what exists; the strict supply invariant (#126) is the backstop.
+        std::vector<int64_t> charge(active.size(), 0);
+        if (uncovered.value > 0) {
+            int64_t total_principal = 0;
+            for (auto* lp : active) total_principal += lp->amount.value;
+            if (total_principal > 0) {
+                int64_t to_charge = uncovered.value < total_principal ? uncovered.value : total_principal;
+                int64_t assigned = 0;
+                for (size_t i = 0; i < active.size(); ++i) {
+                    int64_t c = (int64_t)(fc::uint128_t((uint64_t)to_charge)
+                                * fc::uint128_t((uint64_t)active[i]->amount.value)
+                                / fc::uint128_t((uint64_t)total_principal)).lo;
+                    charge[i] = c; assigned += c;
+                }
+                charge[active.size() - 1] += (to_charge - assigned); // remainder ≤ last LP's principal
+            }
+        }
+
         for (size_t i = 0; i < active.size(); ++i) {
             const pm_liquidity_object& lp = *active[i];
             share_type share(shares[i]);
+            int64_t principal_ret = lp.amount.value - charge[i];
+            if (principal_ret < 0) principal_ret = 0; // defensive; charge[i] ≤ amount by construction
             if (lp.provider.size() > 0) {
-                share_type ret = share_type(lp.amount.value + share.value);
+                share_type ret = share_type(principal_ret + share.value);
                 if (ret.value > 0)
                     db.adjust_balance(db.get_account(lp.provider), asset(ret, TOKEN_SYMBOL));
-                db.pm_adjust_frozen(lp.provider, 0, -lp.amount); // UNLOCK: LP principal returns on finalize
+                db.pm_adjust_frozen(lp.provider, 0, -lp.amount); // UNLOCK: full committed principal releases
             } else {
-                route_pool_lp_return(db, lp.amount.value, share.value); // lazy pool LP
+                route_pool_lp_return(db, principal_ret, share.value); // lazy pool LP
             }
             db.modify(lp, [&](pm_liquidity_object& l) { l.earned_fee += share; l.status = 3; });
         }
@@ -526,7 +555,7 @@ namespace {
                 asset(winner_bets[i]->amount, TOKEN_SYMBOL), asset(payout, TOKEN_SYMBOL)));
         }
 
-        settle_liquidity(db, mkt, share_type(res.lp_bonus));
+        settle_liquidity(db, mkt, share_type(res.lp_bonus), share_type(res.uncovered)); // F1: charge shortfall to LP principal
         db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
     }
 
