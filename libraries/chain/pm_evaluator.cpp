@@ -23,6 +23,48 @@ namespace {
         return db.get_validator_schedule_object().median_props;
     }
 
+    // ── B9 (spec §8): late-bet anti-sniping penalty ──────────────────────────────
+    // Returns the 1e6-scaled penalty applied ONLY to a winning bet's PROFIT at settlement
+    // (never principal — see compute_settlement). It is 0 outside the penalty window, when the
+    // market configured none (time_penalty_value == 0), or for open-ended markets (no deadline).
+    // `risk_time` is when the market exposure was actually taken — bet placement for instant bets,
+    // the COMMIT time for commit-reveal (blind, not the later reveal), the leverage OPEN time for a
+    // converted position — so honest early risk-takers are never penalised for later mechanics.
+    // Integer-only (consensus); the field was defined + read but never assigned before this fix.
+    uint32_t compute_time_penalty(const pm_market_object& mkt, time_point_sec risk_time,
+                                  uint32_t max_time_penalty) {
+        if (mkt.time_penalty_value == 0) return 0;
+        if (mkt.betting_expiration == time_point_sec()) return 0; // open-ended: no window
+        const int64_t be = (int64_t)mkt.betting_expiration.sec_since_epoch();
+        const int64_t ct = (int64_t)mkt.created_time.sec_since_epoch();
+        int64_t window;
+        if (mkt.time_penalty_type == 0) {
+            window = (int64_t)mkt.time_penalty_value;                 // fixed seconds before expiry
+        } else {
+            const int64_t duration = be - ct;                        // percentage of market lifetime
+            if (duration <= 0) return 0;
+            window = (int64_t)(fc::uint128_t((uint64_t)mkt.time_penalty_value)
+                     * fc::uint128_t((uint64_t)duration) / fc::uint128_t(100u)).lo;
+        }
+        if (window <= 0) return 0;
+        int64_t tte = be - (int64_t)risk_time.sec_since_epoch();      // time left when risk was taken
+        if (tte < 0) tte = 0;
+        if (tte >= window) return 0;                                 // placed before the window opened
+        const int64_t into = window - tte;                           // deeper into window = later = harsher
+        fc::uint128_t num, den;
+        if (mkt.penalty_curve_type == 1) {                           // quadratic
+            num = fc::uint128_t((uint64_t)into) * fc::uint128_t((uint64_t)into);
+            den = fc::uint128_t((uint64_t)window) * fc::uint128_t((uint64_t)window);
+        } else {                                                     // linear
+            num = fc::uint128_t((uint64_t)into);
+            den = fc::uint128_t((uint64_t)window);
+        }
+        int64_t penalty = (int64_t)(fc::uint128_t((uint64_t)max_time_penalty) * num / den).lo;
+        if (penalty < 0) penalty = 0;
+        if (penalty > (int64_t)max_time_penalty) penalty = max_time_penalty;
+        return (uint32_t)penalty;
+    }
+
     // ── Per-oracle live active-market counter (display-only, pm_oracle_object.active_markets) ──
     // O(1) upkeep so get_oracle/watchdogs read the count without paging list_markets. NEVER gates
     // consensus. A market is "active" == status 1; inc when it enters (create-active / accept),
@@ -1037,6 +1079,7 @@ void pm_place_bet_evaluator::do_apply(const pm_place_bet_operation& o) {
     auto& db = _db;
     FC_ASSERT(db.has_hardfork(CHAIN_HARDFORK_14), "PM not enabled");
     const auto now = db.head_block_time();
+    const auto& mp = median(db); // for B9 late-bet penalty scale (pm_max_time_penalty)
 
     const auto& mkt = get_market(db, o.market_id);
     FC_ASSERT(mkt.status == 1, "Market not active");
@@ -1097,6 +1140,7 @@ void pm_place_bet_evaluator::do_apply(const pm_place_bet_operation& o) {
             bet.mode         = o.mode;
             bet.status       = 0;
             bet.created_time = now;
+            bet.time_penalty = compute_time_penalty(mkt, now, mp.pm_max_time_penalty); // B9
         });
 
     } else {
@@ -1138,6 +1182,7 @@ void pm_place_bet_evaluator::do_apply(const pm_place_bet_operation& o) {
             bet.mode          = o.mode;
             bet.status        = 0;
             bet.created_time  = now;
+            bet.time_penalty  = compute_time_penalty(mkt, now, mp.pm_max_time_penalty); // B9
         });
     }
 }
@@ -1223,6 +1268,9 @@ void pm_reveal_bet_evaluator::do_apply(const pm_reveal_bet_operation& o) {
         bet.epoch         = mkt.current_epoch;
         bet.status        = 5; // queued
         bet.created_time  = now;
+        // B9: penalise by the blind COMMIT time, not the reveal — honest commit-reveal bettors
+        // are not punished for revealing late within the window.
+        bet.time_penalty  = compute_time_penalty(mkt, commit.commit_time, median(db).pm_max_time_penalty);
     });
     // LOCK: revealed stake becomes a queued bet. The escrow left balance at commit but is not a
     // tracked category; count it as frozen from the moment it materializes as a bet object.
@@ -1718,6 +1766,7 @@ void pm_transfer_position_evaluator::do_apply(const pm_transfer_position_operati
             nb.epoch         = bet.epoch;
             nb.status        = 0;
             nb.created_time  = bet.created_time;
+            nb.time_penalty  = bet.time_penalty; // B9: inherit — same risk taken at the same time
         });
     }
 }
@@ -2083,6 +2132,10 @@ void pm_leverage_convert_evaluator::do_apply(const pm_leverage_convert_operation
         b.weight        = pos.tokens;
         b.status        = 0;
         b.created_time  = now;
+        // B9: the exposure was taken when the leverage position was OPENED, not at conversion —
+        // penalise by pos.created_time (leverage opens are gated ≥24h before expiry, so this is
+        // virtually always 0 unless the market runs a very wide percentage window).
+        b.time_penalty  = compute_time_penalty(mkt, pos.created_time, mp.pm_max_time_penalty);
     });
     db.modify(mkt, [&](pm_market_object& m) {
         if (pos.outcome_index == 0) m.a_bets_sum += pos.total_bet;

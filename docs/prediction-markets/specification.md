@@ -417,6 +417,21 @@ net_payout = bet_amount + profit − penalty_deduction
 
 **Invariant:** `net_payout ≥ bet_amount` — the penalty applies only to the profit share, so winners always receive at least their principal. (Identical for Onix Binary and Onix Multi.)
 
+### Risk-Time Source
+
+`time_penalty` is computed once, when the bet is created, from the moment the market exposure was
+actually taken — not from later mechanics:
+
+| Path | `risk_time` used |
+|------|------------------|
+| Instant / direct batch bet (`pm_place_bet`) | placement time |
+| Commit–reveal (`pm_reveal_bet`) | the **commit** time (blind), so revealing late within the window is not penalised |
+| Converted leverage position (`pm_leverage_convert`) | the leverage **open** time (opens are gated ≥24 h before expiry) |
+| Transferred position (`pm_transfer_position`) | **inherited** from the source bet |
+
+A market with `time_penalty_value = 0` (the default) has no window — the penalty is always 0 and the
+mechanism is dormant until a creator opts in. Open-ended markets (no `betting_expiration`) never apply it.
+
 ---
 
 ## 9. Liquidity Provision
