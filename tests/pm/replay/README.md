@@ -64,6 +64,15 @@ Round 2 — against the fix commits (`172d87c` → `b06bdbf` → `26fd26a` → `
 | `t12c_trace.cpp` | same, worst case | 1000 at risk → weight 102 093 vs 991 honest (103×); market `reserve_b` 105 500 → 3 407 |
 | `t13_penalty.cpp` | B9 wiring | `pm_max_time_penalty` is unbounded in `chain_properties_pm::validate()`; at 2e6 a winner's payout goes to −50 000 while `lp_bonus` holds 200 000 of 150 000 available |
 
+Round 3 — against the F1/F2/F3 fix commits (`93e43e7` → `5ff694e` → `f3ff915` → `a01016b`):
+
+| file | target | what it shows |
+| --- | --- | --- |
+| `t14_f2_ledger.cpp` | F2 fix + F1 fix | F2 holds: the `t12` chain now costs 27 457 instead of being free and `k` is invariant under the same truncation convention as `place_bet`. F1 does not: `compute_settlement` never assigns `settle_result::uncovered`, so `5ff694e`'s LP charge is dead code — and the curve-priced cancel makes a negative `forfeit_pool` reachable with no leverage, emitting up to 138 463 on a 200 000 market |
+
+`t10_conserve` and `t13_penalty` re-run unchanged against this head: `t13` is fixed (payouts back to
+principal at 2e6 / 4e6 / uint32-max), `t10` is bit-identical to the pre-fix run.
+
 ## Live corroboration
 
 `prediction_market_api` on testnet: market **19** carried `forfeit_pool = -69227`, reconciling
