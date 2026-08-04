@@ -25,16 +25,19 @@ namespace {
         return std::accumulate(r.winner_payout.begin(), r.winner_payout.end(), (int64_t)0);
     }
 
-    // Σ outputs must equal Σ inputs (losers_sum + forfeit_pool + winner principals).
+    // Σ outputs must equal Σ inputs (losers_sum + forfeit_pool + winner principals). `uncovered`
+    // (F1) is an INPUT: when winners_pool would go negative the pot cannot fund the payout, so the
+    // caller tops it up from LP principal — that external top-up is on the input side of the identity.
     void check_conservation(const settle_params& p, const std::vector<winner_in>& w,
                             const settle_result& r) {
-        int64_t in = p.losers_sum + p.forfeit_pool;
+        int64_t in = p.losers_sum + p.forfeit_pool + r.uncovered;
         for (const auto& x : w) in += x.amount;
         int64_t out = sum_payout(r) + r.oracle_take + r.creator_take + r.lp_bonus;
         BOOST_CHECK_EQUAL(in, out);
         BOOST_CHECK(r.oracle_take  >= 0);
         BOOST_CHECK(r.creator_take >= 0);
         BOOST_CHECK(r.lp_bonus     >= 0);
+        BOOST_CHECK(r.uncovered    >= 0);
     }
 
 } // namespace
@@ -167,4 +170,46 @@ BOOST_AUTO_TEST_CASE(lp_single_and_zero_bonus) {
     auto none = distribute_lp({ {500, 10}, {500, 20} }, 0);
     BOOST_CHECK_EQUAL(none[0], 0);
     BOOST_CHECK_EQUAL(none[1], 0);
+}
+
+// F1 (PR #124): a forfeit_pool more negative than the losers' pot drives winners_pool below zero.
+// The floor stops the uint64 wrap AND the shortfall is reported as `uncovered` (charged to LP
+// principal by the caller) rather than emitted — winners get exactly their principal back.
+BOOST_AUTO_TEST_CASE(negative_winners_pool_reports_uncovered) {
+    settle_params p;
+    p.losers_sum   = 500;
+    p.forfeit_pool = -1000;                    // leverage profit outran the losing stakes
+    std::vector<winner_in> w = { {1000, 100, 0} };
+    auto r = compute_settlement(p, w);
+    BOOST_CHECK_EQUAL(r.uncovered, 500);       // = |avail + forfeit_pool| = |500 - 1000|
+    BOOST_CHECK_EQUAL(r.winner_payout[0], 1000); // principal only, no profit
+    BOOST_CHECK_EQUAL(r.lp_bonus, 0);
+    check_conservation(p, w, r);               // holds with uncovered on the input side
+}
+
+// F1 boundary: when the losers' pot still covers the negative forfeit, winners_pool stays >= 0 and
+// nothing is uncovered (the floor never engages).
+BOOST_AUTO_TEST_CASE(negative_forfeit_still_covered_no_uncovered) {
+    settle_params p;
+    p.losers_sum   = 100000;
+    p.forfeit_pool = -1000;
+    std::vector<winner_in> w = { {1000, 100, 0} };
+    auto r = compute_settlement(p, w);
+    BOOST_CHECK_EQUAL(r.uncovered, 0);
+    BOOST_CHECK_EQUAL(r.winner_payout[0], 1000 + 99000); // full winners_pool = 100000 - 1000
+    check_conservation(p, w, r);
+}
+
+// F3 (PR #124): a time_penalty above 1e6 (only reachable if a median mis-set pm_max_time_penalty)
+// must be clamped to the profit so the payout never drops below principal — otherwise settle_market
+// silently drops the winner's stake (`if (payout > 0)`) while lp_bonus carries a phantom penalty.
+BOOST_AUTO_TEST_CASE(time_penalty_clamped_at_profit) {
+    settle_params p;
+    p.losers_sum = 1000;
+    std::vector<winner_in> w = { {300, 100, 2000000} }; // 200% of profit — must clamp to 100%
+    auto r = compute_settlement(p, w);
+    BOOST_CHECK_EQUAL(r.winner_payout[0], 300);          // principal returned, profit fully docked, never negative
+    BOOST_CHECK(r.winner_payout[0] >= w[0].amount);
+    BOOST_CHECK_EQUAL(r.lp_bonus, 1000);                 // the whole profit accrues to LP (clamped penalty)
+    check_conservation(p, w, r);
 }

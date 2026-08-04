@@ -9,11 +9,12 @@
 // wrapper that feeds chain state in and applies the result via adjust_balance.
 //
 // Strictly ZERO-SUM (no token emission):
-//   Σ winner_payout + oracle_take + creator_take + lp_bonus + uncovered
-//     == Σ winner.amount + losers_sum + forfeit_pool
-// LP principal is returned separately by the caller; when winners_pool would go negative the
-// shortfall is reported as `uncovered` and the caller charges it to LP principal (F1), so the
-// identity above holds unconditionally rather than emitting the shortfall.
+//   Σ winner_payout + oracle_take + creator_take + lp_bonus
+//     == Σ winner.amount + losers_sum + forfeit_pool + uncovered
+// LP principal is returned separately by the caller. When winners_pool would go negative the
+// shortfall is reported as `uncovered` — an EXTERNAL top-up the pot could not fund from
+// losers_sum+forfeit — and the caller charges it to LP principal (F1). So it sits on the input
+// side of the identity, which then holds unconditionally instead of the shortfall being emitted.
 
 namespace graphene { namespace chain { namespace pm {
 
