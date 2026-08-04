@@ -104,8 +104,8 @@ int main() {
                (long long)res.uncovered,
                out_after_charge==held ? "" : (out>held ? "*** EMITTED ***" : ""));
     }
-    printf("\n  `uncovered` is what 5ff694e's settle_liquidity charges to LP principal.\n");
-    printf("  compute_settlement never assigns it (grep libraries/chain/pm/parimutuel.cpp), so it is\n");
-    printf("  always 0 and the charge is dead code — the shortfall is still emitted.\n");
+    printf("\n  `uncovered` is what settle_liquidity charges to LP principal.\n");
+    printf("  compute_settlement assigns it before the floor (bd1dd67), so it equals the emission\n");
+    printf("  in every row: out - uncovered == held throughout, and the *** EMITTED *** markers are gone.\n");
     return 0;
 }

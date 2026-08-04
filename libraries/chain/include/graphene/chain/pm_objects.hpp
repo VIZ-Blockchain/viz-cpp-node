@@ -99,7 +99,7 @@ namespace graphene { namespace chain {
             // ingests it off-chain from pm_create_market_operation into its own prunable index.
             // This keeps chainbase lean and lets each node prune it (see --pmm-ttl-days).
             int8_t            status = 0;         ///< -1 deleted, 0 waiting, 1 active, 2 closed, 3 resolved
-            uint8_t           payout_status = 0;  ///< 0 none, 1 pending, 2 paid, 3 disputed
+            uint8_t           payout_status = 0;  ///< 0 none, 1 pending, 2 disputed, 3 finalized (paid/closed)
             time_point_sec    created_time;
             time_point_sec    accept_deadline;    ///< pending markets only: created_time + median
                                                   ///< pm_oracle_accept_window_sec. The cron voids the
