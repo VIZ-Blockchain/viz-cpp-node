@@ -369,7 +369,15 @@ namespace {
             int64_t sec = (int64_t)now.sec_since_epoch() - (int64_t)it->deposit_time.sec_since_epoch();
             lps.push_back(pm::lp_in{ it->amount.value, sec });
         }
-        if (active.empty()) return;
+        if (active.empty()) {
+            // No LP principal to absorb the F1 shortfall → 100% of it is emitted. This is the worst
+            // case and must be logged here, above the early return, since the diagnostic in the charge
+            // block below is unreachable when there are no LPs. (PR #124 review.)
+            if (uncovered.value > 0)
+                wlog("PM settle: no active LP to absorb uncovered ${u} on market ${m} — fully emitted",
+                     ("u", uncovered.value)("m", mkt.id._id));
+            return;
+        }
 
         const std::vector<int64_t> shares = pm::distribute_lp(lps, bonus.value);
 
@@ -1476,16 +1484,21 @@ void pm_withdraw_liquidity_evaluator::do_apply(const pm_withdraw_liquidity_opera
     // withdrawal shrinks the reserves price-neutrally below, so an add→withdraw round-trip
     // is exploit-free (this is what B4 fixed; the earlier assert *message* wrongly implied
     // withdrawal was blocked during betting — the condition itself is correct).
-    // F1-escape fix (PR #124): unlock on `finalized_time`, NOT `status >= 2`. Resolution sets
-    // status = 3 but settlement runs later (deferred cron sweep after the ≥12h dispute grace), and
-    // resolution is exactly when the F1 `uncovered` LP charge becomes computable+public
-    // (forfeit_pool is on get_market). Unlocking at status 3 let an LP withdraw 100% of principal in
-    // that window — emptying `active` so settle_liquidity's early return skips the charge and the
-    // shortfall is emitted after all. finalized_time is 0 until a terminal transition (settle/void/
-    // expire), so it locks LPs through resolve→settle while still serving already-finalized markets.
-    FC_ASSERT(mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration
-                  || mkt.finalized_time != time_point_sec(),
-              "LP positions are locked once betting closes, until settlement");
+    // F1-escape fix (PR #124): resolution is the lock trigger, settlement is the unlock. Settlement
+    // runs from the deferred cron sweep (after the ≥12h dispute grace, or the full result_expiration
+    // for an early-resolved market), and resolution is exactly when the F1 `uncovered` LP charge
+    // becomes computable+public (forfeit_pool is on get_market). If an LP could withdraw in that
+    // window it would empty settle_liquidity's `active` set and dodge its share of the charge.
+    // Withdrawable iff (a) already finalized (finalized_time stamped — settle/void/expire), or
+    // (b) still pre-resolution AND inside the betting window (status < 2 gates out resolved markets;
+    // the betting-window clause keeps EARLY withdrawal working, incl. open-ended betting_expiration==0
+    // — clause 1 alone would have left open-ended markets withdrawable at status 3, floored only to
+    // pm_min_liquidity, re-emitting uncovered − 100 VIZ; and open-ended is where uncovered is MOST
+    // likely, as the leverage expiration buffer is waived there).
+    FC_ASSERT(mkt.finalized_time != time_point_sec()
+                  || (mkt.status < 2
+                      && (mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration)),
+              "LP positions are locked once betting closes or the market resolves, until settlement");
 
     share_type withdraw = (o.amount.amount == 0) ? lp.amount : o.amount.amount;
     FC_ASSERT(withdraw.value > 0 && withdraw.value <= lp.amount.value, "Invalid withdrawal amount");
@@ -1553,6 +1566,10 @@ void pm_resolve_market_evaluator::do_apply(const pm_resolve_market_operation& o)
     bool can_resolve_early = mkt.allow_early_resolution && now >= mkt.betting_expiration;
     FC_ASSERT(can_resolve_early || now >= mkt.result_expiration, "Cannot resolve yet");
 
+    // Note: early resolution deliberately does NOT advance result_expiration — disputers keep the
+    // originally-advertised window, and the auto-payout sweep still gates on the full
+    // result_expiration. That window also sets how long LP principal stays locked (F1 escape fix
+    // above) and the market stays unsettled; intentional, not an oversight.
     db.modify(mkt, [&](pm_market_object& m) {
         m.status           = 3;
         m.payout_status    = 1;
