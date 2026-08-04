@@ -23,7 +23,14 @@ namespace graphene { namespace chain { namespace pm {
         // principal back (line 44) and the negative NEVER reaches the uint64 casts below — an
         // unclamped negative would wrap to ~1.8e19 and mint. (B3: PR #124 review.)
         int64_t winners_pool = avail - fixed_paid + p.forfeit_pool;
-        if (winners_pool < 0) winners_pool = 0;
+        if (winners_pool < 0) {
+            // F1: the floor stops the wrap but the shortfall (=|winners_pool|) is real — winners get
+            // their principal back out of tokens that the losers'+forfeit pot did not fund. Hand it to
+            // the caller as `uncovered` so it is charged to LP principal (the leverage counterparty),
+            // instead of being silently emitted. (PR #124 review, finding 1.)
+            r.uncovered = -winners_pool;
+            winners_pool = 0;
+        }
 
         r.oracle_take  = oracle_fee + fixed_paid;
         r.creator_take = creator_fee;
