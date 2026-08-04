@@ -1341,6 +1341,10 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     EXPORT_INDEX(pm_lazy_deposit_index,   pm_lazy_deposit_object,   "pm_lazy_deposit")
     EXPORT_INDEX(pm_lazy_allocation_index,pm_lazy_allocation_object,"pm_lazy_allocation")
     EXPORT_INDEX(pm_leverage_position_index,pm_leverage_position_object,"pm_leverage_position")
+    // B2 (PR #124): pending lazy-pool withdrawals. Was omitted → on reload the request objects
+    // vanished while pm_lazy_pool.pending_withdrawals still carried their total, breaking the FIFO
+    // payout queue (consensus divergence + funds stuck owed but unpayable). Serialize like its peers.
+    EXPORT_INDEX(pm_lazy_withdraw_request_index,pm_lazy_withdraw_request_object,"pm_lazy_withdraw_request")
     EXPORT_INDEX(pm_creator_ban_index,    pm_creator_ban_object,    "pm_creator_ban")
 
     // NON-consensus PM metadata (titles/images/tags/event). Serialized only when the operator opts
@@ -1998,6 +2002,10 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         if (state.contains("pm_leverage_position")) {
             auto n = detail::import_simple_objects<pm_leverage_position_object, pm_leverage_position_index>(db, state["pm_leverage_position"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} pm_leverage_position objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_lazy_withdraw_request")) { // B2 (PR #124): restore pending withdrawals so the FIFO queue matches pm_lazy_pool.pending_withdrawals
+            auto n = detail::import_simple_objects<pm_lazy_withdraw_request_object, pm_lazy_withdraw_request_index>(db, state["pm_lazy_withdraw_request"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_lazy_withdraw_request objects" CLOG_RESET, ("n", n));
         }
         if (state.contains("pm_creator_ban")) {
             auto n = detail::import_simple_objects<pm_creator_ban_object, pm_creator_ban_index>(db, state["pm_creator_ban"].get_array());
