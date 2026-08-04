@@ -413,6 +413,12 @@ namespace {
                 if (uncovered.value > total_principal)
                     wlog("PM settle: uncovered ${u} exceeds LP principal ${p} on market ${m} — ${e} emitted",
                          ("u", uncovered.value)("p", total_principal)("m", mkt.id._id)("e", uncovered.value - total_principal));
+            } else if (uncovered.value > 0) {
+                // active LPs exist but their principals sum to zero → nothing to charge, so 100% of
+                // uncovered is emitted. Same over-emission as the no-active-LP case above, one level
+                // deeper; log it here too so the supply-invariant trail is never silent. (PR #124 review.)
+                wlog("PM settle: active LPs hold zero principal — uncovered ${u} fully emitted on market ${m}",
+                     ("u", uncovered.value)("m", mkt.id._id));
             }
         }
 
@@ -1478,9 +1484,11 @@ void pm_withdraw_liquidity_evaluator::do_apply(const pm_withdraw_liquidity_opera
 
     const auto& mkt = db.get<pm_market_object, by_id>(lp.market);
     // LP positions may be withdrawn early *during* the betting window (Early Withdrawal,
-    // spec §9) but are locked once betting closes, until resolution — this keeps the LP
-    // set stable for the time-weighted fee settlement. Open-ended markets (no betting
-    // deadline) have no lock window; status >= 2 means already closed/resolved. The
+    // spec §9) but are locked once betting closes — for open-ended markets (no betting
+    // deadline) the lock instead begins at resolution — and stay locked until SETTLEMENT,
+    // not merely until resolution: this keeps the LP set stable for the time-weighted fee
+    // settlement and backs the pending F1 charge. The lock is keyed on finalized_time and the
+    // betting window below, never on a status>=2 sentinel (status is only ever 0/1/-1/3). The
     // withdrawal shrinks the reserves price-neutrally below, so an add→withdraw round-trip
     // is exploit-free (this is what B4 fixed; the earlier assert *message* wrongly implied
     // withdrawal was blocked during betting — the condition itself is correct).
@@ -2492,12 +2500,25 @@ void database::process_pm_markets() {
     }
 
     // ── 2. Oracle missed resolution deadline ──────────────────────────────────
-    // Active markets whose result_expiration passed with no oracle report.
+    // Active markets whose result_expiration passed with no oracle report, plus a resolution grace.
+    // The grace is not optional politeness: process_pm_markets() runs at the END of a block, after
+    // dgp.time has advanced to this block's timestamp (database.cpp update_global_dynamic_data),
+    // whereas in-block transactions still saw the PREVIOUS block's time. A zero-slack void
+    // (result_expiration <= now) therefore fires one block before any resolve transaction's clock
+    // can first reach result_expiration, making pm_resolve_market unreachable for a fixed-deadline
+    // market without allow_early_resolution — it would always die here as missed-resolution and slash
+    // the oracle for a deadline it had no reachable block to meet. Voiding only once
+    // result_expiration + pm_dispute_grace_sec has elapsed (the same cutoff the settle sweep in §5
+    // uses) leaves the oracle a real window [result_expiration, result_expiration + grace] to report.
     {
+        const time_point_sec cutoff(
+            (now.sec_since_epoch() > mp.pm_dispute_grace_sec)
+                ? (now.sec_since_epoch() - mp.pm_dispute_grace_sec)
+                : 0u);
         const auto& idx = get_index<pm_market_index>().indices().get<by_result_expiration>();
         auto it = idx.lower_bound(boost::make_tuple(
             (int8_t)1, time_point_sec(0), pm_market_id_type()));
-        while (it != idx.end() && it->status == 1 && it->result_expiration <= now && done < cap) {
+        while (it != idx.end() && it->status == 1 && it->result_expiration <= cutoff && done < cap) {
             const auto& mkt = *it; ++it;
 
             share_type slashed(0);

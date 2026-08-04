@@ -466,7 +466,7 @@ Each deposit is an independent position. Multiple deposits by the same user are 
 
 ### Early Withdrawal
 
-**Preconditions:** market live (`status < 2`) and betting still open (`time < betting_expiration`, or an open-ended market with no deadline); `resulting liquidity_sum ≥ pm_min_liquidity`. Once betting closes the position is locked until resolution (see below).
+**Preconditions:** market live (not resolved) and betting still open (`time < betting_expiration`, or an open-ended market with no deadline); `resulting liquidity_sum ≥ pm_min_liquidity`. Once betting closes — or, for an open-ended market, once the oracle resolves — the position is locked until **settlement** (not merely resolution): the principal backs the pending F1 shortfall charge until `finalized_time` is stamped by the auto-payout / void / expiry sweep (see below).
 
 ```
 // Price-neutral: shrink both reserves by (L − withdraw_amount) / L, where L =
@@ -687,7 +687,10 @@ If oracle wrong: pending refund payouts deleted, replaced with correct winner pa
 
 ## 13. Oracle Penalty for Missed Resolution
 
-If oracle fails to resolve by `result_expiration`:
+If the oracle still has not reported by `result_expiration + pm_dispute_grace_sec` (a resolution
+grace: the missed-resolution cron voids only past this cutoff, so a fixed-deadline market stays
+resolvable *at* its deadline instead of being voided one block before any resolve transaction's
+clock can reach it):
 
 ```
 penalty_amount = floor(oracle_insurance × oracle_penalty_percent / 100)
