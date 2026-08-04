@@ -1,0 +1,42 @@
+diff --git a/tests/pm/parimutuel_test.cpp b/tests/pm/parimutuel_test.cpp
+index 697e91f..cb79c4f 100644
+--- a/tests/pm/parimutuel_test.cpp
++++ b/tests/pm/parimutuel_test.cpp
+@@ -93,6 +93,37 @@ BOOST_AUTO_TEST_CASE(all_winners_only_forfeit) {
+     check_conservation(p, w, r);
+ }
+ 
++// A NEGATIVE forfeit_pool must never mint. liquidate_position()/pm_leverage_close()
++// add an unclamped `curve_residual = pos.total_bet - cancel_value` to
++// market.forfeit_pool, which is negative whenever the closing position is in
++// profit — so this input is reachable on-chain.
++BOOST_AUTO_TEST_CASE(negative_forfeit_pool_never_mints) {
++    settle_params p;
++    p.losers_sum   = 0;
++    p.forfeit_pool = -1000;                                   // leverage-exit residual
++    std::vector<winner_in> w = { {1000, 1000, 0}, {3000, 3000, 0} }; // unequal weight
++    auto r = compute_settlement(p, w);
++
++    // Payouts may be capped, but total outputs can never exceed total inputs.
++    int64_t in = p.losers_sum + p.forfeit_pool;
++    for (const auto& x : w) in += x.amount;
++    int64_t out = sum_payout(r) + r.oracle_take + r.creator_take + r.lp_bonus;
++    BOOST_CHECK_LE(out, in);
++    for (size_t i = 0; i < w.size(); ++i)
++        BOOST_CHECK_LE(r.winner_payout[i], w[i].amount + p.losers_sum);
++}
++
++// Same input with a SINGLE winner: the (uint64_t) two's-complement roundtrip is
++// exact when weight == total_weight, so this case hides the bug above.
++BOOST_AUTO_TEST_CASE(negative_forfeit_pool_single_winner) {
++    settle_params p;
++    p.losers_sum   = 0;
++    p.forfeit_pool = -1000;
++    std::vector<winner_in> w = { {4000, 4000, 0} };
++    auto r = compute_settlement(p, w);
++    BOOST_CHECK_LE(r.winner_payout[0], w[0].amount);
++}
++
+ // Single winner takes the entire winners_pool.
+ BOOST_AUTO_TEST_CASE(single_winner_takes_pool) {
+     settle_params p;
