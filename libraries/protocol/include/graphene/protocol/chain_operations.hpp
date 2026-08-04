@@ -722,6 +722,9 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(pm_betting_min_coverage_percent <= pm_listing_min_coverage_percent,
                     "pm_betting_min_coverage_percent must be <= pm_listing_min_coverage_percent");
                 FC_ASSERT(pm_default_time_penalty_percent <= 10000, "pm_default_time_penalty_percent out of range");
+                // B9 wired compute_time_penalty to spend this as profit*penalty/1e6 in compute_settlement,
+                // so it is only sound while <= 1e6 (100% of profit). Bound it like every sibling ratio.
+                FC_ASSERT(pm_max_time_penalty <= 1000000, "pm_max_time_penalty out of range (<= 1000000 = 100% of profit)");
                 FC_ASSERT(pm_dispute_approve_min_percent <= 10000, "pm_dispute_approve_min_percent out of range");
                 FC_ASSERT(pm_oracle_penalty_percent <= 10000, "pm_oracle_penalty_percent out of range");
                 FC_ASSERT(pm_no_contest_penalty_percent <= 10000, "pm_no_contest_penalty_percent out of range");

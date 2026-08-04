@@ -48,6 +48,10 @@ namespace graphene { namespace chain { namespace pm {
             int64_t penalty = (int64_t)(fc::uint128_t((uint64_t)profit)
                               * fc::uint128_t((uint64_t)w.time_penalty)
                               / fc::uint128_t((uint64_t)1000000)).lo;
+            // F3 defensive clamp: validate() bounds pm_max_time_penalty <= 1e6 so penalty <= profit
+            // already, but never let a (mis-configured / legacy) median push penalty past profit —
+            // that would make payout < principal and settle_market silently drop the winner's stake.
+            if (penalty > profit) penalty = profit;
             r.winner_payout.push_back(w.amount + profit - penalty);
             distributed += profit;
             r.lp_bonus  += penalty;
