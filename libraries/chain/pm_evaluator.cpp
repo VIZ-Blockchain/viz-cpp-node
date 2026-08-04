@@ -374,10 +374,10 @@ namespace {
         const std::vector<int64_t> shares = pm::distribute_lp(lps, bonus.value);
 
         // F1: split `uncovered` across LP principal pro-rata (by principal, not time — it's a capital
-        // loss, not a fee). Each charge is <= its LP's principal by construction; the last LP absorbs
-        // the rounding remainder so Σ charge == min(uncovered, Σ principal) exactly. If uncovered ever
-        // exceeded total principal (leverage paid out more than the whole pool — pos_cap should stop
-        // this), we charge only what exists; the strict supply invariant (#126) is the backstop.
+        // loss, not a fee). Each floor charge is <= its LP's principal (to_charge <= total_principal);
+        // the rounding remainder is then spread ONLY over LPs that still have headroom, so no single
+        // LP is ever charged above its principal (a naive "remainder → last LP" could exceed a small
+        // last LP's principal, clamp to 0, and re-emit the difference — PR #124 review).
         std::vector<int64_t> charge(active.size(), 0);
         if (uncovered.value > 0) {
             int64_t total_principal = 0;
@@ -391,7 +391,20 @@ namespace {
                                 / fc::uint128_t((uint64_t)total_principal)).lo;
                     charge[i] = c; assigned += c;
                 }
-                charge[active.size() - 1] += (to_charge - assigned); // remainder ≤ last LP's principal
+                // Distribute the floor remainder over LPs with headroom (charge < principal). Total
+                // headroom (total_principal - assigned) >= (to_charge - assigned), so it always fits.
+                int64_t remainder = to_charge - assigned;
+                for (size_t i = 0; i < active.size() && remainder > 0; ++i) {
+                    int64_t room = active[i]->amount.value - charge[i];
+                    int64_t add  = remainder < room ? remainder : room;
+                    charge[i] += add; remainder -= add;
+                }
+                // uncovered beyond the whole pool cannot be charged to anyone — it is a real (bounded)
+                // over-emission the strict supply invariant (#126) would only catch on a later import,
+                // so flag it here where it happens. pos_cap should make this unreachable.
+                if (uncovered.value > total_principal)
+                    wlog("PM settle: uncovered ${u} exceeds LP principal ${p} on market ${m} — ${e} emitted",
+                         ("u", uncovered.value)("p", total_principal)("m", mkt.id._id)("e", uncovered.value - total_principal));
             }
         }
 
@@ -1463,17 +1476,27 @@ void pm_withdraw_liquidity_evaluator::do_apply(const pm_withdraw_liquidity_opera
     // withdrawal shrinks the reserves price-neutrally below, so an add→withdraw round-trip
     // is exploit-free (this is what B4 fixed; the earlier assert *message* wrongly implied
     // withdrawal was blocked during betting — the condition itself is correct).
-    FC_ASSERT(mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration || mkt.status >= 2,
-              "LP positions are locked once betting closes, until resolution");
+    // F1-escape fix (PR #124): unlock on `finalized_time`, NOT `status >= 2`. Resolution sets
+    // status = 3 but settlement runs later (deferred cron sweep after the ≥12h dispute grace), and
+    // resolution is exactly when the F1 `uncovered` LP charge becomes computable+public
+    // (forfeit_pool is on get_market). Unlocking at status 3 let an LP withdraw 100% of principal in
+    // that window — emptying `active` so settle_liquidity's early return skips the charge and the
+    // shortfall is emitted after all. finalized_time is 0 until a terminal transition (settle/void/
+    // expire), so it locks LPs through resolve→settle while still serving already-finalized markets.
+    FC_ASSERT(mkt.betting_expiration == time_point_sec() || now < mkt.betting_expiration
+                  || mkt.finalized_time != time_point_sec(),
+              "LP positions are locked once betting closes, until settlement");
 
     share_type withdraw = (o.amount.amount == 0) ? lp.amount : o.amount.amount;
     FC_ASSERT(withdraw.value > 0 && withdraw.value <= lp.amount.value, "Invalid withdrawal amount");
 
     // A live market's pricing curve must stay funded above the minimum: the reserves
     // (CPMM) / lmsr_b (Multi) now track liquidity_sum, so an unchecked full exit could
-    // drain them to zero and brick pricing. Resolved markets (status >= 2) have no live
-    // curve. Positions that cannot exit early settle in full at resolution.
-    if (mkt.status < 2) {
+    // drain them to zero and brick pricing. Only already-finalized markets (finalized_time
+    // stamped) skip the floor — a resolved-but-unsettled market is still locked above (its
+    // curve is dead but its principal backs the pending F1 charge). Positions that cannot
+    // exit early settle in full at settlement.
+    if (mkt.finalized_time == time_point_sec()) {
         const auto& mp = median(db);
         FC_ASSERT(mkt.liquidity_sum.value - withdraw.value >= mp.pm_min_liquidity.amount.value,
                   "Withdrawal would drop market liquidity below the minimum");
