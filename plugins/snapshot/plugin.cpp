@@ -1267,7 +1267,14 @@ void snapshot_plugin::plugin_impl::write_snapshot_to_file(
     // fsync to ensure data is persisted to disk before we report success
     int fd = ::open(output_path.string().c_str(), O_RDONLY);
     if (fd >= 0) {
+#ifdef __APPLE__
+        // macOS has no fdatasync. F_FULLFSYNC is Apple's documented equivalent
+        // and additionally flushes the drive's own write cache, which plain
+        // fsync on macOS does not.
+        ::fcntl(fd, F_FULLFSYNC);
+#else
         ::fdatasync(fd);
+#endif
         ::close(fd);
     }
 #endif
