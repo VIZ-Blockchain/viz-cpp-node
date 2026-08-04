@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.4
-FROM vizblockchain/boost:1.90-noble AS builder
+FROM vizblockchain/vizd:boost-base-1.90-noble AS builder
 
 ENV LANG=en_US.UTF-8
 ENV APPDIR=/usr/local/src/viz/

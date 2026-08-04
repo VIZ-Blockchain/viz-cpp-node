@@ -21,7 +21,7 @@
 # Boost 1.90 lives under /usr/local (from the base image, not apt), so configure
 # with -DBOOST_ROOT=/usr/local, matching the production and testnet builds.
 
-FROM vizblockchain/boost:1.90-noble
+FROM vizblockchain/vizd:boost-base-1.90-noble
 
 ENV LANG=en_US.UTF-8
 

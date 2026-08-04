@@ -33,9 +33,9 @@ The Docker images need no action. Building from source on stock Ubuntu 24.04
 still works: the tree supports Boost 1.83 through 1.9x, and CI covers both ends
 of that range. To match the official images, build Boost 1.90 with
 `link=static` and `cxxflags=-std=c++14`, or use the
-`vizblockchain/boost:1.90-noble` image as your builder:
+`vizblockchain/vizd:boost-base-1.90-noble` image as your builder:
 
-    docker build -f share/vizd/docker/Dockerfile-boost -t vizblockchain/boost:1.90-noble .
+    docker build -f share/vizd/docker/Dockerfile-boost -t vizblockchain/vizd:boost-base-1.90-noble .
 
 When configuring against a Boost installed under `/usr/local` rather than by
 apt, pass `-DBOOST_ROOT=/usr/local`, as the production and testnet Dockerfiles
