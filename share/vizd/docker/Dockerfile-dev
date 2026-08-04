@@ -17,8 +17,11 @@
 # ccache is stored in /workspace/.ccache (mounted from the host worktree) so it
 # persists across container runs. Set CCACHE_DIR=/workspace/.ccache inside the
 # container or rely on the ENV below.
+#
+# Boost 1.90 lives under /usr/local (from the base image, not apt), so configure
+# with -DBOOST_ROOT=/usr/local, matching the production and testnet builds.
 
-FROM phusion/baseimage:noble-1.0.3
+FROM vizblockchain/boost:1.90-noble
 
 ENV LANG=en_US.UTF-8
 
@@ -43,18 +46,6 @@ RUN apt-get update && \
         ccache \
         gdb \
         gcovr \
-        libboost-chrono-dev \
-        libboost-context-dev \
-        libboost-coroutine-dev \
-        libboost-date-time-dev \
-        libboost-filesystem-dev \
-        libboost-iostreams-dev \
-        libboost-locale-dev \
-        libboost-program-options-dev \
-        libboost-serialization-dev \
-        libboost-system-dev \
-        libboost-test-dev \
-        libboost-thread-dev \
         libbz2-dev \
         liblzma-dev \
         libzstd-dev \
