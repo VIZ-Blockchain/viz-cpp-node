@@ -5216,10 +5216,14 @@ BOOST_AUTO_TEST_CASE(gc_dispute_auto_close_after_retention) {
 //
 // The four binary-market state transitions:
 //
-//   pm_place_bet          reserve_in += amount; reserve_out = k / (reserve_in + amount)   :1051-1073
-//   pm_cancel_bet         reserve_in -= amount; reserve_out += weight; k = reserve_a*reserve_b  :1235-1247
-//   pm_add_liquidity      reserve_a += half; reserve_b += amount-half; k = reserve_a*reserve_b  :1298-1309
-//   pm_withdraw_liquidity liquidity_sum -= amount  (reserves and k untouched)             :1343-1352
+//   pm_place_bet          reserve_in += amount; reserve_out = k / (reserve_in + amount)
+//   pm_cancel_bet         reserve_in -= amount; reserve_out += weight; k = reserve_a*reserve_b
+//   pm_add_liquidity      both reserves *= (L + amount) / L; k = reserve_a*reserve_b
+//   pm_withdraw_liquidity both reserves *= (L - amount) / L; k = reserve_a*reserve_b
+//
+// (L = liquidity_sum before the op. The two liquidity ops became price-neutral in the
+// "price-neutral CPMM liquidity add/withdraw" fix; before it, add split the deposit 50/50 and
+// withdraw left the reserves alone entirely.)
 //
 // Properties asserted below, in order:
 //
@@ -5229,13 +5233,20 @@ BOOST_AUTO_TEST_CASE(gc_dispute_auto_close_after_retention) {
 //       staking it in one bet against the honest curve.
 //   P4  a fully unwound market (every bet cancelled, all added liquidity withdrawn) is back
 //       in its creation state, however many times the sequence is repeated.
+//   P5  an LP withdrawal that lands between a bet and its cancellation cannot drive a reserve
+//       negative.
 //
-// P1 holds. P2/P3/P4 do not, because pm_withdraw_liquidity never removes the half/half that
-// pm_add_liquidity put into the reserves: each round trip is free to the provider yet leaves the
-// curve permanently deeper than the VIZ the market holds, and depth is what sets how much claim
-// weight a stake buys. The curve price returns to 50/50 on every pass and the implied probability
-// reported by prediction_market_api (a_bets_sum / Σ bets) is untouched, so nothing surfaces the
-// drift except the reserves themselves — hence state assertions rather than price ones.
+// P1 always held. P2/P3/P4 were written against the pre-fix head, where each LP round trip was
+// free to the provider yet left the curve permanently deeper than the VIZ the market held — and
+// depth is what sets how much claim weight a stake buys. The curve price returned to 50/50 on
+// every pass and the implied probability reported by prediction_market_api (a_bets_sum / Σ bets)
+// was untouched, so nothing surfaced the drift except the reserves themselves — hence state
+// assertions rather than price ones. They now pass, and stay here as regression guards.
+//
+// P5 is the converse hazard the fix opens up: now that withdrawal *shrinks* the reserves,
+// pm_cancel_bet still refunds against the reserve recorded when the bet was placed, so a
+// withdrawal in between can leave less in reserve_in than the bet that has to come back out.
+// The subtraction is unguarded and k is rebuilt as (uint64_t)reserve_a * (uint64_t)reserve_b.
 namespace {
 
     struct cyc_curve_state {
@@ -5324,26 +5335,48 @@ namespace {
         produce(node, gp, when);
     }
 
-    /// Add `amount` of liquidity and immediately withdraw the whole position. The withdrawal is
-    /// accepted mid-betting: pm_evaluator.cpp:1333 asserts `now < betting_expiration`, the inverse
-    /// of the condition its own error message states.
+    /// Newest open LP position of `who` on `market`. Resolved by lookup rather than by assuming
+    /// an id: market creation seeds one position for the creator, and an activating self-oracle
+    /// market may add a lazy-pool position too when the pool is funded.
+    int64_t cyc_find_lp(simulated_node& node, pm_market_id_type market, const std::string& who) {
+        int64_t id = -1;
+        for (const auto& lp : node.db().get_index<pm_liquidity_index>().indices()) {
+            if (lp.market == market && lp.provider == account_name_type(who) && lp.status == 0
+                && (int64_t)lp.id._id > id)
+                id = (int64_t)lp.id._id;
+        }
+        BOOST_REQUIRE_MESSAGE(id >= 0, "no open LP position for " << who);
+        return id;
+    }
+
+    /// Withdraw `amount` from an existing LP position (0 = the whole position).
+    void cyc_lp_withdraw(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when,
+                         const std::string& who, const fc::ecc::private_key& key,
+                         int64_t lp_id, int64_t amount) {
+        pm_withdraw_liquidity_operation wl;
+        wl.provider = who; wl.liquidity_id = lp_id;
+        wl.amount = asset(share_type(amount), TOKEN_SYMBOL);
+        node.push_pending_transaction(sign_ops({wl}, key, node));
+        produce(node, gp, when);
+    }
+
+    /// Add `amount` of liquidity and immediately withdraw the whole position. Early Withdrawal
+    /// during the betting window is a documented feature (spec §9); positions lock only once
+    /// betting closes, until resolution.
     void cyc_lp_round_trip(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when,
                            pm_market_id_type market, const std::string& who,
-                           const fc::ecc::private_key& key, int64_t amount, int64_t lp_id) {
+                           const fc::ecc::private_key& key, int64_t amount) {
         pm_add_liquidity_operation al;
         al.provider = who; al.market_id = market._id;
         al.amount = asset(share_type(amount), TOKEN_SYMBOL);
         node.push_pending_transaction(sign_ops({al}, key, node));
         produce(node, gp, when);
 
+        const int64_t lp_id = cyc_find_lp(node, market, who);
         BOOST_REQUIRE_EQUAL(node.db().get<pm_liquidity_object>(pm_liquidity_id_type(lp_id)).amount.value,
                             amount);
 
-        pm_withdraw_liquidity_operation wl;
-        wl.provider = who; wl.liquidity_id = lp_id;
-        wl.amount = asset(0, TOKEN_SYMBOL);   // 0 = full position
-        node.push_pending_transaction(sign_ops({wl}, key, node));
-        produce(node, gp, when);
+        cyc_lp_withdraw(node, gp, when, who, key, lp_id, 0);   // 0 = full position
     }
 
     /// Shared preamble: node at HF14. Returns false when HF14 is unreachable on this build.
@@ -5433,8 +5466,7 @@ BOOST_AUTO_TEST_CASE(cpmm_lp_add_then_withdraw_must_be_reserve_neutral) {
     const auto before = cyc_snap(node, market);
     const asset bal_before = node.db().get_account("cyca").balance;
 
-    // pm_liquidity id 1: the market's own seed position is id 0.
-    cyc_lp_round_trip(node, gp, when, market, "cyca", cyca_key, unit / 2, 1);
+    cyc_lp_round_trip(node, gp, when, market, "cyca", cyca_key, unit / 2);
 
     const auto after = cyc_snap(node, market);
     const asset bal_after = node.db().get_account("cyca").balance;
@@ -5500,7 +5532,7 @@ BOOST_AUTO_TEST_CASE(cpmm_split_bet_around_lp_cycle_must_not_beat_single_bet) {
 
     const auto s1 = cyc_bet_a(node, gp, when, m_split, "cycb", cycb_key, half);
     // pm_liquidity ids: market 0 seed = 0, market 1 seed = 1, so this deposit is 2.
-    cyc_lp_round_trip(node, gp, when, m_split, "cycb", cycb_key, half, 2);
+    cyc_lp_round_trip(node, gp, when, m_split, "cycb", cycb_key, half);
     const auto after_lp = cyc_snap(node, m_split);
     const auto s2 = cyc_bet_a(node, gp, when, m_split, "cycb", cycb_key, half);
 
@@ -5547,11 +5579,10 @@ BOOST_AUTO_TEST_CASE(cpmm_repeated_unwound_cycle_must_not_ratchet_reserves) {
     BOOST_TEST_MESSAGE("cycle 0 (created):  " << cyc_show(genesis_state));
 
     int64_t first_weight = 0;
-    int64_t next_lp_id = 1;   // 0 is the market's seed LP position
 
     for (int cycle = 1; cycle <= 3; ++cycle) {
         const auto x = cyc_bet_a(node, gp, when, market, "cyca", cyca_key, half);
-        cyc_lp_round_trip(node, gp, when, market, "cyca", cyca_key, half, next_lp_id++);
+        cyc_lp_round_trip(node, gp, when, market, "cyca", cyca_key, half);
         const auto y = cyc_bet_a(node, gp, when, market, "cyca", cyca_key, half);
         const int64_t weight = x.second + y.second;
 
@@ -5574,6 +5605,95 @@ BOOST_AUTO_TEST_CASE(cpmm_repeated_unwound_cycle_must_not_ratchet_reserves) {
         // The same 100 VIZ must buy the same weight on an unchanged market.
         if (cycle == 1) first_weight = weight;
         else            BOOST_CHECK_EQUAL(weight, first_weight);
+    }
+}
+
+// P5 — an LP withdrawal between a bet and its cancellation must not drive a reserve negative.
+//
+// Now that pm_withdraw_liquidity shrinks both reserves by (L - amount) / L, the reserves a bet
+// was priced against can be smaller by the time that bet is cancelled — but pm_cancel_bet still
+// does `reserve_in -= bet.amount` with the amount recorded at bet time. Neither the subtraction
+// nor the k rebuild is guarded, and k is rebuilt as (uint64_t)reserve_a * (uint64_t)reserve_b,
+// so a negative reserve_a reinterprets as ~1.8e19 and the curve's price impact inverts.
+//
+// Every operation in the sequence is ordinary and permissioned:
+//   * the creator seeds 400 VIZ, so the seed LP position is 400;
+//   * a bettor stakes 100 on A  -> reserves 300 / 133.333;
+//   * the creator withdraws 300 of its own position — legal Early Withdrawal (spec §9) and it
+//     respects the min-liquidity floor exactly, leaving liquidity_sum == pm_min_liquidity
+//     -> reserves scale by 100/400 -> 75 / 33.333;
+//   * the bettor cancels -> reserve_a = 75 - 100.
+//
+// The floor cannot prevent this: it bounds liquidity_sum, not reserve_in against the open bets
+// priced against it. A fix has to bound the withdrawal by what the open bets on each side have
+// to be able to reclaim (or clamp/reject in pm_cancel_bet).
+BOOST_AUTO_TEST_CASE(cpmm_lp_withdraw_must_not_strand_an_open_bet) {
+    auto gp = make_genesis_params(0xC105u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-cyc-p5", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!cyc_boot(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping LP-withdraw/open-bet interaction.");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+
+    auto cyca_key = derive_key("cyca");
+    create_and_fund(node, gp, when, "cyca", cyca_key, share_type(unit * 10));
+
+    const auto market = cyc_make_market(node, gp, when, unit * 4, 0);
+    BOOST_TEST_MESSAGE("created:        " << cyc_show(cyc_snap(node, market)));
+
+    // The bettor prices 100 VIZ against the full 400 of depth.
+    const auto b = cyc_bet_a(node, gp, when, market, "cyca", cyca_key, unit);
+    BOOST_TEST_MESSAGE("after bet:      " << cyc_show(cyc_snap(node, market))
+                       << " weight=" << b.second);
+
+    // The creator pulls its seed position down to the minimum — leaving liquidity_sum exactly at
+    // pm_min_liquidity, so the governed floor is satisfied and the withdrawal is accepted.
+    const std::string creator(gp.initiator_name);
+    const int64_t seed_lp = cyc_find_lp(node, market, creator);
+    cyc_lp_withdraw(node, gp, when, creator, gp.initiator_key, seed_lp, unit * 3);
+
+    const auto after_wd = cyc_snap(node, market);
+    BOOST_TEST_MESSAGE("after withdraw: " << cyc_show(after_wd));
+    BOOST_REQUIRE_EQUAL(after_wd.liquidity_sum.value, unit);   // the withdrawal did go through
+
+    // reserve_a still owes the open 100 VIZ bet back on cancellation; it must be able to pay.
+    BOOST_CHECK_GE(after_wd.reserve_a.value, unit);
+
+    cyc_cancel(node, gp, when, "cyca", cyca_key, b.first);
+    const auto after_cancel = cyc_snap(node, market);
+    BOOST_TEST_MESSAGE("after cancel:   " << cyc_show(after_cancel));
+
+    // The core invariant: a CPMM reserve is a quantity of virtual tokens and can never be negative.
+    BOOST_CHECK_GE(after_cancel.reserve_a.value, 0);
+    BOOST_CHECK_GE(after_cancel.reserve_b.value, 0);
+    // k must stay the product of two real reserves rather than a wrapped uint64 of a negative one.
+    BOOST_CHECK(after_cancel.k == fc::uint128_t((uint64_t)after_cancel.reserve_a.value)
+                                * fc::uint128_t((uint64_t)after_cancel.reserve_b.value));
+    BOOST_CHECK(after_cancel.k < fc::uint128_t((uint64_t)1) << 80);
+    BOOST_CHECK_LE(after_cancel.reserve_sum(), after_cancel.viz_held());
+
+    // And the payoff: what the next stake buys out of the resulting curve. On a detonated k this
+    // mints claim weight orders of magnitude above anything the market holds; the assertion is a
+    // generous bound (weight is denominated in curve tokens, not VIZ) that only a wrapped k trips.
+    try {
+        const auto probe = cyc_bet_a(node, gp, when, market, "cyca", cyca_key, unit / 100);
+        BOOST_TEST_MESSAGE("probe bet weight: " << probe.second
+                           << " (market holds " << after_cancel.viz_held() << ")");
+        BOOST_CHECK_LE(probe.second, after_cancel.viz_held());
+    } catch (const fc::exception& e) {
+        // A bricked curve that rejects all further bets is still a failure, but the reserve
+        // assertions above are what localize it.
+        BOOST_TEST_MESSAGE("probe bet rejected outright: " << e.to_string());
     }
 }
 
