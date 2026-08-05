@@ -10,6 +10,7 @@
 #include <fc/network/resolve.hpp>
 #include <fc/crypto/sha256.hpp>
 
+#include <fc/compat/asio_compat.hpp>
 #include <boost/asio.hpp>
 #include <boost/preprocessor/stringize.hpp>
 
@@ -193,9 +194,9 @@ namespace graphene {
             struct webserver_plugin::webserver_plugin_impl final {
             public:
                 boost::thread_group& thread_pool = appbase::app().scheduler();
-                webserver_plugin_impl(thread_pool_size_t thread_pool_size) : thread_pool_work(this->thread_pool_ios) {
+                webserver_plugin_impl(thread_pool_size_t thread_pool_size) : thread_pool_work(asio::make_work_guard(this->thread_pool_ios)) {
                     for (uint32_t i = 0; i < thread_pool_size; ++i) {
-                        thread_pool.create_thread(std::bind(static_cast<std::size_t(asio::io_service::*)()>(&asio::io_service::run), &thread_pool_ios));
+                        thread_pool.create_thread(std::bind(static_cast<std::size_t(asio::io_context::*)()>(&asio::io_context::run), &thread_pool_ios));
                     }
                 }
 
@@ -213,16 +214,16 @@ namespace graphene {
                 void clear_cache();
 
                 shared_ptr<std::thread> http_thread;
-                asio::io_service http_ios;
+                asio::io_context http_ios;
                 optional<tcp::endpoint> http_endpoint;
                 websocket_server_type http_server;
 
                 shared_ptr<std::thread> ws_thread;
-                asio::io_service ws_ios;
+                asio::io_context ws_ios;
                 optional<tcp::endpoint> ws_endpoint;
                 websocket_server_type ws_server;
-                asio::io_service thread_pool_ios;
-                asio::io_service::work thread_pool_work;
+                asio::io_context thread_pool_ios;
+                asio::executor_work_guard<asio::io_context::executor_type> thread_pool_work;
 
                 plugins::json_rpc::plugin *api;
                 chain::plugin *chain_plugin = nullptr;
@@ -360,7 +361,7 @@ namespace graphene {
                 websocket_server_type::message_ptr msg
             ) {
                 auto con = server->get_con_from_hdl(hdl);
-                thread_pool_ios.post([con, msg, this]() {
+                boost::asio::post(thread_pool_ios, [con, msg, this]() {
                     try {
                         if ((chain_plugin && chain_plugin->is_recovering()) ||
                         (snap_plugin && snap_plugin->is_snapshot_reloading())) {
@@ -449,7 +450,7 @@ namespace graphene {
                     return;
                 }
 
-                thread_pool_ios.post([con, this]() {
+                boost::asio::post(thread_pool_ios, [con, this]() {
                     if ((chain_plugin && chain_plugin->is_recovering()) ||
                         (snap_plugin && snap_plugin->is_snapshot_reloading())) {
                         con->append_header("Access-Control-Allow-Origin", "*");

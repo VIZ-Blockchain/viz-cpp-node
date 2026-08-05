@@ -13,7 +13,7 @@ int main(int argc, char **argv, char **envp) {
         idump((log.head()));
 
         graphene::protocol::signed_block b1;
-        b1.witness = "alice";
+        b1.validator = "alice";
         b1.previous = graphene::protocol::block_id_type();
 
         log.append(b1);
@@ -23,7 +23,7 @@ int main(int argc, char **argv, char **envp) {
         idump((fc::raw::pack_size(b1)));
 
         graphene::protocol::signed_block b2;
-        b2.witness = "bob";
+        b2.validator = "bob";
         b2.previous = b1.id();
 
         log.append(b2);

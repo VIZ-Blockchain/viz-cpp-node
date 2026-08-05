@@ -2,6 +2,11 @@ name: Build docker image for a PR
 
 on:
   pull_request:
+    # `labeled`/`unlabeled` are added to the default set (opened, synchronize,
+    # reopened) so that adding the `check-boost-range` label to an open PR
+    # immediately triggers a run — the label-gated build_boost_183 job below
+    # would otherwise only be evaluated on the next push.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths-ignore:
       - 'documentation/**'
       - '**.md'
@@ -82,3 +87,37 @@ jobs:
           tags: vizblockchain/vizd:${{ steps.tag.outputs.value }}
           cache-from: type=gha,scope=pr-${{ github.base_ref }}
           cache-to:   type=gha,scope=pr-${{ github.base_ref }},mode=max
+
+  # The Docker build above proves the top of the supported Boost range (1.91,
+  # from the vizblockchain/vizd:boost-base base image). The tree is also supposed to build
+  # against the 1.83 that Ubuntu 24.04 ships, and nothing else covers that end.
+  # Gated on a label so it does not tax every PR: add `check-boost-range` to any
+  # PR that touches build files, Asio usage, or thirdparty submodule pointers.
+  build_boost_183:
+    name: Build against distro Boost 1.83 (range floor)
+    runs-on: ubuntu-latest
+    if: contains(github.event.pull_request.labels.*.name, 'check-boost-range')
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install distro Boost and build deps
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake libboost-all-dev libssl-dev \
+            libbz2-dev liblzma-dev libzstd-dev libreadline-dev \
+            libtool ncurses-dev pkg-config zlib1g-dev
+
+      - name: Configure and build
+        run: |
+          set -euo pipefail
+          sed -i '/add_subdirectory(tests)/d' thirdparty/fc/CMakeLists.txt
+          mkdir -p build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBRARIES=FALSE \
+                -DCHAINBASE_CHECK_LOCKING=FALSE ..
+          make -j"$(nproc)" vizd

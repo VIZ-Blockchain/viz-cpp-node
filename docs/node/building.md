@@ -11,8 +11,13 @@ VIZ Ledger uses a CMake-based build system with dedicated build scripts for each
 | CMake | 3.16+ |
 | GCC | 4.8+ |
 | Clang | 3.3+ |
-| Boost | 1.71+ (with `coroutine` component) |
+| Boost | 1.83–1.9x (with `coroutine` component) |
 | OpenSSL | Any recent version |
+
+The official Docker images build against Boost 1.91; stock Ubuntu 24.04's Boost
+1.83 is also supported and covered by CI. Switching an existing node between the
+two requires a replay — see
+[Upgrading to a Boost 1.9x build](../operators/boost-1.9x-upgrade.md).
 
 ---
 
