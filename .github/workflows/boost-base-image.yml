@@ -5,10 +5,7 @@ name: Build Boost base image
 on:
   workflow_dispatch:
   push:
-    # TEMP: ci/boost-base-image is listed so the 1.91 base image publishes
-    # before #132 merges. Remove this branch (leaving only master) once the
-    # tag is live.
-    branches: [master, ci/boost-base-image]
+    branches: [master]
     paths:
       - 'share/vizd/docker/Dockerfile-boost'
       - '.github/workflows/boost-base-image.yml'
