@@ -2,6 +2,11 @@ name: Build docker image for a PR
 
 on:
   pull_request:
+    # `labeled`/`unlabeled` are added to the default set (opened, synchronize,
+    # reopened) so that adding the `check-boost-range` label to an open PR
+    # immediately triggers a run — the label-gated build_boost_183 job below
+    # would otherwise only be evaluated on the next push.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths-ignore:
       - 'documentation/**'
       - '**.md'
