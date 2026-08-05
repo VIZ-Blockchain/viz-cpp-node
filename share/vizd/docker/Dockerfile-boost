@@ -1,0 +1,82 @@
+# syntax=docker/dockerfile:1.4
+#
+# Builder base image: phusion/baseimage:noble-1.0.3 plus Boost 1.91 built from
+# source.  Noble ships Boost 1.83, and viz needs to build against 1.9x, so the
+# Boost compile lives here rather than in the per-PR build.  This image is
+# rebuilt only when this file changes.
+#
+# Two constraints are load-bearing:
+#   * cxxflags=-std=c++14 must match the project's standard.  Boost's compiled
+#     libraries (Serialization, Test, Locale) can be ABI-incompatible when built
+#     at a different standard than the consumer, and that surfaces as a link
+#     error or a runtime surprise, not a compile error.
+#   * link=static keeps the viz runtime stage free of Boost .so files, matching
+#     the project's Boost_USE_STATIC_LIBS=TRUE default.
+#
+# Do NOT add a newer CMake here.  thirdparty/{fc,chainbase,appbase} declare
+# cmake_minimum_required(VERSION 2.8.12); CMake 4.x hard-errors below 3.5, while
+# noble's 3.28 only warns.
+FROM phusion/baseimage:noble-1.0.3
+
+ARG BOOST_VERSION=1.91.0
+ARG BOOST_VERSION_UNDERSCORE=1_91_0
+
+ENV LANG=en_US.UTF-8
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' >/etc/apt/apt.conf.d/keep-cache && \
+    for i in 1 2 3; do \
+        apt-get update && \
+        apt-get install -y --no-install-recommends \
+            autoconf \
+            automake \
+            autotools-dev \
+            binutils \
+            bsdmainutils \
+            build-essential \
+            cmake \
+            git \
+            ccache \
+            curl \
+            ca-certificates \
+            libbz2-dev \
+            liblzma-dev \
+            libzstd-dev \
+            libreadline-dev \
+            libssl-dev \
+            libtool \
+            libicu-dev \
+            ncurses-dev \
+            pbzip2 \
+            pkg-config \
+            zlib1g-dev && \
+        break || sleep 10; \
+    done
+
+RUN set -xe ; \
+    curl -fsSL -o /tmp/boost.tar.gz \
+        "https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz" && \
+    tar -xzf /tmp/boost.tar.gz -C /tmp && \
+    cd "/tmp/boost_${BOOST_VERSION_UNDERSCORE}" && \
+    # `system` is deliberately absent: Boost.System is header-only from 1.69 and
+    # 1.91 dropped the compiled stub entirely, so `b2` hard-errors on it as an
+    # unknown library name. Its headers still install with the tree, and the
+    # project probes for the boost_system CMake config rather than assuming it
+    # (see CMakeLists.txt), so nothing downstream needs the compiled lib.
+    ./bootstrap.sh --prefix=/usr/local \
+        --with-libraries=chrono,context,coroutine,date_time,filesystem,iostreams,locale,program_options,serialization,test,thread && \
+    ./b2 -j"$(nproc)" \
+        variant=release \
+        link=static \
+        threading=multi \
+        runtime-link=shared \
+        cxxflags="-std=c++14 -fPIC" \
+        install && \
+    rm -rf /tmp/boost.tar.gz "/tmp/boost_${BOOST_VERSION_UNDERSCORE}"
+
+# Fail the image build rather than shipping a Boost the project cannot find.
+RUN test -f /usr/local/include/boost/version.hpp && \
+    grep -q 'BOOST_LIB_VERSION "1_91"' /usr/local/include/boost/version.hpp && \
+    test -f /usr/local/lib/cmake/Boost-${BOOST_VERSION}/BoostConfig.cmake

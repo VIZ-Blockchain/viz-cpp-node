@@ -83,7 +83,7 @@ namespace chain {
             return db;
         }
 
-        boost::asio::io_service& io_service() {
+        boost::asio::io_context& io_service() {
             return appbase::app().get_io_service();
         }
 
@@ -119,7 +119,7 @@ namespace chain {
             std::promise<bool> promise;
             auto result = promise.get_future();
 
-            io_service().post([&]{
+            boost::asio::post(io_service(), [&]{
                 try {
                     promise.set_value(db.push_block(block, skip));
                 } catch(...) {
@@ -252,7 +252,7 @@ namespace chain {
             std::promise<bool> promise;
             auto wait = promise.get_future();
 
-            io_service().post([&]{
+            boost::asio::post(io_service(), [&]{
                 try {
                     db.push_transaction(trx, skip);
                     promise.set_value(true);
