@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.4
 #
-# Builder base image: phusion/baseimage:noble-1.0.3 plus Boost 1.90 built from
+# Builder base image: phusion/baseimage:noble-1.0.3 plus Boost 1.91 built from
 # source.  Noble ships Boost 1.83, and viz needs to build against 1.9x, so the
 # Boost compile lives here rather than in the per-PR build.  This image is
 # rebuilt only when this file changes.
@@ -18,8 +18,8 @@
 # noble's 3.28 only warns.
 FROM phusion/baseimage:noble-1.0.3
 
-ARG BOOST_VERSION=1.90.0
-ARG BOOST_VERSION_UNDERSCORE=1_90_0
+ARG BOOST_VERSION=1.91.0
+ARG BOOST_VERSION_UNDERSCORE=1_91_0
 
 ENV LANG=en_US.UTF-8
 
@@ -60,8 +60,13 @@ RUN set -xe ; \
         "https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz" && \
     tar -xzf /tmp/boost.tar.gz -C /tmp && \
     cd "/tmp/boost_${BOOST_VERSION_UNDERSCORE}" && \
+    # `system` is deliberately absent: Boost.System is header-only from 1.69 and
+    # 1.91 dropped the compiled stub entirely, so `b2` hard-errors on it as an
+    # unknown library name. Its headers still install with the tree, and the
+    # project probes for the boost_system CMake config rather than assuming it
+    # (see CMakeLists.txt), so nothing downstream needs the compiled lib.
     ./bootstrap.sh --prefix=/usr/local \
-        --with-libraries=chrono,context,coroutine,date_time,filesystem,iostreams,locale,program_options,serialization,system,test,thread && \
+        --with-libraries=chrono,context,coroutine,date_time,filesystem,iostreams,locale,program_options,serialization,test,thread && \
     ./b2 -j"$(nproc)" \
         variant=release \
         link=static \
@@ -73,5 +78,5 @@ RUN set -xe ; \
 
 # Fail the image build rather than shipping a Boost the project cannot find.
 RUN test -f /usr/local/include/boost/version.hpp && \
-    grep -q 'BOOST_LIB_VERSION "1_90"' /usr/local/include/boost/version.hpp && \
+    grep -q 'BOOST_LIB_VERSION "1_91"' /usr/local/include/boost/version.hpp && \
     test -f /usr/local/lib/cmake/Boost-${BOOST_VERSION}/BoostConfig.cmake

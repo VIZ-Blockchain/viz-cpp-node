@@ -5,7 +5,10 @@ name: Build Boost base image
 on:
   workflow_dispatch:
   push:
-    branches: [master]
+    # TEMP: ci/boost-base-image is listed so the 1.91 base image publishes
+    # before #132 merges. Remove this branch (leaving only master) once the
+    # tag is live.
+    branches: [master, ci/boost-base-image]
     paths:
       - 'share/vizd/docker/Dockerfile-boost'
       - '.github/workflows/boost-base-image.yml'
@@ -33,6 +36,6 @@ jobs:
           # Docker Hub account can push tags to repos that already exist but
           # cannot create a new one (vizblockchain/boost). Revisit if a
           # dedicated boost repo is ever provisioned.
-          tags: vizblockchain/vizd:boost-base-1.90-noble
+          tags: vizblockchain/vizd:boost-base-1.91-noble
           cache-from: type=gha,scope=boost-base
           cache-to: type=gha,scope=boost-base,mode=max
