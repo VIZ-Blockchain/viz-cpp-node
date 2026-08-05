@@ -88,7 +88,7 @@ jobs:
           cache-from: type=gha,scope=pr-${{ github.base_ref }}
           cache-to:   type=gha,scope=pr-${{ github.base_ref }},mode=max
 
-  # The Docker build above proves the top of the supported Boost range (1.90,
+  # The Docker build above proves the top of the supported Boost range (1.91,
   # from the vizblockchain/vizd:boost-base base image). The tree is also supposed to build
   # against the 1.83 that Ubuntu 24.04 ships, and nothing else covers that end.
   # Gated on a label so it does not tax every PR: add `check-boost-range` to any

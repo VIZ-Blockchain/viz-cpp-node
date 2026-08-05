@@ -18,10 +18,10 @@
 # persists across container runs. Set CCACHE_DIR=/workspace/.ccache inside the
 # container or rely on the ENV below.
 #
-# Boost 1.90 lives under /usr/local (from the base image, not apt), so configure
+# Boost 1.91 lives under /usr/local (from the base image, not apt), so configure
 # with -DBOOST_ROOT=/usr/local, matching the production and testnet builds.
 
-FROM vizblockchain/vizd:boost-base-1.90-noble
+FROM vizblockchain/vizd:boost-base-1.91-noble
 
 ENV LANG=en_US.UTF-8
 
