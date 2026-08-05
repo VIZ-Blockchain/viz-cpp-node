@@ -160,7 +160,7 @@ jobs:
             -DBOOST_ROOT="/c/Boost" \
             -DBOOST_INCLUDEDIR="/c/Boost/include/boost-1_86" \
             -DBOOST_LIBRARYDIR="/c/Boost/lib" \
-            -DBoost_NO_BOOST_CMAKE=ON \
+            -DCMAKE_PREFIX_PATH="/c/Boost" \
             -DBoost_NO_SYSTEM_PATHS=ON \
             -DBoost_USE_STATIC_LIBS=ON \
             -DBoost_USE_STATIC_RUNTIME=ON \
@@ -214,7 +214,10 @@ jobs:
       # -------------------------------------------------------
       # 13. Create GitHub Release and upload artifacts
       # -------------------------------------------------------
+      # Only master publishes a release. Pushes to windows_build exercise the
+      # full build (a test lane for CI changes) without creating win-<sha> tags.
       - name: Create GitHub Release and upload artifacts
+        if: github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
