@@ -328,13 +328,33 @@ public:
             && elapsed_sec >= WEDGE_CONFIRM_SEC;
     }
 
+    // Is this endpoint meaningful to anyone but the host that advertises it?
+    // Loopback, RFC1918, link-local, multicast, 0.0.0.0 and port 0 are not:
+    // gossiping one through peer exchange makes every receiver dial its OWN
+    // box.  A node that adopts 127.0.0.1:2001 connects to itself, keeps both
+    // directions of that connection as peers, and then re-advertises the same
+    // endpoint — so a single poisoned entry spreads across the network and is
+    // self-sustaining.  fc's is_public_address() covers RFC1918/link-local/
+    // multicast but NOT 127/8 or 0/8, so those are checked explicitly.
+    // Pure and I/O-free — table-testable, hence public alongside is_wedged().
+    static bool is_routable_endpoint(const fc::ip::endpoint& ep) {
+        if (ep.port() == 0) return false;
+        const uint32_t first_octet = static_cast<uint32_t>(ep.get_address()) >> 24;
+        if (first_octet == 127 || first_octet == 0) return false;
+        return ep.get_address().is_public_address();
+    }
+
 private:
     // ── Subnet diversity ─────────────────────────────────────────
     uint32_t count_peers_in_subnet(const fc::ip::address& addr) const;
     bool is_same_subnet(const fc::ip::address& a, const fc::ip::address& b) const;
 
     // ── Per-IP dedup ─────────────────────────────────────────────
-    peer_id find_active_peer_by_node_id(const node_id_t& nid) const;
+    /// @param exclude peer to skip — the caller's own peer_id, which already
+    ///        carries @p nid by the time it asks (otherwise the scan returns
+    ///        the caller itself and the duplicate check silently no-ops).
+    peer_id find_active_peer_by_node_id(const node_id_t& nid,
+                                        peer_id exclude = INVALID_PEER_ID) const;
 
 private:
     dlt_p2p_delegate*               _delegate = nullptr;
