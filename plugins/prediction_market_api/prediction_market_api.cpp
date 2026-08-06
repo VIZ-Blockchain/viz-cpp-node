@@ -41,13 +41,14 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
 
     namespace {
 
-        // Non-consensus reliability score in basis points [0..10000]. Blends the
-        // resolution success ratio with the dispute win ratio, then docks bans.
-        // reliability_score v2 (display-only, bp 0..10000). Weaves in 11 of the 14 oracle counters
-        // (v1 used only 5): three reputation ratios blended, minus time-decayed penalty stamps and
+        // Non-consensus reliability score in basis points [0..10000]. Blends resolution accuracy,
+        // dispute verdicts, responsiveness and timeliness, then docks penalty stamps and bans.
+        // reliability_score v2 (display-only, bp 0..10000). Weaves in 12 of the 14 oracle counters
+        // (v1 used only 5): four reputation ratios blended, minus time-decayed penalty stamps and
         // bans, then confidence-shrunk toward a neutral prior for oracles with a thin track record.
-        // Non-consensus; tune the weights freely. (Explicit lateness weighting lands in P5 once
-        // resolved_late_count exists; avg_resolution_time alone can't be normalized without deadlines.)
+        // Non-consensus; tune the weights freely. Timeliness (on-time resolution ratio derived from
+        // resolved_late_count) is the 4th ratio; avg_resolution_time stays out — it measures latency
+        // from betting close, not deadline overrun, and can't be normalized without the market length.
         uint32_t reliability_score(const pm_oracle_object& o, fc::time_point_sec now) {
             // (1) Resolution accuracy — resolved vs missed-deadline. Optimistic when unproven.
             uint64_t completed = (uint64_t)o.markets_resolved + o.missed_count;
@@ -60,9 +61,17 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             int64_t drecv = (int64_t)o.disputes_received;
             int64_t missed = (int64_t)o.dispute_responses_missed; if (missed > drecv) missed = drecv;
             int64_t resp = drecv > 0 ? (int64_t)((uint64_t)(drecv - missed) * 10000 / (uint64_t)drecv) : 10000;
+            // (4) Timeliness — of the resolutions delivered, the share that landed by the advertised
+            // deadline (resolved_late_count is the past-deadline tally). Late-but-delivered resolves
+            // otherwise earn full accuracy credit, so without this a chronically-late oracle scores
+            // identical to a punctual one. A ratio (not the raw count) keeps it fair to high volume.
+            // Optimistic 10000 until the oracle has resolved anything.
+            int64_t rres = (int64_t)o.markets_resolved;
+            int64_t late = (int64_t)o.resolved_late_count; if (late > rres) late = rres;
+            int64_t timely = rres > 0 ? (int64_t)((uint64_t)(rres - late) * 10000 / (uint64_t)rres) : 10000;
 
-            // Weighted blend: accuracy 45% · verdicts 35% · responsiveness 20%.
-            int64_t score = (acc * 45 + drep * 35 + resp * 20) / 100;
+            // Weighted blend: accuracy 40% · verdicts 30% · responsiveness 15% · timeliness 15%.
+            int64_t score = (acc * 40 + drep * 30 + resp * 15 + timely * 15) / 100;
 
             // Time-decayed penalty stamps: 300 bp each, halved per 10 days since the most recent stamp
             // (mirrors the object's last_penalty_stamp_time 10-day decay note). disputes_auto_closed is
