@@ -119,9 +119,9 @@ Minimum edits for a public node:
 ```ini
 # P2P
 p2p-endpoint = 0.0.0.0:2001
-p2p-seed-node = seed1.viz.world:2001
-p2p-seed-node = seed2.viz.world:2001
 p2p-seed-node = seed3.viz.world:2001
+p2p-seed-node = seed1.viz.world:2001
+p2p-seed-node = rpc.viz.cx:2001
 
 # RPC
 webserver-http-endpoint = 0.0.0.0:8090
