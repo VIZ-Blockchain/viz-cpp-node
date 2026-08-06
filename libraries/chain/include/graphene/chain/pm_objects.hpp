@@ -79,6 +79,15 @@ namespace graphene { namespace chain {
             uint32_t          markets_in_dispute_window  = 0;
             uint32_t          disputes_awaiting_response = 0;
             uint32_t          disputes_awaiting_decision = 0;
+
+            // Resolution-timeliness telemetry (display-only, forward-accumulating from this upgrade;
+            // no seed — increments deterministically at pm_resolve_market). `resolved_late_count` is
+            // the number of markets this oracle resolved AFTER their result_expiration (past the
+            // advertised deadline but before the missed-resolution void). `avg_resolution_time`
+            // (declared above, previously never maintained) now tracks the running mean latency from
+            // betting close to resolution. Oldest-unresolved age and median/p95 latency are exposed
+            // via the prediction_market_api (computed on read / histogram — see P5).
+            uint32_t          resolved_late_count = 0;
         };
 
         struct by_owner;
@@ -765,7 +774,8 @@ FC_REFLECT((graphene::chain::pm_oracle_object),
     (disputes_won)(disputes_auto_closed)(dispute_responses_missed)(total_volume_resolved)(total_insurance_slashed)
     (avg_resolution_time)(penalty_stamps)(bans_received)(last_penalty_stamp_time)
     (auto_accept_creator)(auto_accept_resolver)(auto_accept)(banned_by)(active_markets)
-    (markets_in_dispute_window)(disputes_awaiting_response)(disputes_awaiting_decision))
+    (markets_in_dispute_window)(disputes_awaiting_response)(disputes_awaiting_decision)
+    (resolved_late_count))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_oracle_object, graphene::chain::pm_oracle_index)
 
 FC_REFLECT((graphene::chain::pm_market_object),

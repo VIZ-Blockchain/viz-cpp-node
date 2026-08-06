@@ -1602,6 +1602,13 @@ void pm_resolve_market_evaluator::do_apply(const pm_resolve_market_operation& o)
     bool can_resolve_early = mkt.allow_early_resolution && now >= mkt.betting_expiration;
     FC_ASSERT(can_resolve_early || now >= mkt.result_expiration, "Cannot resolve yet");
 
+    // P5 timeliness telemetry, captured BEFORE the modify below rewrites result_expiration on an
+    // early resolve. `late` = resolved past the advertised deadline. `rt` = latency from betting
+    // close to now (0 for open-ended, which has no forced wait).
+    const bool late = (now > mkt.result_expiration);
+    const uint64_t rt = (mkt.betting_expiration != time_point_sec() && now > mkt.betting_expiration)
+        ? (uint64_t)(now.sec_since_epoch() - mkt.betting_expiration.sec_since_epoch()) : 0;
+
     // Early resolution pulls the whole downstream schedule forward: when the event settles before
     // the advertised deadline we shift result_expiration earlier by exactly how early the oracle
     // reported (new value = now), mirroring pm_no_contest. That collapses the LP-principal lock and
@@ -1627,6 +1634,13 @@ void pm_resolve_market_evaluator::do_apply(const pm_resolve_market_operation& o)
             if (ora.active_markets > 0) ora.active_markets--;   // leaves active set (1 → 3)
             ora.markets_in_dispute_window++;   // enters disputable window (status3, payout1, no dispute)
             ora.total_volume_resolved += mkt.bets_sum;
+            if (late) ora.resolved_late_count++;
+            // Running mean resolution latency over all resolves (n just incremented above).
+            {
+                const uint64_t n = ora.markets_resolved;
+                ora.avg_resolution_time =
+                    (uint32_t)(((uint64_t)ora.avg_resolution_time * (n - 1) + rt) / n);
+            }
             ora.last_active_time = now;
         });
 }

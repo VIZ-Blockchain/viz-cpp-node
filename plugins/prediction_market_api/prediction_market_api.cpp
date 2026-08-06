@@ -89,19 +89,26 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             return (uint32_t)score;
         }
 
-        // Count this oracle's status-1 markets whose betting has closed (betting_expiration in
-        // (epoch, head_block_time]) — i.e. awaiting the oracle's resolution. Walks only the oracle's
-        // own active set via by_oracle_status(owner, 1), so it is O(this oracle's active markets),
-        // not the global closed-market prefix. Display-only; mirrors list_markets_awaiting_resolution.
-        uint32_t markets_awaiting_resolution_count(const database& db, const account_name_type& owner) {
-            uint32_t n = 0;
+        // This oracle's status-1 markets whose betting has closed (betting_expiration in
+        // (epoch, head_block_time]) — i.e. awaiting the oracle's resolution: their count and the age
+        // (seconds since betting close) of the OLDEST such market. Walks only the oracle's own active
+        // set via by_oracle_status(owner, 1), so it is O(this oracle's active markets), not the global
+        // closed-market prefix. Display-only; both are time-dependent so they're computed on read.
+        struct oracle_awaiting_info { uint32_t count = 0; uint32_t oldest_age = 0; };
+        oracle_awaiting_info oracle_awaiting(const database& db, const account_name_type& owner) {
+            oracle_awaiting_info r;
+            int64_t oldest = 0;
             const auto now = db.head_block_time();
             const auto& idx = db.get_index<pm_market_index>().indices().get<by_oracle_status>();
             auto it = idx.lower_bound(boost::make_tuple(owner, (int8_t)1, pm_market_id_type()));
             for (; it != idx.end() && it->oracle == owner && it->status == 1; ++it)
-                if (it->betting_expiration != fc::time_point_sec() && it->betting_expiration <= now)
-                    ++n;
-            return n;
+                if (it->betting_expiration != fc::time_point_sec() && it->betting_expiration <= now) {
+                    ++r.count;
+                    int64_t age = (int64_t)now.sec_since_epoch() - (int64_t)it->betting_expiration.sec_since_epoch();
+                    if (age > oldest) oldest = age;
+                }
+            r.oldest_age = (uint32_t)(oldest < 0 ? 0 : oldest);
+            return r;
         }
 
         // Parimutuel payout this bet would receive if its side wins (or its realized
@@ -900,8 +907,9 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             const auto& idx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
             auto itr = idx.find(owner);
             FC_ASSERT(itr != idx.end(), "Oracle not found");
+            auto aw = oracle_awaiting(db, itr->owner);
             return pm_oracle_api_object{pm_oracle_object(*itr), reliability_score(*itr, db.head_block_time()),
-                                        markets_awaiting_resolution_count(db, itr->owner)};
+                                        aw.count, aw.oldest_age};
         });
     }
 
@@ -1601,9 +1609,11 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             {
                 const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
                 auto oit = oidx.find(mkt.oracle);
-                if (oit != oidx.end())
+                if (oit != oidx.end()) {
+                    auto oaw = oracle_awaiting(db, oit->owner);
                     oracle = pm_oracle_api_object{pm_oracle_object(*oit), reliability_score(*oit, db.head_block_time()),
-                                                  markets_awaiting_resolution_count(db, oit->owner)};
+                                                  oaw.count, oaw.oldest_age};
+                }
             }
 
             fc::optional<pm_market_meta_object> meta;
