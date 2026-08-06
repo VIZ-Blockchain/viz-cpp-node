@@ -36,7 +36,7 @@ no archive — the config below keeps its whole footprint bounded.
 
 | | Validator | Keyless relay |
 |---|---|---|
-| vCPU | 2 | 2 |
+| vCPU | 2 | 2 (4 if you accept a lot of inbound peers) |
 | RAM | 4 GB + 2 GB swap | 4 GB + 2 GB swap |
 | Disk | 20 GB SSD | 20 GB SSD (40 GB if serving snapshots) |
 
@@ -62,6 +62,11 @@ RAM.
 Both profiles want that swap — a relay imports snapshots the same way, so it
 takes the same spike. The difference is only what swapping costs you: a relay
 that swaps gets slow, while a validator that swaps misses a block.
+
+A relay's CPU scales with the inbound peers it accepts, not with being public as
+such — it is public on `:2001` by definition. Cap it with
+`p2p-max-connections` and size from there: the default is generous, and a relay
+that exists to feed your own validators does not need to carry 200 strangers.
 
 Public RPC is a different machine with different economics — the history plugins
 store everything. See the sizing table in [Docker](../node/docker.md) for that
