@@ -50,23 +50,44 @@ namespace graphene { namespace protocol {
             asset                 payout;
         };
 
-        /// Committee-mode tally finalized at voting_end_time.
+        /// A dispute was filed against a resolved market. Carries the `oracle` (and `disputer`)
+        /// so the event lands in BOTH their account histories — the oracle's timeline shows
+        /// "a dispute was opened against my resolution", not just the disputer's side.
+        struct pm_dispute_opened_operation : public virtual_operation {
+            pm_dispute_opened_operation() {}
+            pm_dispute_opened_operation(const account_name_type& orc, const account_name_type& disp,
+                                        pm_vop_object_id_type m, int16_t po)
+                : oracle(orc), disputer(disp), market_id(m), proposed_outcome(po) {}
+
+            account_name_type     oracle;
+            account_name_type     disputer;
+            pm_vop_object_id_type market_id = 0;
+            int16_t               proposed_outcome = -1;
+        };
+
+        /// Committee-mode tally finalized at voting_end_time. Carries `oracle` so the verdict
+        /// (and any penalty) is visible in the oracle's own account history.
         struct pm_dispute_finalize_operation : public virtual_operation {
             pm_dispute_finalize_operation() {}
-            pm_dispute_finalize_operation(pm_vop_object_id_type m, int16_t o, const asset& p)
-                : market_id(m), winning_outcome(o), oracle_penalty(p) {}
+            pm_dispute_finalize_operation(const account_name_type& orc, pm_vop_object_id_type m,
+                                          int16_t o, const asset& p)
+                : oracle(orc), market_id(m), winning_outcome(o), oracle_penalty(p) {}
 
+            account_name_type     oracle;
             pm_vop_object_id_type market_id = 0;
             int16_t               winning_outcome = -1;
             asset                 oracle_penalty;
         };
 
         /// Anti-freeze fallback: dispute unresolved at auto_close_time -> full refund.
+        /// Carries `oracle` so the auto-close (and its penalty) shows in the oracle's history.
         struct pm_dispute_auto_close_operation : public virtual_operation {
             pm_dispute_auto_close_operation() {}
-            pm_dispute_auto_close_operation(pm_vop_object_id_type m, const asset& p)
-                : market_id(m), oracle_penalty(p) {}
+            pm_dispute_auto_close_operation(const account_name_type& orc, pm_vop_object_id_type m,
+                                            const asset& p)
+                : oracle(orc), market_id(m), oracle_penalty(p) {}
 
+            account_name_type     oracle;
             pm_vop_object_id_type market_id = 0;
             asset                 oracle_penalty;
         };
@@ -204,8 +225,9 @@ namespace graphene { namespace protocol {
 FC_REFLECT((graphene::protocol::pm_batch_settle_operation), (market_id)(epoch)(settled_bets))
 FC_REFLECT((graphene::protocol::pm_commit_forfeit_operation), (account)(commit_id)(market_id)(penalty)(refund))
 FC_REFLECT((graphene::protocol::pm_auto_payout_operation), (account)(market_id)(bet_id)(payout))
-FC_REFLECT((graphene::protocol::pm_dispute_finalize_operation), (market_id)(winning_outcome)(oracle_penalty))
-FC_REFLECT((graphene::protocol::pm_dispute_auto_close_operation), (market_id)(oracle_penalty))
+FC_REFLECT((graphene::protocol::pm_dispute_opened_operation), (oracle)(disputer)(market_id)(proposed_outcome))
+FC_REFLECT((graphene::protocol::pm_dispute_finalize_operation), (oracle)(market_id)(winning_outcome)(oracle_penalty))
+FC_REFLECT((graphene::protocol::pm_dispute_auto_close_operation), (oracle)(market_id)(oracle_penalty))
 FC_REFLECT((graphene::protocol::pm_oracle_missed_penalty_operation), (oracle)(market_id)(slashed))
 FC_REFLECT((graphene::protocol::pm_lazy_recall_operation), (market_id)(recalled))
 FC_REFLECT((graphene::protocol::pm_leverage_liquidate_operation),

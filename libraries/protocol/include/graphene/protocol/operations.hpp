@@ -148,7 +148,9 @@ namespace graphene { namespace protocol {
                 pm_unban_operation,
                 // virtual operation:
                 pm_ban_expired_operation,
-                pm_market_expired_operation
+                pm_market_expired_operation,
+                // P1 oracle-metrics: dispute filed -> oracle+disputer history (virtual)
+                pm_dispute_opened_operation
         > operation;
 
         /*void operation_get_required_authorities( const operation& op,

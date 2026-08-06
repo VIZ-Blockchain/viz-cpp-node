@@ -561,10 +561,26 @@ if( options.count(name) ) { \
         // Virtual ops carry no signing authority — without an explicit overload
         // the generic handler adds nobody and the event is invisible in the
         // affected account's history. Market-only vops that carry no account
-        // field (pm_batch_settle / pm_dispute_finalize / pm_dispute_auto_close /
-        // pm_lazy_recall) are left to the generic handler by design.
+        // field (pm_batch_settle / pm_lazy_recall) are left to the generic
+        // handler by design.
         void operator()(const pm_commit_forfeit_operation& op) {
             impacted.insert(op.account);
+        }
+
+        // Dispute lifecycle -> oracle's own history (P1 oracle-metrics). The oracle now
+        // carries through the vop, so opening/finalize/auto-close of a dispute against its
+        // resolution are visible in its timeline (not only the disputer's / market's).
+        void operator()(const pm_dispute_opened_operation& op) {
+            impacted.insert(op.oracle);
+            impacted.insert(op.disputer);
+        }
+
+        void operator()(const pm_dispute_finalize_operation& op) {
+            impacted.insert(op.oracle);
+        }
+
+        void operator()(const pm_dispute_auto_close_operation& op) {
+            impacted.insert(op.oracle);
         }
 
         void operator()(const pm_auto_payout_operation& op) {

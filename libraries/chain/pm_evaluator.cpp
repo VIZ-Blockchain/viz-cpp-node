@@ -1683,6 +1683,10 @@ void pm_dispute_create_evaluator::do_apply(const pm_dispute_create_operation& o)
     auto it = oidx.find(mkt.oracle);
     if (it != oidx.end())
         db.modify(*it, [](pm_oracle_object& ora) { ora.disputes_received++; });
+
+    // P1 oracle-metrics: surface the filing in the oracle's (and disputer's) history.
+    db.push_virtual_operation(pm_dispute_opened_operation(
+        mkt.oracle, o.disputer, mkt.id._id, o.proposed_outcome));
 }
 
 // ─── 14. pm_dispute_vote ─────────────────────────────────────────────────────
@@ -2676,7 +2680,7 @@ void database::process_pm_markets() {
             modify(disp, [](pm_dispute_object& d) { d.status = 3; }); // auto-closed
 
             push_virtual_operation(pm_dispute_auto_close_operation(
-                mkt.id._id, asset(slashed, TOKEN_SYMBOL)));
+                mkt.oracle, mkt.id._id, asset(slashed, TOKEN_SYMBOL)));
             ++done;
         }
     }
@@ -2851,7 +2855,7 @@ void database::process_pm_markets() {
             }
 
             push_virtual_operation(pm_dispute_finalize_operation(
-                mkt.id._id, mkt.resolved_outcome, oracle_penalty));
+                mkt.oracle, mkt.id._id, mkt.resolved_outcome, oracle_penalty));
             ++done;
         }
     }
