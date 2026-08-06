@@ -87,6 +87,33 @@ namespace {
             db.modify(*it, [](pm_oracle_object& o) { if (o.active_markets > 0) o.active_markets--; });
     }
 
+    // ── Per-oracle workload gauges (display-only) ─────────────────────────────────
+    // Generic ±1 on any uint32_t gauge of the oracle named `oracle`. Decrement clamps at 0 so a
+    // stray double-dec can never wrap the counter. No-op when the oracle has no pm_oracle_object.
+    // NEVER gates consensus (cosmetic aggregate; a drift is caught by pm_verify_oracle_gauges).
+    void pm_oracle_gauge_adj(database& db, const account_name_type& oracle,
+                             uint32_t pm_oracle_object::* field, int delta) {
+        if (delta == 0) return;
+        const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
+        auto it = oidx.find(oracle);
+        if (it == oidx.end()) return;
+        db.modify(*it, [&](pm_oracle_object& o) {
+            if (delta > 0) (o.*field) += (uint32_t)delta;
+            else { uint32_t d = (uint32_t)(-delta); (o.*field) = (o.*field) > d ? (o.*field) - d : 0u; }
+        });
+    }
+    // A dispute is leaving the open(0) state (responded/finalized/auto-closed): decrement whichever
+    // open-dispute gauge it currently sits in, keyed on whether the oracle had responded. Call while
+    // the dispute is still status 0 (oracle_response_time is stable across the transition either way).
+    void pm_oracle_dispute_left_open(database& db, const account_name_type& oracle,
+                                     const pm_dispute_object& d) {
+        pm_oracle_gauge_adj(db, oracle,
+            (d.oracle_response_time == time_point_sec())
+                ? &pm_oracle_object::disputes_awaiting_response
+                : &pm_oracle_object::disputes_awaiting_decision,
+            -1);
+    }
+
     // Pay queued lazy-pool withdrawals FIFO (oldest id first) from whatever is liquid in
     // free_balance right now. Each request is paid in full or in part; when free is exhausted we
     // stop. Called at every point capital returns to free_balance (LP return, deposit, leverage
@@ -1598,6 +1625,7 @@ void pm_resolve_market_evaluator::do_apply(const pm_resolve_market_operation& o)
         db.modify(*it, [&](pm_oracle_object& ora) {
             ora.markets_resolved++;
             if (ora.active_markets > 0) ora.active_markets--;   // leaves active set (1 → 3)
+            ora.markets_in_dispute_window++;   // enters disputable window (status3, payout1, no dispute)
             ora.total_volume_resolved += mkt.bets_sum;
             ora.last_active_time = now;
         });
@@ -1625,6 +1653,7 @@ void pm_no_contest_evaluator::do_apply(const pm_no_contest_operation& o) {
         db.modify(*it, [&](pm_oracle_object& ora) {
             ora.no_contest_count++;
             if (ora.active_markets > 0) ora.active_markets--;   // leaves active set (1 → 3)
+            ora.markets_in_dispute_window++;   // enters disputable window (status3, payout1, no dispute)
             ora.last_active_time = now;
         });
     db.modify(mkt, [&](pm_market_object& m) {
@@ -1682,7 +1711,11 @@ void pm_dispute_create_evaluator::do_apply(const pm_dispute_create_operation& o)
     const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
     auto it = oidx.find(mkt.oracle);
     if (it != oidx.end())
-        db.modify(*it, [](pm_oracle_object& ora) { ora.disputes_received++; });
+        db.modify(*it, [](pm_oracle_object& ora) {
+            ora.disputes_received++;
+            if (ora.markets_in_dispute_window > 0) ora.markets_in_dispute_window--; // leaves disputable → disputed
+            ora.disputes_awaiting_response++;   // new open dispute, oracle has not responded yet
+        });
 
     // P1 oracle-metrics: surface the filing in the oracle's (and disputer's) history.
     db.push_virtual_operation(pm_dispute_opened_operation(
@@ -1752,6 +1785,9 @@ void pm_dispute_resolve_evaluator::do_apply(const pm_dispute_resolve_operation& 
     FC_ASSERT(dit != didx.end() && dit->status == 0, "No open dispute");
     FC_ASSERT(now <= dit->oracle_response_deadline + fc::seconds(mp.pm_dispute_vote_period_sec),
               "Resolution window passed");
+
+    // Dispute leaves the open state either way (verdict below): drop it from the open-dispute gauge.
+    pm_oracle_dispute_left_open(db, mkt.oracle, *dit);
 
     // Same post-verdict canon as committee mode (spec §3.9 "both modes converge"); only the
     // penalty size differs — here it is the resolver-specified penalty_amount (no vote to scale).
@@ -2262,6 +2298,13 @@ void pm_dispute_oracle_respond_evaluator::do_apply(const pm_dispute_oracle_respo
     FC_ASSERT(dit != didx.end() && dit->status == 0, "No open dispute");
     FC_ASSERT(now <= dit->oracle_response_deadline, "Oracle response window passed");
 
+    // First response moves the open dispute from awaiting-response to awaiting-decision. A repeat
+    // response (re-posting overwrites) leaves it in awaiting-decision — do not double-count.
+    if (dit->oracle_response_time == time_point_sec()) {
+        pm_oracle_gauge_adj(db, mkt.oracle, &pm_oracle_object::disputes_awaiting_response, -1);
+        pm_oracle_gauge_adj(db, mkt.oracle, &pm_oracle_object::disputes_awaiting_decision, +1);
+    }
+
     db.modify(*dit, [&](pm_dispute_object& d) {
         from_string(d.oracle_response, o.response);
         d.oracle_response_time = now;
@@ -2439,6 +2482,86 @@ bool database::pm_verify_oracle_active_markets() const {
     return ok;
 }
 
+// One-time seed of the per-oracle workload gauges (see header/pm_objects.hpp). Zeroes every
+// oracle's three counters, then re-derives them from live state — idempotent, display-only.
+//   markets_in_dispute_window   = status3 + payout_status1 markets with NO dispute row.
+//   disputes_awaiting_response  = open(0) disputes with oracle_response_time == epoch.
+//   disputes_awaiting_decision  = open(0) disputes with oracle_response_time  > epoch.
+void database::pm_seed_oracle_gauges() {
+    const auto& obyid = get_index<pm_oracle_index>().indices().get<by_id>();
+    for (auto it = obyid.begin(); it != obyid.end(); ++it)
+        if (it->markets_in_dispute_window || it->disputes_awaiting_response || it->disputes_awaiting_decision)
+            modify(*it, [](pm_oracle_object& o) {
+                o.markets_in_dispute_window  = 0;
+                o.disputes_awaiting_response = 0;
+                o.disputes_awaiting_decision = 0;
+            });
+
+    const auto& obyowner = get_index<pm_oracle_index>().indices().get<by_owner>();
+    const auto& didx     = get_index<pm_dispute_index>().indices().get<by_market>();
+    const auto& midx     = get_index<pm_market_index>().indices().get<by_status>();
+    for (auto it = midx.lower_bound((int8_t)3); it != midx.end() && it->status == 3; ++it) {
+        if (it->payout_status != 1) continue;
+        if (didx.find(it->id) != didx.end()) continue;   // disputed → not in the disputable window
+        auto oit = obyowner.find(it->oracle);
+        if (oit != obyowner.end())
+            modify(*oit, [](pm_oracle_object& o) { o.markets_in_dispute_window++; });
+    }
+
+    const auto& dclose = get_index<pm_dispute_index>().indices().get<by_auto_close>();
+    for (auto it = dclose.lower_bound(boost::make_tuple((uint8_t)0, time_point_sec(0), pm_dispute_id_type()));
+         it != dclose.end() && it->status == 0; ++it) {
+        const auto& mbyid = get_index<pm_market_index>().indices().get<by_id>();
+        auto mit = mbyid.find(it->market);
+        if (mit == mbyid.end()) continue;
+        auto oit = obyowner.find(mit->oracle);
+        if (oit == obyowner.end()) continue;
+        const bool responded = (it->oracle_response_time != time_point_sec());
+        modify(*oit, [&](pm_oracle_object& o) {
+            if (responded) o.disputes_awaiting_decision++; else o.disputes_awaiting_response++;
+        });
+    }
+}
+
+// Debug drift-check for the workload gauges: re-derive per-oracle from live state and diff the
+// stored counters. O(resolved-pending markets + open disputes + oracles); read-only. Logs each
+// mismatch, returns true when clean.
+bool database::pm_verify_oracle_gauges() const {
+    std::map<account_name_type, uint32_t> win, resp, dec;
+    const auto& didx  = get_index<pm_dispute_index>().indices().get<by_market>();
+    const auto& midx  = get_index<pm_market_index>().indices().get<by_status>();
+    const auto& mbyid = get_index<pm_market_index>().indices().get<by_id>();
+    for (auto it = midx.lower_bound((int8_t)3); it != midx.end() && it->status == 3; ++it) {
+        if (it->payout_status != 1) continue;
+        if (didx.find(it->id) != didx.end()) continue;
+        win[it->oracle]++;
+    }
+    const auto& dclose = get_index<pm_dispute_index>().indices().get<by_auto_close>();
+    for (auto it = dclose.lower_bound(boost::make_tuple((uint8_t)0, time_point_sec(0), pm_dispute_id_type()));
+         it != dclose.end() && it->status == 0; ++it) {
+        auto mit = mbyid.find(it->market);
+        if (mit == mbyid.end()) continue;
+        if (it->oracle_response_time != time_point_sec()) dec[mit->oracle]++;
+        else                                              resp[mit->oracle]++;
+    }
+    bool ok = true;
+    const auto& oidx = get_index<pm_oracle_index>().indices().get<by_id>();
+    for (auto it = oidx.begin(); it != oidx.end(); ++it) {
+        auto fw = win.find(it->owner);  uint32_t ew = (fw == win.end())  ? 0u : fw->second;
+        auto fr = resp.find(it->owner); uint32_t er = (fr == resp.end()) ? 0u : fr->second;
+        auto fd = dec.find(it->owner);  uint32_t ed = (fd == dec.end())  ? 0u : fd->second;
+        if (it->markets_in_dispute_window != ew || it->disputes_awaiting_response != er
+            || it->disputes_awaiting_decision != ed) {
+            ok = false;
+            elog("pm oracle gauges drift ${o}: win ${a}/${ea} resp ${b}/${eb} dec ${c}/${ec}",
+                ("o", it->owner)("a", it->markets_in_dispute_window)("ea", ew)
+                ("b", it->disputes_awaiting_response)("eb", er)
+                ("c", it->disputes_awaiting_decision)("ec", ed));
+        }
+    }
+    return ok;
+}
+
 void database::process_pm_markets() {
     if (!has_hardfork(CHAIN_HARDFORK_14)) return;
 
@@ -2465,6 +2588,16 @@ void database::process_pm_markets() {
         });
         ilog("pm oracle active_markets seeded; drift-check ${r}",
              ("r", pm_verify_oracle_active_markets() ? "clean" : "MISMATCH"));
+    }
+
+    // One-time seed of the per-oracle workload gauges (display-only). Same pattern as above.
+    if (!get_dynamic_global_properties().pm_oracle_gauges_seeded) {
+        pm_seed_oracle_gauges();
+        modify(get_dynamic_global_properties(), [](dynamic_global_property_object& d) {
+            d.pm_oracle_gauges_seeded = true;
+        });
+        ilog("pm oracle workload gauges seeded; drift-check ${r}",
+             ("r", pm_verify_oracle_gauges() ? "clean" : "MISMATCH"));
     }
 
     const auto  now = head_block_time();
@@ -2677,6 +2810,7 @@ void database::process_pm_markets() {
                 m.resolved_outcome = -1;
                 m.finalized_time   = now;
             });
+            pm_oracle_dispute_left_open(*this, mkt.oracle, disp); // drop from open-dispute gauge
             modify(disp, [](pm_dispute_object& d) { d.status = 3; }); // auto-closed
 
             push_virtual_operation(pm_dispute_auto_close_operation(
@@ -2719,6 +2853,9 @@ void database::process_pm_markets() {
         while (it != idx.end() && it->status == 0 && it->voting_end_time <= now && done < cap) {
             const auto& disp = *it; ++it;
             const auto& mkt  = get<pm_market_object>(disp.market);
+
+            // Dispute is being finalized (uphold or override below): drop from the open-dispute gauge.
+            pm_oracle_dispute_left_open(*this, mkt.oracle, disp);
 
             // Step 1 — stake-weighted tally (mirrors committee-request finalize). Weight is the
             // voter's vesting shares. vote_percent>0 on a real outcome supports that change;
@@ -2876,6 +3013,16 @@ void database::process_pm_markets() {
             const auto& mkt = *it; ++it;
 
             if (mkt.payout_status != 1) continue;
+
+            // If this market was never disputed it is still counted in markets_in_dispute_window;
+            // settling closes that window. A market whose dispute finalized (payout returned to 1)
+            // already left the gauge at dispute_create and carries a dispute row — don't double-dec.
+            {
+                const auto& didx = get_index<pm_dispute_index>().indices().get<by_market>();
+                if (didx.find(mkt.id) == didx.end())
+                    pm_oracle_gauge_adj(*this, mkt.oracle,
+                                        &pm_oracle_object::markets_in_dispute_window, -1);
+            }
 
             settle_market(*this, mkt);
             modify(mkt, [&](pm_market_object& m) { m.payout_status = 3; m.finalized_time = now; });

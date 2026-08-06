@@ -19,6 +19,12 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
     struct pm_oracle_api_object {
         pm_oracle_object oracle;
         uint32_t         reliability_score; // [0..10000] bp, see plugin impl
+        // Live count of this oracle's status-1 markets past their betting close (betting_expiration
+        // <= head_block_time, excluding open-ended) — i.e. awaiting the oracle's resolution. Computed
+        // on read from the oracle's small active set (not stored on pm_oracle_object). The stored
+        // workload gauges (markets_in_dispute_window, disputes_awaiting_response/decision) travel
+        // inside `oracle`.
+        uint32_t         markets_awaiting_resolution = 0;
     };
 
     // A bet plus the parimutuel payout it would receive if its side wins (or its
@@ -288,7 +294,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
 } } } // graphene::plugins::prediction_market_api
 
 FC_REFLECT((graphene::plugins::prediction_market_api::pm_oracle_api_object),
-    (oracle)(reliability_score))
+    (oracle)(reliability_score)(markets_awaiting_resolution))
 FC_REFLECT((graphene::plugins::prediction_market_api::pm_position_api_object),
     (bet)(expected_payout)(market_status)(resolved_outcome))
 FC_REFLECT((graphene::plugins::prediction_market_api::pm_weight_entry),

@@ -64,6 +64,21 @@ namespace graphene { namespace chain {
             // seeded from live markets on the first block after upgrade (dgpo.pm_active_markets_seeded).
             // NEVER gates consensus.
             uint32_t          active_markets = 0;
+
+            // Live workload gauges (display-only, O(1) reads for oracle dashboards/watchdogs;
+            // NEVER gate consensus). Maintained incrementally by pm_oracle_gauge_adj at the
+            // relevant state transitions, and seeded once on the first block after upgrade
+            // (dgpo.pm_oracle_gauges_seeded) with a drift-check. Invariant each tracks:
+            //   markets_in_dispute_window   — this oracle's resolved(3)+payout-pending(1) markets
+            //                                 that have NO dispute filed yet (still disputable).
+            //   disputes_awaiting_response  — open(0) disputes whose oracle has NOT yet responded.
+            //   disputes_awaiting_decision  — open(0) disputes whose oracle HAS responded (awaiting
+            //                                 the committee vote / account-resolver verdict).
+            // (markets_awaiting_resolution — status1 past betting close — is computed on read in the
+            //  prediction_market_api from this oracle's small active set, not stored here.)
+            uint32_t          markets_in_dispute_window  = 0;
+            uint32_t          disputes_awaiting_response = 0;
+            uint32_t          disputes_awaiting_decision = 0;
         };
 
         struct by_owner;
@@ -749,7 +764,8 @@ FC_REFLECT((graphene::chain::pm_oracle_object),
     (markets_accepted)(markets_resolved)(no_contest_count)(missed_count)(disputes_received)(disputes_lost)
     (disputes_won)(disputes_auto_closed)(dispute_responses_missed)(total_volume_resolved)(total_insurance_slashed)
     (avg_resolution_time)(penalty_stamps)(bans_received)(last_penalty_stamp_time)
-    (auto_accept_creator)(auto_accept_resolver)(auto_accept)(banned_by)(active_markets))
+    (auto_accept_creator)(auto_accept_resolver)(auto_accept)(banned_by)(active_markets)
+    (markets_in_dispute_window)(disputes_awaiting_response)(disputes_awaiting_decision))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_oracle_object, graphene::chain::pm_oracle_index)
 
 FC_REFLECT((graphene::chain::pm_market_object),

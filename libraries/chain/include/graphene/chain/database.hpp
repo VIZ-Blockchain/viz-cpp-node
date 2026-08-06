@@ -451,6 +451,13 @@ namespace graphene { namespace chain {
             // Debug drift-check for active_markets: recompute per-oracle from live markets and diff
             // against the stored counter. Read-only; logs mismatches; returns false if any is found.
             bool pm_verify_oracle_active_markets() const;
+            // One-time seed of the per-oracle workload gauges (markets_in_dispute_window,
+            // disputes_awaiting_response, disputes_awaiting_decision) from live markets/disputes
+            // (guarded by dgpo.pm_oracle_gauges_seeded). Display-only; never gates consensus.
+            void pm_seed_oracle_gauges();
+            // Debug drift-check for the workload gauges: recompute per-oracle from live state and
+            // diff against the stored counters. Read-only; logs mismatches; returns false on drift.
+            bool pm_verify_oracle_gauges() const;
 
             void burn_asset(const asset &delta);
 

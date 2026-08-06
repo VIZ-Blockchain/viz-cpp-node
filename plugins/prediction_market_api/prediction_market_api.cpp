@@ -56,6 +56,21 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             return (uint32_t)score;
         }
 
+        // Count this oracle's status-1 markets whose betting has closed (betting_expiration in
+        // (epoch, head_block_time]) — i.e. awaiting the oracle's resolution. Walks only the oracle's
+        // own active set via by_oracle_status(owner, 1), so it is O(this oracle's active markets),
+        // not the global closed-market prefix. Display-only; mirrors list_markets_awaiting_resolution.
+        uint32_t markets_awaiting_resolution_count(const database& db, const account_name_type& owner) {
+            uint32_t n = 0;
+            const auto now = db.head_block_time();
+            const auto& idx = db.get_index<pm_market_index>().indices().get<by_oracle_status>();
+            auto it = idx.lower_bound(boost::make_tuple(owner, (int8_t)1, pm_market_id_type()));
+            for (; it != idx.end() && it->oracle == owner && it->status == 1; ++it)
+                if (it->betting_expiration != fc::time_point_sec() && it->betting_expiration <= now)
+                    ++n;
+            return n;
+        }
+
         // Parimutuel payout this bet would receive if its side wins (or its realized
         // payout once settled). Byte-mirrors settle_market() in pm_evaluator.cpp.
         share_type expected_payout(const database& db, const pm_bet_object& bet,
@@ -823,7 +838,8 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             const auto& idx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
             auto itr = idx.find(owner);
             FC_ASSERT(itr != idx.end(), "Oracle not found");
-            return pm_oracle_api_object{pm_oracle_object(*itr), reliability_score(*itr)};
+            return pm_oracle_api_object{pm_oracle_object(*itr), reliability_score(*itr),
+                                        markets_awaiting_resolution_count(db, itr->owner)};
         });
     }
 
@@ -1481,7 +1497,8 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
                 auto oit = oidx.find(mkt.oracle);
                 if (oit != oidx.end())
-                    oracle = pm_oracle_api_object{pm_oracle_object(*oit), reliability_score(*oit)};
+                    oracle = pm_oracle_api_object{pm_oracle_object(*oit), reliability_score(*oit),
+                                                  markets_awaiting_resolution_count(db, oit->owner)};
             }
 
             fc::optional<pm_market_meta_object> meta;

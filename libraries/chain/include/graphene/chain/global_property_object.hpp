@@ -167,6 +167,15 @@ namespace graphene {
              * never gates consensus. pm_seed_oracle_active_markets() zeroes then re-sums — idempotent.
              */
             bool pm_active_markets_seeded = false;
+
+            /**
+             * One-time seed of the per-oracle workload gauges (markets_in_dispute_window,
+             * disputes_awaiting_response, disputes_awaiting_decision) from existing markets/disputes.
+             * Set on the first block after this upgrade so get_oracle exposes them without a full
+             * replay. Display-only; never gates consensus. pm_seed_oracle_gauges() zeroes then
+             * re-derives — idempotent.
+             */
+            bool pm_oracle_gauges_seeded = false;
         };
 
         typedef multi_index_container <
@@ -217,5 +226,6 @@ FC_REFLECT((graphene::chain::dynamic_global_property_object),
                 (pm_frozen_counters_seeded)
                 (pm_frozen_counters_reseeded_v1)
                 (pm_active_markets_seeded)
+                (pm_oracle_gauges_seeded)
 )
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::dynamic_global_property_object, graphene::chain::dynamic_global_property_index)
