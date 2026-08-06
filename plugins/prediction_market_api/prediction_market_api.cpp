@@ -43,15 +43,48 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
 
         // Non-consensus reliability score in basis points [0..10000]. Blends the
         // resolution success ratio with the dispute win ratio, then docks bans.
-        uint32_t reliability_score(const pm_oracle_object& o) {
+        // reliability_score v2 (display-only, bp 0..10000). Weaves in 11 of the 14 oracle counters
+        // (v1 used only 5): three reputation ratios blended, minus time-decayed penalty stamps and
+        // bans, then confidence-shrunk toward a neutral prior for oracles with a thin track record.
+        // Non-consensus; tune the weights freely. (Explicit lateness weighting lands in P5 once
+        // resolved_late_count exists; avg_resolution_time alone can't be normalized without deadlines.)
+        uint32_t reliability_score(const pm_oracle_object& o, fc::time_point_sec now) {
+            // (1) Resolution accuracy — resolved vs missed-deadline. Optimistic when unproven.
             uint64_t completed = (uint64_t)o.markets_resolved + o.missed_count;
-            int64_t  base = completed ? (int64_t)((uint64_t)o.markets_resolved * 10000 / completed)
-                                      : 10000; // unproven oracle starts optimistic
-            int64_t  dtot = (int64_t)o.disputes_won + o.disputes_lost;
-            int64_t  drep = dtot ? (int64_t)((uint64_t)o.disputes_won * 10000 / (uint64_t)dtot)
-                                 : 10000;
-            int64_t  score = (base + drep) / 2 - (int64_t)o.bans_received * 1000;
-            if (score < 0)     score = 0;
+            int64_t acc = completed ? (int64_t)((uint64_t)o.markets_resolved * 10000 / completed) : 10000;
+            // (2) Dispute verdicts — upheld (won) vs overturned (lost).
+            int64_t dtot = (int64_t)o.disputes_won + o.disputes_lost;
+            int64_t drep = dtot ? (int64_t)((uint64_t)o.disputes_won * 10000 / (uint64_t)dtot) : 10000;
+            // (3) Dispute responsiveness — of disputes filed, how many the oracle engaged rather than
+            // ignored into auto-close (dispute_responses_missed counts the ignored ones).
+            int64_t drecv = (int64_t)o.disputes_received;
+            int64_t missed = (int64_t)o.dispute_responses_missed; if (missed > drecv) missed = drecv;
+            int64_t resp = drecv > 0 ? (int64_t)((uint64_t)(drecv - missed) * 10000 / (uint64_t)drecv) : 10000;
+
+            // Weighted blend: accuracy 45% · verdicts 35% · responsiveness 20%.
+            int64_t score = (acc * 45 + drep * 35 + resp * 20) / 100;
+
+            // Time-decayed penalty stamps: 300 bp each, halved per 10 days since the most recent stamp
+            // (mirrors the object's last_penalty_stamp_time 10-day decay note). disputes_auto_closed is
+            // already folded into penalty_stamps at slash time, so it is not double-charged here.
+            if (o.penalty_stamps > 0) {
+                int64_t cost = (int64_t)o.penalty_stamps * 300;
+                int64_t age  = (int64_t)now.sec_since_epoch() - (int64_t)o.last_penalty_stamp_time.sec_since_epoch();
+                if (age < 0) age = 0;
+                int64_t halvings = age / 864000; if (halvings > 16) halvings = 16;
+                cost >>= halvings;
+                score -= cost;
+            }
+            // Bans are severe and lasting.
+            score -= (int64_t)o.bans_received * 1500;
+
+            // Confidence shrink: a thin track record shouldn't sit at a hard 100 (or crater on one
+            // dispute). Blend toward a neutral 6000 prior until ~20 markets have been resolved.
+            int64_t n = (int64_t)o.markets_resolved;
+            const int64_t FULL = 20;
+            if (n < FULL) score = (score * n + 6000 * (FULL - n)) / FULL;
+
+            if (score < 0) score = 0;
             if (score > 10000) score = 10000;
             return (uint32_t)score;
         }
@@ -867,7 +900,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             const auto& idx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
             auto itr = idx.find(owner);
             FC_ASSERT(itr != idx.end(), "Oracle not found");
-            return pm_oracle_api_object{pm_oracle_object(*itr), reliability_score(*itr),
+            return pm_oracle_api_object{pm_oracle_object(*itr), reliability_score(*itr, db.head_block_time()),
                                         markets_awaiting_resolution_count(db, itr->owner)};
         });
     }
@@ -1569,7 +1602,7 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 const auto& oidx = db.get_index<pm_oracle_index>().indices().get<by_owner>();
                 auto oit = oidx.find(mkt.oracle);
                 if (oit != oidx.end())
-                    oracle = pm_oracle_api_object{pm_oracle_object(*oit), reliability_score(*oit),
+                    oracle = pm_oracle_api_object{pm_oracle_object(*oit), reliability_score(*oit, db.head_block_time()),
                                                   markets_awaiting_resolution_count(db, oit->owner)};
             }
 
