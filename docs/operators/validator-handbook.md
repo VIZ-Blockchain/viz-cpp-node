@@ -514,3 +514,148 @@ docker compose start vizd
 
 An untested alarm is not an alarm. Do this once now, while missing a few slots
 costs nothing, rather than discovering the token was wrong during an incident.
+
+---
+
+## Part 5 — Day-two operations
+
+Start here. This table is the choice operators get wrong, and the wrong choice
+costs slots that a `restart` would not have.
+
+| Situation | Command | Cost |
+|---|---|---|
+| config-only change | `docker compose restart vizd` | ~1 slot |
+| new image | `docker compose pull` **then** `docker compose up -d` | gap replay, near-zero downtime |
+| wedged or on a bad fork | `docker compose down -v && docker compose up -d` | full re-bootstrap; misses slots until resynced |
+
+### Image upgrades
+
+`vizblockchain/vizd:latest` is rebuilt on every push to master, so there is no
+version tag to bump — the tag itself moves.
+
+The trap: **`docker compose up -d` does not pull a newer `:latest` when the tag
+already exists locally.** It sees a matching tag, reuses the local image, and
+reports success. You must `docker compose pull` first, or you have restarted the
+same binary and concluded the upgrade did nothing.
+
+```bash
+cd /opt/vizd
+docker compose pull
+docker compose up -d
+docker compose logs -f
+```
+
+Upgrade **one box at a time**. Between boxes, confirm head is advancing and
+`total_missed` has not grown. If a pull ships a regression, the previous image is
+still on disk — `docker images vizblockchain/vizd` lists it by id, and you can
+pin that id in `compose.yml` to roll back.
+
+### A recreate does not clear a wedge
+
+Chain state lives in the `vizd-state` volume, and compose reattaches that volume
+across `up -d`, `restart`, and even `--force-recreate`. A fresh container
+therefore reloads the *same* bad state and wedges again, which reads as "the
+restart didn't help" when in fact nothing was reset.
+
+Only `docker compose down -v` drops the volume. That is the entire difference,
+and it is why the flag is worth memorising rather than looking up mid-incident.
+
+### Dead-fork recovery, and its ordering trap
+
+Symptoms: head frozen while peers are connected, or a canonical peer logging
+that it soft-banned you for a dead fork.
+
+**Configure a canonical snapshot source before you wipe.** If you `down -v`
+first, the node re-syncs from whatever peers it has — which, on a dead fork, may
+be the same peers that fed you the dead fork. You pay the full re-bootstrap and
+arrive back where you started. Order:
+
+1. Confirm `config.ini`'s `trusted-snapshot-peer` list leads with
+   `seed3.viz.world:8092` and `sync-snapshot-from-trusted-peer = true`.
+2. Confirm the `p2p-seed-node` list leads with `seed3.viz.world:2001`. Peers are
+   tried in order, so the canonical tip must be first.
+3. `docker compose down -v && docker compose up -d`.
+4. Watch for `Node has no state. Triggering P2P snapshot sync from trusted
+   peers...` and confirm the head lands near the network tip, not at the frozen
+   height.
+
+### State refused after an upgrade
+
+If the node exits at startup complaining the state was built with a different
+compiler, build, or Boost version, that is not corruption — it is a deliberate
+refusal. See [Boost 1.9x Upgrade](./boost-1.9x-upgrade.md).
+
+### Key rotation
+
+1. Generate a new keypair exactly as in Part 2.
+2. Update `private-key` in `config.ini`.
+3. `docker compose restart vizd`.
+4. Re-register the new **public** key on-chain, exactly as in Part 3.
+
+The on-chain registration is the cutover fence. Until it lands, the old key
+produces valid blocks; the moment it lands, only the new one does. There is no
+window where both are valid, so there is no double-production risk — but there
+*is* a window between steps 3 and 4 where the node holds a key the chain has not
+accepted yet and will report `no_private_key`. Keep it short.
+
+### Box loss
+
+There is nothing to restore. Your identity is the signing key plus its on-chain
+registration, and both live off the box — the key in your password manager, the
+registration on the chain. Re-run Parts 1–2 on new hardware and the node
+re-bootstraps from a snapshot in minutes. Do not back up chain state; it is
+worthless compared to what the network will hand you.
+
+### Running more than one validator
+
+One signing key per box. **Never the same WIF on two machines** — that is double
+production: two nodes signing different blocks for the same slot, which is
+exactly what the network is built to punish. Separate accounts with separate keys
+are fully independent and perfectly fine.
+
+---
+
+## Part 6 — The keyless relay / seed profile
+
+VIZ is short on public seed nodes. A relay costs you nothing in signing risk and
+gives your own validators a reliable peer on infrastructure you control, while
+the validators themselves stay inbound-closed. If you run one validator, running
+one relay is the highest-value second box you can add.
+
+The relay is the Part 2 deployment with these differences:
+
+- **No `validator` and no `private-key`.** It signs nothing, so there is no key
+  on the box to protect.
+- **`p2p-endpoint = 0.0.0.0:2001`**, plus `sudo ufw allow 2001/tcp`. This is the
+  one place inbound p2p is correct.
+- **`allow-snapshot-serving = true`** if you want to serve snapshots to other
+  operators; add `sudo ufw allow 8092/tcp` with it.
+- **Add `network_broadcast_api` and the history plugins only if you serve API
+  clients.** They cost memory and disk; a pure relay does not need them.
+- **Public RPC, if any, belongs behind a reverse proxy with TLS.** Never publish
+  `:8090` directly.
+
+::: warning Do not co-locate a relay with your only validator
+One box failure then takes out both your producer and the peer it depends on.
+A relay feeding a validator on the same host was implicated in a fork incident.
+If you run both, run them on separate machines.
+:::
+
+---
+
+## Part 7 — Symptom table
+
+Host and deployment symptoms. For symptoms visible in the node's own production
+log — `no_private_key`, `low_participation`, `minority_fork` and friends — see
+[Validator Node](../node/validator-node.md), which tabulates every result.
+
+| Symptom | First command | Usual cause |
+|---|---|---|
+| Container restart-looping | `docker compose logs --tail=100 vizd` | malformed `config.ini` — an inline comment inside a `[log.*]` section, or an invalid log level |
+| RPC not answering on loopback | `docker compose ps` then `ss -tlnp \| grep 8090` | container down, or `ports:` missing the `127.0.0.1:` prefix |
+| Head frozen, peers connected | `docker compose logs --tail=200 vizd \| grep -i fork` | wedged state or a dead fork — Part 5, and note that a plain restart will not clear it |
+| Head frozen, zero peers | `docker compose logs vizd \| grep -i 'p2p\|peer'` | every `p2p-seed-node` unreachable, or outbound `:2001` blocked — test with `nc -z seed3.viz.world 2001` |
+| `total_missed` climbing, head advancing | `timedatectl` | clock drift, or the box is too slow to sign within its slot — check load and swap pressure |
+| Nothing produced after a correct-looking cutover | `get_validator_by_account` — compare `signing_key`, read `virtual_scheduled_time` | zero votes, so never scheduled (Part 3), or the registered key does not match `config.ini` |
+| State refused on startup after an upgrade | `docker compose logs vizd \| head -40` | Boost/compiler state-version mismatch — [Boost 1.9x Upgrade](./boost-1.9x-upgrade.md) |
+| Disk full | `df -h && docker system df` | old images and dangling volumes — `docker image prune -a`; check snapshot retention (`snapshot-max-age-days`) and that `logging.options.max-size` is set |
