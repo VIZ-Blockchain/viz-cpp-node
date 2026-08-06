@@ -31,14 +31,37 @@ relay profile.
 
 ### Sizing
 
-| | Validator | Relay / RPC |
-|---|---|---|
-| vCPU | 2 | 4 |
-| RAM | 4 GB + 8 GB swap | 8 GB + swap |
-| Disk | 40 GB SSD | 100 GB SSD |
+A validator is a small machine. It holds no history, serves no API, and stores
+no archive — the config below keeps its whole footprint bounded.
 
-The swap is not optional on a 4 GB box: chain state loading spikes well above
-steady-state usage.
+| | Validator | Keyless relay |
+|---|---|---|
+| vCPU | 2 | 2 |
+| RAM | 4 GB + 2 GB swap | 4 GB |
+| Disk | 20 GB SSD | 20 GB SSD (40 GB if serving snapshots) |
+
+Where the disk goes, so you can check the numbers rather than trust them:
+
+| | Size | Bounded by |
+|---|---|---|
+| `shared_memory.bin` | 2 GB, growing in 2 GB steps | `shared-file-size` / `inc-shared-file-size` |
+| DLT rolling block log | ~3.5 days of blocks | `dlt-block-log-max-blocks = 100000` |
+| Local snapshots | 2 files, ≤2 GB each | `snapshot-every-n-blocks` + `snapshot-max-age-days` |
+| Docker logs | 30 MB | `max-size` × `max-file` in `compose.yml` |
+
+Everything else is Debian and the `vizd` image. Nothing on a validator grows
+without a bound you set, which is why 20 GB is a real number and not a
+hope — but see the snapshot-retention warning in Part 2, because that is the one
+setting that can quietly break it.
+
+Do not undersize the RAM. Signing happens inside a 3-second slot; a node that
+swaps while producing misses the slot and reports `lag`. The 2 GB swap is a
+safety valve for the memory spike during snapshot import, not a substitute for
+RAM.
+
+Public RPC is a different machine with different economics — the history plugins
+store everything. See the sizing table in [Docker](../node/docker.md) for that
+profile, and do not put it on your validator.
 
 ### Ports
 
@@ -133,8 +156,12 @@ and the node's check are complements, not alternatives.
 
 ### Swap
 
+2 GB is enough. Swap here is a safety valve for the transient spike during
+snapshot import, not headroom you intend to run in — a validator that lives in
+swap misses slots.
+
 ```bash
-sudo fallocate -l 8G /swapfile
+sudo fallocate -l 2G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
@@ -281,8 +308,8 @@ trusted-snapshot-peer = seed1.viz.world:8092
 trusted-snapshot-peer = seed2.viz.world:8092
 trusted-snapshot-peer = rpc.viz.cx:8092
 allow-snapshot-serving = false
-snapshot-every-n-blocks = 1200
-snapshot-max-age-days = 10
+snapshot-every-n-blocks = 28800
+snapshot-max-age-days = 2
 dlt-block-log-max-blocks = 100000
 
 # ─── production safety ───────────────────────────────────────────────
@@ -315,6 +342,18 @@ that warning, you copied an old snippet.
 `seed2.viz.world` appears in the snapshot list but **not** in the p2p list. That
 asymmetry is deliberate: its `:8092` serves snapshots, its `:2001` does not
 accept peers. Do not "fix" it.
+
+::: warning Snapshot retention is by age only — there is no keep-N cap
+Snapshots on disk = cadence × retention, and nothing else limits it.
+`snapshot-every-n-blocks = 28800` is roughly one per day (28800 × 3 s), so with
+`snapshot-max-age-days = 2` you hold about two files. Drop the cadence to
+`1200` and you are asking for ~240 files at up to 2 GB each, which will fill any
+disk in this handbook's sizing table long before the age limit prunes anything.
+
+A validator does not need a deep local snapshot history. Two files cover a fast
+local restart; anything worse than that is a re-bootstrap from a trusted peer,
+which takes minutes (see Part 5, "Box loss").
+:::
 
 ### Start
 
@@ -629,9 +668,12 @@ The relay is the Part 2 deployment with these differences:
 - **`p2p-endpoint = 0.0.0.0:2001`**, plus `sudo ufw allow 2001/tcp`. This is the
   one place inbound p2p is correct.
 - **`allow-snapshot-serving = true`** if you want to serve snapshots to other
-  operators; add `sudo ufw allow 8092/tcp` with it.
+  operators; add `sudo ufw allow 8092/tcp` with it. This is the one change that
+  moves the disk figure — you are now keeping snapshots for others to fetch, so
+  budget 40 GB and keep an eye on `snapshot-max-age-days`.
 - **Add `network_broadcast_api` and the history plugins only if you serve API
-  clients.** They cost memory and disk; a pure relay does not need them.
+  clients.** They cost memory and disk, and they are what turns a 20 GB box into
+  a 50 GB+ one. A pure relay needs neither.
 - **Public RPC, if any, belongs behind a reverse proxy with TLS.** Never publish
   `:8090` directly.
 
