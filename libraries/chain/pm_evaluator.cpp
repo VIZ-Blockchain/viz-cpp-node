@@ -1643,10 +1643,14 @@ void pm_resolve_market_evaluator::do_apply(const pm_resolve_market_operation& o)
             ora.total_volume_resolved += mkt.bets_sum;
             if (late) ora.resolved_late_count++;
             // Running mean resolution latency over all resolves (n just incremented above).
+            // uint128 intermediate: avg_resolution_time (uint32) * (n-1) can overflow uint64
+            // once n grows large (e.g. ~4.3e9 markets), so accumulate in 128 bits.
             {
                 const uint64_t n = ora.markets_resolved;
-                ora.avg_resolution_time =
-                    (uint32_t)(((uint64_t)ora.avg_resolution_time * (n - 1) + rt) / n);
+                const uint64_t sum =
+                    ((fc::uint128_t((uint64_t)ora.avg_resolution_time) * (uint64_t)(n - 1)
+                      + fc::uint128_t(rt)) / n).lo;
+                ora.avg_resolution_time = (uint32_t)sum;
             }
             ora.resolution_time_hist[pm_rt_bucket(rt)] += share_type(1);   // P5 latency distribution
             ora.last_active_time = now;
