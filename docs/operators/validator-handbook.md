@@ -37,7 +37,7 @@ no archive — the config below keeps its whole footprint bounded.
 | | Validator | Keyless relay |
 |---|---|---|
 | vCPU | 2 | 2 |
-| RAM | 4 GB + 2 GB swap | 4 GB |
+| RAM | 4 GB + 2 GB swap | 4 GB + 2 GB swap |
 | Disk | 20 GB SSD | 20 GB SSD (40 GB if serving snapshots) |
 
 Where the disk goes, so you can check the numbers rather than trust them:
@@ -58,6 +58,10 @@ Do not undersize the RAM. Signing happens inside a 3-second slot; a node that
 swaps while producing misses the slot and reports `lag`. The 2 GB swap is a
 safety valve for the memory spike during snapshot import, not a substitute for
 RAM.
+
+Both profiles want that swap — a relay imports snapshots the same way, so it
+takes the same spike. The difference is only what swapping costs you: a relay
+that swaps gets slow, while a validator that swaps misses a block.
 
 Public RPC is a different machine with different economics — the history plugins
 store everything. See the sizing table in [Docker](../node/docker.md) for that
