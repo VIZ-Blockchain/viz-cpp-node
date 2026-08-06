@@ -56,7 +56,7 @@ You should see peer connections and block sync progress within a few minutes.
 
 | Variable | Purpose | Example |
 |----------|---------|----------|
-| `VIZD_WITNESS` | Validator name (if validator node) | `alice` |
+| `VIZD_WITNESS_NAME` | Validator name (if validator node) | `alice` |
 | `VIZD_PRIVATE_KEY` | Validator signing key (WIF) | `5J...` |
 
 ---
@@ -119,9 +119,9 @@ Minimum edits for a public node:
 ```ini
 # P2P
 p2p-endpoint = 0.0.0.0:2001
-p2p-seed-node = seed1.viz.world:2001
-p2p-seed-node = seed2.viz.world:2001
 p2p-seed-node = seed3.viz.world:2001
+p2p-seed-node = seed1.viz.world:2001
+p2p-seed-node = rpc.viz.cx:2001
 
 # RPC
 webserver-http-endpoint = 0.0.0.0:8090

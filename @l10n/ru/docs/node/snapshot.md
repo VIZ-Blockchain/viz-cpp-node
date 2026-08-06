@@ -123,7 +123,7 @@ vizd \
   --snapshot /data/snapshots/viz-snapshot.json \
   --plugin snapshot \
   --plugin p2p \
-  --p2p-seed-node seed1.viz.world:2001
+  --p2p-seed-node seed3.viz.world:2001
 ```
 
 Узел загружает состояние за секунды и начинает P2P-синхронизацию с высоты блока снимка.
@@ -286,9 +286,10 @@ snapshot-dir = /data/viz-snapshots
 
 ```ini
 plugin = snapshot
+trusted-snapshot-peer = seed3.viz.world:8092
 trusted-snapshot-peer = seed1.viz.world:8092
 trusted-snapshot-peer = seed2.viz.world:8092
-trusted-snapshot-peer = seed3.viz.world:8092
+trusted-snapshot-peer = rpc.viz.cx:8092
 sync-snapshot-from-trusted-peer = true
 ```
 
@@ -351,7 +352,7 @@ dlt-block-log-max-blocks = 100000
 
 shared-file-size = 4G
 plugin = p2p
-p2p-seed-node = seed1.viz.world:2001
+p2p-seed-node = seed3.viz.world:2001
 ```
 
 ---

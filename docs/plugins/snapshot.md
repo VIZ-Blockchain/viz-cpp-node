@@ -284,9 +284,10 @@ snapshot-dir = /data/snapshots
 
 ```ini
 plugin = snapshot
+trusted-snapshot-peer = seed3.viz.world:8092
 trusted-snapshot-peer = seed1.viz.world:8092
 trusted-snapshot-peer = seed2.viz.world:8092
-trusted-snapshot-peer = seed3.viz.world:8092
+trusted-snapshot-peer = rpc.viz.cx:8092
 sync-snapshot-from-trusted-peer = true
 ```
 

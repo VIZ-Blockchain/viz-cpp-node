@@ -21,7 +21,7 @@ Key settings:
 ```ini
 # P2P — allow public inbound connections for block propagation
 p2p-endpoint = 0.0.0.0:2001
-p2p-seed-node = seed1.viz.world:2001
+p2p-seed-node = seed3.viz.world:2001
 
 # RPC — bind to localhost for security (validators don't need public API)
 webserver-http-endpoint = 127.0.0.1:8090
@@ -86,7 +86,7 @@ docker run -d \
   --restart unless-stopped \
   -p 2001:2001 \
   -v /data/vizd:/var/lib/vizd \
-  -e VIZD_WITNESS=myvalidator \
+  -e VIZD_WITNESS_NAME=myvalidator \
   -e VIZD_PRIVATE_KEY=5Jxxx... \
   vizblockchain/vizd:latest
 ```

@@ -62,8 +62,9 @@ The entry script (`vizd.sh`) reads these environment variables:
 |----------|-------------|---------|
 | `VIZD_RPC_ENDPOINT` | Override HTTP RPC endpoint | `0.0.0.0:8090` |
 | `VIZD_P2P_ENDPOINT` | Override P2P endpoint | `0.0.0.0:2001` |
-| `VIZD_WITNESS` | Validator account name (enables block production) | `alice` |
+| `VIZD_WITNESS_NAME` | Validator account name (enables block production) | `alice` |
 | `VIZD_PRIVATE_KEY` | Validator signing key in WIF format | `5J...` |
+| `VIZD_EXTRA_OPTS` | Extra flags appended to the vizd command line | `--create-snapshot` |
 
 ---
 
@@ -85,7 +86,7 @@ docker run -d \
   --restart unless-stopped \
   -p 2001:2001 \
   -v /data/vizd:/var/lib/vizd \
-  -e VIZD_WITNESS=myvalidator \
+  -e VIZD_WITNESS_NAME=myvalidator \
   -e VIZD_PRIVATE_KEY=5Jxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
   vizblockchain/vizd:latest
 ```

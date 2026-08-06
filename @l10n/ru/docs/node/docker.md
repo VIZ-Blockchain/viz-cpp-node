@@ -62,8 +62,9 @@ docker run -d \
 |------------|----------|--------|
 | `VIZD_RPC_ENDPOINT` | Переопределить HTTP RPC endpoint | `0.0.0.0:8090` |
 | `VIZD_P2P_ENDPOINT` | Переопределить P2P endpoint | `0.0.0.0:2001` |
-| `VIZD_WITNESS` | Имя аккаунта валидатора (включает производство блоков) | `alice` |
+| `VIZD_WITNESS_NAME` | Имя аккаунта валидатора (включает производство блоков) | `alice` |
 | `VIZD_PRIVATE_KEY` | Подписывающий ключ валидатора в формате WIF | `5J...` |
+| `VIZD_EXTRA_OPTS` | Дополнительные флаги командной строки vizd | `--create-snapshot` |
 
 ---
 
@@ -85,7 +86,7 @@ docker run -d \
   --restart unless-stopped \
   -p 2001:2001 \
   -v /data/vizd:/var/lib/vizd \
-  -e VIZD_WITNESS=myvalidator \
+  -e VIZD_WITNESS_NAME=myvalidator \
   -e VIZD_PRIVATE_KEY=5Jxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
   vizblockchain/vizd:latest
 ```
