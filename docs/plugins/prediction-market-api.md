@@ -75,8 +75,12 @@ build its filter chips without hard-coding a taxonomy. The meta object:
 | `get_account_leverage_positions` | `account, from, limit` | `pm_leverage_position_object[]` |
 | `get_market_leverage_positions` | `market_id, from, limit` | `pm_leverage_position_object[]` |
 | `get_creator_ban` | `account` | `pm_creator_ban_object` (or error if none) |
-| `get_oracle` | `owner` | `pm_oracle` (object + `reliability_score`) |
+| `get_oracle` | `owner` | `pm_oracle` (object + `reliability_score` + workload/latency reads) |
 | `list_oracles` | `from, limit` | `pm_oracle_object[]` |
+| `list_markets_in_dispute_window` | `oracle, from, limit` | `pm_market_card[]` |
+| `list_oracle_disputes` | `oracle, from, limit` | `pm_oracle_dispute[]` (computed) |
+
+`list_markets_in_dispute_window` drills into the `markets_in_dispute_window` gauge: this oracle's resolved (`status 3`, `payout_status 1`) markets that still carry **no dispute row** — i.e. the ones a challenger could still dispute within `pm_dispute_grace_sec` of the announcement. `list_oracle_disputes` drills into the two dispute gauges: this oracle's currently **open** disputes (`status 0`), each tagged with a `stage` — `awaiting_response` (the oracle has not answered yet) or `awaiting_decision` (answered, now with the resolver/committee) — derived from `oracle_response_time`, plus a `market_card` for rendering. Both walk only the oracle's own set (`by_oracle_status` / `by_auto_close`), so they stay O(this oracle), not a global scan. They pair with the stored gauges on `get_oracle` (below): the gauge is the count, these methods are the list.
 
 ### Leverage previews (Boost)
 
@@ -140,7 +144,22 @@ These wrap raw objects with values derived at read time (non-consensus).
 ```
 `expected_payout` byte-mirrors `settle_market`: for an active bet it is the conditional payout if the chosen side wins (`amount + winners_pool × weight / Σweight − time_penalty`); once settled it is the realized `resolved_amount`.
 
-**`pm_oracle`** — oracle object + `reliability_score` (bp `[0..10000]`, API heuristic blending the resolution-success ratio with the dispute-win ratio, minus a per-ban penalty). Non-consensus.
+**`pm_oracle`** — the raw `pm_oracle_object` plus read-time computed fields. All non-consensus (display only; never gate consensus).
+
+- `reliability_score` — bp `[0..10000]`. **v2.1** blends four reputation ratios, then docks decayed penalty stamps and bans, then confidence-shrinks a thin track record toward a neutral prior:
+  ```
+  accuracy    = markets_resolved / (markets_resolved + missed_count)         // resolved vs missed-deadline
+  verdicts    = disputes_won / (disputes_won + disputes_lost)                // dispute outcomes
+  responsive  = (disputes_received − dispute_responses_missed) / disputes_received
+  timely      = (markets_resolved − resolved_late_count) / markets_resolved  // on-time vs past-deadline resolves
+  score       = accuracy·40% + verdicts·30% + responsive·15% + timely·15%
+  score      −= penalty_stamps × 300bp   (halved per 10 days since last_penalty_stamp_time)
+  score      −= bans_received × 1500bp
+  if markets_resolved < 20: shrink toward a 6000 prior      // unproven oracles neither sit at 100 nor crater
+  ```
+  Each ratio defaults to a full `10000` until the oracle has the relevant history (optimistic when unproven). `timely` is the P5 lateness signal: a late-but-delivered resolve still counts as `markets_resolved` (so it earns full `accuracy`), and `timely` is what separates a chronically-late oracle from a punctual one. `avg_resolution_time` is deliberately **not** scored — it measures latency from betting close, not deadline overrun, and can't be normalized without the market length. Weights are non-consensus; tune freely.
+- **Workload gauges** (stored on `pm_oracle_object`, O(1)-maintained across the op/cron transitions, seeded once on upgrade): `markets_in_dispute_window`, `disputes_awaiting_response`, `disputes_awaiting_decision` — the live counts an Oracle Console badges; drill into the lists with `list_markets_in_dispute_window` / `list_oracle_disputes`.
+- **Computed-on-read** (time-dependent, so not stored): `markets_awaiting_resolution` + `oldest_unresolved_age` (this oracle's `status 1` markets past betting close, and the age of the oldest — one `by_oracle_status` walk), and `resolution_time_p50` / `resolution_time_p95` (percentiles read off the oracle's 8-bucket latency histogram `resolution_time_hist`, upper bucket edge where the cumulative count first crosses the percentile).
 
 **`pm_market_weight_sums`** — per side/outcome `bets_sum` and `weight_sum` (weight sums are computed by scanning bets, since they are not stored):
 ```

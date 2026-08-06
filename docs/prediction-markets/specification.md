@@ -714,95 +714,131 @@ Market finalized: status=3, payout_status=2.
 
 ## 14. Oracle Reputation Scoring
 
-### Raw Metrics (14 counters per oracle)
+### Raw Metrics (stored on `pm_oracle_object`)
 
-| Metric | Type | Source |
+Reputation counters and telemetry (exact field names as reflected on the object):
+
+| Field | Type | Source |
 |--------|------|--------|
 | `markets_accepted` | counter | oracle-accept-market |
 | `markets_resolved` | counter | resolve-market |
-| `markets_no_contest` | counter | oracle-no-contest |
-| `markets_missed` | counter | cron (missed deadline) |
+| `no_contest_count` | counter | oracle-no-contest |
+| `missed_count` | counter | cron (missed deadline) |
 | `disputes_received` | counter | create-dispute |
 | `disputes_lost` | counter | resolve-dispute (status=1) |
 | `disputes_won` | counter | resolve-dispute (status=2) |
 | `disputes_auto_closed` | counter | cron (14-day auto-close) |
-| `dispute_responses_missed` | counter | cron (12h response deadline) |
-| `total_volume_resolved` | mVIZ | resolve-market (sum of bets_sum) |
+| `dispute_responses_missed` | counter | cron (12 h response deadline) |
+| `total_volume_resolved` | mVIZ | resolve-market (Σ `bets_sum`) |
 | `total_insurance_slashed` | mVIZ | all penalty events |
-| `avg_resolution_time` | seconds | resolve-market |
+| `avg_resolution_time` | seconds | resolve-market (running mean of betting-close→resolve latency) |
+| `resolved_late_count` | counter | resolve-market (`now > result_expiration`) — feeds `timely` |
+| `resolution_time_hist` | 8×counter | resolve-market (latency histogram, guaranteed zero-init `fc::array`) |
+| `penalty_stamps` | counter | slash events (decays in the score) |
+| `last_penalty_stamp_time` | timestamp | most recent stamp (10-day decay anchor) |
 | `bans_received` | counter | resolve-dispute |
+| `active_markets` | gauge | O(1) count of `status 1` markets |
+| `markets_in_dispute_window` | gauge | resolved+disputable markets (O(1)) |
+| `disputes_awaiting_response` | gauge | open disputes not yet answered (O(1)) |
+| `disputes_awaiting_decision` | gauge | open disputes answered, pending decision (O(1)) |
 | `active_since` | timestamp | register-oracle |
 | `last_active_time` | timestamp | accept/resolve/no-contest |
 
+The four gauges are seeded once on the upgrade block, then maintained incrementally at every transition;
+they are display-only and never gate consensus. See §14 → *Workload Gauges & Latency Telemetry*.
+
 ### Derived Rates
 
-Denominator: `total_outcomes = markets_resolved + markets_no_contest + markets_missed`
+Denominator: `total_outcomes = markets_resolved + no_contest_count + missed_count`
 
 | Rate | Formula |
 |------|---------|
 | `resolution_rate` | `markets_resolved / total_outcomes` |
 | `dispute_loss_rate` | `disputes_lost / disputes_received` |
-| `no_contest_rate` | `markets_no_contest / total_outcomes` |
-| `deadline_miss_rate` | `markets_missed / total_outcomes` |
+| `no_contest_rate` | `no_contest_count / total_outcomes` |
+| `deadline_miss_rate` | `missed_count / total_outcomes` |
 | `dispute_response_rate` | `1 − (dispute_responses_missed / disputes_received)` |
+| `on_time_rate` | `(markets_resolved − resolved_late_count) / markets_resolved` |
 
-### Reliability Score (0–100)
+### Reliability Score (v2.1 — basis points, 0–10000)
 
-```
-reliability_score = clamp(0, 100,
-    BASE_SCORE
-    − W_DISPUTE_LOSS   × dispute_loss_rate    × 100
-    − W_NO_CONTEST     × excess_no_contest    × 100
-    − W_DEADLINE_MISS   × deadline_miss_rate   × 100
-    − W_NO_RESPONSE     × (1 − dispute_response_rate) × 100
-    + W_VOLUME_BONUS    × volume_tier
-    + W_EXPERIENCE      × experience_tier × freshness_multiplier
-    − W_BAN_PENALTY     × bans_received
-)
-```
-
-Where `excess_no_contest = max(0, no_contest_rate − 0.10)`.
-
-### Weight Defaults
-
-| Weight | Value |
-|--------|-------|
-| BASE_SCORE | 50 |
-| W_DISPUTE_LOSS | 0.40 |
-| W_NO_CONTEST | 0.10 |
-| W_DEADLINE_MISS | 0.20 |
-| W_NO_RESPONSE | 0.15 |
-| W_VOLUME_BONUS | 0–25 (tiered: ≥10K→+5, ≥100K→+10, ≥500K→+15, ≥1M→+20, ≥5M→+25) |
-| W_EXPERIENCE | 0–25 (tiered: ≥7d→+5, ≥30d→+10, ≥90d→+15, ≥180d→+20, ≥365d→+25) |
-| W_BAN_PENALTY | 15 per ban |
-
-### Freshness Decay
-
-| Days since last active | Multiplier |
-|----------------------|-----------|
-| ≤ 30 | 1.00 |
-| 31–90 | 0.75 |
-| 91–180 | 0.50 |
-| > 180 | 0.25 |
-
-### Composite Trust Score
+The shipped score is a **non-consensus API heuristic** (display only — it never gates consensus, so
+its weights are freely tunable). It is computed on read in `reliability_score()` (the
+`prediction_market_api` plugin), **not stored**, and returned on the `pm_oracle` DTO from `get_oracle`.
+It blends four reputation ratios, docks time-decayed penalty stamps and bans, then confidence-shrinks a
+thin track record toward a neutral prior:
 
 ```
-trust_score = reliability_score × risk_factor
+accuracy    = markets_resolved / (markets_resolved + missed_count)          // resolved vs missed-deadline
+verdicts    = disputes_won / (disputes_won + disputes_lost)                 // dispute outcomes upheld
+responsive  = (disputes_received − dispute_responses_missed) / disputes_received
+timely      = (markets_resolved − resolved_late_count) / markets_resolved   // on-time vs past-deadline resolves
+
+score       = accuracy·40% + verdicts·30% + responsive·15% + timely·15%     // each ratio in bp [0..10000]
+score      −= penalty_stamps × 300 bp     // halved per 10 days since last_penalty_stamp_time (decay, ≤16 halvings)
+score      −= bans_received  × 1500 bp
+if markets_resolved < 20:                 // unproven oracle: neither a hard 100 nor a crater on one dispute
+    score = (score × n + 6000 × (20 − n)) / 20      // n = markets_resolved; shrink toward 6000 prior
+score       = clamp(0, 10000, score)
 ```
 
-| Risk score (insurance/bets) | risk_factor |
-|---------------------------|-------------|
-| ≥ 3.0× | 1.00 |
-| ≥ 2.0× | 0.95 |
-| ≥ 1.0× | 0.85 |
-| < 1.0× | 0.70 |
+Each ratio defaults to a full `10000` until the oracle has the relevant history (optimistic when
+unproven). **`timely`** is the P5 lateness signal (variant A): a late-but-delivered resolve still
+increments `markets_resolved` — so it earns full `accuracy` credit — and `timely` is what separates a
+chronically-late oracle from a punctual one (max −1500 bp for an always-late oracle at 15% weight).
+`avg_resolution_time` is deliberately **not** scored: it measures latency from betting close, not
+deadline overrun, and cannot be normalized without the market length. Weight defaults:
+
+| Component | Weight |
+|-----------|--------|
+| `accuracy` | 40% |
+| `verdicts` | 30% |
+| `responsive` | 15% |
+| `timely` | 15% |
+| penalty stamp | −300 bp each (10-day half-life) |
+| ban | −1500 bp each |
+| confidence prior | 6000 bp until `markets_resolved` ≥ 20 |
+
+Clients render the score as `reliability_score / 100` (percent). v1 (used through early testnet) blended
+only the success and dispute-win ratios minus a ban dock; v2 added responsiveness, decayed penalty
+stamps and confidence shrink; v2.1 added the `timely` factor and rebalanced the weights.
+
+### Workload Gauges & Latency Telemetry
+
+Per-oracle operational metrics exposed via `get_oracle` (and drill-down list methods) so an Oracle
+Console shows what an oracle owes *now* without paging its whole market set. Also non-consensus.
+
+**Stored gauges** on `pm_oracle_object` — maintained O(1) at every state transition (op- and cron-driven)
+and seeded once on the upgrade block:
+
+| Gauge | Meaning | Drill-down |
+|-------|---------|-----------|
+| `markets_in_dispute_window` | resolved markets (`status 3`, `payout 1`) still disputable, no dispute row yet | `list_markets_in_dispute_window(oracle, from, limit)` |
+| `disputes_awaiting_response` | open disputes the oracle has not answered | `list_oracle_disputes` → `stage = awaiting_response` |
+| `disputes_awaiting_decision` | open disputes answered, now with the resolver/committee | `list_oracle_disputes` → `stage = awaiting_decision` |
+
+**Computed on read** (time-dependent, cheaper to derive than to store):
+
+| Field | Meaning |
+|-------|---------|
+| `markets_awaiting_resolution` | this oracle's `status 1` markets past betting close (a `by_oracle_status` walk) |
+| `oldest_unresolved_age` | seconds since betting close of the oldest such market |
+| `resolution_time_p50` / `resolution_time_p95` | latency percentiles read off the 8-bucket `resolution_time_hist` |
+
+**Latency accounting** at resolve (`markets_resolved` just incremented):
+`resolved_late_count += (now > result_expiration)`; `avg_resolution_time` running-mean of
+`rt = now − betting_expiration`; `resolution_time_hist[bucket(rt)] += 1` over 8 buckets
+(≤1h, ≤6h, ≤24h, ≤3d, ≤7d, ≤14d, ≤30d, >30d). Open-ended markets contribute `rt = 0`.
+
+**Dispute-lifecycle audit (P1):** opening a dispute emits the `pm_dispute_opened` virtual op, and
+`pm_dispute_finalize` / `pm_dispute_auto_close` carry the `oracle` field — so an oracle's dispute
+history (and the disputer's) is reconstructable from `account_history` alone.
 
 ### New Oracle Detection
 
-`total_outcomes < 5` → `is_new = true`. Distinct badge in UI.
-
-Score computed on read via `compute_oracle_reliability_score()`, not stored.
+`markets_resolved < 20` is treated as an unproven oracle: the confidence shrink above pulls the score
+toward the 6000 prior (UI may badge it as new). All scores and the workload/latency fields are computed
+on read; only the raw counters and stored gauges live on `pm_oracle_object`.
 
 ---
 
