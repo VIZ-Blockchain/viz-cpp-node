@@ -57,6 +57,7 @@ set(SCENARIO_SOURCES
     scenarios/test_determinism_replay.cpp
     scenarios/test_equivocation.cpp
     scenarios/test_wedge_predicate.cpp
+    scenarios/test_routable_endpoint.cpp
 )
 
 add_executable(consensus_sim_tests ${SCENARIO_SOURCES})
@@ -64,6 +65,7 @@ add_executable(consensus_sim_tests ${SCENARIO_SOURCES})
 target_link_libraries(consensus_sim_tests
     PRIVATE consensus_sim_harness
             graphene::network         # test_wedge_predicate.cpp: dlt_p2p_node::is_wedged
+                                      # test_routable_endpoint.cpp: is_routable_endpoint
             Boost::unit_test_framework
 )
 
