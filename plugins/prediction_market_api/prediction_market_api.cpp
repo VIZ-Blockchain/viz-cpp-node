@@ -656,6 +656,35 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
+    // list_markets_in_dispute_window(oracle, from, limit): this oracle's resolved(3) markets whose
+    // payout is still pending(1) and that carry NO dispute row yet — i.e. still inside the window
+    // where a dispute can be filed. Mirrors the stored markets_in_dispute_window gauge on the oracle.
+    // Walks by_oracle_status(oracle, 3) (this oracle's resolved set only), filtering payout==1 and
+    // absence of a dispute; far cheaper than scanning the global market set.
+    DEFINE_API(prediction_market_api, list_markets_in_dispute_window) {
+        CHECK_ARG_MIN_SIZE(3, 3)
+        auto oracle = args.args->at(0).as<account_name_type>();
+        auto from   = args.args->at(1).as<uint32_t>();
+        auto limit  = args.args->at(2).as<uint32_t>();
+        FC_ASSERT(limit <= 1000);
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            std::vector<fc::variant> result;
+            result.reserve(limit);
+            const auto& midx = db.get_index<pm_market_index>().indices().get<by_oracle_status>();
+            const auto& didx = db.get_index<pm_dispute_index>().indices().get<by_market>();
+            auto itr = midx.lower_bound(boost::make_tuple(oracle, (int8_t)3, pm_market_id_type()));
+            for (; itr != midx.end() && itr->oracle == oracle && itr->status == 3; ++itr) {
+                if (itr->payout_status != 1) continue;
+                if (didx.find(itr->id) != didx.end()) continue;   // disputed → not in the disputable window
+                if (from > 0) { --from; continue; }
+                result.push_back(market_card(db, *itr));
+                if (result.size() >= limit) break;
+            }
+            return result;
+        });
+    }
+
     DEFINE_API(prediction_market_api, list_markets_by_creator) {
         CHECK_ARG_MIN_SIZE(3, 3)
         auto creator = args.args->at(0).as<account_name_type>();
@@ -977,6 +1006,49 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                     ? (int32_t)((fc::uint128_t((uint64_t)winning) * 10000 / fc::uint128_t((uint64_t)max_rshares)).lo) : 0;
             }
             return out;
+        });
+    }
+
+    // list_oracle_disputes(oracle, from, limit): this oracle's currently OPEN disputes (status 0),
+    // each tagged with its `stage` — "awaiting_response" (oracle has not answered) or
+    // "awaiting_decision" (oracle answered, committee/resolver verdict pending) — mirroring the stored
+    // disputes_awaiting_response / disputes_awaiting_decision gauges. Disputes are indexed by market,
+    // not oracle, so we walk the small open-dispute set via by_auto_close(status 0) and keep those
+    // whose market names this oracle. Each row carries the enriched market card for the UI.
+    DEFINE_API(prediction_market_api, list_oracle_disputes) {
+        CHECK_ARG_MIN_SIZE(3, 3)
+        auto oracle = args.args->at(0).as<account_name_type>();
+        auto from   = args.args->at(1).as<uint32_t>();
+        auto limit  = args.args->at(2).as<uint32_t>();
+        FC_ASSERT(limit <= 1000);
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            std::vector<fc::variant> result;
+            result.reserve(limit);
+            const auto& didx  = db.get_index<pm_dispute_index>().indices().get<by_auto_close>();
+            const auto& mbyid = db.get_index<pm_market_index>().indices().get<by_id>();
+            auto itr = didx.lower_bound(boost::make_tuple((uint8_t)0, time_point_sec(0), pm_dispute_id_type()));
+            for (; itr != didx.end() && itr->status == 0; ++itr) {
+                auto mit = mbyid.find(itr->market);
+                if (mit == mbyid.end() || mit->oracle != oracle) continue;
+                if (from > 0) { --from; continue; }
+                fc::mutable_variant_object o;
+                o["market"]                   = market_card(db, *mit);
+                o["market_id"]                = mit->id._id;
+                o["disputer"]                 = itr->disputer;
+                o["proposed_outcome"]         = itr->proposed_outcome;
+                o["filed_time"]               = itr->filed_time;
+                o["oracle_response_deadline"] = itr->oracle_response_deadline;
+                o["oracle_response_time"]     = itr->oracle_response_time;
+                o["voting_end_time"]          = itr->voting_end_time;
+                o["auto_close_time"]          = itr->auto_close_time;
+                o["dispute_mode"]             = itr->dispute_mode;
+                o["stage"]                    = (itr->oracle_response_time == fc::time_point_sec())
+                                                  ? "awaiting_response" : "awaiting_decision";
+                result.push_back(fc::variant(std::move(o)));
+                if (result.size() >= limit) break;
+            }
+            return result;
         });
     }
 
