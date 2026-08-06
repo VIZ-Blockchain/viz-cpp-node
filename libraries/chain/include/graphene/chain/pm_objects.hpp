@@ -4,6 +4,7 @@
 #include <graphene/chain/chain_object_types.hpp>
 
 #include <fc/uint128_t.hpp>
+#include <fc/array.hpp>
 #include <boost/multi_index/composite_key.hpp>
 
 // HF14 Prediction Markets (Onix) — consensus ChainBase objects. All financial sums are
@@ -88,6 +89,12 @@ namespace graphene { namespace chain {
             // betting close to resolution. Oldest-unresolved age and median/p95 latency are exposed
             // via the prediction_market_api (computed on read / histogram — see P5).
             uint32_t          resolved_late_count = 0;
+            // Resolution-latency histogram (P5 pt.2): 8 buckets by seconds from betting close to
+            // resolve — (≤1h, ≤6h, ≤24h, ≤3d, ≤7d, ≤14d, ≤30d, >30d]; open-ended resolves count as 0
+            // (bucket 0), matching avg_resolution_time. share_type (not uint32) so the fc::array is
+            // guaranteed zero-initialized — the generic fc::array<uint32_t> ctor leaves data
+            // indeterminate, which would be non-deterministic. p50/p95 are derived on read in the API.
+            fc::array<share_type, 8> resolution_time_hist;
         };
 
         struct by_owner;
@@ -775,7 +782,7 @@ FC_REFLECT((graphene::chain::pm_oracle_object),
     (avg_resolution_time)(penalty_stamps)(bans_received)(last_penalty_stamp_time)
     (auto_accept_creator)(auto_accept_resolver)(auto_accept)(banned_by)(active_markets)
     (markets_in_dispute_window)(disputes_awaiting_response)(disputes_awaiting_decision)
-    (resolved_late_count))
+    (resolved_late_count)(resolution_time_hist))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_oracle_object, graphene::chain::pm_oracle_index)
 
 FC_REFLECT((graphene::chain::pm_market_object),

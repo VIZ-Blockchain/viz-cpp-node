@@ -114,6 +114,13 @@ namespace {
             -1);
     }
 
+    // Resolution-latency histogram bucket for rt seconds — 8 buckets (≤1h,≤6h,≤24h,≤3d,≤7d,≤14d,≤30d,>30d).
+    inline int pm_rt_bucket(uint64_t rt) {
+        static const uint64_t ub[7] = {3600u, 21600u, 86400u, 259200u, 604800u, 1209600u, 2592000u};
+        for (int i = 0; i < 7; ++i) if (rt <= ub[i]) return i;
+        return 7;
+    }
+
     // Pay queued lazy-pool withdrawals FIFO (oldest id first) from whatever is liquid in
     // free_balance right now. Each request is paid in full or in part; when free is exhausted we
     // stop. Called at every point capital returns to free_balance (LP return, deposit, leverage
@@ -1641,6 +1648,7 @@ void pm_resolve_market_evaluator::do_apply(const pm_resolve_market_operation& o)
                 ora.avg_resolution_time =
                     (uint32_t)(((uint64_t)ora.avg_resolution_time * (n - 1) + rt) / n);
             }
+            ora.resolution_time_hist[pm_rt_bucket(rt)] += share_type(1);   // P5 latency distribution
             ora.last_active_time = now;
         });
 }

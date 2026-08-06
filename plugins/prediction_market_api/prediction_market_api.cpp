@@ -111,6 +111,21 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             return r;
         }
 
+        // p50/p95 resolution latency (seconds) from the oracle's 8-bucket histogram: the UPPER
+        // boundary of the bucket where the cumulative count first reaches the target percentile. The
+        // open top bucket (>30d) reports its lower edge (2592000) as a floor. 0 if no resolutions yet.
+        uint32_t rt_percentile(const pm_oracle_object& o, int pct) {
+            static const uint32_t ub[8] = {3600u,21600u,86400u,259200u,604800u,1209600u,2592000u,2592000u};
+            uint64_t total = 0;
+            for (int i = 0; i < 8; ++i) total += (uint64_t)o.resolution_time_hist[i].value;
+            if (total == 0) return 0;
+            uint64_t target = (total * (uint64_t)pct + 99) / 100;   // ceil(total*pct/100)
+            if (target == 0) target = 1;
+            uint64_t cum = 0;
+            for (int i = 0; i < 8; ++i) { cum += (uint64_t)o.resolution_time_hist[i].value; if (cum >= target) return ub[i]; }
+            return ub[7];
+        }
+
         // Parimutuel payout this bet would receive if its side wins (or its realized
         // payout once settled). Byte-mirrors settle_market() in pm_evaluator.cpp.
         share_type expected_payout(const database& db, const pm_bet_object& bet,
@@ -909,7 +924,8 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             FC_ASSERT(itr != idx.end(), "Oracle not found");
             auto aw = oracle_awaiting(db, itr->owner);
             return pm_oracle_api_object{pm_oracle_object(*itr), reliability_score(*itr, db.head_block_time()),
-                                        aw.count, aw.oldest_age};
+                                        aw.count, aw.oldest_age,
+                                        rt_percentile(*itr, 50), rt_percentile(*itr, 95)};
         });
     }
 
@@ -1612,7 +1628,8 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
                 if (oit != oidx.end()) {
                     auto oaw = oracle_awaiting(db, oit->owner);
                     oracle = pm_oracle_api_object{pm_oracle_object(*oit), reliability_score(*oit, db.head_block_time()),
-                                                  oaw.count, oaw.oldest_age};
+                                                  oaw.count, oaw.oldest_age,
+                                                  rt_percentile(*oit, 50), rt_percentile(*oit, 95)};
                 }
             }
 

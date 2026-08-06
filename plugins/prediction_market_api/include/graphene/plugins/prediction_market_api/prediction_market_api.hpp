@@ -28,6 +28,10 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         // Age in seconds of this oracle's oldest still-unresolved market (longest time past betting
         // close with no resolution). 0 if none. Time-dependent → computed on read (P5).
         uint32_t         oldest_unresolved_age = 0;
+        // Median / 95th-percentile resolution latency (seconds), derived on read from the oracle's
+        // resolution_time_hist buckets. 0 until it has resolved at least one market (P5).
+        uint32_t         resolution_time_p50 = 0;
+        uint32_t         resolution_time_p95 = 0;
     };
 
     // A bet plus the parimutuel payout it would receive if its side wins (or its
@@ -301,7 +305,8 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
 } } } // graphene::plugins::prediction_market_api
 
 FC_REFLECT((graphene::plugins::prediction_market_api::pm_oracle_api_object),
-    (oracle)(reliability_score)(markets_awaiting_resolution)(oldest_unresolved_age))
+    (oracle)(reliability_score)(markets_awaiting_resolution)(oldest_unresolved_age)
+    (resolution_time_p50)(resolution_time_p95))
 FC_REFLECT((graphene::plugins::prediction_market_api::pm_position_api_object),
     (bet)(expected_payout)(market_status)(resolved_outcome))
 FC_REFLECT((graphene::plugins::prediction_market_api::pm_weight_entry),
