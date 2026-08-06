@@ -820,6 +820,19 @@ inline uint32_t import_pm_oracles(graphene::chain::database& db, const fc::varia
                 obj.auto_accept_resolver = v["auto_accept_resolver"].as<account_name_type>();
             if (v.get_object().contains("auto_accept"))
                 obj.auto_accept          = v["auto_accept"].as<bool>();
+            // Oracle-metrics fields (P1-P5, display-only): forward-compatible import so a snapshot
+            // taken after the upgrade keeps the gauges/histogram; old snapshots (fields absent)
+            // stay zeroed and pm_seed_oracle_gauges() re-derives the gauges on the next block.
+            if (v.get_object().contains("markets_in_dispute_window"))
+                obj.markets_in_dispute_window  = static_cast<uint32_t>(v["markets_in_dispute_window"].as_uint64());
+            if (v.get_object().contains("disputes_awaiting_response"))
+                obj.disputes_awaiting_response = static_cast<uint32_t>(v["disputes_awaiting_response"].as_uint64());
+            if (v.get_object().contains("disputes_awaiting_decision"))
+                obj.disputes_awaiting_decision = static_cast<uint32_t>(v["disputes_awaiting_decision"].as_uint64());
+            if (v.get_object().contains("resolved_late_count"))
+                obj.resolved_late_count  = static_cast<uint32_t>(v["resolved_late_count"].as_uint64());
+            if (v.get_object().contains("resolution_time_hist"))
+                obj.resolution_time_hist = v["resolution_time_hist"].as<fc::array<share_type, 8>>();
         });
         ++count;
     }
