@@ -57,7 +57,7 @@ docker logs -f vizd
 | 变量 | 用途 | 示例 |
 |------|------|------|
 | `VIZD_SEED_NODES` | 覆盖默认种子节点 | `node1.viz.world:2001` |
-| `VIZD_WITNESS` | 验证者名称（验证者节点时使用） | `alice` |
+| `VIZD_WITNESS_NAME` | 验证者名称（验证者节点时使用） | `alice` |
 | `VIZD_PRIVATE_KEY` | 验证者签名密钥（WIF 格式） | `5J...` |
 
 ---

@@ -86,7 +86,7 @@ docker run -d \
   --restart unless-stopped \
   -p 2001:2001 \
   -v /data/vizd:/var/lib/vizd \
-  -e VIZD_WITNESS=myvalidator \
+  -e VIZD_WITNESS_NAME=myvalidator \
   -e VIZD_PRIVATE_KEY=5Jxxx... \
   vizblockchain/vizd:latest
 ```

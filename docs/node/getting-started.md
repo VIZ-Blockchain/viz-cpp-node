@@ -56,7 +56,7 @@ You should see peer connections and block sync progress within a few minutes.
 
 | Variable | Purpose | Example |
 |----------|---------|----------|
-| `VIZD_WITNESS` | Validator name (if validator node) | `alice` |
+| `VIZD_WITNESS_NAME` | Validator name (if validator node) | `alice` |
 | `VIZD_PRIVATE_KEY` | Validator signing key (WIF) | `5J...` |
 
 ---

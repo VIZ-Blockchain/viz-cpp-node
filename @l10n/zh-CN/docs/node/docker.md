@@ -62,8 +62,9 @@ docker run -d \
 |------|------|------|
 | `VIZD_RPC_ENDPOINT` | 覆盖 HTTP RPC 端点 | `0.0.0.0:8090` |
 | `VIZD_P2P_ENDPOINT` | 覆盖 P2P 端点 | `0.0.0.0:2001` |
-| `VIZD_WITNESS` | 验证者账户名（启用区块生产） | `alice` |
+| `VIZD_WITNESS_NAME` | 验证者账户名（启用区块生产） | `alice` |
 | `VIZD_PRIVATE_KEY` | WIF 格式的验证者签名密钥 | `5J...` |
+| `VIZD_EXTRA_OPTS` | 追加到 vizd 命令行的额外参数 | `--create-snapshot` |
 
 ---
 
@@ -85,7 +86,7 @@ docker run -d \
   --restart unless-stopped \
   -p 2001:2001 \
   -v /data/vizd:/var/lib/vizd \
-  -e VIZD_WITNESS=myvalidator \
+  -e VIZD_WITNESS_NAME=myvalidator \
   -e VIZD_PRIVATE_KEY=5Jxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
   vizblockchain/vizd:latest
 ```
