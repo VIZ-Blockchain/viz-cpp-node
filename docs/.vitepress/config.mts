@@ -74,6 +74,9 @@ interface SidebarLabels {
   databaseSchema: string;
   dltArchitecture: string;
   hardforkManagement: string;
+  operators: string;
+  validatorHandbook: string;
+  boostUpgrade: string;
 }
 
 const en: SidebarLabels = {
@@ -146,6 +149,9 @@ const en: SidebarLabels = {
   databaseSchema: 'Database Schema',
   dltArchitecture: 'DLT Architecture',
   hardforkManagement: 'Hardfork Management',
+  operators: 'Operators',
+  validatorHandbook: 'Validator Handbook',
+  boostUpgrade: 'Boost 1.9x Upgrade',
 };
 
 const ru: SidebarLabels = {
@@ -218,6 +224,9 @@ const ru: SidebarLabels = {
   databaseSchema: 'Схема базы данных',
   dltArchitecture: 'Архитектура DLT',
   hardforkManagement: 'Управление хардфорками',
+  operators: 'Операторам',
+  validatorHandbook: 'Справочник оператора валидатора',
+  boostUpgrade: 'Переход на Boost 1.9x',
 };
 
 const zhCN: SidebarLabels = {
@@ -290,18 +299,14 @@ const zhCN: SidebarLabels = {
   databaseSchema: '数据库架构',
   dltArchitecture: 'DLT 架构',
   hardforkManagement: '硬分叉管理',
+  operators: '运维',
+  validatorHandbook: '验证者运维手册',
+  boostUpgrade: '升级到 Boost 1.9x',
 };
 
 // ─── Build sidebar from labels ──────────────────────────────────────────────
 
-// `showOperators` is English-only on purpose: @l10n has no operators/
-// translations, so emitting the group for ru/zh-CN would produce sidebar
-// entries that 404. Flip it on for a locale once its translations land.
-function buildSidebar(
-  t: SidebarLabels,
-  prefix: string,
-  showOperators = false,
-): DefaultTheme.SidebarItem[] {
+function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarItem[] {
   const p = (path: string) => `${prefix}${path}`;
   return [
     {
@@ -407,6 +412,13 @@ function buildSidebar(
       ],
     },
     {
+      text: t.operators,
+      items: [
+        { text: t.validatorHandbook, link: p('/operators/validator-handbook') },
+        { text: t.boostUpgrade, link: p('/operators/boost-1.9x-upgrade') },
+      ],
+    },
+    {
       text: t.development,
       items: [
         { text: t.buildingDev, link: p('/development/building') },
@@ -424,17 +436,6 @@ function buildSidebar(
         { text: t.hardforkManagement, link: p('/advanced/hardfork-management') },
       ],
     },
-    ...(showOperators
-      ? [
-          {
-            text: 'Operators',
-            items: [
-              { text: 'Validator Handbook', link: p('/operators/validator-handbook') },
-              { text: 'Boost 1.9x Upgrade', link: p('/operators/boost-1.9x-upgrade') },
-            ],
-          },
-        ]
-      : []),
   ];
 }
 
@@ -484,7 +485,7 @@ export default defineConfig({
       lang: 'en-US',
       themeConfig: {
         nav: localizedNav('', 'Introduction', 'Run a Node', 'Protocol', 'API'),
-        sidebar: buildSidebar(en, '', true),
+        sidebar: buildSidebar(en, ''),
       },
     },
     ru: {
