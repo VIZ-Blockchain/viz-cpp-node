@@ -494,7 +494,7 @@ chmod 700 /opt/vizd/health.sh
 
 And the cron entry (`crontab -e` as the `viz` user):
 
-```cron
+```text
 */15 * * * * /opt/vizd/health.sh >> /opt/vizd/health.log 2>&1
 ```
 
