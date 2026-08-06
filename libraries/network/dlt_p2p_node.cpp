@@ -310,10 +310,12 @@ static dlt_hello_message unpack_hello_compat(const message& msg) {
 // This correctly handles multiple nodes behind the same NAT (same IP, different
 // ports) — each node has a unique keypair, so only true duplicates are rejected.
 // Returns INVALID_PEER_ID for zero node_id (old peer that didn't send one).
-dlt_p2p_node::peer_id dlt_p2p_node::find_active_peer_by_node_id(const node_id_t& nid) const {
+dlt_p2p_node::peer_id dlt_p2p_node::find_active_peer_by_node_id(const node_id_t& nid,
+                                                                peer_id exclude) const {
     static const node_id_t zero_id;
     if (nid == zero_id) return INVALID_PEER_ID;
     for (const auto& item : _peer_states) {
+        if (item.first == exclude) continue;
         const auto& state = item.second;
         if (state.node_id == nid &&
             (state.lifecycle_state == DLT_PEER_LIFECYCLE_CONNECTING ||
@@ -1129,6 +1131,27 @@ void dlt_p2p_node::on_dlt_hello(peer_id peer, const dlt_hello_message& hello) {
     // Persist node_id — used for dedup and peer-exchange identity.
     state.node_id = hello.node_id;
 
+    // ── Self-connection guard ───────────────────────────────────────────────
+    // The hello carries OUR node_id ⇒ this socket ends at our own listener.
+    // Happens whenever a loopback/LAN endpoint reaches us (peer exchange
+    // gossips whatever its sender has connected, and a seed entry can point at
+    // us).  Both directions of the self-dial then live on as ACTIVE peers:
+    // they inflate the peer count, dilute the wedge watchdog's corroboration
+    // set, re-advertise the bogus endpoint to everyone else — and a soft-ban
+    // aimed at "that peer" is delivered right back to us, so the node bans
+    // itself.  Drop the connection and forget the endpoint so
+    // periodic_reconnect_check() does not immediately dial it again.
+    static const node_id_t zero_node_id;
+    if (hello.node_id != zero_node_id && hello.node_id == _node_id) {
+        wlog(DLT_LOG_RED "Connected to ourselves at ${ep} — dropping and forgetting the endpoint" DLT_LOG_RESET,
+             ("ep", state.endpoint));
+        dlt_known_peer self_kp;
+        self_kp.endpoint = state.endpoint;
+        _known_peers.erase(self_kp);
+        handle_disconnect(peer, "self-connection");
+        return;
+    }
+
     // ── Post-hello node_id dedup ────────────────────────────────────────────
     // Now that we know the remote node's identity, check if we already have an
     // active connection to the exact same node.  This correctly handles:
@@ -1138,8 +1161,11 @@ void dlt_p2p_node::on_dlt_hello(peer_id peer, const dlt_hello_message& hello) {
     // each node generates a unique keypair (node_id).
     static const node_id_t zero_id;
     if (hello.node_id != zero_id) {
-        peer_id dup = find_active_peer_by_node_id(hello.node_id);
-        if (dup != INVALID_PEER_ID && dup != peer) {
+        // Exclude ourselves from the scan: state.node_id was just set above, so
+        // an unexcluded scan can return `peer` itself (map order is by peer_id)
+        // and the `dup != peer` test would silently skip the disconnect.
+        peer_id dup = find_active_peer_by_node_id(hello.node_id, /*exclude=*/peer);
+        if (dup != INVALID_PEER_ID) {
             auto dup_it = _peer_states.find(dup);
             auto dup_ep = (dup_it != _peer_states.end()) ? dup_it->second.endpoint : fc::ip::endpoint();
             dlog(DLT_LOG_DGRAY "Closing duplicate connection from ${ep} "
@@ -1976,6 +2002,7 @@ void dlt_p2p_node::on_dlt_peer_exchange_request(peer_id peer, const dlt_peer_exc
         if (!s.exchange_enabled) continue;
         if (s.lifecycle_state != DLT_PEER_LIFECYCLE_ACTIVE) continue;
         if (s.is_incoming) continue;  // ephemeral source ports are not reconnectable
+        if (!is_routable_endpoint(s.endpoint)) continue;  // loopback/LAN: meaningless off this host
         if (s.connected_since == fc::time_point()) continue;
         auto uptime = (now - s.connected_since).count() / 1000000;
         if (uptime < _peer_exchange_min_uptime_sec) continue;
@@ -2018,6 +2045,13 @@ void dlt_p2p_node::on_dlt_peer_exchange_reply(peer_id peer, const dlt_peer_excha
     for (auto& info : reply.peers) {
         // Filter out self by node_id (NAT-aware: same public IP, different node)
         if (info.node_id == _node_id) continue;
+
+        // Never adopt an endpoint that only means something on the sender's
+        // host — 127.0.0.1:2001 from a peer running a local pair would make us
+        // dial our OWN listener.  Peers still running the unfiltered code keep
+        // gossiping these, so the adopt side must reject them too.  Explicitly
+        // configured seeds are unaffected: they never pass through here.
+        if (!is_routable_endpoint(info.endpoint)) continue;
 
         // _known_peers is keyed on endpoint only.  If we already have this
         // endpoint, just refresh metadata (last_seen + best-effort node_id)

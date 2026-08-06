@@ -331,7 +331,14 @@ const zhCN: SidebarLabels = {
 
 // ─── Build sidebar from labels ──────────────────────────────────────────────
 
-function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarItem[] {
+// `showOperators` is English-only on purpose: @l10n has no operators/
+// translations, so emitting the group for ru/zh-CN would produce sidebar
+// entries that 404. Flip it on for a locale once its translations land.
+function buildSidebar(
+  t: SidebarLabels,
+  prefix: string,
+  showOperators = false,
+): DefaultTheme.SidebarItem[] {
   const p = (path: string) => `${prefix}${path}`;
   return [
     {
@@ -470,6 +477,17 @@ function buildSidebar(t: SidebarLabels, prefix: string): DefaultTheme.SidebarIte
         { text: t.hardforkManagement, link: p('/advanced/hardfork-management') },
       ],
     },
+    ...(showOperators
+      ? [
+          {
+            text: 'Operators',
+            items: [
+              { text: 'Validator Handbook', link: p('/operators/validator-handbook') },
+              { text: 'Boost 1.9x Upgrade', link: p('/operators/boost-1.9x-upgrade') },
+            ],
+          },
+        ]
+      : []),
   ];
 }
 
@@ -520,7 +538,7 @@ export default withMermaid(defineConfig({
       lang: 'en-US',
       themeConfig: {
         nav: localizedNav('', 'Introduction', 'Run a Node', 'Protocol', 'API'),
-        sidebar: buildSidebar(en, ''),
+        sidebar: buildSidebar(en, '', true),
       },
     },
     ru: {

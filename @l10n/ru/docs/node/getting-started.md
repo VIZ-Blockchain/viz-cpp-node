@@ -57,7 +57,7 @@ docker logs -f vizd
 | Переменная | Назначение | Пример |
 |-----------|-----------|--------|
 | `VIZD_SEED_NODES` | Переопределить начальные узлы | `node1.viz.world:2001` |
-| `VIZD_WITNESS` | Имя валидатора (для узла-валидатора) | `alice` |
+| `VIZD_WITNESS_NAME` | Имя валидатора (для узла-валидатора) | `alice` |
 | `VIZD_PRIVATE_KEY` | Ключ подписи валидатора (WIF) | `5J...` |
 
 ---
@@ -120,9 +120,9 @@ cp share/vizd/config/config.ini /data/vizd/config.ini
 ```ini
 # P2P
 p2p-endpoint = 0.0.0.0:2001
-p2p-seed-node = seed1.viz.world:2001
-p2p-seed-node = seed2.viz.world:2001
 p2p-seed-node = seed3.viz.world:2001
+p2p-seed-node = seed1.viz.world:2001
+p2p-seed-node = rpc.viz.cx:2001
 
 # RPC
 webserver-http-endpoint = 0.0.0.0:8090

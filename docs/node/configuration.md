@@ -22,9 +22,9 @@ p2p-endpoint = 0.0.0.0:2001
 p2p-max-connections = 200
 
 # Seed nodes to bootstrap connectivity (repeatable)
-p2p-seed-node = seed1.viz.world:2001
-p2p-seed-node = seed2.viz.world:2001
 p2p-seed-node = seed3.viz.world:2001
+p2p-seed-node = seed1.viz.world:2001
+p2p-seed-node = rpc.viz.cx:2001
 
 # Checkpoints: trusted (block_num, block_id) pairs (repeatable)
 # checkpoint = [12345,"0003039..." ]
