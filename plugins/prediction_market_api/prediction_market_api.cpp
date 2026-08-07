@@ -649,22 +649,31 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
+    // list_markets_by_oracle(oracle, from, limit, [order="newest"]) — an oracle's markets, newest-first
+    // by default (id desc); "oldest" for legacy id-asc. Same insertion==id-order reverse traversal as
+    // list_markets_by_creator. (The oracle work-queue methods — awaiting_resolution / in_dispute_window /
+    // by_oracle_status — stay oldest-first on purpose: a work queue is handled longest-waiting first.)
     DEFINE_API(prediction_market_api, list_markets_by_oracle) {
-        CHECK_ARG_MIN_SIZE(3, 3)
+        CHECK_ARG_MIN_SIZE(3, 4)
         auto oracle = args.args->at(0).as<account_name_type>();
         auto from   = args.args->at(1).as<uint32_t>();
         auto limit  = args.args->at(2).as<uint32_t>();
+        auto order  = GET_OPTIONAL_ARG(3, std::string, std::string("newest"));
         FC_ASSERT(limit <= 1000);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<fc::variant> result;
             result.reserve(limit);
             const auto& idx = db.get_index<pm_market_index>().indices().get<by_oracle>();
-            auto itr = idx.lower_bound(oracle);
-            while (from > 0 && itr != idx.end() && itr->oracle == oracle) { ++itr; --from; }
-            while (result.size() < limit && itr != idx.end() && itr->oracle == oracle) {
-                result.push_back(market_card(db, *itr));
-                ++itr;
+            auto range = idx.equal_range(oracle);
+            if (order == "oldest") {
+                auto itr = range.first;
+                while (from > 0 && itr != range.second) { ++itr; --from; }
+                while (result.size() < limit && itr != range.second) { result.push_back(market_card(db, *itr)); ++itr; }
+            } else { // "newest" (default)
+                auto itr = range.second;
+                while (from > 0 && itr != range.first) { --itr; --from; }
+                while (result.size() < limit && itr != range.first) { --itr; result.push_back(market_card(db, *itr)); }
             }
             return result;
         });
@@ -754,22 +763,31 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
+    // list_markets_by_creator(creator, from, limit, [order="newest"]) — a creator's markets, newest-first
+    // by default (id desc); "oldest" for legacy id-asc. by_creator is ordered_non_unique on the name, so
+    // equal elements keep insertion order == id order → reverse traversal yields newest-first (same
+    // assumption list_markets relies on).
     DEFINE_API(prediction_market_api, list_markets_by_creator) {
-        CHECK_ARG_MIN_SIZE(3, 3)
+        CHECK_ARG_MIN_SIZE(3, 4)
         auto creator = args.args->at(0).as<account_name_type>();
         auto from    = args.args->at(1).as<uint32_t>();
         auto limit   = args.args->at(2).as<uint32_t>();
+        auto order   = GET_OPTIONAL_ARG(3, std::string, std::string("newest"));
         FC_ASSERT(limit <= 1000);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<fc::variant> result;
             result.reserve(limit);
             const auto& idx = db.get_index<pm_market_index>().indices().get<by_creator>();
-            auto itr = idx.lower_bound(creator);
-            while (from > 0 && itr != idx.end() && itr->creator == creator) { ++itr; --from; }
-            while (result.size() < limit && itr != idx.end() && itr->creator == creator) {
-                result.push_back(market_card(db, *itr));
-                ++itr;
+            auto range = idx.equal_range(creator);
+            if (order == "oldest") {
+                auto itr = range.first;
+                while (from > 0 && itr != range.second) { ++itr; --from; }
+                while (result.size() < limit && itr != range.second) { result.push_back(market_card(db, *itr)); ++itr; }
+            } else { // "newest" (default)
+                auto itr = range.second;
+                while (from > 0 && itr != range.first) { --itr; --from; }
+                while (result.size() < limit && itr != range.first) { --itr; result.push_back(market_card(db, *itr)); }
             }
             return result;
         });
@@ -802,48 +820,67 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
+    // get_market_bets(market, from, limit, [order="newest"]) — the "recent bets" feed, so newest-first
+    // by default (id desc); "oldest" preserves the legacy id-asc order. by_market is composite (market, id).
     DEFINE_API(prediction_market_api, get_market_bets) {
-        CHECK_ARG_MIN_SIZE(3, 3)
+        CHECK_ARG_MIN_SIZE(3, 4)
         auto market_id = args.args->at(0).as<int64_t>();
         auto from      = args.args->at(1).as<uint32_t>();
         auto limit     = args.args->at(2).as<uint32_t>();
+        auto order     = GET_OPTIONAL_ARG(3, std::string, std::string("newest"));
         FC_ASSERT(limit <= 1000);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<pm_bet_object> result;
             result.reserve(limit);
             const auto& idx = db.get_index<pm_bet_index>().indices().get<by_market>();
-            auto itr = idx.lower_bound(boost::make_tuple(pm_market_id_type(market_id), pm_bet_id_type()));
-            while (from > 0 && itr != idx.end() && itr->market == pm_market_id_type(market_id)) { ++itr; --from; }
-            while (result.size() < limit && itr != idx.end() && itr->market == pm_market_id_type(market_id)) {
-                result.push_back(pm_bet_object(*itr));
-                ++itr;
+            auto range = idx.equal_range(pm_market_id_type(market_id));
+            if (order == "oldest") {
+                auto itr = range.first;
+                while (from > 0 && itr != range.second) { ++itr; --from; }
+                while (result.size() < limit && itr != range.second) { result.push_back(pm_bet_object(*itr)); ++itr; }
+            } else { // "newest" (default)
+                auto itr = range.second;
+                while (from > 0 && itr != range.first) { --itr; --from; }
+                while (result.size() < limit && itr != range.first) { --itr; result.push_back(pm_bet_object(*itr)); }
             }
             return result;
         });
     }
 
+    // get_account_positions(account, from, limit, [order="newest"])
+    // order: "newest" (bet id desc, default — a user's activity should surface their latest bets first,
+    // not stale positions from months ago) · "oldest" (id asc, legacy). by_account is composite
+    // (account, id): reverse traversal of the account's equal-range yields newest-first deterministically.
     DEFINE_API(prediction_market_api, get_account_positions) {
-        CHECK_ARG_MIN_SIZE(3, 3)
+        CHECK_ARG_MIN_SIZE(3, 4)
         auto account = args.args->at(0).as<account_name_type>();
         auto from    = args.args->at(1).as<uint32_t>();
         auto limit   = args.args->at(2).as<uint32_t>();
+        auto order   = GET_OPTIONAL_ARG(3, std::string, std::string("newest"));
         FC_ASSERT(limit <= 1000);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<pm_position_api_object> result;
             result.reserve(limit);
             const auto& idx = db.get_index<pm_bet_index>().indices().get<by_account>();
-            auto itr = idx.lower_bound(boost::make_tuple(account, pm_bet_id_type()));
-            while (from > 0 && itr != idx.end() && itr->account == account) { ++itr; --from; }
-            while (result.size() < limit && itr != idx.end() && itr->account == account) {
-                const auto* m = db.find<pm_market_object>(itr->market);
-                share_type ep = (m != nullptr) ? expected_payout(db, *itr, *m) : share_type(0);
+            auto range = idx.equal_range(account);
+            auto emit = [&](const pm_bet_object& b) {
+                const auto* m = db.find<pm_market_object>(b.market);
+                share_type ep = (m != nullptr) ? expected_payout(db, b, *m) : share_type(0);
                 result.push_back(pm_position_api_object{
-                    pm_bet_object(*itr), ep,
+                    pm_bet_object(b), ep,
                     (m != nullptr) ? m->status : (int8_t)0,
                     (m != nullptr) ? m->resolved_outcome : (int16_t)-1});
-                ++itr;
+            };
+            if (order == "oldest") {
+                auto itr = range.first;
+                while (from > 0 && itr != range.second) { ++itr; --from; }
+                while (result.size() < limit && itr != range.second) { emit(*itr); ++itr; }
+            } else { // "newest" (default)
+                auto itr = range.second;
+                while (from > 0 && itr != range.first) { --itr; --from; }
+                while (result.size() < limit && itr != range.first) { --itr; emit(*itr); }
             }
             return result;
         });
@@ -872,22 +909,29 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
 
     // ── Leverage positions ─────────────────────────────────────────────────────────
 
+    // get_account_leverage_positions(account, from, limit, [order="newest"]) — newest-first by default
+    // (latest leverage activity surfaces first), "oldest" for the legacy id-asc order.
     DEFINE_API(prediction_market_api, get_account_leverage_positions) {
-        CHECK_ARG_MIN_SIZE(3, 3)
+        CHECK_ARG_MIN_SIZE(3, 4)
         auto account = args.args->at(0).as<account_name_type>();
         auto from    = args.args->at(1).as<uint32_t>();
         auto limit   = args.args->at(2).as<uint32_t>();
+        auto order   = GET_OPTIONAL_ARG(3, std::string, std::string("newest"));
         FC_ASSERT(limit <= 1000);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<pm_leverage_position_object> result;
             result.reserve(limit);
             const auto& idx = db.get_index<pm_leverage_position_index>().indices().get<by_lev_account>();
-            auto itr = idx.lower_bound(boost::make_tuple(account, pm_leverage_position_id_type()));
-            while (from > 0 && itr != idx.end() && itr->account == account) { ++itr; --from; }
-            while (result.size() < limit && itr != idx.end() && itr->account == account) {
-                result.push_back(pm_leverage_position_object(*itr));
-                ++itr;
+            auto range = idx.equal_range(account);
+            if (order == "oldest") {
+                auto itr = range.first;
+                while (from > 0 && itr != range.second) { ++itr; --from; }
+                while (result.size() < limit && itr != range.second) { result.push_back(pm_leverage_position_object(*itr)); ++itr; }
+            } else { // "newest" (default)
+                auto itr = range.second;
+                while (from > 0 && itr != range.first) { --itr; --from; }
+                while (result.size() < limit && itr != range.first) { --itr; result.push_back(pm_leverage_position_object(*itr)); }
             }
             return result;
         });
