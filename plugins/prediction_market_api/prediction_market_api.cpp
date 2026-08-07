@@ -76,8 +76,13 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
             // Time-decayed penalty stamps: 300 bp each, halved per 10 days since the most recent stamp
             // (mirrors the object's last_penalty_stamp_time 10-day decay note). disputes_auto_closed is
             // already folded into penalty_stamps at slash time, so it is not double-charged here.
+            // penalty_stamps is a LIFETIME cumulative counter (one per zero-volume resolution, pm_evaluator
+            // §4.10) — on a busy oracle it reaches tens of thousands, so the raw count MUST be capped or
+            // the linear cost buries the score at 0. Cap the effective stamps the same way the lazy-alloc
+            // consumer does (pm_evaluator ~line 740 caps at 4) so both readers agree: max 4×300 = 1200 bp.
             if (o.penalty_stamps > 0) {
-                int64_t cost = (int64_t)o.penalty_stamps * 300;
+                int64_t stamps = o.penalty_stamps > 4 ? 4 : (int64_t)o.penalty_stamps;
+                int64_t cost = stamps * 300;
                 int64_t age  = (int64_t)now.sec_since_epoch() - (int64_t)o.last_penalty_stamp_time.sec_since_epoch();
                 if (age < 0) age = 0;
                 int64_t halvings = age / 864000; if (halvings > 16) halvings = 16;
