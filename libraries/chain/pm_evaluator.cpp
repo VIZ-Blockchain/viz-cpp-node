@@ -1527,8 +1527,9 @@ void pm_withdraw_liquidity_evaluator::do_apply(const pm_withdraw_liquidity_opera
     // is exploit-free (this is what B4 fixed; the earlier assert *message* wrongly implied
     // withdrawal was blocked during betting — the condition itself is correct).
     // F1-escape fix (PR #124): resolution is the lock trigger, settlement is the unlock. Settlement
-    // runs from the deferred cron sweep (result_expiration + ≥12h dispute grace; an early resolution
-    // pulls result_expiration forward to the report time, so it settles ~grace after the report too),
+    // runs from the deferred cron sweep (result_expiration + ≥12h dispute grace; resolution moves
+    // result_expiration to the report time — early OR late — so it always settles ~grace after the
+    // report and disputers always get the full window),
     // and resolution is exactly when the F1 `uncovered` LP charge
     // becomes computable+public (forfeit_pool is on get_market). If an LP could withdraw in that
     // window it would empty settle_liquidity's `active` set and dodge its share of the charge.
@@ -1616,19 +1617,25 @@ void pm_resolve_market_evaluator::do_apply(const pm_resolve_market_operation& o)
     const uint64_t rt = (mkt.betting_expiration != time_point_sec() && now > mkt.betting_expiration)
         ? (uint64_t)(now.sec_since_epoch() - mkt.betting_expiration.sec_since_epoch()) : 0;
 
-    // Early resolution pulls the whole downstream schedule forward: when the event settles before
-    // the advertised deadline we shift result_expiration earlier by exactly how early the oracle
-    // reported (new value = now), mirroring pm_no_contest. That collapses the LP-principal lock and
-    // the settle wait to `now + dispute_grace` instead of `result_expiration + grace` (open-ended
-    // markets could otherwise stay locked ~pm_max_market_duration). Disputers still get the full
-    // pm_dispute_grace_sec window, now anchored to the announcement rather than a far-future date.
-    // Only ever shift EARLIER: a late resolution (now ≥ result_expiration) leaves the advertised
-    // window untouched — we never extend a disputer's/settle deadline past what was promised.
+    // Anchor the whole downstream schedule (dispute window + LP-principal lock + settle wait) to the
+    // moment the result is ANNOUNCED: result_expiration = now, unconditionally — exactly like
+    // pm_no_contest. This guarantees disputers ALWAYS get the full pm_dispute_grace_sec window
+    // measured from the announcement, whether the oracle reported early OR late.
+    //   * Early report → pulls the schedule forward (collapses the LP lock / settle wait to
+    //     now + grace instead of a far-future result_expiration; open-ended markets could otherwise
+    //     stay locked ~pm_max_market_duration).
+    //   * Late report → pushes result_expiration forward to the report time. Previously we only ever
+    //     shifted EARLIER, which let an oracle GRIEF disputers: by stalling until ~result_expiration
+    //     + grace and only then reporting, the dispute deadline (result_expiration + grace) was
+    //     already spent, leaving a near-zero (or zero) window. Anchoring to `now` closes that hole —
+    //     the settle wait extends by however late the report was, which is the necessary price of a
+    //     fair, always-full dispute window. `late`/`rt` telemetry above was captured pre-shift, so
+    //     resolved_late_count and latency stats stay honest.
     db.modify(mkt, [&](pm_market_object& m) {
         m.status           = 3;
         m.payout_status    = 1;
         m.resolved_outcome = o.winning_outcome;
-        if (now < m.result_expiration) m.result_expiration = now;
+        m.result_expiration = now;   // dispute/settle grace ALWAYS starts from the announcement
         from_string(m.decision_url, o.decision_url);
         from_string(m.decision_reason, o.decision_reason);
     });

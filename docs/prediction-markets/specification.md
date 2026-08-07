@@ -163,7 +163,7 @@ stateDiagram-v2
 | 0 → 1 (self-oracle) | Creator = oracle; insurance check; auto-approves at creation |
 | 0 → -1 | Oracle rejects; seed liquidity returned to creator |
 | 0 → -1 (expiry) | `now ≥ created_time + pm_oracle_accept_window_sec` with no oracle action; cron voids the market, refunds the seed (creation fee kept), emits `pm_market_expired` |
-| 1 → 3 | Oracle submits resolution with outcome (0, 1, or -1 for no-contest); `allow_early_resolution=1` or `time ≥ betting_expiration`. An **early** report (`time < result_expiration`) pulls `result_expiration` forward to `now`, so the dispute-grace / settle / LP-lock schedule shifts earlier by the same margin (mirrors no-contest); a late report leaves it unchanged |
+| 1 → 3 | Oracle submits resolution with outcome (0, 1, or -1 for no-contest); `allow_early_resolution=1` or `time ≥ betting_expiration`. Resolution sets `result_expiration = now` **unconditionally** (early *or* late, mirrors no-contest), so the dispute-grace / settle / LP-lock schedule is always anchored to the announcement — disputers get the full `pm_dispute_grace_sec` window whether the report was early or late (a late report can't grief them by burning the window) |
 | 2 → 3 | Oracle submits resolution; `time ≤ result_expiration` |
 | 3 → paid | Grace period passed with no dispute; cron processes payouts |
 
