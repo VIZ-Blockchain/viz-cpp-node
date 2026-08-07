@@ -707,26 +707,38 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
-    // list_markets_by_oracle_status(oracle, status, from, limit): this oracle's markets in ONE
-    // status, walked over the (oracle, status, id) prefix. Lets a client pull e.g. an oracle's
-    // active (1) or resolved (3) markets directly instead of fetching by_oracle and filtering.
+    // list_markets_by_oracle_status(oracle, status, from, limit, [order="newest"]): this oracle's markets
+    // in ONE status, walked over the (oracle, status, id) prefix. Lets a client pull e.g. an oracle's
+    // active (1) or resolved (3) markets directly instead of fetching by_oracle and filtering. order:
+    // "newest" (id desc, default — profile browse leads with the latest) · "oldest" · "volume" (bets_sum
+    // desc) · "expiration" (soonest-closing first). This is the oracle PROFILE feed; the work-queue
+    // methods (awaiting_resolution / in_dispute_window) are separate and stay oldest-first on purpose.
     DEFINE_API(prediction_market_api, list_markets_by_oracle_status) {
-        CHECK_ARG_MIN_SIZE(4, 4)
+        CHECK_ARG_MIN_SIZE(4, 5)
         auto oracle = args.args->at(0).as<account_name_type>();
         auto status = args.args->at(1).as<int8_t>();
         auto from   = args.args->at(2).as<uint32_t>();
         auto limit  = args.args->at(3).as<uint32_t>();
+        auto order  = GET_OPTIONAL_ARG(4, std::string, std::string("newest"));
         FC_ASSERT(limit <= 1000);
         auto& db = pimpl->database();
         return db.with_weak_read_lock([&]() {
             std::vector<fc::variant> result;
             result.reserve(limit);
             const auto& idx = db.get_index<pm_market_index>().indices().get<by_oracle_status>();
-            auto itr = idx.lower_bound(boost::make_tuple(oracle, status, pm_market_id_type()));
-            while (from > 0 && itr != idx.end() && itr->oracle == oracle && itr->status == status) { ++itr; --from; }
-            while (result.size() < limit && itr != idx.end() && itr->oracle == oracle && itr->status == status) {
-                result.push_back(market_card(db, *itr));
-                ++itr;
+            auto range = idx.equal_range(boost::make_tuple(oracle, status));
+            if (order == "volume" || order == "expiration") {
+                std::vector<const pm_market_object*> ms;
+                for (auto itr = range.first; itr != range.second; ++itr) ms.push_back(&*itr);
+                return page_markets_sorted(db, ms, order, from, limit);
+            } else if (order == "oldest") {
+                auto itr = range.first;
+                while (from > 0 && itr != range.second) { ++itr; --from; }
+                while (result.size() < limit && itr != range.second) { result.push_back(market_card(db, *itr)); ++itr; }
+            } else { // "newest" (default)
+                auto itr = range.second;
+                while (from > 0 && itr != range.first) { --itr; --from; }
+                while (result.size() < limit && itr != range.first) { --itr; result.push_back(market_card(db, *itr)); }
             }
             return result;
         });
