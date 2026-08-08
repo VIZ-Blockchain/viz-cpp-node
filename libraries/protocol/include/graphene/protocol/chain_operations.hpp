@@ -701,6 +701,13 @@ namespace graphene { namespace protocol {
                                                                      ///< after it becomes terminal (finalized_time).
                                                                      ///< Median-voted → identical on every node, so
                                                                      ///< pruning stays deterministic / snapshot-safe.
+            // Early-exit reward cap (F1/#300). A bet or leverage position that exits BEFORE
+            // resolution no longer extracts curve value from LPs. Its outcome-contingent profit
+            // is paid at settlement from a BOUNDED slice of the losing pool (FIFO by exit time,
+            // no per-position cap); a losing outcome earns nothing; any unused slice returns to
+            // the winners' pool. This is the bp cap of that slice (3300 = 33% of losers_sum).
+            // Median-voted (validator param). See early-exit-deferred-claim.md.
+            uint16_t pm_early_exit_reward_cap_percent       = 3300;   ///< bp of losers_sum for early-exit claims
 
             void validate() const {
                 chain_properties_hf13::validate();
@@ -750,6 +757,7 @@ namespace graphene { namespace protocol {
                 FC_ASSERT(pm_leverage_m_factor_percent <= 100, "pm_leverage_m_factor_percent out of range");
                 FC_ASSERT(pm_leverage_funding_rate_ppm_per_day <= 1000000, "pm_leverage_funding_rate_ppm_per_day out of range (<= 100%/day)");
                 FC_ASSERT(pm_conversion_profit_cost_percent <= 100, "pm_conversion_profit_cost_percent out of range");
+                FC_ASSERT(pm_early_exit_reward_cap_percent <= 10000, "pm_early_exit_reward_cap_percent out of range");
                 check_token(pm_leverage_min_market_liquidity, "pm_leverage_min_market_liquidity");
             }
 
@@ -1363,7 +1371,7 @@ FC_REFLECT_DERIVED(
     (pm_leverage_min_market_liquidity)(pm_leverage_max_position_ratio_percent)
     (pm_leverage_expiration_buffer_sec)(pm_leverage_m_factor_percent)(pm_leverage_funding_rate_ppm_per_day)
     (pm_conversion_profit_cost_percent)
-    (pm_closed_market_retention_sec))
+    (pm_closed_market_retention_sec)(pm_early_exit_reward_cap_percent))
 
 FC_REFLECT_TYPENAME((graphene::protocol::versioned_chain_properties))
 
