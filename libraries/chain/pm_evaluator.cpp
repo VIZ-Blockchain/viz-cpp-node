@@ -243,8 +243,14 @@ namespace {
         // early-exit-deferred-claim.md. EXCEPTION reason 4 = terminal void/no-contest: there is no
         // outcome, so the bettor is REFUNDED immediately (old path) and forfeit gets total_bet − cv.
         const bool voiding = (reason == 4);
+        // Clamp pot_retained at 0: accrued funding can push obligation above total_bet for a
+        // long-lived position (funding_paid grows unbounded in accrue_leverage_funding), which
+        // would drive forfeit_pool negative and manufacture an `uncovered` shortfall (LP hit /
+        // mint) at settlement — defeating the F1/#300 no-uncovered guarantee. The pool still
+        // recovers its obligation from cv (reserves); the pot simply never goes negative.
         const int64_t pot_retained = voiding ? (pos.total_bet.value - cv)
                                              : (pos.total_bet.value - pool_received);
+        const int64_t pot_retained_capped = pot_retained > 0 ? pot_retained : 0;
         db.modify(mkt, [&](pm_market_object& m) { // unwind tokens (k preserved)
             if (pos.outcome_index == 0) {
                 int64_t new_rb = m.reserve_b.value + pos.tokens.value;
@@ -255,7 +261,7 @@ namespace {
                 m.reserve_a = share_type(new_ra);
                 m.reserve_b = share_type((int64_t)(m.k / fc::uint128_t((uint64_t)new_ra)).lo);
             }
-            m.forfeit_pool += share_type(pot_retained);
+            m.forfeit_pool += share_type(pot_retained_capped);
         });
         db.modify(db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0)), [&](pm_lazy_pool_object& p) {
             p.free_balance       += share_type(pool_received);
@@ -2292,6 +2298,11 @@ void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o)
     // paid against the curve now — it becomes an OUTCOME-CONTINGENT deferred claim, paid at settlement
     // from the bounded early-exit bucket iff this outcome wins. Keeps forfeit ≥ 0 (no LP hit / mint).
     const int64_t pot_retained = pos.total_bet.value - obligation;
+    // Clamp at 0 (see liquidate_position): long-lived positions accrue unbounded funding, so
+    // obligation can exceed total_bet; a negative pot_retained would push forfeit_pool negative
+    // and create an `uncovered` shortfall at settlement. The pool recovers obligation from cv
+    // either way; the pot just never goes negative.
+    const int64_t pot_retained_capped = pot_retained > 0 ? pot_retained : 0;
     // Unwind the tokens from the curve (k preserved).
     db.modify(mkt, [&](pm_market_object& m) {
         if (pos.outcome_index == 0) {
@@ -2303,7 +2314,7 @@ void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o)
             m.reserve_a = share_type(new_ra);
             m.reserve_b = share_type((int64_t)(m.k / fc::uint128_t((uint64_t)new_ra)).lo);
         }
-        m.forfeit_pool += share_type(pot_retained);
+        m.forfeit_pool += share_type(pot_retained_capped);
     });
     int64_t pool_yield = pos.pool_profit.value + pos.funding_paid.value; // R-markup + accrued funding → LP yield
     db.modify(db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0)), [&](pm_lazy_pool_object& p) {
