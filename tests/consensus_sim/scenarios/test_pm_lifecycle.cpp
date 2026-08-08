@@ -5209,4 +5209,191 @@ BOOST_AUTO_TEST_CASE(gc_dispute_auto_close_after_retention) {
     BOOST_TEST_MESSAGE("dispute-auto-closed market GC'd after retention");
 }
 
+// ── Batch-epoch-settle scheduling (PR #139 + cursor follow-up) ───────────────
+// The per-block cap must budget WORK, not markets: idle allow_batch markets must
+// not consume it (or starve everyone behind them), and the scan must round-robin
+// so always-busy low-id markets can't permanently starve newer ones.
+namespace {
+
+    // Reproduces verify_commit's byte layout exactly (same as batch_commit_reveal_and_forfeit).
+    fc::sha256 batch_commitment(const account_name_type& acct, int64_t mid, int8_t side,
+                                int16_t oidx, int64_t amount, int64_t min_tokens,
+                                const std::string& salt) {
+        fc::sha256::encoder enc;
+        enc.write((const char*)&mid, sizeof(mid));
+        enc.write((const char*)&acct.data, sizeof(acct.data));
+        enc.write((const char*)&side, sizeof(side));
+        enc.write((const char*)&oidx, sizeof(oidx));
+        enc.write((const char*)&amount, sizeof(amount));
+        enc.write((const char*)&min_tokens, sizeof(min_tokens));
+        enc.write(salt.data(), (uint32_t)salt.size());
+        return enc.result();
+    }
+
+    // Enable commit-reveal batch mode with a 5-block epoch and the given (tiny) processing cap.
+    void publish_batch_props(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when,
+                             uint32_t cap) {
+        chain_properties_pm props;
+        props.pm_commit_reveal_enabled    = true;
+        props.pm_batch_epoch_blocks       = 5;
+        props.pm_reveal_window_blocks     = 5;
+        props.pm_processing_cap_per_block = cap;
+        versioned_chain_properties_update_operation vp;
+        vp.owner = gp.initiator_name; vp.props = props;
+        node.push_pending_transaction(sign_ops({vp}, gp.initiator_key, node));
+        const auto& mp = node.db().get_validator_schedule_object().median_props;
+        for (int i = 0; i < 60 && mp.pm_processing_cap_per_block != cap; ++i) produce(node, gp, when);
+        BOOST_REQUIRE_EQUAL(mp.pm_processing_cap_per_block, cap);
+        BOOST_REQUIRE(mp.pm_commit_reveal_enabled);
+    }
+
+    // Initiator creates a self-oracle binary CPMM market with allow_batch. Ids are sequential
+    // from 0 on the fresh per-test chain.
+    void create_batch_market(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when,
+                             int64_t liquidity) {
+        pm_create_market_operation cm;
+        cm.creator = gp.initiator_name; cm.oracle = gp.initiator_name;
+        cm.market_type = 0; cm.outcomes = {"A", "B"}; cm.url = "criteria";
+        cm.liquidity = asset(share_type(liquidity), TOKEN_SYMBOL);
+        cm.betting_expiration = node.head_block_time() + fc::seconds(600);
+        cm.result_expiration  = node.head_block_time() + fc::seconds(1200);
+        cm.allow_batch = true;
+        cm.dispute_mode = 0;
+        node.push_pending_transaction(sign_ops({cm}, gp.initiator_key, node));
+        produce(node, gp, when);
+    }
+
+    // Commit (block 1) + reveal (block 2) a side-0 batch bet — leaves a queued (status 5)
+    // bet on the market. The caller tracks the chain-global commit id sequence.
+    void queue_batch_bet(simulated_node& node, const genesis_params& gp, fc::time_point_sec& when,
+                         const std::string& acct, const fc::ecc::private_key& key,
+                         int64_t market_id, uint32_t commit_id, int64_t amount,
+                         const std::string& salt) {
+        const uint16_t no_reveal =
+            node.db().get_validator_schedule_object().median_props.pm_commit_no_reveal_penalty_percent;
+        pm_commit_bet_operation c;
+        c.account = acct; c.market_id = market_id;
+        c.commitment = batch_commitment(account_name_type(acct), market_id, 0, -1, amount, 0, salt);
+        c.escrow_amount = asset(amount * 2, TOKEN_SYMBOL); c.no_reveal_fee_percent = no_reveal;
+        node.push_pending_transaction(sign_ops({c}, key, node));
+        produce(node, gp, when);
+        pm_reveal_bet_operation r;
+        r.account = acct; r.commit_id = commit_id; r.side = 0; r.outcome_index = -1;
+        r.amount = asset(amount, TOKEN_SYMBOL); r.salt = salt; r.min_tokens = 0;
+        node.push_pending_transaction(sign_ops({r}, key, node));
+        produce(node, gp, when);
+    }
+
+    uint64_t find_bet_id(simulated_node& node, const pm_market_id_type& mid, const std::string& acct) {
+        for (const auto& b : node.db().get_index<pm_bet_index>().indices())
+            if (b.market == mid && b.account == acct) return b.id._id;
+        BOOST_REQUIRE_MESSAGE(false, "queued bet not found");
+        return 0;
+    }
+
+} // namespace
+
+// Regression for PR #139: idle allow_batch markets must not consume the processing cap or
+// bump their epoch. cap=1, three markets, only the NEWEST has a queued bet — pre-#139 the
+// oldest idle market ate the whole budget every boundary and the bet stayed queued forever.
+BOOST_AUTO_TEST_CASE(batch_settle_idle_markets_do_not_starve) {
+    auto gp = make_genesis_params(0xF331u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-starve-idle", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping batch starvation (idle).");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+
+    publish_batch_props(node, gp, when, /*cap*/1);
+    register_self_oracle(node, gp, when);
+
+    auto alice_key = derive_key("alice");
+    create_and_fund(node, gp, when, "alice", alice_key, share_type(unit * 8));
+
+    for (int m = 0; m < 3; ++m) create_batch_market(node, gp, when, unit * 4);
+
+    // Only market 2 (the newest) gets a bet.
+    queue_batch_bet(node, gp, when, "alice", alice_key, /*market*/2, /*commit*/0, unit, "salt-idle");
+    const uint64_t bet_id = find_bet_id(node, pm_market_id_type(2), "alice");
+    BOOST_REQUIRE_EQUAL(node.db().get<pm_bet_object>(pm_bet_id_type(bet_id)).status, 5);
+
+    for (int i = 0; i < 20 &&
+                    node.db().get<pm_bet_object>(pm_bet_id_type(bet_id)).status == 5; ++i)
+        produce(node, gp, when);
+
+    const auto& bet = node.db().get<pm_bet_object>(pm_bet_id_type(bet_id));
+    BOOST_CHECK_EQUAL(bet.status, 0);                 // settled, not starved behind idle markets
+    BOOST_CHECK_GT(bet.weight.value, 0);
+    // Idle markets kept their epoch (and therefore never consumed the cap).
+    BOOST_CHECK_EQUAL(node.db().get<pm_market_object>(pm_market_id_type(0)).current_epoch, 0u);
+    BOOST_CHECK_EQUAL(node.db().get<pm_market_object>(pm_market_id_type(1)).current_epoch, 0u);
+    BOOST_CHECK_GT(node.db().get<pm_market_object>(pm_market_id_type(2)).current_epoch, 0u);
+}
+
+// Cursor round-robin: with cap=1 and market 0 fed a fresh queued bet EVERY epoch, a fixed
+// scan start would settle market 0 at every boundary and starve market 1 forever. The
+// persisted cursor resumes past market 0, so market 1 settles within a couple of epochs.
+BOOST_AUTO_TEST_CASE(batch_settle_round_robin_prevents_busy_starvation) {
+    auto gp = make_genesis_params(0xF332u, 1);
+    fc::time_point_sec start(fc::time_point::now());
+    fc::time_point_sec hf(CHAIN_HARDFORK_14_TIME);
+    if (hf > start) start = hf;
+    start += fc::seconds(CHAIN_BLOCK_INTERVAL);
+    virtual_clock clk(start);
+    simulated_node node("pm-starve-busy", gp, clk);
+    fc::time_point_sec when = start - fc::seconds(CHAIN_BLOCK_INTERVAL);
+
+    if (!bring_to_hf14(node, gp, when)) {
+        BOOST_TEST_MESSAGE("HF14 not reachable; skipping batch starvation (busy).");
+        return;
+    }
+
+    const auto& mp = node.db().get_validator_schedule_object().median_props;
+    const int64_t unit = mp.pm_min_liquidity.amount.value;
+
+    publish_batch_props(node, gp, when, /*cap*/1);
+    register_self_oracle(node, gp, when);
+
+    auto alice_key = derive_key("alice");
+    create_and_fund(node, gp, when, "alice", alice_key, share_type(unit * 30));
+
+    for (int m = 0; m < 2; ++m) create_batch_market(node, gp, when, unit * 4);
+
+    auto to_boundary = [&]() {
+        do { produce(node, gp, when); } while (node.db().head_block_num() % 5 != 0);
+    };
+
+    // From a boundary: queue on market 0 (blocks 1–2), then on market 1 (blocks 3–4), so
+    // both are queued before the block-5 boundary and market 0 shadows market 1 under cap=1.
+    to_boundary();
+    uint32_t commit_seq = 0;
+    queue_batch_bet(node, gp, when, "alice", alice_key, 0, commit_seq++, unit, "salt-b0");
+    queue_batch_bet(node, gp, when, "alice", alice_key, 1, commit_seq++, unit, "salt-b1");
+    const uint64_t m1_bet = find_bet_id(node, pm_market_id_type(1), "alice");
+
+    // Keep market 0 busy at EVERY boundary (commit ≡1, reveal ≡2, boundary ≡0 — so a queued
+    // market-0 bet shadows market 1 under cap=1 at each epoch). Market 1 must still settle.
+    int round = 0;
+    for (; round < 6 && node.db().get<pm_bet_object>(pm_bet_id_type(m1_bet)).status == 5; ++round) {
+        queue_batch_bet(node, gp, when, "alice", alice_key, 0, commit_seq++, unit,
+                        "salt-r" + std::to_string(round));
+        to_boundary();
+    }
+
+    const auto& bet = node.db().get<pm_bet_object>(pm_bet_id_type(m1_bet));
+    BOOST_TEST_MESSAGE("busy-starvation: market-1 bet settled after " << round << " round(s)");
+    BOOST_CHECK_EQUAL(bet.status, 0);                 // round-robin reached market 1
+    BOOST_CHECK_GT(bet.weight.value, 0);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

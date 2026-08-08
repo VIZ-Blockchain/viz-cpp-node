@@ -176,6 +176,15 @@ namespace graphene {
              * re-derives — idempotent.
              */
             bool pm_oracle_gauges_seeded = false;
+
+            /**
+             * Batch-epoch-settle round-robin cursor: the market id where the next
+             * epoch-boundary scan resumes after stopping on the per-block processing cap.
+             * 0 after a completed full pass. Consensus state (all nodes advance it
+             * identically); prevents ~cap always-busy low-id markets from permanently
+             * starving newer ones.
+             */
+            uint64_t pm_batch_settle_cursor = 0;
         };
 
         typedef multi_index_container <
@@ -227,5 +236,6 @@ FC_REFLECT((graphene::chain::dynamic_global_property_object),
                 (pm_frozen_counters_reseeded_v1)
                 (pm_active_markets_seeded)
                 (pm_oracle_gauges_seeded)
+                (pm_batch_settle_cursor)
 )
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::dynamic_global_property_object, graphene::chain::dynamic_global_property_index)

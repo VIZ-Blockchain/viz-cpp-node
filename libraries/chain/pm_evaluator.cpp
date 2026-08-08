@@ -3176,11 +3176,36 @@ void database::process_pm_markets() {
         (head_block_num() % (uint32_t)mp.pm_batch_epoch_blocks == 0)) {
 
         const auto& midx = get_index<pm_market_index>().indices().get<by_status>();
-        auto mit = midx.lower_bound((int8_t)1);
+        const auto& bidx = get_index<pm_bet_index>().indices().get<by_epoch>();
 
-        while (mit != midx.end() && mit->status == 1 && done < cap) {
+        // Round-robin: resume where the previous boundary scan stopped on the cap, wrap
+        // once. A fixed scan start would let ~cap always-busy low-id markets permanently
+        // starve newer ones. The walk itself stays O(active batch markets) per boundary
+        // (one bet-index probe each); if that ever hurts, index queued bets by
+        // (status, market) and drive the scan from that instead.
+        const uint64_t start_id = get_dynamic_global_properties().pm_batch_settle_cursor;
+        bool second_pass = false;
+        auto mit = midx.lower_bound(boost::make_tuple((int8_t)1, pm_market_id_type(start_id)));
+
+        while (done < cap) {
+            if (mit == midx.end() || mit->status != 1) {
+                if (second_pass || start_id == 0) break;   // full circle
+                second_pass = true;
+                mit = midx.lower_bound((int8_t)1);         // wrap to the lowest active id
+                continue;
+            }
+            if (second_pass && mit->id._id >= start_id) break; // full circle
             const auto& mkt = *mit; ++mit;
             if (!mkt.allow_batch) continue;
+
+            // Idle fast-path: nothing queued at this epoch — skip before the LMSR
+            // q-vector snapshot, so an idle market costs one index probe, keeps its
+            // epoch, and does not consume the cap.
+            auto bit = bidx.lower_bound(boost::make_tuple(
+                mkt.id, (uint32_t)mkt.current_epoch, pm_bet_id_type()));
+            if (bit == bidx.end() || bit->market != mkt.id ||
+                bit->epoch  != (uint32_t)mkt.current_epoch)
+                continue;
 
             // Snapshot LMSR q-vector
             std::vector<int64_t> q_vec;
@@ -3192,16 +3217,15 @@ void database::process_pm_markets() {
                 }
             }
 
-            const auto& bidx = get_index<pm_bet_index>().indices().get<by_epoch>();
-            auto bit = bidx.lower_bound(boost::make_tuple(
-                mkt.id, (uint32_t)mkt.current_epoch, pm_bet_id_type()));
             uint32_t settled = 0;
+            bool     had_queued = false;
 
             while (bit != bidx.end() &&
                    bit->market == mkt.id &&
                    bit->epoch  == (uint32_t)mkt.current_epoch) {
                 const auto& bet = *bit; ++bit;
                 if (bet.status != 5) continue;
+                had_queued = true;
 
                 share_type tokens(0);
 
@@ -3277,9 +3301,24 @@ void database::process_pm_markets() {
                 push_virtual_operation(pm_batch_settle_operation(
                     mkt.id._id, mkt.current_epoch, settled));
 
-            modify(mkt, [](pm_market_object& m) { m.current_epoch++; });
-            ++done;
+            // Idle markets keep their epoch and don't consume the cap, so the scan can
+            // reach markets with queued bets past the cap.
+            if (had_queued) {
+                modify(mkt, [](pm_market_object& m) { m.current_epoch++; });
+                ++done;
+            }
         }
+
+        // Persist the resume point: the next unvisited active market when the cap cut
+        // the scan short, 0 after a completed full circle.
+        uint64_t next_cursor = 0;
+        if (done >= cap && mit != midx.end() && mit->status == 1 &&
+            !(second_pass && mit->id._id >= start_id))
+            next_cursor = mit->id._id;
+        if (next_cursor != start_id)
+            modify(get_dynamic_global_properties(), [&](dynamic_global_property_object& d) {
+                d.pm_batch_settle_cursor = next_cursor;
+            });
     }
 
     // ── 7. Lazy pool recall step ──────────────────────────────────────────────
