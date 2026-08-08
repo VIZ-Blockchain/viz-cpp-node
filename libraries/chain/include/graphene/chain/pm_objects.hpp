@@ -623,6 +623,40 @@ namespace graphene { namespace chain {
             allocator<pm_lazy_withdraw_request_object>
         > pm_lazy_withdraw_request_index;
 
+        // Early-exit deferred claim (F1 / #300). Recorded when a bet is cancelled or a leverage
+        // position closes/liquidates BEFORE resolution: instead of paying curve profit out of LP
+        // depth, the profit becomes an OUTCOME-CONTINGENT claim. At settlement, claims on the
+        // WINNING outcome are paid FIFO by exit_time from a bounded slice
+        // (pm_early_exit_reward_cap_percent × losers_sum); a losing outcome pays nothing; any
+        // unused slice returns to the winners' pool. See early-exit-deferred-claim.md.
+        class pm_deferred_claim_object : public object<pm_deferred_claim_object_type, pm_deferred_claim_object> {
+        public:
+            pm_deferred_claim_object() = delete;
+            template<typename Constructor, typename Allocator>
+            pm_deferred_claim_object(Constructor&& c, allocator<Allocator>) { c(*this); }
+
+            id_type            id;
+            pm_market_id_type  market;
+            account_name_type  account;
+            uint8_t            kind          = 0; ///< 0 = bet cancel, 1 = leverage close/liquidate
+            uint8_t            outcome_index = 0; ///< claim pays ONLY if this outcome wins
+            share_type         claim_amount;      ///< profit competing for the bounded early-exit bucket
+            time_point_sec     exit_time;         ///< FIFO order at settlement (== id creation order)
+        };
+
+        struct by_claim_market;
+        typedef multi_index_container<
+            pm_deferred_claim_object,
+            indexed_by<
+                ordered_unique<tag<by_id>, member<pm_deferred_claim_object, pm_deferred_claim_id_type, &pm_deferred_claim_object::id>>,
+                // (market, id): iterate a market's claims in FIFO (creation/exit) order at settlement.
+                ordered_unique<tag<by_claim_market>, composite_key<pm_deferred_claim_object,
+                    member<pm_deferred_claim_object, pm_market_id_type, &pm_deferred_claim_object::market>,
+                    member<pm_deferred_claim_object, pm_deferred_claim_id_type, &pm_deferred_claim_object::id>>>
+            >,
+            allocator<pm_deferred_claim_object>
+        > pm_deferred_claim_index;
+
         class pm_lazy_allocation_object : public object<pm_lazy_allocation_object_type, pm_lazy_allocation_object> {
         public:
             pm_lazy_allocation_object() = delete;
@@ -827,6 +861,10 @@ CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_lazy_pool_object, graphene::chain::
 FC_REFLECT((graphene::chain::pm_lazy_withdraw_request_object),
     (id)(account)(amount)(created))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_lazy_withdraw_request_object, graphene::chain::pm_lazy_withdraw_request_index)
+
+FC_REFLECT((graphene::chain::pm_deferred_claim_object),
+    (id)(market)(account)(kind)(outcome_index)(claim_amount)(exit_time))
+CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_deferred_claim_object, graphene::chain::pm_deferred_claim_index)
 
 FC_REFLECT((graphene::chain::pm_lazy_deposit_object),
     (id)(account)(shares)(principal)(reward_snapshot)(pending_rewards)(unlock_time))

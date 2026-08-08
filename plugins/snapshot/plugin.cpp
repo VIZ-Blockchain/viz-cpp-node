@@ -1358,6 +1358,9 @@ fc::mutable_variant_object snapshot_plugin::plugin_impl::serialize_state() {
     // vanished while pm_lazy_pool.pending_withdrawals still carried their total, breaking the FIFO
     // payout queue (consensus divergence + funds stuck owed but unpayable). Serialize like its peers.
     EXPORT_INDEX(pm_lazy_withdraw_request_index,pm_lazy_withdraw_request_object,"pm_lazy_withdraw_request")
+    // Early-exit deferred claims (F1/#300): outcome-contingent, forward-only (no seed) → MUST be
+    // in the snapshot or they vanish on reload and the winners'/bucket accounting diverges.
+    EXPORT_INDEX(pm_deferred_claim_index, pm_deferred_claim_object, "pm_deferred_claim")
     EXPORT_INDEX(pm_creator_ban_index,    pm_creator_ban_object,    "pm_creator_ban")
 
     // NON-consensus PM metadata (titles/images/tags/event). Serialized only when the operator opts
@@ -2026,6 +2029,10 @@ void snapshot_plugin::plugin_impl::load_snapshot(const fc::path& input_path) {
         if (state.contains("pm_lazy_withdraw_request")) { // B2 (PR #124): restore pending withdrawals so the FIFO queue matches pm_lazy_pool.pending_withdrawals
             auto n = detail::import_simple_objects<pm_lazy_withdraw_request_object, pm_lazy_withdraw_request_index>(db, state["pm_lazy_withdraw_request"].get_array());
             ilog(CLOG_ORANGE "Imported ${n} pm_lazy_withdraw_request objects" CLOG_RESET, ("n", n));
+        }
+        if (state.contains("pm_deferred_claim")) { // F1/#300: outcome-contingent early-exit claims (forward-only, no seed)
+            auto n = detail::import_simple_objects<pm_deferred_claim_object, pm_deferred_claim_index>(db, state["pm_deferred_claim"].get_array());
+            ilog(CLOG_ORANGE "Imported ${n} pm_deferred_claim objects" CLOG_RESET, ("n", n));
         }
         if (state.contains("pm_creator_ban")) {
             auto n = detail::import_simple_objects<pm_creator_ban_object, pm_creator_ban_index>(db, state["pm_creator_ban"].get_array());

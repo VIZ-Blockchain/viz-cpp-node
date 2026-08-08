@@ -5176,6 +5176,7 @@ namespace graphene { namespace chain {
             add_core_index<pm_leverage_position_index>(*this);
             add_core_index<pm_creator_ban_index>(*this);
             add_core_index<pm_lazy_withdraw_request_index>(*this);
+            add_core_index<pm_deferred_claim_index>(*this);
 
             _plugin_index_signal();
         }
