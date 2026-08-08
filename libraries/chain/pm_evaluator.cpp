@@ -588,6 +588,40 @@ namespace {
         }
         sp.losers_sum = losers_sum;
 
+        // F1/#300: pay outcome-contingent deferred claims (early bet-cancels + leverage closes) BEFORE
+        // the parimutuel split, from a BOUNDED slice of the losing pool. Only claims on the winning
+        // outcome are funded, FIFO by exit order (== id via by_claim_market), capped so the total drawn
+        // from losers ≤ pm_early_exit_reward_cap_percent × losers_sum. The unfunded remainder is a
+        // haircut; the unused slice simply stays in the pot (we subtract only what is PAID from
+        // winners_pool, so leftover flows to winners). Losing-outcome claims pay 0. Every claim for this
+        // market is then consumed. Conservation model: docs/prediction-markets/early-exit-deferred-claim.md.
+        // (Inert until the exit paths record claims; a market with no claims iterates nothing.)
+        int64_t paid_claims = 0;
+        {
+            const auto& mp = median(db);
+            const int64_t bucket = (int64_t)(fc::uint128_t((uint64_t)losers_sum)
+                * fc::uint128_t(mp.pm_early_exit_reward_cap_percent) / fc::uint128_t(10000u)).lo;
+            const auto& cidx = db.get_index<pm_deferred_claim_index>().indices().get<by_claim_market>();
+            auto cit = cidx.lower_bound(boost::make_tuple(mkt.id, pm_deferred_claim_id_type()));
+            std::vector<const pm_deferred_claim_object*> consumed;
+            for (; cit != cidx.end() && cit->market == mkt.id; ++cit) {
+                const pm_deferred_claim_object& c = *cit;
+                if ((int16_t)c.outcome_index == win) {
+                    int64_t remaining = bucket - paid_claims;
+                    int64_t pay = c.claim_amount.value < remaining ? c.claim_amount.value : remaining;
+                    if (pay > 0) {
+                        db.adjust_balance(db.get_account(c.account), asset(share_type(pay), TOKEN_SYMBOL));
+                        paid_claims += pay;
+                    }
+                }
+                consumed.push_back(&c);
+            }
+            for (const auto* c : consumed) db.remove(*c);
+        }
+        // Fold the paid claims into forfeit_pool so the parimutuel winners' pool drops by exactly what
+        // early-exiters were paid (never below (1−cap)·losers − fees ≥ 0 → no uncovered mint, no LP hit).
+        sp.forfeit_pool = mkt.forfeit_pool.value - paid_claims;
+
         const pm::settle_result res = pm::compute_settlement(sp, winners);
 
         if (res.oracle_take > 0)
