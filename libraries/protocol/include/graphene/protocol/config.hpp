@@ -223,6 +223,12 @@
 #define MAX_PM_MARKET_TITLE_LEN               256
 #define MAX_PM_OUTCOME_LABEL_LEN              64
 #define MAX_PM_OUTCOMES_PER_MARKET            128
+// #349: cap on live early-exit deferred claims (F1/#300) per market. Bounds settle_market's
+// claim-distribution loop against a griefer spamming cancels/leverage-closes to force unbounded
+// per-block work at settlement. Beyond the cap, an early-exit skips recording its contingent claim
+// (the tail stays in the curve, pays 0 like bucket-exhaustion) — the exit itself still succeeds.
+// Generous: far above any count the bounded reward bucket (≤ cap%·losers) could ever fund.
+#define MAX_PM_DEFERRED_CLAIMS_PER_MARKET     10000
 
 // Deprecated defines
 #define CHAIN_CASHOUT_WINDOW_SECONDS          (60*60*24)  // 1 day

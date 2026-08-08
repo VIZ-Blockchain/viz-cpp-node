@@ -278,14 +278,17 @@ namespace {
             if (voiding) {
                 // Terminal void/no-contest: refund the residual immediately (no outcome to defer to).
                 db.adjust_balance(db.get_account(pos.account), asset(share_type(bettor_received), TOKEN_SYMBOL));
-            } else {
+            } else if (mkt.deferred_claim_count < MAX_PM_DEFERRED_CLAIMS_PER_MARKET) {
                 // Defer as an outcome-contingent claim (F1/#300) — paid at settlement from the bounded
-                // early-exit bucket iff pos.outcome_index wins; otherwise it pays nothing.
+                // early-exit bucket iff pos.outcome_index wins; otherwise it pays nothing. #349: skip
+                // once the per-market cap is hit (the residual stays in the curve and pays 0, exactly
+                // like bucket-exhaustion) so settle_market's claim loop stays bounded.
                 db.create<pm_deferred_claim_object>([&](pm_deferred_claim_object& c) {
                     c.market = pos.market; c.account = pos.account; c.kind = 1;
                     c.outcome_index = pos.outcome_index; c.claim_amount = share_type(bettor_received);
                     c.exit_time = db.head_block_time();
                 });
+                db.modify(mkt, [](pm_market_object& m) { m.deferred_claim_count++; });
             }
         }
 
@@ -425,6 +428,18 @@ namespace {
         auto first = lidx.lower_bound(boost::make_tuple(mkt.id, pm_liquidity_id_type()));
 
         const fc::time_point_sec now = db.head_block_time();
+
+        // #348 / goal #290: F1 guarantees `uncovered == 0` by construction (winners_pool ≥ (1−cap)·losers
+        // − fees ≥ 0). If it is ever > 0, some invariant broke (e.g. a new unbounded accrual like the
+        // #141 funding path) and LP principal is being silently eroded (or tokens emitted when no LP).
+        // Emit ONE always-on loud signal here — regardless of LP presence — so a regression is visible in
+        // node logs / acceptance instead of slipping through silently the way #141 did. Log-only:
+        // deterministic, no consensus effect, and does NOT halt (a hard assert would take the chain down
+        // on an unforeseen edge, worse than charging LP).
+        if (uncovered.value > 0)
+            elog("PM F1 INVARIANT VIOLATED: uncovered shortfall ${u} on market ${m} — winners_pool<0 was "
+                 "floored, shortfall charged to LP principal (or emitted if no LP). This must be 0 by "
+                 "construction; investigate the exit/settle path.", ("u", uncovered.value)("m", mkt.id._id));
 
         std::vector<const pm_liquidity_object*> active;
         std::vector<pm::lp_in> lps;
@@ -1499,11 +1514,14 @@ void pm_cancel_bet_evaluator::do_apply(const pm_cancel_bet_operation& o) {
             m.bets_sum     -= bet.amount;
             m.forfeit_pool += residual; // stake = refund + residual; k unchanged (mirror of buy)
         });
-        if (tail > 0) {
+        if (tail > 0 && mkt.deferred_claim_count < MAX_PM_DEFERRED_CLAIMS_PER_MARKET) {
+            // #349: skip once the per-market cap is hit — the tail stays in the curve and pays 0 at
+            // settlement (like bucket-exhaustion), keeping settle_market's claim loop bounded.
             db.create<pm_deferred_claim_object>([&](pm_deferred_claim_object& c) {
                 c.market = mkt.id; c.account = bet.account; c.kind = 0;
                 c.outcome_index = (uint8_t)bet.side; c.claim_amount = share_type(tail); c.exit_time = now;
             });
+            db.modify(mkt, [](pm_market_object& m) { m.deferred_claim_count++; });
         }
     } else {
         const auto& oidx_out = db.get_index<pm_outcome_index>().indices().get<by_market_outcome>();
@@ -2326,11 +2344,15 @@ void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o)
                                 * fc::uint128_t((uint64_t)1000000000) / fc::uint128_t((uint64_t)p.total_shares.value);
     });
     service_lazy_withdraw_queue(db);   // returning leverage capital first pays queued withdrawers
-    if (bettor_received > 0)
+    if (bettor_received > 0 && mkt.deferred_claim_count < MAX_PM_DEFERRED_CLAIMS_PER_MARKET) {
+        // #349: skip once the per-market cap is hit — the residual stays in the curve and pays 0 at
+        // settlement (like bucket-exhaustion), keeping settle_market's claim loop bounded.
         db.create<pm_deferred_claim_object>([&](pm_deferred_claim_object& c) {
             c.market = pos.market; c.account = o.account; c.kind = 1;
             c.outcome_index = pos.outcome_index; c.claim_amount = share_type(bettor_received); c.exit_time = now;
         });
+        db.modify(mkt, [](pm_market_object& m) { m.deferred_claim_count++; });
+    }
     db.modify(pos, [&](pm_leverage_position_object& p) {
         p.status = 4; p.pool_received = share_type(obligation);
         p.bettor_received = share_type(bettor_received); p.last_update = now;

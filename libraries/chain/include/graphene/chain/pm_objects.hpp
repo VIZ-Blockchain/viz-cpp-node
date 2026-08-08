@@ -185,6 +185,13 @@ namespace graphene { namespace chain {
             // resolved. Readable directly via get_market — no history scan needed.
             shared_string     decision_url;       ///< evidence link the oracle cited when resolving
             shared_string     decision_reason;    ///< oracle's free-text justification (or NO-CONTEST reason)
+            // #349: number of live early-exit deferred claims (F1/#300) recorded against this market.
+            // Bounds settle_market's claim-distribution loop: once this hits
+            // MAX_PM_DEFERRED_CLAIMS_PER_MARKET, further early-exits skip recording a claim (the tail
+            // value stays in the curve and simply pays 0 at settlement, exactly like bucket-exhaustion)
+            // so a griefer cannot force unbounded per-block work at settlement. Monotonic pre-settlement
+            // (claims are only created, never removed, before the market settles).
+            uint32_t          deferred_claim_count = 0;
         };
 
         struct by_creator;
@@ -830,7 +837,8 @@ FC_REFLECT((graphene::chain::pm_market_object),
     (bets_sum)(liquidity_sum)(oracle_fee_percent)(creator_fee_percent)(liquidity_fee_percent)(oracle_fixed_fee)
     (liquidity_fee_earned)(forfeit_pool)(time_penalty_type)(time_penalty_value)(penalty_curve_type)
     (allow_early_resolution)(allow_cancellation)(allow_batch)(allow_instant_bet)(endogeneity_tier)(current_epoch)
-    (dispute_mode)(dispute_resolver)(dispute_penalty_percent)(decision_url)(decision_reason))
+    (dispute_mode)(dispute_resolver)(dispute_penalty_percent)(decision_url)(decision_reason)
+    (deferred_claim_count))
 CHAINBASE_SET_INDEX_TYPE(graphene::chain::pm_market_object, graphene::chain::pm_market_index)
 
 FC_REFLECT((graphene::chain::pm_outcome_object),

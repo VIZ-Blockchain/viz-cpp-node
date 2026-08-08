@@ -887,6 +887,10 @@ inline uint32_t import_pm_markets(graphene::chain::database& db, const fc::varia
             obj.dispute_resolver   = v["dispute_resolver"].as<account_name_type>();
             if (v.get_object().contains("dispute_penalty_percent"))
                 obj.dispute_penalty_percent = static_cast<int16_t>(v["dispute_penalty_percent"].as_int64());
+            // #349: restore the per-market deferred-claim counter (contains-guarded — older snapshots
+            // predate it and correctly default to 0). Without this the cap would reset on reimport.
+            if (v.get_object().contains("deferred_claim_count"))
+                obj.deferred_claim_count = static_cast<uint32_t>(v["deferred_claim_count"].as_uint64());
             // NB: `metadata` is no longer a consensus field (moved off-chain to the
             // prediction_market_api plugin); older snapshots that still carry it are ignored.
         });
