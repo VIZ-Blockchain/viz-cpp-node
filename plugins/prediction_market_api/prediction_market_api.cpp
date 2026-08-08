@@ -1251,6 +1251,31 @@ namespace graphene { namespace plugins { namespace prediction_market_api {
         });
     }
 
+    // get_deferred_claims(market, [from=0], [limit=100])
+    // F1/#300: the outcome-contingent early-exit claims still pending on a market, in FIFO exit order
+    // (by_claim_market == id order). Each carries {account, kind (0 bet-cancel / 1 leverage-close),
+    // outcome_index (pays only if this outcome wins), claim_amount, exit_time}. Claims are consumed and
+    // removed at settlement, so a resolved market returns []. `from` is a starting claim id (0 = oldest),
+    // `limit` caps the page (<= 1000). Lets a client show a position's "pending early-exit claim" and its
+    // FIFO standing against the bounded reward bucket.
+    DEFINE_API(prediction_market_api, get_deferred_claims) {
+        CHECK_ARG_MIN_SIZE(1, 3)
+        auto market = args.args->at(0).as<int64_t>();
+        uint32_t from  = args.args->size() > 1 ? args.args->at(1).as<uint32_t>() : 0;
+        uint32_t limit = args.args->size() > 2 ? args.args->at(2).as<uint32_t>() : 100;
+        FC_ASSERT(limit <= 1000, "limit must be <= 1000");
+        auto& db = pimpl->database();
+        return db.with_weak_read_lock([&]() {
+            std::vector<pm_deferred_claim_object> out;
+            const auto& idx = db.get_index<pm_deferred_claim_index>().indices().get<by_claim_market>();
+            auto it = idx.lower_bound(boost::make_tuple(pm_market_id_type(market),
+                                                        pm_deferred_claim_id_type(from)));
+            for (; it != idx.end() && it->market == pm_market_id_type(market) && out.size() < limit; ++it)
+                out.push_back(*it);
+            return out;
+        });
+    }
+
     DEFINE_API(prediction_market_api, get_pm_chain_properties) {
         CHECK_ARG_SIZE(0)
         auto& db = pimpl->database();

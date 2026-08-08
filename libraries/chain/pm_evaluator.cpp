@@ -639,6 +639,11 @@ namespace {
                     if (pay > 0) {
                         db.adjust_balance(db.get_account(c.account), asset(share_type(pay), TOKEN_SYMBOL));
                         paid_claims += pay;
+                        // Put the credit in the early-exiter's account history (adjust_balance alone
+                        // leaves no trace); `claimed` vs `paid` exposes any bucket-exhaustion haircut.
+                        db.push_virtual_operation(pm_early_exit_claim_paid_operation(
+                            c.account, mkt.id._id, c.kind, c.outcome_index,
+                            asset(c.claim_amount, TOKEN_SYMBOL), asset(share_type(pay), TOKEN_SYMBOL)));
                     }
                 }
                 consumed.push_back(&c);

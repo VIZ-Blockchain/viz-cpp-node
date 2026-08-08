@@ -616,6 +616,11 @@ if( options.count(name) ) { \
         void operator()(const pm_ban_expired_operation& op) {
             impacted.insert(op.account);
         }
+
+        // F1/#300: early-exit deferred claim paid at settlement -> early-exiter's own history.
+        void operator()(const pm_early_exit_claim_paid_operation& op) {
+            impacted.insert(op.account);
+        }
         //void operator()( const operation& op ){}
     };
 

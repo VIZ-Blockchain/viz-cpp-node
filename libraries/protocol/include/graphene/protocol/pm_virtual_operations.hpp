@@ -220,6 +220,27 @@ namespace graphene { namespace protocol {
             bool              creator = false;  ///< a creator ban expired
         };
 
+        /// F1/#300: an early-exit deferred claim was paid at settlement. An early bet-cancel or
+        /// leverage-close on the WINNING outcome draws from the bounded early-exit bucket
+        /// (pm_early_exit_reward_cap_percent × losers_sum), FIFO by exit order. `claimed` is the
+        /// full outcome-contingent claim that was recorded at exit; `paid` is what the bucket could
+        /// actually fund (paid ≤ claimed — a shortfall is a haircut once the slice is exhausted).
+        /// Emitting this puts the credit in the early-exiter's account history (adjust_balance alone
+        /// leaves no trace) and lets indexers reconcile the settlement's token flow.
+        struct pm_early_exit_claim_paid_operation : public virtual_operation {
+            pm_early_exit_claim_paid_operation() {}
+            pm_early_exit_claim_paid_operation(const account_name_type& a, pm_vop_object_id_type m,
+                                               uint8_t k, uint8_t o, const asset& c, const asset& p)
+                : account(a), market_id(m), kind(k), outcome_index(o), claimed(c), paid(p) {}
+
+            account_name_type     account;
+            pm_vop_object_id_type market_id = 0;
+            uint8_t               kind = 0;          ///< 0 = bet cancel, 1 = leverage close/liquidate
+            uint8_t               outcome_index = 0; ///< the winning outcome this claim was contingent on
+            asset                 claimed;           ///< full claim recorded at exit
+            asset                 paid;              ///< amount the bounded bucket funded (≤ claimed)
+        };
+
 } } // graphene::protocol
 
 FC_REFLECT((graphene::protocol::pm_batch_settle_operation), (market_id)(epoch)(settled_bets))
@@ -242,3 +263,5 @@ FC_REFLECT((graphene::protocol::pm_market_expired_operation),
     (oracle)(creator)(market_id)(refunded_liquidity))
 FC_REFLECT((graphene::protocol::pm_ban_expired_operation),
     (account)(oracle)(creator))
+FC_REFLECT((graphene::protocol::pm_early_exit_claim_paid_operation),
+    (account)(market_id)(kind)(outcome_index)(claimed)(paid))

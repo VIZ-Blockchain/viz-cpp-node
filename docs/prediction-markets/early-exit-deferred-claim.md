@@ -93,8 +93,14 @@ Median-voted validator param; `validate()` bounds `≤ 10000`. Added to
       claims FIFO by exit_time, remainder → winners' pool; remove the `uncovered`/F1
       `settle_liquidity` charge path (LP no longer absorbs it).
 - [ ] snapshot: include `pm_deferred_claim_object` in allowlist (+ import handler).
-- [ ] virtual op `pm_early_exit_claim_paid` (account, market, claim, outcome, ts) for history.
-- [ ] read API: `get_deferred_claims(market)` / by account, for clients.
+- [x] virtual op `pm_early_exit_claim_paid` (account, market, kind, outcome, `claimed`, `paid`) —
+      appended at the end of the `operation` variant (op-ids stay stable), FC_REFLECT'd, emitted in
+      the settlement distribution loop next to the `adjust_balance`, and routed to the early-exiter's
+      account history (`account_history` impacted-accounts visitor). `claimed` vs `paid` exposes any
+      bucket-exhaustion haircut. `adjust_balance` alone leaves no history trace — this closes that gap.
+- [x] read API: `get_deferred_claims(market, [from=0], [limit=100])` — FIFO exit order via
+      `by_claim_market`; empty on a settled market (claims consumed). Plugin-only (clients call via
+      rawApi/JSON-RPC), matching `get_lazy_withdraw_requests`; no wallet wiring.
 
 ## Client / lib / docs follow-ups
 - viz-js-lib / viz-php-lib / viz-python-lib: new chain param in v5 chain_properties_pm
