@@ -3115,12 +3115,14 @@ void database::process_pm_markets() {
             auto bit = bidx.lower_bound(boost::make_tuple(
                 mkt.id, (uint32_t)mkt.current_epoch, pm_bet_id_type()));
             uint32_t settled = 0;
+            bool     had_queued = false;
 
             while (bit != bidx.end() &&
                    bit->market == mkt.id &&
                    bit->epoch  == (uint32_t)mkt.current_epoch) {
                 const auto& bet = *bit; ++bit;
                 if (bet.status != 5) continue;
+                had_queued = true;
 
                 share_type tokens(0);
 
@@ -3196,8 +3198,17 @@ void database::process_pm_markets() {
                 push_virtual_operation(pm_batch_settle_operation(
                     mkt.id._id, mkt.current_epoch, settled));
 
-            modify(mkt, [](pm_market_object& m) { m.current_epoch++; });
-            ++done;
+            // Only advance the epoch and consume the per-block processing cap for markets
+            // that actually had queued (status=5) bets this epoch. Previously EVERY
+            // allow_batch market did `current_epoch++` and `++done`, so once the number of
+            // active allow_batch markets exceeded pm_processing_cap_per_block the loop
+            // stopped on the ~cap oldest markets and newer markets never got their queued
+            // bets settled (starvation). Skipping idle markets keeps the cap budget for
+            // markets that need work and lets the scan reach newly-created markets.
+            if (had_queued) {
+                modify(mkt, [](pm_market_object& m) { m.current_epoch++; });
+                ++done;
+            }
         }
     }
 
