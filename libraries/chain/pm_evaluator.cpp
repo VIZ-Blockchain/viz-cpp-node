@@ -217,7 +217,8 @@ namespace {
     // min(cancel_value, obligation), the bettor gets any remainder. Zero-sum: the C+L that
     // entered the curve at open returns as cancel_value (split pool/bettor); the price-impact
     // difference accrues to the rest of the market. reason: 0 opposing-bet, 1 cancel-bet, 2 expiry,
-    // 3 funding (position pulled underwater by accrued carry cost).
+    // 3 funding (position pulled underwater by accrued carry cost), 4 terminal void/no-contest
+    // (refund the residual immediately — no outcome to defer a claim to). See F1/#300.
     void liquidate_position(database& db, const pm_leverage_position_object& pos, uint8_t reason) {
         // Bring funding current before settling so the obligation reflects carry owed to now.
         accrue_leverage_funding(db, pos,
@@ -233,17 +234,17 @@ namespace {
         int64_t bettor_received = cv - pool_received; // ≥ 0
         int64_t pool_profit     = pool_received - pos.loan.value;
 
-        // Conservation: (C+L) entered the curve at open and is tracked as this position's
-        // collateral+loan until now; only `cv` returns (pool_received + bettor_received). The
-        // remainder = total_bet − cv (AMM price-impact + kdiv floor) must be routed, not left
-        // frozen in the virtual reserves — on a never-settling market that would be an untracked
-        // token deficit. Route it to forfeit_pool: it "accrues to the rest of the market" (the
-        // design intent, spec §5) and is distributed to winners at settlement, so token supply
-        // reconciles exactly. See issue #127. NB: a profitable close (cv > total_bet) makes the
-        // residual NEGATIVE — the surplus was paid to the winner out of the pool, so forfeit_pool
-        // (a signed accumulator) correctly nets down the parimutuel winners' pool at settlement,
-        // where it is floored at 0 to prevent the uint64-cast mint (B3, compute_settlement).
-        const int64_t curve_residual = pos.total_bet.value - cv;
+        // F1/#300 deferred-claim conservation. (C+L)=total_bet entered the curve at open. The pool
+        // recovers its obligation from cv; everything the pool does NOT take stays in the market pot
+        // (forfeit_pool). The bettor's residual (cv − pool_received) is NOT paid against the curve now —
+        // it becomes an OUTCOME-CONTINGENT deferred claim paid at settlement from a bounded slice of the
+        // losing pool (or nothing if its outcome loses). So forfeit gets `total_bet − pool_received`
+        // (≥ 0 for normal closes → no negative-forfeit / uncovered mint, no LP hit). Model validated:
+        // early-exit-deferred-claim.md. EXCEPTION reason 4 = terminal void/no-contest: there is no
+        // outcome, so the bettor is REFUNDED immediately (old path) and forfeit gets total_bet − cv.
+        const bool voiding = (reason == 4);
+        const int64_t pot_retained = voiding ? (pos.total_bet.value - cv)
+                                             : (pos.total_bet.value - pool_received);
         db.modify(mkt, [&](pm_market_object& m) { // unwind tokens (k preserved)
             if (pos.outcome_index == 0) {
                 int64_t new_rb = m.reserve_b.value + pos.tokens.value;
@@ -254,7 +255,7 @@ namespace {
                 m.reserve_a = share_type(new_ra);
                 m.reserve_b = share_type((int64_t)(m.k / fc::uint128_t((uint64_t)new_ra)).lo);
             }
-            m.forfeit_pool += share_type(curve_residual);
+            m.forfeit_pool += share_type(pot_retained);
         });
         db.modify(db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0)), [&](pm_lazy_pool_object& p) {
             p.free_balance       += share_type(pool_received);
@@ -267,12 +268,24 @@ namespace {
             }
         });
         service_lazy_withdraw_queue(db);   // returning leverage capital first pays queued withdrawers
-        if (bettor_received > 0)
-            db.adjust_balance(db.get_account(pos.account), asset(share_type(bettor_received), TOKEN_SYMBOL));
+        if (bettor_received > 0) {
+            if (voiding) {
+                // Terminal void/no-contest: refund the residual immediately (no outcome to defer to).
+                db.adjust_balance(db.get_account(pos.account), asset(share_type(bettor_received), TOKEN_SYMBOL));
+            } else {
+                // Defer as an outcome-contingent claim (F1/#300) — paid at settlement from the bounded
+                // early-exit bucket iff pos.outcome_index wins; otherwise it pays nothing.
+                db.create<pm_deferred_claim_object>([&](pm_deferred_claim_object& c) {
+                    c.market = pos.market; c.account = pos.account; c.kind = 1;
+                    c.outcome_index = pos.outcome_index; c.claim_amount = share_type(bettor_received);
+                    c.exit_time = db.head_block_time();
+                });
+            }
+        }
 
-        // reason 2 = the market is resolving/voiding → this is a SETTLEMENT (pm_leverage_resolve),
-        // not a mid-market liquidation (pm_leverage_liquidate). `won` = the position was solvent.
-        const bool settle = (reason == 2);
+        // reason 2 = resolving, 4 = voiding → SETTLEMENT (pm_leverage_resolve); 0/1/3 = mid-market
+        // liquidation (pm_leverage_liquidate). `won` = the position was solvent.
+        const bool settle = (reason == 2 || reason == 4);
         const bool won    = (cv >= obligation);
         db.modify(pos, [&](pm_leverage_position_object& p) {
             p.status = settle ? (won ? (uint8_t)2 : (uint8_t)3) : (uint8_t)1;
@@ -323,13 +336,25 @@ namespace {
     // Force-close ALL active positions on a market (terminal: market resolving/voided).
     // Unbounded by design — every position must be closed; terminates because each
     // liquidation flips status 0→1 (excluded from the next lower_bound).
-    void force_close_positions(database& db, pm_market_id_type market) {
+    // reason 2 = normal resolution (defer residuals as claims); reason 4 = terminal void/no-contest
+    // (refund residuals immediately, no outcome to defer to). See liquidate_position.
+    void force_close_positions(database& db, pm_market_id_type market, uint8_t reason = 2) {
         for (;;) {
             const auto& idx = db.get_index<pm_leverage_position_index>().indices().get<by_lev_market_status>();
             auto it = idx.lower_bound(boost::make_tuple(market, (uint8_t)0, pm_leverage_position_id_type()));
             if (it == idx.end() || it->market != market || it->status != 0) break;
-            liquidate_position(db, *it, 2);
+            liquidate_position(db, *it, reason);
         }
+    }
+
+    // Delete every deferred early-exit claim of a market WITHOUT paying (terminal void/no-contest:
+    // no winning outcome, so outcome-contingent claims are worthless). F1/#300.
+    void purge_deferred_claims(database& db, pm_market_id_type market) {
+        const auto& cidx = db.get_index<pm_deferred_claim_index>().indices().get<by_claim_market>();
+        std::vector<const pm_deferred_claim_object*> consumed;
+        for (auto it = cidx.lower_bound(boost::make_tuple(market, pm_deferred_claim_id_type()));
+             it != cidx.end() && it->market == market; ++it) consumed.push_back(&*it);
+        for (const auto* c : consumed) db.remove(*c);
     }
 
     // Graduated recall: withdraw `amount` of the lazy pool's LP position from an idle
@@ -488,9 +513,10 @@ namespace {
         const bool binary = (mkt.market_type == 0);
         const int16_t win = mkt.resolved_outcome;
 
-        // Any leveraged positions still open at settlement are force-closed first
-        // (normally the expiration buffer prevents this; this is the terminal safety net).
-        force_close_positions(db, mkt.id);
+        // Any leveraged positions still open at settlement are force-closed first (normally the
+        // expiration buffer prevents this; terminal safety net). On a normal resolution (win≥0) the
+        // residuals defer as outcome-contingent claims; on void/no-contest (win<0) they refund now.
+        force_close_positions(db, mkt.id, win < 0 ? (uint8_t)4 : (uint8_t)2);
 
         // Zero-volume resolution → fault stamp on the oracle (§4.10 lazy-pool defense:
         // discourages spam markets that lock pool capital with no betting volume).
@@ -555,6 +581,7 @@ namespace {
                     }
                 }
             }
+            purge_deferred_claims(db, mkt.id); // F1/#300: no winning outcome → early-exit claims pay 0
             db.modify(mkt, [](pm_market_object& m) { m.forfeit_pool = 0; });
             return;
         }
@@ -699,8 +726,10 @@ namespace {
     }
 
     void return_liquidity(database& db, const pm_market_object& mkt) {
-        // Void/refund terminal: force-close any open leveraged positions first.
-        force_close_positions(db, mkt.id);
+        // Void/refund terminal: force-close open leveraged positions (reason 4 = refund residuals now,
+        // no outcome to defer to) and discard any deferred early-exit claims (no winning outcome).
+        force_close_positions(db, mkt.id, 4);
+        purge_deferred_claims(db, mkt.id);
         const auto& lidx = db.get_index<pm_liquidity_index>().indices().get<by_market>();
         auto it = lidx.lower_bound(boost::make_tuple(mkt.id, pm_liquidity_id_type()));
         while (it != lidx.end() && it->market == mkt.id) {
@@ -1443,15 +1472,28 @@ void pm_cancel_bet_evaluator::do_apply(const pm_cancel_bet_operation& o) {
         fc::uint128_t denom = fc::uint128_t((uint64_t)(reserve_out.value + bet.weight.value));
         FC_ASSERT(denom.lo > 0 || denom.hi > 0, "CPMM overflow");
         share_type new_reserve_in = share_type((int64_t)(mkt.k / denom).lo);
-        refund = share_type(reserve_in.value - new_reserve_in.value); // > 0 by construction
-        FC_ASSERT(refund.value >= 0, "curve-priced refund underflow");
-        const int64_t residual = bet.amount.value - refund.value; // signed → forfeit_pool (conserves VIZ)
+        const int64_t curve_refund = reserve_in.value - new_reserve_in.value; // > 0 by construction
+        FC_ASSERT(curve_refund >= 0, "curve-priced refund underflow");
+        // F1/#300: pay at most the stake (min(curve_refund, stake)) — a cancel cuts losses or breaks
+        // even but never realizes curve PROFIT against LP depth. The profit tail becomes an OUTCOME-
+        // CONTINGENT deferred claim, paid from the bounded early-exit bucket at settlement (winning side
+        // only). residual = stake − paid ≥ 0, so forfeit_pool never goes negative on a cancel.
+        const int64_t capped = curve_refund < bet.amount.value ? curve_refund : bet.amount.value;
+        const int64_t tail   = curve_refund - capped; // ≥ 0: curve profit, deferred as a claim
+        refund = share_type(capped);
+        const int64_t residual = bet.amount.value - capped; // ≥ 0 → forfeit_pool
         db.modify(mkt, [&](pm_market_object& m) {
             if (a) { m.reserve_a = new_reserve_in; m.reserve_b += bet.weight; m.a_bets_sum -= bet.amount; }
             else   { m.reserve_b = new_reserve_in; m.reserve_a += bet.weight; m.b_bets_sum -= bet.amount; }
             m.bets_sum     -= bet.amount;
             m.forfeit_pool += residual; // stake = refund + residual; k unchanged (mirror of buy)
         });
+        if (tail > 0) {
+            db.create<pm_deferred_claim_object>([&](pm_deferred_claim_object& c) {
+                c.market = mkt.id; c.account = bet.account; c.kind = 0;
+                c.outcome_index = (uint8_t)bet.side; c.claim_amount = share_type(tail); c.exit_time = now;
+            });
+        }
     } else {
         const auto& oidx_out = db.get_index<pm_outcome_index>().indices().get<by_market_outcome>();
         auto it = oidx_out.lower_bound(boost::make_tuple(mkt.id, (uint8_t)bet.outcome_index));
@@ -2240,14 +2282,11 @@ void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o)
     int64_t bettor_received = cv - obligation;
     FC_ASSERT(bettor_received >= o.min_return, "Return below min_return");
 
-    // Conservation (see issue #127): only `cv` (= obligation + bettor_received) returns, while
-    // the position's total_bet (C+L) is what left circulation at open. The remainder
-    // total_bet − cv (AMM spread + kdiv floor) is routed to forfeit_pool so no token is left
-    // frozen in the virtual reserves; it accrues to the rest of the market and settles to winners.
-    // NB: a profitable close (cv > total_bet) makes this NEGATIVE — the surplus was paid to the
-    // bettor from the pool, so forfeit_pool (signed) nets down the winners' pool at settlement,
-    // floored at 0 there to prevent the uint64-cast mint (B3, compute_settlement).
-    const int64_t curve_residual = pos.total_bet.value - cv;
+    // F1/#300: the pool recovers `obligation` from cv; everything it does not take stays in the pot
+    // (forfeit_pool gets total_bet − obligation, ≥ 0). The bettor's profit (cv − obligation) is NOT
+    // paid against the curve now — it becomes an OUTCOME-CONTINGENT deferred claim, paid at settlement
+    // from the bounded early-exit bucket iff this outcome wins. Keeps forfeit ≥ 0 (no LP hit / mint).
+    const int64_t pot_retained = pos.total_bet.value - obligation;
     // Unwind the tokens from the curve (k preserved).
     db.modify(mkt, [&](pm_market_object& m) {
         if (pos.outcome_index == 0) {
@@ -2259,7 +2298,7 @@ void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o)
             m.reserve_a = share_type(new_ra);
             m.reserve_b = share_type((int64_t)(m.k / fc::uint128_t((uint64_t)new_ra)).lo);
         }
-        m.forfeit_pool += share_type(curve_residual);
+        m.forfeit_pool += share_type(pot_retained);
     });
     int64_t pool_yield = pos.pool_profit.value + pos.funding_paid.value; // R-markup + accrued funding → LP yield
     db.modify(db.get<pm_lazy_pool_object, by_id>(pm_lazy_pool_id_type(0)), [&](pm_lazy_pool_object& p) {
@@ -2272,7 +2311,10 @@ void pm_leverage_close_evaluator::do_apply(const pm_leverage_close_operation& o)
     });
     service_lazy_withdraw_queue(db);   // returning leverage capital first pays queued withdrawers
     if (bettor_received > 0)
-        db.adjust_balance(db.get_account(o.account), asset(share_type(bettor_received), TOKEN_SYMBOL));
+        db.create<pm_deferred_claim_object>([&](pm_deferred_claim_object& c) {
+            c.market = pos.market; c.account = o.account; c.kind = 1;
+            c.outcome_index = pos.outcome_index; c.claim_amount = share_type(bettor_received); c.exit_time = now;
+        });
     db.modify(pos, [&](pm_leverage_position_object& p) {
         p.status = 4; p.pool_received = share_type(obligation);
         p.bettor_received = share_type(bettor_received); p.last_update = now;
