@@ -201,7 +201,12 @@ namespace graphene { namespace chain {
                 ordered_unique<tag<by_id>, member<pm_market_object, pm_market_id_type, &pm_market_object::id>>,
                 ordered_non_unique<tag<by_creator>, member<pm_market_object, account_name_type, &pm_market_object::creator>, string_less>,
                 ordered_non_unique<tag<by_oracle>, member<pm_market_object, account_name_type, &pm_market_object::oracle>, string_less>,
-                ordered_non_unique<tag<by_status>, member<pm_market_object, int8_t, &pm_market_object::status>>,
+                // (status, id): consensus iterates status ranges in id order (deterministic) and the
+                // batch-epoch-settle cursor resumes mid-range with lower_bound((status, id)).
+                ordered_unique<tag<by_status>,
+                    composite_key<pm_market_object,
+                        member<pm_market_object, int8_t, &pm_market_object::status>,
+                        member<pm_market_object, pm_market_id_type, &pm_market_object::id>>>,
                 // (oracle, status, id): one oracle's markets filtered by a single status in a bounded
                 // walk — e.g. its still-active (1) or already-resolved (3) rows — without scanning the
                 // oracle's entire (mostly resolved) history the way plain by_oracle does.
